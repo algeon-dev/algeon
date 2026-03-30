@@ -1,15 +1,4 @@
-use std::sync::Mutex;
-
 use cudf::{Column, DataFrame};
-
-/// Guards test-only mutations of the process-global current device resource.
-///
-/// Some allocation-accounting tests temporarily swap the active RMM resource
-/// via cudf-sys test hooks. Those hooks mutate global process state, so tests
-/// across different modules must share one lock when installing a stats
-/// resource.
-#[allow(dead_code)]
-pub static CURRENT_DEVICE_RESOURCE_LOCK: Mutex<()> = Mutex::new(());
 
 #[allow(dead_code)]
 pub fn sample_df() -> DataFrame {

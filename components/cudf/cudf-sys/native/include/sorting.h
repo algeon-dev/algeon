@@ -35,6 +35,7 @@ cudf_status_t cudf_sort(cudf_table_view_handle input,
 
 /// Sort with explicit execution context.
 /// Pass NULL for `options` to use process defaults (identical to cudf_sort).
+/// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
                             const cudf_order_t* column_order,
                             const cudf_null_order_t* null_precedence,
@@ -50,6 +51,7 @@ cudf_status_t cudf_stable_sort(cudf_table_view_handle input,
                                cudf_table_handle* out);
 
 /// Stable sort with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
                                    const cudf_order_t* column_order,
                                    const cudf_null_order_t* null_precedence,
@@ -66,6 +68,7 @@ cudf_status_t cudf_sort_by_key(cudf_table_view_handle values,
                                cudf_table_handle* out);
 
 /// Sort by key with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
                                    cudf_table_view_handle keys,
                                    const cudf_order_t* column_order,
@@ -83,6 +86,7 @@ cudf_status_t cudf_stable_sort_by_key(cudf_table_view_handle values,
                                       cudf_table_handle* out);
 
 /// Stable sort by key with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
                                           cudf_table_view_handle keys,
                                           const cudf_order_t* column_order,
@@ -100,6 +104,7 @@ cudf_status_t cudf_sorted_order(cudf_table_view_handle input,
                                 cudf_column_handle* out);
 
 /// Sorted order with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
 cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
                                     const cudf_order_t* column_order,
                                     const cudf_null_order_t* null_precedence,

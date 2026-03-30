@@ -15,10 +15,10 @@ use crate::{
 
 /// Options for [`DataFrame::read_csv_with_options`].
 ///
-/// This is the schema-aware CSV facade for `DataFrame`. Unlike the lower-level
-/// [`crate::io::csv::CsvReaderOptions`], it can also resolve DataFrame column
-/// names from either an explicit override, the CSV header row, or generated
-/// fallback names.
+/// This is the schema-aware CSV reader API for `DataFrame`. Unlike the
+/// lower-level [`crate::io::csv::CsvReaderOptions`], it can also resolve
+/// DataFrame column names from either an explicit override, the CSV header
+/// row, or generated fallback names.
 #[derive(Debug, Clone)]
 pub struct DataFrameCsvReaderOptions {
     filepath: PathBuf,
@@ -118,9 +118,10 @@ impl DataFrameCsvReaderOptions {
 
 /// Options for [`DataFrame::write_csv_with_options`].
 ///
-/// This is the schema-aware CSV facade for `DataFrame`. Column names always
-/// come from the DataFrame schema; this type only controls file-format knobs
-/// such as delimiter and whether the header row is included.
+/// This is the schema-aware CSV writer API for `DataFrame`. Column names
+/// always come from the DataFrame schema; this type only controls
+/// file-format knobs such as delimiter and whether the header row is
+/// included.
 #[derive(Debug, Clone)]
 pub struct DataFrameCsvWriterOptions {
     filepath: PathBuf,
@@ -195,8 +196,8 @@ impl DataFrame {
 
     /// Read a CSV file into a `DataFrame` using caller-provided options.
     ///
-    /// When `has_header == true`, the high-level facade parses the header row
-    /// on the host to recover schema names. This metadata parsing does not
+    /// When `has_header == true`, this reader API parses the header row on the
+    /// host to recover schema names. This metadata parsing does not
     /// materialize data columns through host memory.
     pub fn read_csv_with_options(options: DataFrameCsvReaderOptions) -> Result<Self> {
         let table = csv::read_csv(&options.to_table_options())?;

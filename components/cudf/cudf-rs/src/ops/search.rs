@@ -2,10 +2,34 @@
 
 use std::ptr;
 
-use crate::core::{
-    column::{Column, ColumnView},
-    error::{self, Result},
+use crate::{
+    core::{
+        column::{Column, ColumnView},
+        error::{self, Result},
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
+
+fn contains_impl(
+    haystack: &ColumnView<'_>,
+    needles: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_contains_ex(haystack.raw_handle(), needles.raw_handle(), &mut out, options)
+        },
+        None => unsafe { cudf_sys::cudf_contains(haystack.raw_handle(), needles.raw_handle(), &mut out) },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [("execution_context_provided", exec_options.is_some().to_string())],
+    )?;
+    Ok(unsafe { Column::from_raw(out) })
+}
 
 /// Check if elements of `needles` exist in `haystack` (set membership / "isin").
 ///
@@ -30,12 +54,12 @@ use crate::core::{
 /// // result: [true, false]
 /// ```
 pub fn contains(haystack: &ColumnView<'_>, needles: &ColumnView<'_>) -> Result<Column> {
-    let mut out = ptr::null_mut();
-    error::check_status_in(
-        // SAFETY: haystack and needles handles are valid (NonNull maintained by ColumnView).
-        unsafe { cudf_sys::cudf_contains(haystack.raw_handle(), needles.raw_handle(), &mut out) },
+    let output_domain = ExecutionDomain::compatible_domain(
+        haystack.execution_domain(),
+        needles.execution_domain(),
         "search::contains",
     )?;
-    // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    let exec_options = output_domain.explicit_exec_options_raw();
+    contains_impl(haystack, needles, exec_options.as_ref(), "search::contains")
+        .map(|column| column.with_execution_domain(output_domain))
 }

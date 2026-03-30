@@ -208,6 +208,19 @@ unsafe fn create_scan_agg_handle(agg: ScanAggregation) -> Result<*mut c_void> {
 
 /// Reduce a column to a single scalar value.
 pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAggregation, output_type: &DataType) -> Result<Scalar> {
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    reduce_impl(input, agg, output_type, exec_options.as_ref(), "reduction::reduce")
+        .map(|scalar| scalar.with_execution_domain(output_domain))
+}
+
+fn reduce_impl(
+    input: &ColumnView<'_>,
+    agg: &ReduceAggregation,
+    output_type: &DataType,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Scalar> {
     // SAFETY: create_reduce_agg_handle calls FFI with valid parameters.
     let agg_handle = unsafe { create_reduce_agg_handle(agg)? };
     let dtype_handle = output_type.to_raw_handle_for("reduction::reduce")?;
@@ -215,7 +228,12 @@ pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAggregation, output_type: &Dat
     let mut out = ptr::null_mut();
     // SAFETY: input handle is valid (NonNull). agg_handle and dtype_handle
     // were returned by successful FFI calls.
-    let status = unsafe { cudf_sys::cudf_reduce(input.raw_handle(), agg_handle, dtype_handle, &mut out) };
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_reduce_ex(input.raw_handle(), agg_handle, dtype_handle, &mut out, options)
+        },
+        None => unsafe { cudf_sys::cudf_reduce(input.raw_handle(), agg_handle, dtype_handle, &mut out) },
+    };
 
     // SAFETY: agg_handle and dtype_handle are valid handles that must be
     // destroyed regardless of success/failure.
@@ -226,10 +244,11 @@ pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAggregation, output_type: &Dat
 
     error::check_status_in_with(
         status,
-        "reduction::reduce",
+        operation,
         [
             ("aggregation", reduce_agg_name(agg).to_string()),
             ("output_type_id", format!("{:?}", output_type.id()).to_lowercase()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
@@ -243,25 +262,53 @@ pub fn scan(
     scan_type: ScanType,
     null_policy: NullPolicy,
 ) -> Result<Column> {
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    scan_impl(input, agg, scan_type, null_policy, exec_options.as_ref(), "reduction::scan")
+        .map(|column| column.with_execution_domain(output_domain))
+}
+
+fn scan_impl(
+    input: &ColumnView<'_>,
+    agg: ScanAggregation,
+    scan_type: ScanType,
+    null_policy: NullPolicy,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
     // SAFETY: create_scan_agg_handle calls FFI with valid parameters.
     let agg_handle = unsafe { create_scan_agg_handle(agg)? };
 
     let mut out = ptr::null_mut();
     // SAFETY: input handle is valid (NonNull). agg_handle was returned by a
     // successful FFI call.
-    let status =
-        unsafe { cudf_sys::cudf_scan(input.raw_handle(), agg_handle, scan_type as i32, null_policy as i32, &mut out) };
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_scan_ex(
+                input.raw_handle(),
+                agg_handle,
+                scan_type as i32,
+                null_policy as i32,
+                &mut out,
+                options,
+            )
+        },
+        None => unsafe {
+            cudf_sys::cudf_scan(input.raw_handle(), agg_handle, scan_type as i32, null_policy as i32, &mut out)
+        },
+    };
 
     // SAFETY: agg_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_scan_aggregation_destroy(agg_handle) };
 
     error::check_status_in_with(
         status,
-        "reduction::scan",
+        operation,
         [
             ("aggregation", format!("{:?}", agg)),
             ("scan_type", format!("{:?}", scan_type)),
             ("null_policy", format!("{:?}", null_policy)),
+            ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
@@ -270,12 +317,28 @@ pub fn scan(
 
 /// Compute the min and max of a column simultaneously.
 pub fn minmax(input: &ColumnView<'_>) -> Result<(Scalar, Scalar)> {
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    minmax_impl(input, exec_options.as_ref(), "reduction::minmax").map(|(min, max)| {
+        (min.with_execution_domain(std::sync::Arc::clone(&output_domain)), max.with_execution_domain(output_domain))
+    })
+}
+
+fn minmax_impl(
+    input: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<(Scalar, Scalar)> {
     let mut out_min = ptr::null_mut();
     let mut out_max = ptr::null_mut();
-    error::check_status_in(
-        // SAFETY: input handle is valid (NonNull maintained by ColumnView).
-        unsafe { cudf_sys::cudf_minmax(input.raw_handle(), &mut out_min, &mut out_max) },
-        "reduction::minmax",
+    let status = match exec_options {
+        Some(options) => unsafe { cudf_sys::cudf_minmax_ex(input.raw_handle(), &mut out_min, &mut out_max, options) },
+        None => unsafe { cudf_sys::cudf_minmax(input.raw_handle(), &mut out_min, &mut out_max) },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out_min/out_max were returned by a successful FFI call.
     Ok(unsafe { (Scalar::from_raw(out_min), Scalar::from_raw(out_max)) })

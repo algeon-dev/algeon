@@ -27,15 +27,6 @@ pub struct ColumnView<'a> {
 }
 
 impl<'a> ColumnView<'a> {
-    /// Create a `ColumnView` from a raw FFI handle.
-    ///
-    /// # Safety
-    /// The handle must be a valid `cudf_column_view_handle` and must remain
-    /// valid for lifetime `'a`.
-    pub(crate) unsafe fn from_raw(handle: *mut c_void) -> Self {
-        Self::from_raw_with_domain(handle, ExecutionDomain::ambient_default())
-    }
-
     /// Create a `ColumnView` from a raw FFI handle plus a retained execution domain.
     ///
     /// # Safety
@@ -53,6 +44,26 @@ impl<'a> ColumnView<'a> {
 
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
         &self.domain
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_kind(&self) -> &'static str {
+        self.domain.debug_kind()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_id(&self) -> u64 {
+        self.domain.debug_id()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_stream_value(&self) -> usize {
+        self.domain.debug_stream_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_mr_value(&self) -> usize {
+        self.domain.debug_mr_value()
     }
 
     fn synchronize_host_visibility(&self, operation: &'static str) -> Result<()> {
@@ -196,6 +207,8 @@ impl<'a> ColumnView<'a> {
         let mut buf = vec![unsafe { std::mem::zeroed::<T>() }; size];
         let buf_size = size * std::mem::size_of::<T>();
 
+        self.synchronize_host_visibility("column_view::to_vec")?;
+
         // SAFETY: buf is a valid mutable buffer of buf_size bytes. self.handle is
         // valid. Type was checked above to match T::TYPE_ID.
         if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
@@ -277,8 +290,7 @@ impl<'a> ColumnView<'a> {
         let offsets_count = size + 1;
         let offsets_buf_size = offsets_count * std::mem::size_of::<i32>();
         let mut offsets = vec![0i32; offsets_count];
-
-        self.synchronize_host_visibility("column_view::to_strings")?;
+        let exec_options = self.domain.explicit_exec_options_raw();
 
         // First call to get total_chars_bytes: pass a generous chars buffer initially.
         // We do a two-phase approach: first get offsets + total size, then get chars.
@@ -287,15 +299,29 @@ impl<'a> ColumnView<'a> {
         // Phase 1: get offsets and total char bytes (with null chars_buf if 0 chars)
         // SAFETY: offsets buffer has n+1 capacity. self.handle is valid STRING column.
         error::check_status_in(
-            unsafe {
-                cudf_sys::cudf_column_view_strings_to_host(
-                    self.handle.as_ptr(),
-                    offsets.as_mut_ptr(),
-                    offsets_buf_size,
-                    ptr::null_mut(), // chars_buf not needed yet for size query
-                    0,               // chars_buf_size = 0
-                    &mut total_chars_bytes,
-                )
+            if let Some(exec_options) = exec_options.as_ref() {
+                unsafe {
+                    cudf_sys::cudf_column_view_strings_to_host_ex(
+                        self.handle.as_ptr(),
+                        offsets.as_mut_ptr(),
+                        offsets_buf_size,
+                        ptr::null_mut(), // chars_buf not needed yet for size query
+                        0,               // chars_buf_size = 0
+                        &mut total_chars_bytes,
+                        exec_options,
+                    )
+                }
+            } else {
+                unsafe {
+                    cudf_sys::cudf_column_view_strings_to_host(
+                        self.handle.as_ptr(),
+                        offsets.as_mut_ptr(),
+                        offsets_buf_size,
+                        ptr::null_mut(), // chars_buf not needed yet for size query
+                        0,               // chars_buf_size = 0
+                        &mut total_chars_bytes,
+                    )
+                }
             },
             "column_view::to_strings",
         )?;
@@ -307,15 +333,29 @@ impl<'a> ColumnView<'a> {
             // may not have written chars. Re-call to get everything.
             // SAFETY: chars buffer is sized to total_chars_bytes from Phase 1.
             error::check_status_in(
-                unsafe {
-                    cudf_sys::cudf_column_view_strings_to_host(
-                        self.handle.as_ptr(),
-                        offsets.as_mut_ptr(),
-                        offsets_buf_size,
-                        chars.as_mut_ptr() as *mut c_char,
-                        total_chars_bytes as usize,
-                        &mut total_chars_bytes,
-                    )
+                if let Some(exec_options) = exec_options.as_ref() {
+                    unsafe {
+                        cudf_sys::cudf_column_view_strings_to_host_ex(
+                            self.handle.as_ptr(),
+                            offsets.as_mut_ptr(),
+                            offsets_buf_size,
+                            chars.as_mut_ptr() as *mut c_char,
+                            total_chars_bytes as usize,
+                            &mut total_chars_bytes,
+                            exec_options,
+                        )
+                    }
+                } else {
+                    unsafe {
+                        cudf_sys::cudf_column_view_strings_to_host(
+                            self.handle.as_ptr(),
+                            offsets.as_mut_ptr(),
+                            offsets_buf_size,
+                            chars.as_mut_ptr() as *mut c_char,
+                            total_chars_bytes as usize,
+                            &mut total_chars_bytes,
+                        )
+                    }
                 },
                 "column_view::to_strings",
             )?;

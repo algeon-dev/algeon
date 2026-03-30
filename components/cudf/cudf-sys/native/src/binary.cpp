@@ -1,4 +1,5 @@
 #include "binary.h"
+#include "execution_context_internal.hpp"
 #include "shim_common.h"
 
 #include <cudf/binaryop.hpp>
@@ -30,6 +31,15 @@ cudf_status_t cudf_binary_operation_vv(cudf_column_view_handle lhs,
                                        cudf_binary_operator_t op,
                                        cudf_data_type_handle output_type,
                                        cudf_column_handle* out) {
+  return cudf_binary_operation_vv_ex(lhs, rhs, op, output_type, out, nullptr);
+}
+
+cudf_status_t cudf_binary_operation_vv_ex(cudf_column_view_handle lhs,
+                                          cudf_column_view_handle rhs,
+                                          cudf_binary_operator_t op,
+                                          cudf_data_type_handle output_type,
+                                          cudf_column_handle* out,
+                                          cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(lhs, "lhs is null");
@@ -41,14 +51,18 @@ cudf_status_t cudf_binary_operation_vv(cudf_column_view_handle lhs,
     return status;
   }
   CUDF_RUST_TRY {
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* lhs_view = static_cast<cudf::column_view*>(lhs);
     auto* rhs_view = static_cast<cudf::column_view*>(rhs);
     auto* dtype = static_cast<cudf::data_type*>(output_type);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
 
     auto result = cudf::binary_operation(*lhs_view, *rhs_view, cudf_op,
-                                         *dtype, stream, mr);
+                                         *dtype, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -60,6 +74,15 @@ cudf_status_t cudf_binary_operation_vs(cudf_column_view_handle lhs,
                                        cudf_binary_operator_t op,
                                        cudf_data_type_handle output_type,
                                        cudf_column_handle* out) {
+  return cudf_binary_operation_vs_ex(lhs, rhs, op, output_type, out, nullptr);
+}
+
+cudf_status_t cudf_binary_operation_vs_ex(cudf_column_view_handle lhs,
+                                          cudf_scalar_handle rhs,
+                                          cudf_binary_operator_t op,
+                                          cudf_data_type_handle output_type,
+                                          cudf_column_handle* out,
+                                          cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(lhs, "lhs is null");
@@ -71,14 +94,18 @@ cudf_status_t cudf_binary_operation_vs(cudf_column_view_handle lhs,
     return status;
   }
   CUDF_RUST_TRY {
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* lhs_view = static_cast<cudf::column_view*>(lhs);
     auto* rhs_scalar = static_cast<cudf::scalar*>(rhs);
     auto* dtype = static_cast<cudf::data_type*>(output_type);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
 
     auto result = cudf::binary_operation(*lhs_view, *rhs_scalar, cudf_op,
-                                         *dtype, stream, mr);
+                                         *dtype, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -90,6 +117,15 @@ cudf_status_t cudf_binary_operation_sv(cudf_scalar_handle lhs,
                                        cudf_binary_operator_t op,
                                        cudf_data_type_handle output_type,
                                        cudf_column_handle* out) {
+  return cudf_binary_operation_sv_ex(lhs, rhs, op, output_type, out, nullptr);
+}
+
+cudf_status_t cudf_binary_operation_sv_ex(cudf_scalar_handle lhs,
+                                          cudf_column_view_handle rhs,
+                                          cudf_binary_operator_t op,
+                                          cudf_data_type_handle output_type,
+                                          cudf_column_handle* out,
+                                          cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(lhs, "lhs is null");
@@ -101,14 +137,18 @@ cudf_status_t cudf_binary_operation_sv(cudf_scalar_handle lhs,
     return status;
   }
   CUDF_RUST_TRY {
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* lhs_scalar = static_cast<cudf::scalar*>(lhs);
     auto* rhs_view = static_cast<cudf::column_view*>(rhs);
     auto* dtype = static_cast<cudf::data_type*>(output_type);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
 
     auto result = cudf::binary_operation(*lhs_scalar, *rhs_view, cudf_op,
-                                         *dtype, stream, mr);
+                                         *dtype, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }

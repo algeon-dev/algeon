@@ -108,6 +108,10 @@ impl Scalar {
         self.handle.as_ptr()
     }
 
+    pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
+        &self.domain
+    }
+
     /// Construct a `Scalar` from a raw FFI handle, taking ownership.
     ///
     /// # Safety
@@ -115,6 +119,11 @@ impl Scalar {
     /// transfer ownership.
     pub(crate) unsafe fn from_raw(handle: *mut c_void) -> Self {
         Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default())
+    }
+
+    pub(crate) fn with_execution_domain(mut self, domain: Arc<ExecutionDomain>) -> Self {
+        self.domain = domain;
+        self
     }
 
     #[doc(hidden)]
@@ -152,13 +161,21 @@ impl Scalar {
 
     /// Returns `true` if this scalar holds a valid (non-null) value.
     pub fn is_valid(&self) -> Result<bool> {
-        self.domain.synchronize_for_host_visibility("scalar::is_valid")?;
         let mut out: i32 = 0;
-        // SAFETY: self.handle is valid (NonNull invariant from construction).
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_scalar_is_valid(self.handle.as_ptr(), &mut out) },
-            "scalar::is_valid",
-        )?;
+        if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
+            // SAFETY: self.handle is valid (NonNull invariant from construction).
+            error::check_status_in(
+                unsafe { cudf_sys::cudf_scalar_is_valid_ex(self.handle.as_ptr(), &mut out, &exec_options) },
+                "scalar::is_valid",
+            )?;
+        } else {
+            // SAFETY: self.handle is valid (NonNull invariant from construction).
+            error::check_status_in(
+                unsafe { cudf_sys::cudf_scalar_is_valid(self.handle.as_ptr(), &mut out) },
+                "scalar::is_valid",
+            )?;
+        }
+        self.domain.synchronize_for_host_visibility("scalar::is_valid")?;
         Ok(out != 0)
     }
 
@@ -173,15 +190,30 @@ impl Scalar {
                 .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
                 .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
         }
-        self.domain.synchronize_for_host_visibility("scalar::value")?;
         // SAFETY: All CudfType implementors have valid all-zero bit patterns.
         let mut out = unsafe { std::mem::zeroed::<T>() };
-        // SAFETY: self.handle is valid. Type was checked to match T::TYPE_ID above.
-        // &mut out is a valid pointer to receive the scalar value.
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_scalar_value(self.handle.as_ptr(), &mut out as *mut T as *mut c_void) },
-            "scalar::value",
-        )?;
+        if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
+            // SAFETY: self.handle is valid. Type was checked to match T::TYPE_ID above.
+            // &mut out is a valid pointer to receive the scalar value.
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_scalar_value_ex(
+                        self.handle.as_ptr(),
+                        &mut out as *mut T as *mut c_void,
+                        &exec_options,
+                    )
+                },
+                "scalar::value",
+            )?;
+        } else {
+            // SAFETY: self.handle is valid. Type was checked to match T::TYPE_ID above.
+            // &mut out is a valid pointer to receive the scalar value.
+            error::check_status_in(
+                unsafe { cudf_sys::cudf_scalar_value(self.handle.as_ptr(), &mut out as *mut T as *mut c_void) },
+                "scalar::value",
+            )?;
+        }
+        self.domain.synchronize_for_host_visibility("scalar::value")?;
         Ok(out)
     }
 
@@ -189,19 +221,29 @@ impl Scalar {
     ///
     /// Returns an error if the scalar is not a string type.
     pub fn string_value(&self) -> Result<String> {
-        self.domain.synchronize_for_host_visibility("scalar::string_value")?;
         let mut ptr: *mut c_char = ptr::null_mut();
         let mut len: i32 = 0;
-        // SAFETY: self.handle is valid (NonNull invariant from construction).
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_scalar_string_value(self.handle.as_ptr(), &mut ptr, &mut len) },
-            "scalar::string_value",
-        )?;
+        if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
+            // SAFETY: self.handle is valid (NonNull invariant from construction).
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_scalar_string_value_ex(self.handle.as_ptr(), &mut ptr, &mut len, &exec_options)
+                },
+                "scalar::string_value",
+            )?;
+        } else {
+            // SAFETY: self.handle is valid (NonNull invariant from construction).
+            error::check_status_in(
+                unsafe { cudf_sys::cudf_scalar_string_value(self.handle.as_ptr(), &mut ptr, &mut len) },
+                "scalar::string_value",
+            )?;
+        }
         // SAFETY: ptr and len are returned by a successful FFI call.
         let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
         let value = String::from_utf8_lossy(bytes).into_owned();
         // SAFETY: ptr was allocated by the C shim and must be freed with cudf_string_free.
         unsafe { cudf_sys::cudf_string_free(ptr) };
+        self.domain.synchronize_for_host_visibility("scalar::string_value")?;
         Ok(value)
     }
 }

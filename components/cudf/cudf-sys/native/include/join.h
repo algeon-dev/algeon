@@ -28,6 +28,10 @@ cudf_status_t cudf_inner_join(cudf_table_view_handle left_keys,
                               cudf_table_handle* out_right);
 
 /// Inner join with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive both returned tables.
 cudf_status_t cudf_inner_join_ex(cudf_table_view_handle left_keys,
                                   cudf_table_view_handle right_keys,
                                   cudf_table_view_handle left_payload,
@@ -48,6 +52,10 @@ cudf_status_t cudf_left_join(cudf_table_view_handle left_keys,
                              cudf_table_handle* out_right);
 
 /// Left join with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive both returned tables.
 cudf_status_t cudf_left_join_ex(cudf_table_view_handle left_keys,
                                  cudf_table_view_handle right_keys,
                                  cudf_table_view_handle left_payload,
@@ -67,6 +75,10 @@ cudf_status_t cudf_full_join(cudf_table_view_handle left_keys,
                              cudf_table_handle* out_right);
 
 /// Full join with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive both returned tables.
 cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
                                  cudf_table_view_handle right_keys,
                                  cudf_table_view_handle left_payload,

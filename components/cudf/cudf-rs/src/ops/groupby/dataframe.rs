@@ -1,4 +1,4 @@
-//! High-level DataFrame-facing groupby facade.
+//! High-level DataFrame groupby API.
 
 use std::sync::Arc;
 

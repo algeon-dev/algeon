@@ -64,12 +64,30 @@ pub enum UnaryOperator {
 
 /// Apply a unary operation element-wise.
 pub fn unary_operation(input: &ColumnView<'_>, op: UnaryOperator) -> Result<Column> {
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    unary_operation_impl(input, op, exec_options.as_ref(), "unary::unary_operation")
+        .map(|column| column.with_execution_domain(output_domain))
+}
+
+fn unary_operation_impl(
+    input: &ColumnView<'_>,
+    op: UnaryOperator,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
     let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe { cudf_sys::cudf_unary_operation_ex(input.raw_handle(), op as i32, &mut out, options) },
+        None => unsafe { cudf_sys::cudf_unary_operation(input.raw_handle(), op as i32, &mut out) },
+    };
     error::check_status_in_with(
-        // SAFETY: input handle is valid (NonNull maintained by ColumnView).
-        unsafe { cudf_sys::cudf_unary_operation(input.raw_handle(), op as i32, &mut out) },
-        "unary::unary_operation",
-        [("operator", format!("{:?}", op).to_lowercase())],
+        status,
+        operation,
+        [
+            ("operator", format!("{:?}", op).to_lowercase()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
@@ -84,35 +102,89 @@ pub fn logical_not(input: &ColumnView<'_>) -> Result<Column> {
 
 /// Return a boolean column: `true` where elements are null.
 pub fn is_null(input: &ColumnView<'_>) -> Result<Column> {
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    is_null_impl(input, exec_options.as_ref(), "unary::is_null")
+        .map(|column| column.with_execution_domain(output_domain))
+}
+
+fn is_null_impl(
+    input: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
     let mut out = ptr::null_mut();
-    // SAFETY: input handle is valid (NonNull maintained by ColumnView).
-    error::check_status_in(unsafe { cudf_sys::cudf_is_null(input.raw_handle(), &mut out) }, "unary::is_null")?;
+    let status = match exec_options {
+        Some(options) => unsafe { cudf_sys::cudf_is_null_ex(input.raw_handle(), &mut out, options) },
+        None => unsafe { cudf_sys::cudf_is_null(input.raw_handle(), &mut out) },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [("execution_context_provided", exec_options.is_some().to_string())],
+    )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
 /// Return a boolean column: `true` where elements are valid (non-null).
 pub fn is_valid(input: &ColumnView<'_>) -> Result<Column> {
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    is_valid_impl(input, exec_options.as_ref(), "unary::is_valid")
+        .map(|column| column.with_execution_domain(output_domain))
+}
+
+fn is_valid_impl(
+    input: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
     let mut out = ptr::null_mut();
-    // SAFETY: input handle is valid (NonNull maintained by ColumnView).
-    error::check_status_in(unsafe { cudf_sys::cudf_is_valid(input.raw_handle(), &mut out) }, "unary::is_valid")?;
+    let status = match exec_options {
+        Some(options) => unsafe { cudf_sys::cudf_is_valid_ex(input.raw_handle(), &mut out, options) },
+        None => unsafe { cudf_sys::cudf_is_valid(input.raw_handle(), &mut out) },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [("execution_context_provided", exec_options.is_some().to_string())],
+    )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
 /// Cast a column to the specified data type.
 pub fn cast(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    cast_impl(input, output_type, exec_options.as_ref(), "unary::cast")
+        .map(|column| column.with_execution_domain(output_domain))
+}
+
+fn cast_impl(
+    input: &ColumnView<'_>,
+    output_type: &DataType,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for("unary::cast")?;
     let mut out = ptr::null_mut();
     // SAFETY: input handle is valid (NonNull). dtype_handle was returned by
     // a successful to_raw_handle_for call.
-    let status = unsafe { cudf_sys::cudf_cast(input.raw_handle(), dtype_handle, &mut out) };
+    let status = match exec_options {
+        Some(options) => unsafe { cudf_sys::cudf_cast_ex(input.raw_handle(), dtype_handle, &mut out, options) },
+        None => unsafe { cudf_sys::cudf_cast(input.raw_handle(), dtype_handle, &mut out) },
+    };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in_with(
         status,
-        "unary::cast",
-        [("output_type_id", format!("{:?}", output_type.id()).to_lowercase())],
+        operation,
+        [
+            ("output_type_id", format!("{:?}", output_type.id()).to_lowercase()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
@@ -144,18 +216,53 @@ pub fn is_supported_cast(from: &DataType, to: &DataType) -> Result<bool> {
 
 /// Return a boolean column: `true` where elements are NaN.
 pub fn is_nan(input: &ColumnView<'_>) -> Result<Column> {
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    is_nan_impl(input, exec_options.as_ref(), "unary::is_nan").map(|column| column.with_execution_domain(output_domain))
+}
+
+fn is_nan_impl(
+    input: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
     let mut out = ptr::null_mut();
-    // SAFETY: input handle is valid (NonNull maintained by ColumnView).
-    error::check_status_in(unsafe { cudf_sys::cudf_is_nan(input.raw_handle(), &mut out) }, "unary::is_nan")?;
+    let status = match exec_options {
+        Some(options) => unsafe { cudf_sys::cudf_is_nan_ex(input.raw_handle(), &mut out, options) },
+        None => unsafe { cudf_sys::cudf_is_nan(input.raw_handle(), &mut out) },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [("execution_context_provided", exec_options.is_some().to_string())],
+    )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
 /// Return a boolean column: `true` where elements are not NaN.
 pub fn is_not_nan(input: &ColumnView<'_>) -> Result<Column> {
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    is_not_nan_impl(input, exec_options.as_ref(), "unary::is_not_nan")
+        .map(|column| column.with_execution_domain(output_domain))
+}
+
+fn is_not_nan_impl(
+    input: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
     let mut out = ptr::null_mut();
-    // SAFETY: input handle is valid (NonNull maintained by ColumnView).
-    error::check_status_in(unsafe { cudf_sys::cudf_is_not_nan(input.raw_handle(), &mut out) }, "unary::is_not_nan")?;
+    let status = match exec_options {
+        Some(options) => unsafe { cudf_sys::cudf_is_not_nan_ex(input.raw_handle(), &mut out, options) },
+        None => unsafe { cudf_sys::cudf_is_not_nan(input.raw_handle(), &mut out) },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [("execution_context_provided", exec_options.is_some().to_string())],
+    )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }

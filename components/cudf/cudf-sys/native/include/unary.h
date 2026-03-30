@@ -3,6 +3,7 @@
 
 #include "error.h"
 #include "column.h"
+#include "execution_context.h"
 #include "types.h"
 #include <stdint.h>
 
@@ -43,18 +44,44 @@ cudf_status_t cudf_unary_operation(cudf_column_view_handle input,
                                    cudf_unary_operator_t op,
                                    cudf_column_handle* out);
 
+/// Apply a unary operation element-wise with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_unary_operation_ex(cudf_column_view_handle input,
+                                      cudf_unary_operator_t op,
+                                      cudf_column_handle* out,
+                                      const cudf_exec_options_t* options);
+
 /// Return a boolean column: true where elements are null.
 cudf_status_t cudf_is_null(cudf_column_view_handle input,
                            cudf_column_handle* out);
+
+/// Return a boolean column: true where elements are null with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_is_null_ex(cudf_column_view_handle input,
+                              cudf_column_handle* out,
+                              const cudf_exec_options_t* options);
 
 /// Return a boolean column: true where elements are valid (non-null).
 cudf_status_t cudf_is_valid(cudf_column_view_handle input,
                             cudf_column_handle* out);
 
+/// Return a boolean column: true where elements are valid with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_is_valid_ex(cudf_column_view_handle input,
+                               cudf_column_handle* out,
+                               const cudf_exec_options_t* options);
+
 /// Cast a column to the specified data type.
 cudf_status_t cudf_cast(cudf_column_view_handle input,
                         cudf_data_type_handle output_type,
                         cudf_column_handle* out);
+
+/// Cast a column with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_cast_ex(cudf_column_view_handle input,
+                           cudf_data_type_handle output_type,
+                           cudf_column_handle* out,
+                           const cudf_exec_options_t* options);
 
 /// Check whether a cast between two data types is supported.
 cudf_status_t cudf_is_supported_cast(cudf_data_type_handle from_type,
@@ -65,9 +92,21 @@ cudf_status_t cudf_is_supported_cast(cudf_data_type_handle from_type,
 cudf_status_t cudf_is_nan(cudf_column_view_handle input,
                           cudf_column_handle* out);
 
+/// Return a boolean column: true where elements are NaN with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_is_nan_ex(cudf_column_view_handle input,
+                             cudf_column_handle* out,
+                             const cudf_exec_options_t* options);
+
 /// Return a boolean column: true where elements are not NaN.
 cudf_status_t cudf_is_not_nan(cudf_column_view_handle input,
                               cudf_column_handle* out);
+
+/// Return a boolean column: true where elements are not NaN with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_is_not_nan_ex(cudf_column_view_handle input,
+                                 cudf_column_handle* out,
+                                 const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

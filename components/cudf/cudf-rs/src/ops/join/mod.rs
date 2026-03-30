@@ -37,9 +37,12 @@ mod options;
 
 pub use options::{JoinType, MergeOptions, NullEquality};
 
-use crate::core::{
-    error::{self, Result},
-    table::{Table, TableView},
+use crate::{
+    core::{
+        error::{self, Result},
+        table::{Table, TableView},
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Result of a join operation.
@@ -147,6 +150,19 @@ fn join_impl(
     Ok(JoinResult { left: unsafe { Table::from_raw(out_left) }, right: unsafe { Table::from_raw(out_right) } })
 }
 
+fn compatible_join_domain(
+    left_keys: &TableView<'_>,
+    right_keys: &TableView<'_>,
+    left_payload: &TableView<'_>,
+    right_payload: &TableView<'_>,
+    operation: &'static str,
+) -> Result<std::sync::Arc<ExecutionDomain>> {
+    let output_domain =
+        ExecutionDomain::compatible_domain(left_keys.execution_domain(), right_keys.execution_domain(), operation)?;
+    let output_domain = ExecutionDomain::compatible_domain(&output_domain, left_payload.execution_domain(), operation)?;
+    ExecutionDomain::compatible_domain(&output_domain, right_payload.execution_domain(), operation)
+}
+
 /// Inner join: returns only rows with matching keys in both tables.
 ///
 /// `left_keys` and `right_keys` define the join condition.
@@ -159,6 +175,8 @@ pub fn inner_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinResult> {
+    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::inner_join")?;
+    let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(
         left_keys,
         right_keys,
@@ -166,9 +184,13 @@ pub fn inner_join(
         right_payload,
         null_equality,
         JoinType::Inner,
-        None,
+        exec_options.as_ref(),
         "join::inner_join",
     )
+    .map(|result| JoinResult {
+        left: result.left.with_execution_domain(std::sync::Arc::clone(&output_domain)),
+        right: result.right.with_execution_domain(output_domain),
+    })
 }
 
 /// Left join: all left rows are preserved; right side is null-padded
@@ -180,6 +202,8 @@ pub fn left_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinResult> {
+    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::left_join")?;
+    let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(
         left_keys,
         right_keys,
@@ -187,9 +211,13 @@ pub fn left_join(
         right_payload,
         null_equality,
         JoinType::Left,
-        None,
+        exec_options.as_ref(),
         "join::left_join",
     )
+    .map(|result| JoinResult {
+        left: result.left.with_execution_domain(std::sync::Arc::clone(&output_domain)),
+        right: result.right.with_execution_domain(output_domain),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +233,8 @@ pub fn full_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinResult> {
+    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::full_join")?;
+    let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(
         left_keys,
         right_keys,
@@ -212,9 +242,13 @@ pub fn full_join(
         right_payload,
         null_equality,
         JoinType::Full,
-        None,
+        exec_options.as_ref(),
         "join::full_join",
     )
+    .map(|result| JoinResult {
+        left: result.left.with_execution_domain(std::sync::Arc::clone(&output_domain)),
+        right: result.right.with_execution_domain(output_domain),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

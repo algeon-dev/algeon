@@ -2,10 +2,13 @@
 
 use std::ptr;
 
-use crate::core::{
-    column::{Column, ColumnView},
-    error::{self, Result},
-    scalar::Scalar,
+use crate::{
+    core::{
+        column::{Column, ColumnView},
+        error::{self, Result},
+        scalar::Scalar,
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Replace null values in a column with a scalar.
@@ -25,7 +28,10 @@ use crate::core::{
 /// // result: [1, 99, 3]
 /// ```
 pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Column> {
-    replace_nulls_with_exec_options(input, replacement, None, "replace::replace_nulls")
+    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw();
+    replace_nulls_with_exec_options(input, replacement, exec_options.as_ref(), "replace::replace_nulls")
+        .map(|column| column.with_execution_domain(output_domain))
 }
 
 pub(crate) fn replace_nulls_with_exec_options(
@@ -72,7 +78,14 @@ pub(crate) fn replace_nulls_with_exec_options(
 /// // result: [1, 20, 3]
 /// ```
 pub fn replace_nulls_column(input: &ColumnView<'_>, replacement: &ColumnView<'_>) -> Result<Column> {
-    replace_nulls_column_with_exec_options(input, replacement, None, "replace::replace_nulls_column")
+    let output_domain = ExecutionDomain::compatible_domain(
+        input.execution_domain(),
+        replacement.execution_domain(),
+        "replace::replace_nulls_column",
+    )?;
+    let exec_options = output_domain.explicit_exec_options_raw();
+    replace_nulls_column_with_exec_options(input, replacement, exec_options.as_ref(), "replace::replace_nulls_column")
+        .map(|column| column.with_execution_domain(output_domain))
 }
 
 pub(crate) fn replace_nulls_column_with_exec_options(

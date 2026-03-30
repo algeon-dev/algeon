@@ -18,6 +18,7 @@ cudf_status_t cudf_replace_nulls_scalar(cudf_column_view_handle input,
 
 /// Replace null values in a column with a scalar using an explicit execution
 /// context. Null `options` preserve cuDF defaults.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
 cudf_status_t cudf_replace_nulls_scalar_ex(cudf_column_view_handle input,
                                            cudf_scalar_handle replacement,
                                            cudf_column_handle* out,
@@ -32,6 +33,7 @@ cudf_status_t cudf_replace_nulls_column(cudf_column_view_handle input,
 /// Replace null values in a column with corresponding values from another
 /// column using an explicit execution context. Null `options` preserve cuDF
 /// defaults.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
 cudf_status_t cudf_replace_nulls_column_ex(cudf_column_view_handle input,
                                            cudf_column_view_handle replacement,
                                            cudf_column_handle* out,

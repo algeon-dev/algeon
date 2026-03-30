@@ -3,6 +3,7 @@
 
 #include "error.h"
 #include "column.h"
+#include "execution_context.h"
 #include "scalar.h"
 #include "types.h"
 #include <stdint.h>
@@ -53,6 +54,15 @@ cudf_status_t cudf_binary_operation_vv(cudf_column_view_handle lhs,
                                        cudf_data_type_handle output_type,
                                        cudf_column_handle* out);
 
+/// Binary operation: column op column with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_binary_operation_vv_ex(cudf_column_view_handle lhs,
+                                          cudf_column_view_handle rhs,
+                                          cudf_binary_operator_t op,
+                                          cudf_data_type_handle output_type,
+                                          cudf_column_handle* out,
+                                          const cudf_exec_options_t* options);
+
 /// Binary operation: column op scalar.
 cudf_status_t cudf_binary_operation_vs(cudf_column_view_handle lhs,
                                        cudf_scalar_handle rhs,
@@ -60,12 +70,30 @@ cudf_status_t cudf_binary_operation_vs(cudf_column_view_handle lhs,
                                        cudf_data_type_handle output_type,
                                        cudf_column_handle* out);
 
+/// Binary operation: column op scalar with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_binary_operation_vs_ex(cudf_column_view_handle lhs,
+                                          cudf_scalar_handle rhs,
+                                          cudf_binary_operator_t op,
+                                          cudf_data_type_handle output_type,
+                                          cudf_column_handle* out,
+                                          const cudf_exec_options_t* options);
+
 /// Binary operation: scalar op column.
 cudf_status_t cudf_binary_operation_sv(cudf_scalar_handle lhs,
                                        cudf_column_view_handle rhs,
                                        cudf_binary_operator_t op,
                                        cudf_data_type_handle output_type,
                                        cudf_column_handle* out);
+
+/// Binary operation: scalar op column with explicit execution context.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_binary_operation_sv_ex(cudf_scalar_handle lhs,
+                                          cudf_column_view_handle rhs,
+                                          cudf_binary_operator_t op,
+                                          cudf_data_type_handle output_type,
+                                          cudf_column_handle* out,
+                                          const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

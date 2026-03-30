@@ -38,6 +38,8 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f16d)(cudf_table_handle, size_t*) = &cudf_table_device_allocated_size;
   cudf_status_t (*f17)(cudf_column_view_handle, void*, size_t, const cudf_exec_options_t*) =
     &cudf_column_view_to_host_ex;
+  cudf_status_t (*f17b)(cudf_column_view_handle, int32_t*, size_t, char*, size_t, int32_t*, const cudf_exec_options_t*) =
+    &cudf_column_view_strings_to_host_ex;
   cudf_status_t (*f18)(cudf_type_id_t, const void*, int32_t, const cudf_exec_options_t*, cudf_column_handle*) =
     &cudf_column_create_from_device_data_ex;
   cudf_status_t (*f19)(cudf_column_view_handle, cudf_scalar_handle, cudf_column_handle*, const cudf_exec_options_t*) =
@@ -48,6 +50,16 @@ int cudf_rust_c_header_smoke(void)
     &cudf_apply_boolean_mask_ex;
   cudf_status_t (*f22)(cudf_table_view_handle, cudf_column_view_handle, cudf_out_of_bounds_policy_t, cudf_table_handle*, const cudf_exec_options_t*) =
     &cudf_gather_ex;
+  cudf_status_t (*f22b)(cudf_type_id_t, const void*, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
+    &cudf_scalar_create_numeric_ex;
+  cudf_status_t (*f22c)(const char*, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
+    &cudf_scalar_create_string_ex;
+  cudf_status_t (*f22d)(cudf_scalar_handle, int32_t*, const cudf_exec_options_t*) =
+    &cudf_scalar_is_valid_ex;
+  cudf_status_t (*f22e)(cudf_scalar_handle, void*, const cudf_exec_options_t*) =
+    &cudf_scalar_value_ex;
+  cudf_status_t (*f22f)(cudf_scalar_handle, char**, int32_t*, const cudf_exec_options_t*) =
+    &cudf_scalar_string_value_ex;
   cudf_exec_options_t opts = CUDF_EXEC_OPTIONS_INITIALIZER;
 
   cudf_status_t (*f23)(size_t, cudf_device_buffer_handle*) = &cudf_device_buffer_create;
@@ -84,11 +96,17 @@ int cudf_rust_c_header_smoke(void)
   (void)f16c;
   (void)f16d;
   (void)f17;
+  (void)f17b;
   (void)f18;
   (void)f19;
   (void)f20;
   (void)f21;
   (void)f22;
+  (void)f22b;
+  (void)f22c;
+  (void)f22d;
+  (void)f22e;
+  (void)f22f;
   (void)f23;
   (void)f24;
   (void)f25;

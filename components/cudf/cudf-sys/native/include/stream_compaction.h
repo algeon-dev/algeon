@@ -4,6 +4,7 @@
 #include "error.h"
 #include "table.h"
 #include "column.h"
+#include "execution_context.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,6 +19,19 @@ cudf_status_t cudf_drop_nulls(cudf_table_view_handle input,
                               int num_keys,
                               int keep_threshold,
                               cudf_table_handle* out);
+
+/// Drop rows from a table where key columns contain nulls with explicit
+/// execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
+cudf_status_t cudf_drop_nulls_ex(cudf_table_view_handle input,
+                                 const int* keys,
+                                 int num_keys,
+                                 int keep_threshold,
+                                 cudf_table_handle* out,
+                                 const cudf_exec_options_t* options);
 
 /// Which duplicate rows to keep.
 typedef enum {
@@ -47,6 +61,21 @@ cudf_status_t cudf_distinct(cudf_table_view_handle input,
                             cudf_stream_compaction_null_equality_t null_equality,
                             cudf_stream_compaction_nan_equality_t nan_equality,
                             cudf_table_handle* out);
+
+/// Create a new table with distinct rows based on key columns with explicit
+/// execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
+cudf_status_t cudf_distinct_ex(cudf_table_view_handle input,
+                               const int* keys,
+                               int num_keys,
+                               cudf_duplicate_keep_option_t keep,
+                               cudf_stream_compaction_null_equality_t null_equality,
+                               cudf_stream_compaction_nan_equality_t nan_equality,
+                               cudf_table_handle* out,
+                               const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

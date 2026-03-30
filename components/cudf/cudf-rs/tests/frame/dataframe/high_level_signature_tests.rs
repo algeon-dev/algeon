@@ -8,9 +8,9 @@
 //!
 //! | Method                   | Current signature                          | Target signature                           |
 //! |--------------------------|--------------------------------------------|--------------------------------------------|
-//! | `gather`                 | `&Series` (facade primary)                 | `gather_by_column_view` for `&ColumnView`  |
-//! | `filter_isin`            | `&Series` (facade primary)                 | `filter_isin_by_column_view` for `&ColumnView` |
-//! | `fillna`                 | `T: CudfType` (facade primary)             | `fillna_with_scalar` for `&Scalar`         |
+//! | `gather`                 | `&Series` (primary high-level API)         | `gather_by_column_view` for `&ColumnView`  |
+//! | `filter_isin`            | `&Series` (primary high-level API)         | `filter_isin_by_column_view` for `&ColumnView` |
+//! | `fillna`                 | `T: CudfType` (primary high-level API)     | `fillna_with_scalar` for `&Scalar`         |
 //! | `factorize`              | Returns `(Column, Column)`                 | Returns `(Series, Series)`                 |
 
 use cudf::{Column, DataFrame, Series};
@@ -27,7 +27,7 @@ fn sample_df() -> DataFrame {
 }
 
 // ===========================================================================
-// 1. gather(&Series) — facade primary (was gather_by_series)
+// 1. gather(&Series) — primary high-level API (was gather_by_series)
 // ===========================================================================
 
 #[test]
@@ -41,7 +41,7 @@ fn test_gather_with_series() {
 }
 
 // ===========================================================================
-// 2. filter_isin(&str, &Series) — facade primary (was filter_isin_series)
+// 2. filter_isin(&str, &Series) — primary high-level API (was filter_isin_series)
 // ===========================================================================
 
 #[test]
@@ -76,7 +76,7 @@ fn test_filter_isin_with_series_rejects_missing_column() {
 }
 
 // ===========================================================================
-// 3. fillna<T: CudfType> — facade primary (was fillna_scalar)
+// 3. fillna<T: CudfType> — primary high-level API (was fillna_scalar)
 // ===========================================================================
 
 #[test]
