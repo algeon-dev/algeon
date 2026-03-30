@@ -46,6 +46,13 @@ cudf_status_t cudf_test_memory_resource_create_stats(
 cudf_status_t cudf_test_memory_resource_allocation_count(
     cudf_memory_resource_handle handle, int64_t* out);
 
+/// Resolve a memory-resource handle to its underlying `device_memory_resource*`.
+///
+/// Test-only hook for debug assertions that need the exact pointer recorded by
+/// `cudf_resolve_exec_options`.
+cudf_status_t cudf_test_memory_resource_raw(
+    cudf_memory_resource_handle handle, void** out);
+
 /// Install the memory resource owned by `handle` as the process-global current
 /// device resource.
 ///

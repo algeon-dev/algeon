@@ -7,7 +7,6 @@ use crate::{
         column::{Column, ColumnView},
         error::{self, Result},
     },
-    runtime::execution_domain::ExecutionDomain,
 };
 
 fn contains_impl(
@@ -54,11 +53,7 @@ fn contains_impl(
 /// // result: [true, false]
 /// ```
 pub fn contains(haystack: &ColumnView<'_>, needles: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = ExecutionDomain::compatible_domain(
-        haystack.execution_domain(),
-        needles.execution_domain(),
-        "search::contains",
-    )?;
+    let output_domain = std::sync::Arc::clone(haystack.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     contains_impl(haystack, needles, exec_options.as_ref(), "search::contains")
         .map(|column| column.with_execution_domain(output_domain))

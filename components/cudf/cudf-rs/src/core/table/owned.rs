@@ -43,7 +43,7 @@ impl Table {
         let domain = if let Some(first) = columns.first() {
             let domain = Arc::clone(first.execution_domain());
             for (index, column) in columns.iter().enumerate().skip(1) {
-                if !ExecutionDomain::same_identity(&domain, column.execution_domain()) {
+                if !ExecutionDomain::same_provenance(&domain, column.execution_domain()) {
                     return Err(Error::new(
                         ErrorKind::InvalidOperation,
                         "all columns in a table must share one execution domain",

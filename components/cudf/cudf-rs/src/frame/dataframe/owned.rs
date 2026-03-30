@@ -71,7 +71,7 @@ pub(crate) fn derive_frame_domain_from_columns(
 
     let domain = Arc::clone(first_column.execution_domain());
     for (name, column) in columns.iter().skip(1) {
-        if !ExecutionDomain::same_identity(&domain, column.execution_domain()) {
+        if !ExecutionDomain::same_provenance(&domain, column.execution_domain()) {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
                 "all columns in a dataframe must share one execution domain",
@@ -91,7 +91,7 @@ pub(crate) fn frame_domain_matches_columns(
     columns: &IndexMap<String, Arc<Column>>,
     frame_domain: &Arc<ExecutionDomain>,
 ) -> bool {
-    columns.values().all(|column| ExecutionDomain::same_identity(frame_domain, column.execution_domain()))
+    columns.values().all(|column| ExecutionDomain::same_provenance(frame_domain, column.execution_domain()))
 }
 
 pub(crate) fn resolve_frame_domain_from_authoritative_source(
@@ -104,7 +104,7 @@ pub(crate) fn resolve_frame_domain_from_authoritative_source(
     }
 
     for (name, column) in columns {
-        if !ExecutionDomain::same_identity(authoritative_domain, column.execution_domain()) {
+        if !ExecutionDomain::same_provenance(authoritative_domain, column.execution_domain()) {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
                 "all columns in a dataframe must share the authoritative execution domain",
@@ -452,10 +452,10 @@ impl DataFrame {
         output_domain: &Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<()> {
-        if !ExecutionDomain::same_identity(&self.domain, output_domain) {
+        if !ExecutionDomain::same_provenance(&self.domain, output_domain) {
             self.domain.synchronize_for_host_visibility(operation)?;
         }
-        if !ExecutionDomain::same_identity(&other.domain, output_domain) {
+        if !ExecutionDomain::same_provenance(&other.domain, output_domain) {
             other.domain.synchronize_for_host_visibility(operation)?;
         }
         Ok(())
@@ -466,7 +466,7 @@ impl DataFrame {
         output_domain: &Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<IndexMap<String, Arc<Column>>> {
-        if ExecutionDomain::same_identity(&self.domain, output_domain) {
+        if ExecutionDomain::same_provenance(&self.domain, output_domain) {
             return Ok(self.columns.clone());
         }
 
@@ -490,7 +490,7 @@ impl DataFrame {
         operation: &'static str,
         column_name: &str,
     ) -> Result<Arc<Column>> {
-        if ExecutionDomain::same_identity(series.as_column().execution_domain(), output_domain) {
+        if ExecutionDomain::same_provenance(series.as_column().execution_domain(), output_domain) {
             return Ok(Arc::clone(series.column_arc()));
         }
 

@@ -1,8 +1,10 @@
 //! Tests for runtime-aware `fillna_with_series` and ambient constructor variants.
 //!
 //! Coverage:
-//! - `DataFrame::fillna_with_series_with_runtime` — mixed-domain recovery
-//! - `Series::fillna_with_series_with_runtime` — mixed-domain recovery
+//! - `DataFrame::fillna_with_series_with_runtime` — explicit context override
+//! - `Series::fillna_with_series_with_runtime` — explicit context override
+//! - `DataFrame::fillna_with_series` — v2: mixed-domain default path succeeds
+//! - `Series::fillna_with_series` — v2: mixed-domain default path succeeds
 //! - `Column::empty_with_runtime` — retains explicit domain
 //! - `Column::from_device_ptr_with_runtime` — uses `_ex` FFI, retains explicit domain
 
@@ -50,11 +52,10 @@ fn sample_runtime() -> Runtime {
 // ---------------------------------------------------------------------------
 
 /// Left DataFrame in domain A, fill series in domain B, target runtime C.
-/// The non-runtime `fillna_with_series` would reject this as mixed domains,
-/// but the `_with_runtime` variant recovers by copying inputs into the
-/// target runtime's domain.
+/// The `_with_runtime` variant overrides execution context to the target
+/// runtime's domain.
 #[test]
-fn df_fillna_with_series_with_runtime_recovers_mixed_domains() {
+fn df_fillna_with_series_with_runtime_overrides_mixed_domains() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
     let target_rt = sample_runtime();
@@ -69,15 +70,43 @@ fn df_fillna_with_series_with_runtime_recovers_mixed_domains() {
     // Fill series in domain B.
     let fill = Series::new_with_runtime(&rt_b, "fill", &[99i32, 99, 99]).unwrap();
 
-    // Without runtime, this should fail (mixed domains).
-    assert!(df.fillna_with_series("val", &fill).is_err());
-
-    // With target runtime, should succeed.
+    // With target runtime, should succeed with context override.
     obs_reset();
     let result = df.fillna_with_series_with_runtime("val", &fill, &target_rt).unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
+    assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());
     assert_eq!(result.__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), target_rt.memory_resource().__debug_raw_handle_value());
+    assert_eq!(result.series_view("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+}
+
+/// v2 semantics: mixed-domain fillna_with_series succeeds via the default
+/// path (without `_with_runtime`). Output provenance follows the input
+/// DataFrame (primary input for replace-nulls).
+#[test]
+fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
+    let rt_a = sample_runtime();
+    let rt_b = sample_runtime();
+
+    let df = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&rt_a, "id", &[1i32, 2, 3]).unwrap()),
+        ("val", Series::new_nullable_with_runtime(&rt_a, "val", &[10i32, 0, 30], &[true, false, true]).unwrap()),
+    ])
+    .unwrap();
+
+    let fill = Series::new_with_runtime(&rt_b, "fill", &[99i32, 99, 99]).unwrap();
+    let expected_mr = df.__debug_execution_domain_mr_value();
+
+    // Without runtime, mixed domains now succeed under v2.
+    obs_reset();
+    let result = df.fillna_with_series("val", &fill).unwrap();
+
+    // Output provenance inherits from the input DataFrame.
+    assert_eq!(result.__debug_execution_domain_id(), rt_a.__debug_execution_domain_id());
+    assert_eq!(obs_last_stream(), rt_a.stream().__debug_raw_handle_value());
+    assert_eq!(obs_last_mr() as usize, expected_mr);
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
     assert_eq!(result.series_view("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
@@ -104,8 +133,9 @@ fn df_fillna_with_series_with_runtime_same_domain_works() {
 // ---------------------------------------------------------------------------
 
 /// Same as the DataFrame test but at the Series level.
+/// The `_with_runtime` variant overrides execution context.
 #[test]
-fn series_fillna_with_series_with_runtime_recovers_mixed_domains() {
+fn series_fillna_with_series_with_runtime_overrides_mixed_domains() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
     let target_rt = sample_runtime();
@@ -113,15 +143,41 @@ fn series_fillna_with_series_with_runtime_recovers_mixed_domains() {
     let series = Series::new_nullable_with_runtime(&rt_a, "val", &[10i32, 0, 30], &[true, false, true]).unwrap();
     let fill = Series::new_with_runtime(&rt_b, "fill", &[99i32, 99, 99]).unwrap();
 
-    // Without runtime, mixed domains rejected.
-    assert!(series.fillna_with_series(&fill).is_err());
-
-    // With runtime, succeeds.
+    // With runtime, succeeds with context override.
     obs_reset();
     let result = series.fillna_with_series_with_runtime(&fill, &target_rt).unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
+    assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());
     assert_eq!(result.as_column().__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
+    assert_eq!(
+        result.as_column().__debug_execution_domain_mr_value(),
+        target_rt.memory_resource().__debug_raw_handle_value()
+    );
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
+}
+
+/// v2 semantics: mixed-domain Series::fillna_with_series succeeds via the
+/// default path (without `_with_runtime`). Output provenance follows the
+/// input series (primary input for replace-nulls).
+#[test]
+fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
+    let rt_a = sample_runtime();
+    let rt_b = sample_runtime();
+
+    let series = Series::new_nullable_with_runtime(&rt_a, "val", &[10i32, 0, 30], &[true, false, true]).unwrap();
+    let fill = Series::new_with_runtime(&rt_b, "fill", &[99i32, 99, 99]).unwrap();
+    let expected_mr = series.as_column().__debug_execution_domain_mr_value();
+
+    // Without runtime, mixed domains now succeed under v2.
+    obs_reset();
+    let result = series.fillna_with_series(&fill).unwrap();
+
+    // Output provenance inherits from the input series.
+    assert_eq!(result.as_column().__debug_execution_domain_id(), rt_a.__debug_execution_domain_id());
+    assert_eq!(obs_last_stream(), rt_a.stream().__debug_raw_handle_value());
+    assert_eq!(obs_last_mr() as usize, expected_mr);
+    assert_eq!(result.as_column().__debug_execution_domain_mr_value(), expected_mr);
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
 }
 

@@ -165,7 +165,6 @@ impl DataFrame {
 
     /// Gather rows using a borrowed per-operation execution override.
     pub fn gather_with_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
-        ExecutionDomain::compatible_domain(&self.domain, indices.as_column().execution_domain(), "dataframe::gather")?;
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let cv = indices.as_column_view()?;
         self.gather_by_column_view_impl(
@@ -183,7 +182,6 @@ impl DataFrame {
 
     /// Filter rows using a borrowed per-operation execution override.
     pub fn filter_with_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
-        ExecutionDomain::compatible_domain(&self.domain, mask.as_column().execution_domain(), "dataframe::filter")?;
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let mask_view = self.validate_series_mask(mask)?;
         self.filter_by_mask_impl(
@@ -253,7 +251,6 @@ impl DataFrame {
     ///
     /// Returns an error if `indices` is not `Int32`.
     pub fn gather(&self, indices: &Series) -> Result<Self> {
-        ExecutionDomain::compatible_domain(&self.domain, indices.as_column().execution_domain(), "dataframe::gather")?;
         let cv = indices.as_column_view()?;
         self.gather_by_column_view(&cv)
     }
@@ -288,7 +285,6 @@ impl DataFrame {
     /// - `TypeError` if `mask` dtype is not `Bool8`.
     /// - `InvalidOperation` if `mask` length does not match the DataFrame row count.
     pub fn filter(&self, mask: &Series) -> Result<Self> {
-        ExecutionDomain::compatible_domain(&self.domain, mask.as_column().execution_domain(), "dataframe::filter")?;
         let mask_view = self.validate_series_mask(mask)?;
         self.filter_by_mask(&mask_view)
     }
@@ -621,16 +617,8 @@ impl DataFrame {
         forced_output_domain: Option<Arc<ExecutionDomain>>,
         operation: &'static str,
     ) -> Result<Self> {
-        let output_domain = match ExecutionDomain::compatible_domain(&self.domain, &other.domain, operation) {
-            Ok(domain) => forced_output_domain.unwrap_or(domain),
-            Err(err) => {
-                if exec_options.is_some() {
-                    forced_output_domain.unwrap_or_else(|| Arc::clone(&self.domain))
-                } else {
-                    return Err(err);
-                }
-            },
-        };
+        let output_domain = forced_output_domain.unwrap_or_else(|| Arc::clone(&self.domain));
+        let exec_options = exec_options.or_else(|| output_domain.explicit_exec_options_raw());
 
         // Validate schemas match: same names, same order.
         if self.columns.len() != other.columns.len() {
@@ -790,13 +778,6 @@ impl DataFrame {
         for (name, series) in pairs {
             let name = name.as_ref();
             let series_rows = series.len();
-            if self.columns.is_empty() {
-                ExecutionDomain::compatible_domain(
-                    &self.domain,
-                    series.as_column().execution_domain(),
-                    "dataframe::assign",
-                )?;
-            }
 
             if let Some(self_rows) = expected_rows {
                 if series_rows != self_rows {
@@ -813,7 +794,13 @@ impl DataFrame {
                 expected_rows = Some(series_rows);
             }
 
-            new_columns.insert(name.to_string(), Arc::clone(series.column_arc()));
+            let column = if self.columns.is_empty() && self.domain.explicit_stream().is_some() {
+                Self::clone_or_copy_series_into_domain(&series, &self.domain, "dataframe::assign", name)?
+            } else {
+                Arc::clone(series.column_arc())
+            };
+
+            new_columns.insert(name.to_string(), column);
         }
 
         let row_count = expected_rows.unwrap_or(self.row_count);
@@ -1082,11 +1069,7 @@ impl DataFrame {
                 .with_context("column_name", column.to_string())
         })?;
 
-        let output_domain = ExecutionDomain::compatible_domain(
-            col.execution_domain(),
-            fill_series.as_column().execution_domain(),
-            "dataframe::fillna_with_series",
-        )?;
+        let output_domain = Arc::clone(col.execution_domain());
         let cv = col.view()?;
         let fill_cv = fill_series.as_column_view()?;
         let exec_options = output_domain.explicit_exec_options_raw();

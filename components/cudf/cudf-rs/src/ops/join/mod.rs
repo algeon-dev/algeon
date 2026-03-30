@@ -155,12 +155,9 @@ fn compatible_join_domain(
     right_keys: &TableView<'_>,
     left_payload: &TableView<'_>,
     right_payload: &TableView<'_>,
-    operation: &'static str,
 ) -> Result<std::sync::Arc<ExecutionDomain>> {
-    let output_domain =
-        ExecutionDomain::compatible_domain(left_keys.execution_domain(), right_keys.execution_domain(), operation)?;
-    let output_domain = ExecutionDomain::compatible_domain(&output_domain, left_payload.execution_domain(), operation)?;
-    ExecutionDomain::compatible_domain(&output_domain, right_payload.execution_domain(), operation)
+    let _ = (right_keys, left_payload, right_payload);
+    Ok(std::sync::Arc::clone(left_keys.execution_domain()))
 }
 
 /// Inner join: returns only rows with matching keys in both tables.
@@ -175,7 +172,7 @@ pub fn inner_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinResult> {
-    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::inner_join")?;
+    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload)?;
     let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(
         left_keys,
@@ -202,7 +199,7 @@ pub fn left_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinResult> {
-    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::left_join")?;
+    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload)?;
     let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(
         left_keys,
@@ -233,7 +230,7 @@ pub fn full_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinResult> {
-    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::full_join")?;
+    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload)?;
     let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(
         left_keys,

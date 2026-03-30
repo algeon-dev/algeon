@@ -29,7 +29,6 @@ use crate::{
         error::{self, Error, ErrorKind, Result},
         table::{Table, TableView},
     },
-    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Column sort order.
@@ -229,8 +228,7 @@ pub fn sort_by_key(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let output_domain =
-        ExecutionDomain::compatible_domain(values.execution_domain(), keys.execution_domain(), "sorting::sort_by_key")?;
+    let output_domain = std::sync::Arc::clone(values.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     sort_by_key_impl(values, keys, column_order, null_precedence, false, exec_options.as_ref(), "sorting::sort_by_key")
         .map(|table| table.with_execution_domain(output_domain))
@@ -245,11 +243,7 @@ pub fn stable_sort_by_key(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let output_domain = ExecutionDomain::compatible_domain(
-        values.execution_domain(),
-        keys.execution_domain(),
-        "sorting::stable_sort_by_key",
-    )?;
+    let output_domain = std::sync::Arc::clone(values.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     sort_by_key_impl(
         values,

@@ -100,20 +100,6 @@ fn sample_runtime() -> Runtime {
     Runtime::builder().with_stream(stream).with_memory_resource(mr).build().unwrap()
 }
 
-fn assert_mixed_domain_error(err: cudf::Error, operation: &'static str, left_identity: u64, right_identity: u64) {
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), operation);
-    assert!(
-        err.context().iter().any(|(key, value)| *key == "left_domain" && value == &format!("explicit:{left_identity}"))
-    );
-    assert!(
-        err.context()
-            .iter()
-            .any(|(key, value)| *key == "right_domain" && value == &format!("explicit:{right_identity}"))
-    );
-}
-
 #[test]
 fn owned_constructors_seed_ambient_default_domain() {
     let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
@@ -207,6 +193,8 @@ fn dataframe_from_table_preserves_frame_and_column_domain_identity() {
     assert_eq!(df.series("b").unwrap().as_column().__debug_execution_domain_id(), 19);
 }
 
+/// [INV-CT-01] Container invariant: `DataFrame::from_columns` / `from_series` rejects columns
+/// with different retained provenance (Rule 4 -- preserved in v2).
 #[test]
 fn dataframe_new_rejects_mixed_domain_columns() {
     let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(100).unwrap();
@@ -222,6 +210,8 @@ fn dataframe_new_rejects_mixed_domain_columns() {
     assert!(context.iter().any(|(key, value)| *key == "right_domain" && value == "explicit:200"));
 }
 
+/// [INV-CT-02] Container invariant: `Table::from_columns` rejects columns with different
+/// retained provenance (Rule 4 -- preserved in v2).
 #[test]
 fn table_from_columns_rejects_mixed_domain_columns() {
     let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(3).unwrap();
@@ -290,17 +280,30 @@ fn dataframe_concat_preserves_explicit_domain_identity() {
     assert_eq!(combined.series("id").unwrap().as_column().__debug_execution_domain_id(), 81);
 }
 
+/// v2 semantics: concat with mixed explicit domains succeeds.
+/// Output provenance follows the first table (left).
 #[test]
-fn dataframe_concat_rejects_mixed_explicit_domains() {
+fn dataframe_concat_succeeds_with_mixed_explicit_domains() {
     let left = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2], 8))]).unwrap();
     let right = DataFrame::from_columns([("id", explicit_i32_series("id", &[3, 4], 9))]).unwrap();
+    let expected_stream = left.__debug_execution_domain_stream_value();
 
-    let err = left.concat(&right).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), "dataframe::concat");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value == "explicit:8"));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value == "explicit:9"));
+    reset_exec_observation();
+    let combined = left.concat(&right).unwrap();
+
+    // Output provenance inherits from the first (left) table.
+    assert_eq!(combined.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(combined.__debug_execution_domain_id(), 8);
+    assert_eq!(combined.series("id").unwrap().as_column().__debug_execution_domain_id(), 8);
+
+    // Execution used the primary input's stream.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+
+    // Verify correct values.
+    reset_sync_observation();
+    let host: Vec<i32> = combined.series("id").unwrap().as_column_view().unwrap().to_vec().unwrap();
+    assert_eq!(host, vec![1, 2, 3, 4]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -330,8 +333,10 @@ fn dataframe_merge_preserves_explicit_domain_identity() {
     );
 }
 
+/// v2 semantics: merge with mixed explicit domains succeeds.
+/// Output provenance follows the left table.
 #[test]
-fn dataframe_merge_rejects_mixed_explicit_domains() {
+fn dataframe_merge_succeeds_with_mixed_explicit_domains() {
     let left = DataFrame::from_columns([
         ("id", explicit_i32_series("id", &[1, 2, 3], 11)),
         ("left", explicit_i32_series("left", &[10, 20, 30], 11)),
@@ -342,17 +347,31 @@ fn dataframe_merge_rejects_mixed_explicit_domains() {
         ("right", explicit_i32_series("right", &[200, 300, 400], 12)),
     ])
     .unwrap();
+    let expected_stream = left.__debug_execution_domain_stream_value();
 
-    let err = left.merge(&right, cudf::MergeOptions::new().how_inner().on(["id"])).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), "dataframe::merge");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value == "explicit:11"));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value == "explicit:12"));
+    reset_exec_observation();
+    let merged = left.merge(&right, cudf::MergeOptions::new().how_inner().on(["id"])).unwrap();
+
+    // Output provenance inherits from the left table.
+    assert_eq!(merged.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(merged.__debug_execution_domain_id(), 11);
+    assert!(
+        merged.column_names().into_iter().all(|name| merged
+            .series(name)
+            .unwrap()
+            .as_column()
+            .__debug_execution_domain_id()
+            == 11)
+    );
+
+    // Execution used the primary (left) input's stream.
+    assert_eq!(last_exec_stream_value(), expected_stream);
 }
 
+/// v2 semantics: fillna_with_series with mixed explicit domains succeeds.
+/// Output provenance follows the input DataFrame (replace nulls primary = input column).
 #[test]
-fn dataframe_fillna_with_series_rejects_mixed_explicit_domains() {
+fn dataframe_fillna_with_series_succeeds_with_mixed_explicit_domains() {
     let df = DataFrame::from_columns([(
         "value",
         Series::from_column(
@@ -366,13 +385,21 @@ fn dataframe_fillna_with_series_rejects_mixed_explicit_domains() {
     )])
     .unwrap();
     let fill = explicit_i32_series("fill", &[10, 20, 30], 22);
+    let expected_stream = df.__debug_execution_domain_stream_value();
 
-    let err = df.fillna_with_series("value", &fill).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), "dataframe::fillna_with_series");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value == "explicit:21"));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value == "explicit:22"));
+    reset_exec_observation();
+    let filled = df.fillna_with_series("value", &fill).unwrap();
+
+    // Output provenance inherits from the input DataFrame.
+    assert_eq!(filled.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(filled.__debug_execution_domain_id(), 21);
+
+    // Execution used the primary input's stream.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+
+    // Verify correct values.
+    let host: Vec<i32> = filled.series("value").unwrap().as_column_view().unwrap().to_vec().unwrap();
+    assert_eq!(host, vec![1, 20, 3]);
 }
 
 #[test]
@@ -702,6 +729,8 @@ fn zero_column_dataframe_concat_preserves_explicit_domain() {
     assert_eq!(combined.__debug_execution_domain_id(), 80);
 }
 
+/// [INV-CT-01] Container construction path: inserting an ambient-domain column into an
+/// explicit-domain DataFrame is rejected (Rule 4 -- preserved in v2).
 #[test]
 fn zero_column_explicit_dataframe_with_column_rejects_ambient_series() {
     let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 81))])
@@ -733,20 +762,22 @@ fn zero_column_explicit_dataframe_with_column_preserves_same_explicit_domain() {
     assert_eq!(result.series("value").unwrap().as_column().__debug_execution_domain_id(), 82);
 }
 
+/// v2 semantics: assign with mixed domains (explicit + ambient) succeeds.
+/// Output provenance follows the target DataFrame's domain.
 #[test]
-fn zero_column_explicit_dataframe_assign_rejects_mixed_domain_series() {
+fn zero_column_explicit_dataframe_assign_succeeds_with_mixed_domain_series() {
     let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 83))])
         .unwrap()
         .without_columns(["id"])
         .unwrap();
     let ambient = Series::new::<i32>("value", &[10, 20, 30]).unwrap();
 
-    let err = zero.assign([("value", ambient)]).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), "dataframe::assign");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value == "explicit:83"));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value == "ambient_default"));
+    let result = zero.assign([("value", ambient)]).unwrap();
+
+    // Output retains the target DataFrame's explicit domain.
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 83);
+    assert_eq!(result.series("value").unwrap().as_column().__debug_execution_domain_id(), 83);
 }
 
 #[test]
@@ -802,6 +833,8 @@ fn table_view_from_column_views_retains_explicit_domain() {
     assert_eq!(last_sync_stream_value(), borrowed.__debug_execution_domain_stream_value());
 }
 
+/// [INV-CT-01 extension] View-level container invariant: `TableView::from_column_views` rejects
+/// column views with different retained provenance (Rule 4 -- preserved in v2).
 #[test]
 fn table_view_from_column_views_rejects_mixed_domains() {
     let left = explicit_i32_column(&[1, 2, 3], 123);
@@ -883,16 +916,31 @@ fn search_contains_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: search::contains with mixed explicit domains succeeds.
+/// Output provenance follows the haystack (the data being searched).
 #[test]
-fn search_contains_rejects_mixed_domains() {
+fn search_contains_succeeds_with_mixed_domains() {
     let haystack = explicit_i32_column(&[10, 20, 30], 201);
     let needles = explicit_i32_column(&[20, 40], 202);
+    let expected_stream = haystack.__debug_execution_domain_stream_value();
+    let expected_mr = haystack.__debug_execution_domain_mr_value();
 
-    let err = match search::contains(&haystack.view().unwrap(), &needles.view().unwrap()) {
-        Ok(_) => panic!("expected mixed-domain error"),
-        Err(err) => err,
-    };
-    assert_mixed_domain_error(err, "search::contains", 201, 202);
+    reset_exec_observation();
+    let result = search::contains(&haystack.view().unwrap(), &needles.view().unwrap()).unwrap();
+
+    // Output provenance inherits from the haystack.
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 201);
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the haystack's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -973,19 +1021,37 @@ fn dictionary_set_keys_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: dictionary::set_keys with mixed explicit domains succeeds.
+/// Output provenance follows the dictionary column (primary input).
 #[test]
-fn dictionary_set_keys_rejects_mixed_domains() {
+fn dictionary_set_keys_succeeds_with_mixed_domains() {
     let dict = dictionary::encode(&Column::from_slice(&[3i32, 1, 3, 2]).unwrap().view().unwrap(), TypeId::Int32)
         .unwrap()
         .__debug_rebind_execution_domain_explicit(213)
         .unwrap();
     let keys = Column::from_slice(&[2i32, 3, 4]).unwrap().__debug_rebind_execution_domain_explicit(214).unwrap();
+    let expected_stream = dict.__debug_execution_domain_stream_value();
+    let expected_mr = dict.__debug_execution_domain_mr_value();
 
-    let err = match dictionary::set_keys(&dict.view().unwrap(), &keys.view().unwrap()) {
-        Ok(_) => panic!("expected mixed-domain error"),
-        Err(err) => err,
-    };
-    assert_mixed_domain_error(err, "dictionary::set_keys", 213, 214);
+    reset_exec_observation();
+    let updated = dictionary::set_keys(&dict.view().unwrap(), &keys.view().unwrap()).unwrap();
+
+    // Output provenance inherits from the dictionary column.
+    assert_eq!(updated.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(updated.__debug_execution_domain_id(), 213);
+    assert_eq!(updated.__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the dictionary column's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    let updated_view = updated.view().unwrap();
+    let mut updated_keys = dictionary::keys(&updated_view).unwrap().to_vec::<i32>().unwrap();
+    updated_keys.sort_unstable();
+    assert_eq!(updated_keys, vec![2, 3, 4]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1021,8 +1087,10 @@ fn dictionary_match_dictionaries_retains_explicit_domain_and_uses_exec_options()
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: dictionary::match_dictionaries with mixed explicit domains succeeds.
+/// Output provenance follows the first dictionary (concatenate semantics).
 #[test]
-fn dictionary_match_dictionaries_rejects_mixed_domains() {
+fn dictionary_match_dictionaries_succeeds_with_mixed_domains() {
     let first = dictionary::encode(&Column::from_slice(&[10i32, 20, 30]).unwrap().view().unwrap(), TypeId::Int32)
         .unwrap()
         .__debug_rebind_execution_domain_explicit(216)
@@ -1031,12 +1099,31 @@ fn dictionary_match_dictionaries_rejects_mixed_domains() {
         .unwrap()
         .__debug_rebind_execution_domain_explicit(217)
         .unwrap();
+    let expected_stream = first.__debug_execution_domain_stream_value();
+    let expected_mr = first.__debug_execution_domain_mr_value();
 
-    let err = match dictionary::match_dictionaries(&[&first.view().unwrap(), &second.view().unwrap()]) {
-        Ok(_) => panic!("expected mixed-domain error"),
-        Err(err) => err,
-    };
-    assert_mixed_domain_error(err, "dictionary::match_dictionaries", 216, 217);
+    reset_exec_observation();
+    let matched = dictionary::match_dictionaries(&[&first.view().unwrap(), &second.view().unwrap()]).unwrap();
+
+    // Output provenance inherits from the first dictionary.
+    assert_eq!(matched.len(), 2);
+    assert!(matched.iter().all(|column| column.__debug_execution_domain_kind() == "explicit"));
+    assert!(matched.iter().all(|column| column.__debug_execution_domain_id() == 216));
+    assert!(matched.iter().all(|column| column.__debug_execution_domain_mr_value() == expected_mr));
+
+    // Execution used the first dictionary's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify matched dictionaries share the same key set.
+    reset_sync_observation();
+    let mut first_keys = dictionary::keys(&matched[0].view().unwrap()).unwrap().to_vec::<i32>().unwrap();
+    let mut second_keys = dictionary::keys(&matched[1].view().unwrap()).unwrap().to_vec::<i32>().unwrap();
+    first_keys.sort_unstable();
+    second_keys.sort_unstable();
+    assert_eq!(first_keys, second_keys);
+    assert_eq!(first_keys, vec![10, 20, 30, 40]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1157,23 +1244,33 @@ fn stream_compaction_distinct_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: filter_isin with mixed explicit domains succeeds.
+/// Output provenance follows the haystack (the DataFrame column being searched).
 #[test]
-fn dataframe_filter_isin_rejects_mixed_domains() {
+fn dataframe_filter_isin_succeeds_with_mixed_domains() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let df =
         DataFrame::from_columns([("id", Series::new_with_runtime(&left_rt, "id", &[10i32, 20, 30]).unwrap())]).unwrap();
     let values = Series::new_with_runtime(&right_rt, "values", &[20i32, 30]).unwrap();
+    let expected_stream = df.__debug_execution_domain_stream_value();
+    let expected_mr = df.__debug_execution_domain_mr_value();
 
-    let err = df.filter_isin("id", &values).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), "search::contains");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain"
-        && value == &format!("explicit:{}", values.as_column().__debug_execution_domain_id())));
-    assert!(err.context().iter().any(
-        |(key, value)| *key == "right_domain" && value == &format!("explicit:{}", df.__debug_execution_domain_id())
-    ));
+    reset_exec_observation();
+    let filtered = df.filter_isin("id", &values).unwrap();
+
+    // Output provenance inherits from the DataFrame (haystack).
+    assert_eq!(filtered.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(filtered.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(filtered.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    let host: Vec<i32> = filtered.series("id").unwrap().as_column_view().unwrap().to_vec().unwrap();
+    assert_eq!(host, vec![20, 30]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1244,20 +1341,32 @@ fn sorting_sort_by_key_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: sort_by_key with mixed explicit domains succeeds.
+/// Output provenance follows the values table (primary input).
 #[test]
-fn sorting_sort_by_key_rejects_mixed_domains() {
+fn sorting_sort_by_key_succeeds_with_mixed_domains() {
     let keys = Table::from_columns(vec![explicit_i32_column(&[3, 1, 2], 132)]).unwrap();
     let values = Table::from_columns(vec![explicit_i32_column(&[30, 10, 20], 133)]).unwrap();
+    let expected_stream = values.__debug_execution_domain_stream_value();
+    let expected_mr = values.__debug_execution_domain_mr_value();
 
-    let err = sorting::sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None)
-        .err()
-        .expect("expected mixed-domain error");
+    reset_exec_observation();
+    let sorted = sorting::sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None).unwrap();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), "sorting::sort_by_key");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value == "explicit:133"));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value == "explicit:132"));
+    // Output provenance inherits from the values table.
+    assert_eq!(sorted.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(sorted.__debug_execution_domain_id(), 133);
+    assert_eq!(sorted.__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the values table's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    let host = sorted.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host, vec![10, 20, 30]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1302,20 +1411,32 @@ fn filter_apply_boolean_mask_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: filter with mixed explicit domains succeeds.
+/// Output provenance follows the data being filtered (not the mask).
 #[test]
-fn filter_apply_boolean_mask_rejects_mixed_domains() {
+fn filter_apply_boolean_mask_succeeds_with_mixed_domains() {
     let table = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 136)]).unwrap();
     let mask = Column::from_slice(&[true, false, true]).unwrap().__debug_rebind_execution_domain_explicit(137).unwrap();
+    let expected_stream = table.__debug_execution_domain_stream_value();
+    let expected_mr = table.__debug_execution_domain_mr_value();
 
-    let err = filter::apply_boolean_mask(&table.view().unwrap(), &mask.view().unwrap())
-        .err()
-        .expect("expected mixed-domain error");
+    reset_exec_observation();
+    let filtered = filter::apply_boolean_mask(&table.view().unwrap(), &mask.view().unwrap()).unwrap();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), "filter::apply_boolean_mask");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value == "explicit:136"));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value == "explicit:137"));
+    // Output provenance inherits from the data table (not the mask).
+    assert_eq!(filtered.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(filtered.__debug_execution_domain_id(), 136);
+    assert_eq!(filtered.__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the data table's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    let host = filtered.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host, vec![10, 30]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1531,47 +1652,95 @@ fn binary_operation_sv_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: binary_operation_vv with mixed explicit domains succeeds.
+/// Output provenance follows the left-hand side.
 #[test]
-fn binary_operation_vv_rejects_mixed_domains() {
+fn binary_operation_vv_succeeds_with_mixed_domains() {
     let lhs = explicit_i32_column(&[1, 2, 3], 153);
     let rhs = explicit_i32_column(&[10, 20, 30], 154);
+    let expected_stream = lhs.__debug_execution_domain_stream_value();
+    let expected_mr = lhs.__debug_execution_domain_mr_value();
 
-    let err = binary::binary_operation_vv(
+    reset_exec_observation();
+    let result = binary::binary_operation_vv(
         &lhs.view().unwrap(),
         &rhs.view().unwrap(),
         BinaryOperator::Add,
         &DataType::new(TypeId::Int32),
     )
-    .err()
-    .expect("expected mixed-domain error");
+    .unwrap();
 
-    assert_mixed_domain_error(err, "binary::binary_operation_vv", 153, 154);
+    // Output provenance inherits from the left-hand side.
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 153);
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the left-hand side's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: binary_operation_vs with mixed explicit domains succeeds.
+/// Output provenance follows the left-hand side (the column).
 #[test]
-fn binary_operation_vs_rejects_mixed_domains() {
+fn binary_operation_vs_succeeds_with_mixed_domains() {
     let lhs = explicit_i32_column(&[2, 3, 4], 155);
     let rhs = Scalar::from_value(10i32).unwrap().__debug_rebind_execution_domain_explicit(156).unwrap();
+    let expected_stream = lhs.__debug_execution_domain_stream_value();
+    let expected_mr = lhs.__debug_execution_domain_mr_value();
 
-    let err =
+    reset_exec_observation();
+    let result =
         binary::binary_operation_vs(&lhs.view().unwrap(), &rhs, BinaryOperator::Mul, &DataType::new(TypeId::Int32))
-            .err()
-            .expect("expected mixed-domain error");
+            .unwrap();
 
-    assert_mixed_domain_error(err, "binary::binary_operation_vs", 155, 156);
+    // Output provenance inherits from the left-hand side.
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 155);
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the left-hand side's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![20, 30, 40]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: binary_operation_sv with mixed explicit domains succeeds.
+/// Output provenance follows the left-hand side (the scalar).
 #[test]
-fn binary_operation_sv_rejects_mixed_domains() {
+fn binary_operation_sv_succeeds_with_mixed_domains() {
     let lhs = Scalar::from_value(100i32).unwrap().__debug_rebind_execution_domain_explicit(157).unwrap();
     let rhs = explicit_i32_column(&[2, 4, 5], 158);
+    let expected_stream = lhs.__debug_execution_domain_stream_value();
 
-    let err =
+    reset_exec_observation();
+    let result =
         binary::binary_operation_sv(&lhs, &rhs.view().unwrap(), BinaryOperator::Div, &DataType::new(TypeId::Int32))
-            .err()
-            .expect("expected mixed-domain error");
+            .unwrap();
 
-    assert_mixed_domain_error(err, "binary::binary_operation_sv", 157, 158);
+    // Output provenance inherits from the left-hand side (scalar).
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 157);
+    // Scalar does not yet expose a debug MR accessor, so at minimum assert
+    // output provenance matches the actual FFI-observed MR.
+    assert_eq!(result.__debug_execution_domain_mr_value(), last_exec_mr_value());
+
+    // Execution used the left-hand side's stream.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+
+    // Verify correct values.
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![50, 25, 20]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1662,15 +1831,33 @@ fn concatenate_columns_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: concatenate_columns with mixed explicit domains succeeds.
+/// Output provenance follows the first column in the sequence.
 #[test]
-fn concatenate_columns_rejects_mixed_domains() {
+fn concatenate_columns_succeeds_with_mixed_domains() {
     let left = explicit_i32_column(&[1, 2], 171);
     let right = explicit_i32_column(&[3, 4], 172);
     let left_view = left.view().unwrap();
     let right_view = right.view().unwrap();
+    let expected_stream = left.__debug_execution_domain_stream_value();
+    let expected_mr = left.__debug_execution_domain_mr_value();
 
-    let err = concatenate::concatenate_columns(&[&left_view, &right_view]).err().expect("expected mixed-domain error");
-    assert_mixed_domain_error(err, "concatenate::concatenate_columns", 171, 172);
+    reset_exec_observation();
+    let result = concatenate::concatenate_columns(&[&left_view, &right_view]).unwrap();
+
+    // Output provenance inherits from the first column.
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 171);
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the first column's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1697,15 +1884,34 @@ fn concatenate_tables_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: concatenate_tables with mixed explicit domains succeeds.
+/// Output provenance follows the first table in the sequence.
 #[test]
-fn concatenate_tables_rejects_mixed_domains() {
+fn concatenate_tables_succeeds_with_mixed_domains() {
     let first = Table::from_columns(vec![explicit_i32_column(&[1, 2], 174)]).unwrap();
     let second = Table::from_columns(vec![explicit_i32_column(&[3, 4], 175)]).unwrap();
     let first_view = first.view().unwrap();
     let second_view = second.view().unwrap();
+    let expected_stream = first.__debug_execution_domain_stream_value();
+    let expected_mr = first.__debug_execution_domain_mr_value();
 
-    let err = concatenate::concatenate_tables(&[&first_view, &second_view]).err().expect("expected mixed-domain error");
-    assert_mixed_domain_error(err, "concatenate::concatenate_tables", 174, 175);
+    reset_exec_observation();
+    let result = concatenate::concatenate_tables(&[&first_view, &second_view]).unwrap();
+
+    // Output provenance inherits from the first table.
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 174);
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the first table's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    let host = result.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host, vec![1, 2, 3, 4]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1730,15 +1936,32 @@ fn copying_gather_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: gather with mixed explicit domains succeeds.
+/// Output provenance follows the data table (not the gather map).
 #[test]
-fn copying_gather_rejects_mixed_domains() {
+fn copying_gather_succeeds_with_mixed_domains() {
     let table = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 177)]).unwrap();
     let gather_map = explicit_i32_column(&[2, 0], 178);
+    let expected_stream = table.__debug_execution_domain_stream_value();
+    let expected_mr = table.__debug_execution_domain_mr_value();
 
-    let err = copying::gather(&table.view().unwrap(), &gather_map.view().unwrap())
-        .err()
-        .expect("expected mixed-domain error");
-    assert_mixed_domain_error(err, "copying::gather", 177, 178);
+    reset_exec_observation();
+    let result = copying::gather(&table.view().unwrap(), &gather_map.view().unwrap()).unwrap();
+
+    // Output provenance inherits from the data table (not the gather map).
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 177);
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the data table's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    let host = result.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host, vec![30, 10]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1789,18 +2012,34 @@ fn replace_nulls_column_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: replace_nulls_column with mixed explicit domains succeeds.
+/// Output provenance follows the input column (not the replacement).
 #[test]
-fn replace_nulls_column_rejects_mixed_domains() {
+fn replace_nulls_column_succeeds_with_mixed_domains() {
     let input = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
         .unwrap()
         .__debug_rebind_execution_domain_explicit(181)
         .unwrap();
     let replacement = explicit_i32_column(&[10, 20, 30], 182);
+    let expected_stream = input.__debug_execution_domain_stream_value();
+    let expected_mr = input.__debug_execution_domain_mr_value();
 
-    let err = replace::replace_nulls_column(&input.view().unwrap(), &replacement.view().unwrap())
-        .err()
-        .expect("expected mixed-domain error");
-    assert_mixed_domain_error(err, "replace::replace_nulls_column", 181, 182);
+    reset_exec_observation();
+    let result = replace::replace_nulls_column(&input.view().unwrap(), &replacement.view().unwrap()).unwrap();
+
+    // Output provenance inherits from the input column.
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_id(), 181);
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the input column's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 20, 3]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1838,24 +2077,46 @@ fn join_inner_join_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: inner_join with mixed explicit domains succeeds.
+/// Output provenance follows the left table.
 #[test]
-fn join_inner_join_rejects_mixed_domains() {
+fn join_inner_join_succeeds_with_mixed_domains() {
     let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3], 184)]).unwrap();
     let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 3, 4], 185)]).unwrap();
     let left_payload = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 184)]).unwrap();
     let right_payload = Table::from_columns(vec![explicit_i32_column(&[200, 300, 400], 185)]).unwrap();
+    let expected_stream = left_keys.__debug_execution_domain_stream_value();
+    let expected_mr = left_keys.__debug_execution_domain_mr_value();
 
-    let err = join::inner_join(
+    reset_exec_observation();
+    let result = join::inner_join(
         &left_keys.view().unwrap(),
         &right_keys.view().unwrap(),
         &left_payload.view().unwrap(),
         &right_payload.view().unwrap(),
         join::NullEquality::Equal,
     )
-    .err()
-    .expect("expected mixed-domain error");
+    .unwrap();
 
-    assert_mixed_domain_error(err, "join::inner_join", 184, 185);
+    // Output provenance inherits from the left table.
+    assert_eq!(result.left.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.right.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.left.__debug_execution_domain_id(), 184);
+    assert_eq!(result.right.__debug_execution_domain_id(), 184);
+    assert_eq!(result.left.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.right.__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the left table's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    let left_host = result.left.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    let right_host = result.right.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(left_host, vec![2, 3]);
+    assert_eq!(right_host, vec![2, 3]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1888,18 +2149,41 @@ fn groupby_aggregate_retains_explicit_domain_and_uses_exec_options() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
+/// v2 semantics: groupby_aggregate with mixed explicit domains succeeds.
+/// Output provenance follows the keys table.
 #[test]
-fn groupby_aggregate_rejects_mixed_domains() {
+fn groupby_aggregate_succeeds_with_mixed_domains() {
     let keys = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 2], 187)]).unwrap();
     let values = explicit_i32_column(&[10, 20, 30, 40], 188);
     let values_view = values.view().unwrap();
     let aggregations = [Aggregation::Sum];
     let requests = [AggregationRequest { values: &values_view, aggregations: &aggregations }];
+    let expected_stream = keys.__debug_execution_domain_stream_value();
+    let expected_mr = keys.__debug_execution_domain_mr_value();
 
-    let err = groupby::groupby_aggregate(&keys.view().unwrap(), &requests, groupby::NullPolicy::Exclude)
-        .err()
-        .expect("expected mixed-domain error");
-    assert_mixed_domain_error(err, "groupby::groupby_aggregate", 187, 188);
+    reset_exec_observation();
+    let result = groupby::groupby_aggregate(&keys.view().unwrap(), &requests, groupby::NullPolicy::Exclude).unwrap();
+
+    // Output provenance inherits from the keys table.
+    assert_eq!(result.keys.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.keys.__debug_execution_domain_id(), 187);
+    assert_eq!(result.results.len(), 1);
+    assert_eq!(result.results[0].len(), 1);
+    assert_eq!(result.results[0][0].__debug_execution_domain_id(), 187);
+    assert_eq!(result.keys.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.results[0][0].__debug_execution_domain_mr_value(), expected_mr);
+
+    // Execution used the keys table's stream and MR.
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    // Verify correct values.
+    reset_sync_observation();
+    let key_host = result.keys.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    let sum_host = result.results[0][0].view().unwrap().to_vec::<i64>().unwrap();
+    assert_eq!(key_host, vec![1, 2]);
+    assert_eq!(sum_host, vec![30, 70]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 #[test]
@@ -1913,4 +2197,269 @@ fn retained_domain_carriers_are_send_sync() {
     assert_send_sync::<Scalar>();
     assert_send_sync::<CudaStream>();
     assert_send_sync::<DeviceMemoryResource>();
+}
+
+// === v2: mixed-domain deterministic resolution ===
+//
+// These tests express the v2 execution semantics contract where mixed-domain
+// inputs are legal at operation boundaries. The operation resolves execution
+// resources from the primary input's retained provenance, and the output
+// carries that primary input's domain identity.
+//
+// INV-ER-04 is REMOVED: mixed explicit inputs no longer cause errors.
+// INV-PR-02 is CHANGED: output inherits primary input's provenance.
+// INV-PR-04 is CHANGED: identity does not gate operations.
+
+#[test]
+fn mixed_domain_binary_op_succeeds_with_left_provenance() {
+    // Primary input for binary ops = left-hand side (spec table)
+    let lhs = explicit_i32_column(&[1, 2, 3], 300);
+    let rhs = explicit_i32_column(&[10, 20, 30], 301);
+    let lhs_identity = lhs.__debug_execution_domain_id();
+    let lhs_stream = lhs.__debug_execution_domain_stream_value();
+    let lhs_mr = lhs.__debug_execution_domain_mr_value();
+    assert_ne!(lhs_identity, rhs.__debug_execution_domain_id());
+
+    reset_exec_observation();
+    let result = binary::binary_operation_vv(
+        &lhs.view().unwrap(),
+        &rhs.view().unwrap(),
+        BinaryOperator::Add,
+        &DataType::new(TypeId::Int32),
+    )
+    .unwrap();
+
+    // Output provenance = left (primary) input
+    assert_eq!(result.__debug_execution_domain_id(), lhs_identity);
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_mr_value(), lhs_mr);
+    // FFI stream/MR = left input's retained domain
+    assert_eq!(last_exec_stream_value(), lhs_stream);
+    assert_eq!(last_exec_mr_value(), lhs_mr);
+
+    // Value correctness
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(last_sync_stream_value(), lhs_stream);
+}
+
+#[test]
+fn mixed_domain_concatenate_columns_succeeds_with_first_provenance() {
+    // Primary input for concatenation = first column (spec table)
+    let first = explicit_i32_column(&[1, 2], 302);
+    let second = explicit_i32_column(&[3, 4, 5], 303);
+    let first_identity = first.__debug_execution_domain_id();
+    let first_stream = first.__debug_execution_domain_stream_value();
+    let first_mr = first.__debug_execution_domain_mr_value();
+    assert_ne!(first_identity, second.__debug_execution_domain_id());
+
+    let first_view = first.view().unwrap();
+    let second_view = second.view().unwrap();
+    reset_exec_observation();
+    let result = concatenate::concatenate_columns(&[&first_view, &second_view]).unwrap();
+
+    // Output provenance = first column's domain
+    assert_eq!(result.__debug_execution_domain_id(), first_identity);
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_mr_value(), first_mr);
+    assert_eq!(last_exec_stream_value(), first_stream);
+    assert_eq!(last_exec_mr_value(), first_mr);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(last_sync_stream_value(), first_stream);
+}
+
+#[test]
+fn mixed_domain_concatenate_tables_succeeds_with_first_provenance() {
+    // Primary input for concatenation = first table (spec table)
+    let first = Table::from_columns(vec![explicit_i32_column(&[1, 2], 304)]).unwrap();
+    let second = Table::from_columns(vec![explicit_i32_column(&[3, 4], 305)]).unwrap();
+    let first_identity = first.__debug_execution_domain_id();
+    let first_stream = first.__debug_execution_domain_stream_value();
+    let first_mr = first.__debug_execution_domain_mr_value();
+    assert_ne!(first_identity, second.__debug_execution_domain_id());
+
+    let first_view = first.view().unwrap();
+    let second_view = second.view().unwrap();
+    reset_exec_observation();
+    let result = concatenate::concatenate_tables(&[&first_view, &second_view]).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), first_identity);
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_mr_value(), first_mr);
+    assert_eq!(last_exec_stream_value(), first_stream);
+    assert_eq!(last_exec_mr_value(), first_mr);
+
+    reset_sync_observation();
+    let host = result.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host, vec![1, 2, 3, 4]);
+    assert_eq!(last_sync_stream_value(), first_stream);
+}
+
+#[test]
+fn mixed_domain_filter_succeeds_with_data_provenance() {
+    // Primary input for filter = the data being filtered (not the mask)
+    let table = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 306)]).unwrap();
+    let mask = Column::from_slice(&[true, false, true]).unwrap().__debug_rebind_execution_domain_explicit(307).unwrap();
+    let data_identity = table.__debug_execution_domain_id();
+    let data_stream = table.__debug_execution_domain_stream_value();
+    let data_mr = table.__debug_execution_domain_mr_value();
+    assert_ne!(data_identity, mask.__debug_execution_domain_id());
+
+    reset_exec_observation();
+    let filtered = filter::apply_boolean_mask(&table.view().unwrap(), &mask.view().unwrap()).unwrap();
+
+    // Output provenance = data table's domain (not the mask's)
+    assert_eq!(filtered.__debug_execution_domain_id(), data_identity);
+    assert_eq!(filtered.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(filtered.__debug_execution_domain_mr_value(), data_mr);
+    assert_eq!(last_exec_stream_value(), data_stream);
+    assert_eq!(last_exec_mr_value(), data_mr);
+
+    reset_sync_observation();
+    let host = filtered.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host, vec![10, 30]);
+    assert_eq!(last_sync_stream_value(), data_stream);
+}
+
+#[test]
+fn mixed_domain_gather_succeeds_with_data_provenance() {
+    // Primary input for gather = the data being gathered (not the gather map)
+    let table = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 308)]).unwrap();
+    let gather_map = explicit_i32_column(&[2, 0], 309);
+    let data_identity = table.__debug_execution_domain_id();
+    let data_stream = table.__debug_execution_domain_stream_value();
+    let data_mr = table.__debug_execution_domain_mr_value();
+    assert_ne!(data_identity, gather_map.__debug_execution_domain_id());
+
+    reset_exec_observation();
+    let result = copying::gather(&table.view().unwrap(), &gather_map.view().unwrap()).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), data_identity);
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_mr_value(), data_mr);
+    assert_eq!(last_exec_stream_value(), data_stream);
+    assert_eq!(last_exec_mr_value(), data_mr);
+
+    reset_sync_observation();
+    let host = result.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host, vec![30, 10]);
+    assert_eq!(last_sync_stream_value(), data_stream);
+}
+
+#[test]
+fn mixed_domain_join_succeeds_with_left_provenance() {
+    // Primary input for join = left table
+    let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3], 310)]).unwrap();
+    let left_payload = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 310)]).unwrap();
+    let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 3, 4], 311)]).unwrap();
+    let right_payload = Table::from_columns(vec![explicit_i32_column(&[200, 300, 400], 311)]).unwrap();
+    let left_identity = left_keys.__debug_execution_domain_id();
+    let left_stream = left_keys.__debug_execution_domain_stream_value();
+    let left_mr = left_keys.__debug_execution_domain_mr_value();
+    assert_ne!(left_identity, right_keys.__debug_execution_domain_id());
+
+    reset_exec_observation();
+    let result = join::inner_join(
+        &left_keys.view().unwrap(),
+        &right_keys.view().unwrap(),
+        &left_payload.view().unwrap(),
+        &right_payload.view().unwrap(),
+        join::NullEquality::Equal,
+    )
+    .unwrap();
+
+    // Output provenance = left table's domain
+    assert_eq!(result.left.__debug_execution_domain_id(), left_identity);
+    assert_eq!(result.right.__debug_execution_domain_id(), left_identity);
+    assert_eq!(result.left.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.right.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.left.__debug_execution_domain_mr_value(), left_mr);
+    assert_eq!(result.right.__debug_execution_domain_mr_value(), left_mr);
+    assert_eq!(last_exec_stream_value(), left_stream);
+    assert_eq!(last_exec_mr_value(), left_mr);
+
+    reset_sync_observation();
+    let left_host = result.left.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    let right_host = result.right.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(left_host, vec![2, 3]);
+    assert_eq!(right_host, vec![2, 3]);
+    assert_eq!(last_sync_stream_value(), left_stream);
+}
+
+#[test]
+fn mixed_domain_sort_by_key_succeeds_with_values_provenance() {
+    // Primary input for sort_by_key = values table (not the keys table)
+    let keys = Table::from_columns(vec![explicit_i32_column(&[3, 1, 2], 312)]).unwrap();
+    let values = Table::from_columns(vec![explicit_i32_column(&[30, 10, 20], 313)]).unwrap();
+    let values_identity = values.__debug_execution_domain_id();
+    let values_stream = values.__debug_execution_domain_stream_value();
+    let values_mr = values.__debug_execution_domain_mr_value();
+    assert_ne!(values_identity, keys.__debug_execution_domain_id());
+
+    reset_exec_observation();
+    let sorted = sorting::sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None).unwrap();
+
+    assert_eq!(sorted.__debug_execution_domain_id(), values_identity);
+    assert_eq!(sorted.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(sorted.__debug_execution_domain_mr_value(), values_mr);
+    assert_eq!(last_exec_stream_value(), values_stream);
+    assert_eq!(last_exec_mr_value(), values_mr);
+
+    reset_sync_observation();
+    let host = sorted.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host, vec![10, 20, 30]);
+    assert_eq!(last_sync_stream_value(), values_stream);
+}
+
+#[test]
+fn mixed_domain_replace_nulls_column_succeeds_with_input_provenance() {
+    // Primary input for replace_nulls = input column (not the replacement)
+    let input = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
+        .unwrap()
+        .__debug_rebind_execution_domain_explicit(314)
+        .unwrap();
+    let replacement = explicit_i32_column(&[10, 20, 30], 315);
+    let input_identity = input.__debug_execution_domain_id();
+    let input_stream = input.__debug_execution_domain_stream_value();
+    let input_mr = input.__debug_execution_domain_mr_value();
+    assert_ne!(input_identity, replacement.__debug_execution_domain_id());
+
+    reset_exec_observation();
+    let result = replace::replace_nulls_column(&input.view().unwrap(), &replacement.view().unwrap()).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), input_identity);
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_mr_value(), input_mr);
+    assert_eq!(last_exec_stream_value(), input_stream);
+    assert_eq!(last_exec_mr_value(), input_mr);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 20, 3]);
+    assert_eq!(last_sync_stream_value(), input_stream);
+}
+
+#[test]
+fn mixed_domain_search_contains_succeeds_with_haystack_provenance() {
+    // Primary input for search/contains = haystack (not the needles)
+    let haystack = explicit_i32_column(&[10, 20, 30, 40], 316);
+    let needles = explicit_i32_column(&[20, 50, 10], 317);
+    let haystack_identity = haystack.__debug_execution_domain_id();
+    let haystack_stream = haystack.__debug_execution_domain_stream_value();
+    let haystack_mr = haystack.__debug_execution_domain_mr_value();
+    assert_ne!(haystack_identity, needles.__debug_execution_domain_id());
+
+    reset_exec_observation();
+    let result = search::contains(&haystack.view().unwrap(), &needles.view().unwrap()).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), haystack_identity);
+    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(result.__debug_execution_domain_mr_value(), haystack_mr);
+    assert_eq!(last_exec_stream_value(), haystack_stream);
+    assert_eq!(last_exec_mr_value(), haystack_mr);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(last_sync_stream_value(), haystack_stream);
 }

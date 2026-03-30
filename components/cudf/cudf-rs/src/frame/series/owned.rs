@@ -344,7 +344,7 @@ impl Series {
         output_domain: &Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Arc<Column>> {
-        if ExecutionDomain::same_identity(column.execution_domain(), output_domain) {
+        if ExecutionDomain::same_provenance(column.execution_domain(), output_domain) {
             return Ok(Arc::clone(column));
         }
 
@@ -414,11 +414,7 @@ impl Series {
     /// # Cost
     /// GPU-allocating: a new column is produced with nulls replaced.
     pub fn fillna_with_series(&self, other: &Series) -> Result<Series> {
-        let output_domain = ExecutionDomain::compatible_domain(
-            self.column.execution_domain(),
-            other.column.execution_domain(),
-            "series::fillna_with_series",
-        )?;
+        let output_domain = Arc::clone(self.column.execution_domain());
         let cv = self.column.view()?;
         let other_cv = other.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();

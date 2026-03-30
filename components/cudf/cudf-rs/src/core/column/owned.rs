@@ -580,15 +580,12 @@ impl Column {
 impl Column {
     /// Generic binary operation with inferred output type.
     pub fn binary_op(&self, rhs: &Column, op: binary::BinaryOperator) -> Result<Column> {
-        let output_domain =
-            ExecutionDomain::compatible_domain(&self.domain, rhs.execution_domain(), "column::binary_op")?;
         (|| {
             let lv = self.view()?;
             let rv = rhs.view()?;
             let out_type = binary::infer_binary_output_type(lv.data_type()?.id(), rv.data_type()?.id(), op)?;
             binary::binary_operation_vv(&lv, &rv, op, &out_type)
         })()
-        .map(|col| col.with_execution_domain(output_domain))
         .map_err(|e| e.with_operation("column::binary_op").with_context("operator", format!("{:?}", op).to_lowercase()))
     }
 
@@ -599,14 +596,11 @@ impl Column {
         op: binary::BinaryOperator,
         output_type: &DataType,
     ) -> Result<Column> {
-        let output_domain =
-            ExecutionDomain::compatible_domain(&self.domain, rhs.execution_domain(), "column::binary_op_with_type")?;
         (|| {
             let lv = self.view()?;
             let rv = rhs.view()?;
             binary::binary_operation_vv(&lv, &rv, op, output_type)
         })()
-        .map(|col| col.with_execution_domain(output_domain))
         .map_err(|e| {
             e.with_operation("column::binary_op_with_type")
                 .with_context("operator", format!("{:?}", op).to_lowercase())
