@@ -8,6 +8,8 @@ use std::{
     sync::Arc,
 };
 
+use typed_builder::TypedBuilder;
+
 use crate::{
     core::{
         error::{self, Error, ErrorKind, Result},
@@ -17,73 +19,20 @@ use crate::{
 };
 
 /// Options for reading a Parquet file.
+#[derive(TypedBuilder)]
 pub struct ParquetReaderOptions {
+    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
-    columns: Option<Vec<CString>>,
+    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
+    columns: Option<Vec<String>>,
+    #[builder(default)]
     skip_rows: i64,
+    #[builder(default = -1)]
     num_rows: i64,
+    #[builder(default, setter(transform = |groups: &[i32]| if groups.is_empty() { None } else { Some(groups.to_vec()) }))]
     row_groups: Option<Vec<i32>>,
+    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
-}
-
-impl ParquetReaderOptions {
-    /// Create options to read from the given file path.
-    pub fn new(path: impl AsRef<Path>) -> Self {
-        Self {
-            filepath: path.as_ref().to_path_buf(),
-            columns: None,
-            skip_rows: 0,
-            num_rows: -1, // -1 means read all
-            row_groups: None,
-            runtime: None,
-        }
-    }
-
-    /// Only read the specified columns (by name).
-    ///
-    /// Returns an error if any column name contains an interior null byte.
-    pub fn columns(mut self, names: &[&str]) -> Result<Self> {
-        self.columns = Some(
-            names
-                .iter()
-                .map(|s| {
-                    CString::new(*s).map_err(|_| {
-                        Error::new(ErrorKind::InvalidOperation, "column name contains interior null byte")
-                            .with_operation("io::parquet::ParquetReaderOptions::columns")
-                            .with_context("column_name", s.to_string())
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-        );
-        Ok(self)
-    }
-
-    /// Skip the first `n` rows.
-    pub fn skip_rows(mut self, n: i64) -> Self {
-        self.skip_rows = n;
-        self
-    }
-
-    /// Read at most `n` rows.
-    pub fn num_rows(mut self, n: i64) -> Self {
-        self.num_rows = n;
-        self
-    }
-
-    /// Read only the specified row groups (by zero-based index).
-    ///
-    /// Cannot be combined with `skip_rows` or `num_rows` — the read call
-    /// will return an error if both are set.
-    pub fn row_groups(mut self, groups: &[i32]) -> Self {
-        self.row_groups = if groups.is_empty() { None } else { Some(groups.to_vec()) };
-        self
-    }
-
-    /// Seed explicit execution provenance from the given runtime.
-    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
-        self.runtime = Some(runtime.clone());
-        self
-    }
 }
 
 /// A table read from Parquet along with its column name metadata.
@@ -120,9 +69,24 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
     let mut names_ptr: *mut *mut c_char = ptr::null_mut();
     let mut num_names: i32 = 0;
 
-    // Build the pointer array; the Vec must outlive the FFI call.
+    // Convert column names to CStrings at the call site, then build the pointer array.
+    let cstring_columns: Option<Vec<CString>> = options
+        .columns
+        .as_ref()
+        .map(|cols| {
+            cols.iter()
+                .map(|s| {
+                    CString::new(s.as_str()).map_err(|_| {
+                        Error::new(ErrorKind::InvalidOperation, "column name contains interior null byte")
+                            .with_operation("io::parquet::read_parquet_with_metadata")
+                            .with_context("column_name", s.to_string())
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
     let col_ptrs_vec: Vec<*const c_char> =
-        options.columns.as_ref().map(|cols| cols.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
+        cstring_columns.as_ref().map(|cols| cols.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
     let (col_ptrs, num_cols) =
         if col_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32) };
 
@@ -240,55 +204,22 @@ unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> R
 }
 
 /// Options for writing a Parquet file.
+#[derive(TypedBuilder)]
 pub struct ParquetWriterOptions {
+    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
-    column_names: Option<Vec<CString>>,
+    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
+    column_names: Option<Vec<String>>,
+    #[builder(default)]
     row_group_size_rows: i32,
+    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
 }
 
 impl ParquetWriterOptions {
-    /// Create options to write to the given file path.
-    pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { filepath: path.as_ref().to_path_buf(), column_names: None, row_group_size_rows: 0, runtime: None }
-    }
-
-    /// Set column names for the output file.
-    ///
-    /// Returns an error if any column name contains an interior null byte.
-    pub fn column_names(mut self, names: &[&str]) -> Result<Self> {
-        self.column_names = Some(
-            names
-                .iter()
-                .map(|s| {
-                    CString::new(*s).map_err(|_| {
-                        Error::new(ErrorKind::InvalidOperation, "column name contains interior null byte")
-                            .with_operation("io::parquet::ParquetWriterOptions::column_names")
-                            .with_context("column_name", s.to_string())
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-        );
-        Ok(self)
-    }
-
-    /// Set the maximum number of rows per row group in the output file.
-    ///
-    /// Default (0) uses libcudf's default of 1,000,000 rows.
-    pub fn row_group_size_rows(mut self, n: i32) -> Self {
-        self.row_group_size_rows = n;
-        self
-    }
-
-    /// Route the write through the given runtime's stream.
-    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
-        self.runtime = Some(runtime.clone());
-        self
-    }
-
     pub(crate) fn ensure_column_names(mut self, names: &[&str]) -> Result<Self> {
         if self.column_names.is_none() {
-            self = self.column_names(names)?;
+            self.column_names = Some(names.iter().map(|s| (*s).to_string()).collect());
         }
         Ok(self)
     }
@@ -329,9 +260,27 @@ pub(crate) fn write_parquet_with_exec(
         }
     }
 
+    // Convert column names to CStrings at the call site.
+    let cstring_names: Option<Vec<CString>> = options
+        .column_names
+        .as_ref()
+        .map(|names| {
+            names
+                .iter()
+                .map(|s| {
+                    CString::new(s.as_str()).map_err(|_| {
+                        Error::new(ErrorKind::InvalidOperation, "column name contains interior null byte")
+                            .with_operation("io::parquet::write_parquet")
+                            .with_context("column_name", s.to_string())
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
+
     // Build the pointer array; the Vec must outlive the FFI call.
     let name_ptrs_vec: Vec<*const c_char> =
-        options.column_names.as_ref().map(|names| names.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
+        cstring_names.as_ref().map(|names| names.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
     let (name_ptrs, num_cols) =
         if name_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32) };
 

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use smallvec::SmallVec;
+use typed_builder::TypedBuilder;
 
 use super::agg::{Aggregation, AggregationRequest, NullPolicy, groupby_aggregate, groupby_aggregate_with_exec_options};
 use crate::{
@@ -113,22 +114,21 @@ impl AggSpec {
 }
 
 /// Options for the high-level groupby operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct GroupByOptions {
-    null_policy: NullPolicy,
+    #[builder(default)]
+    include_null_keys: bool,
 }
 
 impl Default for GroupByOptions {
     fn default() -> Self {
-        Self { null_policy: NullPolicy::Exclude }
+        Self::builder().build()
     }
 }
 
 impl GroupByOptions {
-    /// Set whether null keys are included in the groupby output.
-    pub fn include_null_keys(mut self, include: bool) -> Self {
-        self.null_policy = if include { NullPolicy::Include } else { NullPolicy::Exclude };
-        self
+    pub(crate) fn null_policy(&self) -> NullPolicy {
+        if self.include_null_keys { NullPolicy::Include } else { NullPolicy::Exclude }
     }
 }
 
@@ -279,12 +279,12 @@ impl<'a> GroupBy<'a> {
             groupby_aggregate_with_exec_options(
                 keys_table.table(),
                 &requests,
-                self.options.null_policy,
+                self.options.null_policy(),
                 exec_options,
                 operation,
             )?
         } else {
-            groupby_aggregate(keys_table.table(), &requests, self.options.null_policy)?
+            groupby_aggregate(keys_table.table(), &requests, self.options.null_policy())?
         };
 
         let mut grouped_results: Vec<Vec<Option<crate::Column>>> = gb_result

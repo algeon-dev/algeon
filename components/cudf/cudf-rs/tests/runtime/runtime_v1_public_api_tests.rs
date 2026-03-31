@@ -178,7 +178,7 @@ fn parquet_read_with_runtime_seeds_explicit_domain_and_uses_runtime_stream() {
 
     let rt = sample_runtime();
     let expected_stream = rt.stream().__debug_raw_handle_value();
-    let opts = ParquetReaderOptions::new(&path).with_runtime(&rt);
+    let opts = ParquetReaderOptions::builder().filepath(&path).with_runtime(&rt).build();
 
     obs_reset();
     let read_df = DataFrame::read_parquet_with_options(opts).unwrap();
@@ -220,7 +220,7 @@ fn dataframe_write_parquet_with_options_uses_retained_runtime_stream() {
     .unwrap();
 
     obs_reset();
-    df.write_parquet_with_options(cudf::io::parquet::ParquetWriterOptions::new(&path)).unwrap();
+    df.write_parquet_with_options(cudf::io::parquet::ParquetWriterOptions::builder().filepath(&path).build()).unwrap();
 
     assert_eq!(obs_last_stream(), rt.stream().__debug_raw_handle_value());
 
@@ -242,8 +242,10 @@ fn dataframe_write_parquet_with_options_runtime_override_recovers_mixed_explicit
     .unwrap();
 
     obs_reset();
-    df.write_parquet_with_options(cudf::io::parquet::ParquetWriterOptions::new(&path).with_runtime(&target_rt))
-        .unwrap();
+    df.write_parquet_with_options(
+        cudf::io::parquet::ParquetWriterOptions::builder().filepath(&path).with_runtime(&target_rt).build(),
+    )
+    .unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());

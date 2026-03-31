@@ -4,8 +4,9 @@
 //! and FFI calls can fail at runtime.
 //!
 //! Supported forms:
-//! - `Series op Series` (all value/ref combos)
+//! - `Series op Series` (all value/ref combos): `Add`, `Sub`, `Mul`, `Div`, `Rem`
 //! - `Series op scalar` / `scalar op Series` for `f32`, `f64`, `i32`, `i64`
+//! - `-Series` (`Neg`) and `!Series` (`Not`)
 //!
 //! Named methods (`add`, `sub`, `mul_scalar`, etc.) remain on `Series` in
 //! `owned.rs`. Operators forward to those methods so behaviour stays aligned.
@@ -64,6 +65,7 @@ impl_series_series_op!(Add, add, add);
 impl_series_series_op!(Sub, sub, sub);
 impl_series_series_op!(Mul, mul, mul);
 impl_series_series_op!(Div, div, div);
+impl_series_series_op!(Rem, rem, rem);
 
 // ===========================================================================
 // Series op scalar — returns Result<Series>
@@ -97,6 +99,7 @@ impl_series_scalar_op!(Add, add, add_scalar, f32, f64, i32, i64);
 impl_series_scalar_op!(Sub, sub, sub_scalar, f32, f64, i32, i64);
 impl_series_scalar_op!(Mul, mul, mul_scalar, f32, f64, i32, i64);
 impl_series_scalar_op!(Div, div, div_scalar, f32, f64, i32, i64);
+impl_series_scalar_op!(Rem, rem, rem_scalar, f32, f64, i32, i64);
 
 // ===========================================================================
 // scalar op Series — returns Result<Series>
@@ -133,6 +136,7 @@ impl_scalar_series_op!(Add, add, BinaryOperator::Add, f32, f64, i32, i64);
 impl_scalar_series_op!(Sub, sub, BinaryOperator::Sub, f32, f64, i32, i64);
 impl_scalar_series_op!(Mul, mul, BinaryOperator::Mul, f32, f64, i32, i64);
 impl_scalar_series_op!(Div, div, BinaryOperator::Div, f32, f64, i32, i64);
+impl_scalar_series_op!(Rem, rem, BinaryOperator::Mod, f32, f64, i32, i64);
 
 // ===========================================================================
 // Private helper: scalar-left binary operation
@@ -160,4 +164,44 @@ fn scalar_left_op<T: crate::core::types::CudfType>(series: &Series, lhs: T, op: 
         .map(|c| c.with_execution_domain(Arc::clone(series.column.execution_domain())))?;
 
     series.with_inherited_name(result_col)
+}
+
+// ===========================================================================
+// Neg — unary arithmetic negation
+// ===========================================================================
+
+impl std::ops::Neg for Series {
+    type Output = Result<Series>;
+
+    fn neg(self) -> Self::Output {
+        Series::neg(&self)
+    }
+}
+
+impl std::ops::Neg for &Series {
+    type Output = Result<Series>;
+
+    fn neg(self) -> Self::Output {
+        Series::neg(self)
+    }
+}
+
+// ===========================================================================
+// Not — logical NOT (Bool8)
+// ===========================================================================
+
+impl std::ops::Not for Series {
+    type Output = Result<Series>;
+
+    fn not(self) -> Self::Output {
+        Series::logical_not(&self)
+    }
+}
+
+impl std::ops::Not for &Series {
+    type Output = Result<Series>;
+
+    fn not(self) -> Self::Output {
+        Series::logical_not(self)
+    }
 }

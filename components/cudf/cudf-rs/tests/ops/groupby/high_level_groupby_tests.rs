@@ -285,7 +285,7 @@ fn groupby_with_options_include_null_keys() {
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let options = GroupByOptions::default().include_null_keys(true);
+    let options = GroupByOptions::builder().include_null_keys(true).build();
     let result = df.groupby(&["key"]).options(options).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
     assert_eq!(result.num_columns(), 2);

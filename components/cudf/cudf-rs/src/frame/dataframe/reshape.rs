@@ -1,3 +1,5 @@
+use typed_builder::TypedBuilder;
+
 /// Options for [`DataFrame::dropna`].
 ///
 /// Controls which rows are dropped based on null values. Mirrors the
@@ -8,56 +10,34 @@
 /// - `how` = any (drop if **any** subset column is null)
 /// - `subset` = all columns
 /// - `thresh` = `None` (when set, overrides `how`)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct DropNaOptions {
     /// Column names to inspect. Empty means all columns.
+    #[builder(default, setter(transform = |columns: &[&str]| columns.iter().map(|s| s.to_string()).collect()))]
     subset: Vec<String>,
     /// Minimum number of non-null values in subset required to keep the row.
     /// `None` means derive from `how`.
+    #[builder(default, setter(transform = |thresh: i32| Some(thresh)))]
     thresh: Option<i32>,
     /// If `true`, drop only when **all** subset columns are null.
     /// If `false` (default), drop when **any** subset column is null.
+    #[builder(default)]
     how_all: bool,
 }
 
 impl Default for DropNaOptions {
     fn default() -> Self {
-        Self::new()
+        Self::builder().build()
     }
 }
 
 impl DropNaOptions {
     /// Create default options: how=any, subset=all columns, no threshold override.
     pub fn new() -> Self {
-        Self { subset: Vec::new(), thresh: None, how_all: false }
-    }
-
-    /// Specify which columns to check for nulls. If not called (or empty),
-    /// all columns are checked.
-    pub fn subset(mut self, columns: &[&str]) -> Self {
-        self.subset = columns.iter().map(|s| s.to_string()).collect();
-        self
-    }
-
-    /// Drop rows where **any** of the subset columns is null (default).
-    pub fn how_any(mut self) -> Self {
-        self.how_all = false;
-        self
-    }
-
-    /// Drop rows only when **all** subset columns are null.
-    pub fn how_all(mut self) -> Self {
-        self.how_all = true;
-        self
-    }
-
-    /// Set an explicit threshold: keep rows with at least `thresh` non-null
-    /// values in the subset columns. When set, this overrides `how`.
-    pub fn thresh(mut self, thresh: i32) -> Self {
-        self.thresh = Some(thresh);
-        self
+        Self::default()
     }
 }
+
 /// Options for [`DataFrame::drop_duplicates`].
 ///
 /// Controls deduplication behavior. Mirrors `drop_duplicates()` from cuDF
@@ -67,37 +47,26 @@ impl DropNaOptions {
 ///
 /// - `subset` = all columns
 /// - `keep` = [`DuplicateKeepOption::KeepAny`]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct DistinctOptions {
     /// Column names to use as deduplication keys. Empty means all columns.
+    #[builder(default, setter(transform = |columns: &[&str]| columns.iter().map(|s| s.to_string()).collect()))]
     subset: Vec<String>,
     /// Which duplicate occurrence to keep.
+    #[builder(default = DuplicateKeepOption::KeepAny)]
     keep: DuplicateKeepOption,
 }
 
 impl Default for DistinctOptions {
     fn default() -> Self {
-        Self::new()
+        Self::builder().build()
     }
 }
 
 impl DistinctOptions {
     /// Create default options: all columns, keep any.
     pub fn new() -> Self {
-        Self { subset: Vec::new(), keep: DuplicateKeepOption::KeepAny }
-    }
-
-    /// Specify which columns to use as deduplication keys. If not called
-    /// (or empty), all columns are used.
-    pub fn subset(mut self, columns: &[&str]) -> Self {
-        self.subset = columns.iter().map(|s| s.to_string()).collect();
-        self
-    }
-
-    /// Which duplicate occurrence to keep.
-    pub fn keep(mut self, keep: DuplicateKeepOption) -> Self {
-        self.keep = keep;
-        self
+        Self::default()
     }
 }
 

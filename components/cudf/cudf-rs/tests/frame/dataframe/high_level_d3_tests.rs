@@ -60,7 +60,7 @@ fn test_dropna_default_drops_any_null_row() {
 #[test]
 fn test_dropna_how_all_keeps_partial_nulls() {
     let df = sample_df_with_nulls();
-    let opts = DropNaOptions::new().how_all();
+    let opts = DropNaOptions::builder().how_all(true).build();
     let result = df.dropna(opts).unwrap();
 
     // "all" means drop only rows where ALL columns are null.
@@ -75,7 +75,7 @@ fn test_dropna_how_all_keeps_partial_nulls() {
 #[test]
 fn test_dropna_subset_single_column() {
     let df = sample_df_with_nulls();
-    let opts = DropNaOptions::new().subset(&["score"]);
+    let opts = DropNaOptions::builder().subset(&["score"]).build();
     let result = df.dropna(opts).unwrap();
 
     // score is null at rows 1,3 → 3 rows survive.
@@ -86,7 +86,7 @@ fn test_dropna_subset_single_column() {
 #[test]
 fn test_dropna_subset_multiple_columns() {
     let df = sample_df_with_nulls();
-    let opts = DropNaOptions::new().subset(&["score", "tag"]);
+    let opts = DropNaOptions::builder().subset(&["score", "tag"]).build();
     let result = df.dropna(opts).unwrap();
 
     // Rows with any null in score OR tag: rows 1,2,3,4 → only row 0 survives.
@@ -102,7 +102,7 @@ fn test_dropna_threshold() {
     let df = sample_df_with_nulls();
     // thresh=2 on subset ["score","tag"] means: keep row if at least 2 of the
     // subset columns are non-null.
-    let opts = DropNaOptions::new().subset(&["score", "tag"]).thresh(2);
+    let opts = DropNaOptions::builder().subset(&["score", "tag"]).thresh(2).build();
     let result = df.dropna(opts).unwrap();
 
     // Row 0: score=valid, tag=valid → 2 non-null → keep
@@ -118,7 +118,7 @@ fn test_dropna_threshold() {
 fn test_dropna_threshold_one_keeps_most_rows() {
     let df = sample_df_with_nulls();
     // thresh=1 on subset ["score","tag"] means: keep row if at least 1 is non-null.
-    let opts = DropNaOptions::new().subset(&["score", "tag"]).thresh(1);
+    let opts = DropNaOptions::builder().subset(&["score", "tag"]).thresh(1).build();
     let result = df.dropna(opts).unwrap();
 
     // All 5 rows have at least 1 non-null in {score, tag}.
@@ -132,7 +132,7 @@ fn test_dropna_threshold_one_keeps_most_rows() {
 #[test]
 fn test_dropna_invalid_column_name() {
     let df = sample_df_with_nulls();
-    let opts = DropNaOptions::new().subset(&["nonexistent"]);
+    let opts = DropNaOptions::builder().subset(&["nonexistent"]).build();
     let err = df.dropna(opts).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
@@ -173,7 +173,7 @@ fn test_drop_duplicates_default() {
 #[test]
 fn test_drop_duplicates_subset() {
     let df = sample_df_with_dupes();
-    let opts = DistinctOptions::new().subset(&["a"]);
+    let opts = DistinctOptions::builder().subset(&["a"]).build();
     let result = df.drop_duplicates(opts).unwrap();
 
     // 3 distinct values of "a": 1, 2, 3
@@ -190,7 +190,7 @@ fn test_drop_duplicates_keep_first() {
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
 
-    let opts = DistinctOptions::new().subset(&["a"]).keep(DuplicateKeepOption::KeepFirst);
+    let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepFirst).build();
     let result = df.drop_duplicates(opts).unwrap();
 
     assert_eq!(result.num_rows(), 2);
@@ -213,7 +213,7 @@ fn test_drop_duplicates_keep_last() {
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
 
-    let opts = DistinctOptions::new().subset(&["a"]).keep(DuplicateKeepOption::KeepLast);
+    let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepLast).build();
     let result = df.drop_duplicates(opts).unwrap();
 
     assert_eq!(result.num_rows(), 2);
@@ -235,7 +235,7 @@ fn test_drop_duplicates_keep_none() {
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
 
-    let opts = DistinctOptions::new().subset(&["a"]).keep(DuplicateKeepOption::KeepNone);
+    let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepNone).build();
     let result = df.drop_duplicates(opts).unwrap();
 
     // a=1 appears twice → both removed; a=2 appears once → kept.
@@ -250,7 +250,7 @@ fn test_drop_duplicates_keep_none() {
 #[test]
 fn test_drop_duplicates_invalid_column() {
     let df = sample_df_with_dupes();
-    let opts = DistinctOptions::new().subset(&["nonexistent"]);
+    let opts = DistinctOptions::builder().subset(&["nonexistent"]).build();
     let err = df.drop_duplicates(opts).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
@@ -262,7 +262,7 @@ fn test_drop_duplicates_invalid_column() {
 #[test]
 fn test_drop_duplicates_preserves_schema() {
     let df = sample_df_with_dupes();
-    let opts = DistinctOptions::new().subset(&["a"]);
+    let opts = DistinctOptions::builder().subset(&["a"]).build();
     let result = df.drop_duplicates(opts).unwrap();
 
     assert_eq!(result.column_names(), vec!["a", "b"]);
@@ -341,11 +341,11 @@ fn test_fillna_preserves_schema() {
 #[test]
 fn test_dropna_options_builder_chaining() {
     // Verify that builder methods can be chained.
-    let _opts = DropNaOptions::new().subset(&["a", "b"]).how_all().thresh(2);
+    let _opts = DropNaOptions::builder().subset(&["a", "b"]).how_all(true).thresh(2).build();
 
     // thresh takes precedence over how, so this should behave like thresh=2
     let df = sample_df_with_nulls();
-    let subset_opts = DropNaOptions::new().subset(&["score"]).how_all();
+    let subset_opts = DropNaOptions::builder().subset(&["score"]).how_all(true).build();
     let result = df.dropna(subset_opts).unwrap();
     // how=all on just "score": drop only when score is null.
     // score null at rows 1,3 → 3 rows survive.

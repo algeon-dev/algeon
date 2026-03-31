@@ -91,7 +91,7 @@ fn test_groupby_types_reexported() {
     // Verify it constructed without error.
     let _ = spec;
 
-    let opts = GroupByOptions::default().include_null_keys(true);
+    let opts = GroupByOptions::builder().include_null_keys(true).build();
     let _ = opts;
 }
 
@@ -201,7 +201,7 @@ fn test_domain_modules_export_documented_surface() {
 
     let _ = DomainSortOptions::new();
     let _ = DomainMergeOptions::new().how(DomainJoinType::Inner);
-    let _ = DomainGroupByOptions::default().include_null_keys(true);
+    let _ = DomainGroupByOptions::builder().include_null_keys(true).build();
     let _ = DomainAggSpec::new("value", DomainAgg::Sum);
     let _ = DomainNullEquality::Equal;
     let _ = DomainCudaStream::new().unwrap();

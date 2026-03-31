@@ -69,7 +69,7 @@ fn write_test_parquet(path: &Path, num_rows: i32, num_columns: usize) {
 
     let table = Table::from_columns(columns).unwrap();
     let view = table.view().unwrap();
-    let opts = ParquetWriterOptions::new(path).column_names(&names).unwrap();
+    let opts = ParquetWriterOptions::builder().filepath(path).column_names(&names).build();
     write_parquet(&view, &opts).unwrap();
 }
 

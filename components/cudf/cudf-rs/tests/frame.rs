@@ -43,12 +43,18 @@ mod dataframe_slice_tests;
 #[path = "frame/dataframe/view_tests.rs"]
 mod dataframe_view_tests;
 
+#[path = "frame/series/series_concat_tests.rs"]
+mod series_concat_tests;
+#[path = "frame/series/series_constructor_tests.rs"]
+mod series_constructor_tests;
 #[path = "frame/series/convenience_tests.rs"]
 mod series_convenience_tests;
 #[path = "frame/series/host_materialization_tests.rs"]
 mod series_host_materialization_tests;
 #[path = "frame/series/series_ops_tests.rs"]
 mod series_ops_tests;
+#[path = "frame/series/series_reduction_tests.rs"]
+mod series_reduction_tests;
 #[path = "frame/series/series_tests.rs"]
 mod series_tests;
 #[path = "frame/series/view_tests.rs"]

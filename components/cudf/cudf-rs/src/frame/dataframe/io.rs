@@ -208,7 +208,7 @@ impl DataFrame {
     /// This is a convenience wrapper around
     /// [`parquet::read_parquet_with_metadata`].
     pub fn read_parquet(path: impl AsRef<Path>) -> Result<Self> {
-        Self::read_parquet_with_options(ParquetReaderOptions::new(path))
+        Self::read_parquet_with_options(ParquetReaderOptions::builder().filepath(path).build())
     }
 
     /// Read a Parquet file into a `DataFrame` using caller-provided options.
@@ -223,7 +223,7 @@ impl DataFrame {
     /// the file's schema metadata.
     pub fn write_parquet(&self, path: impl AsRef<Path>) -> Result<()> {
         let names: Vec<&str> = self.column_names();
-        let opts = ParquetWriterOptions::new(path).column_names(&names)?;
+        let opts = ParquetWriterOptions::builder().filepath(path).column_names(&names).build();
         self.write_parquet_with_options(opts)
     }
 
