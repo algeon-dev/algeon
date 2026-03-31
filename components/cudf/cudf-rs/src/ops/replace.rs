@@ -2,12 +2,10 @@
 
 use std::ptr;
 
-use crate::{
-    core::{
-        column::{Column, ColumnView},
-        error::{self, Result},
-        scalar::Scalar,
-    },
+use crate::core::{
+    column::{Column, ColumnView},
+    error::{self, Result},
+    scalar::Scalar,
 };
 
 /// Replace null values in a column with a scalar.

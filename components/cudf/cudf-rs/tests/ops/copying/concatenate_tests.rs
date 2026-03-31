@@ -2,6 +2,11 @@
 
 use cudf::{Column, Table, ops::concatenate};
 
+use crate::common::{
+    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
+    reset_sync_observation,
+};
+
 #[test]
 fn test_concatenate_columns() {
     let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
@@ -57,4 +62,48 @@ fn test_concatenate_nullable_columns() {
     assert_eq!(values[0], 1);
     assert_eq!(values[3], 4);
     assert_eq!(validity, vec![true, false, false, true]);
+}
+
+#[test]
+fn test_concatenate_columns_succeeds_with_mixed_domains_and_uses_first_provenance() {
+    let first = explicit_i32_column(&[1, 2, 3], 940);
+    let second = explicit_i32_column(&[4, 5], 941);
+    let expected_stream = first.__debug_execution_domain_stream_value();
+    let expected_mr = first.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let result = concatenate::concatenate_columns(&[&first.view().unwrap(), &second.view().unwrap()]).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), first.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn test_concatenate_tables_succeeds_with_mixed_domains_and_uses_first_provenance() {
+    let first =
+        Table::from_columns(vec![explicit_i32_column(&[1, 2], 942), explicit_i32_column(&[10, 20], 942)]).unwrap();
+    let second =
+        Table::from_columns(vec![explicit_i32_column(&[3, 4], 943), explicit_i32_column(&[30, 40], 943)]).unwrap();
+    let expected_stream = first.__debug_execution_domain_stream_value();
+    let expected_mr = first.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let result = concatenate::concatenate_tables(&[&first.view().unwrap(), &second.view().unwrap()]).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), first.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    let view = result.view().unwrap();
+    assert_eq!(view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(view.column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }

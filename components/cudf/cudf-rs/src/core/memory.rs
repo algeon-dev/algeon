@@ -1,7 +1,7 @@
 //! Device memory resource management (RMM).
 //!
-//! These handles back explicit retained execution domains via [`crate::Runtime`]
-//! and borrowed overrides via [`crate::ExecutionContext`].
+//! These handles back explicit retained provenance via [`crate::Runtime`] and
+//! borrowed overrides via [`crate::ExecutionContext`].
 //! The low-level `_ex` FFI shims in `cudf-sys` accept explicit memory-resource
 //! handles, and the current high-level public slice can route selected
 //! operations and constructors through them.
@@ -33,8 +33,8 @@ use crate::core::error::{self, Result};
 ///
 /// Wraps an `rmm::mr::device_memory_resource` via the C shim.
 ///
-/// Use this with [`crate::Runtime::builder`] to seed a retained explicit
-/// execution domain, or with [`crate::ExecutionContext::with_memory_resource`]
+/// Use this with [`crate::Runtime::builder`] to seed explicit retained
+/// provenance, or with [`crate::ExecutionContext::with_memory_resource`]
 /// to override allocator selection for one supported operation.
 #[derive(Clone)]
 pub struct DeviceMemoryResource {

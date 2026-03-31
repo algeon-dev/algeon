@@ -1,8 +1,11 @@
 //! Tests for DataFrame filter, filter_isin, sort, deduplicate.
 
-use cudf::{Column, DataFrame, ErrorKind, SortOptions, ops::stream_compaction::DuplicateKeepOption};
+use cudf::{Column, DataFrame, ErrorKind, Series, SortOptions, ops::stream_compaction::DuplicateKeepOption};
 
-use crate::common::sample_df;
+use crate::common::{
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    sample_df, sample_runtime,
+};
 
 // ---------------------------------------------------------------------------
 // filter
@@ -125,6 +128,35 @@ fn test_filter_isin_empty_values() {
     let filtered = df.filter_isin_by_column_view("id", &values_view).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
+}
+
+#[test]
+fn test_filter_isin_by_column_view_succeeds_with_mixed_domains_and_syncs_secondary_input_before_dataframe_exec() {
+    let df_rt = sample_runtime();
+    let values_rt = sample_runtime();
+    let df = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&df_rt, "id", &[10i32, 20, 30]).unwrap()),
+        ("score", Series::new_with_runtime(&df_rt, "score", &[100i32, 200, 300]).unwrap()),
+    ])
+    .unwrap();
+    let values = Column::from_slice_with_runtime(&values_rt, &[20i32, 30]).unwrap();
+    let expected_exec_stream = df.__debug_execution_domain_stream_value();
+    let expected_exec_mr = df.__debug_execution_domain_mr_value();
+    let expected_presync_stream = values.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let filtered = df.filter_isin_by_column_view("id", &values.view().unwrap()).unwrap();
+
+    assert_eq!(filtered.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(filtered.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), expected_presync_stream);
+
+    reset_sync_observation();
+    assert_eq!(filtered.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
+    assert_eq!(filtered.series_view("score").unwrap().to_vec::<i32>().unwrap(), vec![200, 300]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
 // ---------------------------------------------------------------------------

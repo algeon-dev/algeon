@@ -13,13 +13,11 @@
 
 use std::ptr;
 
-use crate::{
-    core::{
-        column::{Column, ColumnView},
-        error::{self, Error, ErrorKind, Result},
-        scalar::Scalar,
-        types::{DataType, TypeId},
-    },
+use crate::core::{
+    column::{Column, ColumnView},
+    error::{self, Error, ErrorKind, Result},
+    scalar::Scalar,
+    types::{DataType, TypeId},
 };
 
 /// Binary operators matching `cudf::binary_operator` (same integer values).

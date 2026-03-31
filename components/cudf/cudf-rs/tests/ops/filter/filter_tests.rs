@@ -2,6 +2,11 @@
 
 use cudf::{Column, Table, ops::filter};
 
+use crate::common::{
+    explicit_bool_column, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation,
+};
+
 #[test]
 fn test_boolean_mask_basic() {
     let col = Column::from_slice(&[10i32, 20, 30, 40]).unwrap();
@@ -68,4 +73,25 @@ fn test_boolean_mask_multi_column() {
     let col1 = fv.column(1).unwrap().to_vec::<f64>().unwrap();
     assert_eq!(col0, vec![2, 4]);
     assert_eq!(col1, vec![20.0, 40.0]);
+}
+
+#[test]
+fn test_boolean_mask_succeeds_with_mixed_domains_and_uses_input_provenance() {
+    let table = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 920)]).unwrap();
+    let mask = explicit_bool_column(&[true, false, true], 921);
+    let expected_stream = table.__debug_execution_domain_stream_value();
+    let expected_mr = table.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let filtered = filter::apply_boolean_mask(&table.view().unwrap(), &mask.view().unwrap()).unwrap();
+
+    assert_eq!(filtered.__debug_execution_domain_id(), table.__debug_execution_domain_id());
+    assert_eq!(filtered.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    let host = filtered.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host, vec![10, 30]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }

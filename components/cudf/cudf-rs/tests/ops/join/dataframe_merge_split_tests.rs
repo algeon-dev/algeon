@@ -1,6 +1,11 @@
 //! Tests for `DataFrame::merge_split`.
 
-use cudf::{Column, DataFrame, DataFrameJoinResult, MergeOptions, NullEquality};
+use cudf::{Column, DataFrame, DataFrameJoinResult, ExecutionContext, MergeOptions, NullEquality, Series};
+
+use crate::common::{
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    sample_runtime,
+};
 
 fn left_df() -> DataFrame {
     let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
@@ -178,4 +183,86 @@ fn test_merge_split_respects_null_equality() {
         nullable_i32_column(&ne_result.right, "id").into_iter().zip(i32_column(&ne_result.right, "rval")).collect();
     ne_right_rows.sort();
     assert_eq!(ne_right_rows, vec![(Some(1), 100), (Some(3), 300)]);
+}
+
+#[test]
+fn test_merge_split_with_context_succeeds_on_mixed_domains_and_uses_context_resources() {
+    let left_rt = sample_runtime();
+    let right_rt = sample_runtime();
+    let target_rt = sample_runtime();
+
+    let left = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&left_rt, "id", &[1i32, 2, 3]).unwrap()),
+        ("score", Series::new_with_runtime(&left_rt, "score", &[10i32, 20, 30]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&right_rt, "id", &[2i32, 3, 4]).unwrap()),
+        ("value", Series::new_with_runtime(&right_rt, "value", &[200i32, 300, 400]).unwrap()),
+    ])
+    .unwrap();
+    let ctx = ExecutionContext::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
+    let expected_stream = target_rt.stream().__debug_raw_handle_value();
+    let expected_mr = target_rt.memory_resource().__debug_raw_handle_value();
+
+    reset_exec_observation();
+    let split = left.merge_split_with_context(&right, MergeOptions::new().how_inner().on(&["id"]), &ctx).unwrap();
+
+    assert_eq!(split.left.__debug_execution_domain_id(), left.__debug_execution_domain_id());
+    assert_eq!(split.right.__debug_execution_domain_id(), left.__debug_execution_domain_id());
+    assert_eq!(split.left.__debug_execution_domain_stream_value(), expected_stream);
+    assert_eq!(split.right.__debug_execution_domain_stream_value(), expected_stream);
+    assert_eq!(split.left.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(split.right.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    let mut left_rows: Vec<_> =
+        i32_column(&split.left, "id").into_iter().zip(i32_column(&split.left, "score")).collect();
+    let mut right_rows: Vec<_> =
+        i32_column(&split.right, "id").into_iter().zip(i32_column(&split.right, "value")).collect();
+    left_rows.sort();
+    right_rows.sort();
+    assert_eq!(left_rows, vec![(2, 20), (3, 30)]);
+    assert_eq!(right_rows, vec![(2, 200), (3, 300)]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
+    let left_rt = sample_runtime();
+    let right_rt = sample_runtime();
+    let left = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&left_rt, "id", &[1i32, 2, 3]).unwrap()),
+        ("score", Series::new_with_runtime(&left_rt, "score", &[10i32, 20, 30]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", Series::new_with_runtime(&right_rt, "id", &[2i32, 3, 4]).unwrap()),
+        ("value", Series::new_with_runtime(&right_rt, "value", &[200i32, 300, 400]).unwrap()),
+    ])
+    .unwrap();
+    let expected_exec_stream = left.__debug_execution_domain_stream_value();
+    let expected_exec_mr = left.__debug_execution_domain_mr_value();
+    let expected_sync_stream = right.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let split = left.merge_split(&right, MergeOptions::new().how_inner().on(&["id"])).unwrap();
+
+    assert_eq!(split.left.__debug_execution_domain_id(), left.__debug_execution_domain_id());
+    assert_eq!(split.right.__debug_execution_domain_id(), left.__debug_execution_domain_id());
+    assert_eq!(split.left.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(split.right.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+
+    reset_sync_observation();
+    let left_rows: Vec<_> = i32_column(&split.left, "id").into_iter().zip(i32_column(&split.left, "score")).collect();
+    let right_rows: Vec<_> =
+        i32_column(&split.right, "id").into_iter().zip(i32_column(&split.right, "value")).collect();
+    assert_eq!(left_rows, vec![(2, 20), (3, 30)]);
+    assert_eq!(right_rows, vec![(2, 200), (3, 300)]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }

@@ -43,8 +43,9 @@
 //!
 //! The core types give direct control over GPU memory layout and lifetimes.
 //! Most users should not need these.
-//! Use [`Runtime`] to seed an explicit execution domain, and
-//! [`ExecutionContext`] when you need a borrowed per-operation override.
+//! Use [`Runtime`] to own default execution resources plus retained provenance
+//! for a pipeline, and [`ExecutionContext`] when you need a borrowed
+//! per-operation override.
 //!
 //! - [`Column`] — An owned GPU column (analogous to `cudf::column`).
 //! - [`ColumnView`] — A non-owning borrow of a column, tied by lifetime.
@@ -53,6 +54,34 @@
 //! - [`Scalar`] — A single value on the GPU.
 //! - [`Runtime`] / [`ExecutionContext`] — explicit stream and allocator control.
 //! - For lower-level CUDA stream management, see the [`runtime`] module.
+//!
+//! # Stream Synchronization Strategy
+//!
+//! Every owned GPU object ([`Column`], [`Table`], [`DataFrame`], [`Scalar`])
+//! carries *retained provenance* — a record of the CUDA stream and memory
+//! resource that produced it.  This differs from upstream libcudf, where
+//! callers pass a stream to each function call and are responsible for all
+//! cross-stream ordering themselves.
+//!
+//! **Single-stream (default) path:** Objects created without an explicit
+//! [`Runtime`] use the process-global default stream.  No synchronization
+//! overhead is incurred.
+//!
+//! **Mixed-provenance operations:** When inputs from different [`Runtime`]
+//! instances are combined (e.g. `merge`, `concat`), cudf-rs automatically
+//! fences the secondary stream with `cudaStreamSynchronize` before the
+//! operation proceeds on the output stream.  This is a *host fence*: it
+//! blocks the calling CPU thread until the secondary stream's GPU work
+//! completes.
+//!
+//! The host fence is intentionally conservative.  It guarantees correctness
+//! without requiring users to understand CUDA event semantics, but it
+//! serializes cross-stream GPU execution.  For maximum GPU throughput, keep
+//! all objects in the same [`Runtime`].
+//!
+//! A future version may replace the host fence with lighter-weight CUDA
+//! event barriers (`cudaEventRecord` + `cudaStreamWaitEvent`) that avoid
+//! blocking the CPU thread.
 
 pub mod core;
 pub mod frame;

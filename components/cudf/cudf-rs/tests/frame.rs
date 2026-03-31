@@ -1,3 +1,6 @@
+#[path = "common/mod.rs"]
+mod common;
+
 #[path = "frame/contracts/accessor_naming_tests.rs"]
 mod accessor_naming_tests;
 #[path = "frame/contracts/cast_consistency_tests.rs"]

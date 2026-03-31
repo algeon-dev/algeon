@@ -1,6 +1,6 @@
-//! Contract tests for retained execution-domain provenance.
+//! Contract tests for retained provenance.
 //!
-//! The retained-domain substrate underpins the public `Runtime v1` surface.
+//! The retained-provenance substrate underpins the public `Runtime v1` surface.
 //! These tests use `__debug_` observation hooks to validate internal
 //! provenance and synchronization behavior at the domain layer.
 
@@ -119,6 +119,36 @@ fn owned_constructors_seed_ambient_default_domain() {
     assert_eq!(df.__debug_execution_domain_kind(), "ambient_default");
     assert_eq!(df.__debug_execution_domain_id(), 0);
     assert_eq!(df.series("id").unwrap().as_column().__debug_execution_domain_id(), 0);
+}
+
+#[test]
+fn retained_provenance_debug_aliases_match_execution_domain_debug_hooks() {
+    let runtime = sample_runtime();
+    let column = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_retained_provenance_explicit(40).unwrap();
+    let scalar = Scalar::from_value(7i32).unwrap().__debug_rebind_retained_provenance_explicit(41).unwrap();
+    let table = Table::from_columns(vec![column.copy().unwrap()]).unwrap();
+    let df = DataFrame::from_columns([("id", Series::from_column(column.copy().unwrap()).unwrap())]).unwrap();
+
+    assert_eq!(column.__debug_retained_provenance_kind(), column.__debug_execution_domain_kind());
+    assert_eq!(column.__debug_retained_provenance_id(), column.__debug_execution_domain_id());
+    assert_eq!(column.__debug_retained_provenance_stream_value(), column.__debug_execution_domain_stream_value());
+    assert_eq!(column.__debug_retained_provenance_mr_value(), column.__debug_execution_domain_mr_value());
+
+    assert_eq!(scalar.__debug_retained_provenance_kind(), scalar.__debug_execution_domain_kind());
+    assert_eq!(scalar.__debug_retained_provenance_id(), scalar.__debug_execution_domain_id());
+    assert_eq!(scalar.__debug_retained_provenance_stream_value(), scalar.__debug_execution_domain_stream_value());
+
+    assert_eq!(table.__debug_retained_provenance_kind(), table.__debug_execution_domain_kind());
+    assert_eq!(table.__debug_retained_provenance_id(), table.__debug_execution_domain_id());
+    assert_eq!(table.__debug_retained_provenance_stream_value(), table.__debug_execution_domain_stream_value());
+    assert_eq!(table.__debug_retained_provenance_mr_value(), table.__debug_execution_domain_mr_value());
+
+    assert_eq!(df.__debug_retained_provenance_kind(), df.__debug_execution_domain_kind());
+    assert_eq!(df.__debug_retained_provenance_id(), df.__debug_execution_domain_id());
+    assert_eq!(df.__debug_retained_provenance_stream_value(), df.__debug_execution_domain_stream_value());
+    assert_eq!(df.__debug_retained_provenance_mr_value(), df.__debug_execution_domain_mr_value());
+
+    assert_eq!(runtime.__debug_retained_provenance_id(), runtime.__debug_execution_domain_id());
 }
 
 #[test]
@@ -2462,4 +2492,35 @@ fn mixed_domain_search_contains_succeeds_with_haystack_provenance() {
     reset_sync_observation();
     assert_eq!(result.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
     assert_eq!(last_sync_stream_value(), haystack_stream);
+}
+
+// ---------------------------------------------------------------------------
+// Column::from_scalar — explicit-domain provenance propagation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn column_from_scalar_propagates_explicit_domain() {
+    let scalar = Scalar::from_value(42i32)
+        .unwrap()
+        .__debug_rebind_execution_domain_explicit(900)
+        .unwrap();
+    let scalar_stream = scalar.__debug_execution_domain_stream_value();
+    assert_ne!(scalar_stream, 0, "explicit domain must have non-zero stream");
+
+    reset_exec_observation();
+    let col = Column::from_scalar(&scalar, 5).unwrap();
+
+    // Output domain must inherit the scalar's explicit domain.
+    assert_eq!(col.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(col.__debug_execution_domain_id(), 900);
+    assert_eq!(col.__debug_execution_domain_stream_value(), scalar_stream);
+    assert_eq!(col.__debug_execution_domain_mr_value(), last_exec_mr_value());
+
+    // The _ex FFI path must have been called with the explicit stream.
+    assert_eq!(last_exec_stream_value(), scalar_stream);
+
+    // Round-trip the values to confirm correctness.
+    reset_sync_observation();
+    assert_eq!(col.view().unwrap().to_vec::<i32>().unwrap(), vec![42, 42, 42, 42, 42]);
+    assert_eq!(last_sync_stream_value(), scalar_stream);
 }

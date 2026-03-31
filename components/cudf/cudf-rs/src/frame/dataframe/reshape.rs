@@ -343,9 +343,25 @@ impl DataFrame {
     /// `contains` / `filter` operation fails.
     pub fn filter_isin_by_column_view(&self, column: &str, values: &ColumnView<'_>) -> Result<Self> {
         let col_view = self.series_view(column)?;
-        let mask = ops::search::contains(values, &col_view)?;
+        let output_domain = Arc::clone(&self.domain);
+        if !ExecutionDomain::same_provenance(values.execution_domain(), &output_domain) {
+            values.execution_domain().fence_stream("dataframe::filter_isin_by_column_view")?;
+        }
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let mask = ops::search::contains_with_exec_options(
+            values,
+            &col_view,
+            exec_options.as_ref(),
+            "dataframe::filter_isin_by_column_view",
+        )?
+        .with_execution_domain(Arc::clone(&output_domain));
         let mask_view = mask.view()?;
-        self.filter_by_mask(&mask_view)
+        self.filter_by_mask_impl(
+            &mask_view,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::filter_isin_by_column_view",
+        )
     }
 
     /// Validate that a `Series` is a valid boolean mask for this DataFrame.
@@ -620,6 +636,13 @@ impl DataFrame {
         let output_domain = forced_output_domain.unwrap_or_else(|| Arc::clone(&self.domain));
         let exec_options = exec_options.or_else(|| output_domain.explicit_exec_options_raw());
 
+        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
+            self.domain.fence_stream(operation)?;
+        }
+        if !ExecutionDomain::same_provenance(&other.domain, &output_domain) {
+            other.domain.fence_stream(operation)?;
+        }
+
         // Validate schemas match: same names, same order.
         if self.columns.len() != other.columns.len() {
             return Err(Error::new(
@@ -673,7 +696,7 @@ impl DataFrame {
     pub fn with_column(&self, name: &str, col: impl IntoSeries) -> Result<Self> {
         let series: Series = col.into_series()?;
         if self.columns.is_empty() {
-            ExecutionDomain::compatible_domain(
+            ExecutionDomain::require_same_provenance(
                 &self.domain,
                 series.as_column().execution_domain(),
                 "dataframe::with_column",
@@ -1089,10 +1112,10 @@ impl DataFrame {
     }
 
     /// Replace null values in a column using a [`Series`], copying inputs
-    /// into the target [`Runtime`]'s execution domain when necessary.
+    /// into the target [`Runtime`]'s retained provenance when necessary.
     ///
     /// Unlike [`fillna_with_series`](Self::fillna_with_series), this method
-    /// recovers from mixed execution domains by deep-copying the target
+    /// recovers from mixed retained provenance by deep-copying the target
     /// column and `fill_series` into the runtime's domain before executing
     /// the replace-nulls operation.
     ///
@@ -1148,6 +1171,13 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
+        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
+            self.domain.fence_stream(operation)?;
+        }
+        if !ExecutionDomain::same_provenance(indices.execution_domain(), &output_domain) {
+            indices.execution_domain().fence_stream(operation)?;
+        }
+
         if indices.is_empty()? {
             return self.empty_with_same_schema_in_domain(output_domain);
         }
@@ -1164,6 +1194,13 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
+        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
+            self.domain.fence_stream(operation)?;
+        }
+        if !ExecutionDomain::same_provenance(mask.execution_domain(), &output_domain) {
+            mask.execution_domain().fence_stream(operation)?;
+        }
+
         self.validate_mask_view(mask, operation)?;
         let tv = self.build_table_view()?;
         let result_table =

@@ -5,6 +5,11 @@ use cudf::{
     ops::join::{self, NullEquality},
 };
 
+use crate::common::{
+    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
+    reset_sync_observation,
+};
+
 /// Helper to create an empty table (0 columns) for use as an empty payload.
 fn empty_payload() -> Table {
     Table::from_columns(vec![]).unwrap()
@@ -245,4 +250,58 @@ fn test_join_domain_module_exports_documented_surface() {
 
     let opts = MergeOptions::new().on(&["id"]).how(JoinType::Left);
     assert_eq!(opts.join_type(), JoinType::Left);
+}
+
+#[test]
+fn test_inner_join_succeeds_with_mixed_domains_and_uses_left_provenance() {
+    let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3], 950)]).unwrap();
+    let left_payload = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 950)]).unwrap();
+    let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 3, 4], 951)]).unwrap();
+    let right_payload = Table::from_columns(vec![explicit_i32_column(&[200, 300, 400], 951)]).unwrap();
+    let expected_stream = left_keys.__debug_execution_domain_stream_value();
+    let expected_mr = left_keys.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let result = join::inner_join(
+        &left_keys.view().unwrap(),
+        &right_keys.view().unwrap(),
+        &left_payload.view().unwrap(),
+        &right_payload.view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+
+    assert_eq!(result.left.__debug_execution_domain_id(), left_keys.__debug_execution_domain_id());
+    assert_eq!(result.right.__debug_execution_domain_id(), left_keys.__debug_execution_domain_id());
+    assert_eq!(result.left.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.right.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    let left_rows: Vec<(i32, i32)> = result
+        .left
+        .view()
+        .unwrap()
+        .column(0)
+        .unwrap()
+        .to_vec::<i32>()
+        .unwrap()
+        .into_iter()
+        .zip(result.left.view().unwrap().column(1).unwrap().to_vec::<i32>().unwrap())
+        .collect();
+    let right_rows: Vec<(i32, i32)> = result
+        .right
+        .view()
+        .unwrap()
+        .column(0)
+        .unwrap()
+        .to_vec::<i32>()
+        .unwrap()
+        .into_iter()
+        .zip(result.right.view().unwrap().column(1).unwrap().to_vec::<i32>().unwrap())
+        .collect();
+    assert_eq!(left_rows, vec![(2, 20), (3, 30)]);
+    assert_eq!(right_rows, vec![(2, 200), (3, 300)]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
 }

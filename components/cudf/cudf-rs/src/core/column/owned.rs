@@ -76,9 +76,9 @@ impl Column {
     /// Create an empty column of the given type inside the given explicit
     /// runtime.
     ///
-    /// The resulting column carries the runtime's execution domain so it
-    /// can participate in explicit-domain pipelines without triggering
-    /// mixed-domain rejection. No device memory is allocated for the
+    /// The resulting column carries the runtime's retained provenance so it
+    /// can participate in explicit-provenance pipelines without triggering
+    /// mixed-provenance rejection. No device memory is allocated for the
     /// column data itself.
     pub fn empty_with_runtime(runtime: &Runtime, type_id: TypeId) -> Result<Self> {
         let mut handle = ptr::null_mut();
@@ -529,9 +529,12 @@ impl Column {
     /// an empty column of the scalar's type is returned.
     pub fn from_scalar(scalar: &Scalar, size: i32) -> Result<Self> {
         let mut handle = ptr::null_mut();
+        let exec_options = scalar.domain.explicit_exec_options_raw();
+        let opts_ptr = exec_options.as_ref().map_or(ptr::null(), |o| o as *const _);
         // SAFETY: scalar.raw_handle() is valid (Scalar maintains NonNull invariant).
+        // opts_ptr is either null (ambient default) or a valid exec_options pointer.
         error::check_status_in(
-            unsafe { cudf_sys::cudf_column_from_scalar(scalar.raw_handle(), size, &mut handle) },
+            unsafe { cudf_sys::cudf_column_from_scalar_ex(scalar.raw_handle(), size, &mut handle, opts_ptr) },
             "column::from_scalar",
         )?;
         Ok(Self::from_handle_with_domain(handle, Arc::clone(&scalar.domain)))
@@ -552,8 +555,18 @@ impl Column {
     }
 
     #[doc(hidden)]
+    pub fn __debug_retained_provenance_kind(&self) -> &'static str {
+        self.__debug_execution_domain_kind()
+    }
+
+    #[doc(hidden)]
     pub fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_retained_provenance_id(&self) -> u64 {
+        self.__debug_execution_domain_id()
     }
 
     #[doc(hidden)]
@@ -562,14 +575,29 @@ impl Column {
     }
 
     #[doc(hidden)]
+    pub fn __debug_retained_provenance_stream_value(&self) -> usize {
+        self.__debug_execution_domain_stream_value()
+    }
+
+    #[doc(hidden)]
     pub fn __debug_execution_domain_mr_value(&self) -> usize {
         self.domain.debug_mr_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_retained_provenance_mr_value(&self) -> usize {
+        self.__debug_execution_domain_mr_value()
     }
 
     #[doc(hidden)]
     pub fn __debug_rebind_execution_domain_explicit(mut self, identity: u64) -> Result<Self> {
         self.domain = ExecutionDomain::debug_explicit(identity)?;
         Ok(self)
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_rebind_retained_provenance_explicit(self, identity: u64) -> Result<Self> {
+        self.__debug_rebind_execution_domain_explicit(identity)
     }
 }
 

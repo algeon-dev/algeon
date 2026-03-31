@@ -19,12 +19,10 @@
 
 use std::ptr;
 
-use crate::{
-    core::{
-        column::ColumnView,
-        error::{self, Result},
-        table::{Table, TableView},
-    },
+use crate::core::{
+    column::ColumnView,
+    error::{self, Result},
+    table::{Table, TableView},
 };
 
 fn apply_boolean_mask_impl(

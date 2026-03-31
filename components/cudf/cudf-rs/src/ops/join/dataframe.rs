@@ -24,7 +24,6 @@ impl DataFrame {
         ctx: &ExecutionContext<'_>,
     ) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(self.execution_domain())?;
-        self.synchronize_for_forced_output_domain(right, &output_domain, "dataframe::merge_with_context")?;
         self.merge_impl(
             right,
             options,
@@ -42,7 +41,6 @@ impl DataFrame {
         runtime: &Runtime,
     ) -> Result<Self> {
         let output_domain = Arc::clone(runtime.execution_domain());
-        self.synchronize_for_forced_output_domain(right, &output_domain, "dataframe::merge_with_runtime")?;
         self.merge_impl(
             right,
             options,
@@ -76,7 +74,6 @@ impl DataFrame {
 
         let output_domain = ctx.resolve_output_domain(self.execution_domain())?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        self.synchronize_for_forced_output_domain(right, &output_domain, operation)?;
         self.join_split_on_impl_with_null_eq_and_context(
             right,
             &left_on_refs,
@@ -113,7 +110,6 @@ impl DataFrame {
 
         let output_domain = Arc::clone(runtime.execution_domain());
         let exec_options = output_domain.explicit_exec_options_raw();
-        self.synchronize_for_forced_output_domain(right, &output_domain, operation)?;
         self.join_split_on_impl_with_null_eq_and_context(
             right,
             &left_on_refs,
@@ -249,8 +245,6 @@ impl DataFrame {
             .with_context("right_on_count", right_on_refs.len().to_string()));
         }
 
-        let output_domain =
-            ExecutionDomain::compatible_domain(self.execution_domain(), right.execution_domain(), operation)?;
         self.join_split_on_impl_with_null_eq_and_context(
             right,
             &left_on_refs,
@@ -258,7 +252,7 @@ impl DataFrame {
             options.join_type(),
             options.null_eq(),
             None,
-            Some(output_domain),
+            None,
             operation,
         )
     }
@@ -276,6 +270,13 @@ impl DataFrame {
         operation: &'static str,
     ) -> Result<DataFrameJoinResult> {
         let output_domain = forced_output_domain.unwrap_or_else(|| Arc::clone(self.execution_domain()));
+
+        if !ExecutionDomain::same_provenance(self.execution_domain(), &output_domain) {
+            self.execution_domain().fence_stream(operation)?;
+        }
+        if !ExecutionDomain::same_provenance(right.execution_domain(), &output_domain) {
+            right.execution_domain().fence_stream(operation)?;
+        }
 
         if left_on.len() != right_on.len() {
             return Err(Error::new(

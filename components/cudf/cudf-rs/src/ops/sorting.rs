@@ -23,12 +23,10 @@
 
 use std::ptr;
 
-use crate::{
-    core::{
-        column::Column,
-        error::{self, Error, ErrorKind, Result},
-        table::{Table, TableView},
-    },
+use crate::core::{
+    column::Column,
+    error::{self, Error, ErrorKind, Result},
+    table::{Table, TableView},
 };
 
 /// Column sort order.

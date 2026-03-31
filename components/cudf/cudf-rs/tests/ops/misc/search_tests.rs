@@ -2,6 +2,11 @@
 
 use cudf::{Column, ErrorKind, ops::search};
 
+use crate::common::{
+    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
+    reset_sync_observation,
+};
+
 #[test]
 fn test_contains_basic_i32() {
     let haystack = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
@@ -93,6 +98,26 @@ fn test_contains_float64() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false]);
 }
 
+#[test]
+fn test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance() {
+    let haystack = explicit_i32_column(&[10, 20, 30, 40], 910);
+    let needles = explicit_i32_column(&[20, 50, 10], 911);
+    let expected_stream = haystack.__debug_execution_domain_stream_value();
+    let expected_mr = haystack.__debug_execution_domain_mr_value();
+
+    reset_exec_observation();
+    let result = search::contains(&haystack.view().unwrap(), &needles.view().unwrap()).unwrap();
+
+    assert_eq!(result.__debug_execution_domain_id(), haystack.__debug_execution_domain_id());
+    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_sync_observation();
+    assert_eq!(result.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
 // ---------------------------------------------------------------------------
 // ColumnView::isin
 // ---------------------------------------------------------------------------
@@ -108,6 +133,31 @@ fn test_isin_i32_some_matches() {
     let mask = cv.isin(&vv).unwrap();
     let mv = mask.view().unwrap();
     assert_eq!(mv.to_vec::<bool>().unwrap(), vec![false, true, false, true, false]);
+}
+
+#[test]
+fn test_isin_succeeds_with_mixed_domains() {
+    let col = explicit_i32_column(&[1, 2, 3, 4, 5], 912);
+    let values = explicit_i32_column(&[2, 4], 913);
+    let expected_exec_stream = col.__debug_execution_domain_stream_value();
+    let expected_exec_mr = col.__debug_execution_domain_mr_value();
+    let expected_sync_stream = values.__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let cv = col.view().unwrap();
+    let vv = values.view().unwrap();
+
+    let mask = cv.isin(&vv).unwrap();
+    assert_eq!(mask.__debug_execution_domain_id(), col.__debug_execution_domain_id());
+    assert_eq!(mask.__debug_execution_domain_mr_value(), expected_exec_mr);
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+
+    reset_sync_observation();
+    let mv = mask.view().unwrap();
+    assert_eq!(mv.to_vec::<bool>().unwrap(), vec![false, true, false, true, false]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
 #[test]

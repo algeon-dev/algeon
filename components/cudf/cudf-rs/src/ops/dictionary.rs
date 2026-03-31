@@ -96,9 +96,7 @@ fn set_keys_impl(
     Ok(unsafe { Column::from_raw(out) })
 }
 
-fn compatible_column_domain(
-    columns: &[&ColumnView<'_>],
-) -> Result<std::sync::Arc<ExecutionDomain>> {
+fn primary_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Arc<ExecutionDomain>> {
     let Some(first) = columns.first() else {
         return Ok(ExecutionDomain::ambient_default());
     };
@@ -245,6 +243,9 @@ pub fn indices<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
 /// so their indices are directly comparable.
 pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(dict_column.execution_domain());
+    if !ExecutionDomain::same_provenance(keys.execution_domain(), &output_domain) {
+        keys.execution_domain().fence_stream("dictionary::set_keys")?;
+    }
     let exec_options = output_domain.explicit_exec_options_raw();
     set_keys_impl(dict_column, keys, exec_options.as_ref(), "dictionary::set_keys")
         .map(|column| column.with_execution_domain(output_domain))
@@ -291,7 +292,12 @@ pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column
         .with_operation("dictionary::match_dictionaries"));
     }
 
-    let output_domain = compatible_column_domain(dict_columns)?;
+    let output_domain = primary_column_domain(dict_columns)?;
+    for dict_column in &dict_columns[1..] {
+        if !ExecutionDomain::same_provenance(dict_column.execution_domain(), &output_domain) {
+            dict_column.execution_domain().fence_stream("dictionary::match_dictionaries")?;
+        }
+    }
     let exec_options = output_domain.explicit_exec_options_raw();
     match_dictionaries_impl(dict_columns, exec_options.as_ref(), "dictionary::match_dictionaries").map(|columns| {
         columns.into_iter().map(|column| column.with_execution_domain(std::sync::Arc::clone(&output_domain))).collect()
