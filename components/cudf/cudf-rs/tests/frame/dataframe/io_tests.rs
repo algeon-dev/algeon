@@ -126,8 +126,12 @@ fn test_read_csv_with_options_supports_delimiter_and_explicit_names() {
 
     std::fs::write(&path, "1\t10\n2\t20\n3\t30\n").unwrap();
 
-    let opts =
-        DataFrameCsvReaderOptions::new(&path).delimiter(b'\t').has_header(false).column_names(&["left", "right"]);
+    let opts = DataFrameCsvReaderOptions::builder()
+        .filepath(&path)
+        .delimiter(b'\t')
+        .has_header(false)
+        .column_names(&["left", "right"])
+        .build();
     let df = DataFrame::read_csv_with_options(opts).unwrap();
 
     assert_eq!(df.num_columns(), 2);
@@ -144,7 +148,7 @@ fn test_read_csv_without_header_uses_generated_names() {
 
     std::fs::write(&path, "4,40\n5,50\n").unwrap();
 
-    let opts = DataFrameCsvReaderOptions::new(&path).has_header(false);
+    let opts = DataFrameCsvReaderOptions::builder().filepath(&path).has_header(false).build();
     let df = DataFrame::read_csv_with_options(opts).unwrap();
 
     assert_eq!(df.column_names(), vec!["column_0", "column_1"]);
@@ -159,7 +163,7 @@ fn test_read_csv_explicit_names_override_header_names() {
 
     std::fs::write(&path, "old_a,old_b\n7,70\n8,80\n").unwrap();
 
-    let opts = DataFrameCsvReaderOptions::new(&path).column_names(&["new_a", "new_b"]);
+    let opts = DataFrameCsvReaderOptions::builder().filepath(&path).column_names(&["new_a", "new_b"]).build();
     let df = DataFrame::read_csv_with_options(opts).unwrap();
 
     assert_eq!(df.column_names(), vec!["new_a", "new_b"]);
@@ -196,14 +200,18 @@ fn test_write_csv_with_options_supports_delimiter_and_header_toggle() {
     let right = Series::new::<i32>("right_src", &[90, 80]).unwrap();
     let df = DataFrame::from_series([("left", left), ("right", right)]).unwrap();
 
-    let opts = DataFrameCsvWriterOptions::new(&path).delimiter(b'\t').include_header(false);
+    let opts = DataFrameCsvWriterOptions::builder().filepath(&path).delimiter(b'\t').include_header(false).build();
     df.write_csv_with_options(opts).unwrap();
 
     let written = std::fs::read_to_string(&path).unwrap();
     assert!(written.starts_with("9\t90\n"));
 
-    let read_opts =
-        DataFrameCsvReaderOptions::new(&path).delimiter(b'\t').has_header(false).column_names(&["left", "right"]);
+    let read_opts = DataFrameCsvReaderOptions::builder()
+        .filepath(&path)
+        .delimiter(b'\t')
+        .has_header(false)
+        .column_names(&["left", "right"])
+        .build();
     let df2 = DataFrame::read_csv_with_options(read_opts).unwrap();
 
     assert_eq!(df2.column_names(), vec!["left", "right"]);

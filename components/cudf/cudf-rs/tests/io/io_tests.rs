@@ -121,11 +121,12 @@ fn test_csv_roundtrip() {
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = csv::CsvWriterOptions::new(&path).column_names(&["ids", "values"]).include_header(true);
+    let write_opts =
+        csv::CsvWriterOptions::builder().filepath(&path).column_names(&["ids", "values"]).include_header(true).build();
     csv::write_csv(&view, &write_opts).unwrap();
 
     // Read back
-    let read_opts = csv::CsvReaderOptions::new(&path).has_header(true);
+    let read_opts = csv::CsvReaderOptions::builder().filepath(&path).has_header(true).build();
     let read_table = csv::read_csv(&read_opts).unwrap();
     let read_view = read_table.view().unwrap();
 
@@ -332,10 +333,10 @@ fn test_csv_custom_delimiter() {
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = csv::CsvWriterOptions::new(&path).column_names(&["x"]).delimiter(b'\t');
+    let write_opts = csv::CsvWriterOptions::builder().filepath(&path).column_names(&["x"]).delimiter(b'\t').build();
     csv::write_csv(&view, &write_opts).unwrap();
 
-    let read_opts = csv::CsvReaderOptions::new(&path).delimiter(b'\t');
+    let read_opts = csv::CsvReaderOptions::builder().filepath(&path).delimiter(b'\t').build();
     let read_table = csv::read_csv(&read_opts).unwrap();
     assert_eq!(read_table.view().unwrap().num_rows().unwrap(), 2);
 }

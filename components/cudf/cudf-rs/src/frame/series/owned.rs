@@ -6,7 +6,7 @@ use crate::{
         column::{Column, ColumnView},
         error::Result,
         scalar::Scalar,
-        types::{CudfType, DataType},
+        types::{CudfType, DataType, TypeId},
     },
     internal::temp_table::TempTableView,
     ops::{
@@ -165,19 +165,56 @@ impl Series {
     /// null positions as `None`.
     ///
     /// Non-nullable columns return all `Some`. For nullable columns, this
-    /// combines `to_vec` and `validity()` into a single call.
+    /// performs two separate device-to-host transfers (data buffer + null-mask
+    /// buffer), each with its own synchronization point, then merges them on
+    /// the host.
     ///
     /// # Cost
-    /// Device-to-host copy: data buffer + null-mask buffer (two memcpys).
+    /// Two synchronous device-to-host memcpys: `len * size_of::<T>()` bytes
+    /// for data, plus `ceil(len / 8)` bytes for the null mask.
     ///
     /// # Errors
     /// Returns `TypeError` if the column dtype does not match `T`.
     pub fn to_optional_vec<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
         let cv = self.column.view()?;
+
+        // Bool8 safety: libcudf stores booleans as int8 and makes no guarantee
+        // about the byte value of null (masked-off) slots. Rust requires bool
+        // to be exactly 0 or 1; any other value is UB. To avoid constructing
+        // an invalid bool, we materialize as u8 and only convert valid slots.
+        if T::TYPE_ID == TypeId::Bool8 {
+            return self.to_optional_vec_bool::<T>(&cv);
+        }
+
         let vals = cv.to_vec::<T>()?;
         match cv.validity()? {
             None => Ok(vals.into_iter().map(Some).collect()),
             Some(mask) => Ok(vals.into_iter().zip(mask).map(|(v, valid)| if valid { Some(v) } else { None }).collect()),
+        }
+    }
+
+    /// Bool-safe path: materialize raw bytes, convert only valid positions.
+    ///
+    /// libcudf stores Bool8 as int8 and makes no guarantee about the byte
+    /// value of null (masked-off) slots. Rust requires `bool` to be exactly
+    /// 0 or 1; any other value is UB. We materialize as `u8` via
+    /// `ColumnView::to_raw_bytes` and canonicalize before converting.
+    fn to_optional_vec_bool<T: CudfType>(&self, cv: &ColumnView<'_>) -> Result<Vec<Option<T>>> {
+        let raw = cv.to_raw_bytes()?;
+
+        fn byte_to_bool<T: CudfType>(b: u8) -> T {
+            let canonical: u8 = if b != 0 { 1 } else { 0 };
+            // SAFETY: T is bool (Bool8, size 1). canonical is 0 or 1, both valid.
+            unsafe { std::mem::transmute_copy::<u8, T>(&canonical) }
+        }
+
+        match cv.validity()? {
+            None => Ok(raw.into_iter().map(|b| Some(byte_to_bool(b))).collect()),
+            Some(mask) => Ok(raw
+                .into_iter()
+                .zip(mask)
+                .map(|(b, valid)| if valid { Some(byte_to_bool(b)) } else { None })
+                .collect()),
         }
     }
 

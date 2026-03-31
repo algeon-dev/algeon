@@ -3,6 +3,8 @@ use std::{
     sync::Arc,
 };
 
+use typed_builder::TypedBuilder;
+
 use super::owned::DataFrame;
 use crate::{
     core::error::{Error, ErrorKind, Result},
@@ -19,60 +21,35 @@ use crate::{
 /// lower-level [`crate::io::csv::CsvReaderOptions`], it can also resolve
 /// DataFrame column names from either an explicit override, the CSV header
 /// row, or generated fallback names.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct DataFrameCsvReaderOptions {
+    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
+    #[builder(default = b',')]
     delimiter: u8,
+    #[builder(default = true)]
     has_header: bool,
+    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
     column_names: Option<Vec<String>>,
+    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
 }
 
 impl DataFrameCsvReaderOptions {
-    /// Create options to read a CSV file into a `DataFrame`.
-    pub fn new(path: impl AsRef<Path>) -> Self {
-        Self {
-            filepath: path.as_ref().to_path_buf(),
-            delimiter: b',',
-            has_header: true,
-            column_names: None,
-            runtime: None,
-        }
-    }
-
-    /// Set the field delimiter character (default: `,`).
-    pub fn delimiter(mut self, d: u8) -> Self {
-        self.delimiter = d;
-        self
-    }
-
-    /// Set whether the file has a header row (default: `true`).
-    pub fn has_header(mut self, has: bool) -> Self {
-        self.has_header = has;
-        self
-    }
-
-    /// Override the output DataFrame column names.
-    ///
-    /// When set, these names take precedence over both header-derived names
-    /// and generated fallback names.
-    pub fn column_names(mut self, names: &[&str]) -> Self {
-        self.column_names = Some(names.iter().map(|s| (*s).to_string()).collect());
-        self
-    }
-
-    /// Seed explicit execution provenance from the given runtime.
-    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
-        self.runtime = Some(runtime.clone());
-        self
-    }
-
     fn to_table_options(&self) -> CsvReaderOptions {
-        let mut options = CsvReaderOptions::new(&self.filepath).delimiter(self.delimiter).has_header(self.has_header);
-        if let Some(runtime) = self.runtime.as_ref() {
-            options = options.with_runtime(runtime);
+        match self.runtime.as_ref() {
+            Some(rt) => CsvReaderOptions::builder()
+                .filepath(&self.filepath)
+                .delimiter(self.delimiter)
+                .has_header(self.has_header)
+                .with_runtime(rt)
+                .build(),
+            None => CsvReaderOptions::builder()
+                .filepath(&self.filepath)
+                .delimiter(self.delimiter)
+                .has_header(self.has_header)
+                .build(),
         }
-        options
     }
 
     fn resolve_column_names(&self, num_columns: usize) -> Result<Vec<String>> {
@@ -122,46 +99,35 @@ impl DataFrameCsvReaderOptions {
 /// always come from the DataFrame schema; this type only controls
 /// file-format knobs such as delimiter and whether the header row is
 /// included.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct DataFrameCsvWriterOptions {
+    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
+    #[builder(default = b',')]
     delimiter: u8,
+    #[builder(default = true)]
     include_header: bool,
+    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
 }
+
 impl DataFrameCsvWriterOptions {
-    /// Create options to write a `DataFrame` to a CSV file.
-    pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { filepath: path.as_ref().to_path_buf(), delimiter: b',', include_header: true, runtime: None }
-    }
-
-    /// Set the field delimiter character (default: `,`).
-    pub fn delimiter(mut self, d: u8) -> Self {
-        self.delimiter = d;
-        self
-    }
-
-    /// Set whether to include a header row (default: `true`).
-    pub fn include_header(mut self, include: bool) -> Self {
-        self.include_header = include;
-        self
-    }
-
-    /// Route the write through the given runtime's stream.
-    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
-        self.runtime = Some(runtime.clone());
-        self
-    }
-
     fn to_table_options(&self, column_names: &[&str]) -> CsvWriterOptions {
-        let mut options = CsvWriterOptions::new(&self.filepath)
-            .column_names(column_names)
-            .delimiter(self.delimiter)
-            .include_header(self.include_header);
-        if let Some(runtime) = self.runtime.as_ref() {
-            options = options.with_runtime(runtime);
+        match self.runtime.as_ref() {
+            Some(rt) => CsvWriterOptions::builder()
+                .filepath(&self.filepath)
+                .column_names(column_names)
+                .delimiter(self.delimiter)
+                .include_header(self.include_header)
+                .with_runtime(rt)
+                .build(),
+            None => CsvWriterOptions::builder()
+                .filepath(&self.filepath)
+                .column_names(column_names)
+                .delimiter(self.delimiter)
+                .include_header(self.include_header)
+                .build(),
         }
-        options
     }
 }
 
@@ -191,7 +157,7 @@ impl DataFrame {
     /// row when `has_header == true`, or fall back to generated names such as
     /// `"column_0"` when reading headerless CSV.
     pub fn read_csv(path: impl AsRef<Path>) -> Result<Self> {
-        Self::read_csv_with_options(DataFrameCsvReaderOptions::new(path))
+        Self::read_csv_with_options(DataFrameCsvReaderOptions::builder().filepath(path).build())
     }
 
     /// Read a CSV file into a `DataFrame` using caller-provided options.
@@ -212,7 +178,7 @@ impl DataFrame {
     /// Write this `DataFrame` to a CSV file, preserving the DataFrame schema
     /// as the output header row.
     pub fn write_csv(&self, path: impl AsRef<Path>) -> Result<()> {
-        self.write_csv_with_options(DataFrameCsvWriterOptions::new(path))
+        self.write_csv_with_options(DataFrameCsvWriterOptions::builder().filepath(path).build())
     }
 
     /// Write this `DataFrame` to a CSV file using caller-provided options.

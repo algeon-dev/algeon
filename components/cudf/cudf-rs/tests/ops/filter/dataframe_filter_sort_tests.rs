@@ -261,9 +261,8 @@ fn test_nlargest_nonexistent_column() {
 fn test_drop_duplicates_by_single_column() {
     // Duplicate ids: 3,1,4,1,5 → distinct ids should be {1,3,4,5}
     let df = sample_df();
-    let deduped = df
-        .drop_duplicates(DistinctOptions::new().subset(&["id"]).keep(DuplicateKeepOption::KeepAny))
-        .unwrap();
+    let deduped =
+        df.drop_duplicates(DistinctOptions::new().subset(&["id"]).keep(DuplicateKeepOption::KeepAny)).unwrap();
 
     assert_eq!(deduped.num_rows(), 4); // 4 distinct ids
     assert_eq!(deduped.column_names(), vec!["id", "score"]);
@@ -272,9 +271,8 @@ fn test_drop_duplicates_by_single_column() {
 #[test]
 fn test_drop_duplicates_preserves_schema() {
     let df = sample_df();
-    let deduped = df
-        .drop_duplicates(DistinctOptions::new().subset(&["id"]).keep(DuplicateKeepOption::KeepFirst))
-        .unwrap();
+    let deduped =
+        df.drop_duplicates(DistinctOptions::new().subset(&["id"]).keep(DuplicateKeepOption::KeepFirst)).unwrap();
     assert_eq!(deduped.column_names(), vec!["id", "score"]);
     assert_eq!(deduped.column_index("id"), Some(0));
     assert_eq!(deduped.column_index("score"), Some(1));
