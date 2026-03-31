@@ -77,7 +77,8 @@ case "${WORKLOAD}" in
   *) echo "error: unsupported --workload=${WORKLOAD}; expected tpch or tpcds" >&2; exit 2 ;;
 esac
 
-data_dir="${DATA_ROOT}/${WORKLOAD}_sf${SF}"
+dataset_root="${DATA_ROOT}/${WORKLOAD}"
+data_dir="${dataset_root}/sf${SF}/parquet"
 namespace="${WORKLOAD}_sf${SF}"
 mkdir -p "${DATA_ROOT}" "${IVY_CACHE}"
 chmod 0777 "${IVY_CACHE}"
@@ -86,7 +87,7 @@ if [[ "${REUSE_PARQUET}" == "1" && -d "${data_dir}" ]] && compgen -G "${data_dir
   echo "[iceberg-rest-load] reusing parquet -> ${data_dir}"
 else
   echo "[iceberg-rest-load] generating ${WORKLOAD} sf${SF} parquet -> ${data_dir}"
-  "${FIXTURE_SCRIPT}" "${WORKLOAD}" generate --scale "${SF}" --out "${data_dir}" --force
+  "${FIXTURE_SCRIPT}" "${WORKLOAD}" generate --scale "${SF}" --variant raw --out-root "${dataset_root}" --force
 fi
 
 pkgs="org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:${ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
