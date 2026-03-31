@@ -662,7 +662,7 @@ impl<'a> GraphBuilder<'a> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl Graph<Transposed> {
-    /// Compute PageRank on this transposed graph.
+    /// Compute PageRank on this transposed graph with full options.
     ///
     /// Returns a [`PageRankResult`](crate::centrality::PageRankResult)
     /// containing vertex ids, scores, iteration count, and convergence status.
@@ -670,22 +670,34 @@ impl Graph<Transposed> {
     /// # Example
     ///
     /// ```no_run
-    /// # use cugraph::{DeviceArray, GraphBuilder, PageRankParams, ResourceHandle, Transposed};
+    /// # use cugraph::{DeviceArray, GraphBuilder, PageRankOptions, ResourceHandle, Transposed};
     /// # let handle = ResourceHandle::new().unwrap();
     /// # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
     /// # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
     /// # let mut graph = GraphBuilder::new(&src.view(), &dst.view())
     /// #     .renumber()
     /// #     .build::<Transposed>(&handle).unwrap();
-    /// let result = graph.pagerank(&handle, &PageRankParams::default()).unwrap();
+    /// let result = graph.pagerank(&handle, &PageRankOptions::default()).unwrap();
     /// let scores = result.scores().unwrap();
     /// ```
-    pub fn pagerank(
+    pub fn pagerank<V: CugraphElement, W: CugraphElement>(
+        &mut self,
+        handle: &ResourceHandle,
+        options: &crate::centrality::PageRankOptions<'_, V, W>,
+    ) -> Result<crate::centrality::PageRankResult> {
+        crate::centrality::pagerank::pagerank(handle, self, options)
+    }
+
+    /// Compute PageRank with only basic parameters (no optional inputs).
+    ///
+    /// Convenience wrapper around [`pagerank`](Self::pagerank) for the common
+    /// case where no precomputed weights or initial guess are needed.
+    pub fn pagerank_simple(
         &mut self,
         handle: &ResourceHandle,
         params: &crate::centrality::PageRankParams,
     ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::pagerank(handle, self, params)
+        crate::centrality::pagerank::pagerank_simple(handle, self, params)
     }
 
     /// Compute both in-degrees and out-degrees for vertices in this graph.
@@ -703,7 +715,18 @@ impl Graph<Transposed> {
         vertices: &crate::structure::DegreeVertices<'_, V>,
     ) -> Result<crate::structure::DegreesResult> {
         self.validate_degree_vertices(vertices, "Graph::degrees")?;
-        crate::structure::degrees::degrees(handle, self, vertices)
+        crate::structure::degrees::degrees(handle, self, vertices, false)
+    }
+
+    /// Compute degrees with optional expensive input validation.
+    pub fn degrees_checked<V: CugraphElement>(
+        &mut self,
+        handle: &ResourceHandle,
+        vertices: &crate::structure::DegreeVertices<'_, V>,
+        do_expensive_check: bool,
+    ) -> Result<crate::structure::DegreesResult> {
+        self.validate_degree_vertices(vertices, "Graph::degrees")?;
+        crate::structure::degrees::degrees(handle, self, vertices, do_expensive_check)
     }
 
     /// Compute degrees for every vertex in the graph.
@@ -726,7 +749,18 @@ impl Graph<Transposed> {
         vertices: &crate::structure::DegreeVertices<'_, V>,
     ) -> Result<crate::structure::InDegreesResult> {
         self.validate_degree_vertices(vertices, "Graph::in_degrees")?;
-        crate::structure::degrees::in_degrees(handle, self, vertices)
+        crate::structure::degrees::in_degrees(handle, self, vertices, false)
+    }
+
+    /// Compute in-degrees with optional expensive input validation.
+    pub fn in_degrees_checked<V: CugraphElement>(
+        &mut self,
+        handle: &ResourceHandle,
+        vertices: &crate::structure::DegreeVertices<'_, V>,
+        do_expensive_check: bool,
+    ) -> Result<crate::structure::InDegreesResult> {
+        self.validate_degree_vertices(vertices, "Graph::in_degrees")?;
+        crate::structure::degrees::in_degrees(handle, self, vertices, do_expensive_check)
     }
 
     /// Compute in-degrees for every vertex in the graph.
@@ -845,7 +879,18 @@ impl<T: Transposition> Graph<T> {
         vertices: &crate::structure::DegreeVertices<'_, V>,
     ) -> Result<crate::structure::OutDegreesResult> {
         self.validate_degree_vertices(vertices, "Graph::out_degrees")?;
-        crate::structure::degrees::out_degrees(handle, self, vertices)
+        crate::structure::degrees::out_degrees(handle, self, vertices, false)
+    }
+
+    /// Compute out-degrees with optional expensive input validation.
+    pub fn out_degrees_checked<V: CugraphElement>(
+        &mut self,
+        handle: &ResourceHandle,
+        vertices: &crate::structure::DegreeVertices<'_, V>,
+        do_expensive_check: bool,
+    ) -> Result<crate::structure::OutDegreesResult> {
+        self.validate_degree_vertices(vertices, "Graph::out_degrees")?;
+        crate::structure::degrees::out_degrees(handle, self, vertices, do_expensive_check)
     }
 
     /// Compute out-degrees for every vertex in the graph.

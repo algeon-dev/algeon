@@ -466,7 +466,7 @@ fn centrality_result_to_dataframe() {
         .build::<Transposed>(&handle)
         .expect("graph");
 
-    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
+    let result = graph.pagerank_simple(&handle, &PageRankParams::default()).expect("pagerank");
     let df = result.to_dataframe().expect("to_dataframe");
 
     assert_eq!(df.num_columns(), 2);
@@ -613,7 +613,7 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
         .build::<Transposed>(&handle)
         .expect("graph");
 
-    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
+    let result = graph.pagerank_simple(&handle, &PageRankParams::default()).expect("pagerank");
     let df = result.to_dataframe().expect("to_dataframe");
 
     // Snapshot expected values

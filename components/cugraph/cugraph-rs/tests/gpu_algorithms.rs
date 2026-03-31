@@ -22,7 +22,7 @@ fn pagerank_supports_i64_vertices_and_f64_weights() {
     assert_eq!(graph.vertex_dtype(), DataType::Int64);
     assert_eq!(graph.weight_dtype(), DataType::Float64);
 
-    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
+    let result = graph.pagerank_simple(&handle, &PageRankParams::default()).expect("pagerank");
 
     let vertex_ids = result.vertex_ids().expect("vertex_ids");
     assert!(matches!(vertex_ids, VertexIds::I64(_)));

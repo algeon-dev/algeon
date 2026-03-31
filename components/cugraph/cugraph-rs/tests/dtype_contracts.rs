@@ -36,7 +36,7 @@ fn typed_results_refuse_lossy_narrowing() {
         .build::<Transposed>(&handle)
         .expect("graph");
 
-    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
+    let result = graph.pagerank_simple(&handle, &PageRankParams::default()).expect("pagerank");
 
     let vertex_err = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect_err("must reject narrowing");
     assert_eq!(vertex_err.kind(), cugraph::ErrorKind::InvalidInput);

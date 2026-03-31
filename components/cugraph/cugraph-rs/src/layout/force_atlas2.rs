@@ -46,7 +46,7 @@
 use std::ptr;
 
 use cugraph_sys::{
-    bool_t, cugraph_error_t, cugraph_force_atlas2, cugraph_layout_result_free, cugraph_layout_result_get_vertices,
+    cugraph_error_t, cugraph_force_atlas2, cugraph_layout_result_free, cugraph_layout_result_get_vertices,
     cugraph_layout_result_get_x_axis, cugraph_layout_result_get_y_axis, cugraph_layout_result_t,
 };
 
@@ -111,6 +111,9 @@ pub struct ForceAtlas2Params {
     pub gravity: NonNegativeF64,
     /// Print convergence info at each iteration (default: `false`).
     pub verbose: bool,
+    /// Whether to run expensive input validation checks in the C library
+    /// (default: `false`).
+    pub do_expensive_check: bool,
 }
 
 impl Default for ForceAtlas2Params {
@@ -130,6 +133,7 @@ impl Default for ForceAtlas2Params {
             strong_gravity_mode: false,
             gravity: NonNegativeF64::new(1.0).unwrap(),
             verbose: false,
+            do_expensive_check: false,
         }
     }
 }
@@ -507,7 +511,7 @@ pub(crate) fn force_atlas2<T, V: CugraphElement, W: CugraphElement>(
             mass_verts_ptr,
             mass_vals_ptr,
             to_bool_t(params.verbose),
-            bool_t::FALSE, // do_expensive_check
+            to_bool_t(params.do_expensive_check),
             &mut result,
             &mut error,
         );

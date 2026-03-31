@@ -25,6 +25,7 @@ fn pagerank_params_custom_construction() {
         alpha: ClosedUnitF64::new(0.9).unwrap(),
         epsilon: NonNegativeF64::new(1e-6).unwrap(),
         max_iterations: IterationCount::new(200).unwrap(),
+        do_expensive_check: false,
     };
     assert_eq!(params.alpha.get(), 0.9);
     assert_eq!(params.epsilon.get(), 1e-6);
