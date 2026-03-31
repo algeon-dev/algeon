@@ -1884,7 +1884,8 @@ fn test_io_read_csv_missing_file_clears_out() {
 fn test_io_read_parquet_missing_file_clears_out() {
     let path = unique_missing_path("parquet");
     let mut out = 1usize as *mut c_void;
-    let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), 0, 0, -1, &mut out) };
+    let status =
+        unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), 0, 0, -1, ptr::null(), 0, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_IO);
     assert!(out.is_null());
@@ -1919,6 +1920,8 @@ fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
             -1,
             0,
             -1,
+            ptr::null(),
+            0,
             &mut out_table,
             &mut out_names,
             &mut out_num_names,
@@ -1968,7 +1971,8 @@ fn test_io_write_csv_null_column_name_entry_rejected() {
 fn test_io_read_parquet_negative_num_columns_rejected() {
     let path = unique_missing_path("parquet");
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), -1, 0, -1, &mut out) };
+    let status =
+        unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), -1, 0, -1, ptr::null(), 0, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 }
@@ -1978,7 +1982,8 @@ fn test_io_read_parquet_null_column_name_entry_rejected() {
     let path = unique_missing_path("parquet");
     let columns = [ptr::null()];
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), columns.as_ptr(), 1, 0, -1, &mut out) };
+    let status =
+        unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), columns.as_ptr(), 1, 0, -1, ptr::null(), 0, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
 }
@@ -1987,7 +1992,8 @@ fn test_io_read_parquet_null_column_name_entry_rejected() {
 fn test_io_read_parquet_negative_skip_rows_rejected() {
     let path = unique_missing_path("parquet");
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), 0, -1, -1, &mut out) };
+    let status =
+        unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), 0, -1, -1, ptr::null(), 0, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 }
@@ -1996,7 +2002,8 @@ fn test_io_read_parquet_negative_skip_rows_rejected() {
 fn test_io_read_parquet_invalid_num_rows_rejected() {
     let path = unique_missing_path("parquet");
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), 0, 0, -2, &mut out) };
+    let status =
+        unsafe { cudf_sys::cudf_io_read_parquet(path.as_ptr(), ptr::null(), 0, 0, -2, ptr::null(), 0, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 }
@@ -2008,7 +2015,7 @@ fn test_io_write_parquet_negative_num_columns_rejected() {
     let tv = make_table_view(tbl);
     let path = unique_missing_path("parquet");
 
-    let status = unsafe { cudf_sys::cudf_io_write_parquet(tv, path.as_ptr(), ptr::null(), -1) };
+    let status = unsafe { cudf_sys::cudf_io_write_parquet(tv, path.as_ptr(), ptr::null(), -1, 0) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
 
     unsafe {
@@ -2025,7 +2032,7 @@ fn test_io_write_parquet_null_column_name_entry_rejected() {
     let path = unique_missing_path("parquet");
     let names = [ptr::null()];
 
-    let status = unsafe { cudf_sys::cudf_io_write_parquet(tv, path.as_ptr(), names.as_ptr(), 1) };
+    let status = unsafe { cudf_sys::cudf_io_write_parquet(tv, path.as_ptr(), names.as_ptr(), 1, 0) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
 
     unsafe {
@@ -2047,6 +2054,8 @@ fn test_io_read_parquet_with_metadata_negative_num_columns_rejected() {
             -1,
             0,
             -1,
+            ptr::null(),
+            0,
             &mut out_table,
             &mut out_names,
             &mut out_num_names,
@@ -2071,6 +2080,8 @@ fn test_io_read_parquet_with_metadata_null_column_name_entry_rejected() {
             1,
             0,
             -1,
+            ptr::null(),
+            0,
             &mut out_table,
             &mut out_names,
             &mut out_num_names,
@@ -2095,6 +2106,8 @@ fn test_io_read_parquet_with_metadata_negative_skip_rows_rejected() {
             0,
             -1,
             -1,
+            ptr::null(),
+            0,
             &mut out_table,
             &mut out_names,
             &mut out_num_names,
@@ -2118,6 +2131,8 @@ fn test_io_read_parquet_with_metadata_invalid_num_rows_rejected() {
             0,
             0,
             -2,
+            ptr::null(),
+            0,
             &mut out_table,
             &mut out_names,
             &mut out_num_names,
