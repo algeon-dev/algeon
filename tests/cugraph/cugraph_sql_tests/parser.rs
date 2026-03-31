@@ -190,16 +190,23 @@ fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
         parse_cugraph_algorithm_spec(CugraphAlgorithm::WeaklyConnectedComponents, &[lit("edges")], &config).unwrap();
     assert!(!spec.graph_options.directed, "WCC must default to directed=false");
 
-    // triangle_count_all / core_number / k_core must also default to
-    // directed=false so their parity oracles (which Python cuGraph forces
-    // undirected) are computed under the same semantics as the adapter.
+    // These algorithms must default to directed=false so cuGraph receives the
+    // symmetric graph semantics required by the underlying operation.
     for algorithm in [
         CugraphAlgorithm::TriangleCountAll,
         CugraphAlgorithm::CoreNumber,
         CugraphAlgorithm::KCore,
+        CugraphAlgorithm::MinimumSpanningTree,
+        CugraphAlgorithm::SpectralModularityMaximization,
+        CugraphAlgorithm::BalancedCutClustering,
         CugraphAlgorithm::ForceAtlas2,
     ] {
-        let spec = parse_cugraph_algorithm_spec(algorithm, &[lit("edges")], &config).unwrap();
+        let args = if algorithm == CugraphAlgorithm::MinimumSpanningTree {
+            vec![lit("edges"), lit("src"), lit("dst"), lit("weight")]
+        } else {
+            vec![lit("edges")]
+        };
+        let spec = parse_cugraph_algorithm_spec(algorithm, &args, &config).unwrap();
         assert!(!spec.graph_options.directed, "{} must default to directed=false", algorithm.function_name());
     }
 }
@@ -238,6 +245,29 @@ fn cugraph_sql_planning_rejects_incompatible_directedness_options() {
     .unwrap_err()
     .to_string();
     assert!(wcc_error.contains("cugraph_weakly_connected_components requires directed=false"), "{wcc_error}");
+
+    for (algorithm, expected) in [
+        (CugraphAlgorithm::MinimumSpanningTree, "cugraph_minimum_spanning_tree requires directed=false"),
+        (
+            CugraphAlgorithm::SpectralModularityMaximization,
+            "cugraph_spectral_modularity_maximization requires directed=false",
+        ),
+        (CugraphAlgorithm::BalancedCutClustering, "cugraph_balanced_cut_clustering requires directed=false"),
+    ] {
+        let args = if algorithm == CugraphAlgorithm::MinimumSpanningTree {
+            vec![lit("graph_edges"), lit("src"), lit("dst"), lit("weight"), lit(r#"{"directed":true}"#)]
+        } else {
+            vec![
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"directed":true}"#),
+            ]
+        };
+        let error = parse_cugraph_algorithm_spec(algorithm, &args, &config).unwrap_err().to_string();
+        assert!(error.contains(expected), "{error}");
+    }
 }
 
 #[test]

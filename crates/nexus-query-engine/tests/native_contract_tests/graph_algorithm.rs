@@ -9,8 +9,8 @@ use nexus_query_engine::{
     GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams,
     GraphEdgeColumnBindings, GraphLayoutRequirement, GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput,
     GraphOutputSchemaKind, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport,
-    GraphSourceVertexRequirement, GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan, QueryPlanBuilder, SourceNode,
-    StrictBoundedContractReport, StrictBoundedExecutionMode,
+    GraphSourceVertexRequirement, GraphVertexIdTypeSupport, GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan,
+    QueryPlanBuilder, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     graph_memory_class, graph_memory_reservation_required, stable_graph_result_schema,
 };
@@ -731,7 +731,7 @@ fn graph_operation_registry_pins_descriptor_contracts() {
                 GraphSourceVertexRequirement::None,
                 GraphWeightPolicy::Required,
                 GraphOutputSchemaKind::Fixed,
-                true,
+                false,
             ),
             (
                 GraphAlgorithm::PersonalizedPageRank,
@@ -759,14 +759,14 @@ fn graph_operation_registry_pins_descriptor_contracts() {
                 GraphSourceVertexRequirement::None,
                 GraphWeightPolicy::Ignored,
                 GraphOutputSchemaKind::Fixed,
-                true,
+                false,
             ),
             (
                 GraphAlgorithm::BalancedCutClustering,
                 GraphSourceVertexRequirement::None,
                 GraphWeightPolicy::Ignored,
                 GraphOutputSchemaKind::Fixed,
-                true,
+                false,
             ),
             (
                 GraphAlgorithm::ForceAtlas2,
@@ -859,6 +859,51 @@ fn graph_algorithm_capability_validates_edge_column_types_but_allows_nullable_sc
 }
 
 #[test]
+fn graph_algorithm_capability_rejects_int64_for_legacy_int32_only_algorithms() {
+    for (algorithm, params) in [
+        (GraphAlgorithm::MinimumSpanningTree, GraphAlgorithmParams::MinimumSpanningTree(Default::default())),
+        (
+            GraphAlgorithm::SpectralModularityMaximization,
+            GraphAlgorithmParams::SpectralModularityMaximization(Default::default()),
+        ),
+        (GraphAlgorithm::BalancedCutClustering, GraphAlgorithmParams::BalancedCutClustering(Default::default())),
+    ] {
+        assert_eq!(algorithm.vertex_id_type_support(), GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType);
+        let graph_options = algorithm.definition().default_graph_options(&GraphConstructionOptions::default());
+        let int64_plan = graph_plan_with_options(
+            algorithm,
+            params.clone(),
+            graph_options.clone(),
+            edge_schema(DataType::Int64, DataType::Float64, false),
+        );
+        assert_graph_rejection_facts(
+            &int64_plan,
+            "unsupported_vertex_dtype",
+            "source",
+            &[
+                ("algorithm", algorithm.as_str()),
+                ("vertex_id_type_support", "int32_only_legacy_edge_type"),
+                ("supported_vertex_dtypes", "Int32"),
+            ],
+        );
+
+        let int32_plan = graph_plan_with_options(
+            algorithm,
+            params,
+            graph_options,
+            edge_schema(DataType::Int32, DataType::Float64, false),
+        );
+        let int32_capability = int32_plan
+            .capability_analysis()
+            .nodes
+            .into_iter()
+            .find(|node| node.node_id == int32_plan.root_id())
+            .unwrap();
+        assert_eq!(int32_capability.executable, CapabilityDecision::Satisfied);
+    }
+}
+
+#[test]
 fn graph_algorithm_capability_rejects_incompatible_directedness() {
     let scc = graph_plan_with_options(
         GraphAlgorithm::StronglyConnectedComponents,
@@ -875,15 +920,39 @@ fn graph_algorithm_capability_rejects_incompatible_directedness() {
         edge_schema(DataType::Int64, DataType::Float64, false),
     );
     assert_graph_directedness_rejection(&wcc, "weakly_connected_components", true, false);
+
+    for (algorithm, params) in [
+        (GraphAlgorithm::MinimumSpanningTree, GraphAlgorithmParams::MinimumSpanningTree(Default::default())),
+        (
+            GraphAlgorithm::SpectralModularityMaximization,
+            GraphAlgorithmParams::SpectralModularityMaximization(Default::default()),
+        ),
+        (GraphAlgorithm::BalancedCutClustering, GraphAlgorithmParams::BalancedCutClustering(Default::default())),
+    ] {
+        let plan = graph_plan_with_options(
+            algorithm,
+            params,
+            GraphConstructionOptions { directed: true, ..Default::default() },
+            edge_schema(DataType::Int32, DataType::Float64, false),
+        );
+        assert_graph_directedness_rejection(&plan, algorithm.as_str(), true, false);
+    }
 }
 
 fn assert_graph_rejection_contains(plan: &QueryPlan, reason: &str, role: &str) {
+    assert_graph_rejection_facts(plan, reason, role, &[]);
+}
+
+fn assert_graph_rejection_facts(plan: &QueryPlan, reason: &str, role: &str, expected: &[(&str, &str)]) {
     let capability = plan.capability_analysis().nodes.into_iter().find(|node| node.node_id == plan.root_id()).unwrap();
     let CapabilityDecision::Rejected { facts, .. } = capability.executable else {
         panic!("expected graph capability rejection");
     };
     assert_eq!(facts.get("reason").map(String::as_str), Some(reason));
     assert_eq!(facts.get("edge_column_role").map(String::as_str), Some(role));
+    for (key, value) in expected {
+        assert_eq!(facts.get(*key).map(String::as_str), Some(*value), "unexpected fact {key}");
+    }
 }
 
 fn assert_graph_directedness_rejection(plan: &QueryPlan, algorithm: &str, directed: bool, required_directed: bool) {

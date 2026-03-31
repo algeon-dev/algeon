@@ -437,8 +437,22 @@ fn validate_graph_algorithm_node(
     }
     validate_graph_vertex_column("source", &graph.spec.edge_columns.source, input_schema, input_available)?;
     validate_graph_vertex_column("destination", &graph.spec.edge_columns.destination, input_schema, input_available)?;
-    let vertex_type =
-        graph_edge_field("source", &graph.spec.edge_columns.source, input_schema, input_available)?.data_type().clone();
+    let source_field = graph_edge_field("source", &graph.spec.edge_columns.source, input_schema, input_available)?;
+    validate_graph_algorithm_vertex_id_support(
+        graph.spec.algorithm,
+        "source",
+        &graph.spec.edge_columns.source,
+        source_field.data_type(),
+    )?;
+    let destination_field =
+        graph_edge_field("destination", &graph.spec.edge_columns.destination, input_schema, input_available)?;
+    validate_graph_algorithm_vertex_id_support(
+        graph.spec.algorithm,
+        "destination",
+        &graph.spec.edge_columns.destination,
+        destination_field.data_type(),
+    )?;
+    let vertex_type = source_field.data_type().clone();
     if let Some(weight_col) = graph.spec.edge_columns.weight.as_deref() {
         validate_graph_weight_column(weight_col, input_schema, input_available)?;
     }
@@ -694,6 +708,30 @@ fn validate_graph_vertex_column(
         .with_fact("data_type", format!("{:?}", field.data_type())));
     }
     Ok(())
+}
+
+fn validate_graph_algorithm_vertex_id_support(
+    algorithm: crate::plan::GraphAlgorithm,
+    role: &'static str,
+    column: &str,
+    data_type: &arrow::datatypes::DataType,
+) -> Result<()> {
+    let support = algorithm.vertex_id_type_support();
+    if support.accepts_arrow_data_type(data_type) {
+        return Ok(());
+    }
+    Err(QueryError::new(
+        QueryErrorCode::UnsupportedType,
+        "nexus_query_engine.graph_algorithm.validate",
+        "graph algorithm vertex column type is unsupported by the selected algorithm",
+    )
+    .with_fact("reason", "unsupported_vertex_dtype")
+    .with_fact("algorithm", algorithm.as_str())
+    .with_fact("edge_column_role", role)
+    .with_fact("column", column)
+    .with_fact("data_type", format!("{data_type:?}"))
+    .with_fact("vertex_id_type_support", support.as_str())
+    .with_fact("supported_vertex_dtypes", support.supported_dtypes_label()))
 }
 
 fn validate_graph_weight_column(
@@ -1105,6 +1143,48 @@ mod tests {
     }
 
     #[test]
+    fn validate_graph_algorithm_rejects_int64_for_legacy_int32_only_algorithms() {
+        for (algorithm, params) in [
+            (GraphAlgorithm::MinimumSpanningTree, GraphAlgorithmParams::MinimumSpanningTree(Default::default())),
+            (
+                GraphAlgorithm::SpectralModularityMaximization,
+                GraphAlgorithmParams::SpectralModularityMaximization(Default::default()),
+            ),
+            (GraphAlgorithm::BalancedCutClustering, GraphAlgorithmParams::BalancedCutClustering(Default::default())),
+        ] {
+            let int64_plan = graph_algorithm_validation_plan(
+                algorithm,
+                params.clone(),
+                Arc::new(Schema::new(vec![
+                    Field::new("src", ArrowDataType::Int64, false),
+                    Field::new("dst", ArrowDataType::Int64, false),
+                    Field::new("weight", ArrowDataType::Float64, false),
+                ])),
+            );
+            let error =
+                validate_query_plan(&int64_plan).expect_err("legacy cuGraph algorithms must reject Int64 vertices");
+            assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+            assert_eq!(error.operation(), "nexus_query_engine.graph_algorithm.validate");
+            assert_eq!(error.fact_value("reason"), Some("unsupported_vertex_dtype"));
+            assert_eq!(error.fact_value("algorithm"), Some(algorithm.as_str()));
+            assert_eq!(error.fact_value("edge_column_role"), Some("source"));
+            assert_eq!(error.fact_value("vertex_id_type_support"), Some("int32_only_legacy_edge_type"));
+            assert_eq!(error.fact_value("supported_vertex_dtypes"), Some("Int32"));
+
+            let int32_plan = graph_algorithm_validation_plan(
+                algorithm,
+                params,
+                Arc::new(Schema::new(vec![
+                    Field::new("src", ArrowDataType::Int32, false),
+                    Field::new("dst", ArrowDataType::Int32, false),
+                    Field::new("weight", ArrowDataType::Float64, false),
+                ])),
+            );
+            validate_query_plan(&int32_plan).expect("legacy cuGraph algorithms must keep accepting Int32 vertices");
+        }
+    }
+
+    #[test]
     fn validate_local_parquet_source_uses_output_schema_override_for_available_columns() {
         let physical_schema = Arc::new(Schema::new(vec![
             Field::new("old_status", ArrowDataType::Int64, true),
@@ -1142,5 +1222,22 @@ mod tests {
             Expr::binary(Expr::column("ca_zip"), BinaryOp::GtEq, Expr::literal(LiteralValue::Utf8(lower)));
         let upper_bound = Expr::binary(Expr::column("ca_zip"), BinaryOp::Lt, Expr::literal(LiteralValue::Utf8(upper)));
         Expr::binary(lower_bound, BinaryOp::And, upper_bound)
+    }
+
+    fn graph_algorithm_validation_plan(
+        algorithm: GraphAlgorithm,
+        params: GraphAlgorithmParams,
+        schema: Arc<Schema>,
+    ) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(schema)));
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            algorithm,
+            GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+            algorithm.definition().default_graph_options(&GraphConstructionOptions::default()),
+            params,
+        );
+        let graph = builder.add_graph_algorithm(source, spec);
+        builder.finish_with_host_sink(graph)
     }
 }

@@ -12,7 +12,8 @@ use super::{
     super::{
         CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource, CugraphBfsSourceVertex,
         CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain,
-        datafusion_table_reference, parse_cugraph_algorithm_spec, stable_result_schema, vertex_id_domain_for_call,
+        datafusion_table_reference, parse_cugraph_algorithm_spec, stable_result_schema,
+        validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
     },
     ERROR_ALGORITHM_DISABLED, ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_INVALID_CALL_JSON, ERROR_OK,
     ERROR_TABLE_NOT_FOUND, ERROR_UNKNOWN_ALGORITHM, ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE,
@@ -193,6 +194,19 @@ pub(super) async fn cugraph_validate_call(
     if let CugraphAlgorithmParams::Bfs(params) = &spec.params {
         spec.output_schema = bfs_result_schema_for_vertex_domain(params, &vertex_domain);
         output_schema_json = schema_json(&spec.output_schema);
+    }
+    if let Err(error) = validate_vertex_id_domain_support_for_call(algorithm, &vertex_domain) {
+        return ValidationRow {
+            table_resolved: true,
+            src_col_resolved: true,
+            dst_col_resolved: true,
+            weight_col_resolved: spec.weight_col.is_none() || weight.is_some(),
+            src_dtype,
+            dst_dtype,
+            weight_dtype,
+            ..ValidationRow::invalid(canonical_function_name, ERROR_UNSUPPORTED_VERTEX_DTYPE, error.to_string())
+                .with_algorithm(true, output_schema_json)
+        };
     }
     if let Some(_edge_id_field) = edge_id_field
         && vertex_domain.is_string_logical()
@@ -646,7 +660,10 @@ async fn resolve_table_provider(
 }
 
 fn parse_error_code(message: &str) -> &'static str {
-    if message.contains("unknown option") || message.contains("requires vertex_radius side input") {
+    if message.contains("unknown option")
+        || message.contains("requires vertex_radius side input")
+        || message.contains("requires directed=")
+    {
         ERROR_UNSUPPORTED_OPTION
     } else if message.contains("is not enabled in this session") {
         ERROR_ALGORITHM_DISABLED

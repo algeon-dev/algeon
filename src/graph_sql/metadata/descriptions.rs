@@ -165,6 +165,15 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
     if algorithm == CugraphAlgorithm::ForceAtlas2 {
         limitations.push("prevent_overlapping=true is rejected until vertex_radius side inputs are exposed");
     }
+    if matches!(
+        algorithm.native_algorithm().vertex_id_type_support(),
+        nexus_query_engine::GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType
+    ) {
+        limitations.push("legacy cuGraph implementation requires Int32 source and destination vertex columns");
+    }
+    if algorithm.native_algorithm().definition().required_graph_directedness() == Some(false) {
+        limitations.push("cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view");
+    }
     json!(limitations).to_string()
 }
 
@@ -248,14 +257,18 @@ pub(super) fn purpose(algorithm: CugraphAlgorithm) -> &'static str {
         CugraphAlgorithm::CoreNumber => "Compute each vertex's core number to identify dense graph regions.",
         CugraphAlgorithm::KCore => "Return the edge set induced by the selected k-core subgraph.",
         CugraphAlgorithm::MinimumSpanningTree => {
-            "Select a minimum-weight spanning tree edge set, requiring an explicit weight column."
+            "Select a minimum-weight spanning tree edge set over an undirected graph view, requiring an explicit weight column."
         },
         CugraphAlgorithm::Leiden => {
             "Assign vertices to communities with Leiden refinement for modularity-style clustering."
         },
         CugraphAlgorithm::Ecg => "Assign vertices to communities using ensemble clustering for graphs.",
-        CugraphAlgorithm::SpectralModularityMaximization => "Cluster vertices by spectral modularity maximization.",
-        CugraphAlgorithm::BalancedCutClustering => "Cluster vertices by optimizing a balanced-cut spectral objective.",
+        CugraphAlgorithm::SpectralModularityMaximization => {
+            "Cluster vertices by spectral modularity maximization over an undirected graph view."
+        },
+        CugraphAlgorithm::BalancedCutClustering => {
+            "Cluster vertices by optimizing a balanced-cut spectral objective over an undirected graph view."
+        },
         CugraphAlgorithm::ForceAtlas2 => {
             "Compute deterministic two-dimensional force-directed layout coordinates for graph visualization."
         },

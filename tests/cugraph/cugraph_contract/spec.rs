@@ -18,8 +18,9 @@ use nexus_query_engine::{
     GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams,
     GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
     GraphOutDegreesAllParams, GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
-    GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams,
-    PlanNode, QueryPlan, QueryPlanBuilder, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
+    GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams,
+    GraphVertexIdTypeSupport, GraphWccParams, PlanNode, QueryPlan, QueryPlanBuilder, SourceNode,
+    StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     stable_graph_result_schema,
 };
@@ -68,10 +69,14 @@ pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
     }
 }
 
-fn edge_schema() -> Arc<Schema> {
+fn edge_schema(algorithm: GraphAlgorithm) -> Arc<Schema> {
+    let vertex_id_type = match algorithm.vertex_id_type_support() {
+        GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType => DataType::Int32,
+        GraphVertexIdTypeSupport::Int32OrInt64 => DataType::Int64,
+    };
     Arc::new(Schema::new(vec![
-        Field::new("src", DataType::Int64, false),
-        Field::new("dst", DataType::Int64, false),
+        Field::new("src", vertex_id_type.clone(), false),
+        Field::new("dst", vertex_id_type, false),
         Field::new("weight", DataType::Float64, false),
     ]))
 }
@@ -86,7 +91,7 @@ fn personalization_schema() -> Arc<Schema> {
 /// Build the canonical CPU-only QueryPlan for the contract checks.
 pub fn graph_plan(algorithm: GraphAlgorithm) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", edge_schema())));
+    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", edge_schema(algorithm))));
     let personalization =
         if algorithm == GraphAlgorithm::PersonalizedPageRank {
             Some(builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(

@@ -527,6 +527,22 @@ fn graph_algorithm_node_executable_decision(
                 ],
             );
         }
+        let vertex_id_type_support = graph.spec.algorithm.vertex_id_type_support();
+        if !vertex_id_type_support.accepts_arrow_data_type(field.data_type()) {
+            return CapabilityDecision::rejected(
+                "unsupported_graph_algorithm_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "unsupported_vertex_dtype".to_string()),
+                    ("algorithm", graph.spec.algorithm.as_str().to_string()),
+                    ("edge_column_role", role.to_string()),
+                    ("column", column.to_string()),
+                    ("data_type", format!("{:?}", field.data_type())),
+                    ("vertex_id_type_support", vertex_id_type_support.as_str().to_string()),
+                    ("supported_vertex_dtypes", vertex_id_type_support.supported_dtypes_label().to_string()),
+                ],
+            );
+        }
     }
 
     if let Some(weight_col) = graph.spec.edge_columns.weight.as_deref() {

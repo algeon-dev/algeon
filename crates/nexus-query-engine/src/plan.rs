@@ -44,8 +44,8 @@ pub use graph_algorithm::{
     GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOperationDefinition, GraphOutDegreesAllParams,
     GraphOutputSchemaKind, GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
     GraphPredicateInput, GraphSccParams, GraphSourceVertexRequirement, GraphSpectralClusteringParams, GraphSsspParams,
-    GraphTriangleCountAllParams, GraphWccParams, GraphWeightPolicy, graph_result_schema_for_params,
-    stable_graph_result_schema,
+    GraphTriangleCountAllParams, GraphVertexIdTypeSupport, GraphWccParams, GraphWeightPolicy,
+    graph_result_schema_for_params, stable_graph_result_schema,
 };
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
