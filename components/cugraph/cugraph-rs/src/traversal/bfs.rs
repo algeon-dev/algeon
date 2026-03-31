@@ -190,14 +190,10 @@ impl BfsResult {
     }
 
     /// Get the raw predecessors view.
-    #[cfg(feature = "cudf-interop")]
     pub(crate) fn predecessors_raw(&self) -> Option<RawDeviceArrayView<'_>> {
         self.normalized_predecessors_raw()
     }
-}
 
-#[cfg(feature = "cudf-interop")]
-impl BfsResult {
     /// Convert this BFS result to a cudf DataFrame.
     ///
     /// Returns a DataFrame with columns:
@@ -208,39 +204,10 @@ impl BfsResult {
     ///   dtype, only if predecessors were computed; the column is omitted
     ///   otherwise
     ///
-    /// Performs a device-to-device copy.
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
     pub fn to_dataframe(&self) -> crate::error::Result<cudf::DataFrame> {
-        use crate::{
-            cudf_interop::RawDeviceArrayViewExt,
-            error::{Error, ErrorKind},
-        };
-
-        let vertices_raw = self.vertices_raw()?;
-        let distances_raw = self.distances_raw()?;
-        let expected_len = vertices_raw.len();
-
-        let vert_col = vertices_raw.to_cudf_column().map_err(|e| e.with_operation("BfsResult::to_dataframe"))?;
-        let dist_col = distances_raw.to_cudf_column().map_err(|e| e.with_operation("BfsResult::to_dataframe"))?;
-
-        let (names, columns) = match self.predecessors_raw() {
-            Some(preds) if preds.len() == expected_len => {
-                let pred_col = preds.to_cudf_column().map_err(|e| e.with_operation("BfsResult::to_dataframe"))?;
-                (vec!["vertex".into(), "distance".into(), "predecessor".into()], vec![vert_col, dist_col, pred_col])
-            },
-            Some(preds) => {
-                return Err(Error::new(ErrorKind::Unexpected, "BfsResult::to_dataframe").with_message(format!(
-                    "failed to build DataFrame: predecessor length {} does not match vertex length {}",
-                    preds.len(),
-                    expected_len
-                )));
-            },
-            None => (vec!["vertex".into(), "distance".into()], vec![vert_col, dist_col]),
-        };
-
-        cudf::DataFrame::new(names, columns).map_err(|e| {
-            Error::new(ErrorKind::Unexpected, "BfsResult::to_dataframe")
-                .with_message(format!("failed to build DataFrame: {}", e))
-        })
+        cudf::DataFrame::try_from(self).map_err(|e: crate::error::Error| e.with_operation("BfsResult::to_dataframe"))
     }
 }
 

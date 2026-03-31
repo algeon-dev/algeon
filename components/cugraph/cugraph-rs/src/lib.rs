@@ -51,15 +51,15 @@
 //! - **Generic** (`T: Transposition`) — [`Graph::betweenness_centrality`],
 //!   [`Graph::force_atlas2`], [`Graph::out_degrees`]
 //!
-//! # Feature flags
+//! # cudf interop
 //!
-//! - **`cudf-interop`** — enables zero-copy interop with the [`cudf`] crate,
-//!   including [`graph_from_parquet`](cudf_interop::graph_from_parquet),
-//!   [`graph_from_dataframe`](cudf_interop::graph_from_dataframe), and
-//!   result-to-DataFrame conversions.
+//! The [`cudf_interop`] module provides zero-copy graph construction from
+//! cudf [`Series`](cudf::Series) and [`DataFrame`](cudf::DataFrame), plus
+//! result-to-DataFrame conversions.
 
 pub mod array;
 pub mod centrality;
+pub mod cudf_interop;
 pub mod error;
 pub mod graph;
 pub mod handle;
@@ -69,9 +69,6 @@ pub mod random;
 pub mod structure;
 pub mod traversal;
 pub mod types;
-
-#[cfg(feature = "cudf-interop")]
-pub mod cudf_interop;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Crate-root re-exports — the recommended import path for common types
@@ -84,8 +81,11 @@ pub use centrality::{
     BetweennessCentralityParams, BetweennessCentralityResult, InitialGuess, PageRankOptions, PageRankParams,
     PageRankResult, PrecomputedWeights,
 };
-#[cfg(feature = "cudf-interop")]
-pub use cudf_interop::{DataFrameGraphOptions, LoadedGraph, ParquetGraphOptions, TableGraphOptions};
+// cudf interop — graph construction
+pub use cudf_interop::{
+    DataFrameGraphOptions, IntoSeries, LoadedGraph, ParquetGraphOptions, SeriesGraphOptions, TableGraphOptions,
+    device_array_view_from_slice, graph_from_dataframe, graph_from_parquet, graph_from_series, graph_from_table_view,
+};
 // Error handling
 pub use error::{Error, ErrorKind, ErrorStatus};
 // Graph construction and type-state

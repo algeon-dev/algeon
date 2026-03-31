@@ -37,10 +37,8 @@ use cugraph_sys::{
     cugraph_type_erased_device_array_view_t, cugraph_type_erased_device_array_view_type,
 };
 
-#[cfg(feature = "cudf-interop")]
-use crate::array::RawDeviceArrayView;
 use crate::{
-    array::DeviceArrayView,
+    array::{DeviceArrayView, RawDeviceArrayView},
     error::{Error, ErrorKind, Result, check_error},
     handle::ResourceHandle,
     types::{CugraphElement, DataType, GraphProperties, to_bool_t},
@@ -435,7 +433,6 @@ impl<'a> GraphBuilder<'a> {
     }
 
     /// Build from raw (type-erased) view pointers. Used by cudf_interop.
-    #[cfg(feature = "cudf-interop")]
     pub(crate) fn from_raw_views(
         properties: GraphProperties,
         src: &'a RawDeviceArrayView<'a>,
@@ -465,7 +462,6 @@ impl<'a> GraphBuilder<'a> {
     }
 
     /// Set weights from a raw view. Used by cudf_interop.
-    #[cfg(feature = "cudf-interop")]
     pub(crate) fn weights_raw(mut self, raw: &'a RawDeviceArrayView<'a>) -> Self {
         self.weights = Some((raw.as_ptr(), raw.len()));
         self
@@ -473,7 +469,6 @@ impl<'a> GraphBuilder<'a> {
 
     /// Set renumber from a bool. Used by cudf_interop where the flag comes
     /// from a function parameter rather than a builder toggle.
-    #[cfg(feature = "cudf-interop")]
     pub(crate) fn renumber_flag(mut self, renumber: bool) -> Self {
         self.renumber = renumber;
         self
@@ -677,7 +672,7 @@ impl Graph<Transposed> {
     /// # let mut graph = GraphBuilder::new(&src.view(), &dst.view())
     /// #     .renumber()
     /// #     .build::<Transposed>(&handle).unwrap();
-    /// let result = graph.pagerank(&handle, &PageRankOptions::default()).unwrap();
+    /// let result = graph.pagerank::<i32, f32>(&handle, &PageRankOptions::default()).unwrap();
     /// let scores = result.scores().unwrap();
     /// ```
     pub fn pagerank<V: CugraphElement, W: CugraphElement>(

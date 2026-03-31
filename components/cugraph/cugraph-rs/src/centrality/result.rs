@@ -133,7 +133,6 @@ impl PageRankResult {
     }
 }
 
-#[cfg(feature = "cudf-interop")]
 impl PageRankResult {
     /// Convert this PageRank result to a cudf DataFrame.
     ///
@@ -141,20 +140,10 @@ impl PageRankResult {
     /// - `"vertex"` — vertex ids with the underlying result dtype (`Int32` or `Int64`)
     /// - `"value"` — PageRank values with the underlying result dtype (`Float32` or `Float64`)
     ///
-    /// Performs a device-to-device copy. The returned DataFrame owns its
-    /// memory independently.
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
     pub fn to_dataframe(&self) -> Result<cudf::DataFrame> {
-        use crate::cudf_interop::RawDeviceArrayViewExt;
-
-        let vert_col =
-            self.0.vertices_raw()?.to_cudf_column().map_err(|e| e.with_operation("PageRankResult::to_dataframe"))?;
-        let val_col =
-            self.0.values_raw()?.to_cudf_column().map_err(|e| e.with_operation("PageRankResult::to_dataframe"))?;
-
-        cudf::DataFrame::new(vec!["vertex".into(), "value".into()], vec![vert_col, val_col]).map_err(|e| {
-            Error::new(ErrorKind::Unexpected, "PageRankResult::to_dataframe")
-                .with_message(format!("failed to build DataFrame: {}", e))
-        })
+        cudf::DataFrame::try_from(self).map_err(|e: Error| e.with_operation("PageRankResult::to_dataframe"))
     }
 }
 
@@ -205,7 +194,6 @@ impl BetweennessCentralityResult {
     }
 }
 
-#[cfg(feature = "cudf-interop")]
 impl BetweennessCentralityResult {
     /// Convert this betweenness centrality result to a cudf DataFrame.
     ///
@@ -214,25 +202,10 @@ impl BetweennessCentralityResult {
     /// - `"value"` — betweenness centrality values with the underlying result
     ///   dtype (`Float32` or `Float64`)
     ///
-    /// Performs a device-to-device copy. The returned DataFrame owns its
-    /// memory independently.
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
     pub fn to_dataframe(&self) -> Result<cudf::DataFrame> {
-        use crate::cudf_interop::RawDeviceArrayViewExt;
-
-        let vert_col = self
-            .0
-            .vertices_raw()?
-            .to_cudf_column()
-            .map_err(|e| e.with_operation("BetweennessCentralityResult::to_dataframe"))?;
-        let val_col = self
-            .0
-            .values_raw()?
-            .to_cudf_column()
-            .map_err(|e| e.with_operation("BetweennessCentralityResult::to_dataframe"))?;
-
-        cudf::DataFrame::new(vec!["vertex".into(), "value".into()], vec![vert_col, val_col]).map_err(|e| {
-            Error::new(ErrorKind::Unexpected, "BetweennessCentralityResult::to_dataframe")
-                .with_message(format!("failed to build DataFrame: {}", e))
-        })
+        cudf::DataFrame::try_from(self)
+            .map_err(|e: Error| e.with_operation("BetweennessCentralityResult::to_dataframe"))
     }
 }
