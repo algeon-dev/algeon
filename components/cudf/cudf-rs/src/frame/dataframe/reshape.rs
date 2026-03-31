@@ -527,15 +527,14 @@ impl DataFrame {
         self.sort_values([column], SortOptions::new())?.head(n)
     }
 
-    /// Remove duplicate rows based on a subset of columns.
+    /// Remove duplicate rows based on a subset of columns (internal).
     ///
     /// The order of rows in the output is **not** guaranteed. The full
     /// schema (all columns) is preserved.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if any name in `subset` is not in the schema.
-    pub fn distinct(&self, subset: &[&str], keep: DuplicateKeepOption) -> Result<Self> {
+    /// This is the low-level implementation behind [`drop_duplicates`](Self::drop_duplicates).
+    /// External callers should use `drop_duplicates` with [`DistinctOptions`] instead.
+    pub(crate) fn distinct(&self, subset: &[&str], keep: DuplicateKeepOption) -> Result<Self> {
         let key_indices = resolve_column_names(&self.columns, subset, "dataframe::distinct")?;
         let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
         let tv = self.build_table_view()?;
@@ -693,6 +692,22 @@ impl DataFrame {
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
+    /// Return a new DataFrame with a single column added or replaced.
+    ///
+    /// The `name` parameter controls the column name in the resulting
+    /// DataFrame. The input's own [`Series::name()`] is **ignored** —
+    /// DataFrame is the schema authority for column naming.
+    ///
+    /// Use [`assign`](Self::assign) for batch addition of multiple columns,
+    /// or [`with_columns`](Self::with_columns) for expression-based computed
+    /// columns.
+    ///
+    /// # Cost
+    /// Unchanged columns are shared via `Arc::clone` — no GPU copy.
+    ///
+    /// # Errors
+    /// Returns an error if the new column's row count does not match the
+    /// DataFrame's existing row count.
     pub fn with_column(&self, name: &str, col: impl IntoSeries) -> Result<Self> {
         let series: Series = col.into_series()?;
         if self.columns.is_empty() {
@@ -765,6 +780,10 @@ impl DataFrame {
 
     /// Return a new DataFrame with multiple columns added or replaced from
     /// `(name, Series)` pairs.
+    ///
+    /// The pair key controls the column name in the resulting DataFrame. The
+    /// input Series' own [`Series::name()`] is **ignored** — DataFrame is the
+    /// schema authority for column naming.
     ///
     /// For each pair, if `name` already exists the column is replaced;
     /// otherwise it is appended. All unchanged columns are shared via
@@ -877,6 +896,10 @@ impl DataFrame {
 
     /// Evaluate expressions against this DataFrame and add/replace the
     /// resulting columns.
+    ///
+    /// Use this for declarative computed columns. For pre-computed Series,
+    /// use [`with_column`](Self::with_column) (single) or
+    /// [`assign`](Self::assign) (batch).
     ///
     /// All expressions are evaluated against the **original** state of `self`
     /// — not an incrementally mutated copy. This ensures that expressions can

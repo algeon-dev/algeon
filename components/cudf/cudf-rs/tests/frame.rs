@@ -45,6 +45,10 @@ mod dataframe_view_tests;
 
 #[path = "frame/series/convenience_tests.rs"]
 mod series_convenience_tests;
+#[path = "frame/series/host_materialization_tests.rs"]
+mod series_host_materialization_tests;
+#[path = "frame/series/series_ops_tests.rs"]
+mod series_ops_tests;
 #[path = "frame/series/series_tests.rs"]
 mod series_tests;
 #[path = "frame/series/view_tests.rs"]

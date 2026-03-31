@@ -97,6 +97,12 @@ impl Series {
 
     // -- Access --------------------------------------------------------------
 
+    /// Returns `true` if both series share the same retained provenance
+    /// (CUDA stream and memory resource).
+    pub fn same_provenance(&self, other: &Series) -> bool {
+        ExecutionDomain::same_provenance(self.column.execution_domain(), other.column.execution_domain())
+    }
+
     /// Advanced: drop to the core `Column` type.
     ///
     /// Returns a reference to the underlying `Column`. Use this when you need
@@ -140,6 +146,51 @@ impl Series {
     /// `SeriesView` name wrapper.
     pub fn as_column_view(&self) -> Result<ColumnView<'_>> {
         self.column.view()
+    }
+
+    /// Copy fixed-width column data to a host `Vec<T>`.
+    ///
+    /// The column's dtype must match `T::TYPE_ID`.
+    ///
+    /// # Cost
+    /// Device-to-host copy: one synchronous memcpy of `len * size_of::<T>()` bytes.
+    ///
+    /// # Errors
+    /// Returns `TypeError` if the column dtype does not match `T`.
+    pub fn to_vec<T: CudfType>(&self) -> Result<Vec<T>> {
+        self.column.view()?.to_vec::<T>()
+    }
+
+    /// Copy fixed-width column data to host as `Vec<Option<T>>`, encoding
+    /// null positions as `None`.
+    ///
+    /// Non-nullable columns return all `Some`. For nullable columns, this
+    /// combines `to_vec` and `validity()` into a single call.
+    ///
+    /// # Cost
+    /// Device-to-host copy: data buffer + null-mask buffer (two memcpys).
+    ///
+    /// # Errors
+    /// Returns `TypeError` if the column dtype does not match `T`.
+    pub fn to_optional_vec<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
+        let cv = self.column.view()?;
+        let vals = cv.to_vec::<T>()?;
+        match cv.validity()? {
+            None => Ok(vals.into_iter().map(Some).collect()),
+            Some(mask) => Ok(vals.into_iter().zip(mask).map(|(v, valid)| if valid { Some(v) } else { None }).collect()),
+        }
+    }
+
+    /// Copy string column data to a host `Vec<String>`.
+    ///
+    /// Null elements are returned as empty strings (`""`). Use
+    /// [`to_optional_strings`](Self::to_optional_strings) to distinguish
+    /// nulls from genuinely empty strings.
+    ///
+    /// # Errors
+    /// Returns `TypeError` if the underlying column type is not `STRING`.
+    pub fn to_strings(&self) -> Result<Vec<String>> {
+        self.column.view()?.to_strings()
     }
 
     /// Copy string data to host as `Vec<Option<String>>`, distinguishing null
@@ -555,53 +606,22 @@ impl Series {
     }
 }
 
-// ===========================================================================
-// Operator overloads: Add, Sub, Mul, Div
-// ===========================================================================
+// Operator overloads (Add, Sub, Mul, Div) live in the `ops` module.
 
-/// Implement `std::ops::{Add, Sub, Mul, Div}` for all value/ref combinations.
-///
-/// Each operator panics on error — use the named method (e.g. `.add()`) for
-/// `Result`-based error handling.
-macro_rules! impl_series_arithmetic_op {
-    ($trait:ident, $method:ident, $named_method:ident) => {
-        impl std::ops::$trait for Series {
-            type Output = Series;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-            /// Panics if the operation fails (e.g., type mismatch). Use the
-            /// named method [`Series::$named_method`] for `Result`-based error handling.
-            fn $method(self, rhs: Series) -> Series {
-                Series::$named_method(&self, &rhs).expect(concat!("Series::", stringify!($named_method), " failed"))
-            }
-        }
+    #[test]
+    fn same_provenance_ambient_default_returns_true() {
+        let a = Series::new("a", &[1i32, 2, 3]).expect("series a");
+        let b = Series::new("b", &[4i32, 5, 6]).expect("series b");
+        assert!(a.same_provenance(&b), "ambient-default series should share provenance");
+    }
 
-        impl std::ops::$trait<&Series> for Series {
-            type Output = Series;
-
-            fn $method(self, rhs: &Series) -> Series {
-                Series::$named_method(&self, rhs).expect(concat!("Series::", stringify!($named_method), " failed"))
-            }
-        }
-
-        impl std::ops::$trait<Series> for &Series {
-            type Output = Series;
-
-            fn $method(self, rhs: Series) -> Series {
-                Series::$named_method(self, &rhs).expect(concat!("Series::", stringify!($named_method), " failed"))
-            }
-        }
-
-        impl std::ops::$trait<&Series> for &Series {
-            type Output = Series;
-
-            fn $method(self, rhs: &Series) -> Series {
-                Series::$named_method(self, rhs).expect(concat!("Series::", stringify!($named_method), " failed"))
-            }
-        }
-    };
+    #[test]
+    fn same_provenance_self_returns_true() {
+        let a = Series::new("x", &[10i64, 20]).expect("series");
+        assert!(a.same_provenance(&a), "a series should share provenance with itself");
+    }
 }
-
-impl_series_arithmetic_op!(Add, add, add);
-impl_series_arithmetic_op!(Sub, sub, sub);
-impl_series_arithmetic_op!(Mul, mul, mul);
-impl_series_arithmetic_op!(Div, div, div);

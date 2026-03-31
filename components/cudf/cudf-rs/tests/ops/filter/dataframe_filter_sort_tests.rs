@@ -1,6 +1,8 @@
 //! Tests for DataFrame filter, filter_isin, sort, deduplicate.
 
-use cudf::{Column, DataFrame, ErrorKind, Series, SortOptions, ops::stream_compaction::DuplicateKeepOption};
+use cudf::{
+    Column, DataFrame, DistinctOptions, ErrorKind, Series, SortOptions, ops::stream_compaction::DuplicateKeepOption,
+};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
@@ -252,32 +254,36 @@ fn test_nlargest_nonexistent_column() {
 }
 
 // ---------------------------------------------------------------------------
-// distinct
+// drop_duplicates
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_distinct_by_single_column() {
+fn test_drop_duplicates_by_single_column() {
     // Duplicate ids: 3,1,4,1,5 → distinct ids should be {1,3,4,5}
     let df = sample_df();
-    let deduped = df.distinct(&["id"], DuplicateKeepOption::KeepAny).unwrap();
+    let deduped = df
+        .drop_duplicates(DistinctOptions::new().subset(&["id"]).keep(DuplicateKeepOption::KeepAny))
+        .unwrap();
 
     assert_eq!(deduped.num_rows(), 4); // 4 distinct ids
     assert_eq!(deduped.column_names(), vec!["id", "score"]);
 }
 
 #[test]
-fn test_distinct_preserves_schema() {
+fn test_drop_duplicates_preserves_schema() {
     let df = sample_df();
-    let deduped = df.distinct(&["id"], DuplicateKeepOption::KeepFirst).unwrap();
+    let deduped = df
+        .drop_duplicates(DistinctOptions::new().subset(&["id"]).keep(DuplicateKeepOption::KeepFirst))
+        .unwrap();
     assert_eq!(deduped.column_names(), vec!["id", "score"]);
     assert_eq!(deduped.column_index("id"), Some(0));
     assert_eq!(deduped.column_index("score"), Some(1));
 }
 
 #[test]
-fn test_distinct_nonexistent_column() {
+fn test_drop_duplicates_nonexistent_column() {
     let df = sample_df();
-    let result = df.distinct(&["nope"], DuplicateKeepOption::KeepAny);
+    let result = df.drop_duplicates(DistinctOptions::new().subset(&["nope"]).keep(DuplicateKeepOption::KeepAny));
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
 }

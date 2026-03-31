@@ -30,7 +30,7 @@
 //! | `head()` / `tail()`        | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `slice()`                  | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `gather()`                 | GPU-allocating             | Yes (owned)    | OK                     |
-//! | `distinct()`               | GPU-allocating             | Yes (owned)    | OK                     |
+//! | `distinct()` _(pub(crate))_| GPU-allocating             | Yes (owned)    | Internal impl for `drop_duplicates` |
 //! | `drop_nulls()`             | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `drop_nulls_any()`         | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `dropna(DropNaOptions)`    | GPU-allocating             | Yes (owned)    | OK (cuDF-style high-level API) |
