@@ -90,7 +90,7 @@ mod tests {
         let mut hasher = StableFnv1a64::new();
         hasher.update_field("alpha");
         hasher.update_field("beta");
-        assert_eq!(hasher.finish(), 0x072b_cef3_5e1d_c68a3);
+        assert_eq!(hasher.finish(), 0x72bc_ef35_e1dc_68a3);
     }
 
     #[test]

@@ -61,7 +61,14 @@ fn assert_successful_native_parity_row(
     assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded, "{query_id}");
     assert!(row.native_runtime_started, "{query_id} must execute through the native path");
     assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded, "{query_id}");
-    assert_eq!(row.parity_status, ParityStatus::Matched, "{query_id}");
+    assert_eq!(
+        row.parity_status,
+        ParityStatus::Matched,
+        "{query_id}: parity_detail={:?} cpu_fingerprint={:?} native_fingerprint={:?}",
+        row.parity_detail,
+        row.cpu_output_fingerprint,
+        row.native_output_fingerprint
+    );
     assert_eq!(row.comparison_mode, comparison_mode, "{query_id}");
     assert_eq!(row.cpu_output_rows, Some(output_rows), "{query_id}");
     assert_eq!(row.native_output_rows, Some(output_rows), "{query_id}");
