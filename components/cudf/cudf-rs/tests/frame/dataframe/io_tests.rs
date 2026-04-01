@@ -26,10 +26,10 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["id", "value"]);
 
-    let col = df.series_view("id").unwrap();
+    let col = df.series("id").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 
-    let col = df.series_view("value").unwrap();
+    let col = df.series("value").unwrap();
     assert_eq!(col.to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
@@ -54,7 +54,7 @@ fn test_read_parquet_with_options() {
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["b"]);
 
-    let col = df.series_view("b").unwrap();
+    let col = df.series("b").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
@@ -74,10 +74,10 @@ fn test_write_parquet_preserves_schema() {
     assert_eq!(df2.column_names(), vec!["x", "y"]);
     assert_eq!(df2.num_rows(), 2);
 
-    let col = df2.series_view("x").unwrap();
+    let col = df2.series("x").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![100, 200]);
 
-    let col = df2.series_view("y").unwrap();
+    let col = df2.series("y").unwrap();
     assert_eq!(col.to_vec::<f64>().unwrap(), vec![1.5, 2.5]);
 }
 
@@ -100,9 +100,9 @@ fn test_roundtrip_create_write_read() {
     assert_eq!(df2.num_columns(), 3);
     assert_eq!(df2.num_rows(), 3);
 
-    assert_eq!(df2.series_view("alpha").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
-    assert_eq!(df2.series_view("beta").unwrap().to_vec::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
-    assert_eq!(df2.series_view("gamma").unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_eq!(df2.series("alpha").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(df2.series("beta").unwrap().to_vec::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
+    assert_eq!(df2.series("gamma").unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
 }
 
 #[test]
@@ -117,8 +117,8 @@ fn test_read_csv_returns_dataframe_with_schema() {
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["id", "value"]);
-    assert_eq!(df.series_view("id").unwrap().to_vec::<i64>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(df.series_view("value").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(df.series("id").unwrap().to_vec::<i64>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(df.series("value").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -139,8 +139,8 @@ fn test_read_csv_with_options_supports_delimiter_and_explicit_names() {
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["left", "right"]);
-    assert_eq!(df.series_view("left").unwrap().to_vec::<i64>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(df.series_view("right").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(df.series("left").unwrap().to_vec::<i64>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(df.series("right").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -154,8 +154,8 @@ fn test_read_csv_without_header_uses_generated_names() {
     let df = DataFrame::read_csv_with_options(opts).unwrap();
 
     assert_eq!(df.column_names(), vec!["column_0", "column_1"]);
-    assert_eq!(df.series_view("column_0").unwrap().to_vec::<i64>().unwrap(), vec![4, 5]);
-    assert_eq!(df.series_view("column_1").unwrap().to_vec::<i64>().unwrap(), vec![40, 50]);
+    assert_eq!(df.series("column_0").unwrap().to_vec::<i64>().unwrap(), vec![4, 5]);
+    assert_eq!(df.series("column_1").unwrap().to_vec::<i64>().unwrap(), vec![40, 50]);
 }
 
 #[test]
@@ -169,8 +169,8 @@ fn test_read_csv_explicit_names_override_header_names() {
     let df = DataFrame::read_csv_with_options(opts).unwrap();
 
     assert_eq!(df.column_names(), vec!["new_a", "new_b"]);
-    assert_eq!(df.series_view("new_a").unwrap().to_vec::<i64>().unwrap(), vec![7, 8]);
-    assert_eq!(df.series_view("new_b").unwrap().to_vec::<i64>().unwrap(), vec![70, 80]);
+    assert_eq!(df.series("new_a").unwrap().to_vec::<i64>().unwrap(), vec![7, 8]);
+    assert_eq!(df.series("new_b").unwrap().to_vec::<i64>().unwrap(), vec![70, 80]);
 }
 
 #[test]
@@ -189,8 +189,8 @@ fn test_write_csv_preserves_dataframe_schema() {
 
     let df2 = DataFrame::read_csv(&path).unwrap();
     assert_eq!(df2.column_names(), vec!["x", "y"]);
-    assert_eq!(df2.series_view("x").unwrap().to_vec::<i64>().unwrap(), vec![100, 200]);
-    assert_eq!(df2.series_view("y").unwrap().to_vec::<i64>().unwrap(), vec![1, 2]);
+    assert_eq!(df2.series("x").unwrap().to_vec::<i64>().unwrap(), vec![100, 200]);
+    assert_eq!(df2.series("y").unwrap().to_vec::<i64>().unwrap(), vec![1, 2]);
 }
 
 #[test]
@@ -217,6 +217,6 @@ fn test_write_csv_with_options_supports_delimiter_and_header_toggle() {
     let df2 = DataFrame::read_csv_with_options(read_opts).unwrap();
 
     assert_eq!(df2.column_names(), vec!["left", "right"]);
-    assert_eq!(df2.series_view("left").unwrap().to_vec::<i64>().unwrap(), vec![9, 8]);
-    assert_eq!(df2.series_view("right").unwrap().to_vec::<i64>().unwrap(), vec![90, 80]);
+    assert_eq!(df2.series("left").unwrap().to_vec::<i64>().unwrap(), vec![9, 8]);
+    assert_eq!(df2.series("right").unwrap().to_vec::<i64>().unwrap(), vec![90, 80]);
 }

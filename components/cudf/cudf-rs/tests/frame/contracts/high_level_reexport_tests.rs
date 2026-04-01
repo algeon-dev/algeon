@@ -104,7 +104,7 @@ fn test_high_level_workflow_sort_values() {
     let df = DataFrame::from_columns([("id", ids)]).unwrap();
 
     let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
-    let data: Vec<i32> = sorted.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let data: Vec<i32> = sorted.series("id").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(data, vec![1, 2, 3]);
 }
 
@@ -166,8 +166,8 @@ fn test_all_high_level_types_in_single_import() {
 fn test_domain_modules_export_documented_surface() {
     use cudf::{
         frame::{
-            dataframe::{DataFrame as DomainDataFrame, DataFrameView as DomainDataFrameView},
-            series::{IntoSeries as DomainIntoSeries, Series as DomainSeries, SeriesView as DomainSeriesView},
+            dataframe::DataFrame as DomainDataFrame,
+            series::{IntoSeries as DomainIntoSeries, Series as DomainSeries},
         },
         ops::{
             Expr as DomainExpr,
@@ -190,9 +190,7 @@ fn test_domain_modules_export_documented_surface() {
     fn assert_into_series<T: DomainIntoSeries>() {}
 
     let _: Option<DomainDataFrame> = None;
-    let _: Option<DomainDataFrameView<'static>> = None;
     let _: Option<DomainSeries> = None;
-    let _: Option<DomainSeriesView<'static>> = None;
     let _: Option<DomainExpr> = None;
     let _: Option<DomainJoinResult> = None;
     let _: Option<DomainExecutionContext<'static>> = None;

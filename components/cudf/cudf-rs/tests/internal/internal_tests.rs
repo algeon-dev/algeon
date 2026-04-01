@@ -44,7 +44,7 @@ fn sort_preserves_schema_names_and_lengths() {
     assert_eq!(sorted.column_names(), vec!["a", "b"]);
 
     // Verify sorted order.
-    let a_view = sorted.series_view("a").unwrap();
+    let a_view = sorted.series("a").unwrap();
     let a_vals = a_view.to_vec::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2, 3]);
 }

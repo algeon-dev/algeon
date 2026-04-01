@@ -2,50 +2,18 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-use super::{owned::DataFrame, view::DataFrameView};
+use super::owned::DataFrame;
 use crate::{
     core::error::{Error, ErrorKind, Result},
-    frame::series::{Series, SeriesView},
+    frame::series::Series,
 };
 
 impl DataFrame {
-    /// Borrow a named [`SeriesView`] by name — the explicit borrow accessor.
-    ///
-    /// The returned view carries the column name and implements
-    /// `Deref<Target = ColumnView>`, so all low-level column methods are
-    /// available directly.
-    ///
-    /// This is the explicit borrow path. For owned access, use
-    /// [`series()`](Self::series) instead.
-    ///
-    /// # Cost
-    ///
-    /// Zero-copy (FFI view): creates a borrowed `ColumnView` over existing device memory.
-    /// No GPU allocation or copy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `name` is not in the schema.
-    pub fn series_view(&self, name: &str) -> Result<SeriesView<'_>> {
-        let (key, col) = self.columns.get_key_value(name).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                .with_operation("dataframe::series_view")
-                .with_context("column_name", name.to_string())
-        })?;
-
-        let cv = col.view()?;
-        Ok(SeriesView::new(Some(key.as_str()), cv))
-    }
-
     /// Return a named [`Series`] for the given column — the canonical user-facing accessor.
     ///
     /// The returned `Series` shares the underlying `Arc<Column>`, so this is a
     /// metadata-only operation that does not copy GPU data. The series name is
     /// set to the DataFrame column name.
-    ///
-    /// Use this method for all high-level column access. For a borrowed
-    /// [`SeriesView`] without an `Arc` bump, use
-    /// [`series_view()`](Self::series_view).
     ///
     /// # Cost
     ///
@@ -71,13 +39,33 @@ impl DataFrame {
         self.columns.get_index_of(name)
     }
 
-    /// Create a [`DataFrameView`] — a named, borrowed view of all columns.
+    /// Probe for a column by name, returning `Ok(None)` on miss.
     ///
-    /// The view provides named column access and iteration without copying
-    /// any GPU data.
-    pub fn view(&self) -> DataFrameView<'_> {
-        let columns = self.columns.iter().map(|(name, col)| (name.as_str(), col)).collect();
-        DataFrameView::new(columns)
+    /// Use this when a missing column is a normal case, not an error.
+    /// For strict access that errors on miss, use [`series()`](Self::series).
+    ///
+    /// # Cost
+    ///
+    /// Metadata-only, no GPU data copy: returns a new `Series` sharing the
+    /// underlying `Column` via `Arc`.
+    pub fn get(&self, name: &str) -> Result<Option<Series>> {
+        match self.columns.get(name) {
+            None => Ok(None),
+            Some(col) => Ok(Some(Series::from_column_arc(Arc::clone(col))?.rename(name))),
+        }
+    }
+
+    /// Returns `true` if a column with the given name exists in the schema.
+    pub fn contains(&self, name: &str) -> bool {
+        self.columns.contains_key(name)
+    }
+
+    /// Iterate over all columns as [`Series`] in schema order.
+    ///
+    /// Each item is an owned `Series` sharing the underlying `Column` via
+    /// `Arc`. No GPU data is copied.
+    pub fn iter_series(&self) -> impl Iterator<Item = Result<Series>> + '_ {
+        self.columns.iter().map(|(name, col)| Ok(Series::from_column_arc(Arc::clone(col))?.rename(name)))
     }
 
     /// Factorize a named column into integer codes and unique values.
@@ -92,7 +80,12 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema.
     pub fn factorize(&self, column: &str) -> Result<(Series, Series)> {
-        let cv = self.series_view(column)?;
+        let col = self.columns.get(column).ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
+                .with_operation("dataframe::factorize")
+                .with_context("column_name", column.to_string())
+        })?;
+        let cv = col.view()?;
         let (codes_col, uniques_col) = cv.factorize().map_err(|e| {
             let err = if e.operation().is_empty() { e.with_operation("dataframe::factorize") } else { e };
             err.with_context("column_name", column.to_string())

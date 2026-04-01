@@ -36,7 +36,7 @@ fn merge_same_key_allocates_no_more_than_merge_split() {
         let result = left.merge(&right, options.clone()).unwrap();
         assert_eq!(result.column_names(), vec!["id", "score", "value"]);
         assert_eq!(result.num_rows(), 2);
-        let _ = result.series_view("id").unwrap().to_vec::<i32>().unwrap();
+        let _ = result.series("id").unwrap().to_vec::<i32>().unwrap();
         result
     });
 
@@ -46,8 +46,8 @@ fn merge_same_key_allocates_no_more_than_merge_split() {
         assert_eq!(result.right.column_names(), vec!["id", "value"]);
         assert_eq!(result.left.num_rows(), 2);
         assert_eq!(result.right.num_rows(), 2);
-        let _ = result.left.series_view("id").unwrap().to_vec::<i32>().unwrap();
-        let _ = result.right.series_view("id").unwrap().to_vec::<i32>().unwrap();
+        let _ = result.left.series("id").unwrap().to_vec::<i32>().unwrap();
+        let _ = result.right.series("id").unwrap().to_vec::<i32>().unwrap();
         result
     });
 
@@ -67,7 +67,7 @@ fn merge_asymmetric_keys_allocates_no_more_than_merge_split() {
         let result = left.merge(&right, options.clone()).unwrap();
         assert_eq!(result.column_names(), vec!["left_id", "score", "right_id", "value"]);
         assert_eq!(result.num_rows(), 3);
-        let _ = result.series_view("left_id").unwrap().to_vec::<i32>().unwrap();
+        let _ = result.series("left_id").unwrap().to_vec::<i32>().unwrap();
         result
     });
 
@@ -77,8 +77,8 @@ fn merge_asymmetric_keys_allocates_no_more_than_merge_split() {
         assert_eq!(result.right.column_names(), vec!["right_id", "value"]);
         assert_eq!(result.left.num_rows(), 3);
         assert_eq!(result.right.num_rows(), 3);
-        let _ = result.left.series_view("left_id").unwrap().to_vec::<i32>().unwrap();
-        let _ = result.right.series_view("right_id").unwrap().to_vec::<i32>().unwrap();
+        let _ = result.left.series("left_id").unwrap().to_vec::<i32>().unwrap();
+        let _ = result.right.series("right_id").unwrap().to_vec::<i32>().unwrap();
         result
     });
 

@@ -47,7 +47,7 @@ fn expr_cast_accepts_typeid() {
     let df = DataFrame::from_series([("x", s)]).unwrap();
     let result = expr.eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
-    assert_eq!(result.view().unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(result.to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 // ===========================================================================

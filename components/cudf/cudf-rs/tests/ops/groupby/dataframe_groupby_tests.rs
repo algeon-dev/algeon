@@ -27,8 +27,8 @@ fn test_groupby_single_key_sum() {
     assert_eq!(names[1], "value_sum");
 
     // Verify data (sort by key for determinism)
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let sum_data: Vec<i64> = result.series_view("value_sum").unwrap().to_vec::<i64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let sum_data: Vec<i64> = result.series("value_sum").unwrap().to_vec::<i64>().unwrap();
 
     let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(sum_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -56,9 +56,9 @@ fn test_groupby_single_key_multiple_aggregations_same_column() {
     assert_eq!(names[1], "score_min");
     assert_eq!(names[2], "score_max");
 
-    let key_data: Vec<i32> = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let min_data: Vec<f64> = result.series_view("score_min").unwrap().to_vec::<f64>().unwrap();
-    let max_data: Vec<f64> = result.series_view("score_max").unwrap().to_vec::<f64>().unwrap();
+    let key_data: Vec<i32> = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let min_data: Vec<f64> = result.series("score_min").unwrap().to_vec::<f64>().unwrap();
+    let max_data: Vec<f64> = result.series("score_max").unwrap().to_vec::<f64>().unwrap();
 
     let mut triples: Vec<(i32, f64, f64)> =
         key_data.into_iter().zip(min_data.into_iter().zip(max_data)).map(|(k, (mn, mx))| (k, mn, mx)).collect();
@@ -166,10 +166,10 @@ fn test_groupby_interleaved_multi_column_agg_ordering() {
 
     assert_eq!(result.column_names(), vec!["key", "a_sum", "b_sum", "a_min"]);
 
-    let keys = result.series_view("key").unwrap().to_vec::<i32>().unwrap();
-    let a_sum = result.series_view("a_sum").unwrap().to_vec::<i64>().unwrap();
-    let b_sum = result.series_view("b_sum").unwrap().to_vec::<i64>().unwrap();
-    let a_min = result.series_view("a_min").unwrap().to_vec::<i64>().unwrap();
+    let keys = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let a_sum = result.series("a_sum").unwrap().to_vec::<i64>().unwrap();
+    let b_sum = result.series("b_sum").unwrap().to_vec::<i64>().unwrap();
+    let a_min = result.series("a_min").unwrap().to_vec::<i64>().unwrap();
 
     let mut rows: Vec<(i32, i64, i64, i64)> = keys
         .into_iter()

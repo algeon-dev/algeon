@@ -39,7 +39,7 @@ fn test_sort_values_single_column_ascending() {
     let df = sample_df();
     let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
 
-    assert_eq!(sorted.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
+    assert_eq!(sorted.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
     assert_eq!(sorted.column_names(), vec!["id", "score"]);
 }
 
@@ -52,7 +52,7 @@ fn test_sort_values_single_column_descending() {
     let df = sample_df();
     let sorted = df.sort_values(&["score"], SortOptions::new().with_descending(vec![true])).unwrap();
 
-    assert_eq!(sorted.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
+    assert_eq!(sorted.series("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -68,8 +68,8 @@ fn test_sort_values_multi_column() {
 
     let sorted = df.sort_values(&["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
 
-    assert_eq!(sorted.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
-    assert_eq!(sorted.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
+    assert_eq!(sorted.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
+    assert_eq!(sorted.series("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
 }
 
 #[test]
@@ -82,9 +82,9 @@ fn test_sort_values_multi_column_with_owned_string_keys() {
     let keys = vec!["id".to_string(), "score".to_string()];
     let sorted = df.sort_values(keys, SortOptions::new().with_descending(vec![false, true])).unwrap();
 
-    assert_eq!(sorted.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
-    assert_eq!(sorted.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
-    assert_eq!(sorted.series_view("tag").unwrap().to_vec::<i32>().unwrap(), vec![300, 100, 400, 200]);
+    assert_eq!(sorted.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
+    assert_eq!(sorted.series("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
+    assert_eq!(sorted.series("tag").unwrap().to_vec::<i32>().unwrap(), vec![300, 100, 400, 200]);
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ fn test_sort_values_stable_preserves_order() {
     let sorted = df.sort_values(&["id"], SortOptions::new().with_stable(true)).unwrap();
 
     // Tags should remain in original insertion order since all ids are equal.
-    assert_eq!(sorted.series_view("tag").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40]);
+    assert_eq!(sorted.series("tag").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40]);
 }
 
 // ---------------------------------------------------------------------------
@@ -175,8 +175,8 @@ fn test_sort_values_empty_options_means_defaults() {
     // Should be same as explicit ascending.
     let expected = df.sort_values(&["id"], SortOptions::new().with_descending(vec![false])).unwrap();
     assert_eq!(
-        sorted.series_view("id").unwrap().to_vec::<i32>().unwrap(),
-        expected.series_view("id").unwrap().to_vec::<i32>().unwrap(),
+        sorted.series("id").unwrap().to_vec::<i32>().unwrap(),
+        expected.series("id").unwrap().to_vec::<i32>().unwrap(),
     );
 }
 
@@ -193,7 +193,7 @@ fn test_sort_values_nulls_first() {
     // Sort by id ascending, nulls first.
     let sorted = df.sort_values(&["id"], SortOptions::new().with_nulls_first(vec![true])).unwrap();
 
-    let id_vals = sorted.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let id_vals = sorted.series("id").unwrap().to_vec::<i32>().unwrap();
     // Nulls should appear first (their host value is 0, but they're null).
     // Then the non-null values in ascending order: 1, 2.
     // The null positions have undefined data values, but the validity mask marks them null.
@@ -209,12 +209,12 @@ fn test_sort_values_default_places_nulls_last() {
     let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
 
     let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
-    let id_col = sorted.series_view("id").unwrap();
+    let id_col = sorted.series("id").unwrap();
     let id_vals = id_col.to_vec::<i32>().unwrap();
 
     assert_eq!(id_vals[0], 1);
     assert_eq!(id_vals[1], 2);
-    assert_eq!(id_col.validity().unwrap().unwrap(), vec![true, true, false, false]);
+    assert_eq!(id_col.as_column_view().unwrap().validity().unwrap().unwrap(), vec![true, true, false, false]);
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ fn test_sort_values_unstable_by_default() {
     // Default unstable sort should still produce correct ordering.
     let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
 
-    let ids = sorted.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let ids = sorted.series("id").unwrap().to_vec::<i32>().unwrap();
     // Check monotonically non-decreasing.
     for w in ids.windows(2) {
         assert!(w[0] <= w[1], "unstable sort produced incorrect order: {:?}", ids);
@@ -242,5 +242,5 @@ fn test_sort_values_unstable_by_default() {
 fn test_sort_values_explicit_ascending() {
     let df = sample_df();
     let sorted = df.sort_values(&["id"], SortOptions::new().with_descending(vec![false])).unwrap();
-    assert_eq!(sorted.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
+    assert_eq!(sorted.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
 }

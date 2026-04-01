@@ -11,7 +11,7 @@ fn test_gather_sequential_indices() {
     let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
 
     assert_eq!(result.num_rows(), 3);
-    let vals = result.series_view("x").unwrap().to_vec::<i32>().unwrap();
+    let vals = result.series("x").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(vals, vec![10, 20, 30]);
 }
 
@@ -24,7 +24,7 @@ fn test_gather_reversed() {
     let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
 
     assert_eq!(result.num_rows(), 3);
-    let vals = result.series_view("x").unwrap().to_vec::<i32>().unwrap();
+    let vals = result.series("x").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(vals, vec![30, 20, 10]);
 }
 
@@ -37,8 +37,8 @@ fn test_gather_out_of_bounds_nullify() {
     let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
 
     assert_eq!(result.num_rows(), 3);
-    let view = result.series_view("x").unwrap();
-    let validity = view.validity().unwrap().unwrap();
+    let view = result.series("x").unwrap();
+    let validity = view.as_column_view().unwrap().validity().unwrap().unwrap();
     assert!(validity[0]);
     assert!(!validity[1]); // OOB → null
     assert!(validity[2]);
@@ -53,7 +53,7 @@ fn test_gather_duplicate_indices() {
     let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
 
     assert_eq!(result.num_rows(), 3);
-    let vals = result.series_view("x").unwrap().to_vec::<i32>().unwrap();
+    let vals = result.series("x").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(vals, vec![20, 20, 20]);
 }
 
@@ -68,8 +68,8 @@ fn test_gather_preserves_schema() {
 
     assert_eq!(result.column_names(), &["id", "score"]);
     assert_eq!(result.num_rows(), 2);
-    assert_eq!(result.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 1]);
-    assert_eq!(result.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0]);
+    assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 1]);
+    assert_eq!(result.series("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0]);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn test_gather_multi_type() {
     let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
 
     assert_eq!(result.num_rows(), 2);
-    assert_eq!(result.series_view("ints").unwrap().to_vec::<i32>().unwrap(), vec![3, 1]);
-    assert_eq!(result.series_view("floats").unwrap().to_vec::<f64>().unwrap(), vec![3.5, 1.5]);
-    assert_eq!(result.series_view("strs").unwrap().to_strings().unwrap(), vec!["c", "a"]);
+    assert_eq!(result.series("ints").unwrap().to_vec::<i32>().unwrap(), vec![3, 1]);
+    assert_eq!(result.series("floats").unwrap().to_vec::<f64>().unwrap(), vec![3.5, 1.5]);
+    assert_eq!(result.series("strs").unwrap().to_strings().unwrap(), vec!["c", "a"]);
 }

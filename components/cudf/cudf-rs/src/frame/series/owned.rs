@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use super::view::SeriesView;
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -128,22 +127,13 @@ impl Series {
         self.column
     }
 
-    /// Creates a borrowed [`SeriesView`] carrying this series' name.
-    ///
-    /// The returned view implements `Deref<Target = ColumnView>`, so all
-    /// low-level column operations are accessible directly.
-    pub fn view(&self) -> Result<SeriesView<'_>> {
-        let cv = self.column.view()?;
-        Ok(SeriesView::new(self.name.as_deref(), cv))
-    }
-
-    /// Returns a borrowed bare `ColumnView` for low-level operations.
+    /// Returns a borrowed [`ColumnView`] for low-level operations.
     ///
     /// # Advanced
     ///
-    /// Prefer [`view()`](Self::view) for most uses. Use this method only when
-    /// an API specifically requires a bare `ColumnView` without the
-    /// `SeriesView` name wrapper.
+    /// Use this when you need to call core-layer column operations
+    /// (e.g. `device_data_ptr()`, `nullable()`, `validity()`) that are
+    /// not exposed on `Series`.
     pub fn as_column_view(&self) -> Result<ColumnView<'_>> {
         self.column.view()
     }

@@ -1,7 +1,6 @@
 //! GPU column types: owned `Column` and borrowed `ColumnView`.
 //!
-//! **Advanced/Core.** Most users should use [`Series`](crate::Series) /
-//! [`SeriesView`](crate::SeriesView).
+//! **Advanced/Core.** Most users should use [`Series`](crate::Series).
 
 mod convert;
 mod device_slice;

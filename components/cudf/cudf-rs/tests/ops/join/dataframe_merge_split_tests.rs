@@ -32,13 +32,13 @@ fn right_df_asym() -> DataFrame {
 }
 
 fn i32_column(df: &DataFrame, name: &str) -> Vec<i32> {
-    df.series_view(name).unwrap().to_vec::<i32>().unwrap()
+    df.series(name).unwrap().to_vec::<i32>().unwrap()
 }
 
 fn nullable_i32_column(df: &DataFrame, name: &str) -> Vec<Option<i32>> {
-    let series = df.series_view(name).unwrap();
+    let series = df.series(name).unwrap();
     let values = series.to_vec::<i32>().unwrap();
-    let validity = series.validity().unwrap().unwrap_or_else(|| vec![true; values.len()]);
+    let validity = series.as_column_view().unwrap().validity().unwrap().unwrap_or_else(|| vec![true; values.len()]);
 
     values.into_iter().zip(validity).map(|(value, valid)| if valid { Some(value) } else { None }).collect()
 }

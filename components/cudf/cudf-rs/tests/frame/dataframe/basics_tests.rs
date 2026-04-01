@@ -24,10 +24,10 @@ fn test_column_by_name() {
 
     let df = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
 
-    let col = df.series_view("id").unwrap();
+    let col = df.series("id").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 
-    let col = df.series_view("score").unwrap();
+    let col = df.series("score").unwrap();
     assert_eq!(col.to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
@@ -59,7 +59,7 @@ fn test_column_nonexistent_name_returns_error() {
     let c1 = Column::from_slice(&[1i32, 2]).unwrap();
     let df = DataFrame::new(vec!["x".to_string()], vec![c1]).unwrap();
 
-    let result = df.series_view("nonexistent");
+    let result = df.series("nonexistent");
     assert!(result.is_err());
     let err = result.err().unwrap();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -110,7 +110,7 @@ fn test_column_accessor_validates_data() {
     let c1 = Column::from_slice(&[1i32, 2]).unwrap();
     let df = DataFrame::new(vec!["x".to_string()], vec![c1]).unwrap();
 
-    let col = df.series_view("x").unwrap();
+    let col = df.series("x").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![1, 2]);
     assert_eq!(df.num_columns(), 1);
     assert_eq!(df.num_rows(), 2);
@@ -128,10 +128,10 @@ fn test_from_table_round_trip() {
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
 
-    let col_a = df.series_view("a").unwrap();
+    let col_a = df.series("a").unwrap();
     assert_eq!(col_a.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 
-    let col_b = df.series_view("b").unwrap();
+    let col_b = df.series("b").unwrap();
     assert_eq!(col_b.to_vec::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
 }
 
@@ -182,7 +182,7 @@ fn test_dataframe_macro_basic() {
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.column_names(), &["x", "y"]);
     assert_eq!(df.num_rows(), 3);
-    assert_eq!(df.series_view("x").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(df.series("x").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]

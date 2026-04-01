@@ -38,15 +38,15 @@ fn right_df_asym() -> DataFrame {
 }
 
 fn nullable_i32_column(df: &DataFrame, name: &str) -> Vec<Option<i32>> {
-    let series = df.series_view(name).unwrap();
+    let series = df.series(name).unwrap();
     let values = series.to_vec::<i32>().unwrap();
-    let validity = series.validity().unwrap().unwrap_or_else(|| vec![true; values.len()]);
+    let validity = series.as_column_view().unwrap().validity().unwrap().unwrap_or_else(|| vec![true; values.len()]);
 
     values.into_iter().zip(validity).map(|(value, valid)| if valid { Some(value) } else { None }).collect()
 }
 
 fn i32_column(df: &DataFrame, name: &str) -> Vec<i32> {
-    df.series_view(name).unwrap().to_vec::<i32>().unwrap()
+    df.series(name).unwrap().to_vec::<i32>().unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -303,12 +303,12 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_presync_stream);
-    assert_eq!(result.series_view("id").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
-    assert_eq!(result.series_view("score").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
-    assert_eq!(result.series_view("value").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series("id").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series("score").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series("value").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
 
     reset_exec_observation();
-    let mut ids = result.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let mut ids = result.series("id").unwrap().to_vec::<i32>().unwrap();
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 2, 3, 4]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
@@ -363,12 +363,12 @@ fn test_full_merge_with_context_succeeds_on_mixed_domains_and_reassembles_on_con
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(last_sync_stream_value(), expected_presync_stream);
-    assert_eq!(result.series_view("id").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
-    assert_eq!(result.series_view("score").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
-    assert_eq!(result.series_view("value").unwrap().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series("id").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series("score").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
+    assert_eq!(result.series("value").unwrap().as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
 
     reset_exec_observation();
-    let mut ids = result.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    let mut ids = result.series("id").unwrap().to_vec::<i32>().unwrap();
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 2, 3, 4]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);

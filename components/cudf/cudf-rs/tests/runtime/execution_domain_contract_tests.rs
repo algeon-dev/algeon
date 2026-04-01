@@ -433,13 +433,13 @@ fn dataframe_fillna_with_series_succeeds_with_mixed_explicit_domains() {
 }
 
 #[test]
-fn series_view_to_vec_synchronizes_retained_explicit_domain_stream() {
+fn series_to_vec_synchronizes_retained_explicit_domain_stream() {
     let series = explicit_i32_series("id", &[4, 5, 6], 71);
     let expected_stream = series.as_column().__debug_execution_domain_stream_value();
     assert_ne!(expected_stream, 0, "explicit domains should expose a non-zero retained stream value");
 
     reset_sync_observation();
-    let host: Vec<i32> = series.view().unwrap().to_vec().unwrap();
+    let host: Vec<i32> = series.to_vec().unwrap();
 
     assert_eq!(host, vec![4, 5, 6]);
     assert_eq!(last_sync_stream_value(), expected_stream);
@@ -488,13 +488,13 @@ fn scalar_is_valid_synchronizes_retained_explicit_domain_stream() {
 }
 
 #[test]
-fn series_view_to_strings_uses_retained_explicit_domain_stream() {
+fn series_to_strings_uses_retained_explicit_domain_stream() {
     let series = explicit_string_series("name", &["alice", "", "bob"], 732);
     let expected_stream = series.as_column().__debug_execution_domain_stream_value();
     assert_ne!(expected_stream, 0, "explicit domains should expose a non-zero retained stream value");
 
     reset_exec_observation();
-    let host = series.view().unwrap().to_strings().unwrap();
+    let host = series.to_strings().unwrap();
 
     assert_eq!(host, vec!["alice".to_string(), "".to_string(), "bob".to_string()]);
     assert_eq!(last_exec_stream_value(), expected_stream);
@@ -570,7 +570,7 @@ fn series_fillna_uses_retained_explicit_domain_stream() {
 
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(filled.as_column().__debug_execution_domain_id(), 80);
-    let host: Vec<i32> = filled.view().unwrap().to_vec().unwrap();
+    let host: Vec<i32> = filled.to_vec().unwrap();
     assert_eq!(host, vec![1, 99, 3]);
 }
 
@@ -1173,7 +1173,7 @@ fn series_isin_uses_retained_explicit_domain_stream_end_to_end() {
     assert_eq!(mask.as_column().__debug_execution_domain_id(), base.as_column().__debug_execution_domain_id());
 
     reset_sync_observation();
-    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, true, false, true]);
+    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, true, false, true]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 

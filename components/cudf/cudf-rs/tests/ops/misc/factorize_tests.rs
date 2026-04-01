@@ -229,8 +229,8 @@ fn test_dataframe_factorize_by_name() {
 
     let (codes, uniques) = df.factorize("values").unwrap();
 
-    let codes_view = codes.view().unwrap();
-    let uniques_view = uniques.view().unwrap();
+    let codes_view = codes.as_column_view().unwrap();
+    let uniques_view = uniques.as_column_view().unwrap();
 
     assert_eq!(codes_view.len().unwrap(), 5);
     assert_eq!(uniques_view.len().unwrap(), 3);
