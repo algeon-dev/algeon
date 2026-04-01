@@ -159,8 +159,9 @@ pub mod runtime_contracts {
         },
         graph_memory::{
             GRAPH_MEMORY_BOUNDARY, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES,
-            GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON, GraphMemoryClass, GraphMemoryEstimate, GraphMemoryModel,
-            GraphMemoryModelInput, GraphReservationOutcome, GraphReservationReport, graph_memory_class,
+            GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON, GRAPH_VERTEX_ESTIMATE_BOUNDARY, GraphMemoryClass,
+            GraphMemoryEstimate, GraphMemoryModel, GraphMemoryModelInput, GraphReservationOutcome,
+            GraphReservationReport, GraphVertexEstimate, GraphVertexEstimateSource, graph_memory_class,
             graph_memory_model_input, graph_memory_reservation_required,
         },
         runtime::{
@@ -313,8 +314,9 @@ pub use expr::{
 };
 pub use graph_memory::{
     GRAPH_MEMORY_BOUNDARY, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON,
-    GraphMemoryClass, GraphMemoryEstimate, GraphMemoryModel, GraphMemoryModelInput, GraphReservationOutcome,
-    GraphReservationReport, graph_memory_class, graph_memory_model_input, graph_memory_reservation_required,
+    GRAPH_VERTEX_ESTIMATE_BOUNDARY, GraphMemoryClass, GraphMemoryEstimate, GraphMemoryModel, GraphMemoryModelInput,
+    GraphReservationOutcome, GraphReservationReport, GraphVertexEstimate, GraphVertexEstimateSource,
+    graph_memory_class, graph_memory_model_input, graph_memory_reservation_required,
 };
 pub use metrics::{
     AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, DynamicFilterRuntimeMetrics,

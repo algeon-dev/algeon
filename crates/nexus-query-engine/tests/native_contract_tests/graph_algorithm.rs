@@ -9,8 +9,9 @@ use nexus_query_engine::{
     GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams,
     GraphEdgeColumnBindings, GraphLayoutRequirement, GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput,
     GraphOutputSchemaKind, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport,
-    GraphSourceVertexRequirement, GraphVertexIdTypeSupport, GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan,
-    QueryPlanBuilder, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
+    GraphSourceVertexRequirement, GraphVertexEstimate, GraphVertexEstimateSource, GraphVertexIdTypeSupport,
+    GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan, QueryPlanBuilder, SourceNode, StrictBoundedContractReport,
+    StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     graph_memory_class, graph_memory_reservation_required, stable_graph_result_schema,
 };
@@ -392,11 +393,14 @@ fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
                 vertex_width_bytes: 4,
                 weight_width_bytes: Some(4),
                 has_edge_id: false,
+                vertex_estimate: None,
             },
         )
         .unwrap();
     assert_eq!(estimate.class, GraphMemoryClass::OutputSized);
     assert_eq!(estimate.vertex_upper_bound, 200);
+    assert_eq!(estimate.vertex_estimate, 200);
+    assert_eq!(estimate.vertex_estimate_source, GraphVertexEstimateSource::EdgeEndpointUpperBound);
     assert!(estimate.requested_bytes > 0);
 
     let admitted = GraphReservationReport::from_estimate(
@@ -433,6 +437,72 @@ fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
 }
 
 #[test]
+fn graph_memory_model_uses_refined_vertex_estimate_for_sparse_graph_admission() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Louvain,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::PythonCugraph },
+        GraphAlgorithmParams::Louvain(Default::default()),
+    );
+    let input = GraphMemoryModelInput {
+        input_edges: 1_000_000,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        vertex_estimate: None,
+    };
+
+    let fallback = GraphMemoryModel.estimate(&spec, input).unwrap();
+    let refined = GraphMemoryModel
+        .estimate(&spec, input.with_vertex_estimate(GraphVertexEstimate::source_statistics(10)))
+        .unwrap();
+
+    assert_eq!(fallback.vertex_upper_bound, 2_000_000);
+    assert_eq!(fallback.vertex_estimate, 2_000_000);
+    assert_eq!(fallback.vertex_estimate_source, GraphVertexEstimateSource::EdgeEndpointUpperBound);
+    assert_eq!(refined.vertex_upper_bound, 2_000_000);
+    assert_eq!(refined.vertex_estimate, 10);
+    assert_eq!(refined.vertex_estimate_source, GraphVertexEstimateSource::SourceStatistics);
+    assert!(
+        refined.requested_bytes < fallback.requested_bytes,
+        "sparse graph pricing must use the refined vertex count for vertex-sized Louvain terms"
+    );
+
+    let budget = refined.requested_bytes;
+    let refined_report = GraphReservationReport::from_estimate("n2", refined, Some(budget));
+    assert_eq!(refined_report.outcome, GraphReservationOutcome::Admitted);
+    let fallback_report = GraphReservationReport::from_estimate("n2", fallback, Some(budget));
+    assert_eq!(fallback_report.outcome, GraphReservationOutcome::Denied);
+    assert_eq!(fallback_report.reason, Some("graph_memory_estimate_exceeds_budget"));
+}
+
+#[test]
+fn graph_memory_model_clamps_refined_vertex_estimate_to_endpoint_upper_bound() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+    let estimate = GraphMemoryModel
+        .estimate(
+            &spec,
+            GraphMemoryModelInput {
+                input_edges: 5,
+                vertex_width_bytes: 4,
+                weight_width_bytes: None,
+                has_edge_id: false,
+                vertex_estimate: Some(GraphVertexEstimate::graph_metadata(999)),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(estimate.vertex_upper_bound, 10);
+    assert_eq!(estimate.vertex_estimate, 10);
+    assert_eq!(estimate.vertex_estimate_source, GraphVertexEstimateSource::GraphMetadata);
+}
+
+#[test]
 fn betweenness_seed_count_is_the_class_d_memory_dial() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::BetweennessCentrality,
@@ -451,6 +521,7 @@ fn betweenness_seed_count_is_the_class_d_memory_dial() {
                 vertex_width_bytes: 4,
                 weight_width_bytes: None,
                 has_edge_id: false,
+                vertex_estimate: None,
             },
         )
         .unwrap();
@@ -475,10 +546,36 @@ fn betweenness_seed_count_is_the_class_d_memory_dial() {
                 vertex_width_bytes: 4,
                 weight_width_bytes: None,
                 has_edge_id: false,
+                vertex_estimate: None,
             },
         )
         .unwrap();
     assert_eq!(k_estimate.seed_count, Some(5));
+
+    let all_vertex_estimate = GraphMemoryModel
+        .estimate(
+            &GraphAlgorithmSpec::with_stable_schema(
+                GraphAlgorithm::BetweennessCentrality,
+                GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+                GraphConstructionOptions {
+                    directed: true,
+                    renumber: true,
+                    policy: GraphConstructionPolicy::RawLibcugraph,
+                },
+                GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams::default()),
+            ),
+            GraphMemoryModelInput {
+                input_edges: 100,
+                vertex_width_bytes: 4,
+                weight_width_bytes: None,
+                has_edge_id: false,
+                vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(7)),
+            },
+        )
+        .unwrap();
+    assert_eq!(all_vertex_estimate.vertex_upper_bound, 200);
+    assert_eq!(all_vertex_estimate.vertex_estimate, 7);
+    assert_eq!(all_vertex_estimate.seed_count, Some(7));
 }
 
 #[test]

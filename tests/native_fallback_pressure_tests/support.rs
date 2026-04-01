@@ -293,6 +293,8 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .with_new_label("outcome", "admitted")
         .with_new_label("input_edges", "6")
         .with_new_label("vertex_upper_bound", "12")
+        .with_new_label("vertex_estimate", "12")
+        .with_new_label("vertex_estimate_source", "edge_endpoint_upper_bound")
         .with_new_label("vertex_width_bytes", "4")
         .with_new_label("weight_width_bytes", "8")
         .with_new_label("has_edge_id", "false")

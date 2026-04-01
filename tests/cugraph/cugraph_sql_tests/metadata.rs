@@ -146,6 +146,41 @@ async fn cugraph_metadata_list_algorithms_reports_allowlist_state() {
 }
 
 #[tokio::test]
+async fn cugraph_louvain_metadata_discloses_weight_arg_is_accepted_but_not_consumed() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+
+    let batches = ctx
+        .sql(
+            "SELECT accepts_weight_arg, consumes_weight, weight_col_policy \
+             FROM cugraph_list_algorithms() \
+             WHERE function_name = 'cugraph_louvain'",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0), "Louvain SQL accepts the positional weight_col argument");
+    assert!(!bool_value(batch, 1, 0), "native Louvain execution does not consume edge weights");
+    assert_eq!(string_value(batch, 2, 0), "ignored");
+
+    let describe = ctx
+        .sql("SELECT argument_descriptions_json FROM cugraph_describe_algorithm('cugraph_louvain')")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let argument_descriptions = json_value(string_value(single_batch(&describe), 0, 0));
+    let weight_col = json_array_item_by_name(&argument_descriptions, "weight_col");
+    assert_eq!(weight_col["weight_col_policy"], "ignored");
+    assert_eq!(weight_col["semantic_effect"], "none for this algorithm");
+    assert!(weight_col["note"].as_str().unwrap().contains("does not consume weights"));
+}
+
+#[tokio::test]
 async fn cugraph_metadata_describe_algorithm_returns_structured_rows() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);

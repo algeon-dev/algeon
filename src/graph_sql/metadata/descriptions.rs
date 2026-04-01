@@ -35,6 +35,9 @@ fn weight_argument_note(algorithm: CugraphAlgorithm) -> &'static str {
     match algorithm {
         CugraphAlgorithm::Bfs => "accepted as an edge-column binding but ignored by BFS traversal",
         CugraphAlgorithm::MinimumSpanningTree => "required edge weight column",
+        _ if !algorithm.native_algorithm().weight_policy().consumes_weight() => {
+            "accepted as an edge-column binding; native algorithm execution does not consume weights"
+        },
         _ => "optional edge weight column for graph construction when supported by the algorithm",
     }
 }

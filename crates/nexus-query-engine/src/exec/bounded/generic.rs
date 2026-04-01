@@ -432,14 +432,37 @@ fn execute_bounded_generic_graph_algorithm(
 
     let mut graph_reservation = None;
     let graph_memory_limit_bytes = if crate::graph_memory::graph_memory_reservation_required(graph.spec.algorithm) {
-        let report = graph_memory_reservation_report(
+        let vertex_estimate = match graph_memory_vertex_estimate_with_reservation(
+            context,
+            node_id,
+            &graph.spec,
+            filtered_input.frame(),
+            reservations,
+            metrics,
+        ) {
+            Ok(vertex_estimate) => vertex_estimate,
+            Err(error) => {
+                drop(filtered_input);
+                reservations.release(input_reservation, metrics);
+                return Err(error.with_fact_if_absent("node_id", node_id));
+            },
+        };
+        let report = match graph_memory_reservation_report(
             node_id,
             &graph.spec,
             filtered_input.frame(),
             sanitized_input_rows,
             Some(reservations.remaining_bytes()),
             false,
-        )?;
+            vertex_estimate,
+        ) {
+            Ok(report) => report,
+            Err(error) => {
+                drop(filtered_input);
+                reservations.release(input_reservation, metrics);
+                return Err(error.with_fact_if_absent("node_id", node_id));
+            },
+        };
         let request = MemoryReservationRequest::new(
             ReservationKind::GraphAlgorithm,
             report.requested_bytes,
@@ -575,6 +598,30 @@ pub(in crate::exec::bounded) fn release_resident_frames_reverse(
     while let Some(frame) = frames.pop() {
         reservations.release(frame.reservation, metrics);
     }
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_memory_vertex_estimate_with_reservation(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: &DataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Option<crate::graph_memory::GraphVertexEstimate>> {
+    let remaining = reservations.remaining_bytes();
+    if remaining == 0 {
+        return Ok(None);
+    }
+    let request = MemoryReservationRequest::new(ReservationKind::GraphAlgorithm, remaining, reservations.budget())
+        .with_memory_boundary(crate::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY)
+        .with_node_id(node_id)
+        .with_stage("graph_memory_vertex_estimate");
+    let reservation = reservations.try_reserve_work(request, metrics)?;
+    let limit_bytes = reservation.bytes();
+    let estimate = runtime_exact_vertex_estimate_with_budget(context, input, spec, limit_bytes, metrics);
+    reservations.release(reservation, metrics);
+    estimate.map(Some)
 }
 
 pub(in crate::exec::bounded) fn release_reservations_reverse(

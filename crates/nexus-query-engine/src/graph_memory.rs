@@ -15,6 +15,9 @@ use crate::{
 /// Stable graph memory-tier boundary used in reports and reservation facts.
 pub const GRAPH_MEMORY_BOUNDARY: &str = "graph_memory";
 
+/// Temporary bounded-admission probe that measures distinct graph endpoints.
+pub const GRAPH_VERTEX_ESTIMATE_BOUNDARY: &str = "graph_memory_vertex_estimate";
+
 /// Stable local rejection reason for graph estimate denial.
 pub const GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON: &str = "graph_memory_estimate_exceeds_budget";
 
@@ -89,6 +92,66 @@ impl std::fmt::Display for GraphReservationOutcome {
     }
 }
 
+/// Provenance for the vertex-count signal used by graph memory pricing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GraphVertexEstimateSource {
+    /// The model fell back to `2 * input_edges`.
+    EdgeEndpointUpperBound,
+    /// Exact distinct endpoint count measured from the runtime edge frame.
+    RuntimeExactDistinct,
+    /// Source-level statistics supplied a trusted vertex count.
+    SourceStatistics,
+    /// Graph dataset metadata supplied a trusted vertex count.
+    GraphMetadata,
+}
+
+impl GraphVertexEstimateSource {
+    /// Stable label used in reports.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EdgeEndpointUpperBound => "edge_endpoint_upper_bound",
+            Self::RuntimeExactDistinct => "runtime_exact_distinct",
+            Self::SourceStatistics => "source_statistics",
+            Self::GraphMetadata => "graph_metadata",
+        }
+    }
+}
+
+impl std::fmt::Display for GraphVertexEstimateSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Refined vertex-count evidence for graph memory pricing.
+///
+/// Non-runtime callers must pass an exact or safety-padded count; admission uses
+/// this value directly after clamping it to the endpoint upper bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GraphVertexEstimate {
+    /// Vertex-count signal before clamping to the endpoint upper bound.
+    pub count: u64,
+    /// Provenance for the count.
+    pub source: GraphVertexEstimateSource,
+}
+
+impl GraphVertexEstimate {
+    /// Exact endpoint count measured from the runtime edge-list frame.
+    pub const fn runtime_exact_distinct(count: u64) -> Self {
+        Self { count, source: GraphVertexEstimateSource::RuntimeExactDistinct }
+    }
+
+    /// Trusted vertex count supplied by source-level statistics.
+    pub const fn source_statistics(count: u64) -> Self {
+        Self { count, source: GraphVertexEstimateSource::SourceStatistics }
+    }
+
+    /// Trusted vertex count supplied by graph dataset metadata.
+    pub const fn graph_metadata(count: u64) -> Self {
+        Self { count, source: GraphVertexEstimateSource::GraphMetadata }
+    }
+}
+
 /// Plan/runtime inputs used by the approximate graph memory model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GraphMemoryModelInput {
@@ -100,6 +163,8 @@ pub struct GraphMemoryModelInput {
     pub weight_width_bytes: Option<u64>,
     /// Whether the graph has a stable edge-id column.
     pub has_edge_id: bool,
+    /// Better vertex-count signal when available.
+    pub vertex_estimate: Option<GraphVertexEstimate>,
 }
 
 impl GraphMemoryModelInput {
@@ -107,6 +172,12 @@ impl GraphMemoryModelInput {
     /// distinct endpoints.
     pub fn vertex_upper_bound(self) -> u64 {
         self.input_edges.saturating_mul(2)
+    }
+
+    /// Attach refined vertex-count evidence.
+    pub fn with_vertex_estimate(mut self, estimate: GraphVertexEstimate) -> Self {
+        self.vertex_estimate = Some(estimate);
+        self
     }
 }
 
@@ -117,6 +188,8 @@ pub struct GraphMemoryEstimate {
     pub class: GraphMemoryClass,
     pub input_edges: u64,
     pub vertex_upper_bound: u64,
+    pub vertex_estimate: u64,
+    pub vertex_estimate_source: GraphVertexEstimateSource,
     pub vertex_width_bytes: u64,
     pub weight_width_bytes: Option<u64>,
     pub has_edge_id: bool,
@@ -137,6 +210,8 @@ pub struct GraphReservationReport {
     pub outcome: GraphReservationOutcome,
     pub input_edges: u64,
     pub vertex_upper_bound: u64,
+    pub vertex_estimate: u64,
+    pub vertex_estimate_source: GraphVertexEstimateSource,
     pub vertex_width_bytes: u64,
     pub weight_width_bytes: Option<u64>,
     pub has_edge_id: bool,
@@ -171,6 +246,8 @@ impl GraphReservationReport {
             outcome,
             input_edges: estimate.input_edges,
             vertex_upper_bound: estimate.vertex_upper_bound,
+            vertex_estimate: estimate.vertex_estimate,
+            vertex_estimate_source: estimate.vertex_estimate_source,
             vertex_width_bytes: estimate.vertex_width_bytes,
             weight_width_bytes: estimate.weight_width_bytes,
             has_edge_id: estimate.has_edge_id,
@@ -194,6 +271,8 @@ impl GraphReservationReport {
             .with_fact("graph_memory_class", self.class.as_str())
             .with_fact("input_edges", self.input_edges)
             .with_fact("vertex_upper_bound", self.vertex_upper_bound)
+            .with_fact("vertex_estimate", self.vertex_estimate)
+            .with_fact("vertex_estimate_source", self.vertex_estimate_source.as_str())
             .with_fact("vertex_width_bytes", self.vertex_width_bytes)
             .with_fact("directed", self.directed)
             .with_fact("renumber", self.renumber)
@@ -224,6 +303,10 @@ impl GraphMemoryModel {
 
         let class = graph_memory_class(spec.algorithm);
         let vertex_upper_bound = input.vertex_upper_bound();
+        let (vertex_estimate, vertex_estimate_source) = input
+            .vertex_estimate
+            .map(|estimate| (estimate.count.min(vertex_upper_bound), estimate.source))
+            .unwrap_or((vertex_upper_bound, GraphVertexEstimateSource::EdgeEndpointUpperBound));
         let edge_row_width = input
             .vertex_width_bytes
             .saturating_mul(2)
@@ -233,13 +316,13 @@ impl GraphMemoryModel {
         let construction_bytes = saturating_product(input.input_edges, edge_row_width)
             .saturating_mul(construction_multiplier)
             .saturating_add(if spec.graph_options.renumber {
-                saturating_product(vertex_upper_bound, input.vertex_width_bytes.saturating_mul(3))
+                saturating_product(vertex_estimate, input.vertex_width_bytes.saturating_mul(3))
             } else {
                 0
             });
-        let output_bytes = output_bytes_for_algorithm(spec.algorithm, vertex_upper_bound, input.input_edges);
-        let seed_count = graph_seed_count(&spec.params, vertex_upper_bound);
-        let workspace_bytes = workspace_bytes_for_class(class, input, vertex_upper_bound, seed_count);
+        let output_bytes = output_bytes_for_algorithm(spec.algorithm, vertex_estimate, input.input_edges);
+        let seed_count = graph_seed_count(&spec.params, vertex_estimate);
+        let workspace_bytes = workspace_bytes_for_class(class, input, vertex_estimate, seed_count);
         let requested_bytes = construction_bytes.saturating_add(output_bytes).saturating_add(workspace_bytes).max(1);
 
         Ok(GraphMemoryEstimate {
@@ -247,6 +330,8 @@ impl GraphMemoryModel {
             class,
             input_edges: input.input_edges,
             vertex_upper_bound,
+            vertex_estimate,
+            vertex_estimate_source,
             vertex_width_bytes: input.vertex_width_bytes,
             weight_width_bytes: input.weight_width_bytes,
             has_edge_id: input.has_edge_id,
@@ -411,5 +496,6 @@ pub fn graph_memory_model_input(
         vertex_width_bytes,
         weight_width_bytes: consumes_weight.then_some(weight_width_bytes).flatten(),
         has_edge_id: edge_columns.edge_id.is_some(),
+        vertex_estimate: None,
     }
 }
