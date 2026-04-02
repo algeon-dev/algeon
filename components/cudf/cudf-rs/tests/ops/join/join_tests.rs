@@ -248,7 +248,7 @@ fn test_join_domain_module_exports_documented_surface() {
     .unwrap();
     assert_eq!(full.left.view().unwrap().num_rows().unwrap(), 4);
 
-    let opts = MergeOptions::new().on(&["id"]).how(JoinType::Left);
+    let opts = MergeOptions::new().on(["id"]).how(JoinType::Left);
     assert_eq!(opts.join_type(), JoinType::Left);
 }
 

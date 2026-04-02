@@ -7,7 +7,7 @@ use arrow::{
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf::{Column, DataFrame, TypeId, io::arrow::dataframe_from_record_batch};
+use cudf::{Column, DataFrame, TypeId};
 
 // ---------------------------------------------------------------------------
 // Round-trip: DataFrame → RecordBatch → DataFrame
@@ -23,7 +23,7 @@ fn test_round_trip_i32() {
     assert_eq!(batch.schema().field(0).name(), "a");
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Int32);
 
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["a"]);
     let vals: Vec<i32> = df2.series("a").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(vals, vec![1, 2, 3]);
@@ -36,7 +36,7 @@ fn test_round_trip_i64() {
     let batch = df.to_record_batch().unwrap();
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Int64);
 
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     let vals: Vec<i64> = df2.series("x").unwrap().to_vec::<i64>().unwrap();
     assert_eq!(vals, vec![100, 200, 300]);
 }
@@ -53,7 +53,7 @@ fn test_round_trip_f32_f64() {
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Float32);
     assert_eq!(*batch.schema().field(1).data_type(), ArrowDataType::Float64);
 
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     let f32_vals: Vec<f32> = df2.series("f32_col").unwrap().to_vec::<f32>().unwrap();
     assert_eq!(f32_vals, vec![1.5, 2.5, 3.5]);
 
@@ -82,7 +82,7 @@ fn test_round_trip_nullable_i32() {
     assert_eq!(arr.value(2), 3);
 
     // Round-trip back.
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     let cv = df2.series("a").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
@@ -107,7 +107,7 @@ fn test_round_trip_nullable_f64() {
     assert!(arr.is_valid(2));
     assert!(!arr.is_valid(3));
 
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     let cv = df2.series("v").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true, false]);
@@ -129,11 +129,11 @@ fn test_round_trip_bool8() {
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Boolean);
 
     let arr = batch.column(0).as_any().downcast_ref::<BooleanArray>().unwrap();
-    assert_eq!(arr.value(0), true);
-    assert_eq!(arr.value(1), false);
-    assert_eq!(arr.value(2), true);
+    assert!(arr.value(0));
+    assert!(!arr.value(1));
+    assert!(arr.value(2));
 
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     let vals: Vec<bool> = df2.series("flag").unwrap().to_vec::<bool>().unwrap();
     assert_eq!(vals, vec![true, false, true]);
 }
@@ -151,10 +151,10 @@ fn test_round_trip_nullable_bool8() {
     assert!(arr.is_valid(0));
     assert!(!arr.is_valid(1));
     assert!(arr.is_valid(2));
-    assert_eq!(arr.value(0), true);
-    assert_eq!(arr.value(2), true);
+    assert!(arr.value(0));
+    assert!(arr.value(2));
 
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     let cv = df2.series("flag").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
@@ -182,7 +182,7 @@ fn test_schema_preserved_multi_column() {
     assert_eq!(batch.schema().field(1).name(), "score");
     assert_eq!(batch.schema().field(2).name(), "active");
 
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["id", "score", "active"]);
 
     // Verify types survived.
@@ -205,7 +205,7 @@ fn test_from_record_batch_creates_dataframe() {
     )
     .unwrap();
 
-    let df = dataframe_from_record_batch(&batch).unwrap();
+    let df = DataFrame::from_record_batch(&batch).unwrap();
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["x", "y"]);
@@ -223,7 +223,7 @@ fn test_from_record_batch_with_nulls() {
     let batch =
         RecordBatch::try_new(Arc::new(schema), vec![Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]))]).unwrap();
 
-    let df = dataframe_from_record_batch(&batch).unwrap();
+    let df = DataFrame::from_record_batch(&batch).unwrap();
     let cv = df.series("a").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
@@ -254,7 +254,7 @@ fn test_round_trip_string_only() {
     assert_eq!(arr.value(2), "charlie");
 
     // Round-trip back to GPU DataFrame.
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["name"]);
     assert_eq!(df2.series("name").unwrap().dtype().unwrap().id(), TypeId::String);
     let strs = df2.series("name").unwrap().to_strings().unwrap();
@@ -277,7 +277,7 @@ fn test_round_trip_mixed_string_and_numeric() {
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Utf8);
     assert_eq!(*batch.schema().field(1).data_type(), ArrowDataType::Int64);
 
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["city", "pop"]);
 
     let cities = df2.series("city").unwrap().to_strings().unwrap();
@@ -304,7 +304,7 @@ fn test_round_trip_nullable_string() {
     assert_eq!(arr.value(2), "world");
 
     // Round-trip back.
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     let cv = df2.series("tag").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
@@ -319,7 +319,7 @@ fn test_round_trip_string_with_empty_values() {
     let df = DataFrame::new(vec!["s".to_string()], vec![Column::from_strings(&["", "data", ""]).unwrap()]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     let strs = df2.series("s").unwrap().to_strings().unwrap();
     assert_eq!(strs, vec!["", "data", ""]);
 }
@@ -336,7 +336,7 @@ fn test_round_trip_string_unicode() {
     assert_eq!(arr.value(1), "日本語");
     assert_eq!(arr.value(2), "🚀🎉");
 
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     let strs = df2.series("text").unwrap().to_strings().unwrap();
     assert_eq!(strs, vec!["héllo", "日本語", "🚀🎉"]);
 }
@@ -348,7 +348,7 @@ fn test_from_record_batch_string_array() {
         RecordBatch::try_new(Arc::new(schema), vec![Arc::new(StringArray::from(vec!["alpha", "beta", "gamma"]))])
             .unwrap();
 
-    let df = dataframe_from_record_batch(&batch).unwrap();
+    let df = DataFrame::from_record_batch(&batch).unwrap();
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.series("name").unwrap().dtype().unwrap().id(), TypeId::String);
     let strs = df.series("name").unwrap().to_strings().unwrap();
@@ -362,7 +362,7 @@ fn test_from_record_batch_nullable_string_array() {
         RecordBatch::try_new(Arc::new(schema), vec![Arc::new(StringArray::from(vec![Some("a"), None, Some("c")]))])
             .unwrap();
 
-    let df = dataframe_from_record_batch(&batch).unwrap();
+    let df = DataFrame::from_record_batch(&batch).unwrap();
     let cv = df.series("s").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
@@ -378,7 +378,7 @@ fn test_from_record_batch_large_string_array() {
     let batch =
         RecordBatch::try_new(Arc::new(schema), vec![Arc::new(LargeStringArray::from(vec!["x", "y", "z"]))]).unwrap();
 
-    let df = dataframe_from_record_batch(&batch).unwrap();
+    let df = DataFrame::from_record_batch(&batch).unwrap();
     let strs = df.series("s").unwrap().to_strings().unwrap();
     assert_eq!(strs, vec!["x", "y", "z"]);
 }
@@ -395,7 +395,7 @@ fn test_round_trip_empty_string_schema() {
     let arr = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
     assert_eq!(arr.len(), 0);
 
-    let df2 = dataframe_from_record_batch(&batch).unwrap();
+    let df2 = DataFrame::from_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["s"]);
     assert_eq!(df2.num_rows(), 0);
     assert_eq!(df2.series("s").unwrap().dtype().unwrap().id(), TypeId::String);

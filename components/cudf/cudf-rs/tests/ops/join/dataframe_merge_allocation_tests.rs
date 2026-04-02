@@ -30,7 +30,7 @@ fn right_df_asym() -> DataFrame {
 fn merge_same_key_allocates_no_more_than_merge_split() {
     let left = left_df();
     let right = right_df();
-    let options = MergeOptions::new().on(&["id"]);
+    let options = MergeOptions::new().on(["id"]);
 
     let merge_allocations = allocation_count_delta(|| {
         let result = left.merge(&right, options.clone()).unwrap();
@@ -61,7 +61,7 @@ fn merge_same_key_allocates_no_more_than_merge_split() {
 fn merge_asymmetric_keys_allocates_no_more_than_merge_split() {
     let left = left_df_asym();
     let right = right_df_asym();
-    let options = MergeOptions::new().how_left().left_on(&["left_id"]).right_on(&["right_id"]);
+    let options = MergeOptions::new().how_left().left_on(["left_id"]).right_on(["right_id"]);
 
     let merge_allocations = allocation_count_delta(|| {
         let result = left.merge(&right, options.clone()).unwrap();

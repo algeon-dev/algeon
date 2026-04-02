@@ -142,7 +142,7 @@ fn test_from_column_round_trip() {
 fn test_from_column_arc_shares_arc() {
     let col = Arc::new(Column::from_slice(&[1i64, 2]).unwrap());
     let arc_clone = Arc::clone(&col);
-    let s = Series::from_column_arc(arc_clone).unwrap();
+    let s = Series::from_column_arc(arc_clone);
 
     // The Series should share the same Arc (same device pointer).
     let ptr_orig = col.view().unwrap().device_data_ptr().unwrap();

@@ -2,7 +2,7 @@
 //!
 //! Validates the accessor naming scheme:
 //! - `DataFrame::series()` — returns owned `Series`
-//! - `DataFrame::get()` — probe access, returns `Ok(None)` on miss
+//! - `DataFrame::get()` — probe access, returns `None` on miss
 //! - `DataFrame::contains()` — existence check
 //! - `DataFrame::iter_series()` — schema-ordered iteration
 //! - `Series::as_column()` — returns `&Column`
@@ -72,19 +72,19 @@ fn test_dataframe_series_share_device_data() {
 // 4. DataFrame::get() — probe access
 // ===========================================================================
 
-/// `get()` returns `Ok(None)` on a missing column name.
+/// `get()` returns `None` on a missing column name.
 #[test]
 fn test_dataframe_get_miss() {
     let df = sample_df();
-    let result = df.get("nonexistent").unwrap();
+    let result = df.get("nonexistent");
     assert!(result.is_none());
 }
 
-/// `get()` returns `Ok(Some(Series))` for an existing column.
+/// `get()` returns `Some(Series)` for an existing column.
 #[test]
 fn test_dataframe_get_hit() {
     let df = sample_df();
-    let s = df.get("id").unwrap().unwrap();
+    let s = df.get("id").unwrap();
     assert_eq!(s.name(), Some("id"));
     assert_eq!(s.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
@@ -111,7 +111,7 @@ fn test_dataframe_contains() {
 #[test]
 fn test_dataframe_iter_series_preserves_schema_order() {
     let df = sample_df(); // columns: "id", "score"
-    let names: Vec<_> = df.iter_series().map(|s| s.unwrap().name().unwrap().to_string()).collect();
+    let names: Vec<_> = df.iter_series().map(|s| s.name().unwrap().to_string()).collect();
 
     assert_eq!(names, vec!["id", "score"]);
 }
@@ -120,7 +120,7 @@ fn test_dataframe_iter_series_preserves_schema_order() {
 #[test]
 fn test_dataframe_iter_series_assigns_column_names() {
     let df = sample_df();
-    let items: Vec<_> = df.iter_series().collect::<Result<Vec<_>, _>>().unwrap();
+    let items: Vec<_> = df.iter_series().collect::<Vec<_>>();
 
     assert_eq!(items[0].name(), Some("id"));
     assert_eq!(items[0].to_vec::<i32>().unwrap(), vec![1, 2, 3]);
@@ -132,7 +132,7 @@ fn test_dataframe_iter_series_assigns_column_names() {
 #[test]
 fn test_dataframe_iter_series_shares_device_buffers() {
     let df = sample_df();
-    let items: Vec<_> = df.iter_series().collect::<Result<Vec<_>, _>>().unwrap();
+    let items: Vec<_> = df.iter_series().collect::<Vec<_>>();
 
     let iter_ptr = items[0].as_column_view().unwrap().device_data_ptr().unwrap();
     let direct_ptr = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();

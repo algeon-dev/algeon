@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{DataFrame, Series, io::arrow::dataframe_from_record_batch};
+//! use cudf::{DataFrame, Series};
 //!
 //! let ids = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
 //! let scores = Series::new::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
@@ -18,7 +18,7 @@
 //! assert_eq!(batch.num_rows(), 3);
 //!
 //! // Arrow RecordBatch → GPU DataFrame (host-copy)
-//! let df2 = dataframe_from_record_batch(&batch).unwrap();
+//! let df2 = DataFrame::from_record_batch(&batch).unwrap();
 //! assert_eq!(df2.num_columns(), 2);
 //! ```
 
@@ -76,9 +76,32 @@ impl DataFrame {
             Error::new(ErrorKind::InvalidOperation, e.to_string()).with_operation("dataframe::to_record_batch")
         })
     }
+
+    /// Create a GPU `DataFrame` from an Arrow [`RecordBatch`] via host copy.
+    ///
+    /// This is the inverse of [`to_record_batch()`](Self::to_record_batch).
+    /// Each Arrow array is copied from host memory to the GPU. The schema
+    /// (column names and types) is preserved.
+    ///
+    /// # Supported types
+    ///
+    /// - Numeric: `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`,
+    ///   `UInt32`, `UInt64`, `Float32`, `Float64`
+    /// - `Boolean`
+    /// - `Utf8` / `LargeUtf8` (converted to cudf `String`)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any column has an unsupported Arrow type, or if
+    /// the host-to-GPU copy fails.
+    pub fn from_record_batch(batch: &RecordBatch) -> Result<Self> {
+        dataframe_from_record_batch(batch)
+    }
 }
 
 /// Convert an Arrow [`RecordBatch`] to a GPU [`DataFrame`] via host copy.
+///
+/// Prefer [`DataFrame::from_record_batch()`] for a more ergonomic API.
 ///
 /// Each Arrow array is copied from host memory to the GPU. The schema
 /// (column names and types) is preserved.

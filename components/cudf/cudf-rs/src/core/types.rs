@@ -309,6 +309,50 @@ pub enum NullEquality {
     Unequal = 1,
 }
 
+/// Timestamp resolution for convenience cast methods like [`Series::to_datetime`].
+///
+/// Maps to the corresponding [`TypeId`] timestamp variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TimestampResolution {
+    /// Day resolution ([`TypeId::TimestampDays`]).
+    Days,
+    /// Second resolution ([`TypeId::TimestampSeconds`]).
+    Seconds,
+    /// Millisecond resolution ([`TypeId::TimestampMilliseconds`]).
+    Milliseconds,
+    /// Microsecond resolution ([`TypeId::TimestampMicroseconds`]).
+    Microseconds,
+    /// Nanosecond resolution ([`TypeId::TimestampNanoseconds`]).
+    Nanoseconds,
+}
+
+impl TimestampResolution {
+    /// Returns the corresponding timestamp [`TypeId`] for this resolution.
+    pub fn type_id(self) -> TypeId {
+        match self {
+            Self::Days => TypeId::TimestampDays,
+            Self::Seconds => TypeId::TimestampSeconds,
+            Self::Milliseconds => TypeId::TimestampMilliseconds,
+            Self::Microseconds => TypeId::TimestampMicroseconds,
+            Self::Nanoseconds => TypeId::TimestampNanoseconds,
+        }
+    }
+
+    /// Returns the corresponding duration [`TypeId`] for this resolution.
+    ///
+    /// libcudf requires a numeric → duration → timestamp cast path;
+    /// direct numeric → timestamp casts are not supported.
+    pub fn duration_type_id(self) -> TypeId {
+        match self {
+            Self::Days => TypeId::DurationDays,
+            Self::Seconds => TypeId::DurationSeconds,
+            Self::Milliseconds => TypeId::DurationMilliseconds,
+            Self::Microseconds => TypeId::DurationMicroseconds,
+            Self::Nanoseconds => TypeId::DurationNanoseconds,
+        }
+    }
+}
+
 /// Helper to create a bitmask from an iterator of validity flags.
 ///
 /// cudf uses LSB-first bitmask packing (bit 0 of byte 0 = element 0).

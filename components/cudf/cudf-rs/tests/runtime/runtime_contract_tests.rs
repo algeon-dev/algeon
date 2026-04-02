@@ -106,7 +106,7 @@ assert_not_impl_any!(cudf::TableView<'static>: Send, Sync);
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_sort_survives_spawn_blocking() {
     let df = sample_df();
-    let result = tokio::task::spawn_blocking(move || df.sort_values(&["id"], SortOptions::new()))
+    let result = tokio::task::spawn_blocking(move || df.sort_values(["id"], SortOptions::new()))
         .await
         .expect("blocking task panicked")
         .expect("sort_values failed");
@@ -152,7 +152,7 @@ async fn dataframe_drop_inside_spawn_blocking_is_safe() {
     // the closure (not returned). Verify no leak or crash.
     let df = sample_df();
     tokio::task::spawn_blocking(move || {
-        let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+        let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
         assert_eq!(sorted.num_rows(), 5);
         // df and sorted both drop here, freeing GPU memory.
     })
@@ -164,7 +164,7 @@ async fn dataframe_drop_inside_spawn_blocking_is_safe() {
 async fn dataframe_returned_from_spawn_blocking_drops_on_async_thread() {
     // Move DataFrame into spawn_blocking, return it, drop on the async task.
     let df = sample_df();
-    let result = tokio::task::spawn_blocking(move || df.sort_values(&["id"], SortOptions::new()))
+    let result = tokio::task::spawn_blocking(move || df.sort_values(["id"], SortOptions::new()))
         .await
         .expect("blocking task panicked")
         .expect("sort_values failed");
@@ -309,14 +309,14 @@ async fn chained_pipeline_in_spawn_blocking() {
         let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals])?;
 
         // Sort by key.
-        let sorted = df.sort_values(&["key"], SortOptions::new())?;
+        let sorted = df.sort_values(["key"], SortOptions::new())?;
 
         // Take first 4 rows.
         let top = sorted.head(4)?;
         assert_eq!(top.num_rows(), 4);
 
         // GroupBy sum.
-        let agg_result = top.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Sum)])?;
+        let agg_result = top.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum)])?;
 
         // Materialize to host.
         let key_data: Vec<i32> = agg_result.series("key").unwrap().to_vec::<i32>()?;
@@ -348,7 +348,7 @@ async fn join_inside_spawn_blocking() {
             vec![Column::from_slice(&[2i32, 3, 4]).unwrap(), Column::from_slice(&[85.0f64, 92.0, 78.0]).unwrap()],
         )?;
 
-        let opts = cudf::MergeOptions::new().on(&["id"]).how_inner();
+        let opts = cudf::MergeOptions::new().on(["id"]).how_inner();
         let joined = left.merge(&right, opts)?;
         Ok(joined.num_rows())
     })
@@ -402,9 +402,9 @@ async fn concurrent_sort_on_shared_arc_dataframe() {
     let df2 = Arc::clone(&df);
 
     let (sorted_asc, sorted_desc) = tokio::join!(
-        tokio::task::spawn_blocking(move || { df1.sort_values(&["id"], SortOptions::new()) }),
+        tokio::task::spawn_blocking(move || { df1.sort_values(["id"], SortOptions::new()) }),
         tokio::task::spawn_blocking(move || {
-            df2.sort_values(&["id"], SortOptions::new().with_descending(vec![true]))
+            df2.sort_values(["id"], SortOptions::new().with_descending(vec![true]))
         }),
     );
 
@@ -443,7 +443,7 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
         handles.push(tokio::task::spawn_blocking(|| {
             for _ in 0..16 {
                 let df = sample_df();
-                let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+                let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
                 let _ids: Vec<i32> = sorted.series("id").unwrap().to_vec::<i32>().unwrap();
             }
         }));
@@ -470,7 +470,7 @@ async fn timeout_on_spawn_blocking_is_safe() {
     // cleanly. No crash, no corruption.
     let handle = tokio::task::spawn_blocking(|| {
         let df = sample_df();
-        let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+        let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
         assert_eq!(sorted.num_rows(), 5);
         sorted
     });

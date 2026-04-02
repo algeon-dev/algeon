@@ -61,10 +61,10 @@ fn write_test_parquet(path: &Path, num_rows: i32, num_columns: usize) {
     // We need to hold the name strings so they live long enough.
     let name_strings: Vec<String> = (0..num_columns).map(|i| format!("c{}", i)).collect();
 
-    for i in 0..num_columns {
+    for (i, name) in name_strings.iter().enumerate().take(num_columns) {
         let data: Vec<i32> = (0..num_rows).map(|r| r * num_columns as i32 + i as i32).collect();
         columns.push(Column::from_slice(&data).unwrap());
-        names.push(&name_strings[i]);
+        names.push(name);
     }
 
     let table = Table::from_columns(columns).unwrap();

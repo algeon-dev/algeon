@@ -76,7 +76,7 @@ fn test_join_types_reexported() {
     // JoinType and MergeOptions should be importable directly from the crate root.
     use cudf::{JoinType, MergeOptions};
 
-    let opts = MergeOptions::new().on(&["id"]).how(JoinType::Left).suffixes("_x", "_y");
+    let opts = MergeOptions::new().on(["id"]).how(JoinType::Left).suffixes("_x", "_y");
     assert_eq!(opts.join_type(), JoinType::Left);
     assert_eq!(opts.suffix_left(), "_x");
     assert_eq!(opts.suffix_right(), "_y");
@@ -103,7 +103,7 @@ fn test_high_level_workflow_sort_values() {
     let ids = Series::new::<i32>("id", &[3, 1, 2]).unwrap();
     let df = DataFrame::from_columns([("id", ids)]).unwrap();
 
-    let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+    let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
     let data: Vec<i32> = sorted.series("id").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(data, vec![1, 2, 3]);
 }
@@ -121,7 +121,7 @@ fn test_high_level_workflow_merge() {
     let right_val = Series::new::<i32>("rank", &[200, 300, 400]).unwrap();
     let right = DataFrame::from_columns([("id", right_id), ("rank", right_val)]).unwrap();
 
-    let opts = MergeOptions::new().on(&["id"]).how(JoinType::Inner);
+    let opts = MergeOptions::new().on(["id"]).how(JoinType::Inner);
     let merged = left.merge(&right, opts).unwrap();
 
     assert_eq!(merged.num_rows(), 2);
@@ -139,7 +139,7 @@ fn test_high_level_workflow_groupby() {
     let df = DataFrame::from_columns([("key", keys), ("value", vals)]).unwrap();
 
     let result =
-        df.groupby(&["key"]).options(GroupByOptions::default()).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+        df.groupby(["key"]).options(GroupByOptions::default()).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.column_names(), vec!["key", "value_sum"]);
@@ -159,7 +159,7 @@ fn test_all_high_level_types_in_single_import() {
 
     let s = Series::new::<i32>("a", &[1]).unwrap();
     let df = DataFrame::from_columns([("a", s)]).unwrap();
-    let _gb: GroupBy<'_> = df.groupby(&["a"]);
+    let _gb: GroupBy<'_> = df.groupby(["a"]);
 }
 
 #[test]
@@ -207,7 +207,7 @@ fn test_domain_modules_export_documented_surface() {
 
     let series = DomainSeries::new::<i32>("key", &[1, 2, 1]).unwrap();
     let df = DomainDataFrame::from_columns([("key", series)]).unwrap();
-    let _gb: DomainGroupBy<'_> = df.groupby(&["key"]);
+    let _gb: DomainGroupBy<'_> = df.groupby(["key"]);
 
     assert_into_series::<DomainSeries>();
 }

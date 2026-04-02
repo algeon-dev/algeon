@@ -54,9 +54,9 @@ fn lit_i32_broadcasts() {
 #[test]
 fn lit_f64_broadcasts() {
     let df = xy_df();
-    let result = lit(3.14f64).alias("pi").eval(&df).unwrap();
+    let result = lit(3.25f64).alias("pi").eval(&df).unwrap();
     assert_eq!(result.len(), 3);
-    assert_eq!(result.to_vec::<f64>().unwrap(), vec![3.14, 3.14, 3.14]);
+    assert_eq!(result.to_vec::<f64>().unwrap(), vec![3.25, 3.25, 3.25]);
 }
 
 #[test]

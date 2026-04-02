@@ -88,13 +88,13 @@ fn df_series_two_calls_share_arc() {
 // 2. DataFrame::get() / contains() — probe and existence check
 // ===========================================================================
 
-/// `get()` returns `Ok(None)` on miss, `Ok(Some(Series))` on hit.
+/// `get()` returns `None` on miss, `Some(Series)` on hit.
 #[test]
 fn df_get_probe_access() {
     let df = sample_df();
-    assert!(df.get("nonexistent").unwrap().is_none());
+    assert!(df.get("nonexistent").is_none());
 
-    let s = df.get("id").unwrap().unwrap();
+    let s = df.get("id").unwrap();
     assert_eq!(s.name(), Some("id"));
     assert_eq!(s.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
@@ -224,8 +224,8 @@ fn sort_values_consistent_results() {
     let df1 = sample_df();
     let df2 = sample_df();
 
-    let result1 = df1.sort_values(&["id"], cudf::SortOptions::new().with_descending(vec![true])).unwrap();
-    let result2 = df2.sort_values(&["id"], cudf::SortOptions::new().with_descending(vec![true])).unwrap();
+    let result1 = df1.sort_values(["id"], cudf::SortOptions::new().with_descending(vec![true])).unwrap();
+    let result2 = df2.sort_values(["id"], cudf::SortOptions::new().with_descending(vec![true])).unwrap();
 
     assert_eq!(
         result1.series("id").unwrap().to_vec::<i32>().unwrap(),
@@ -239,7 +239,7 @@ fn select_shares_arc() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
 
-    let selected = df.select(&["id"]).unwrap();
+    let selected = df.select(["id"]).unwrap();
     let selected_ptr = device_ptr(&selected, "id");
 
     assert_eq!(original_ptr, selected_ptr);

@@ -193,7 +193,7 @@ impl Expr {
 
             Expr::Literal(lit_val) => {
                 let scalar = lit_val.to_scalar()?;
-                let size = df.num_rows() as i32;
+                let size = df.num_rows();
                 let col = Column::from_scalar(&scalar, size)?;
                 Series::from_column(col)
             },

@@ -87,6 +87,7 @@ add_library(
   src/execution_context.cpp
   src/io_parquet.cpp
   src/io_csv.cpp
+  src/io_json.cpp
   src/sorting.cpp
   src/filter.cpp
   src/groupby.cpp
@@ -100,6 +101,7 @@ add_library(
   src/replace.cpp
   src/search.cpp
   src/copying.cpp
+  src/strings.cpp
   src/stream_compaction.cpp
   src/abi_checks.cpp
   src/c_header_smoke.c

@@ -15,7 +15,7 @@ fn test_groupby_single_key_sum() {
 
     let df = DataFrame::new(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
     // Should have 2 columns: "key" and "value_sum"
     assert_eq!(result.num_columns(), 2);
@@ -45,7 +45,7 @@ fn test_groupby_single_key_multiple_aggregations_same_column() {
 
     let df = DataFrame::new(vec!["key".to_string(), "score".to_string()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(&["key"]).agg(&[AggSpec::new("score", Agg::Min), AggSpec::new("score", Agg::Max)]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("score", Agg::Min), AggSpec::new("score", Agg::Max)]).unwrap();
 
     // Should have 3 columns: "key", "score_min", "score_max"
     assert_eq!(result.num_columns(), 3);
@@ -76,7 +76,7 @@ fn test_groupby_multiple_keys() {
 
     let df = DataFrame::new(vec!["a".to_string(), "b".to_string(), "value".to_string()], vec![k0, k1, vals]).unwrap();
 
-    let result = df.groupby(&["a", "b"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+    let result = df.groupby(["a", "b"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
     // Should have 3 columns: "a", "b", "value_sum"
     assert_eq!(result.num_columns(), 3);
@@ -96,7 +96,7 @@ fn test_groupby_nonexistent_agg_column_returns_error() {
     let df = DataFrame::new(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let err = df
-        .groupby(&["key"])
+        .groupby(["key"])
         .agg(&[AggSpec::new("nonexistent", Agg::Sum)])
         .expect_err("expected error for nonexistent column");
 
@@ -113,7 +113,7 @@ fn test_groupby_nonexistent_key_column_returns_error() {
     let df = DataFrame::new(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let err = df
-        .groupby(&["missing_key"])
+        .groupby(["missing_key"])
         .agg(&[AggSpec::new("value", Agg::Sum)])
         .expect_err("expected error for nonexistent key column");
 
@@ -129,7 +129,7 @@ fn test_groupby_result_column_naming_convention() {
     let df = DataFrame::new(vec!["id".to_string(), "price".to_string()], vec![keys, prices]).unwrap();
 
     let result = df
-        .groupby(&["id"])
+        .groupby(["id"])
         .agg(&[
             AggSpec::new("price", Agg::Sum),
             AggSpec::new("price", Agg::Mean),
@@ -160,7 +160,7 @@ fn test_groupby_interleaved_multi_column_agg_ordering() {
     let df = DataFrame::new(vec!["key".to_string(), "a".to_string(), "b".to_string()], vec![keys, a, b]).unwrap();
 
     let result = df
-        .groupby(&["key"])
+        .groupby(["key"])
         .agg(&[AggSpec::new("a", Agg::Sum), AggSpec::new("b", Agg::Sum), AggSpec::new("a", Agg::Min)])
         .unwrap();
 
@@ -190,7 +190,7 @@ fn test_groupby_no_aggregations_returns_error() {
 
     let df = DataFrame::new(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
-    let err = df.groupby(&["key"]).agg(&[]).expect_err("expected error for empty aggregation");
+    let err = df.groupby(["key"]).agg(&[]).expect_err("expected error for empty aggregation");
 
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }

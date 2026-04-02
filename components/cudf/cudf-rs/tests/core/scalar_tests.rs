@@ -26,16 +26,16 @@ fn test_i64_scalar_round_trip() {
 
 #[test]
 fn test_f32_scalar_round_trip() {
-    let s = Scalar::from_value(3.14f32).unwrap();
+    let s = Scalar::from_value(3.25f32).unwrap();
     let v = s.value::<f32>().unwrap();
-    assert!((v - 3.14f32).abs() < 1e-6);
+    assert!((v - 3.25f32).abs() < 1e-6);
 }
 
 #[test]
 fn test_f64_scalar_round_trip() {
-    let s = Scalar::from_value(2.718f64).unwrap();
+    let s = Scalar::from_value(2.75f64).unwrap();
     let v = s.value::<f64>().unwrap();
-    assert!((v - 2.718f64).abs() < 1e-12);
+    assert!((v - 2.75f64).abs() < 1e-12);
 }
 
 #[test]

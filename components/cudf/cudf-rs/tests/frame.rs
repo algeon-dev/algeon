@@ -34,6 +34,10 @@ mod dataframe_high_level_signature_tests;
 mod dataframe_info_tests;
 #[path = "frame/dataframe/io_tests.rs"]
 mod dataframe_io_tests;
+#[path = "frame/dataframe/json_io_tests.rs"]
+mod dataframe_json_io_tests;
+#[path = "frame/dataframe/melt_tests.rs"]
+mod dataframe_melt_tests;
 #[path = "frame/dataframe/metadata_ops_tests.rs"]
 mod dataframe_metadata_ops_tests;
 #[path = "frame/dataframe/series_bridge_tests.rs"]
@@ -54,3 +58,12 @@ mod series_ops_tests;
 mod series_reduction_tests;
 #[path = "frame/series/series_tests.rs"]
 mod series_tests;
+
+#[path = "frame/series/edge_case_tests.rs"]
+mod edge_case_tests;
+#[path = "frame/series/ffill_bfill_tests.rs"]
+mod ffill_bfill_tests;
+#[path = "frame/series/null_arithmetic_tests.rs"]
+mod null_arithmetic_tests;
+#[path = "frame/series/null_reduction_tests.rs"]
+mod null_reduction_tests;

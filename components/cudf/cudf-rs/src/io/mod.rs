@@ -6,6 +6,7 @@ use crate::core::error::{Error, ErrorKind, Result};
 
 pub mod arrow;
 pub mod csv;
+pub mod json;
 pub mod parquet;
 
 /// Convert a filesystem path to a `CString` for FFI, with operation context.

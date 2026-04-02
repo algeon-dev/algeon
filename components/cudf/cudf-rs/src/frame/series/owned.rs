@@ -5,11 +5,12 @@ use crate::{
         column::{Column, ColumnView},
         error::{Error, ErrorKind, Result},
         scalar::Scalar,
-        types::{CudfType, DataType, TypeId},
+        types::{CudfType, DataType, TimestampResolution, TypeId},
     },
     internal::temp_table::TempTableView,
     ops::{
-        binary, concatenate, replace,
+        binary, concatenate,
+        replace::{self, FillPolicy},
         sorting::SortOptions,
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
         unary,
@@ -508,6 +509,48 @@ impl Series {
         self.with_inherited_name(col)
     }
 
+    /// Cast this series to a timestamp type. Inherits the source Series' name.
+    ///
+    /// The source series should contain integer values representing durations
+    /// since the Unix epoch in the specified resolution. If `resolution` is
+    /// `None`, defaults to microsecond resolution (matching cuDF Python's
+    /// `to_datetime()` default).
+    ///
+    /// Equivalent to cuDF Python's `cudf.to_datetime(series)`.
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced with the target timestamp dtype.
+    pub fn to_datetime(&self, resolution: Option<TimestampResolution>) -> Result<Series> {
+        let res = resolution.unwrap_or(TimestampResolution::Microseconds);
+        let source_type = self.dtype()?.id();
+        // libcudf does not support direct numeric → timestamp casts; it
+        // requires numeric → duration → timestamp.
+        if source_type.is_numeric() {
+            let duration = self.astype(res.duration_type_id())?;
+            duration.astype(res.type_id())
+        } else {
+            self.astype(res.type_id())
+        }
+    }
+
+    /// Cast this series to a numeric type. Inherits the source Series' name.
+    ///
+    /// `target` must be a numeric [`TypeId`] (integer, unsigned integer,
+    /// float, or bool). Returns an error if `target` is a non-numeric type
+    /// (string, timestamp, duration, etc.).
+    ///
+    /// Equivalent to cuDF Python's `cudf.to_numeric(series)`.
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced with the target numeric dtype.
+    pub fn to_numeric(&self, target: TypeId) -> Result<Series> {
+        if !target.is_numeric() {
+            return Err(Error::new(ErrorKind::InvalidOperation, format!("target type {target:?} is not numeric"))
+                .with_operation("series::to_numeric"));
+        }
+        self.astype(target)
+    }
+
     /// Replace null values with a scalar. Inherits the source Series' name.
     ///
     /// Equivalent to cuDF Python's `Series.fillna(scalar)`.
@@ -571,6 +614,48 @@ impl Series {
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = replace::replace_nulls_column_with_exec_options(&cv, &other_cv, exec_options.as_ref(), operation)?
             .with_execution_domain(output_domain);
+        self.with_inherited_name(col)
+    }
+
+    /// Forward fill: replace each null with the nearest preceding non-null
+    /// value. Leading nulls (with no preceding non-null value) remain null.
+    /// Inherits the source Series' name.
+    ///
+    /// Equivalent to cuDF Python's `Series.ffill()` / `Series.fillna(method='ffill')`.
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced with nulls forward-filled.
+    pub fn ffill(&self) -> Result<Series> {
+        let cv = self.column.view()?;
+        let exec_options = self.column.execution_domain().explicit_exec_options_raw();
+        let col = replace::replace_nulls_policy_with_exec_options(
+            &cv,
+            FillPolicy::Preceding,
+            exec_options.as_ref(),
+            "series::ffill",
+        )?
+        .with_execution_domain(Arc::clone(self.column.execution_domain()));
+        self.with_inherited_name(col)
+    }
+
+    /// Backward fill: replace each null with the nearest following non-null
+    /// value. Trailing nulls (with no following non-null value) remain null.
+    /// Inherits the source Series' name.
+    ///
+    /// Equivalent to cuDF Python's `Series.bfill()` / `Series.fillna(method='bfill')`.
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced with nulls backward-filled.
+    pub fn bfill(&self) -> Result<Series> {
+        let cv = self.column.view()?;
+        let exec_options = self.column.execution_domain().explicit_exec_options_raw();
+        let col = replace::replace_nulls_policy_with_exec_options(
+            &cv,
+            FillPolicy::Following,
+            exec_options.as_ref(),
+            "series::bfill",
+        )?
+        .with_execution_domain(Arc::clone(self.column.execution_domain()));
         self.with_inherited_name(col)
     }
 

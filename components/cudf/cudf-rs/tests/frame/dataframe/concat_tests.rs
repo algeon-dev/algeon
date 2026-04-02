@@ -48,7 +48,7 @@ fn test_concat_mismatched_column_names_returns_error() {
     )
     .unwrap();
 
-    let err = df1.concat(&df2).err().expect("expected schema mismatch error");
+    let err = df1.concat(&df2).expect_err("expected schema mismatch error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -62,7 +62,7 @@ fn test_concat_mismatched_column_count_returns_error() {
     )
     .unwrap();
 
-    let err = df1.concat(&df2).err().expect("expected schema mismatch error");
+    let err = df1.concat(&df2).expect_err("expected schema mismatch error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -81,7 +81,7 @@ fn test_concat_mismatched_column_types_returns_error() {
     )
     .unwrap();
 
-    let err = df1.concat(&df2).err().expect("expected type mismatch error");
+    let err = df1.concat(&df2).expect_err("expected type mismatch error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -158,7 +158,7 @@ fn test_rename_column() {
 fn test_rename_nonexistent_column_returns_error() {
     let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()]).unwrap();
 
-    let err = df.rename_column("nonexistent", "new").err().expect("expected error");
+    let err = df.rename_column("nonexistent", "new").expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -170,7 +170,7 @@ fn test_rename_to_existing_name_returns_error() {
     )
     .unwrap();
 
-    let err = df.rename_column("a", "b").err().expect("expected error");
+    let err = df.rename_column("a", "b").expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -186,7 +186,7 @@ fn test_select_subset_of_columns() {
     )
     .unwrap();
 
-    let selected = df.select(&["c", "a"]).unwrap();
+    let selected = df.select(["c", "a"]).unwrap();
 
     assert_eq!(selected.num_columns(), 2);
     assert_eq!(selected.num_rows(), 2);
@@ -203,7 +203,7 @@ fn test_select_subset_of_columns() {
 fn test_select_nonexistent_column_returns_error() {
     let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2]).unwrap()]).unwrap();
 
-    let err = df.select(&["nonexistent"]).err().expect("expected error");
+    let err = df.select(["nonexistent"]).expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -215,7 +215,7 @@ fn test_select_duplicate_column_names_returns_error() {
     )
     .unwrap();
 
-    let err = df.select(&["a", "a"]).err().expect("expected duplicate selection error");
+    let err = df.select(["a", "a"]).expect_err("expected duplicate selection error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -228,7 +228,7 @@ fn test_select_preserves_data() {
     .unwrap();
 
     // Select single column.
-    let selected = df.select(&["y"]).unwrap();
+    let selected = df.select(["y"]).unwrap();
 
     assert_eq!(selected.num_columns(), 1);
     assert_eq!(selected.column_names(), vec!["y"]);
@@ -293,7 +293,7 @@ fn test_select_all_columns_returns_full_copy() {
     )
     .unwrap();
 
-    let selected = df.select(&["a", "b"]).unwrap();
+    let selected = df.select(["a", "b"]).unwrap();
     assert_eq!(selected.num_columns(), 2);
     assert_eq!(selected.num_rows(), 2);
     assert_eq!(selected.column_names(), vec!["a", "b"]);

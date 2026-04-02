@@ -534,7 +534,7 @@ impl Column {
     /// given explicit runtime.
     ///
     /// The resulting column carries the runtime's retained provenance.
-    pub fn from_scalar_with_runtime(runtime: &Runtime, scalar: &Scalar, size: i32) -> Result<Self> {
+    pub fn from_scalar_with_runtime(runtime: &Runtime, scalar: &Scalar, size: usize) -> Result<Self> {
         let col = Self::from_scalar(scalar, size)?;
         Ok(col.with_execution_domain(Arc::clone(runtime.execution_domain())))
     }
@@ -561,14 +561,22 @@ impl Column {
     ///
     /// Uses `cudf::make_column_from_scalar` under the hood. For `size == 0`,
     /// an empty column of the scalar's type is returned.
-    pub fn from_scalar(scalar: &Scalar, size: i32) -> Result<Self> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `size` exceeds `i32::MAX` (FFI limit).
+    pub fn from_scalar(scalar: &Scalar, size: usize) -> Result<Self> {
+        let size_i32 = i32::try_from(size).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "size exceeds i32::MAX")
+                .with_operation("column::from_scalar")
+        })?;
         let mut handle = ptr::null_mut();
         let exec_options = scalar.domain.explicit_exec_options_raw();
         let opts_ptr = exec_options.as_ref().map_or(ptr::null(), |o| o as *const _);
         // SAFETY: scalar.raw_handle() is valid (Scalar maintains NonNull invariant).
         // opts_ptr is either null (ambient default) or a valid exec_options pointer.
         error::check_status_in(
-            unsafe { cudf_sys::cudf_column_from_scalar_ex(scalar.raw_handle(), size, &mut handle, opts_ptr) },
+            unsafe { cudf_sys::cudf_column_from_scalar_ex(scalar.raw_handle(), size_i32, &mut handle, opts_ptr) },
             "column::from_scalar",
         )?;
         Ok(Self::from_handle_with_domain(handle, Arc::clone(&scalar.domain)))

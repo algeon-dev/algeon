@@ -51,7 +51,7 @@ fn expr_cast_accepts_typeid() {
 }
 
 // ===========================================================================
-// Symmetry: series.astype(dt) == df.cast_column(col, &dt)
+// Symmetry: series.astype(dt) == df.cast_column(col, dt)
 // ===========================================================================
 
 #[test]
@@ -61,7 +61,7 @@ fn cast_symmetry() {
     let df = DataFrame::from_series([("x", s.clone())]).unwrap();
 
     let via_series = s.astype(dt).unwrap();
-    let via_df = df.cast_column("x", &dt).unwrap();
+    let via_df = df.cast_column("x", dt).unwrap();
     let via_df_col = via_df.series("x").unwrap();
 
     assert_eq!(via_series.dtype().unwrap(), via_df_col.dtype().unwrap());

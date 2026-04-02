@@ -171,7 +171,7 @@ fn test_factorize_already_unique() {
 
 #[test]
 fn test_factorize_f64_column() {
-    let data = vec![3.14f64, 2.71, 3.14, 1.41, 2.71];
+    let data = vec![3.25f64, 2.75, 3.25, 1.5, 2.75];
     let col = Column::from_slice(&data).unwrap();
     let view = col.view().unwrap();
 

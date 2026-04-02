@@ -30,7 +30,7 @@ fn load_all_fixtures(dir: &Path) -> Vec<(PathBuf, Fixture)> {
     for entry in entries {
         let entry = entry.expect("read dir entry");
         let path = entry.path();
-        if path.extension().map_or(false, |ext| ext == "json") {
+        if path.extension().is_some_and(|ext| ext == "json") {
             let contents =
                 std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
             let fixture: Fixture =
