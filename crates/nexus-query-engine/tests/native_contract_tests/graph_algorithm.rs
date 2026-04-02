@@ -393,6 +393,7 @@ fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
                 vertex_width_bytes: 4,
                 weight_width_bytes: Some(4),
                 has_edge_id: false,
+                device_total_memory_bytes: None,
                 vertex_estimate: None,
             },
         )
@@ -449,6 +450,7 @@ fn graph_memory_model_uses_refined_vertex_estimate_for_sparse_graph_admission() 
         vertex_width_bytes: 8,
         weight_width_bytes: None,
         has_edge_id: false,
+        device_total_memory_bytes: None,
         vertex_estimate: None,
     };
 
@@ -492,6 +494,7 @@ fn graph_memory_model_clamps_refined_vertex_estimate_to_endpoint_upper_bound() {
                 vertex_width_bytes: 4,
                 weight_width_bytes: None,
                 has_edge_id: false,
+                device_total_memory_bytes: None,
                 vertex_estimate: Some(GraphVertexEstimate::graph_metadata(999)),
             },
         )
@@ -503,7 +506,7 @@ fn graph_memory_model_clamps_refined_vertex_estimate_to_endpoint_upper_bound() {
 }
 
 #[test]
-fn betweenness_seed_count_is_the_class_d_memory_dial() {
+fn betweenness_seed_count_reports_requested_sources_and_prices_resident_source_state() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -521,6 +524,7 @@ fn betweenness_seed_count_is_the_class_d_memory_dial() {
                 vertex_width_bytes: 4,
                 weight_width_bytes: None,
                 has_edge_id: false,
+                device_total_memory_bytes: None,
                 vertex_estimate: None,
             },
         )
@@ -546,6 +550,7 @@ fn betweenness_seed_count_is_the_class_d_memory_dial() {
                 vertex_width_bytes: 4,
                 weight_width_bytes: None,
                 has_edge_id: false,
+                device_total_memory_bytes: None,
                 vertex_estimate: None,
             },
         )
@@ -569,6 +574,7 @@ fn betweenness_seed_count_is_the_class_d_memory_dial() {
                 vertex_width_bytes: 4,
                 weight_width_bytes: None,
                 has_edge_id: false,
+                device_total_memory_bytes: None,
                 vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(7)),
             },
         )
@@ -576,6 +582,154 @@ fn betweenness_seed_count_is_the_class_d_memory_dial() {
     assert_eq!(all_vertex_estimate.vertex_upper_bound, 200);
     assert_eq!(all_vertex_estimate.vertex_estimate, 7);
     assert_eq!(all_vertex_estimate.seed_count, Some(7));
+}
+
+#[test]
+fn vertex_betweenness_source_workspace_uses_cugraph_physical_batch_cap() {
+    let device_total_memory_bytes = 64 * 1024 * 1024 * 1024;
+    let vertex_estimate = 1_000_000;
+    let vertex_width_bytes = 8;
+    let cugraph_batch_cap = device_total_memory_bytes / 4 / (vertex_estimate * vertex_width_bytes * 2);
+    assert!(cugraph_batch_cap > 1);
+    assert!(cugraph_batch_cap < u16::MAX as u64);
+
+    let spec_for_k = |k| {
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::BetweennessCentrality,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+            GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+                k: Some(k),
+                exact_vertex_threshold: vertex_estimate,
+                ..Default::default()
+            }),
+        )
+    };
+    let input = GraphMemoryModelInput {
+        input_edges: 1_000_000,
+        vertex_width_bytes,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: Some(device_total_memory_bytes),
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(vertex_estimate)),
+    };
+
+    let capped = GraphMemoryModel.estimate(&spec_for_k(cugraph_batch_cap), input).unwrap();
+    let oversized = GraphMemoryModel.estimate(&spec_for_k(cugraph_batch_cap * 10), input).unwrap();
+
+    assert_eq!(capped.seed_count, Some(cugraph_batch_cap));
+    assert_eq!(oversized.seed_count, Some(cugraph_batch_cap * 10));
+    let expected_seed_list_delta = (oversized.seed_count.unwrap() - capped.seed_count.unwrap()) * vertex_width_bytes;
+    assert_eq!(
+        oversized.requested_bytes - capped.requested_bytes,
+        expected_seed_list_delta,
+        "k-only vertex betweenness should price additional requested sources as seed-list storage only"
+    );
+}
+
+#[test]
+fn edge_betweenness_seed_count_does_not_price_all_requested_sources_as_resident() {
+    let spec_for_k = |k| {
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::EdgeBetweennessCentrality,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+            GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams {
+                k: Some(k),
+                ..Default::default()
+            }),
+        )
+    };
+    let input = GraphMemoryModelInput {
+        input_edges: 1_000,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: None,
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
+    };
+
+    let small = GraphMemoryModel.estimate(&spec_for_k(10), input).unwrap();
+    let large = GraphMemoryModel.estimate(&spec_for_k(10_000), input).unwrap();
+
+    assert_eq!(small.seed_count, Some(10));
+    assert_eq!(large.seed_count, Some(10_000));
+    assert!(
+        large.requested_bytes - small.requested_bytes < 10_000 * 8 * 2,
+        "edge betweenness should account seed-list storage, not a live seeds-by-vertices matrix"
+    );
+}
+
+#[test]
+fn edge_betweenness_output_pricing_scales_with_edges() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::EdgeBetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams {
+            k: Some(10),
+            ..Default::default()
+        }),
+    );
+    let input_for_edges = |input_edges| GraphMemoryModelInput {
+        input_edges,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: None,
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
+    };
+
+    let small = GraphMemoryModel.estimate(&spec, input_for_edges(1_000)).unwrap();
+    let large = GraphMemoryModel.estimate(&spec, input_for_edges(10_000)).unwrap();
+
+    assert!(
+        large.requested_bytes - small.requested_bytes >= 9_000 * 24,
+        "edge betweenness result memory should include source, destination, and score arrays per output edge"
+    );
+}
+
+#[test]
+fn betweenness_k_seed_selection_prices_endpoint_distinct_sort_transient() {
+    let spec_for_algorithm = |algorithm| match algorithm {
+        GraphAlgorithm::BetweennessCentrality => GraphAlgorithmSpec::with_stable_schema(
+            algorithm,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+            GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+                k: Some(10),
+                ..Default::default()
+            }),
+        ),
+        GraphAlgorithm::EdgeBetweennessCentrality => GraphAlgorithmSpec::with_stable_schema(
+            algorithm,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+            GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams {
+                k: Some(10),
+                ..Default::default()
+            }),
+        ),
+        other => panic!("unexpected algorithm {other:?}"),
+    };
+    let input_for_edges = |input_edges| GraphMemoryModelInput {
+        input_edges,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: None,
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
+    };
+
+    for algorithm in [GraphAlgorithm::BetweennessCentrality, GraphAlgorithm::EdgeBetweennessCentrality] {
+        let spec = spec_for_algorithm(algorithm);
+        let small = GraphMemoryModel.estimate(&spec, input_for_edges(1_000)).unwrap();
+        let large = GraphMemoryModel.estimate(&spec, input_for_edges(10_000)).unwrap();
+        assert!(
+            large.requested_bytes - small.requested_bytes >= 9_000 * 8 * 4,
+            "{algorithm:?} k seed selection must price endpoint copy and concat transient"
+        );
+    }
 }
 
 #[test]

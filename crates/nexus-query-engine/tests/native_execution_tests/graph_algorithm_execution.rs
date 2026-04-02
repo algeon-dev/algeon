@@ -432,6 +432,7 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
         vertex_width_bytes: 4,
         weight_width_bytes: None,
         has_edge_id: false,
+        device_total_memory_bytes: None,
         vertex_estimate: None,
     };
     let fallback_estimate = GraphMemoryModel.estimate(&spec, model_input).unwrap();
@@ -941,6 +942,66 @@ fn exact_betweenness_above_threshold_is_refused_before_cugraph() {
 
     let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
         Ok(_) => panic!("exact betweenness above threshold should be refused before cuGraph"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("reason"), Some("exact_betweenness_vertex_threshold_exceeded"));
+    assert_eq!(error.fact_value("actual_vertex_count"), Some("3"));
+    assert_eq!(error.fact_value("required_option"), Some("seeds_or_k"));
+}
+
+#[test]
+fn bounded_exact_betweenness_above_threshold_is_refused_before_graph_memory_denial() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 1])), Arc::new(Int32Array::from(vec![1, 2]))],
+    )
+    .unwrap();
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 512 * 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            exact_vertex_threshold: 1,
+            ..Default::default()
+        }),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan =
+        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+        Ok(_) => panic!("bounded exact betweenness above threshold should be refused before graph memory admission"),
         Err(error) => error,
     };
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
