@@ -151,8 +151,8 @@ fn e2e_opt_in_defaults_to_disabled() {
 }
 
 #[test]
-fn rust_error_normalization_uses_manifest_taxonomy_for_missing_columns() {
-    let err = cudf::Error::new(cudf::ErrorKind::InvalidOperation, "column 'missing' not found in schema")
+fn rust_error_normalization_uses_manifest_taxonomy_for_missing_columns_without_message_matching() {
+    let err = cudf::Error::new(cudf::ErrorKind::InvalidOperation, "schema lookup failed")
         .with_operation("dataframe::select")
         .with_context("column_name", "missing");
 

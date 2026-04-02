@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use cudf::{DataFrame, ErrorKind, Series};
 
+use crate::common::assert_missing_column_error;
+
 /// Helper: build a 3-row, 3-column DataFrame.
 fn sample_df() -> DataFrame {
     let ids = Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
@@ -64,8 +66,7 @@ fn test_without_columns_nonexistent_column_returns_error() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.to_string().contains("nonexistent"));
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 #[test]

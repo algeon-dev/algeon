@@ -3,9 +3,9 @@
 use std::{ffi::c_void, ptr};
 
 use cudf::{
-    Agg, AggSpec, DataFrame, DataFrameCsvReaderOptions, DataFrameCsvWriterOptions, DataframeParquetReaderOptions,
-    DataFrameParquetWriterOptions, ErrorKind, ExecutionContext, MergeOptions, Runtime, Series, SortOptions,
-    core::memory::DeviceMemoryResource, runtime::CudaStream,
+    Agg, AggSpec, CsvReadOptions, CsvWriteOptions, DataFrame, ErrorKind, ExecutionContext, MergeOptions,
+    ParquetReaderOptions, ParquetWriteOptions, Runtime, Series, SortOptions, core::memory::DeviceMemoryResource,
+    runtime::CudaStream,
 };
 use cudf_sys::{
     cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
@@ -178,7 +178,7 @@ fn parquet_read_with_runtime_seeds_explicit_domain_and_uses_runtime_stream() {
 
     let rt = sample_runtime();
     let expected_stream = rt.stream().__debug_raw_handle_value();
-    let opts = DataframeParquetReaderOptions::builder().filepath(&path).with_runtime(&rt).build();
+    let opts = ParquetReaderOptions::builder().filepath(&path).with_runtime(&rt).build();
 
     obs_reset();
     let read_df = DataFrame::read_parquet_with_options(opts).unwrap();
@@ -197,7 +197,7 @@ fn csv_read_with_runtime_seeds_explicit_domain_and_uses_runtime_stream() {
 
     let rt = sample_runtime();
     let expected_stream = rt.stream().__debug_raw_handle_value();
-    let opts = DataFrameCsvReaderOptions::builder().filepath(&path).with_runtime(&rt).build();
+    let opts = CsvReadOptions::builder().filepath(&path).with_runtime(&rt).build();
 
     obs_reset();
     let read_df = DataFrame::read_csv_with_options(opts).unwrap();
@@ -220,7 +220,7 @@ fn dataframe_write_parquet_with_options_uses_retained_runtime_stream() {
     .unwrap();
 
     obs_reset();
-    df.write_parquet_with_options(DataFrameParquetWriterOptions::builder().filepath(&path).build()).unwrap();
+    df.write_parquet_with_options(ParquetWriteOptions::builder().filepath(&path).build()).unwrap();
 
     assert_eq!(obs_last_stream(), rt.stream().__debug_raw_handle_value());
 
@@ -242,10 +242,8 @@ fn dataframe_write_parquet_with_options_runtime_override_recovers_mixed_explicit
     .unwrap();
 
     obs_reset();
-    df.write_parquet_with_options(
-        DataFrameParquetWriterOptions::builder().filepath(&path).with_runtime(&target_rt).build(),
-    )
-    .unwrap();
+    df.write_parquet_with_options(ParquetWriteOptions::builder().filepath(&path).with_runtime(&target_rt).build())
+        .unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());
@@ -272,7 +270,7 @@ fn dataframe_write_csv_with_options_uses_retained_runtime_stream() {
     .unwrap();
 
     obs_reset();
-    df.write_csv_with_options(DataFrameCsvWriterOptions::builder().filepath(&path).build()).unwrap();
+    df.write_csv_with_options(CsvWriteOptions::builder().filepath(&path).build()).unwrap();
 
     assert_eq!(obs_last_stream(), rt.stream().__debug_raw_handle_value());
 
@@ -294,8 +292,7 @@ fn dataframe_write_csv_with_options_runtime_override_recovers_mixed_explicit_dom
     .unwrap();
 
     obs_reset();
-    df.write_csv_with_options(DataFrameCsvWriterOptions::builder().filepath(&path).with_runtime(&target_rt).build())
-        .unwrap();
+    df.write_csv_with_options(CsvWriteOptions::builder().filepath(&path).with_runtime(&target_rt).build()).unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());

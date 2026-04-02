@@ -19,7 +19,10 @@ use crate::{
 };
 
 /// Options for reading a Parquet file.
-#[derive(TypedBuilder)]
+///
+/// Used by both the low-level [`read_parquet_with_metadata`] function and the
+/// high-level [`DataFrame::read_parquet_with_options`](crate::DataFrame::read_parquet_with_options).
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct ParquetReaderOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
@@ -204,7 +207,9 @@ unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> R
 }
 
 /// Options for writing a Parquet file.
-#[derive(TypedBuilder)]
+///
+/// **Advanced.** Most users should prefer [`DataFrame::write_parquet`](crate::DataFrame::write_parquet).
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct ParquetWriterOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,

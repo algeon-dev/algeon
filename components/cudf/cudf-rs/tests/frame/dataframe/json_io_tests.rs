@@ -2,7 +2,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataFrame, DataFrameJsonReaderOptions, DataFrameJsonWriterOptions, Series};
+use cudf::{DataFrame, JsonReaderOptions, JsonWriteOptions, Series};
 use tempfile::TempDir;
 
 // ===========================================================================
@@ -56,10 +56,10 @@ fn test_dataframe_json_roundtrip_with_options() {
     let s1 = Series::new("x", &[42i32]).unwrap();
     let df = DataFrame::from_series([("x", s1)]).unwrap();
 
-    let write_opts = DataFrameJsonWriterOptions::builder().filepath(&path).build();
+    let write_opts = JsonWriteOptions::builder().filepath(&path).build();
     df.write_json_with_options(write_opts).unwrap();
 
-    let read_opts = DataFrameJsonReaderOptions::builder().filepath(&path).build();
+    let read_opts = JsonReaderOptions::builder().filepath(&path).build();
     let read_df = DataFrame::read_json_with_options(read_opts).unwrap();
     assert_eq!(read_df.num_rows(), 1);
     assert!(read_df.contains("x"));
@@ -73,7 +73,7 @@ fn test_dataframe_json_write_no_nulls_option() {
     let s1 = Series::new("a", &[1i32, 2]).unwrap();
     let df = DataFrame::from_series([("a", s1)]).unwrap();
 
-    let write_opts = DataFrameJsonWriterOptions::builder().filepath(&path).include_nulls(false).build();
+    let write_opts = JsonWriteOptions::builder().filepath(&path).include_nulls(false).build();
     df.write_json_with_options(write_opts).unwrap();
 
     // Read back — should still work

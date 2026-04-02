@@ -3,8 +3,8 @@
 use cudf::{Column, DataFrame, ErrorKind, ExecutionContext, JoinType, MergeOptions, Series};
 
 use crate::common::{
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
-    sample_runtime,
+    assert_duplicate_name_error, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -516,7 +516,7 @@ fn test_merge_rejects_duplicate_output_names_after_reassembly() {
 
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert_eq!(err.operation(), "dataframe::merge");
-    assert!(err.to_string().contains("duplicate column name"));
+    assert_duplicate_name_error(&err, "right_id");
 }
 
 // ---------------------------------------------------------------------------

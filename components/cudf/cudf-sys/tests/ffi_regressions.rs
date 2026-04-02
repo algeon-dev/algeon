@@ -1,6 +1,14 @@
+mod support;
+
 use std::{
     os::raw::{c_char, c_void},
     ptr,
+};
+
+use support::{
+    NO_SYNC_RECORDED, current_device_resource_raw, default_stream_value, last_error_message, last_exec_mr_raw,
+    last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource,
+    owned_string_value, reset_exec_observation, stream_value,
 };
 
 fn make_i32_column(data: &[i32]) -> *mut c_void {
@@ -240,74 +248,6 @@ fn unique_missing_path(extension: &str) -> std::ffi::CString {
     std::ffi::CString::new(path.to_string_lossy().into_owned()).unwrap()
 }
 
-fn last_error_message() -> String {
-    let ptr = unsafe { cudf_sys::cudf_last_error_message() };
-    if ptr.is_null() {
-        return String::new();
-    }
-    unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
-}
-
-const NO_SYNC_RECORDED: usize = usize::MAX;
-
-fn reset_exec_observation() {
-    unsafe { cudf_sys::cudf_test_exec_reset_observation() };
-}
-
-fn last_exec_stream_value() -> usize {
-    let mut out = usize::MAX;
-    let st = unsafe { cudf_sys::cudf_test_exec_last_stream_value(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    out
-}
-
-fn last_exec_sync_stream_value() -> usize {
-    let mut out = usize::MAX;
-    let st = unsafe { cudf_sys::cudf_test_exec_last_sync_stream_value(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    out
-}
-
-fn last_exec_mr_raw() -> *mut c_void {
-    let mut out = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_test_exec_last_mr_raw(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    out
-}
-
-fn default_stream_value() -> usize {
-    let mut out = usize::MAX;
-    let st = unsafe { cudf_sys::cudf_test_default_stream_value(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    out
-}
-
-fn stream_value(stream: *mut c_void) -> usize {
-    let mut out = usize::MAX;
-    let st = unsafe { cudf_sys::cudf_test_stream_handle_value(stream, &mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    out
-}
-
-fn current_device_resource_raw() -> *mut c_void {
-    let mut out = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_test_current_device_resource_raw(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    out
-}
-
-fn make_stats_memory_resource() -> cudf_sys::MemoryResource {
-    cudf_sys::MemoryResource::new_test_stats().unwrap()
-}
-
-fn owned_string_value(ptr: *mut c_char, len: i32) -> String {
-    assert!(!ptr.is_null());
-    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
-    let value = String::from_utf8(bytes.to_vec()).unwrap();
-    unsafe { cudf_sys::cudf_string_free(ptr) };
-    value
-}
-
 #[test]
 fn test_scalar_string_value_round_trips_empty_and_non_empty_values() {
     for expected in ["hello", ""] {
@@ -462,6 +402,7 @@ fn test_stream_create_is_ready_and_synchronize_smoke() {
 
 #[test]
 fn test_execution_context_defaults_match_legacy_column_copy() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3, 4]);
     let default_stream = default_stream_value();
     let default_mr = current_device_resource_raw();
@@ -504,6 +445,7 @@ fn test_execution_context_defaults_match_legacy_column_copy() {
 
 #[test]
 fn test_scalar_create_numeric_remains_unsynchronized_before_return() {
+    let _shim_state = lock_shim_state();
     reset_exec_observation();
     let scalar = make_i32_scalar(42);
     assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
@@ -517,6 +459,7 @@ fn test_scalar_create_numeric_remains_unsynchronized_before_return() {
 
 #[test]
 fn test_scalar_create_string_synchronizes_default_stream_before_return() {
+    let _shim_state = lock_shim_state();
     let default_stream = default_stream_value();
     let hello = std::ffi::CString::new("hello").unwrap();
     reset_exec_observation();
@@ -536,6 +479,7 @@ fn test_scalar_create_string_synchronizes_default_stream_before_return() {
 
 #[test]
 fn test_scalar_create_numeric_ex_uses_explicit_stream_and_mr_without_syncing_before_return() {
+    let _shim_state = lock_shim_state();
     let value = 42i32;
     let stream = cudf_sys::Stream::new().unwrap();
     let explicit_stream = stream_value(stream.as_raw());
@@ -570,6 +514,7 @@ fn test_scalar_create_numeric_ex_uses_explicit_stream_and_mr_without_syncing_bef
 
 #[test]
 fn test_scalar_create_string_ex_uses_explicit_stream_and_mr_and_synchronizes_before_return() {
+    let _shim_state = lock_shim_state();
     let hello = std::ffi::CString::new("hello").unwrap();
     let stream = cudf_sys::Stream::new().unwrap();
     let explicit_stream = stream_value(stream.as_raw());
@@ -597,6 +542,7 @@ fn test_scalar_create_string_ex_uses_explicit_stream_and_mr_and_synchronizes_bef
 
 #[test]
 fn test_column_create_numeric_host_source_sync_contract() {
+    let _shim_state = lock_shim_state();
     let data = [31i32, 32, 33];
     let validity = [true, false, true];
     let null_mask = validity_to_bitmask(&validity);
@@ -652,6 +598,7 @@ fn test_column_create_numeric_host_source_sync_contract() {
 
 #[test]
 fn test_column_create_strings_host_source_sync_contract() {
+    let _shim_state = lock_shim_state();
     let values = ["ab", "", "cde"];
     let c_strings: Vec<_> = values.iter().map(|value| std::ffi::CString::new(*value).unwrap()).collect();
     let string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
@@ -707,6 +654,7 @@ fn test_column_create_strings_host_source_sync_contract() {
 
 #[test]
 fn test_stream_handle_has_no_effect_until_attached_to_execution_context() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[7, 8, 9]);
     let stream = cudf_sys::Stream::new().unwrap();
     let explicit_stream = stream_value(stream.as_raw());
@@ -735,6 +683,7 @@ fn test_stream_handle_has_no_effect_until_attached_to_execution_context() {
 
 #[test]
 fn test_column_view_to_host_execution_context_defaults_and_sync_contract() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[11, 12, 13]);
     let view = make_column_view(col);
     let default_stream = default_stream_value();
@@ -795,6 +744,7 @@ fn test_column_view_to_host_execution_context_defaults_and_sync_contract() {
 
 #[test]
 fn test_column_view_null_mask_to_host_sync_contract() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column_nullable(&[1, 2, 3, 4, 5], &[true, false, true, false, true]);
     let view = make_column_view(col);
     let default_stream = default_stream_value();
@@ -814,6 +764,7 @@ fn test_column_view_null_mask_to_host_sync_contract() {
 
 #[test]
 fn test_column_view_strings_to_host_sync_contract() {
+    let _shim_state = lock_shim_state();
     let col = make_string_column(&["ab", "", "cde"]);
     let view = make_column_view(col);
     let default_stream = default_stream_value();
@@ -846,6 +797,7 @@ fn test_column_view_strings_to_host_sync_contract() {
 
 #[test]
 fn test_column_view_strings_to_host_empty_writes_single_zero_offset() {
+    let _shim_state = lock_shim_state();
     let col = make_string_column(&[]);
     let view = make_column_view(col);
     let mut offsets = vec![-1i32; 1];
@@ -894,6 +846,7 @@ fn test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer() {
 
 #[test]
 fn test_column_view_strings_to_host_empty_ex_matches_legacy_contract() {
+    let _shim_state = lock_shim_state();
     let col = make_string_column(&[]);
     let view = make_column_view(col);
     let stream = cudf_sys::Stream::new().unwrap();
@@ -944,6 +897,7 @@ fn test_column_view_strings_to_host_empty_ex_matches_legacy_contract() {
 
 #[test]
 fn test_column_view_strings_to_host_ex_sync_contract() {
+    let _shim_state = lock_shim_state();
     let col = make_string_column(&["ab", "", "cde"]);
     let view = make_column_view(col);
     let stream = cudf_sys::Stream::new().unwrap();
@@ -980,6 +934,7 @@ fn test_column_view_strings_to_host_ex_sync_contract() {
 
 #[test]
 fn test_scalar_is_valid_ex_uses_explicit_stream_without_extra_shim_sync() {
+    let _shim_state = lock_shim_state();
     let scalar = make_i32_scalar(42);
     let stream = cudf_sys::Stream::new().unwrap();
     let explicit_stream = stream_value(stream.as_raw());
@@ -998,6 +953,7 @@ fn test_scalar_is_valid_ex_uses_explicit_stream_without_extra_shim_sync() {
 
 #[test]
 fn test_scalar_value_ex_uses_explicit_stream_without_extra_shim_sync() {
+    let _shim_state = lock_shim_state();
     let scalar = make_i32_scalar(42);
     let stream = cudf_sys::Stream::new().unwrap();
     let explicit_stream = stream_value(stream.as_raw());
@@ -1016,6 +972,7 @@ fn test_scalar_value_ex_uses_explicit_stream_without_extra_shim_sync() {
 
 #[test]
 fn test_scalar_string_value_ex_uses_explicit_stream_without_extra_shim_sync() {
+    let _shim_state = lock_shim_state();
     let scalar = make_string_scalar("hello");
     let stream = cudf_sys::Stream::new().unwrap();
     let explicit_stream = stream_value(stream.as_raw());
@@ -1035,6 +992,7 @@ fn test_scalar_string_value_ex_uses_explicit_stream_without_extra_shim_sync() {
 
 #[test]
 fn test_column_create_from_device_data_sync_and_async_contracts() {
+    let _shim_state = lock_shim_state();
     let source = make_i32_column(&[21, 22, 23]);
     let source_view = make_column_view(source);
     let default_stream = default_stream_value();
@@ -1519,6 +1477,7 @@ fn test_groupby_aggregation_count_mismatch_rejected() {
 
 #[test]
 fn test_aggregation_create_count_invalid_null_policy_rejected() {
+    let _shim_state = lock_shim_state();
     let mut agg: *mut c_void = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_aggregation_create_count(99, &mut agg) };
 
@@ -1529,6 +1488,7 @@ fn test_aggregation_create_count_invalid_null_policy_rejected() {
 
 #[test]
 fn test_groupby_invalid_keys_null_policy_rejected() {
+    let _shim_state = lock_shim_state();
     let key_col = make_i32_column(&[1, 1, 2]);
     let val_col = make_i32_column(&[10, 20, 30]);
     let keys_tbl = make_table_from_one_column(key_col);
@@ -1668,21 +1628,25 @@ fn assert_join_invalid_null_equality_rejected(
 
 #[test]
 fn test_inner_join_invalid_null_equality_rejected() {
+    let _shim_state = lock_shim_state();
     assert_join_invalid_null_equality_rejected(cudf_sys::cudf_inner_join);
 }
 
 #[test]
 fn test_left_join_invalid_null_equality_rejected() {
+    let _shim_state = lock_shim_state();
     assert_join_invalid_null_equality_rejected(cudf_sys::cudf_left_join);
 }
 
 #[test]
 fn test_full_join_invalid_null_equality_rejected() {
+    let _shim_state = lock_shim_state();
     assert_join_invalid_null_equality_rejected(cudf_sys::cudf_full_join);
 }
 
 #[test]
 fn test_scan_invalid_scan_type_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let view = make_column_view(col);
     let mut agg: *mut c_void = ptr::null_mut();
@@ -1706,6 +1670,7 @@ fn test_scan_invalid_scan_type_rejected() {
 
 #[test]
 fn test_scan_invalid_null_policy_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let view = make_column_view(col);
     let mut agg: *mut c_void = ptr::null_mut();
@@ -1729,6 +1694,7 @@ fn test_scan_invalid_null_policy_rejected() {
 
 #[test]
 fn test_unary_operation_invalid_operator_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let view = make_column_view(col);
 
@@ -1747,6 +1713,7 @@ fn test_unary_operation_invalid_operator_rejected() {
 
 #[test]
 fn test_binary_operation_vv_invalid_operator_rejected() {
+    let _shim_state = lock_shim_state();
     let lhs_col = make_i32_column(&[1, 2, 3]);
     let rhs_col = make_i32_column(&[4, 5, 6]);
     let lhs_view = make_column_view(lhs_col);
@@ -1771,6 +1738,7 @@ fn test_binary_operation_vv_invalid_operator_rejected() {
 
 #[test]
 fn test_binary_operation_vs_invalid_operator_rejected() {
+    let _shim_state = lock_shim_state();
     let lhs_col = make_i32_column(&[1, 2, 3]);
     let lhs_view = make_column_view(lhs_col);
     let rhs_scalar = make_i32_scalar(4);
@@ -1793,6 +1761,7 @@ fn test_binary_operation_vs_invalid_operator_rejected() {
 
 #[test]
 fn test_binary_operation_sv_invalid_operator_rejected() {
+    let _shim_state = lock_shim_state();
     let lhs_scalar = make_i32_scalar(4);
     let rhs_col = make_i32_column(&[1, 2, 3]);
     let rhs_view = make_column_view(rhs_col);
@@ -1835,6 +1804,7 @@ fn test_memory_resource_cuda_create_destroy_smoke() {
 
 #[test]
 fn test_memory_resource_has_no_effect_until_attached_to_execution_context() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[21, 22, 23]);
     let stats_mr = make_stats_memory_resource();
     let default_mr = current_device_resource_raw();
@@ -1893,6 +1863,7 @@ fn test_io_read_parquet_missing_file_clears_out() {
 
 #[test]
 fn test_non_io_runtime_error_maps_to_unknown() {
+    let _shim_state = lock_shim_state();
     let status = unsafe { cudf_sys::cudf_test_throw_runtime_error() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_UNKNOWN);
@@ -1901,6 +1872,7 @@ fn test_non_io_runtime_error_maps_to_unknown() {
 
 #[test]
 fn test_bad_alloc_maps_to_out_of_memory() {
+    let _shim_state = lock_shim_state();
     let status = unsafe { cudf_sys::cudf_test_throw_bad_alloc() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
@@ -2229,6 +2201,7 @@ fn test_dictionary_match_dictionaries_returns_heap_array() {
 
 #[test]
 fn test_table_create_failure_does_not_partially_consume_columns() {
+    let _shim_state = lock_shim_state();
     let c1 = make_i32_column(&[1, 2, 3]);
     let c2 = make_i32_column(&[4, 5, 6]);
     let mut columns = [c1, ptr::null_mut(), c2];
@@ -2407,6 +2380,7 @@ fn test_table_release_columns_failure_does_not_consume_table() {
 
 #[test]
 fn test_table_release_columns_allocation_failure_does_not_consume_table() {
+    let _shim_state = lock_shim_state();
     const NUM_COLUMNS: usize = 2;
 
     let mut columns: Vec<*mut c_void> = (0..NUM_COLUMNS).map(|_| make_empty_i32_column()).collect();

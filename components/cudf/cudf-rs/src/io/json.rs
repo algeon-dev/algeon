@@ -17,12 +17,15 @@ use crate::{
     runtime::Runtime,
 };
 
-/// Options for reading a JSON file into a low-level [`Table`].
+/// Options for reading a JSON file.
+///
+/// Used by both the low-level [`read_json`] function and the high-level
+/// [`DataFrame::read_json_with_options`](crate::DataFrame::read_json_with_options).
 ///
 /// # Defaults
 ///
 /// - `lines` = `true` (JSON Lines / NDJSON format, one JSON object per line)
-#[derive(TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct JsonReaderOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
@@ -135,11 +138,13 @@ fn collect_column_names(names_ptr: *mut *mut std::os::raw::c_char, num_names: i3
 
 /// Options for writing a low-level [`Table`] to a JSON file.
 ///
+/// **Advanced.** Most users should prefer [`DataFrame::write_json`](crate::DataFrame::write_json).
+///
 /// # Defaults
 ///
 /// - `lines` = `true` (JSON Lines / NDJSON format)
 /// - `include_nulls` = `true`
-#[derive(TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct JsonWriterOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,

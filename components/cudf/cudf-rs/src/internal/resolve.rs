@@ -98,7 +98,7 @@ mod tests {
         let names = vec!["a".into(), "b".into(), "a".into()];
         let err = validate_no_duplicate_names(&names, "test").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-        assert!(err.to_string().contains("duplicate"));
+        assert!(err.context().iter().any(|(k, v)| *k == "duplicate_name" && v == "a"));
     }
 
     #[test]
@@ -119,7 +119,7 @@ mod tests {
 
         let err = resolve_column_names(&map, &["missing"], "test").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-        assert!(err.to_string().contains("missing"));
+        assert!(err.context().iter().any(|(k, v)| *k == "column_name" && v == "missing"));
     }
 
     #[test]

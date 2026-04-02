@@ -16,8 +16,8 @@
 use cudf::{Column, DataFrame, Series};
 
 use crate::common::{
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
-    sample_runtime,
+    assert_missing_column_error, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
 // ===========================================================================
@@ -131,7 +131,7 @@ fn test_filter_isin_with_series_rejects_missing_column() {
     let values = Series::new::<i32>("vals", &[10]).unwrap();
     let err = df.filter_isin("nonexistent", &values).unwrap_err();
 
-    assert!(err.to_string().contains("nonexistent"));
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 // ===========================================================================
@@ -171,7 +171,7 @@ fn test_fillna_rejects_missing_column() {
     let df = DataFrame::from_columns([("id", ids)]).unwrap();
     let err = df.fillna::<i32>("nonexistent", 42).unwrap_err();
 
-    assert!(err.to_string().contains("nonexistent"));
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 // ===========================================================================

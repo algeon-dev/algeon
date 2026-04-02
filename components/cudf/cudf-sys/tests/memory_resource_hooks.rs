@@ -1,4 +1,8 @@
+mod support;
+
 use std::{ffi::c_void, ptr};
+
+use support::{CurrentDeviceResourceRestore, current_device_resource_raw, lock_shim_state};
 
 fn make_i32_column(data: &[i32]) -> *mut c_void {
     let mut out: *mut c_void = ptr::null_mut();
@@ -17,29 +21,12 @@ fn make_i32_column(data: &[i32]) -> *mut c_void {
     out
 }
 
-fn current_device_resource_raw() -> *mut c_void {
-    let mut out = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_test_current_device_resource_raw(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    out
-}
-
-struct CurrentDeviceResourceRestore {
-    previous_raw: *mut c_void,
-}
-
-impl Drop for CurrentDeviceResourceRestore {
-    fn drop(&mut self) {
-        unsafe { cudf_sys::test_set_current_device_resource_raw(self.previous_raw) }
-            .expect("failed to restore previous current device resource");
-    }
-}
-
 #[test]
 fn stats_memory_resource_can_be_installed_as_current_allocator() {
+    let _shim_state = lock_shim_state();
     let previous_raw = current_device_resource_raw();
     let stats = cudf_sys::MemoryResource::new_test_stats().expect("failed to create stats memory resource");
-    let _restore = CurrentDeviceResourceRestore { previous_raw };
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
 
     cudf_sys::test_set_current_device_resource(&stats).expect("failed to install current test allocator");
 

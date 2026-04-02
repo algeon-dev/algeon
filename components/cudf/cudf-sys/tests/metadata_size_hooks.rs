@@ -1,7 +1,11 @@
+mod support;
+
 use std::{
     ffi::{CString, c_void},
     ptr,
 };
+
+use support::{last_exec_stream_value, lock_shim_state, reset_exec_observation, stream_value};
 
 fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
     let mut mask = vec![0u8; validity.len().div_ceil(8)];
@@ -15,24 +19,6 @@ fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
 
 fn nullable_bitmask_payload_bytes(len: usize) -> usize {
     len.div_ceil(32) * std::mem::size_of::<u32>()
-}
-
-fn obs_reset() {
-    unsafe { cudf_sys::cudf_test_exec_reset_observation() };
-}
-
-fn obs_last_stream() -> usize {
-    let mut out = usize::MAX;
-    let status = unsafe { cudf_sys::cudf_test_exec_last_stream_value(&mut out) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    out
-}
-
-fn stream_value(stream: cudf_sys::cudf_stream_handle) -> usize {
-    let mut out = usize::MAX;
-    let status = unsafe { cudf_sys::cudf_test_stream_handle_value(stream, &mut out) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    out
 }
 
 fn make_i32_column(data: &[i32]) -> *mut c_void {
@@ -241,19 +227,20 @@ fn empty_table_size_hooks_return_zero() {
 
 #[test]
 fn column_payload_size_ex_uses_explicit_stream_for_string_columns() {
+    let _shim_state = lock_shim_state();
     let col = make_string_column(&["ab", "cde", ""]);
     let stream = cudf_sys::Stream::new().unwrap();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream);
     let expected_stream = stream_value(stream.as_raw());
 
-    obs_reset();
+    reset_exec_observation();
 
     let mut payload = 0usize;
     let status = unsafe { cudf_sys::cudf_column_payload_size_ex(col, ctx.as_raw(), &mut payload) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     assert_eq!(payload, (4 * std::mem::size_of::<i32>()) + 5);
-    assert_eq!(obs_last_stream(), expected_stream);
+    assert_eq!(last_exec_stream_value(), expected_stream);
 
     unsafe { cudf_sys::cudf_column_destroy(col) };
 }

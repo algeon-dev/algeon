@@ -67,7 +67,7 @@ pub fn execute_operation(df: &DataFrame, op: &Operation) -> Result<NormalizedRes
                 Some(names) => {
                     let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
                     DropNaOptions::builder().subset(&refs).build()
-                }
+                },
                 None => DropNaOptions::default(),
             };
             df.dropna(opts)
@@ -349,18 +349,20 @@ fn type_id_to_canonical(type_id: TypeId) -> String {
 
 /// Normalize a cudf::Error into a manifest-facing error taxonomy for comparison.
 pub fn normalize_manifest_error(err: &cudf::Error, operation_kind: &'static str) -> NormalizedError {
-    let kind = normalize_manifest_error_kind(err);
+    let kind = normalize_manifest_error_kind(err, operation_kind);
     let operation = operation_kind.to_string();
     let context: Vec<(String, String)> = err.context().iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     NormalizedError { kind, operation, context }
 }
 
-fn normalize_manifest_error_kind(err: &cudf::Error) -> String {
+fn normalize_manifest_error_kind(err: &cudf::Error, operation_kind: &'static str) -> String {
     let has_column_name = err.context().iter().any(|(k, _)| *k == "column_name");
-    let message = err.message().to_ascii_lowercase();
 
     match err.kind() {
-        cudf::ErrorKind::InvalidOperation if has_column_name && message.contains("not found") => {
+        cudf::ErrorKind::InvalidOperation if has_column_name && matches!(
+            operation_kind,
+            "select" | "rename" | "sort_values" | "filter_eq" | "drop_nulls"
+        ) => {
             "column_not_found".into()
         },
         cudf::ErrorKind::InvalidOperation | cudf::ErrorKind::TypeError | cudf::ErrorKind::NullError => {
