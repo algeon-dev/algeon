@@ -129,6 +129,26 @@ fn native_service_overloaded_error_preserves_adapter_classification_and_facts() 
 }
 
 #[test]
+fn native_error_message_is_preserved_as_adapter_fact() {
+    let native_error = nexus_query_engine::QueryError::new(
+        nexus_query_engine::QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.graph_algorithm.betweenness_seed_policy",
+        "exact betweenness requires explicit seeds or k above the configured vertex threshold",
+    );
+
+    let adapter_error = Error::from_native(
+        "datafusion_nexus.cugraph_sql.execute_gpu",
+        "native cuGraph SQL GPU-resident query execution failed",
+        native_error,
+    );
+
+    assert_eq!(
+        adapter_error.fact_value("native_message"),
+        Some("exact betweenness requires explicit seeds or k above the configured vertex threshold")
+    );
+}
+
+#[test]
 fn native_fact_collisions_preserve_adapter_facts_and_record_skipped_keys() {
     let native_error = nexus_query_engine::QueryError::new(
         nexus_query_engine::QueryErrorCode::UnsupportedPlanShape,

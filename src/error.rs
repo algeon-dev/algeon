@@ -123,11 +123,12 @@ impl Error {
     ///
     /// The adapter maps the native code into the closest [`ErrorCode`] and
     /// preserves the native classification under reserved facts: `native_code`,
-    /// `native_kind`, `native_status`, and `native_operation`. Native facts are
-    /// copied unprefixed when they do not collide with adapter facts. If a
-    /// native fact would overwrite an adapter/native classification fact, the
-    /// adapter preserves the existing fact, skips the colliding native fact, and
-    /// records the skipped keys in `native_fact_collision_keys`.
+    /// `native_kind`, `native_status`, `native_operation`, and the native
+    /// diagnostic text under `native_message`. Native facts are copied
+    /// unprefixed when they do not collide with adapter facts. If a native fact
+    /// would overwrite an adapter/native classification fact, the adapter
+    /// preserves the existing fact, skips the colliding native fact, and records
+    /// the skipped keys in `native_fact_collision_keys`.
     ///
     /// `operation` should be the stable dotted id for the adapter operation, and
     /// `message` should be human-facing adapter context.
@@ -141,7 +142,8 @@ impl Error {
             .with_fact("native_code", source.code())
             .with_fact("native_kind", source.kind())
             .with_fact("native_status", source.status())
-            .with_fact("native_operation", source.operation());
+            .with_fact("native_operation", source.operation())
+            .with_fact("native_message", source.message());
         let mut collision_keys = Vec::new();
         for (key, value) in source.facts().iter() {
             if key == NATIVE_FACT_COLLISION_KEYS || error.facts.get(key).is_some() {
