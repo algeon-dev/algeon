@@ -35,6 +35,7 @@ mod lowering_policy;
 mod materialize;
 mod operators;
 mod order;
+mod retry;
 mod source;
 mod types;
 mod util;

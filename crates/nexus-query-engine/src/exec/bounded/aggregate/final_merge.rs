@@ -1022,15 +1022,11 @@ fn release_merge_level_items(
 }
 
 fn is_retryable_final_merge_error(error: &QueryError) -> bool {
-    matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted)
+    crate::exec::retry::is_retryable_resource_error(error)
 }
 
 fn record_final_merge_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
-    match error.code() {
-        QueryErrorCode::MemoryReservationFailed => metrics.record_retry_reservation_failure(),
-        QueryErrorCode::CudfResourceExhausted => metrics.record_retry_resource_exhausted(),
-        _ => {},
-    }
+    crate::exec::retry::record_retryable_resource_error(error, metrics);
 }
 
 pub(in crate::exec::bounded) fn reduce_merge_fan_in(merge_fan_in: usize) -> Option<usize> {
@@ -1392,15 +1388,11 @@ fn release_compiled_merge_level_items(
 }
 
 fn is_retryable_compiled_final_merge_error(error: &QueryError) -> bool {
-    matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted)
+    crate::exec::retry::is_retryable_resource_error(error)
 }
 
 fn record_compiled_final_merge_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
-    match error.code() {
-        QueryErrorCode::MemoryReservationFailed => metrics.record_retry_reservation_failure(),
-        QueryErrorCode::CudfResourceExhausted => metrics.record_retry_resource_exhausted(),
-        _ => {},
-    }
+    crate::exec::retry::record_retryable_resource_error(error, metrics);
 }
 
 fn execute_compiled_final_aggregate_projection(

@@ -1647,15 +1647,11 @@ fn materialize_bounded_root_hash_join_index_slice_once(
 }
 
 fn is_retryable_join_stream_slice_error(error: &QueryError) -> bool {
-    matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted)
+    crate::exec::retry::is_retryable_resource_error(error)
 }
 
 fn record_join_stream_slice_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
-    match error.code() {
-        QueryErrorCode::MemoryReservationFailed => metrics.record_retry_reservation_failure(),
-        QueryErrorCode::CudfResourceExhausted => metrics.record_retry_resource_exhausted(),
-        _ => {},
-    }
+    crate::exec::retry::record_retryable_resource_error(error, metrics);
 }
 
 fn reusable_hash_join_stream_chunk_rows(output_rows: u64, output_reservation_bytes: u64, target_bytes: u64) -> usize {
