@@ -113,6 +113,8 @@ pub enum JoinFilterReassociationRejectedReason {
     UnsupportedCrossedJoinShape,
     /// Join residual did not contain a side-local necessary predicate.
     NoPushableResidualPredicate,
+    /// Projected-parent reassociation would rewrite a projection shared by multiple consumers.
+    SharedProjectedParent,
 }
 
 pub(crate) struct JoinFilterReassociationResult {
@@ -150,6 +152,7 @@ pub(crate) fn optimize_join_filter_reassociation(
 struct JoinFilterReassociationRewriter<'a> {
     original: &'a QueryPlan,
     options: &'a JoinFilterReassociationOptions,
+    consumer_counts: Vec<usize>,
     nodes: Vec<QueryNode>,
     memo: BTreeMap<NodeId, NodeId>,
     diagnostics: JoinFilterReassociationDiagnostics,
@@ -161,6 +164,7 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         Self {
             original,
             options,
+            consumer_counts: node_consumer_counts(original),
             nodes: Vec::new(),
             memo: BTreeMap::new(),
             diagnostics: JoinFilterReassociationDiagnostics::default(),
@@ -183,6 +187,12 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         }
         if let PlanNode::Join(join) = &old_node.kind
             && let Some(new_id) = self.try_reassociate_candidate(old_id, join)
+        {
+            self.memo.insert(old_id, new_id);
+            return new_id;
+        }
+        if let PlanNode::Projection(projection) = &old_node.kind
+            && let Some(new_id) = self.try_reassociate_projected_join_candidate(old_id, projection)
         {
             self.memo.insert(old_id, new_id);
             return new_id;
@@ -214,7 +224,59 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         };
         self.diagnostics.considered_count += 1;
 
-        match self.plan_reassociation(candidate_node_id, join) {
+        let output_schema =
+            self.original.node(candidate_node_id).expect("candidate node must exist").output_schema().clone();
+        match self.plan_reassociation(join, output_schema) {
+            Ok(planned) => {
+                candidate.crossed_join_node_id = Some(planned.crossed_join_node_id);
+                candidate.filtered_child_node_id = Some(planned.filtered_child_node_id);
+                candidate.filtering_node_id = Some(planned.filtering_node_id);
+                candidate.applied = true;
+                self.diagnostics.applied_count += 1;
+                self.diagnostics.candidates.push(candidate);
+                self.changed = true;
+                Some(planned.new_id)
+            },
+            Err(reason) => {
+                candidate.rejected_reason = Some(reason);
+                self.diagnostics.candidates.push(candidate);
+                None
+            },
+        }
+    }
+
+    fn try_reassociate_projected_join_candidate(
+        &mut self,
+        projection_node_id: NodeId,
+        projection: &ProjectionNode,
+    ) -> Option<NodeId> {
+        let input_node = self.original.node(projection.input)?;
+        let PlanNode::Join(join) = &input_node.kind else {
+            return None;
+        };
+        if !parent_join_supported(join) {
+            return None;
+        }
+        let projected_join = projected_preserved_side_join(join, projection)?;
+        parent_preserved_output_side(&projected_join)?;
+
+        let mut candidate = JoinFilterReassociationCandidateDiagnostics {
+            rule_name: JOIN_FILTER_REASSOCIATION_RULE_NAME,
+            candidate_node_id: projection.input,
+            crossed_join_node_id: None,
+            filtered_child_node_id: None,
+            filtering_node_id: None,
+            applied: false,
+            rejected_reason: None,
+        };
+        self.diagnostics.considered_count += 1;
+        if self.consumer_count(projection_node_id) > 1 {
+            candidate.rejected_reason = Some(JoinFilterReassociationRejectedReason::SharedProjectedParent);
+            self.diagnostics.candidates.push(candidate);
+            return None;
+        }
+
+        match self.plan_reassociation(&projected_join, projection.output_schema().clone()) {
             Ok(planned) => {
                 candidate.crossed_join_node_id = Some(planned.crossed_join_node_id);
                 candidate.filtered_child_node_id = Some(planned.filtered_child_node_id);
@@ -402,8 +464,8 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
 
     fn plan_reassociation(
         &mut self,
-        candidate_node_id: NodeId,
         join: &JoinNode,
+        output_schema: SchemaRef,
     ) -> Result<ReassociationPlan, JoinFilterReassociationRejectedReason> {
         if !parent_join_supported(join) {
             return Err(JoinFilterReassociationRejectedReason::UnsupportedParentJoinShape);
@@ -451,12 +513,11 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
             crossed_new
         };
 
-        let parent_node = self.original.node(candidate_node_id).expect("candidate node must exist");
-        let parent_projection = parent_projection_for_preserved_side(join, preserved_side, parent_node.output_schema())
+        let parent_projection = parent_projection_for_preserved_side(join, preserved_side, &output_schema)
             .ok_or(JoinFilterReassociationRejectedReason::NonPreservedSideProjection)?;
         let new_id = self.push_node(
             PlanNode::Projection(ProjectionNode::new(preserved_new, parent_projection)),
-            PlanFacts::device(parent_node.output_schema().clone(), SchemaBehavior::Projection),
+            PlanFacts::device(output_schema, SchemaBehavior::Projection),
         );
         Ok(ReassociationPlan {
             new_id,
@@ -510,6 +571,25 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         self.nodes.push(QueryNode { id, kind, facts });
         id
     }
+
+    fn consumer_count(&self, node_id: NodeId) -> usize {
+        self.consumer_counts.get(node_id.index()).copied().unwrap_or_default()
+    }
+}
+
+fn node_consumer_counts(plan: &QueryPlan) -> Vec<usize> {
+    let mut consumer_counts = vec![0; plan.nodes().len()];
+    for node in plan.nodes() {
+        for input in node.input_ids() {
+            if let Some(count) = consumer_counts.get_mut(input.index()) {
+                *count += 1;
+            }
+        }
+    }
+    if let Some(count) = consumer_counts.get_mut(plan.sink().input().index()) {
+        *count += 1;
+    }
+    consumer_counts
 }
 
 struct ReassociationPlan {
@@ -1134,6 +1214,29 @@ fn parent_preserved_output_side(join: &JoinNode) -> Option<JoinSide> {
         }
     }
     side
+}
+
+fn projected_preserved_side_join(join: &JoinNode, projection: &ProjectionNode) -> Option<JoinNode> {
+    let mut output_projection = Vec::with_capacity(projection.outputs.len());
+    let mut side = None;
+    for output in &projection.outputs {
+        let column = simple_projection_column(&output.expr)?;
+        let join_output = unique_join_output_for_name(join, column.name())?;
+        match side {
+            Some(existing) if existing != join_output.side => return None,
+            Some(_) => {},
+            None => side = Some(join_output.side),
+        }
+        output_projection.push(JoinOutputColumn {
+            side: join_output.side,
+            column: join_output.column.clone(),
+            output_name: output.field.name().clone(),
+        });
+    }
+    side?;
+    let mut projected_join = join.clone();
+    projected_join.spec.output_projection = output_projection;
+    Some(projected_join)
 }
 
 fn parent_keys(join: &JoinNode, side: JoinSide) -> Vec<ColumnRef> {

@@ -1045,6 +1045,192 @@ fn native_optimizer_rejects_join_probe_dynamic_filter_for_reused_local_source() 
 }
 
 #[test]
+fn native_optimizer_routes_q02_like_shared_partsupp_source_when_all_key_consumers_are_constrained() {
+    let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions::default());
+    let options = NativeOptimizerOptions {
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(fixture.plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
+    let candidate = result
+        .diagnostics
+        .dynamic_filter_route_discovery
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == fixture.part_partsupp_join)
+        .expect("part/partsupp join should be considered");
+    assert!(candidate.routed);
+    assert_eq!(candidate.consumer_source_node_id, Some(fixture.partsupp));
+    assert_eq!(candidate.consumer_key_column.as_deref(), Some("ps_partkey"));
+    assert_eq!(candidate.consumer_kind.as_deref(), Some("local_parquet_source"));
+    assert_eq!(candidate.consumer_lowering, Some(DynamicFilterConsumerLowering::PostDecodeOnly));
+    assert_eq!(candidate.consumer_reduction_stage, Some(DynamicFilterConsumerReductionStage::SourcePostDecode));
+    assert_eq!(candidate.rejected_reason, None);
+
+    let routes = result.plan.dynamic_filter_routes();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].producer_columns, vec!["p_partkey".to_string()]);
+    assert_eq!(routes[0].consumer_columns, vec!["ps_partkey".to_string()]);
+    assert_eq!(routes[0].consumer_lowering, DynamicFilterConsumerLowering::PostDecodeOnly);
+    assert!(matches!(
+        routes[0].producer,
+        DynamicFilterProducer::HashJoinBuild {
+            join_node_id,
+            build_side: JoinSide::Left,
+            ..
+        } if join_node_id == fixture.part_partsupp_join
+    ));
+    assert!(
+        matches!(routes[0].consumer, DynamicFilterConsumer::LocalParquetSource { source_node_id } if source_node_id == fixture.partsupp)
+    );
+}
+
+#[test]
+fn native_optimizer_rejects_q02_like_shared_source_filter_with_unconstrained_extra_consumer() {
+    let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
+        extra_unconstrained_partsupp_consumer: true,
+        ..SharedPartsuppDynamicFilterPlanOptions::default()
+    });
+    let options = NativeOptimizerOptions {
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(fixture.plan, &options);
+
+    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
+    let candidate = result
+        .diagnostics
+        .dynamic_filter_route_discovery
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == fixture.part_partsupp_join)
+        .expect("part/partsupp join should be considered");
+    assert!(!candidate.routed);
+    assert_eq!(candidate.consumer_source_node_id, Some(fixture.partsupp));
+    assert_eq!(candidate.consumer_key_column.as_deref(), Some("ps_partkey"));
+    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan));
+    assert!(result.plan.dynamic_filter_routes().is_empty());
+}
+
+#[test]
+fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_outer_joined() {
+    let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
+        final_join_type: JoinType::Left,
+        ..SharedPartsuppDynamicFilterPlanOptions::default()
+    });
+    let options = NativeOptimizerOptions {
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(fixture.plan, &options);
+
+    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
+    let candidate = result
+        .diagnostics
+        .dynamic_filter_route_discovery
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == fixture.part_partsupp_join)
+        .expect("part/partsupp join should be considered");
+    assert!(!candidate.routed);
+    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan));
+    assert!(result.plan.dynamic_filter_routes().is_empty());
+}
+
+#[test]
+fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_uses_null_equal_join() {
+    let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
+        final_join_null_equality: JoinNullEquality::NullsMatch,
+        ..SharedPartsuppDynamicFilterPlanOptions::default()
+    });
+    let options = NativeOptimizerOptions {
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(fixture.plan, &options);
+
+    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
+    let candidate = result
+        .diagnostics
+        .dynamic_filter_route_discovery
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == fixture.part_partsupp_join)
+        .expect("part/partsupp join should be considered");
+    assert!(!candidate.routed);
+    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan));
+    assert!(result.plan.dynamic_filter_routes().is_empty());
+}
+
+#[test]
+fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_group_key_is_derived() {
+    let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
+        derived_aggregate_group_key: true,
+        ..SharedPartsuppDynamicFilterPlanOptions::default()
+    });
+    let options = NativeOptimizerOptions {
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(fixture.plan, &options);
+
+    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
+    let candidate = result
+        .diagnostics
+        .dynamic_filter_route_discovery
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == fixture.part_partsupp_join)
+        .expect("part/partsupp join should be considered");
+    assert!(!candidate.routed);
+    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan));
+    assert!(result.plan.dynamic_filter_routes().is_empty());
+}
+
+#[test]
+fn native_optimizer_rejects_q02_like_shared_source_filter_when_constraint_uses_same_source_but_not_keyset() {
+    let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
+        filter_part_build_keyset: true,
+        final_join_uses_unfiltered_part_keyset: true,
+        ..SharedPartsuppDynamicFilterPlanOptions::default()
+    });
+    let options = NativeOptimizerOptions {
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(fixture.plan, &options);
+
+    let candidate = result
+        .diagnostics
+        .dynamic_filter_route_discovery
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == fixture.part_partsupp_join)
+        .expect("part/partsupp join should be considered");
+    assert!(!candidate.routed);
+    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan));
+    assert!(result.plan.dynamic_filter_routes().iter().all(|route| {
+        !(route.consumer_columns == ["ps_partkey".to_string()]
+            && matches!(route.consumer, DynamicFilterConsumer::LocalParquetSource { source_node_id } if source_node_id == fixture.partsupp))
+    }));
+}
+
+#[test]
 fn native_optimizer_skips_join_probe_dynamic_filter_when_it_feeds_scalar_decimal_sum() {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = Arc::new(Schema::new(vec![
@@ -2550,6 +2736,176 @@ fn shared_filtered_prefix_branch_local_dynamic_filter_plan() -> (nexus_query_eng
         branch_schema,
     );
     (builder.finish_gpu_resident(final_join), shared_filter, first_branch_join, second_branch_join)
+}
+
+struct SharedPartsuppDynamicFilterPlan {
+    plan: nexus_query_engine::QueryPlan,
+    partsupp: NodeId,
+    part_partsupp_join: NodeId,
+}
+
+#[derive(Clone, Copy)]
+struct SharedPartsuppDynamicFilterPlanOptions {
+    extra_unconstrained_partsupp_consumer: bool,
+    final_join_type: JoinType,
+    final_join_null_equality: JoinNullEquality,
+    derived_aggregate_group_key: bool,
+    filter_part_build_keyset: bool,
+    final_join_uses_unfiltered_part_keyset: bool,
+}
+
+impl Default for SharedPartsuppDynamicFilterPlanOptions {
+    fn default() -> Self {
+        Self {
+            extra_unconstrained_partsupp_consumer: false,
+            final_join_type: JoinType::Inner,
+            final_join_null_equality: JoinNullEquality::NullsDoNotMatch,
+            derived_aggregate_group_key: false,
+            filter_part_build_keyset: false,
+            final_join_uses_unfiltered_part_keyset: false,
+        }
+    }
+}
+
+fn q02_like_shared_partsupp_dynamic_filter_plan(
+    options: SharedPartsuppDynamicFilterPlanOptions,
+) -> SharedPartsuppDynamicFilterPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let result_schema = schema(&["p_partkey", "ps_supplycost"]);
+    let part = builder.add_source(estimated_local_source("part", "p_partkey", 16 * 1024 * 1024, 100_000));
+    let part_build_input = if options.filter_part_build_keyset {
+        builder.add_filter(
+            part,
+            Expr::binary(Expr::column("p_partkey"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
+            schema(&["p_partkey"]),
+        )
+    } else {
+        part
+    };
+    let partsupp = builder.add_source(estimated_local_source_with_fields(
+        "partsupp",
+        &["ps_partkey", "ps_suppkey", "ps_supplycost"],
+        512 * 1024 * 1024,
+        80_000_000,
+    ));
+    let part_partsupp_join = builder.add_join(
+        part_build_input,
+        partsupp,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "p_partkey", "p_partkey"),
+                ColumnRef::input(1, "ps_partkey", "ps_partkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
+        ])
+        .with_build_side(JoinSide::Left),
+        Arc::clone(&result_schema),
+    );
+    let (aggregate_key_expr, aggregate_key_name) = if options.derived_aggregate_group_key {
+        (
+            Expr::binary(Expr::column("ps_partkey"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(0)))
+                .alias("ps_partkey_plus_zero"),
+            "ps_partkey_plus_zero",
+        )
+    } else {
+        (Expr::column("ps_partkey"), "ps_partkey")
+    };
+    let supplier = builder.add_source(estimated_local_source("supplier", "s_suppkey", 8 * 1024 * 1024, 10_000));
+    let supplier_partsupp = builder.add_join(
+        supplier,
+        partsupp,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                ColumnRef::input(1, "ps_suppkey", "ps_suppkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::right(ColumnRef::input(1, "ps_partkey", "ps_partkey"), "ps_partkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
+        ])
+        .with_build_side(JoinSide::Left),
+        Arc::clone(&result_schema),
+    );
+    let partsupp_min = builder.add_aggregate(
+        supplier_partsupp,
+        AggregateSpec::new(
+            vec![aggregate_key_expr],
+            vec![AggregateExpr::new(AggregateFunction::Min, Expr::column("ps_supplycost"), "min_supplycost")],
+        ),
+        schema(&[aggregate_key_name, "min_supplycost"]),
+    );
+    let final_join_left = if options.final_join_uses_unfiltered_part_keyset {
+        builder.add_projection(
+            part,
+            vec![
+                ProjectionOutput::new(Expr::column("p_partkey"), Field::new("p_partkey", DataType::Int32, false)),
+                ProjectionOutput::new(
+                    Expr::literal(LiteralValue::Int32(0)),
+                    Field::new("ps_supplycost", DataType::Int32, false),
+                ),
+            ],
+        )
+    } else {
+        part_partsupp_join
+    };
+    let final_join = builder.add_join(
+        final_join_left,
+        partsupp_min,
+        JoinSpec::new(
+            options.final_join_type,
+            vec![
+                JoinKey::new(
+                    ColumnRef::input(0, "p_partkey", "p_partkey"),
+                    ColumnRef::input(1, aggregate_key_name, aggregate_key_name),
+                ),
+                JoinKey::new(
+                    ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
+                    ColumnRef::input(1, "min_supplycost", "min_supplycost"),
+                ),
+            ],
+        )
+        .with_null_equality(options.final_join_null_equality)
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&result_schema),
+    );
+    let mut root_inputs = vec![final_join];
+    if options.final_join_uses_unfiltered_part_keyset {
+        root_inputs.push(part_partsupp_join);
+    }
+    if options.extra_unconstrained_partsupp_consumer {
+        let extra_consumer = builder.add_projection(
+            partsupp,
+            vec![
+                ProjectionOutput::new(Expr::column("ps_partkey"), Field::new("p_partkey", DataType::Int32, false)),
+                ProjectionOutput::new(
+                    Expr::column("ps_supplycost"),
+                    Field::new("ps_supplycost", DataType::Int32, false),
+                ),
+            ],
+        );
+        root_inputs.push(extra_consumer);
+    }
+    let root = if root_inputs.len() == 1 {
+        final_join
+    } else {
+        builder.add_union(root_inputs, Arc::clone(&result_schema))
+    };
+
+    SharedPartsuppDynamicFilterPlan {
+        plan: builder.finish_gpu_resident(root),
+        partsupp,
+        part_partsupp_join,
+    }
 }
 
 fn aggregate_keyset_source(builder: &mut QueryPlanBuilder, name: &str, key_name: &str) -> nexus_query_engine::NodeId {

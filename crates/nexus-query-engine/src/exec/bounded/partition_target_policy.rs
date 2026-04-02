@@ -25,7 +25,7 @@ impl BoundedPartitionTargetPolicy {
     pub(in crate::exec::bounded) const DEFAULT_AGGREGATE_PARTITION_MAX_TARGET_BYTES: u64 = 1024 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_AGGREGATE_PARTITION_BUDGET_DIVISOR: u64 = 32;
     pub(in crate::exec::bounded) const DEFAULT_PARTITIONED_JOIN_MIN_TARGET_BYTES: u64 = 128 * 1024 * 1024;
-    pub(in crate::exec::bounded) const DEFAULT_PARTITIONED_JOIN_MAX_TARGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+    pub(in crate::exec::bounded) const DEFAULT_PARTITIONED_JOIN_MAX_TARGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_PARTITIONED_JOIN_BUDGET_DIVISOR: u64 = 16;
     pub(in crate::exec::bounded) const DEFAULT_REUSABLE_HASH_JOIN_STREAM_MIN_TARGET_BYTES: u64 = 128 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_REUSABLE_HASH_JOIN_STREAM_MAX_TARGET_BYTES: u64 = 512 * 1024 * 1024;
@@ -113,6 +113,10 @@ mod tests {
         );
         assert_eq!(policy.partitioned_join_target_bytes(8 * 1024 * 1024 * 1024), 512 * 1024 * 1024);
         assert_eq!(policy.partitioned_join_target_bytes(32 * 1024 * 1024 * 1024), 2 * 1024 * 1024 * 1024);
+        assert_eq!(
+            policy.partitioned_join_target_bytes(95 * 1024 * 1024 * 1024),
+            95 * 1024 * 1024 * 1024 / BoundedPartitionTargetPolicy::DEFAULT_PARTITIONED_JOIN_BUDGET_DIVISOR
+        );
         assert_eq!(
             policy.partitioned_join_target_bytes(128 * 1024 * 1024 * 1024),
             BoundedPartitionTargetPolicy::DEFAULT_PARTITIONED_JOIN_MAX_TARGET_BYTES

@@ -776,6 +776,21 @@ fn native_optimizer_derives_scalar_sum_from_grouped_sum_with_permuted_source_fil
 }
 
 #[test]
+fn disabled_shared_subplan_materialization_does_not_derive_scalar_sum_from_grouped_sum() {
+    let plan = grouped_and_scalar_sum_over_permuted_source_files_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::disabled(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert!(result.diagnostics.shared_subplan_materialization.is_empty());
+}
+
+#[test]
 fn disabled_shared_subplan_materialization_emits_no_diagnostics() {
     let plan = repeated_grouped_aggregate_materialization_plan();
     let options = NativeOptimizerOptions {

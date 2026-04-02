@@ -28,7 +28,8 @@ impl BoundedSourceBatchingPolicy {
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES: u64 =
         384 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS: usize = 1024;
-    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 = 64 * 1024 * 1024;
+    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 =
+        Self::DEFAULT_SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES;
     pub(in crate::exec::bounded) const DEFAULT_REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 =
         8 * 1024 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_FAN_IN: usize = 64;
@@ -96,10 +97,10 @@ impl BoundedSourceBatchingPolicy {
         remote_direct_required: bool,
         source_adjacent_grouped_aggregate: bool,
     ) -> u64 {
+        if source_adjacent_grouped_aggregate {
+            return self.source_adjacent_grouped_aggregate_target_chunk_bytes;
+        }
         if remote_direct_required {
-            if source_adjacent_grouped_aggregate {
-                return self.source_adjacent_grouped_aggregate_target_chunk_bytes;
-            }
             return self.remote_direct_source_adjacent_raw_source_batch_max_bytes;
         }
         self.source_adjacent_raw_source_batch_max_bytes
@@ -205,7 +206,11 @@ mod tests {
         );
         assert_eq!(
             policy.source_adjacent_raw_source_batch_max_bytes(false, true),
-            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES
+            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES
+        );
+        assert_eq!(
+            policy.source_adjacent_raw_source_batch_max_bytes(false, false),
+            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES
         );
     }
 

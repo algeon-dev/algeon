@@ -267,8 +267,13 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         join_build_side_result.plan,
         &options.outer_join_null_rejection,
     );
+    let pre_aggregate_scalar_derivation_result =
+        shared_subplan_materialization::optimize_scalar_aggregate_from_grouped_aggregate_if_enabled(
+            null_rejection_result.plan,
+            &options.shared_subplan_materialization,
+        );
     let aggregate_join_pushdown_result = aggregate_join_pushdown::optimize_aggregate_join_pushdown(
-        null_rejection_result.plan,
+        pre_aggregate_scalar_derivation_result.plan,
         &options.aggregate_join_pushdown,
     );
     let aggregate_join_pushdown_change = aggregate_join_pushdown_result.change;
@@ -315,10 +320,11 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         count_non_null_column_pruning_result.plan,
         &options.stream_fanout_replay,
     );
-    let shared_subplan_materialization_result = shared_subplan_materialization::optimize_shared_subplan_materialization(
-        stream_fanout_replay_result.plan,
-        &options.shared_subplan_materialization,
-    );
+    let shared_subplan_materialization_result =
+        shared_subplan_materialization::optimize_shared_subplan_materialization_without_scalar_derivation(
+            stream_fanout_replay_result.plan,
+            &options.shared_subplan_materialization,
+        );
     let local_parquet_source_reuse_result = local_parquet_source_reuse::optimize_local_parquet_source_reuse(
         shared_subplan_materialization_result.plan,
         &options.local_parquet_source_reuse,
@@ -339,6 +345,7 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         || join_filter_reassociation_result.change.changed()
         || dimension_pruning_result.change.changed()
         || join_build_side_result.change.changed()
+        || pre_aggregate_scalar_derivation_result.change.changed()
         || aggregate_join_pushdown_result.change.changed()
         || post_aggregate_join_build_side_result.change.changed()
         || post_aggregate_null_rejection_result.change.changed()
@@ -380,7 +387,18 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
             },
             stream_fanout_replay: stream_fanout_replay_result.diagnostics,
             local_parquet_source_reuse: local_parquet_source_reuse_result.diagnostics,
-            shared_subplan_materialization: shared_subplan_materialization_result.diagnostics,
+            shared_subplan_materialization: {
+                let mut diagnostics = pre_aggregate_scalar_derivation_result.diagnostics;
+                let shared_diagnostics = shared_subplan_materialization_result.diagnostics;
+                let suppress_empty_post_scalar_discovery = !diagnostics.is_empty()
+                    && shared_diagnostics.candidate_count == 0
+                    && shared_diagnostics.applied_count == 0
+                    && shared_diagnostics.candidates.is_empty();
+                if !suppress_empty_post_scalar_discovery {
+                    diagnostics.merge(shared_diagnostics);
+                }
+                diagnostics
+            },
             dynamic_filter_route_discovery: dynamic_filter_route_result.diagnostics,
         },
     }

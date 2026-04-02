@@ -19,8 +19,8 @@ pub(in crate::exec::bounded) struct BoundedPartitionRowPolicy {
 
 impl BoundedPartitionRowPolicy {
     pub(in crate::exec::bounded) const DEFAULT_MIXED_JOIN_MIN_TARGET_ROWS: u64 = 50_000;
-    pub(in crate::exec::bounded) const DEFAULT_MIXED_JOIN_MAX_TARGET_ROWS: u64 = 1_000_000;
-    pub(in crate::exec::bounded) const DEFAULT_MIXED_JOIN_TARGET_ROWS_BUDGET_BYTE_DIVISOR: u64 = 128 * 1024;
+    pub(in crate::exec::bounded) const DEFAULT_MIXED_JOIN_MAX_TARGET_ROWS: u64 = 16_000_000;
+    pub(in crate::exec::bounded) const DEFAULT_MIXED_JOIN_TARGET_ROWS_BUDGET_BYTE_DIVISOR: u64 = 8 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_MIXED_JOIN_MAX_PARTITIONS: usize = 1024;
     pub(in crate::exec::bounded) const DEFAULT_HASH_FRAME_STREAM_MIN_PARTITIONS: usize = 2;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS: u64 = 32_000_000;
@@ -111,7 +111,7 @@ mod tests {
     fn mixed_join_row_target_scales_with_large_device_budgets() {
         assert_eq!(
             BoundedPartitionRowPolicy::default().mixed_join_target_rows_for_budget(95 * 1024 * 1024 * 1024),
-            778_240
+            12_451_840
         );
         assert_eq!(
             BoundedPartitionRowPolicy::default().mixed_join_target_rows_for_budget(256 * 1024 * 1024 * 1024),

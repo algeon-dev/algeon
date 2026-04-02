@@ -134,6 +134,18 @@ impl<T> CompiledPipelineState<T> {
         })
     }
 
+    pub fn replace_resource_payload(&mut self, resource: ResidentResourceId, payload: T) -> Result<T> {
+        let slot = self.resource_slot_mut(resource)?;
+        if slot.released {
+            return Err(invalid("compiled task tried to replace a released resident resource")
+                .with_fact("resident_resource_id", resource));
+        }
+        slot.payload.replace(payload).ok_or_else(|| {
+            invalid("compiled task tried to replace an unproduced resident resource")
+                .with_fact("resident_resource_id", resource)
+        })
+    }
+
     pub fn prepare_task(&self, task: &PipelineTask) -> Result<()> {
         if self.completed_tasks.contains(&task.id()) {
             return Err(invalid("compiled task executed more than once")
