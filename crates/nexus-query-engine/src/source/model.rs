@@ -1219,7 +1219,8 @@ impl LocalParquetSource {
     /// Returns true if `predicate` can be lowered to the cuDF Parquet reader AST
     /// using this source's read-column projection.
     pub fn reader_predicate_is_supported(&self, predicate: &Expr) -> bool {
-        reader_predicate_expr_is_supported(self, predicate)
+        reader_predicate_root_is_supported(predicate)
+            && reader_predicate_expr_is_supported(self, predicate)
             && (!reader_predicate_references_decimal_column(self, predicate)
                 || reader_predicate_source_contract_shape_is_supported(self, predicate))
     }
@@ -1393,6 +1394,35 @@ impl LocalParquetSource {
 
 fn object_store_reader_path(uri: &str) -> String {
     uri.to_string()
+}
+
+fn reader_predicate_root_is_supported(expr: &Expr) -> bool {
+    match expr {
+        Expr::Alias { expr, .. } => reader_predicate_root_is_supported(expr),
+        Expr::Column(_) | Expr::Literal(_) => false,
+        Expr::Not(_)
+        | Expr::IsNull(_)
+        | Expr::IsNotNull(_)
+        | Expr::Cast { .. }
+        | Expr::TryCast { .. }
+        | Expr::Binary { .. }
+        | Expr::InList { .. }
+        | Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::StringLength { .. }
+        | Expr::RegexpReplace { .. }
+        | Expr::Concat(_)
+        | Expr::Abs(_)
+        | Expr::Sqrt { .. }
+        | Expr::Round { .. }
+        | Expr::IsDistinctFrom { .. }
+        | Expr::IsNotDistinctFrom { .. }
+        | Expr::Case { .. }
+        | Expr::Extract { .. }
+        | Expr::DateTrunc { .. } => true,
+    }
 }
 
 fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) -> bool {

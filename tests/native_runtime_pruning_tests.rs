@@ -45,7 +45,9 @@ use datafusion_nexus_bench::{
     CUDF_TPCH_PARQUET_DIR_ENV, TPCH_QUERIES, TPCH_TABLES, TpchDefaultScale, default_nvme_tpch_dataset,
     default_tpch_parquet_root, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
 };
-use nexus_query_engine::{ExecutionContext, MemoryControlPolicy, QueryOutput, execute_query_plan};
+use nexus_query_engine::{
+    ExecutionContext, MemoryControlPolicy, PlanNode, QueryOutput, SourceNode, execute_query_plan,
+};
 use tokio::sync::Mutex;
 
 static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::const_new(());
@@ -220,6 +222,49 @@ async fn native_runtime_decimal32_equality_reader_pushdown_matches_post_scan() {
         reader_pushdown.input_rows,
         post_scan.input_rows
     );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_bare_boolean_filter_stays_post_decode() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-bare-boolean-filter");
+    let path = dir.join("input.parquet");
+    write_bare_boolean_filter_parquet_file(&path);
+
+    let mut config = SessionConfig::new();
+    config.options_mut().execution.parquet.pushdown_filters = true;
+    let native_physical_plan = sql_plan(&path, config, SQL_BARE_BOOLEAN_FILTER_QUERY).await;
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.plans.len(), 1);
+    let sources = lowering.plans[0]
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sources.len(), 1);
+    assert!(
+        sources[0].reader_predicate.is_none(),
+        "bare boolean filters must not become top-level column reader predicates"
+    );
+    assert_eq!(lowering.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
+
+    let context = bounded_execution_context();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let (output, metrics) = result.into_parts();
+    let QueryOutput::HostArrow(batch) = output else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_eq!(batch_rows(&[batch]), vec![vec!["3".to_string()]]);
+    assert_eq!(metrics.input_rows, 6);
 
     fs::remove_dir_all(dir).unwrap();
 }

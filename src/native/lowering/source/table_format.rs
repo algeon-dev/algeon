@@ -962,6 +962,105 @@ mod tests {
     }
 
     #[test]
+    fn table_format_bare_boolean_filter_stays_post_decode() {
+        let footer_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("flag", DataType::Boolean, false),
+        ]));
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("flag", DataType::Boolean, false),
+        ]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&output_schema))
+            .with_data_file(data_file)
+            .with_projected_column(TableFormatColumnMapping::new(
+                Some(1),
+                "id",
+                Some("id"),
+                DataType::Int32,
+                false,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::Projected,
+            ))
+            .with_pure_filter_column(TableFormatColumnMapping::new(
+                Some(2),
+                "flag",
+                Some("flag"),
+                DataType::Boolean,
+                false,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::PureFilter,
+            ));
+        let scan_exec = Arc::new(CudfTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
+        let scan_plan_exec: Arc<dyn ExecutionPlan> = scan_exec.clone();
+        let scan_schema = scan_plan_exec.schema();
+        let predicate = col("flag", &scan_schema).unwrap();
+        let filter = FilterExec::try_new(predicate, scan_plan_exec).unwrap();
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            output_schema,
+            Some(&filter),
+            &RequiredFields::all(),
+        )
+        .unwrap();
+        let source_output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let groups =
+            table_format_source_read_groups(&scan_plan, &requirements, Arc::clone(&source_output_schema)).unwrap();
+        let (native_source, reader_pushdown_covers_filter) = table_format_native_source_for_group(
+            &scan_plan,
+            &groups[0],
+            Some(&filter),
+            &file_schema,
+            filter.schema(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].requirements.read_columns, vec!["id", "flag"]);
+        assert_eq!(groups[0].requirements.predicate_columns, vec!["flag"]);
+        assert!(native_source.reader_predicate.is_none());
+        assert!(!reader_pushdown_covers_filter);
+
+        let mut builder = NativeQueryPlanBuilder::new();
+        let lowered = lower_table_format_source_input(
+            scan_exec.as_ref(),
+            Some(&filter),
+            &mut builder,
+            &RequiredFields::all(),
+            None,
+        )
+        .unwrap();
+        let plan = builder.finish_with_host_sink(lowered.node);
+
+        assert!(
+            plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Filter(_))),
+            "bare boolean table-format filters must execute post-decode"
+        );
+        assert!(plan.nodes().iter().any(|node| {
+            matches!(&node.kind, PlanNode::Source(source) if matches!(
+                source.as_ref(),
+                NativeSourceNode::LocalParquet(source) if source.reader_predicate.is_none()
+            ))
+        }));
+    }
+
+    #[test]
     fn table_format_filter_only_same_name_unsafe_type_mismatch_rejects_instead_of_missing_null() {
         let footer_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Utf8, true)]));
         let output_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int32, true)]));

@@ -1614,7 +1614,11 @@ mod tests {
     #[test]
     fn remote_direct_contract_keeps_filter_only_predicate_attachable() {
         let context = ExecutionContext::builder().build().expect("execution context builds");
-        let source = remote_direct_test_source().with_reader_predicate(crate::expr::Expr::column("filter_only"));
+        let source = remote_direct_test_source().with_reader_predicate(crate::expr::Expr::binary(
+            crate::expr::Expr::column("filter_only"),
+            crate::expr::BinaryOp::Eq,
+            crate::expr::Expr::literal(crate::expr::LiteralValue::Boolean(true)),
+        ));
         let predicate = source.reader_predicate.as_ref().expect("reader predicate set");
         assert!(source.reader_predicate_is_supported(predicate));
 
