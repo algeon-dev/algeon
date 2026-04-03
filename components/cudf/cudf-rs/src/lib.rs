@@ -80,6 +80,35 @@
 //! A future version may replace the host fence with lighter-weight CUDA
 //! event barriers (`cudaEventRecord` + `cudaStreamWaitEvent`) that avoid
 //! blocking the CPU thread.
+//!
+//! # Multi-GPU
+//!
+//! Each [`Runtime`] is pinned to one CUDA device. When an operation is
+//! invoked through a device-pinned runtime, the FFI layer re-enters the
+//! runtime's device before enqueuing GPU work, and restores the calling
+//! thread's ambient device afterward.
+//!
+//! ```no_run
+//! use cudf::{DeviceId, Runtime, Series};
+//!
+//! let rt0 = Runtime::builder()
+//!     .with_device(DeviceId::new(0).unwrap())
+//!     .build()
+//!     .unwrap();
+//! let rt1 = Runtime::builder()
+//!     .with_device(DeviceId::new(1).unwrap())
+//!     .build()
+//!     .unwrap();
+//!
+//! // Each series lives on its respective GPU.
+//! let s0 = Series::new_with_runtime::<i32>(&rt0, "a", &[1, 2, 3]).unwrap();
+//! let s1 = Series::new_with_runtime::<i32>(&rt1, "b", &[4, 5, 6]).unwrap();
+//! ```
+//!
+//! Objects created without an explicit [`Runtime`] use the *ambient default*
+//! path, which snapshots the calling thread's current CUDA device. The
+//! ambient path is suitable for single-GPU use but does not pin device
+//! selection at execution time — use [`Runtime`] for multi-GPU correctness.
 
 pub mod core;
 pub mod frame;

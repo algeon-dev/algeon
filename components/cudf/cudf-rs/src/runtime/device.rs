@@ -4,6 +4,11 @@
 //! [`RuntimeBuilder::with_device`](super::RuntimeBuilder::with_device) to pin
 //! a [`Runtime`](super::Runtime) — and all resources it creates — to a
 //! specific GPU.
+//!
+//! The device is a first-class part of the execution contract: when a
+//! `Runtime` pinned to device *N* is used for an operation, the FFI layer
+//! re-enters device *N* before any GPU work is enqueued. See [`super::Runtime`]
+//! for details.
 
 use std::sync::OnceLock;
 

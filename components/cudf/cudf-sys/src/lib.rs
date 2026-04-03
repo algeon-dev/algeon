@@ -97,13 +97,17 @@ pub type cudf_memory_resource_handle = *mut c_void;
 
 pub const CUDF_EXEC_OPTIONS_RESERVED_SLOTS: usize = 4;
 
+/// Bit 0 of `flags`: when set, `device` was explicitly provided.
+pub const CUDF_EXEC_FLAG_DEVICE_EXPLICIT: u32 = 1;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct cudf_exec_options_t {
     pub struct_size: usize,
+    pub device: i32,
+    pub flags: u32,
     pub stream: cudf_stream_handle,
     pub mr: cudf_memory_resource_handle,
-    pub flags: u64,
     pub reserved: [u64; CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
 }
 
@@ -111,9 +115,10 @@ impl cudf_exec_options_t {
     pub const fn defaults() -> Self {
         Self {
             struct_size: std::mem::size_of::<Self>(),
+            device: -1,
+            flags: 0,
             stream: std::ptr::null_mut(),
             mr: std::ptr::null_mut(),
-            flags: 0,
             reserved: [0; CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
         }
     }
@@ -1846,6 +1851,10 @@ extern "C" {
     /// Return the raw pointer of the last memory resource passed to an `_ex`
     /// shim.
     pub fn cudf_test_exec_last_mr_raw(out: *mut *mut c_void) -> cudf_status_t;
+
+    /// Return the CUDA device ordinal that was current when the last `_ex`
+    /// shim resolved execution options, or -1 if no observation was recorded.
+    pub fn cudf_test_exec_last_device(out: *mut i32) -> cudf_status_t;
 
     /// Return the raw `uintptr_t` value of the process-global default stream.
     pub fn cudf_test_default_stream_value(out: *mut usize) -> cudf_status_t;

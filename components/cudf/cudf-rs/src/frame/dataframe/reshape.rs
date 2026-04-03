@@ -1232,7 +1232,7 @@ impl DataFrame {
         }
 
         let indices: Vec<i32> = (start as i32..(start + len) as i32).collect();
-        let map = Column::from_slice(&indices)?;
+        let map = Column::from_slice_in_domain(&indices, &self.domain)?;
         let tv = self.build_table_view()?;
         let exec_options = self.domain.explicit_exec_options_raw();
         // SAFETY: indices are constructed from `start..start+len` which the
@@ -1333,13 +1333,17 @@ impl DataFrame {
         // Step 2: Build the "variable" string column
         // Each value_var name is repeated N times, in order
         let var_strings: Vec<&str> = value_vars.iter().flat_map(|name| std::iter::repeat_n(name.as_str(), n)).collect();
-        let var_series = Series::from_strings(&opts.var_name, &var_strings)?;
+        let var_series =
+            Series::from_column(Column::from_strings_in_domain(&var_strings, &self.domain)?)?.rename(&opts.var_name);
         result_columns.push((&opts.var_name, var_series));
 
         // Step 3: Concatenate value columns into a single "value" column
         if value_vars.is_empty() {
             // No value vars → empty value column. Use Int32 as default type.
-            let empty_series = Series::new::<i32>(&opts.value_name, &[])?;
+            let empty_series = Series::from_column(
+                Column::empty(crate::TypeId::Int32)?.with_execution_domain(Arc::clone(&self.domain)),
+            )?
+            .rename(&opts.value_name);
             result_columns.push((&opts.value_name, empty_series));
         } else {
             let value_series_list: Vec<Series> = value_vars

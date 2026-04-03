@@ -13,6 +13,13 @@ use crate::core::{
 /// Each `Runtime` is pinned to a specific CUDA device (see
 /// [`RuntimeBuilder::with_device`]).  All resources created through this
 /// runtime live on that device.
+///
+/// **Multi-GPU execution guarantee:** when an operation is invoked through
+/// this runtime (via `_with_runtime` methods), the runtime's device is
+/// re-entered at the FFI boundary before any GPU work is enqueued. This
+/// ensures that compute runs on the correct device regardless of the calling
+/// thread's ambient CUDA device. The ambient device is restored after each
+/// FFI call.
 #[derive(Clone)]
 pub struct Runtime {
     domain: Arc<ExecutionDomain>,
@@ -106,15 +113,21 @@ impl RuntimeBuilder {
     /// Build a runtime with one explicit retained provenance bundle.
     ///
     /// If [`with_device`](Self::with_device) was called, resources are created
-    /// on that device.  Otherwise, the current thread's device is used.
+    /// on that device.  Otherwise the device is inferred from supplied handles,
+    /// or defaults to the calling thread's current device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - An explicit device is given and a supplied handle was created on a
+    ///   different device.
+    /// - No explicit device is given and both handles were supplied but created
+    ///   on different devices.
     pub fn build(self) -> Result<Runtime> {
-        let device = match self.device {
-            Some(d) => d,
-            None => DeviceId::current()?,
-        };
+        let device = self.resolve_device()?;
 
-        // Temporarily switch to the target device so that the stream and
-        // memory resource are created on the correct GPU.
+        // Temporarily switch to the target device so that any auto-created
+        // stream or memory resource lands on the correct GPU.
         let _guard = DeviceGuard::new(device)?;
 
         let stream = match self.stream {
@@ -134,5 +147,56 @@ impl RuntimeBuilder {
             .with_operation("runtime::RuntimeBuilder::build"));
         }
         Ok(Runtime { domain })
+    }
+
+    /// Resolve the target device, validating handle provenance.
+    fn resolve_device(&self) -> Result<DeviceId> {
+        let op = "runtime::RuntimeBuilder::build";
+
+        if let Some(target) = self.device {
+            // Explicit device — validate supplied handles agree.
+            if let Some(ref stream) = self.stream {
+                if stream.device() != target {
+                    return Err(Error::new(
+                        ErrorKind::InvalidOperation,
+                        "cross-device stream: stream was created on a different device than the runtime target",
+                    )
+                    .with_operation(op)
+                    .with_context("target_device", target.ordinal().to_string())
+                    .with_context("stream_device", stream.device().ordinal().to_string()));
+                }
+            }
+            if let Some(ref mr) = self.mr {
+                if mr.device() != target {
+                    return Err(Error::new(
+                        ErrorKind::InvalidOperation,
+                        "cross-device memory resource: MR was created on a different device than the runtime target",
+                    )
+                    .with_operation(op)
+                    .with_context("target_device", target.ordinal().to_string())
+                    .with_context("mr_device", mr.device().ordinal().to_string()));
+                }
+            }
+            Ok(target)
+        } else {
+            // No explicit device — infer from handles.
+            match (&self.stream, &self.mr) {
+                (Some(stream), Some(mr)) => {
+                    if stream.device() != mr.device() {
+                        return Err(Error::new(
+                            ErrorKind::InvalidOperation,
+                            "cross-device handles: stream and memory resource were created on different devices",
+                        )
+                        .with_operation(op)
+                        .with_context("stream_device", stream.device().ordinal().to_string())
+                        .with_context("mr_device", mr.device().ordinal().to_string()));
+                    }
+                    Ok(stream.device())
+                },
+                (Some(stream), None) => Ok(stream.device()),
+                (None, Some(mr)) => Ok(mr.device()),
+                (None, None) => DeviceId::current(),
+            }
+        }
     }
 }
