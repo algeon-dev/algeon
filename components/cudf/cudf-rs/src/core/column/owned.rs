@@ -209,6 +209,41 @@ impl Column {
         })
     }
 
+    /// Create a zero-copy sliced borrowed view over this column.
+    ///
+    /// The returned view borrows `self` and preserves cuDF offset semantics:
+    /// `device_data_ptr()` still points at the base device allocation while
+    /// `offset()` records the logical start row within that allocation.
+    pub fn slice_view(&self, offset: usize, length: usize) -> Result<ColumnView<'_>> {
+        let base_view = self.view()?;
+        let total = base_view.len()?;
+        let start = offset.min(total);
+        let take = length.min(total - start);
+
+        let start = i32::try_from(start).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "slice offset exceeds i32::MAX")
+                .with_operation("column::slice_view")
+                .with_context("offset", offset.to_string())
+        })?;
+        let take = i32::try_from(take).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "slice length exceeds i32::MAX")
+                .with_operation("column::slice_view")
+                .with_context("length", length.to_string())
+        })?;
+
+        let mut view_handle = ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view_slice(base_view.raw_handle(), start, take, &mut view_handle) },
+            "column::slice_view",
+        )?;
+
+        Ok(ColumnView {
+            handle: NonNull::new(view_handle).expect("null sliced column view handle on success"),
+            domain: Arc::clone(&self.domain),
+            _lifetime: PhantomData,
+        })
+    }
+
     pub(crate) fn payload_size_bytes(&self) -> Result<usize> {
         let mut out = 0usize;
         let exec_options = self.domain.explicit_exec_options_raw();

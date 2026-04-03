@@ -112,6 +112,10 @@ impl DeviceMemoryResource {
         self.handle.raw.as_ptr()
     }
 
+    pub(crate) fn interop_raw_handle(&self) -> *mut std::ffi::c_void {
+        self.__debug_raw_handle_value() as *mut std::ffi::c_void
+    }
+
     #[doc(hidden)]
     pub fn __debug_raw_handle_value(&self) -> usize {
         let mut out = std::ptr::null_mut();

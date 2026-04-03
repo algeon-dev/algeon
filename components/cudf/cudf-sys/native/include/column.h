@@ -169,12 +169,27 @@ cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
 cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle,
                                         const void** out);
 
+/// Get the raw device null-mask pointer of a column_view.
+///
+/// Returns `CUDF_ERROR_NULL` when the column has no null mask.
+cudf_status_t cudf_column_view_null_mask_ptr(cudf_column_view_handle handle,
+                                             const void** out);
+
 /// Get the element offset of a column_view into its parent buffer.
 ///
 /// Returns 0 for non-sliced columns. For sliced views, the offset indicates
 /// how many elements from the start of the device buffer the view begins.
 cudf_status_t cudf_column_view_offset(cudf_column_view_handle handle,
                                       int32_t* out);
+
+/// Create a sliced borrowed column view over an existing column view.
+///
+/// This is zero-copy with respect to device data: it creates only a new
+/// `cudf::column_view` handle.
+cudf_status_t cudf_column_view_slice(cudf_column_view_handle handle,
+                                     int32_t offset,
+                                     int32_t length,
+                                     cudf_column_view_handle* out);
 
 /// Copy null mask to host buffer. `host_buf` must be at least
 /// bitmask_allocation_size_bytes(size) bytes.
