@@ -122,4 +122,4 @@ pub use ops::{
 };
 #[doc(hidden)]
 pub use runtime::__DebugExecutionContext;
-pub use runtime::{ExecutionContext, Runtime, RuntimeBuilder};
+pub use runtime::{DeviceId, ExecutionContext, Runtime, RuntimeBuilder};

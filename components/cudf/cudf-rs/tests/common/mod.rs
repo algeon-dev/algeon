@@ -76,9 +76,7 @@ pub fn sample_runtime() -> Runtime {
 
 #[allow(dead_code)]
 pub fn error_context_value<'a>(err: &'a cudf::Error, key: &str) -> Option<&'a str> {
-    err.context()
-        .iter()
-        .find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then_some(ctx_value.as_str()))
+    err.context().iter().find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then_some(ctx_value.as_str()))
 }
 
 #[allow(dead_code)]
