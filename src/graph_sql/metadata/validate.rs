@@ -12,22 +12,20 @@ use super::{
     super::{
         CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource, CugraphBfsSourceVertex,
         CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain,
-        datafusion_table_reference, parse_cugraph_algorithm_spec, stable_result_schema,
-        validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
+        datafusion_table_reference, parse_cugraph_algorithm_spec, validate_vertex_id_domain_support_for_call,
+        vertex_id_domain_for_call,
     },
-    ERROR_ALGORITHM_DISABLED, ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_INVALID_CALL_JSON, ERROR_OK,
+    ERROR_ALGORITHM_DISABLED, ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_INVALID_CALL_JSON,
     ERROR_TABLE_NOT_FOUND, ERROR_UNKNOWN_ALGORITHM, ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE,
-    ERROR_UNSUPPORTED_WEIGHT_DTYPE, ERROR_VERTEX_DTYPE_MISMATCH, SEVERITY_ERROR, SEVERITY_OK,
-    algorithm_for_metadata_name,
-    json_schema::{data_type_label, normalized_options_json, schema_json},
+    ERROR_UNSUPPORTED_WEIGHT_DTYPE, ERROR_VERTEX_DTYPE_MISMATCH, algorithm_for_metadata_name,
+    json_schema::{data_type_label, metadata_output_schema_json, normalized_options_json, schema_json},
 };
 
 /// Single-row diagnostic payload returned by graph SQL validation calls.
 #[derive(Debug, Clone)]
 pub(super) struct ValidationRow {
     pub(super) valid: bool,
-    pub(super) severity: String,
-    pub(super) error_code: String,
+    pub(super) error_code: Option<String>,
     pub(super) message: String,
     pub(super) function_name: String,
     pub(super) algorithm_enabled: bool,
@@ -35,9 +33,9 @@ pub(super) struct ValidationRow {
     pub(super) src_col_resolved: bool,
     pub(super) dst_col_resolved: bool,
     pub(super) weight_col_resolved: bool,
-    pub(super) src_dtype: String,
-    pub(super) dst_dtype: String,
-    pub(super) weight_dtype: String,
+    pub(super) src_dtype: Option<String>,
+    pub(super) dst_dtype: Option<String>,
+    pub(super) weight_dtype: Option<String>,
     pub(super) output_schema_json: String,
     pub(super) normalized_options_json: String,
     pub(super) would_execute_gpu: bool,
@@ -47,8 +45,7 @@ impl ValidationRow {
     fn invalid(function_name: &str, code: &str, message: impl Into<String>) -> Self {
         Self {
             valid: false,
-            severity: SEVERITY_ERROR.to_string(),
-            error_code: code.to_string(),
+            error_code: Some(code.to_string()),
             message: message.into(),
             function_name: function_name.to_string(),
             algorithm_enabled: false,
@@ -56,9 +53,9 @@ impl ValidationRow {
             src_col_resolved: false,
             dst_col_resolved: false,
             weight_col_resolved: false,
-            src_dtype: String::new(),
-            dst_dtype: String::new(),
-            weight_dtype: String::new(),
+            src_dtype: None,
+            dst_dtype: None,
+            weight_dtype: None,
             output_schema_json: "{}".to_string(),
             normalized_options_json: "{}".to_string(),
             would_execute_gpu: false,
@@ -87,7 +84,7 @@ pub(super) async fn cugraph_validate_call(
         );
     };
     let canonical_function_name = algorithm.function_name();
-    let output_schema_json = schema_json(&stable_result_schema(algorithm));
+    let output_schema_json = metadata_output_schema_json(algorithm);
     if !config.allows(algorithm) {
         return ValidationRow::invalid(
             canonical_function_name,
@@ -131,9 +128,9 @@ pub(super) async fn cugraph_validate_call(
     let dst = schema.field_with_name(&spec.dst_col).ok();
     let weight = spec.weight_col.as_ref().and_then(|name| schema.field_with_name(name).ok());
     let edge_id = spec.edge_id_col.as_ref().and_then(|name| schema.field_with_name(name).ok());
-    let src_dtype = src.map(|field| data_type_label(field.data_type())).unwrap_or_default();
-    let dst_dtype = dst.map(|field| data_type_label(field.data_type())).unwrap_or_default();
-    let weight_dtype = weight.map(|field| data_type_label(field.data_type())).unwrap_or_default();
+    let src_dtype = src.map(|field| data_type_label(field.data_type()));
+    let dst_dtype = dst.map(|field| data_type_label(field.data_type()));
+    let weight_dtype = weight.map(|field| data_type_label(field.data_type()));
 
     if src.is_none()
         || dst.is_none()
@@ -270,7 +267,10 @@ pub(super) async fn cugraph_validate_call(
         };
     }
 
-    if let Some(row) = validate_bfs_predicate_sources(
+    // Side-input validation runs after the edge columns are resolved, so a
+    // failure here must still report the resolved edge dtypes -- leaving them
+    // NULL would contradict `src_col_resolved`/`dst_col_resolved` being true.
+    if let Some(mut row) = validate_bfs_predicate_sources(
         state,
         canonical_function_name,
         &spec,
@@ -279,9 +279,12 @@ pub(super) async fn cugraph_validate_call(
     )
     .await
     {
+        row.src_dtype = src_dtype.clone();
+        row.dst_dtype = dst_dtype.clone();
+        row.weight_dtype = weight_dtype.clone();
         return row;
     }
-    if let Some(row) = validate_personalized_pagerank_source(
+    if let Some(mut row) = validate_personalized_pagerank_source(
         state,
         canonical_function_name,
         &spec,
@@ -290,13 +293,15 @@ pub(super) async fn cugraph_validate_call(
     )
     .await
     {
+        row.src_dtype = src_dtype.clone();
+        row.dst_dtype = dst_dtype.clone();
+        row.weight_dtype = weight_dtype.clone();
         return row;
     }
 
     ValidationRow {
         valid: true,
-        severity: SEVERITY_OK.to_string(),
-        error_code: ERROR_OK.to_string(),
+        error_code: None,
         message: "cuGraph call is statically valid".to_string(),
         function_name: canonical_function_name.to_string(),
         algorithm_enabled: true,

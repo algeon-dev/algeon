@@ -39,12 +39,9 @@ pub const CUGRAPH_FORCE_ATLAS2_FUNCTION: &str = "cugraph_force_atlas2";
 pub const CUGRAPH_LIST_ALGORITHMS_FUNCTION: &str = "cugraph_list_algorithms";
 pub const CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION: &str = "cugraph_describe_algorithm";
 pub const CUGRAPH_VALIDATE_CALL_FUNCTION: &str = "cugraph_validate_call";
-/// Output schema version for `cugraph_list_algorithms`.
-pub const CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION: u32 = 5;
-/// Output schema version for `cugraph_describe_algorithm`.
-pub const CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION: u32 = 5;
-/// Output schema version for `cugraph_validate_call`.
-pub const CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION: u32 = 1;
+pub const CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION: u32 = 7;
+pub const CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION: u32 = 9;
+pub const CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct CugraphSqlConfig {
@@ -154,10 +151,6 @@ impl CugraphAlgorithm {
 
     pub(crate) fn output_schema_kind(self) -> &'static str {
         self.native_algorithm().output_schema_kind().as_str()
-    }
-
-    pub(crate) fn has_mode_schemas(self) -> bool {
-        self.native_algorithm().output_schema_kind().has_mode_schemas()
     }
 
     pub(crate) fn effective_default_graph_options(self, defaults: &CugraphGraphOptions) -> CugraphGraphOptions {

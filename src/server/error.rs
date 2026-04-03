@@ -95,8 +95,18 @@ impl ServerError {
     }
 
     pub fn transport(source: tonic::transport::Error) -> Self {
-        Self::new(ErrorCode::CudfDependencyFailure, "datafusion_nexus.server.transport", "Flight SQL transport failed")
+        Self::new(ErrorCode::ServerTransportFailure, "datafusion_nexus.server.transport", "Flight SQL transport failed")
             .with_source(source)
+    }
+
+    pub(crate) fn transport_at_addr(addr: std::net::SocketAddr, source: tonic::transport::Error) -> Self {
+        Self::new(
+            ErrorCode::ServerTransportFailure,
+            "datafusion_nexus.server.transport",
+            format!("Flight SQL transport failed while serving {addr}"),
+        )
+        .with_fact("bind_addr", addr)
+        .with_source(source)
     }
 
     fn new(code: ErrorCode, operation: &'static str, message: impl Into<String>) -> Self {
@@ -771,6 +781,24 @@ mod tests {
         assert_eq!(status.code(), Code::ResourceExhausted);
         assert_error_metadata(&status, "service_overloaded", "resource_exhausted", "temporary");
         assert_eq!(status.message(), "service overloaded; retry later");
+        assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn adapter_server_transport_failure_projects_internal_status() {
+        let status = datafusion_error_to_status_for_operation(
+            Error::new(
+                ErrorCode::ServerTransportFailure,
+                "datafusion_nexus.server.transport",
+                "Flight SQL transport failed",
+            )
+            .into(),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(status.code(), Code::Internal);
+        assert_error_metadata(&status, "server_transport_failure", "dependency_failure", "permanent");
+        assert_eq!(status.message(), "internal server error while processing the request");
         assert_no_diagnostic_fields(status.message());
     }
 

@@ -211,7 +211,7 @@ async fn cugraph_validate_call_accepts_bfs_path_mode_on_canonical_function() {
         .unwrap();
     let batch = single_batch(&batches);
     assert!(bool_value(batch, 0, 0));
-    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(is_null_value(batch, 1, 0));
     assert!(string_value(batch, 2, 0).contains(r#""path_index""#));
     assert!(string_value(batch, 3, 0).contains(r#""mode":"path""#));
 }

@@ -78,6 +78,8 @@ pub enum ErrorCode {
     MemoryReservationFailed,
     /// The native query service rejected work because admission capacity was exhausted.
     ServiceOverloaded,
+    /// The Flight SQL server transport failed outside request handling.
+    ServerTransportFailure,
     /// An internal adapter bug or unreachable condition.
     Internal,
 }
@@ -112,6 +114,7 @@ impl ErrorCode {
             Self::CudfInvariantViolation => "cudf_invariant_violation",
             Self::MemoryReservationFailed => "memory_reservation_failed",
             Self::ServiceOverloaded => "service_overloaded",
+            Self::ServerTransportFailure => "server_transport_failure",
             Self::Internal => "internal",
         }
     }
@@ -251,7 +254,8 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         ErrorCode::CudfTemporaryFailure
         | ErrorCode::CudfPersistentFailure
         | ErrorCode::CudfDependencyFailure
-        | ErrorCode::SourceTemporaryFailure => ErrorKind::DependencyFailure,
+        | ErrorCode::SourceTemporaryFailure
+        | ErrorCode::ServerTransportFailure => ErrorKind::DependencyFailure,
         ErrorCode::CudfInvariantViolation => ErrorKind::InvariantViolation,
         ErrorCode::Internal => ErrorKind::Internal,
     }
@@ -291,6 +295,7 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::CudfUnsupported
         | ErrorCode::CudfDependencyFailure
         | ErrorCode::CudfInvariantViolation
+        | ErrorCode::ServerTransportFailure
         | ErrorCode::Internal => ErrorStatus::Permanent,
     }
 }

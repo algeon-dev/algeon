@@ -186,7 +186,7 @@ async fn serve_inner(config: ServerConfig, listen: Listen) -> Result<()> {
     if let Ok(watchdog) = watchdog_rx.await {
         watchdog.abort();
     }
-    server_result.map_err(ServerError::transport)?;
+    server_result.map_err(|error| ServerError::transport_at_addr(addr, error))?;
 
     tracing::info!("datafusion-nexus Flight SQL server stopped");
     Ok(())
