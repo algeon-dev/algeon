@@ -53,6 +53,7 @@ use super::{
     auth::{AuthInterceptor, handle_handshake},
     cancel::QueryCancellation,
     config::ServerSessionProfile,
+    datafusion_error::find_adapter_error,
     diagnostics::{log_leaf_guard_rejection, log_native_planning_report},
     error::{
         ServerError, adapter_error_to_status, datafusion_error_to_captured_error,
@@ -65,6 +66,7 @@ use super::{
 use crate::graph_sql::CugraphSqlConfig;
 use crate::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode,
+    error::ErrorSourceDiagnostics,
     native_exec::{NativeMetricsCapture, NativeMetricsCaptureSink},
 };
 
@@ -257,7 +259,7 @@ impl DatafusionCudfFlightSqlService {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "iceberg"))]
     fn with_catalog_diagnostics(mut self, diagnostics: ServerCatalogDiagnostics) -> Self {
         self.catalog_diagnostics = diagnostics;
         self
@@ -337,12 +339,12 @@ impl DatafusionCudfFlightSqlService {
                             Ok(Some(table)) => (Some(table.schema()), table_type_to_flight_sql(table.table_type())),
                             Ok(None) => continue,
                             Err(error) => {
-                                tracing::warn!(
-                                    catalog = %catalog_name,
-                                    schema = %schema_name,
-                                    table = %table_name,
-                                    error = %error,
-                                    "failed to load table for Flight SQL GetTables"
+                                Self::warn_get_tables_metadata_error(
+                                    &catalog_name,
+                                    &schema_name,
+                                    &table_name,
+                                    "load_table",
+                                    &error,
                                 );
                                 continue;
                             },
@@ -352,12 +354,12 @@ impl DatafusionCudfFlightSqlService {
                             Ok(Some(table_type)) => table_type,
                             Ok(None) => continue,
                             Err(error) if include_schema => {
-                                tracing::warn!(
-                                    catalog = %catalog_name,
-                                    schema = %schema_name,
-                                    table = %table_name,
-                                    error = %error,
-                                    "failed to resolve table type for Flight SQL GetTables"
+                                Self::warn_get_tables_metadata_error(
+                                    &catalog_name,
+                                    &schema_name,
+                                    &table_name,
+                                    "table_type",
+                                    &error,
                                 );
                                 continue;
                             },
@@ -379,12 +381,12 @@ impl DatafusionCudfFlightSqlService {
                                 Ok(Some(table)) => Some(table.schema()),
                                 Ok(None) => None,
                                 Err(error) => {
-                                    tracing::warn!(
-                                        catalog = %catalog_name,
-                                        schema = %schema_name,
-                                        table = %table_name,
-                                        error = %error,
-                                        "failed to load table for Flight SQL GetTables"
+                                    Self::warn_get_tables_metadata_error(
+                                        &catalog_name,
+                                        &schema_name,
+                                        &table_name,
+                                        "load_table",
+                                        &error,
                                     );
                                     None
                                 },
@@ -401,13 +403,61 @@ impl DatafusionCudfFlightSqlService {
                     let table_schema_ref: &Schema = table_schema.as_deref().unwrap_or(&empty_schema);
                     builder
                         .append(&catalog_name, &schema_name, &table_name, table_type_str, table_schema_ref)
-                        .map_err(arrow_flight_error_to_status)?;
+                        .map_err(|error| {
+                            arrow_flight_error_to_status_for_operation(
+                                error,
+                                "datafusion_nexus.server.flight.do_get_tables.append",
+                                "failed to append Flight SQL GetTables metadata row",
+                            )
+                        })?;
                 }
             }
         }
         let schema = builder.schema();
-        let batch = builder.build().map_err(arrow_flight_error_to_status)?;
+        let batch = builder.build().map_err(|error| {
+            arrow_flight_error_to_status_for_operation(
+                error,
+                "datafusion_nexus.server.flight.do_get_tables.build",
+                "failed to build Flight SQL GetTables metadata batch",
+            )
+        })?;
         Ok((schema, batch))
+    }
+
+    fn warn_get_tables_metadata_error(
+        catalog_name: &str,
+        schema_name: &str,
+        table_name: &str,
+        failure: &'static str,
+        error: &DataFusionError,
+    ) {
+        let diagnostics = ErrorSourceDiagnostics::from_error(error);
+        if let Some(adapter_error) = find_adapter_error(error) {
+            tracing::warn!(
+                catalog = %catalog_name,
+                schema = %schema_name,
+                table = %table_name,
+                failure,
+                error_code = adapter_error.code().as_str(),
+                error_kind = adapter_error.kind().as_str(),
+                error_status = adapter_error.status().as_str(),
+                error_operation = adapter_error.operation(),
+                error_message = adapter_error.message(),
+                error_source_chain = diagnostics.chain(),
+                error_root_cause = diagnostics.root_cause_when_distinct(),
+                "failed to inspect table metadata for Flight SQL GetTables"
+            );
+        } else {
+            tracing::warn!(
+                catalog = %catalog_name,
+                schema = %schema_name,
+                table = %table_name,
+                failure,
+                error_source_chain = diagnostics.chain(),
+                error_root_cause = diagnostics.root_cause_when_distinct(),
+                "failed to inspect table metadata for Flight SQL GetTables"
+            );
+        }
     }
 
     pub(crate) fn admission(&self) -> &Arc<QueryAdmission> {
@@ -554,7 +604,13 @@ impl DatafusionCudfFlightSqlService {
         let endpoint = FlightEndpoint::new().with_ticket(Ticket { ticket: ticket_payload });
         let info = FlightInfo::new()
             .try_with_schema(&schema)
-            .map_err(arrow_error_to_status)?
+            .map_err(|error| {
+                arrow_error_to_status_for_operation(
+                    error,
+                    "datafusion_nexus.server.flight.get_flight_info_query.schema",
+                    "failed to build Flight SQL query FlightInfo schema",
+                )
+            })?
             .with_descriptor(descriptor)
             .with_endpoint(endpoint)
             .with_ordered(false);
@@ -782,7 +838,11 @@ impl DatafusionCudfFlightSqlService {
                 .build(futures::stream::empty::<Result<arrow::record_batch::RecordBatch, FlightError>>())
                 .map_err(move |error| {
                     status_with_query_id_and_correlation_id(
-                        Status::from(error),
+                        arrow_flight_error_to_status_for_operation(
+                            error,
+                            "datafusion_nexus.server.flight.execute_ticket.empty_ddl_encode",
+                            "failed to encode empty Flight SQL DDL result stream",
+                        ),
                         &query_id_for_encode,
                         correlation_id_for_encode.as_deref(),
                     )
@@ -1079,7 +1139,11 @@ impl DatafusionCudfFlightSqlService {
         let stream =
             FlightDataEncoderBuilder::new().with_schema(Arc::new(schema)).build(stream).map_err(move |error| {
                 let status = status_with_query_id_and_correlation_id(
-                    Status::from(error),
+                    arrow_flight_error_to_status_for_operation(
+                        error,
+                        "datafusion_nexus.server.flight.execute_ticket.result_encode",
+                        "failed to encode Flight SQL result stream",
+                    ),
                     &query_id_for_encode,
                     correlation_id_for_encode.as_deref(),
                 );

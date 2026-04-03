@@ -191,7 +191,13 @@ where
     let endpoint = FlightEndpoint::new().with_ticket(ticket);
     let info = FlightInfo::new()
         .try_with_schema(schema)
-        .map_err(arrow_error_to_status)?
+        .map_err(|error| {
+            arrow_error_to_status_for_operation(
+                error,
+                "datafusion_nexus.server.flight.metadata_flight_info.schema",
+                "failed to build Flight SQL metadata FlightInfo schema",
+            )
+        })?
         .with_descriptor(descriptor)
         .with_endpoint(endpoint)
         .with_ordered(false);
@@ -204,11 +210,13 @@ where
 pub(super) fn metadata_record_batch_stream(
     schema: Arc<Schema>,
     batch: arrow::record_batch::RecordBatch,
+    operation: &'static str,
+    message: &'static str,
 ) -> Pin<Box<dyn Stream<Item = Result<arrow_flight::FlightData, Status>> + Send>> {
     let stream = FlightDataEncoderBuilder::new()
         .with_schema(schema)
         .build(futures::stream::once(async move { Ok(batch) }))
-        .map_err(Status::from);
+        .map_err(move |error| arrow_flight_error_to_status_for_operation(error, operation, message));
     Box::pin(stream)
 }
 
@@ -293,7 +301,13 @@ pub(super) fn sql_info_data() -> Result<arrow_flight::sql::metadata::SqlInfoData
     builder.append(SqlInfo::SqlNamedParametersSupported, false);
     builder.append(SqlInfo::SqlLocatorsUpdateCopy, false);
     builder.append(SqlInfo::SqlStoredFunctionsUsingCallSyntaxSupported, false);
-    builder.build().map_err(Status::from)
+    builder.build().map_err(|error| {
+        arrow_flight_error_to_status_for_operation(
+            error,
+            "datafusion_nexus.server.flight.sql_info_data.build",
+            "failed to build Flight SQL SqlInfo metadata",
+        )
+    })
 }
 
 pub(super) fn sql_info_bitmask(values: impl IntoIterator<Item = i32>) -> i32 {

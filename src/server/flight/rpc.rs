@@ -265,7 +265,13 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         let sql_info = sql_info_data()?;
         let info = FlightInfo::new()
             .try_with_schema(query.into_builder(&sql_info).schema().as_ref())
-            .map_err(arrow_error_to_status)?
+            .map_err(|error| {
+                arrow_error_to_status_for_operation(
+                    error,
+                    "datafusion_nexus.server.flight.get_flight_info_sql_info.schema",
+                    "failed to build Flight SQL SqlInfo FlightInfo schema",
+                )
+            })?
             .with_descriptor(descriptor)
             .with_endpoint(endpoint);
         Ok(Response::new(info))
@@ -352,8 +358,19 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             builder.append(name);
         }
         let schema = builder.schema();
-        let batch = builder.build().map_err(arrow_flight_error_to_status)?;
-        Ok(Response::new(metadata_record_batch_stream(schema, batch)))
+        let batch = builder.build().map_err(|error| {
+            arrow_flight_error_to_status_for_operation(
+                error,
+                "datafusion_nexus.server.flight.do_get_catalogs.build",
+                "failed to build Flight SQL catalogs metadata batch",
+            )
+        })?;
+        Ok(Response::new(metadata_record_batch_stream(
+            schema,
+            batch,
+            "datafusion_nexus.server.flight.do_get_catalogs.encode",
+            "failed to encode Flight SQL catalogs metadata stream",
+        )))
     }
 
     async fn do_get_schemas(
@@ -372,8 +389,19 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             }
         }
         let schema = builder.schema();
-        let batch = builder.build().map_err(arrow_flight_error_to_status)?;
-        Ok(Response::new(metadata_record_batch_stream(schema, batch)))
+        let batch = builder.build().map_err(|error| {
+            arrow_flight_error_to_status_for_operation(
+                error,
+                "datafusion_nexus.server.flight.do_get_schemas.build",
+                "failed to build Flight SQL schemas metadata batch",
+            )
+        })?;
+        Ok(Response::new(metadata_record_batch_stream(
+            schema,
+            batch,
+            "datafusion_nexus.server.flight.do_get_schemas.encode",
+            "failed to encode Flight SQL schemas metadata stream",
+        )))
     }
 
     async fn do_get_tables(
@@ -383,7 +411,12 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.check_auth(&request)?;
         let (schema, batch) = self.build_get_tables_response(query).await?;
-        Ok(Response::new(metadata_record_batch_stream(schema, batch)))
+        Ok(Response::new(metadata_record_batch_stream(
+            schema,
+            batch,
+            "datafusion_nexus.server.flight.do_get_tables.encode",
+            "failed to encode Flight SQL GetTables metadata stream",
+        )))
     }
 
     async fn do_get_table_types(
@@ -392,8 +425,19 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.check_auth(&request)?;
-        let batch = build_table_types_batch().map_err(arrow_error_to_status)?;
-        Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
+        let batch = build_table_types_batch().map_err(|error| {
+            arrow_error_to_status_for_operation(
+                error,
+                "datafusion_nexus.server.flight.do_get_table_types.build",
+                "failed to build Flight SQL table-types metadata batch",
+            )
+        })?;
+        Ok(Response::new(metadata_record_batch_stream(
+            batch.schema(),
+            batch,
+            "datafusion_nexus.server.flight.do_get_table_types.encode",
+            "failed to encode Flight SQL table-types metadata stream",
+        )))
     }
 
     async fn do_get_sql_info(
@@ -409,7 +453,13 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         let stream = FlightDataEncoderBuilder::new()
             .with_schema(schema)
             .build(futures::stream::once(async { batch }))
-            .map_err(Status::from);
+            .map_err(|error| {
+                arrow_flight_error_to_status_for_operation(
+                    error,
+                    "datafusion_nexus.server.flight.do_get_sql_info.encode",
+                    "failed to encode Flight SQL SqlInfo response",
+                )
+            });
         Ok(Response::new(Box::pin(stream)))
     }
 
@@ -424,8 +474,19 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         // schema. This lets clients (DataGrip, the Arrow Flight SQL JDBC
         // driver, ADBC) complete introspection without a UNIMPLEMENTED RPC
         // failure tearing down the session.
-        let batch = empty_primary_keys_batch().map_err(arrow_error_to_status)?;
-        Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
+        let batch = empty_primary_keys_batch().map_err(|error| {
+            arrow_error_to_status_for_operation(
+                error,
+                "datafusion_nexus.server.flight.do_get_primary_keys.build",
+                "failed to build Flight SQL primary-keys metadata batch",
+            )
+        })?;
+        Ok(Response::new(metadata_record_batch_stream(
+            batch.schema(),
+            batch,
+            "datafusion_nexus.server.flight.do_get_primary_keys.encode",
+            "failed to encode Flight SQL primary-keys metadata stream",
+        )))
     }
 
     async fn do_get_exported_keys(
@@ -434,8 +495,19 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.check_auth(&request)?;
-        let batch = empty_foreign_keys_batch().map_err(arrow_error_to_status)?;
-        Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
+        let batch = empty_foreign_keys_batch().map_err(|error| {
+            arrow_error_to_status_for_operation(
+                error,
+                "datafusion_nexus.server.flight.do_get_exported_keys.build",
+                "failed to build Flight SQL exported-keys metadata batch",
+            )
+        })?;
+        Ok(Response::new(metadata_record_batch_stream(
+            batch.schema(),
+            batch,
+            "datafusion_nexus.server.flight.do_get_exported_keys.encode",
+            "failed to encode Flight SQL exported-keys metadata stream",
+        )))
     }
 
     async fn do_get_imported_keys(
@@ -444,8 +516,19 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.check_auth(&request)?;
-        let batch = empty_foreign_keys_batch().map_err(arrow_error_to_status)?;
-        Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
+        let batch = empty_foreign_keys_batch().map_err(|error| {
+            arrow_error_to_status_for_operation(
+                error,
+                "datafusion_nexus.server.flight.do_get_imported_keys.build",
+                "failed to build Flight SQL imported-keys metadata batch",
+            )
+        })?;
+        Ok(Response::new(metadata_record_batch_stream(
+            batch.schema(),
+            batch,
+            "datafusion_nexus.server.flight.do_get_imported_keys.encode",
+            "failed to encode Flight SQL imported-keys metadata stream",
+        )))
     }
 
     async fn do_get_cross_reference(
@@ -454,8 +537,19 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.check_auth(&request)?;
-        let batch = empty_foreign_keys_batch().map_err(arrow_error_to_status)?;
-        Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
+        let batch = empty_foreign_keys_batch().map_err(|error| {
+            arrow_error_to_status_for_operation(
+                error,
+                "datafusion_nexus.server.flight.do_get_cross_reference.build",
+                "failed to build Flight SQL cross-reference metadata batch",
+            )
+        })?;
+        Ok(Response::new(metadata_record_batch_stream(
+            batch.schema(),
+            batch,
+            "datafusion_nexus.server.flight.do_get_cross_reference.encode",
+            "failed to encode Flight SQL cross-reference metadata stream",
+        )))
     }
 
     async fn do_put_statement_update(
@@ -683,7 +777,11 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     let status = status_with_query_id_and_correlation_id(
-                        Status::internal(error.to_string()),
+                        arrow_error_to_status_for_operation(
+                            error,
+                            "datafusion_nexus.server.flight.do_action_create_prepared_statement.dataset_schema_ipc",
+                            "failed to encode Flight SQL prepared-statement dataset schema",
+                        ),
                         &query_id,
                         correlation_id.as_deref(),
                     );

@@ -141,8 +141,12 @@ pub(super) fn reject_parameterized_plan(plan: &LogicalPlan, operation: &'static 
     .into())
 }
 
-pub(super) fn arrow_error_to_status(error: arrow::error::ArrowError) -> Status {
-    Status::internal(error.to_string())
+pub(super) fn arrow_error_to_status_for_operation(
+    error: arrow::error::ArrowError,
+    operation: &'static str,
+    message: &'static str,
+) -> Status {
+    adapter_error_to_status(&Error::new(ErrorCode::Internal, operation, message).with_source(error))
 }
 
 /// Serialize an Arrow `Schema` into the IPC-encapsulated form that Flight SQL
@@ -155,8 +159,15 @@ pub(super) fn schema_to_ipc_bytes(schema: &Schema) -> Result<prost::bytes::Bytes
     Ok(bytes)
 }
 
-pub(super) fn arrow_flight_error_to_status(error: arrow_flight::error::FlightError) -> Status {
-    Status::from(error)
+pub(super) fn arrow_flight_error_to_status_for_operation(
+    error: arrow_flight::error::FlightError,
+    operation: &'static str,
+    message: &'static str,
+) -> Status {
+    match error {
+        arrow_flight::error::FlightError::Tonic(status) => *status,
+        error => adapter_error_to_status(&Error::new(ErrorCode::Internal, operation, message).with_source(error)),
+    }
 }
 
 pub(super) fn server_error_to_status(error: ServerError) -> Status {
@@ -241,4 +252,34 @@ pub(super) fn log_statement_status(query_id: &str, stage: &'static str, started_
         error = status.message(),
         "failed Flight SQL statement"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrow_flight_tonic_status_is_passed_through() {
+        let mut status = Status::permission_denied("source credentials rejected");
+        status.metadata_mut().insert(
+            crate::server::error::ERROR_CODE_METADATA_KEY,
+            MetadataValue::try_from("source_access_denied").expect("metadata value should be valid"),
+        );
+
+        let projected = arrow_flight_error_to_status_for_operation(
+            FlightError::from(status.clone()),
+            "datafusion_nexus.server.flight.test.encode",
+            "encode failed",
+        );
+
+        assert_eq!(projected.code(), status.code());
+        assert_eq!(projected.message(), status.message());
+        assert_eq!(
+            projected
+                .metadata()
+                .get(crate::server::error::ERROR_CODE_METADATA_KEY)
+                .and_then(|value| value.to_str().ok()),
+            Some("source_access_denied")
+        );
+    }
 }
