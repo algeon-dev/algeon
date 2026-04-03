@@ -46,6 +46,7 @@ pub struct NativeCudfGpuProducerExec {
     input_name: String,
     plan: QueryPlan,
     metrics_capture: Option<NativeMetricsCapture>,
+    plan_task_mapping_datafusion_shape: Option<String>,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
@@ -62,6 +63,15 @@ impl NativeCudfGpuProducerExec {
         input_name: impl Into<String>,
         plan: QueryPlan,
         metrics_capture: Option<NativeMetricsCapture>,
+    ) -> crate::error::Result<Self> {
+        Self::try_new_with_metrics_capture_and_shape(input_name, plan, metrics_capture, None)
+    }
+
+    pub(crate) fn try_new_with_metrics_capture_and_shape(
+        input_name: impl Into<String>,
+        plan: QueryPlan,
+        metrics_capture: Option<NativeMetricsCapture>,
+        plan_task_mapping_datafusion_shape: Option<&str>,
     ) -> crate::error::Result<Self> {
         let input_name = input_name.into();
         if input_name.is_empty() {
@@ -95,6 +105,7 @@ impl NativeCudfGpuProducerExec {
             cache: conservative_properties(Arc::clone(plan.output_schema())),
             plan,
             metrics_capture,
+            plan_task_mapping_datafusion_shape: plan_task_mapping_datafusion_shape.map(ToString::to_string),
             metrics: ExecutionPlanMetricsSet::new(),
         })
     }
@@ -126,7 +137,12 @@ impl NativeCudfGpuProducerExec {
             .into());
         }
 
-        let metrics = NativeCudfMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
+        let metrics = NativeCudfMetrics::new_with_capture_and_shape(
+            &self.metrics,
+            partition,
+            self.metrics_capture.clone(),
+            self.plan_task_mapping_datafusion_shape.as_deref(),
+        );
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
         let result = execute_query_plan(native_context, &self.plan).map_err(|error| {
             DataFusionError::from(native_query_runtime_error(

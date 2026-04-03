@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use serde_json::{Value, json};
+
 pub use crate::mode::StrictBoundedExecutionMode;
 use crate::{
     capability::{
@@ -15,6 +17,7 @@ use crate::{
         strict_unresolved_preflight_gap,
     },
     error::{QueryError, QueryErrorCode, Result},
+    metrics::{QueryId, TraceId},
     pipeline::{CompiledPipeline, ReservationGate, ReservationGateId, ReservationGateOwner},
     plan::NodeId,
     runtime::ReservationKind,
@@ -26,6 +29,8 @@ use crate::{
 /// report surface and execution mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrictBoundedContractReport {
+    query_id: Option<QueryId>,
+    trace_id: Option<TraceId>,
     execution_mode: StrictBoundedExecutionMode,
     gate_rows: Vec<StrictBoundedContractGateRow>,
 }
@@ -135,9 +140,46 @@ impl StrictBoundedContractReport {
             && self.gate_rows.iter().all(|row| row.contract_status == ContractStatus::Modeled)
     }
 
+    /// Returns the query-wide diagnostic correlation id, when assigned.
+    pub fn query_id(&self) -> Option<&QueryId> {
+        self.query_id.as_ref()
+    }
+
+    /// Returns the optional parent trace id.
+    pub fn trace_id(&self) -> Option<&TraceId> {
+        self.trace_id.as_ref()
+    }
+
+    /// Returns this strict report with a query id assigned.
+    #[must_use]
+    pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
+        self.query_id = Some(query_id.into());
+        self
+    }
+
+    /// Returns this strict report with a parent trace id assigned.
+    #[must_use]
+    pub fn with_trace_id(mut self, trace_id: impl Into<TraceId>) -> Self {
+        self.trace_id = Some(trace_id.into());
+        self
+    }
+
     /// Serializes each row as a stable comma-separated key/value string.
     pub fn stable_kv_rows(&self) -> Vec<String> {
         self.gate_rows.iter().map(StrictBoundedContractGateRow::to_stable_kv_row).collect()
+    }
+
+    /// Serializes this strict bounded contract report as named JSON.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "schema": "nexus_query_engine.strict_bounded_contract_report.v1",
+            "query_id": self.query_id.as_ref().map(QueryId::as_str),
+            "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
+            "triage": self.triage_summary().to_json(),
+            "execution_mode": self.execution_mode.as_str(),
+            "strict_bounded_ready": self.is_strict_bounded_ready(),
+            "gate_rows": self.gate_rows.iter().map(StrictBoundedContractGateRow::to_json).collect::<Vec<_>>(),
+        })
     }
 
     fn new(execution_mode: StrictBoundedExecutionMode, gate_rows: Vec<StrictBoundedContractGateRow>) -> Result<Self> {
@@ -156,7 +198,7 @@ impl StrictBoundedContractReport {
             }
         }
         validate_report_execution_mode(execution_mode, &gate_rows)?;
-        Ok(Self { execution_mode, gate_rows })
+        Ok(Self { query_id: None, trace_id: None, execution_mode, gate_rows })
     }
 }
 
@@ -300,6 +342,22 @@ impl StrictBoundedContractGateRow {
             self.contract_quality.as_str(),
             self.unresolved_preflight_gap.unwrap_or("none")
         )
+    }
+
+    /// Serializes this strict bounded contract row as named JSON.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "execution_mode": self.execution_mode.as_str(),
+            "contract_scope": self.contract_scope.as_str(),
+            "gate_id": self.gate_id.to_string(),
+            "owner": self.owner.to_string(),
+            "reservation_kind": self.reservation_kind.as_str(),
+            "memory_boundary": self.memory_boundary,
+            "required_contract": self.required_contract,
+            "contract_status": self.contract_status.as_str(),
+            "contract_quality": self.contract_quality.as_str(),
+            "unresolved_preflight_gap": self.unresolved_preflight_gap,
+        })
     }
 }
 

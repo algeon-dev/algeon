@@ -18,8 +18,7 @@ fn main() -> ExitCode {
 #[cfg(target_arch = "x86_64")]
 fn ensure_cpu_baseline() {
     // SSE4.2 + POPCNT are representative of the x86-64-v2 feature set.
-    let supported =
-        std::arch::is_x86_feature_detected!("sse4.2") && std::arch::is_x86_feature_detected!("popcnt");
+    let supported = std::arch::is_x86_feature_detected!("sse4.2") && std::arch::is_x86_feature_detected!("popcnt");
     if !supported {
         eprintln!(
             "FATAL: datafusion-nexus was built for the x86-64-v2 CPU baseline (SSE4.2 + POPCNT) but \

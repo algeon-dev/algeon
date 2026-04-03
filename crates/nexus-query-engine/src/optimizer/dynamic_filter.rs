@@ -1263,16 +1263,6 @@ fn parent_constrains_or_carries_column(
             producer_source_column,
             visited,
         ),
-        PlanNode::Limit(limit) if limit.input == child_id => column_consumers_are_keyset_constrained(
-            plan,
-            parent_counts,
-            parent_id,
-            column,
-            producer_keyset_node_id,
-            producer_source_node_id,
-            producer_source_column,
-            visited,
-        ),
         PlanNode::Join(join) => join_constrains_or_carries_column(
             plan,
             parent_counts,
@@ -1299,6 +1289,11 @@ fn parent_constrains_or_carries_column(
                 )
             })
         },
+        // `Limit`/`Window` are intentionally rejected (not recursed): filtering the shared
+        // source in place removes rows before these order/position-dependent operators run, so
+        // a `Limit(N)` above would select a different row set than the unfiltered plan even when a
+        // further-downstream inner join would constrain the key. This mirrors `lineages_for_column`,
+        // which also refuses to cross `Limit` on the consumer side.
         PlanNode::Filter(_)
         | PlanNode::Projection(_)
         | PlanNode::Sort(_)

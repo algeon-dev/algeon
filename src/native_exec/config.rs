@@ -13,9 +13,9 @@ use nexus_query_engine::{
     AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, CudfInventory, DynamicFilterExecutionOptions,
     ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache, GpuInventory,
     GpuLocalParquetSourceCache, KeyedHashJoinStrategyOptions, MemoryControlPolicy, MemoryResourcePolicy,
-    NativePipelineExecutionMode, QueryHandle, ServiceStreamPool, SourceChunkPlanningMode, SourceChunkPlanningOptions,
-    SourceFetchConfig, SourceSchedulerPolicy, SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext,
-    device_budget_bytes_from_facts,
+    NativePipelineExecutionMode, QueryHandle, QueryId, ServiceStreamPool, SourceChunkPlanningMode,
+    SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy, SourceStorageProfile,
+    StddevSampExecutionMode, TenantQueryContext, TraceId, device_budget_bytes_from_facts,
 };
 
 use super::metrics::NativeMetricsCapture;
@@ -51,6 +51,9 @@ pub struct NativeCudfExecutionConfig {
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
     source_storage_profiles: Vec<SourceStorageProfile>,
     query_service_handle: Option<Arc<QueryHandle>>,
+    query_id: Option<QueryId>,
+    trace_id: Option<TraceId>,
+    plan_task_mapping_datafusion_shape: Option<String>,
     metrics_capture: Option<NativeMetricsCapture>,
 }
 
@@ -69,6 +72,16 @@ impl NativeCudfExecutionContext {
     fn tenant_bound(tenant_context: TenantQueryContext) -> Self {
         let context = tenant_context.context().clone();
         Self { context, _tenant_context: Some(tenant_context) }
+    }
+
+    fn with_query_id(mut self, query_id: QueryId) -> Self {
+        self.context = self.context.with_query_id(query_id);
+        self
+    }
+
+    fn with_trace_id(mut self, trace_id: TraceId) -> Self {
+        self.context = self.context.with_trace_id(trace_id);
+        self
     }
 
     pub(crate) fn context(&self) -> &ExecutionContext {
@@ -120,6 +133,9 @@ impl NativeCudfExecutionConfig {
             local_parquet_source_cache: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
+            query_id: None,
+            trace_id: None,
+            plan_task_mapping_datafusion_shape: None,
             metrics_capture: None,
         }
     }
@@ -220,6 +236,9 @@ impl NativeCudfExecutionConfig {
             local_parquet_source_cache: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
+            query_id: None,
+            trace_id: None,
+            plan_task_mapping_datafusion_shape: None,
             metrics_capture: None,
         }
     }
@@ -317,8 +336,50 @@ impl NativeCudfExecutionConfig {
     /// Attach a server-side query metrics capture sink.
     #[cfg(feature = "server")]
     pub(crate) fn with_metrics_capture(mut self, capture: NativeMetricsCapture) -> Self {
+        self.query_id = Some(QueryId::new(capture.query_id()));
         self.metrics_capture = Some(capture);
         self
+    }
+
+    /// Attach a diagnostic query id to native execution metrics.
+    pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
+        self.query_id = Some(query_id.into());
+        self
+    }
+
+    /// Attach a query id only when the caller has not supplied one.
+    pub(crate) fn with_query_id_if_absent(mut self, query_id: impl Into<QueryId>) -> Self {
+        if self.query_id.is_none() {
+            self.query_id = Some(query_id.into());
+        }
+        self
+    }
+
+    /// Attach a parent trace id to native diagnostics.
+    pub fn with_trace_id(mut self, trace_id: impl Into<TraceId>) -> Self {
+        self.trace_id = Some(trace_id.into());
+        self
+    }
+
+    /// Attach the DataFusion candidate shape used to annotate plan/task mapping rows.
+    pub(crate) fn with_plan_task_mapping_datafusion_shape(mut self, shape: impl Into<String>) -> Self {
+        let shape = shape.into();
+        if !shape.is_empty() {
+            self.plan_task_mapping_datafusion_shape = Some(shape);
+        }
+        self
+    }
+
+    pub(crate) fn query_id(&self) -> Option<&QueryId> {
+        self.query_id.as_ref()
+    }
+
+    pub(crate) fn trace_id(&self) -> Option<&TraceId> {
+        self.trace_id.as_ref()
+    }
+
+    pub(crate) fn plan_task_mapping_datafusion_shape(&self) -> Option<&str> {
+        self.plan_task_mapping_datafusion_shape.as_deref()
     }
 
     pub(crate) fn metrics_capture(&self) -> Option<NativeMetricsCapture> {
@@ -527,28 +588,28 @@ impl NativeCudfExecutionConfig {
             Error::from_native(
                 "datafusion_nexus.native_exec.config.validate",
                 "invalid native dynamic-filter execution policy",
-                error,
+                self.stamp_native_error_correlation(error),
             )
         })?;
         self.keyed_hash_join_strategy_options.validate().map_err(|error| {
             Error::from_native(
                 "datafusion_nexus.native_exec.config.validate",
                 "invalid native keyed hash-join strategy policy",
-                error,
+                self.stamp_native_error_correlation(error),
             )
         })?;
         self.aggregate_strategy_execution_options.validate().map_err(|error| {
             Error::from_native(
                 "datafusion_nexus.native_exec.config.validate",
                 "invalid native aggregate strategy execution policy",
-                error,
+                self.stamp_native_error_correlation(error),
             )
         })?;
         self.source_chunk_planning_options.validate().map_err(|error| {
             Error::from_native(
                 "datafusion_nexus.native_exec.config.validate",
                 "invalid native source chunk planning policy",
-                error,
+                self.stamp_native_error_correlation(error),
             )
         })?;
         Ok(())
@@ -567,11 +628,20 @@ impl NativeCudfExecutionConfig {
             return handle
                 .acquire_context_with_cancellation(self.cancellation.clone())
                 .map(NativeCudfExecutionContext::tenant_bound)
+                .map(|mut context| {
+                    if let Some(query_id) = self.query_id.clone() {
+                        context = context.with_query_id(query_id);
+                    }
+                    if let Some(trace_id) = self.trace_id.clone() {
+                        context = context.with_trace_id(trace_id);
+                    }
+                    context
+                })
                 .map_err(|error| {
                     Error::from_native(
                         "datafusion_nexus.native_exec.context",
                         "failed to acquire query service native cudf execution context",
-                        error,
+                        self.stamp_native_error_correlation(error),
                     )
                 });
         }
@@ -610,13 +680,32 @@ impl NativeCudfExecutionConfig {
         if let Some(memory_history) = &self.adaptive_memory_history {
             builder = builder.with_adaptive_memory_history(Arc::clone(memory_history));
         }
+        if let Some(query_id) = &self.query_id {
+            builder = builder.with_query_id(query_id.clone());
+        }
+        if let Some(trace_id) = &self.trace_id {
+            builder = builder.with_trace_id(trace_id.clone());
+        }
         builder.build().map(NativeCudfExecutionContext::standalone).map_err(|error| {
             Error::from_native(
                 "datafusion_nexus.native_exec.context",
                 "failed to build native cudf execution context",
-                error,
+                self.stamp_native_error_correlation(error),
             )
         })
+    }
+
+    fn stamp_native_error_correlation(
+        &self,
+        mut error: nexus_query_engine::QueryError,
+    ) -> nexus_query_engine::QueryError {
+        if let Some(query_id) = &self.query_id {
+            error = error.with_query_id(query_id.clone());
+        }
+        if let Some(trace_id) = &self.trace_id {
+            error = error.with_trace_id(trace_id.clone());
+        }
+        error
     }
 }
 
@@ -763,5 +852,38 @@ mod tests {
             auto_sized_device_budget_bytes_for_device_with_fraction_and_inventory(&inventory, 0, 0.5),
             total / 2
         );
+    }
+
+    #[test]
+    fn execution_context_carries_configured_correlation_ids() {
+        let context = NativeCudfExecutionConfig::unbounded()
+            .with_query_id("query-config")
+            .with_trace_id("trace-config")
+            .execution_context()
+            .unwrap();
+
+        assert_eq!(context.context().query_id().map(QueryId::as_str), Some("query-config"));
+        assert_eq!(context.context().trace_id().map(TraceId::as_str), Some("trace-config"));
+    }
+
+    #[test]
+    fn config_validation_errors_carry_configured_correlation_ids() {
+        let error = NativeCudfExecutionConfig::unbounded()
+            .with_query_id("query-config-error")
+            .with_trace_id("trace-config-error")
+            .with_source_chunk_planning_options(
+                SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(0),
+            )
+            .validate_query_policies()
+            .unwrap_err();
+
+        assert_eq!(error.fact_value("query_id"), Some("query-config-error"));
+        assert_eq!(error.fact_value("trace_id"), Some("trace-config-error"));
+        let native = error
+            .source_error()
+            .and_then(|source| source.downcast_ref::<QueryError>())
+            .expect("adapter error should retain native source error");
+        assert_eq!(native.query_id().map(QueryId::as_str), Some("query-config-error"));
+        assert_eq!(native.trace_id().map(TraceId::as_str), Some("trace-config-error"));
     }
 }

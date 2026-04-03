@@ -18,7 +18,7 @@ use super::{
     tsv::{
         TsvRow, format_adaptive_pipeline_rows, format_aggregate_strategy_rows, format_dynamic_filter_runtime_rows,
         format_graph_reservation_rows, format_graph_runtime_rows, format_join_diagnostics, format_join_strategy_rows,
-        format_lakehouse_cache_fill_event_snapshot_rows, format_source_diagnostics,
+        format_lakehouse_cache_fill_event_snapshot_rows, format_plan_task_mapping_rows, format_source_diagnostics,
         format_strict_bounded_compiled_graphs, format_strict_bounded_contract_rows, format_task_operator_rows,
         format_task_runtime_rows,
     },
@@ -396,6 +396,10 @@ impl TsvRow for NativeDataFusionExecutionRow {
     const SCHEMA_VERSION: u32 = NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION;
 
     fn fields(&self) -> Vec<String> {
+        let mut plan_task_mapping_rows = self.metrics.plan_task_mapping_rows.clone();
+        for row in &mut plan_task_mapping_rows {
+            row.query_id.clone_from(&self.query_id);
+        }
         vec![
             self.query_id.clone(),
             self.physical_root.clone(),
@@ -528,6 +532,7 @@ impl TsvRow for NativeDataFusionExecutionRow {
             optional_duration_ms_text(self.metrics.source_decode_time_ns),
             format_source_diagnostics(&self.source_diagnostics),
             format_lakehouse_cache_fill_event_snapshot_rows(&self.metrics.lakehouse_cache_fill_event_snapshot_rows),
+            format_plan_task_mapping_rows(&plan_task_mapping_rows),
         ]
     }
 }
@@ -662,6 +667,7 @@ mod tests {
                 | "graph_runtime_rows"
                 | "task_operator_rows"
                 | "task_runtime_rows"
+                | "plan_task_mapping_rows"
                 | "dynamic_filter_post_decode_reduction_stage"
                 | "dynamic_filter_runtime_rows"
                 | "aggregate_strategy_rows"
@@ -826,7 +832,8 @@ mod tests {
                 "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t70\t71\t72\t73\t74\t75\t76\t77\t78\t79\t80\t81\t82\t83\t",
                 "84\t85\t86\t87\t88\t89\t90\t91\t92\tnone\tnone\t93\t94\t1.000\t2.500\t3.750\t4.125\tnone\t",
                 "outcome=completed,bytes=4096,elapsed_ns=9000000,cache_path_hash=cache123,stable_id_hash=stable456,",
-                "file_index=0,chunk_index=2,error_code=none,error_kind=none,error_status=none,error_operation=none"
+                "file_index=0,chunk_index=2,error_code=none,error_kind=none,error_status=none,error_operation=none",
+                "\tnone"
             )
         );
     }

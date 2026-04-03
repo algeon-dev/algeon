@@ -1,5 +1,6 @@
 use nexus_query_engine::{
     admission_contracts, ir, metrics_contracts, optimizer_contracts, pipeline_contracts, prelude, runtime_contracts,
+    triage_contracts,
 };
 
 #[test]
@@ -11,4 +12,5 @@ fn facade_modules_expose_intentional_contract_groups() {
     let _optimizer = optimizer_contracts::NativeOptimizerOptions::default();
     let _pipeline_kind = pipeline_contracts::PipelineTaskKind::SourceRead;
     let _admission_status = admission_contracts::AdaptiveCandidateStatus::Rejected;
+    let _triage = triage_contracts::TriageSummary::healthy();
 }

@@ -5,6 +5,8 @@
 //! a TSV schema break and requires bumping the consuming report's schema
 //! version.
 
+use nexus_query_engine::TriageCode;
+
 /// Policy controlling whether DataFusion may fall back to CPU execution.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GpuFallbackPolicy {
@@ -157,6 +159,51 @@ impl FallbackReason {
             Self::IcebergObjectStoreReadUnsupported => "iceberg_object_store_read_unsupported",
             Self::IcebergSnapshotUnsupported => "iceberg_snapshot_unsupported",
             Self::TableFormatGpuOnlyLeafNotRewritten => "table_format_gpu_only_leaf_not_rewritten",
+        }
+    }
+
+    /// Shared triage code for this planning fallback reason.
+    pub const fn triage_code(self) -> TriageCode {
+        match self {
+            Self::UnsupportedOperator => TriageCode::UnsupportedOperator,
+            Self::UnsupportedExpression => TriageCode::UnsupportedExpression,
+            Self::UnsupportedType => TriageCode::UnsupportedType,
+            Self::ExplicitCpuPolicy => TriageCode::ExplicitCpuPolicy,
+            Self::NativeSmallSelectiveTopkCpuPreferred
+            | Self::NativeSmallSelectiveResidualJoinCpuPreferred
+            | Self::NativeSmallSelectiveFullSortCpuPreferred => TriageCode::CpuPreferred,
+            Self::NativeBoundedJoinUnsupported => TriageCode::StrictBoundedRejected,
+            Self::NativeAdaptivePipelineUnsupported => TriageCode::AdaptivePipelineRejected,
+            Self::NativeSourceNonLocalObjectStore
+            | Self::NativeSourcePartitionColumns
+            | Self::NativeSourceExprAdapter
+            | Self::NativeSourceParquetFileReaderFactory
+            | Self::NativeSourceScanLimit
+            | Self::NativeSourcePreserveOrder
+            | Self::NativeSourceOutputOrdering
+            | Self::NativeSourcePushedDownParquetPredicate
+            | Self::NativeSourceEmpty
+            | Self::NativeSourcePartitionValues
+            | Self::NativeSourceByteRange
+            | Self::NativeSourceFileOrdering
+            | Self::NativeSourceRowSelection
+            | Self::NativeSourceSchemaMapping
+            | Self::TableFormatUnsupported
+            | Self::IcebergNonParquetDataFile
+            | Self::IcebergDeleteFilesUnsupported
+            | Self::IcebergFieldIdMappingUnsupported
+            | Self::IcebergNameMappingUnsupported
+            | Self::IcebergNestedProjectionUnsupported
+            | Self::IcebergPartitionTransformUnsupported
+            | Self::IcebergResidualPredicateUnsupported
+            | Self::IcebergRowSelectionUnsupported
+            | Self::IcebergObjectStoreReadUnsupported
+            | Self::IcebergSnapshotUnsupported => TriageCode::UnsupportedSource,
+            Self::TableFormatPlanningFailed => TriageCode::InvalidPlan,
+            Self::NativeSortPreservingMergeUnsupported
+            | Self::NativeDistributedAggregateUnsupported
+            | Self::NativePartitionPreservingSortUnsupported
+            | Self::TableFormatGpuOnlyLeafNotRewritten => TriageCode::UnsupportedPlanShape,
         }
     }
 }

@@ -1231,6 +1231,42 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_constraint_uses_s
 }
 
 #[test]
+fn native_optimizer_rejects_q02_like_shared_source_filter_when_constrained_consumer_is_below_limit() {
+    // A shared-partsupp consumer constrained by the same `part` keyset, but only after an
+    // intervening `Limit`. Applying the keyset filter in place at the source would change which
+    // rows the `Limit` selects, so the shared source must NOT be lowered to an in-place source
+    // post-decode filter. (Without the `Limit` arm being rejected, this route would be wrongly
+    // admitted as a `LocalParquetSource` consumer and silently drop rows the limited branch needs.)
+    let fixture = q02_like_shared_partsupp_dynamic_filter_plan(SharedPartsuppDynamicFilterPlanOptions {
+        limited_constrained_partsupp_consumer: true,
+        ..SharedPartsuppDynamicFilterPlanOptions::default()
+    });
+    let options = NativeOptimizerOptions {
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(fixture.plan, &options);
+
+    let candidate = result
+        .diagnostics
+        .dynamic_filter_route_discovery
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == fixture.part_partsupp_join)
+        .expect("part/partsupp join should be considered");
+    assert_eq!(candidate.consumer_source_node_id, Some(fixture.partsupp));
+    assert_eq!(candidate.consumer_key_column.as_deref(), Some("ps_partkey"));
+    assert!(!candidate.routed);
+    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan));
+    assert_ne!(candidate.consumer_reduction_stage, Some(DynamicFilterConsumerReductionStage::SourcePostDecode));
+    assert!(result.plan.dynamic_filter_routes().iter().all(|route| {
+        !matches!(route.consumer, DynamicFilterConsumer::LocalParquetSource { source_node_id } if source_node_id == fixture.partsupp)
+    }));
+}
+
+#[test]
 fn native_optimizer_skips_join_probe_dynamic_filter_when_it_feeds_scalar_decimal_sum() {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = Arc::new(Schema::new(vec![
@@ -2752,6 +2788,7 @@ struct SharedPartsuppDynamicFilterPlanOptions {
     derived_aggregate_group_key: bool,
     filter_part_build_keyset: bool,
     final_join_uses_unfiltered_part_keyset: bool,
+    limited_constrained_partsupp_consumer: bool,
 }
 
 impl Default for SharedPartsuppDynamicFilterPlanOptions {
@@ -2763,6 +2800,7 @@ impl Default for SharedPartsuppDynamicFilterPlanOptions {
             derived_aggregate_group_key: false,
             filter_part_build_keyset: false,
             final_join_uses_unfiltered_part_keyset: false,
+            limited_constrained_partsupp_consumer: false,
         }
     }
 }
@@ -2894,6 +2932,31 @@ fn q02_like_shared_partsupp_dynamic_filter_plan(
             ],
         );
         root_inputs.push(extra_consumer);
+    }
+    if options.limited_constrained_partsupp_consumer {
+        // Extra shared-partsupp consumer whose key is constrained by the SAME `part` keyset, but
+        // only AFTER an intervening `Limit`. Filtering the shared source in place would change the
+        // rows the `Limit` selects, so this branch must NOT be treated as keyset-constrained.
+        let partsupp_schema = schema(&["ps_partkey", "ps_suppkey", "ps_supplycost"]);
+        let limited_partsupp = builder.add_limit(partsupp, LimitSpec::fetch(10), Arc::clone(&partsupp_schema));
+        let limited_constrained_join = builder.add_join(
+            limited_partsupp,
+            part,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+                    ColumnRef::input(1, "p_partkey", "p_partkey"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "p_partkey"),
+                JoinOutputColumn::left(ColumnRef::input(0, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&result_schema),
+        );
+        root_inputs.push(limited_constrained_join);
     }
     let root = if root_inputs.len() == 1 {
         final_join

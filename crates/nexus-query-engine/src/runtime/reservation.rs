@@ -1,5 +1,8 @@
 use super::*;
-use crate::util::comma_separated_usize;
+use crate::{
+    metrics::{CompiledTaskId, PlanNodeId, QueryId},
+    util::comma_separated_usize,
+};
 
 /// Reservation request submitted to bounded execution admission.
 ///
@@ -17,6 +20,8 @@ use crate::util::comma_separated_usize;
 /// deliberately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryReservationRequest {
+    /// Query-wide diagnostic correlation id, when assigned.
+    pub query_id: Option<QueryId>,
     /// Category of memory being reserved.
     pub reservation_kind: ReservationKind,
     /// Memory space charged by this request.
@@ -37,7 +42,7 @@ pub struct MemoryReservationRequest {
     /// Total bounded device budget used for this admission check.
     pub budget_bytes: u64,
     /// Optional plan node id associated with this reservation.
-    pub node_id: Option<String>,
+    pub node_id: Option<PlanNodeId>,
     /// Optional execution stage, such as a bounded join or retry stage.
     pub stage: Option<String>,
     /// Optional source chunk index.
@@ -53,7 +58,7 @@ pub struct MemoryReservationRequest {
     /// Optional maximum retry attempts for the current retry path.
     pub max_attempts: Option<usize>,
     /// Optional compiled pipeline task id associated with this reservation.
-    pub compiled_task_id: Option<String>,
+    pub compiled_task_id: Option<CompiledTaskId>,
     /// Optional compiled pipeline resident resource id associated with this reservation.
     pub resident_resource_id: Option<String>,
     /// Optional quality label for source-read sizing diagnostics.
@@ -68,6 +73,7 @@ impl MemoryReservationRequest {
     /// Creates a reservation request for a kind, requested byte count, and budget.
     pub fn new(reservation_kind: ReservationKind, requested_bytes: u64, budget_bytes: u64) -> Self {
         Self {
+            query_id: None,
             reservation_kind,
             memory_space: MemorySpaceId::Device { device_ordinal: 0 },
             memory_boundary: reservation_kind.as_str().to_string(),
@@ -113,7 +119,14 @@ impl MemoryReservationRequest {
     /// Attaches a plan node id to the request.
     #[must_use]
     pub fn with_node_id(mut self, node_id: impl ToString) -> Self {
-        self.node_id = Some(node_id.to_string());
+        self.node_id = Some(PlanNodeId::new(node_id.to_string()));
+        self
+    }
+
+    /// Attaches a query id to the request.
+    #[must_use]
+    pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
+        self.query_id = Some(query_id.into());
         self
     }
 
@@ -163,7 +176,7 @@ impl MemoryReservationRequest {
     /// Attaches a compiled pipeline task id to the request.
     #[must_use]
     pub fn with_compiled_task_id(mut self, compiled_task_id: impl ToString) -> Self {
-        self.compiled_task_id = Some(compiled_task_id.to_string());
+        self.compiled_task_id = Some(CompiledTaskId::new(compiled_task_id));
         self
     }
 
@@ -205,6 +218,9 @@ impl MemoryReservationRequest {
         .with_fact("granted_bytes", granted_bytes)
         .with_fact("budget_bytes", self.budget_bytes);
 
+        if let Some(query_id) = &self.query_id {
+            error = error.with_fact("query_id", query_id);
+        }
         if let Some(node_id) = &self.node_id {
             error = error.with_fact("node_id", node_id);
         }

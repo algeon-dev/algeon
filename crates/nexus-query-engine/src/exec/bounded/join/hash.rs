@@ -981,6 +981,7 @@ fn materialize_bounded_root_hash_join_probe_chunk(
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
+            query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: reusable_hash_join_execution_strategy(node, build).to_string(),
             key_count: node.spec.keys.len(),
@@ -1181,6 +1182,7 @@ fn materialize_bounded_root_hash_join_probe_stream(
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
+            query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: reusable_hash_join_execution_strategy(node, build).to_string(),
             key_count: node.spec.keys.len(),
@@ -1319,6 +1321,7 @@ impl RootHashJoinMaterializeStreamSource {
             metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
                 self.node_id,
                 crate::metrics::JoinOperatorMetrics {
+                    query_id: None,
                     join_type: self.node.spec.join_type.to_string(),
                     execution_strategy: reusable_hash_join_execution_strategy(&self.node, build).to_string(),
                     key_count: self.node.spec.keys.len(),

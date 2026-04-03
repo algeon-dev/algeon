@@ -183,6 +183,7 @@ pub(super) fn execute_join(
     metrics.record_operator_metrics(OperatorMetrics::join(
         node_id,
         JoinOperatorMetrics {
+            query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: join_execution_strategy(node).to_string(),
             key_count: node.spec.keys.len(),
@@ -284,6 +285,7 @@ fn execute_cross_join(
     metrics.record_operator_metrics(OperatorMetrics::join(
         node_id,
         JoinOperatorMetrics {
+            query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: "cross_join".to_string(),
             key_count: 0,

@@ -51,6 +51,7 @@ use crate::{
 };
 
 mod dataset;
+mod descriptor;
 mod diagnostics;
 mod metrics;
 mod reports;
@@ -62,6 +63,7 @@ mod tsv;
 mod workload;
 
 pub use dataset::WorkloadDatasetMetadata;
+pub use descriptor::{native_report_metric_descriptor, native_report_metric_descriptors, native_report_metric_names};
 pub(crate) use diagnostics::join_diagnostics as physical_join_diagnostics;
 use diagnostics::{
     candidate_shape_family, physical_plan_shape, post_native_plan_coverage, summarize_source_diagnostics,
@@ -71,8 +73,8 @@ pub use metrics::{
     NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDynamicFilterMeasuredReductionStatus,
     NativeDynamicFilterPostDecodeReductionStage, NativeDynamicFilterRuntimeMetricRow,
     NativeDynamicFilterWorkAvoidanceStatus, NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow,
-    NativeJoinStrategyMetricRow, NativeLakehouseCacheFillEventMetricRow, NativeSourceReadRuntimeMetricRow,
-    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
+    NativeJoinStrategyMetricRow, NativeLakehouseCacheFillEventMetricRow, NativePlanTaskMappingMetricRow,
+    NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
 };
 pub use reports::{NativeDataFusionExecutionReport, NativeDataFusionPlanningReport, NativeFallbackPressureReport};
 pub use rows::{

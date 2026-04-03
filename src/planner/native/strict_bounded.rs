@@ -115,10 +115,13 @@ pub(super) fn accepted_plan_contract_diagnostics(
         plan,
         execution_config.statistical_aggregate_execution_mode(),
     )
-    .map_err(strict_bounded_report_error)?
+    .map_err(|error| strict_bounded_report_error(stamp_native_error_correlation(error, execution_config)))?
     .ok_or_else(|| strict_bounded_candidate_error("strict bounded rewrite has no strict admission evidence"))?;
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
-        .map_err(strict_bounded_report_error)?;
+    let report = stamp_strict_report_correlation(
+        StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
+            .map_err(|error| strict_bounded_report_error(stamp_native_error_correlation(error, execution_config)))?,
+        execution_config,
+    );
     Ok(NativeStrictBoundedContractDiagnostics {
         accepted_candidates: vec![NativeStrictBoundedAcceptedCandidateDiagnostics {
             candidate,
@@ -142,7 +145,7 @@ pub(super) fn strict_bounded_admission_is_rejected(
         Ok(Some(_)) => Ok(false),
         Ok(None) => Ok(true),
         Err(error) if error.code() == nexus_query_engine::QueryErrorCode::UnsupportedPlanShape => Ok(true),
-        Err(error) => Err(strict_bounded_report_error(error)),
+        Err(error) => Err(strict_bounded_report_error(stamp_native_error_correlation(error, execution_config))),
     }
 }
 
@@ -177,7 +180,7 @@ fn first_blocking_contract_row(
         plan,
         execution_config.statistical_aggregate_execution_mode(),
     )
-    .map_err(strict_bounded_report_error)?
+    .map_err(|error| strict_bounded_report_error(stamp_native_error_correlation(error, execution_config)))?
     {
         return StrictBoundedContractGateRow::from_capability_rejection_projection(
             StrictBoundedExecutionMode::UnsupportedStrictBounded,
@@ -185,12 +188,12 @@ fn first_blocking_contract_row(
             &projection,
         )
         .map(Some)
-        .map_err(strict_bounded_report_error);
+        .map_err(|error| strict_bounded_report_error(stamp_native_error_correlation(error, execution_config)));
     }
 
     let analysis = plan.capability_analysis();
-    let report =
-        StrictBoundedContractReport::from_capability_analysis(&analysis).map_err(strict_bounded_report_error)?;
+    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+        .map_err(|error| strict_bounded_report_error(stamp_native_error_correlation(error, execution_config)))?;
     Ok(report.gate_rows().iter().find(|row| row.contract_status != ContractStatus::Modeled).cloned())
 }
 
@@ -218,4 +221,30 @@ fn strict_bounded_candidate_error(message: &'static str) -> DataFusionError {
         message,
     )
     .into()
+}
+
+fn stamp_strict_report_correlation(
+    mut report: StrictBoundedContractReport,
+    execution_config: &NativeCudfExecutionConfig,
+) -> StrictBoundedContractReport {
+    if let Some(query_id) = execution_config.query_id() {
+        report = report.with_query_id(query_id.clone());
+    }
+    if let Some(trace_id) = execution_config.trace_id() {
+        report = report.with_trace_id(trace_id.clone());
+    }
+    report
+}
+
+fn stamp_native_error_correlation(
+    mut error: nexus_query_engine::QueryError,
+    execution_config: &NativeCudfExecutionConfig,
+) -> nexus_query_engine::QueryError {
+    if let Some(query_id) = execution_config.query_id() {
+        error = error.with_query_id(query_id.clone());
+    }
+    if let Some(trace_id) = execution_config.trace_id() {
+        error = error.with_trace_id(trace_id.clone());
+    }
+    error
 }

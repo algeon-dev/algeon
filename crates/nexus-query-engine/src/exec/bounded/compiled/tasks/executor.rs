@@ -1725,6 +1725,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
         self.context.check_cancellation("nexus_query_engine.exec.bounded.compiled.task")?;
         validate_task_runtime_gates(self.pipeline, task)?;
+        self.metrics.record_compiled_pipeline_task_mapping(task.id(), task.kind().as_str(), task.plan_node());
         self.metrics.record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
         self.metrics.set_current_compiled_task(task.id());
         self.reservations.set_diagnostic_context(Some(task.id()), task_diagnostic_resident_resource(task));

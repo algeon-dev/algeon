@@ -215,8 +215,8 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.graph_reservation_rows[0].budget_bytes, Some(1048576));
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 46);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 131);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 47);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 132);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
     ));
@@ -253,7 +253,7 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     ));
     assert!(
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
-            .ends_with("\tsource_diagnostics\tlakehouse_cache_fill_event_snapshot_rows")
+            .ends_with("\tsource_diagnostics\tlakehouse_cache_fill_event_snapshot_rows\tplan_task_mapping_rows")
     );
     assert!(text.contains("selected_strategy=libcudf_groupby,execution_stage=partial"));
     assert!(text.contains("algorithm=pagerank,class=output_sized,outcome=admitted"));

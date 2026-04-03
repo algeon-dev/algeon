@@ -58,6 +58,7 @@ pub mod prelude {
 /// Stable planning and runtime report contracts.
 pub mod report_contracts {
     pub use crate::{
+        TriageCode, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict,
         native_report::{
             NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
             NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
@@ -73,13 +74,14 @@ pub mod report_contracts {
             NativeFallbackPressureReport, NativeFallbackPressureRow, NativeFallbackPressureWorkloadInput,
             NativeFallbackPressureWorkloadItem, NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow,
             NativeJoinDiagnosticSummary, NativeJoinStrategyMetricRow, NativeLakehouseCacheFillEventMetricRow,
-            NativePlanningFailure, NativeSourceDiagnosticSummary, NativeSourceReadRuntimeMetricRow,
-            NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, NativeTpcdsParityCpuOutcome,
-            NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputStatus,
+            NativePlanTaskMappingMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary,
+            NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
+            NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputStatus,
             NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityNativePlanningOutcome,
             NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome, NativeTpcdsParityReport,
             NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityComparisonResult,
             ParityFloatTolerance, ParityStageStatus, ParityStatus, WorkloadDatasetMetadata, compare_record_batches,
+            native_report_metric_descriptor, native_report_metric_descriptors, native_report_metric_names,
             sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
         },
         report::{CandidateOutcome, GpuCandidate, PlanningReport},
@@ -259,20 +261,23 @@ pub use native_report::{
     NativeFallbackPressureReport, NativeFallbackPressureRow, NativeFallbackPressureWorkloadInput,
     NativeFallbackPressureWorkloadItem, NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow,
     NativeJoinDiagnosticSummary, NativeJoinStrategyMetricRow, NativeLakehouseCacheFillEventMetricRow,
-    NativePlanningFailure, NativeSourceDiagnosticSummary, NativeSourceReadRuntimeMetricRow,
-    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, NativeTpcdsParityCpuOutcome,
-    NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
-    NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
-    NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
-    ParityComparisonResult, ParityFloatTolerance, ParityStageStatus, ParityStatus, WorkloadDatasetMetadata,
-    compare_record_batches, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
+    NativePlanTaskMappingMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary,
+    NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
+    NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputStatus,
+    NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityNativePlanningOutcome,
+    NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome, NativeTpcdsParityReport,
+    NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityComparisonResult,
+    ParityFloatTolerance, ParityStageStatus, ParityStatus, WorkloadDatasetMetadata, compare_record_batches,
+    native_report_metric_descriptor, native_report_metric_descriptors, native_report_metric_names,
+    sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
 };
 pub use nexus_query_engine::{
     AdaptiveMemoryHistory, DynamicFilterExecutionOptions, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey,
     KeyedHashJoinStrategyOptions, NativeOptimizerOptions, NativePipelineExecutionMode, NativePlanCpuPreferenceReason,
     NativePlanPreferenceOptions, RemoteParquetReadMode, S3SourceStorageCredential, S3SourceStorageProfile,
     SemijoinReductionOptions, SourceStorageProfile, StatisticalAggregateExecutionMode,
-    StatisticalAggregateToleranceContract,
+    StatisticalAggregateToleranceContract, TriageCode, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary,
+    TriageVerdict,
 };
 pub use planner::{
     CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,

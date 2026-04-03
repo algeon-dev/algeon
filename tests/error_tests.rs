@@ -1,5 +1,6 @@
 use datafusion::common::DataFusionError;
 use datafusion_nexus::{Error, ErrorCode, ErrorKind, ErrorStatus};
+use nexus_query_engine::{QueryError, QueryErrorCode, TriageCode, TriageVerdict};
 
 #[test]
 fn error_code_projections_are_stable_policy_contracts() {
@@ -129,6 +130,53 @@ fn native_service_overloaded_error_preserves_adapter_classification_and_facts() 
 }
 
 #[test]
+fn native_query_error_json_includes_triage_summary() {
+    let native_error = QueryError::new(
+        QueryErrorCode::MemoryReservationFailed,
+        "nexus_query_engine.test.memory",
+        "memory reservation failed",
+    )
+    .with_query_id("query-err")
+    .with_fact("node_id", "n3")
+    .with_fact("compiled_task_id", "task-3");
+
+    let summary = native_error.triage_summary();
+    assert_eq!(summary.verdict, TriageVerdict::Failed);
+    assert_eq!(summary.signals[0].code, TriageCode::MemoryReservationDenied);
+
+    let json = native_error.to_json();
+    assert_eq!(json["triage"]["verdict"], "failed");
+    assert_eq!(json["triage"]["signals"][0]["code"], "memory_reservation_denied");
+    assert_eq!(json["triage"]["signals"][0]["evidence"]["query_id"], "query-err");
+    assert_eq!(json["triage"]["signals"][0]["evidence"]["plan_node_id"], "n3");
+    assert_eq!(json["triage"]["signals"][0]["evidence"]["compiled_task_id"], "task-3");
+}
+
+#[test]
+fn native_query_error_json_uses_fact_only_correlation_ids() {
+    let native_error = QueryError::new(
+        QueryErrorCode::MemoryReservationFailed,
+        "nexus_query_engine.test.memory",
+        "memory reservation failed",
+    )
+    .with_fact("query_id", "fact-query")
+    .with_fact("trace_id", "fact-trace")
+    .with_fact("node_id", "n3");
+
+    let json = native_error.to_json();
+    assert_eq!(json["query_id"], "fact-query");
+    assert_eq!(json["trace_id"], "fact-trace");
+    assert_eq!(json["triage"]["signals"][0]["evidence"]["query_id"], "fact-query");
+    assert_eq!(json["triage"]["signals"][0]["evidence"]["plan_node_id"], "n3");
+}
+
+#[test]
+fn native_query_error_triage_codes_preserve_invalid_input_and_unsupported_capability() {
+    assert_eq!(nexus_query_engine::TriageCode::from(QueryErrorCode::CudfInvalidInput), TriageCode::InvalidInput);
+    assert_eq!(nexus_query_engine::TriageCode::from(QueryErrorCode::CudfUnsupported), TriageCode::UnsupportedPlanShape);
+}
+
+#[test]
 fn native_error_message_is_preserved_as_adapter_fact() {
     let native_error = nexus_query_engine::QueryError::new(
         nexus_query_engine::QueryErrorCode::InvalidPlan,
@@ -146,6 +194,25 @@ fn native_error_message_is_preserved_as_adapter_fact() {
         adapter_error.fact_value("native_message"),
         Some("exact betweenness requires explicit seeds or k above the configured vertex threshold")
     );
+}
+
+#[test]
+fn native_correlation_facts_follow_stamped_query_error() {
+    let native_error = nexus_query_engine::QueryError::new(
+        nexus_query_engine::QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.query_service.context",
+        "query service handle was released before context acquisition",
+    )
+    .with_fact("query_id", "service-local-query")
+    .with_query_id("request-query");
+
+    let adapter_error = Error::from_native(
+        "datafusion_nexus.native_exec.context",
+        "failed to acquire query service native cudf execution context",
+        native_error,
+    );
+
+    assert_eq!(adapter_error.fact_value("query_id"), Some("request-query"));
 }
 
 #[test]

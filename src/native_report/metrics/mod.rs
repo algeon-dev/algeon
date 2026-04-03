@@ -13,6 +13,7 @@ mod dynamic_filter;
 mod graph;
 mod labels;
 mod lakehouse_cache;
+mod plan_task;
 mod source_read;
 mod strategy;
 mod task;
@@ -27,6 +28,8 @@ use graph::{graph_reservation_rows, graph_runtime_rows};
 use labels::max_optional_usize;
 pub use lakehouse_cache::NativeLakehouseCacheFillEventMetricRow;
 use lakehouse_cache::lakehouse_cache_fill_event_snapshot_rows;
+pub use plan_task::NativePlanTaskMappingMetricRow;
+use plan_task::plan_task_mapping_rows;
 pub use source_read::NativeSourceReadRuntimeMetricRow;
 use source_read::source_read_runtime_rows;
 pub use strategy::{NativeAggregateStrategyMetricRow, NativeJoinStrategyMetricRow};
@@ -94,6 +97,8 @@ pub struct NativeDataFusionExecutionMetrics {
     pub task_operator_rows: Vec<NativeTaskOperatorMetricRow>,
     /// Stable nested task runtime metric rows keyed by compiled task id.
     pub task_runtime_rows: Vec<NativeTaskRuntimeMetricRow>,
+    /// Stable nested mapping rows between native plan nodes and compiled tasks.
+    pub plan_task_mapping_rows: Vec<NativePlanTaskMappingMetricRow>,
     /// Count of source chunks planned.
     pub source_chunks_planned: usize,
     /// Count of source chunk attempts, including retries.
@@ -284,6 +289,7 @@ impl NativeDataFusionExecutionMetrics {
             graph_runtime_rows: graph_runtime_rows(metrics),
             task_operator_rows: task_operator_rows(metrics),
             task_runtime_rows: task_runtime_rows(metrics),
+            plan_task_mapping_rows: plan_task_mapping_rows(metrics),
             source_chunks_planned: metric_count(metrics, "source_chunks_planned"),
             source_chunks_attempted: metric_count(metrics, "source_chunks_attempted"),
             source_chunks_committed: metric_count(metrics, "source_chunks_committed"),
@@ -638,6 +644,13 @@ impl NativeDataFusionExecutionMetrics {
             }
         }
         self.task_runtime_rows.sort_by(|left, right| left.compiled_task_id.cmp(&right.compiled_task_id));
+    }
+
+    /// Appends plan/task mapping rows and restores stable sort order.
+    pub fn merge_plan_task_mapping_rows(&mut self, rows: Vec<NativePlanTaskMappingMetricRow>) {
+        self.plan_task_mapping_rows.extend(rows);
+        self.plan_task_mapping_rows.sort_by_key(|row| row.to_stable_kv_row());
+        self.plan_task_mapping_rows.dedup();
     }
 
     /// Appends dynamic-filter runtime rows and restores stable sort order.

@@ -110,6 +110,7 @@ fn native_cpu_only_report(report: &PlanningReport) -> PlanningReport {
             CandidateOutcome::Rejected { candidate: candidate.clone(), reason: FallbackReason::ExplicitCpuPolicy }
         },
     }))
+    .with_correlation_from(report)
 }
 
 fn first_native_rejection(report: &PlanningReport) -> Option<(&GpuCandidate, FallbackReason)> {
@@ -257,6 +258,7 @@ fn optimize_final_native_plan_with_composition(
     }
 
     let mut report = lowering.report.clone();
+    stamp_planning_report_correlation(&mut report, native_execution_config);
     let mut native_optimizer = nexus_query_engine::NativeOptimizerDiagnostics::default();
     let mut source_diagnostics = lowering.source_diagnostics.clone();
     let mut strict_bounded_contract = NativeStrictBoundedContractDiagnostics::default();
@@ -342,6 +344,8 @@ fn replace_lowered_root_or_keep_plan(
     native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
+    let mut lowering = lowering;
+    stamp_planning_report_correlation(&mut lowering.report, native_execution_config);
     if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
         return Ok(NativeOptimizationAttempt {
             plan,
@@ -353,6 +357,7 @@ fn replace_lowered_root_or_keep_plan(
             rewritten: false,
         });
     }
+    lowering.report.anchor_rewritten_candidates_to_plan_node(lowering.plans[0].root_id());
     let candidate = lowering
         .report
         .single_rewritten_candidate()
@@ -389,6 +394,7 @@ fn replace_lowered_root_or_keep_plan(
                 report: native_execution_rejection_report_for_candidate(
                     candidate.clone(),
                     FallbackReason::NativeAdaptivePipelineUnsupported,
+                    &lowering.report,
                 ),
                 native_optimizer,
                 source_diagnostics: lowering.source_diagnostics,
@@ -398,7 +404,8 @@ fn replace_lowered_root_or_keep_plan(
             });
         }
 
-        let plan = native_datafusion_exec_for_plan(Arc::clone(&plan), native_plan, native_execution_config)?;
+        let plan =
+            native_datafusion_exec_for_plan(Arc::clone(&plan), native_plan, native_execution_config, &candidate.shape)?;
         return Ok(NativeOptimizationAttempt {
             plan,
             report: lowering.report,
@@ -414,6 +421,7 @@ fn replace_lowered_root_or_keep_plan(
         let report = native_execution_rejection_report_for_candidate(
             candidate.clone(),
             FallbackReason::NativeBoundedJoinUnsupported,
+            &lowering.report,
         );
         return Ok(NativeOptimizationAttempt {
             plan,
@@ -430,8 +438,10 @@ fn replace_lowered_root_or_keep_plan(
         });
     }
 
+    let datafusion_shape = candidate.shape.clone();
     let strict_bounded_contract = accepted_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?;
-    let plan = native_datafusion_exec_for_plan(Arc::clone(&plan), native_plan, native_execution_config)?;
+    let plan =
+        native_datafusion_exec_for_plan(Arc::clone(&plan), native_plan, native_execution_config, &datafusion_shape)?;
     Ok(NativeOptimizationAttempt {
         plan,
         report: lowering.report,
@@ -463,7 +473,7 @@ fn native_optimizer_options_for_execution(
         Error::from_native(
             "datafusion_nexus.native_exec.config.validate",
             "invalid native optimizer option policy",
-            error,
+            stamp_native_error_correlation(error, native_execution_config),
         )
     })?;
     Ok(options)
@@ -473,16 +483,19 @@ fn native_datafusion_exec_for_plan(
     original_plan: Arc<dyn ExecutionPlan>,
     native_plan: nexus_query_engine::QueryPlan,
     native_execution_config: &NativeCudfExecutionConfig,
+    datafusion_shape: &str,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    let native_execution_config =
+        native_execution_config.clone().with_plan_task_mapping_datafusion_shape(datafusion_shape);
     let gpu_input_names = native_plan_gpu_resident_source_names(&native_plan);
     if gpu_input_names.is_empty() {
-        return NativeCudfExec::try_new(native_plan, native_execution_config.clone())
+        return NativeCudfExec::try_new(native_plan, native_execution_config)
             .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
             .map_err(DataFusionError::from);
     }
 
     let gpu_inputs = gpu_resident_producer_children(&original_plan, &gpu_input_names)?;
-    NativeCudfComposedExec::try_new(native_plan, gpu_inputs, native_execution_config.clone())
+    NativeCudfComposedExec::try_new(native_plan, gpu_inputs, native_execution_config)
         .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
         .map_err(DataFusionError::from)
 }
@@ -649,10 +662,14 @@ fn producerize_native_fragments(
             return Ok(None);
         }
         let input_name = state.next_input_name();
-        let producer = NativeCudfGpuProducerExec::try_new_with_metrics_capture(
+        let producer = NativeCudfGpuProducerExec::try_new_with_metrics_capture_and_shape(
             input_name,
             native_plan,
             native_execution_config.metrics_capture(),
+            native
+                .execution_config()
+                .plan_task_mapping_datafusion_shape()
+                .or_else(|| native_execution_config.plan_task_mapping_datafusion_shape()),
         )
         .map_err(DataFusionError::from)?;
         return Ok(Some(Arc::new(producer)));
@@ -872,7 +889,8 @@ fn host_arrow_child_replacement_preserves_schema(
 }
 
 fn append_planning_report(report: &mut PlanningReport, extra: &PlanningReport) {
-    *report = PlanningReport::from_outcomes(report.outcomes().iter().cloned().chain(extra.outcomes().iter().cloned()));
+    *report = PlanningReport::from_outcomes(report.outcomes().iter().cloned().chain(extra.outcomes().iter().cloned()))
+        .with_correlation_from(report);
 }
 
 fn host_arrow_boundary_allows_child_replacement(
@@ -1020,13 +1038,38 @@ fn native_execution_rejection_report(report: &PlanningReport, rejection_reason: 
             CandidateOutcome::Rejected { candidate: candidate.clone(), reason: *reason }
         },
     }))
+    .with_correlation_from(report)
 }
 
 fn native_execution_rejection_report_for_candidate(
     candidate: GpuCandidate,
     rejection_reason: FallbackReason,
+    source_report: &PlanningReport,
 ) -> PlanningReport {
     PlanningReport::from_outcomes([CandidateOutcome::Rejected { candidate, reason: rejection_reason }])
+        .with_correlation_from(source_report)
+}
+
+fn stamp_planning_report_correlation(report: &mut PlanningReport, native_execution_config: &NativeCudfExecutionConfig) {
+    if let Some(query_id) = native_execution_config.query_id() {
+        report.set_query_id(query_id.clone());
+    }
+    if let Some(trace_id) = native_execution_config.trace_id() {
+        report.set_trace_id(trace_id.clone());
+    }
+}
+
+fn stamp_native_error_correlation(
+    mut error: nexus_query_engine::QueryError,
+    native_execution_config: &NativeCudfExecutionConfig,
+) -> nexus_query_engine::QueryError {
+    if let Some(query_id) = native_execution_config.query_id() {
+        error = error.with_query_id(query_id.clone());
+    }
+    if let Some(trace_id) = native_execution_config.trace_id() {
+        error = error.with_trace_id(trace_id.clone());
+    }
+    error
 }
 
 fn native_candidate_error(message: &'static str) -> DataFusionError {

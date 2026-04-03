@@ -72,6 +72,7 @@ pub(super) fn record_streamed_one_shot_join_metrics(
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
+            query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: "bounded_one_shot_equi_join".to_string(),
             key_count: node.spec.keys.len(),
@@ -109,6 +110,7 @@ pub(super) fn record_one_shot_join_chunk_metrics(
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
+            query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: "bounded_one_shot_equi_join".to_string(),
             key_count: node.spec.keys.len(),
@@ -144,6 +146,7 @@ pub(super) fn record_streamed_partitioned_hash_join_metrics(
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
+            query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: "bounded_partitioned_hash_equi_join".to_string(),
             key_count: node.spec.keys.len(),
