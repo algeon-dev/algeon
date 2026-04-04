@@ -133,19 +133,19 @@ WHERE l_shipdate >= DATE '1994-01-01'
 ";
 
 pub(super) const SQL_SCALAR_EXPRESSIONS_QUERY: &str = "
-SELECT status_prefix, ship_year, ship_month, status_label, SUM(order_mod) AS sum_mod
+SELECT status_prefix, ship_year, ship_month, status_label, SUM(order_doubled) AS sum_doubled
 FROM (
     SELECT
         SUBSTRING(status FROM 1 FOR 1) AS status_prefix,
         EXTRACT(YEAR FROM shipdate) AS ship_year,
         shipdate + INTERVAL '1' MONTH AS ship_month,
         CASE WHEN status IN ('O', 'P') THEN 'open' ELSE 'other' END AS status_label,
-        orderkey % 2 AS order_mod
+        orderkey * 2 AS order_doubled
     FROM bench
     WHERE status LIKE 'O%'
       AND status IS NOT NULL
       AND orderkey IN (1, 3)
-      AND orderkey % 2 = 1
+      AND orderkey * 2 >= 2
 ) scalar_expression
 GROUP BY status_prefix, ship_year, ship_month, status_label
 ORDER BY status_prefix ASC, ship_year ASC, ship_month ASC, status_label ASC
@@ -163,7 +163,7 @@ SELECT
     not_like_match,
     status_is_null,
     status_is_not_null,
-    SUM(order_mod) AS sum_mod
+    SUM(order_doubled) AS sum_doubled
 FROM (
     SELECT
         SUBSTRING(status FROM 1 FOR 1) AS status_prefix,
@@ -180,7 +180,7 @@ FROM (
         status NOT LIKE 'O%' AS not_like_match,
         status IS NULL AS status_is_null,
         status IS NOT NULL AS status_is_not_null,
-        orderkey % 2 AS order_mod
+        orderkey * 2 AS order_doubled
     FROM bench
 ) scalar_expression
 GROUP BY

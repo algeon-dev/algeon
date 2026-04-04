@@ -439,6 +439,14 @@ fn validate_binary_expr(binary: &BinaryExpr, input_schema: &SchemaRef) -> Result
         validate_integral_operand_type(binary.left(), input_schema)?;
         validate_integral_operand_type(binary.right(), input_schema)?;
     }
+    // libcudf has no checked integer divide/modulo semantics, so integer `/`
+    // and `%` fall back to CPU; decimal/float division stays admitted.
+    if matches!(binary.op(), Operator::Divide | Operator::Modulo)
+        && is_integral_type(&left_type)
+        && is_integral_type(&right_type)
+    {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
     if matches!(
         binary.op(),
         Operator::BitwiseAnd

@@ -569,7 +569,9 @@ fn classify_datafusion_error(error: &DataFusionError) -> ErrorCode {
         DataFusionError::NotImplemented(_) => ErrorCode::UnsupportedOperator,
         DataFusionError::Configuration(_) => ErrorCode::DataFusionPlanning,
         DataFusionError::Execution(message) if datafusion_not_found_message(message) => ErrorCode::ObjectNotFound,
-        DataFusionError::Execution(_) => ErrorCode::DataFusionPlanning,
+        // Non-not-found execution errors may include reader internals, so keep
+        // them behind the generic `Internal` client surface.
+        DataFusionError::Execution(_) => ErrorCode::Internal,
         DataFusionError::ResourcesExhausted(_) => ErrorCode::MemoryReservationFailed,
         DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => {
             classify_datafusion_error(source)
@@ -719,6 +721,24 @@ mod tests {
         assert_eq!(status.code(), Code::NotFound);
         assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
         assert_eq!(status.message(), "Table 'does_not_exist' doesn't exist.");
+    }
+
+    #[test]
+    fn generic_execution_error_is_genericized_and_does_not_leak_internal_detail() {
+        // Execution detail can include local paths or object-store URLs; do not
+        // echo it to clients.
+        let status = datafusion_error_to_status_for_operation(
+            DataFusionError::Execution(
+                "Parquet error reading /var/lib/nexus/secret/customers.parquet: invalid magic bytes".to_string(),
+            ),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(status.code(), Code::Internal);
+        assert_eq!(status.message(), "internal server error while processing the request");
+        assert!(!status.message().contains("/var/lib/nexus"));
+        assert!(!status.message().contains("customers.parquet"));
+        assert_no_diagnostic_fields(status.message());
     }
 
     #[test]

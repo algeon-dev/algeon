@@ -180,17 +180,22 @@ fn parquet_row_level_access_plan_is_rejected_with_source_reason() {
 }
 
 #[test]
-fn modulo_projection_expression_lowers_during_native_planning() {
-    let dir = unique_temp_dir("datafusion-nexus-native-lowering-unsupported-expression");
+fn integer_modulo_projection_expression_is_rejected_during_native_planning() {
+    // m00/m01 are Int64; integer modulo stays on CPU until checked libcudf
+    // semantics exist.
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-integer-modulo-shape");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo);
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.plans.len(), 1);
+    assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+    ));
 
     fs::remove_dir_all(dir).unwrap();
 }

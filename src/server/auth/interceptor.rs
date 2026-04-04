@@ -24,6 +24,10 @@ pub struct AuthInterceptor {
 
 impl AuthInterceptor {
     pub fn new(mode: AuthMode, tokens: TokenStore) -> Self {
+        // Warm the decoy hash so the first unknown-user check is not a timing outlier.
+        if matches!(mode, AuthMode::BasicBearer { .. }) {
+            super::handshake::warm_unknown_user_timing_decoy();
+        }
         Self { mode, tokens }
     }
 

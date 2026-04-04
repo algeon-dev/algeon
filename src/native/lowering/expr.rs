@@ -97,6 +97,13 @@ pub(super) fn lower_physical_expr_with_bindings(
         {
             return Ok(NativeExpr::binary_with_output_type(left, op, right, declared_type));
         }
+        // libcudf leaves integer divide/modulo by zero undefined; keep this
+        // lowering-wide CPU-fallback backstop for paths that skip validation.
+        if matches!(binary.op(), Operator::Divide | Operator::Modulo)
+            && binary_operands_are_integral(binary, input_schema)?
+        {
+            return Err(FallbackReason::UnsupportedExpression);
+        }
         return Ok(NativeExpr::binary(left, op, right));
     }
     if let Some(not) = expr.downcast_ref::<NotExpr>() {
@@ -684,6 +691,28 @@ pub(super) fn collect_required_field_indices(
 
 pub(super) fn lower_literal(value: &ScalarValue) -> Result<NativeExpr, FallbackReason> {
     Ok(NativeExpr::literal(native_literal_value(value, NativeLiteralContext::Expression)?))
+}
+
+fn binary_operands_are_integral(binary: &BinaryExpr, input_schema: &SchemaRef) -> Result<bool, FallbackReason> {
+    let left_type =
+        binary.left().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    let right_type =
+        binary.right().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    Ok(is_integral_arrow_type(&left_type) && is_integral_arrow_type(&right_type))
+}
+
+fn is_integral_arrow_type(data_type: &ArrowDataType) -> bool {
+    matches!(
+        data_type,
+        ArrowDataType::Int8
+            | ArrowDataType::Int16
+            | ArrowDataType::Int32
+            | ArrowDataType::Int64
+            | ArrowDataType::UInt8
+            | ArrowDataType::UInt16
+            | ArrowDataType::UInt32
+            | ArrowDataType::UInt64
+    )
 }
 
 fn declared_decimal_divide_output_type(
