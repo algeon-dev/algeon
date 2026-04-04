@@ -9,7 +9,7 @@
 //! ```no_run
 //! use cugraph::{ResourceHandle, RngState};
 //!
-//! let handle = ResourceHandle::new().unwrap();
+//! let handle = ResourceHandle::for_current_device().unwrap();
 //! let rng = RngState::new(&handle, 42).unwrap();
 //! ```
 

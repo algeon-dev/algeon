@@ -194,7 +194,7 @@ impl<'a> Drop for RawDeviceArrayView<'a> {
 ///
 /// ```no_run
 /// # use cugraph::{DeviceArray, ResourceHandle};
-/// let handle = ResourceHandle::new().unwrap();
+/// let handle = ResourceHandle::for_current_device().unwrap();
 /// let arr = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
 /// let ids: Vec<i32> = arr.view().to_vec(&handle).unwrap();
 /// assert_eq!(ids, vec![0, 1, 2]);
@@ -226,7 +226,7 @@ impl<T: CugraphElement> DeviceArray<T> {
     ///
     /// ```no_run
     /// # use cugraph::{DeviceArray, ResourceHandle};
-    /// let handle = ResourceHandle::new().unwrap();
+    /// let handle = ResourceHandle::for_current_device().unwrap();
     /// let arr = DeviceArray::from_slice(&handle, &[1i32, 2, 3]).unwrap();
     /// assert_eq!(arr.view().len(), 3);
     /// ```
@@ -373,7 +373,7 @@ impl<'a, T: CugraphElement> DeviceArrayView<'a, T> {
     ///
     /// ```no_run
     /// # use cugraph::{DeviceArray, ResourceHandle};
-    /// # let handle = ResourceHandle::new().unwrap();
+    /// # let handle = ResourceHandle::for_current_device().unwrap();
     /// let arr = DeviceArray::from_slice(&handle, &[10i32, 20, 30]).unwrap();
     /// let values: Vec<i32> = arr.view().to_vec(&handle).unwrap();
     /// assert_eq!(values, vec![10, 20, 30]);

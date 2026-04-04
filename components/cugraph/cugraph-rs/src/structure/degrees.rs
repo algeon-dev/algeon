@@ -35,7 +35,7 @@ use crate::{
 ///
 /// // Query a subset via From conversion:
 /// # use cugraph::{DeviceArray, ResourceHandle};
-/// # let handle = ResourceHandle::new().unwrap();
+/// # let handle = ResourceHandle::for_current_device().unwrap();
 /// # let arr = DeviceArray::from_slice(&handle, &[0i32, 1]).unwrap();
 /// let subset = DegreeVertices::from(&arr.view());
 /// ```

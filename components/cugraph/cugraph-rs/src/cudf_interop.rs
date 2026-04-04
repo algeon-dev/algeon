@@ -122,7 +122,9 @@ pub fn cugraph_type_to_cudf(dtype: DataType) -> Option<TypeId> {
 /// ```no_run
 /// use cugraph::cudf_interop::device_array_view_from_slice;
 ///
-/// let series = cudf::Series::new("v", &[0i32, 1, 2]).unwrap();
+/// let runtime = cudf::Runtime::builder().build().unwrap();
+/// let series =
+///     cudf::Series::new_with_runtime(&runtime, "v", &[0i32, 1, 2]).unwrap();
 /// let col = series.as_column_view().unwrap();
 /// let slice = col.device_slice::<i32>().unwrap();
 ///
@@ -840,9 +842,14 @@ pub fn graph_from_dataframe<T: Transposition>(
 ///     cudf_interop::{SeriesGraphOptions, graph_from_series},
 /// };
 ///
-/// let handle = ResourceHandle::new().unwrap();
-/// let src = cudf::Series::new("src", &[0i32, 1, 2]).unwrap();
-/// let dst = cudf::Series::new("dst", &[1i32, 2, 0]).unwrap();
+/// let runtime = cudf::Runtime::builder().build().unwrap();
+/// let handle =
+///     ResourceHandle::new_on_device(runtime.device().ordinal() as i32)
+///         .unwrap();
+/// let src =
+///     cudf::Series::new_with_runtime(&runtime, "src", &[0i32, 1, 2]).unwrap();
+/// let dst =
+///     cudf::Series::new_with_runtime(&runtime, "dst", &[1i32, 2, 0]).unwrap();
 ///
 /// let opts = SeriesGraphOptions::default().renumber();
 /// let graph =
