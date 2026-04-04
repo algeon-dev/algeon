@@ -3,6 +3,8 @@
 //! `DeviceGuard` saves the calling thread's current device, switches to the
 //! target device, and restores the original device on drop.
 
+use std::marker::PhantomData;
+
 use super::device::DeviceId;
 use crate::core::error::{self, Result};
 
@@ -11,8 +13,14 @@ use crate::core::error::{self, Result};
 ///
 /// This is `pub(crate)` — users interact with device selection through
 /// [`RuntimeBuilder::with_device`](super::RuntimeBuilder::with_device).
+///
+/// The guard is `!Send` because CUDA device state is thread-local: restoring
+/// the saved device on a different thread would corrupt that thread's state.
 pub(crate) struct DeviceGuard {
     previous: i32,
+    /// Make this type `!Send` and `!Sync` — the guard must be dropped on the
+    /// same thread that created it.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl DeviceGuard {
@@ -34,7 +42,7 @@ impl DeviceGuard {
             )?;
         }
 
-        Ok(Self { previous: current })
+        Ok(Self { previous: current, _not_send: PhantomData })
     }
 }
 

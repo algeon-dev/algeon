@@ -75,6 +75,14 @@ impl IntoSeries for Column {
 }
 
 impl Series {
+    fn scalar_from_value_in_domain<T: CudfType>(&self, value: T) -> Result<Scalar> {
+        Scalar::from_value_in_domain(value, self.column.execution_domain())
+    }
+
+    fn scalar_from_string_in_domain(&self, value: &str) -> Result<Scalar> {
+        Scalar::from_string_in_domain(value, self.column.execution_domain())
+    }
+
     /// Returns the data type of the underlying column.
     pub fn dtype(&self) -> Result<DataType> {
         self.column.view()?.data_type()
@@ -238,21 +246,21 @@ impl Series {
 
     /// Element-wise `self > scalar`. Inherits the source Series' name.
     pub fn gt_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = Scalar::from_value(rhs)?;
+        let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.gt_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self < scalar`. Inherits the source Series' name.
     pub fn lt_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = Scalar::from_value(rhs)?;
+        let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.lt_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self == scalar`. Inherits the source Series' name.
     pub fn eq_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = Scalar::from_value(rhs)?;
+        let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.eq_scalar(&s)?;
         self.with_inherited_name(col)
     }
@@ -261,42 +269,42 @@ impl Series {
 
     /// Element-wise `self == string_scalar`. Inherits the source Series' name.
     pub fn eq_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = Scalar::from_string(rhs)?;
+        let s = self.scalar_from_string_in_domain(rhs)?;
         let col = self.column.eq_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self != string_scalar`. Inherits the source Series' name.
     pub fn ne_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = Scalar::from_string(rhs)?;
+        let s = self.scalar_from_string_in_domain(rhs)?;
         let col = self.column.ne_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self > string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn gt_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = Scalar::from_string(rhs)?;
+        let s = self.scalar_from_string_in_domain(rhs)?;
         let col = self.column.gt_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self < string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn lt_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = Scalar::from_string(rhs)?;
+        let s = self.scalar_from_string_in_domain(rhs)?;
         let col = self.column.lt_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self >= string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn ge_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = Scalar::from_string(rhs)?;
+        let s = self.scalar_from_string_in_domain(rhs)?;
         let col = self.column.ge_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self <= string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn le_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = Scalar::from_string(rhs)?;
+        let s = self.scalar_from_string_in_domain(rhs)?;
         let col = self.column.le_scalar(&s)?;
         self.with_inherited_name(col)
     }
@@ -305,21 +313,21 @@ impl Series {
 
     /// Element-wise `self != scalar`. Inherits the source Series' name.
     pub fn ne_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = Scalar::from_value(rhs)?;
+        let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.ne_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self >= scalar`. Inherits the source Series' name.
     pub fn ge_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = Scalar::from_value(rhs)?;
+        let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.ge_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self <= scalar`. Inherits the source Series' name.
     pub fn le_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = Scalar::from_value(rhs)?;
+        let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.le_scalar(&s)?;
         self.with_inherited_name(col)
     }
@@ -392,28 +400,28 @@ impl Series {
 
     /// Element-wise `self + scalar`. Inherits the source Series' name.
     pub fn add_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = Scalar::from_value(rhs)?;
+        let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.add_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self - scalar`. Inherits the source Series' name.
     pub fn sub_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = Scalar::from_value(rhs)?;
+        let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.sub_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self * scalar`. Inherits the source Series' name.
     pub fn mul_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = Scalar::from_value(rhs)?;
+        let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.mul_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self / scalar`. Inherits the source Series' name.
     pub fn div_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = Scalar::from_value(rhs)?;
+        let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.div_scalar(&s)?;
         self.with_inherited_name(col)
     }
@@ -427,7 +435,7 @@ impl Series {
 
     /// Element-wise `self % scalar`. Inherits the source Series' name.
     pub fn rem_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
-        let s = Scalar::from_value(rhs)?;
+        let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.binary_op_scalar(&s, binary::BinaryOperator::Mod)?;
         self.with_inherited_name(col)
     }
@@ -559,7 +567,7 @@ impl Series {
     /// GPU-allocating: a new column is produced with nulls replaced.
     pub fn fillna<T: CudfType>(&self, value: T) -> Result<Series> {
         let cv = self.column.view()?;
-        let scalar = Scalar::from_value(value)?;
+        let scalar = self.scalar_from_value_in_domain(value)?;
         let exec_options = self.column.execution_domain().explicit_exec_options_raw();
         let col = replace::replace_nulls_with_exec_options(&cv, &scalar, exec_options.as_ref(), "series::fillna")?
             .with_execution_domain(Arc::clone(self.column.execution_domain()));

@@ -1,4 +1,4 @@
-//! Series facade methods for GPU string operations.
+//! `Series` convenience methods for GPU string operations.
 
 use super::owned::Series;
 use crate::{
@@ -46,7 +46,7 @@ impl Series {
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn str_contains(&self, pat: &str) -> Result<Series> {
         let cv = self.column.view()?;
-        let scalar = Scalar::from_string(pat)?;
+        let scalar = Scalar::from_string_in_domain(pat, self.column.execution_domain())?;
         let col = strings::str_contains(&cv, &scalar)?;
         self.with_inherited_name(col)
     }
@@ -61,7 +61,7 @@ impl Series {
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn str_startswith(&self, pat: &str) -> Result<Series> {
         let cv = self.column.view()?;
-        let scalar = Scalar::from_string(pat)?;
+        let scalar = Scalar::from_string_in_domain(pat, self.column.execution_domain())?;
         let col = strings::starts_with(&cv, &scalar)?;
         self.with_inherited_name(col)
     }
@@ -76,7 +76,7 @@ impl Series {
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn str_endswith(&self, pat: &str) -> Result<Series> {
         let cv = self.column.view()?;
-        let scalar = Scalar::from_string(pat)?;
+        let scalar = Scalar::from_string_in_domain(pat, self.column.execution_domain())?;
         let col = strings::ends_with(&cv, &scalar)?;
         self.with_inherited_name(col)
     }
@@ -115,7 +115,7 @@ impl Series {
     /// means strip whitespace.
     pub fn str_strip_chars(&self, side: StripSide, to_strip: &str) -> Result<Series> {
         let cv = self.column.view()?;
-        let scalar = Scalar::from_string(to_strip)?;
+        let scalar = Scalar::from_string_in_domain(to_strip, self.column.execution_domain())?;
         let col = strings::strip(&cv, side, &scalar)?;
         self.with_inherited_name(col)
     }

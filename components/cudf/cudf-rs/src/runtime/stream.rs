@@ -89,8 +89,8 @@ impl CudaStream {
         self.handle.raw.as_ptr()
     }
 
-    pub(crate) fn interop_raw_handle(&self) -> *mut std::ffi::c_void {
-        self.debug_handle_value().expect("failed to read CUDA stream raw handle for interop") as *mut std::ffi::c_void
+    pub(crate) fn interop_raw_handle(&self) -> Result<*mut std::ffi::c_void> {
+        Ok(self.debug_handle_value()? as *mut std::ffi::c_void)
     }
 
     pub(crate) fn debug_handle_value(&self) -> Result<usize> {

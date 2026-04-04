@@ -9,6 +9,12 @@ use crate::core::types::TypeId;
 /// device pointers are not accessible from host code, so holding one cannot cause
 /// undefined behavior.
 ///
+/// This is a low-level raw-pointer helper, not the preferred cross-crate GPU
+/// interop contract. For external borrowed interop, prefer
+/// [`crate::interop::BorrowedColumnView`] and
+/// [`crate::interop::TryBorrowColumnView`], which also carry null-mask
+/// semantics, base-pointer-plus-offset behavior, and execution provenance.
+///
 /// Create a `DeviceSlice` from a [`ColumnView`] via
 /// [`device_slice()`](ColumnView::device_slice). Use [`split_at()`](Self::split_at)
 /// to partition it into sub-regions (e.g., source and destination vertex IDs).
@@ -54,6 +60,9 @@ impl DeviceSlice<'_> {
     /// This pointer refers to GPU memory and cannot be dereferenced from host
     /// code. It is intended for passing to GPU libraries (e.g., cugraph) that
     /// accept device pointers.
+    ///
+    /// This method exposes only a pointer. It does not communicate null-mask
+    /// semantics, original column offset, or execution provenance.
     pub fn as_ptr(&self) -> *mut c_void {
         self.ptr
     }

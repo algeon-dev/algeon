@@ -475,6 +475,12 @@ impl<'a> ColumnView<'a> {
     /// and [`offset()`](Self::offset). The returned `DeviceSlice` already accounts
     /// for the column's offset — no manual pointer arithmetic needed.
     ///
+    /// This is an advanced raw-pointer helper for code that already knows how
+    /// to consume a device pointer + length pair. For external cross-crate
+    /// interop, prefer [`crate::interop::TryBorrowColumnView`], which preserves
+    /// null-mask and execution-binding semantics in addition to the data
+    /// pointer.
+    ///
     /// # Type checking
     ///
     /// Returns an error if the column's element type does not match `T::TYPE_ID`.

@@ -34,23 +34,57 @@ impl Scalar {
         Self { handle: NonNull::new(handle).expect("null scalar handle"), domain }
     }
 
+    pub(crate) fn from_value_in_domain<T: CudfType>(value: T, domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        let mut handle = ptr::null_mut();
+        let exec_options = domain.explicit_exec_options_raw();
+        error::check_status_in(
+            match exec_options.as_ref() {
+                Some(options) => unsafe {
+                    cudf_sys::cudf_scalar_create_numeric_ex(
+                        T::TYPE_ID.to_raw(),
+                        &value as *const T as *const c_void,
+                        1,
+                        options,
+                        &mut handle,
+                    )
+                },
+                None => unsafe {
+                    cudf_sys::cudf_scalar_create_numeric(
+                        T::TYPE_ID.to_raw(),
+                        &value as *const T as *const c_void,
+                        1,
+                        &mut handle,
+                    )
+                },
+            },
+            "scalar::from_value_in_domain",
+        )?;
+        Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
+    }
+
+    pub(crate) fn from_string_in_domain(value: &str, domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        let c_str = CString::new(value).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "string contains interior null byte")
+                .with_operation("scalar::from_string_in_domain")
+        })?;
+        let mut handle = ptr::null_mut();
+        let exec_options = domain.explicit_exec_options_raw();
+        error::check_status_in(
+            match exec_options.as_ref() {
+                Some(options) => unsafe {
+                    cudf_sys::cudf_scalar_create_string_ex(c_str.as_ptr(), 1, options, &mut handle)
+                },
+                None => unsafe { cudf_sys::cudf_scalar_create_string(c_str.as_ptr(), 1, &mut handle) },
+            },
+            "scalar::from_string_in_domain",
+        )?;
+        Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
+    }
+
     /// Create a valid numeric scalar from a Rust value.
     pub fn from_value<T: CudfType>(value: T) -> Result<Self> {
-        let mut handle = ptr::null_mut();
-        // SAFETY: &value is a valid pointer to a T. T::TYPE_ID correctly
-        // describes the type. is_valid=1 marks this as a valid scalar.
-        error::check_status_in(
-            unsafe {
-                cudf_sys::cudf_scalar_create_numeric(
-                    T::TYPE_ID.to_raw(),
-                    &value as *const T as *const c_void,
-                    1, // is_valid
-                    &mut handle,
-                )
-            },
-            "scalar::from_value",
-        )?;
-        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
+        let domain = ExecutionDomain::ambient_default();
+        Self::from_value_in_domain(value, &domain).map_err(|e| e.with_operation("scalar::from_value"))
     }
 
     /// Create a null scalar of the given numeric type.
@@ -77,17 +111,8 @@ impl Scalar {
 
     /// Create a valid string scalar.
     pub fn from_string(value: &str) -> Result<Self> {
-        let c_str = CString::new(value).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "string contains interior null byte")
-                .with_operation("scalar::from_string")
-        })?;
-        let mut handle = ptr::null_mut();
-        // SAFETY: c_str is a valid CString pointer. is_valid=1.
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_scalar_create_string(c_str.as_ptr(), 1, &mut handle) },
-            "scalar::from_string",
-        )?;
-        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
+        let domain = ExecutionDomain::ambient_default();
+        Self::from_string_in_domain(value, &domain).map_err(|e| e.with_operation("scalar::from_string"))
     }
 
     /// Create a null string scalar.
