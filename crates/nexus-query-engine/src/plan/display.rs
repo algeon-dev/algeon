@@ -384,7 +384,9 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
                 .map_or_else(|| "none".to_string(), |input| format!("{}:{}", input.input, input.column)),
             params.depth_limit.map_or_else(|| "none".to_string(), |depth| depth.to_string())
         ),
-        super::GraphAlgorithmParams::Louvain(params) => format!("resolution={}", params.resolution),
+        super::GraphAlgorithmParams::Louvain(params) => {
+            format!("max_level={}:threshold={}:resolution={}", params.max_level, params.threshold, params.resolution)
+        },
         super::GraphAlgorithmParams::EigenvectorCentrality(params) => {
             format!("epsilon={}:max_iterations={}", params.epsilon, params.max_iterations)
         },

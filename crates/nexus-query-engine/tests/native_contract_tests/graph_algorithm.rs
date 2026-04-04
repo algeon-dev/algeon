@@ -7,11 +7,11 @@ use nexus_query_engine::{
     GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
     GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
     GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams,
-    GraphEdgeColumnBindings, GraphLayoutRequirement, GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput,
-    GraphOutputSchemaKind, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport,
-    GraphSourceVertexRequirement, GraphVertexEstimate, GraphVertexEstimateSource, GraphVertexIdTypeSupport,
-    GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan, QueryPlanBuilder, SourceNode, StrictBoundedContractReport,
-    StrictBoundedExecutionMode,
+    GraphEdgeColumnBindings, GraphLayoutRequirement, GraphLouvainParams, GraphMemoryClass, GraphMemoryModel,
+    GraphMemoryModelInput, GraphOutputSchemaKind, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome,
+    GraphReservationReport, GraphSourceVertexRequirement, GraphVertexEstimate, GraphVertexEstimateSource,
+    GraphVertexIdTypeSupport, GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan, QueryPlanBuilder, SourceNode,
+    StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     graph_memory_class, graph_memory_reservation_required, stable_graph_result_schema,
 };
@@ -62,6 +62,19 @@ fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
     assert!(display.contains("renumber=true"));
     assert!(display.contains("construction_policy=raw_libcugraph"));
     assert!(display.contains("output_schema_fields=2"));
+}
+
+#[test]
+fn louvain_ir_display_includes_all_cugraph_scalar_params() {
+    let plan = graph_plan(
+        GraphAlgorithm::Louvain,
+        GraphAlgorithmParams::Louvain(GraphLouvainParams { max_level: 17, threshold: 0.001, resolution: 2.5 }),
+        edge_schema(DataType::Int64, DataType::Float64, false),
+    );
+
+    let display = plan.to_string();
+    assert!(display.contains("algorithm=louvain"));
+    assert!(display.contains("params=max_level=17:threshold=0.001:resolution=2.5"));
 }
 
 #[test]

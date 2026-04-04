@@ -40,8 +40,8 @@ pub const CUGRAPH_LIST_ALGORITHMS_FUNCTION: &str = "cugraph_list_algorithms";
 pub const CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION: &str = "cugraph_describe_algorithm";
 pub const CUGRAPH_VALIDATE_CALL_FUNCTION: &str = "cugraph_validate_call";
 pub const CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION: u32 = 7;
-pub const CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION: u32 = 10;
-pub const CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION: u32 = 2;
+pub const CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION: u32 = 11;
+pub const CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct CugraphSqlConfig {
@@ -462,9 +462,11 @@ impl CugraphAlgorithmParams {
                 predicates: CugraphBfsPredicateInputs::default(),
                 output: CugraphBfsOutputOptions::default(),
             })),
-            NativeGraphAlgorithmParams::Louvain(params) => {
-                Self::Louvain(CugraphLouvainParams { resolution: params.resolution })
-            },
+            NativeGraphAlgorithmParams::Louvain(params) => Self::Louvain(CugraphLouvainParams {
+                max_level: params.max_level,
+                threshold: params.threshold,
+                resolution: params.resolution,
+            }),
             NativeGraphAlgorithmParams::EigenvectorCentrality(params) => {
                 Self::EigenvectorCentrality(CugraphEigenvectorCentralityParams {
                     epsilon: params.epsilon,
@@ -589,7 +591,7 @@ pub struct CugraphPageRankParams {
 
 impl Default for CugraphPageRankParams {
     fn default() -> Self {
-        Self { alpha: 0.85, epsilon: 1e-6, max_iterations: 100 }
+        Self { alpha: 0.85, epsilon: 1e-5, max_iterations: 100 }
     }
 }
 
@@ -975,12 +977,17 @@ impl CugraphGraphEdgePredicateTable {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CugraphLouvainParams {
+    /// Maximum hierarchy depth / iteration count. Must be >= 1.
+    pub max_level: u32,
+    /// Convergence threshold for modularity gain at each level. Must be >= 0.
+    pub threshold: f64,
+    /// Resolution parameter in the modularity formula. Must be > 0.
     pub resolution: f64,
 }
 
 impl Default for CugraphLouvainParams {
     fn default() -> Self {
-        Self { resolution: 1.0 }
+        Self { max_level: 100, threshold: 1.0e-7, resolution: 1.0 }
     }
 }
 
@@ -993,7 +1000,7 @@ pub struct CugraphEigenvectorCentralityParams {
 impl Default for CugraphEigenvectorCentralityParams {
     fn default() -> Self {
         // Mirrors `nexus_query_engine::GraphEigenvectorCentralityParams::default`.
-        Self { epsilon: 1.0e-6, max_iterations: 500 }
+        Self { epsilon: 1.0e-6, max_iterations: 200 }
     }
 }
 
@@ -1221,11 +1228,11 @@ pub struct CugraphSpectralClusteringParams {
     pub n_eigenvectors: u32,
     /// Eigenvalue-solver tolerance. Must be >= 0.
     pub evs_tolerance: f64,
-    /// Eigenvalue-solver maximum iteration count. Must be >= 1.
+    /// Eigenvalue-solver maximum iteration count. Must be in `[1, i32::MAX]`.
     pub evs_max_iterations: u32,
     /// k-means tolerance. Must be >= 0.
     pub k_means_tolerance: f64,
-    /// k-means maximum iteration count. Must be >= 1.
+    /// k-means maximum iteration count. Must be in `[1, i32::MAX]`.
     pub k_means_max_iterations: u32,
     /// RNG seed. Default 0 gives a deterministic run.
     pub seed: u64,

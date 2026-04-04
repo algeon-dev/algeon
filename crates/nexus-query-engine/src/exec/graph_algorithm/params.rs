@@ -142,11 +142,19 @@ pub(super) fn bfs_params(params: &crate::plan::GraphBfsParams) -> Result<cugraph
 
 pub(super) fn louvain_params(params: &crate::plan::GraphLouvainParams) -> Result<cugraph::community::LouvainParams> {
     Ok(cugraph::community::LouvainParams {
+        max_level: cugraph::params::IterationCount::new(params.max_level).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.louvain_params",
+            "invalid cuGraph Louvain max_level",
+        ))?,
+        threshold: cugraph::params::NonNegativeF64::new(params.threshold).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.louvain_params",
+            "invalid cuGraph Louvain threshold",
+        ))?,
         resolution: cugraph::params::PositiveF64::new(params.resolution).map_err(map_cugraph_error(
             "nexus_query_engine.graph_algorithm.louvain_params",
             "invalid cuGraph Louvain resolution",
         ))?,
-        ..cugraph::community::LouvainParams::default()
+        do_expensive_check: false,
     })
 }
 
@@ -213,6 +221,22 @@ pub(super) fn spectral_clustering_params(
         )
         .with_fact("n_eigenvectors", params.n_eigenvectors)
     })?;
+    if params.evs_max_iterations > i32::MAX as u32 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.spectral_clustering_params",
+            "cuGraph spectral clustering evs_max_iterations must fit the libcugraph int32 iteration count",
+        )
+        .with_fact("evs_max_iterations", params.evs_max_iterations));
+    }
+    if params.k_means_max_iterations > i32::MAX as u32 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.spectral_clustering_params",
+            "cuGraph spectral clustering k_means_max_iterations must fit the libcugraph int32 iteration count",
+        )
+        .with_fact("k_means_max_iterations", params.k_means_max_iterations));
+    }
     Ok(cugraph::community::SpectralClusteringParams {
         n_clusters,
         n_eigenvectors,
@@ -335,4 +359,27 @@ pub(super) fn k_core_params(params: &crate::plan::GraphKCoreParams) -> Result<cu
         degree_type: degree_type_to_cugraph(params.degree_type),
         do_expensive_check: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spectral_clustering_params_reject_libcugraph_int_overflow_before_binding() {
+        let mut params = crate::plan::GraphSpectralClusteringParams {
+            evs_max_iterations: i32::MAX as u32 + 1,
+            ..Default::default()
+        };
+        let error = spectral_clustering_params(&params).expect_err("oversized evs iterations must be rejected");
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        let oversized_value = (i32::MAX as u32 + 1).to_string();
+        assert_eq!(error.fact_value("evs_max_iterations"), Some(oversized_value.as_str()));
+
+        params.evs_max_iterations = 500;
+        params.k_means_max_iterations = i32::MAX as u32 + 1;
+        let error = spectral_clustering_params(&params).expect_err("oversized k-means iterations must be rejected");
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("k_means_max_iterations"), Some(oversized_value.as_str()));
+    }
 }

@@ -165,6 +165,14 @@ fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
     assert!(spec.graph_options.directed);
     assert!(spec.graph_options.renumber);
     assert_eq!(spec.graph_options.construction_policy, CugraphGraphConstructionPolicy::PythonCugraph);
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::PageRank(datafusion_nexus::CugraphPageRankParams {
+            alpha: 0.85,
+            epsilon: 1.0e-5,
+            max_iterations: 100,
+        })
+    );
 
     let spec = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::Louvain,
@@ -470,13 +478,52 @@ fn cugraph_sql_planning_parses_algorithm_options() {
 
     let spec = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::Louvain,
-        &[lit("graph_edges"), lit("src"), lit("dst"), lit("weight"), lit(r#"{"directed":false,"resolution":2.5}"#)],
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            lit("weight"),
+            lit(r#"{"directed":false,"max_level":24,"threshold":0.00001,"resolution":2.5}"#),
+        ],
         &config,
     )
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Louvain(datafusion_nexus::CugraphLouvainParams { resolution: 2.5 })
+        CugraphAlgorithmParams::Louvain(datafusion_nexus::CugraphLouvainParams {
+            max_level: 24,
+            threshold: 0.00001,
+            resolution: 2.5,
+        })
+    );
+
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Louvain,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"max_level":0}"#),
+            ],
+            &config,
+        ),
+        "Louvain max_level must be at least 1",
+    );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Louvain,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"threshold":-0.1}"#),
+            ],
+            &config,
+        ),
+        "Louvain threshold must be non-negative",
     );
 
     let spec = parse_cugraph_algorithm_spec(
@@ -496,6 +543,15 @@ fn cugraph_sql_planning_parses_algorithm_options() {
         CugraphAlgorithmParams::EigenvectorCentrality(datafusion_nexus::CugraphEigenvectorCentralityParams {
             epsilon: 0.0005,
             max_iterations: 80,
+        })
+    );
+    let spec =
+        parse_cugraph_algorithm_spec(CugraphAlgorithm::EigenvectorCentrality, &[lit("graph_edges")], &config).unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::EigenvectorCentrality(datafusion_nexus::CugraphEigenvectorCentralityParams {
+            epsilon: 1.0e-6,
+            max_iterations: 200,
         })
     );
 
@@ -984,6 +1040,20 @@ fn cugraph_sql_planning_parses_algorithm_options() {
         ),
         "n_clusters must be at least 1",
     );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::SpectralModularityMaximization,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"evs_max_iterations":2147483648}"#),
+            ],
+            &config,
+        ),
+        "evs_max_iterations must be at most i32::MAX",
+    );
 
     // BalancedCutClustering: same params struct as SpectralModularityMaximization.
     let spec = parse_cugraph_algorithm_spec(
@@ -1005,6 +1075,20 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             seed: 11,
             ..Default::default()
         }),
+    );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::BalancedCutClustering,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"k_means_max_iterations":2147483648}"#),
+            ],
+            &config,
+        ),
+        "k_means_max_iterations must be at most i32::MAX",
     );
 
     let spec = parse_cugraph_algorithm_spec(

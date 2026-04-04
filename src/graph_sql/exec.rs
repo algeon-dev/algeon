@@ -2093,9 +2093,11 @@ fn native_algorithm_params(
         CugraphAlgorithmParams::Bfs(params) => {
             GraphAlgorithmParams::Bfs(Box::new(native_bfs_params(params, predicate_nodes)))
         },
-        CugraphAlgorithmParams::Louvain(params) => {
-            GraphAlgorithmParams::Louvain(GraphLouvainParams { resolution: params.resolution })
-        },
+        CugraphAlgorithmParams::Louvain(params) => GraphAlgorithmParams::Louvain(GraphLouvainParams {
+            max_level: params.max_level,
+            threshold: params.threshold,
+            resolution: params.resolution,
+        }),
         CugraphAlgorithmParams::EigenvectorCentrality(params) => {
             GraphAlgorithmParams::EigenvectorCentrality(GraphEigenvectorCentralityParams {
                 epsilon: params.epsilon,

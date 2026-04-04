@@ -914,7 +914,7 @@ impl GraphAlgorithmParams {
 ///
 /// `alpha` is the damping factor, `epsilon` is the positive convergence
 /// tolerance, and `max_iterations` is the positive iteration cap. Defaults
-/// match cuGraph's public defaults.
+/// match the pinned local cugraph-rs defaults.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphPageRankParams {
     /// Damping factor.
@@ -926,9 +926,9 @@ pub struct GraphPageRankParams {
 }
 
 impl Default for GraphPageRankParams {
-    // ref: https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.pagerank/
     fn default() -> Self {
-        Self { alpha: 0.85, epsilon: 1e-6, max_iterations: 100 }
+        // Matches cugraph::centrality::PageRankParams::default().
+        Self { alpha: 0.85, epsilon: 1e-5, max_iterations: 100 }
     }
 }
 
@@ -1135,16 +1135,23 @@ impl GraphEdgePredicateInput {
 
 /// Louvain community detection parameters.
 ///
-/// `resolution` controls community granularity and defaults to `1.0`.
+/// Mirrors `cugraph::community::LouvainParams` without the cugraph-rs
+/// newtype wrappers and without `do_expensive_check` (always false in the
+/// adapter).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphLouvainParams {
-    /// Community granularity parameter.
+    /// Maximum hierarchy depth / iteration count. Must be >= 1.
+    pub max_level: u32,
+    /// Convergence threshold for modularity gain at each level. Must be >= 0.
+    pub threshold: f64,
+    /// Resolution parameter (`gamma`) in the modularity formula. Must be > 0.
     pub resolution: f64,
 }
 
 impl Default for GraphLouvainParams {
     fn default() -> Self {
-        Self { resolution: 1.0 }
+        // Matches cugraph::community::LouvainParams::default().
+        Self { max_level: 100, threshold: 1.0e-7, resolution: 1.0 }
     }
 }
 
@@ -1164,7 +1171,7 @@ pub struct GraphEigenvectorCentralityParams {
 impl Default for GraphEigenvectorCentralityParams {
     fn default() -> Self {
         // Matches cugraph::centrality::EigenvectorCentralityParams::default().
-        Self { epsilon: 1.0e-6, max_iterations: 500 }
+        Self { epsilon: 1.0e-6, max_iterations: 200 }
     }
 }
 
@@ -1461,11 +1468,11 @@ pub struct GraphSpectralClusteringParams {
     pub n_eigenvectors: u32,
     /// Eigenvalue-solver tolerance. Must be >= 0.
     pub evs_tolerance: f64,
-    /// Eigenvalue-solver maximum iteration count. Must be >= 1.
+    /// Eigenvalue-solver maximum iteration count. Must be in `[1, i32::MAX]`.
     pub evs_max_iterations: u32,
     /// k-means tolerance. Must be >= 0.
     pub k_means_tolerance: f64,
-    /// k-means maximum iteration count. Must be >= 1.
+    /// k-means maximum iteration count. Must be in `[1, i32::MAX]`.
     pub k_means_max_iterations: u32,
     /// RNG seed. Default 0 gives a deterministic run.
     pub seed: u64,
