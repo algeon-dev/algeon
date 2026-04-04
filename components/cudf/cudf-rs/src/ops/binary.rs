@@ -237,6 +237,9 @@ fn binary_operation_vv_impl(
 ) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vv")?;
     let mut out = ptr::null_mut();
+    // Safety: BinaryOperator and cudf_sys::cudf_binary_operator_t are both #[repr(i32)]
+    // with identical discriminant values.
+    let op_ffi: cudf_sys::cudf_binary_operator_t = unsafe { std::mem::transmute(op) };
     // SAFETY: lhs and rhs handles are valid (NonNull). dtype_handle was
     // returned by a successful to_raw_handle_for call.
     let status = match exec_options {
@@ -244,14 +247,14 @@ fn binary_operation_vv_impl(
             cudf_sys::cudf_binary_operation_vv_ex(
                 lhs.raw_handle(),
                 rhs.raw_handle(),
-                op as i32,
+                op_ffi,
                 dtype_handle,
                 &mut out,
                 options,
             )
         },
         None => unsafe {
-            cudf_sys::cudf_binary_operation_vv(lhs.raw_handle(), rhs.raw_handle(), op as i32, dtype_handle, &mut out)
+            cudf_sys::cudf_binary_operation_vv(lhs.raw_handle(), rhs.raw_handle(), op_ffi, dtype_handle, &mut out)
         },
     };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.
@@ -294,6 +297,7 @@ fn binary_operation_vs_impl(
 ) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vs")?;
     let mut out = ptr::null_mut();
+    let op_ffi: cudf_sys::cudf_binary_operator_t = unsafe { std::mem::transmute(op) };
     // SAFETY: lhs (ColumnView) and rhs (Scalar) handles are valid (NonNull).
     // dtype_handle was returned by a successful to_raw_handle_for call.
     let status = match exec_options {
@@ -301,14 +305,14 @@ fn binary_operation_vs_impl(
             cudf_sys::cudf_binary_operation_vs_ex(
                 lhs.raw_handle(),
                 rhs.raw_handle(),
-                op as i32,
+                op_ffi,
                 dtype_handle,
                 &mut out,
                 options,
             )
         },
         None => unsafe {
-            cudf_sys::cudf_binary_operation_vs(lhs.raw_handle(), rhs.raw_handle(), op as i32, dtype_handle, &mut out)
+            cudf_sys::cudf_binary_operation_vs(lhs.raw_handle(), rhs.raw_handle(), op_ffi, dtype_handle, &mut out)
         },
     };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.
@@ -351,6 +355,7 @@ fn binary_operation_sv_impl(
 ) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_sv")?;
     let mut out = ptr::null_mut();
+    let op_ffi: cudf_sys::cudf_binary_operator_t = unsafe { std::mem::transmute(op) };
     // SAFETY: lhs (Scalar) and rhs (ColumnView) handles are valid (NonNull).
     // dtype_handle was returned by a successful to_raw_handle_for call.
     let status = match exec_options {
@@ -358,14 +363,14 @@ fn binary_operation_sv_impl(
             cudf_sys::cudf_binary_operation_sv_ex(
                 lhs.raw_handle(),
                 rhs.raw_handle(),
-                op as i32,
+                op_ffi,
                 dtype_handle,
                 &mut out,
                 options,
             )
         },
         None => unsafe {
-            cudf_sys::cudf_binary_operation_sv(lhs.raw_handle(), rhs.raw_handle(), op as i32, dtype_handle, &mut out)
+            cudf_sys::cudf_binary_operation_sv(lhs.raw_handle(), rhs.raw_handle(), op_ffi, dtype_handle, &mut out)
         },
     };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.

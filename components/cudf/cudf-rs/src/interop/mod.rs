@@ -29,9 +29,9 @@
 use std::sync::Arc;
 
 pub use rapids_interop::{
-    BorrowedColumnView, BorrowedTableView, CudaStreamHandle, DataType as InteropDataType,
-    DeviceMemoryResourceHandle, ExecutionBinding, InteropError, InteropErrorKind, NullMask, NullMaskKind,
-    TryBorrowColumnView, TryBorrowTableView, TypeId as InteropTypeId,
+    BorrowedColumnView, BorrowedTableView, CudaStreamHandle, DataType as InteropDataType, DeviceMemoryResourceHandle,
+    ExecutionBinding, InteropError, InteropErrorKind, NullMask, NullMaskKind, TryBorrowColumnView, TryBorrowTableView,
+    TypeId as InteropTypeId,
 };
 
 use crate::{
@@ -290,9 +290,9 @@ impl TryBorrowTableView for TableView<'_> {
         let execution = execution_binding(operation, self.execution_domain())?;
         let mut columns = Vec::with_capacity(num_columns);
         for index in 0..num_columns {
-            let view = self.column(index as i32).map_err(|error| {
-                map_cudf_error(InteropErrorKind::InvalidView, operation, error)
-            })?;
+            let view = self
+                .column(index as i32)
+                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
             let borrowed = borrow_from_view_with_execution(&view, execution, operation)?;
             columns.push(borrowed);
         }

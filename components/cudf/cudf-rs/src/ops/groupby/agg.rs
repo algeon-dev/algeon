@@ -118,6 +118,9 @@ fn groupby_aggregate_impl(
     let mut out_values: *mut *mut c_void = ptr::null_mut();
     let mut out_total_columns: i32 = 0;
 
+    // Safety: NullPolicy and cudf_sys::cudf_null_policy_t are both #[repr(i32)]
+    // with identical discriminant values.
+    let null_policy_ffi: cudf_sys::cudf_null_policy_t = unsafe { std::mem::transmute(null_policy) };
     let status = if let Some(options) = exec_options {
         unsafe {
             cudf_sys::cudf_groupby_aggregate_ex(
@@ -127,7 +130,7 @@ fn groupby_aggregate_impl(
                 agg_counts.as_ptr(),
                 num_requests,
                 i32::try_from(all_agg_handles.len()).expect("aggregation count exceeds i32::MAX"),
-                null_policy as i32,
+                null_policy_ffi,
                 &mut out_keys,
                 &mut out_values,
                 &mut out_total_columns,
@@ -143,7 +146,7 @@ fn groupby_aggregate_impl(
                 agg_counts.as_ptr(),
                 num_requests,
                 i32::try_from(all_agg_handles.len()).expect("aggregation count exceeds i32::MAX"),
-                null_policy as i32,
+                null_policy_ffi,
                 &mut out_keys,
                 &mut out_values,
                 &mut out_total_columns,
@@ -217,28 +220,34 @@ fn bind_groupby_result_domain(result: GroupByResult, output_domain: std::sync::A
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_aggregation_destroy`.
 unsafe fn create_agg_handle(agg: &Aggregation) -> Result<*mut c_void> {
+    use cudf_sys::{cudf_aggregation_kind_t::*, cudf_null_policy_t};
+
     let mut handle = ptr::null_mut();
     match agg {
         Aggregation::Sum => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(0, &mut handle),
+                cudf_sys::cudf_aggregation_create(CUDF_AGG_SUM, &mut handle),
                 "groupby::create_agg_handle(sum)",
             )?;
         },
         Aggregation::Min => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(1, &mut handle),
+                cudf_sys::cudf_aggregation_create(CUDF_AGG_MIN, &mut handle),
                 "groupby::create_agg_handle(min)",
             )?;
         },
         Aggregation::Max => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(2, &mut handle),
+                cudf_sys::cudf_aggregation_create(CUDF_AGG_MAX, &mut handle),
                 "groupby::create_agg_handle(max)",
             )?;
         },
         Aggregation::Count { include_nulls } => {
-            let policy = if *include_nulls { 1 } else { 0 };
+            let policy = if *include_nulls {
+                cudf_null_policy_t::CUDF_NULL_POLICY_INCLUDE
+            } else {
+                cudf_null_policy_t::CUDF_NULL_POLICY_EXCLUDE
+            };
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create_count(policy, &mut handle),
                 "groupby::create_agg_handle(count)",
@@ -246,19 +255,19 @@ unsafe fn create_agg_handle(agg: &Aggregation) -> Result<*mut c_void> {
         },
         Aggregation::Mean => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(5, &mut handle),
+                cudf_sys::cudf_aggregation_create(CUDF_AGG_MEAN, &mut handle),
                 "groupby::create_agg_handle(mean)",
             )?;
         },
         Aggregation::Median => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(6, &mut handle),
+                cudf_sys::cudf_aggregation_create(CUDF_AGG_MEDIAN, &mut handle),
                 "groupby::create_agg_handle(median)",
             )?;
         },
         Aggregation::NUnique => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(7, &mut handle),
+                cudf_sys::cudf_aggregation_create(CUDF_AGG_NUNIQUE, &mut handle),
                 "groupby::create_agg_handle(nunique)",
             )?;
         },

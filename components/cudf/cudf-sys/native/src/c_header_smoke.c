@@ -73,6 +73,58 @@ int cudf_rust_c_header_smoke(void)
                        int32_t, int32_t, cudf_column_handle*) =
     &cudf_column_adopt_device_buffer_nullable;
 
+  /* strings.h */
+  cudf_status_t (*f30)(cudf_column_view_handle, cudf_column_handle*) =
+    &cudf_strings_to_lower;
+  cudf_status_t (*f31)(cudf_column_view_handle, cudf_column_handle*,
+                       const cudf_exec_options_t*) =
+    &cudf_strings_to_lower_ex;
+  cudf_status_t (*f32)(cudf_column_view_handle, cudf_column_handle*) =
+    &cudf_strings_to_upper;
+  cudf_status_t (*f33)(cudf_column_view_handle, cudf_column_handle*,
+                       const cudf_exec_options_t*) =
+    &cudf_strings_to_upper_ex;
+  cudf_status_t (*f34)(cudf_column_view_handle, cudf_scalar_handle,
+                       cudf_column_handle*) =
+    &cudf_strings_contains;
+  cudf_status_t (*f35)(cudf_column_view_handle, cudf_scalar_handle,
+                       cudf_column_handle*, const cudf_exec_options_t*) =
+    &cudf_strings_contains_ex;
+  cudf_status_t (*f36)(cudf_column_view_handle, cudf_scalar_handle,
+                       cudf_column_handle*) =
+    &cudf_strings_starts_with;
+  cudf_status_t (*f37)(cudf_column_view_handle, cudf_scalar_handle,
+                       cudf_column_handle*, const cudf_exec_options_t*) =
+    &cudf_strings_starts_with_ex;
+  cudf_status_t (*f38)(cudf_column_view_handle, cudf_scalar_handle,
+                       cudf_column_handle*) =
+    &cudf_strings_ends_with;
+  cudf_status_t (*f39)(cudf_column_view_handle, cudf_scalar_handle,
+                       cudf_column_handle*, const cudf_exec_options_t*) =
+    &cudf_strings_ends_with_ex;
+  cudf_status_t (*f40)(cudf_column_view_handle, cudf_strip_side_t,
+                       cudf_scalar_handle, cudf_column_handle*) =
+    &cudf_strings_strip;
+  cudf_status_t (*f41)(cudf_column_view_handle, cudf_strip_side_t,
+                       cudf_scalar_handle, cudf_column_handle*,
+                       const cudf_exec_options_t*) =
+    &cudf_strings_strip_ex;
+  cudf_status_t (*f42)(cudf_column_view_handle, cudf_column_handle*) =
+    &cudf_strings_count_characters;
+  cudf_status_t (*f43)(cudf_column_view_handle, cudf_column_handle*,
+                       const cudf_exec_options_t*) =
+    &cudf_strings_count_characters_ex;
+  cudf_status_t (*f44)(cudf_column_view_handle, cudf_column_handle*) =
+    &cudf_strings_count_bytes;
+  cudf_status_t (*f45)(cudf_column_view_handle, cudf_column_handle*,
+                       const cudf_exec_options_t*) =
+    &cudf_strings_count_bytes_ex;
+
+  /* device.h */
+  cudf_status_t (*f46)(int32_t*) = &cudf_cuda_get_device;
+  cudf_status_t (*f47)(int32_t)  = &cudf_cuda_set_device;
+  cudf_status_t (*f48)(int32_t*) = &cudf_cuda_get_device_count;
+
   (void)f1;
   (void)f2;
   (void)f3;
@@ -114,6 +166,25 @@ int cudf_rust_c_header_smoke(void)
   (void)f27;
   (void)f28;
   (void)f29;
+  (void)f30;
+  (void)f31;
+  (void)f32;
+  (void)f33;
+  (void)f34;
+  (void)f35;
+  (void)f36;
+  (void)f37;
+  (void)f38;
+  (void)f39;
+  (void)f40;
+  (void)f41;
+  (void)f42;
+  (void)f43;
+  (void)f44;
+  (void)f45;
+  (void)f46;
+  (void)f47;
+  (void)f48;
   (void)opts;
   return 0;
 }
