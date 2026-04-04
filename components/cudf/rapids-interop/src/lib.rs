@@ -81,8 +81,7 @@ impl TypeId {
             | Self::DurationDays
             | Self::DurationSeconds
             | Self::DurationMilliseconds
-            | Self::Decimal32
-            | Self::Dictionary32 => Some(4),
+            | Self::Decimal32 => Some(4),
             Self::Int64
             | Self::UInt64
             | Self::Float64
@@ -92,7 +91,7 @@ impl TypeId {
             | Self::DurationNanoseconds
             | Self::Decimal64 => Some(8),
             Self::Decimal128 => Some(16),
-            Self::Empty | Self::String | Self::List | Self::Struct => None,
+            Self::Empty | Self::Dictionary32 | Self::String | Self::List | Self::Struct => None,
         }
     }
 }

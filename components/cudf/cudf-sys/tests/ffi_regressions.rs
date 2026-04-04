@@ -344,6 +344,16 @@ fn decode_dictionary_i32_column(dict_col: *mut c_void, expected_len: usize) -> V
     data
 }
 
+fn make_sliced_column_view(col: *mut c_void, offset: usize, len: usize) -> *mut c_void {
+    let base = make_column_view(col);
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_view_slice(base, offset as i32, len as i32, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    unsafe { cudf_sys::cudf_column_view_destroy(base) };
+    out
+}
+
 fn unique_missing_path(extension: &str) -> std::ffi::CString {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let path = std::env::temp_dir().join(format!(
@@ -372,6 +382,28 @@ fn test_scalar_string_value_round_trips_empty_and_non_empty_values() {
         assert_eq!(owned_string_value(out, len), expected);
 
         unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
+    }
+}
+
+#[test]
+fn test_column_view_null_mask_to_host_ex_supports_sliced_nullable_views() {
+    let col = make_i32_column_nullable(
+        &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        &[true, false, true, true, false, true, false, true, true, false],
+    );
+    let sliced = make_sliced_column_view(col, 3, 6);
+
+    let mut mask = vec![0xAAu8; 64];
+    let st =
+        unsafe { cudf_sys::cudf_column_view_null_mask_to_host_ex(sliced, mask.as_mut_ptr(), mask.len(), ptr::null()) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS, "sliced nullable null-mask export should succeed");
+
+    assert_eq!(mask[0], 0b0011_0101, "mask bits should be normalized to the logical slice starting at bit 0");
+    assert!(mask[1..].iter().all(|&byte| byte == 0), "no extra bits outside the logical slice should be set");
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(sliced);
+        cudf_sys::cudf_column_destroy(col);
     }
 }
 

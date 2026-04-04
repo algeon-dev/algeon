@@ -92,6 +92,15 @@ fn test_from_strings_nullable_roundtrip() {
 }
 
 #[test]
+fn test_validity_for_sliced_nullable_string_column_is_normalized_to_slice() {
+    let col = Column::from_strings_nullable(&["alpha", "beta", "gamma", "delta"], &[true, false, true, false]).unwrap();
+    let sliced = col.slice_view(1, 3).unwrap();
+
+    let validity = sliced.validity().unwrap().unwrap();
+    assert_eq!(validity, vec![false, true, false]);
+}
+
+#[test]
 fn test_from_strings_nullable_mismatched_lengths() {
     let strings = &["a", "b", "c"];
     let validity = &[true, false]; // wrong length

@@ -560,10 +560,6 @@ cudf_status_t cudf_column_view_null_mask_to_host_ex(
       set_error("Column has no null mask");
       return CUDF_ERROR_NULL;
     }
-    if (view->offset() != 0) {
-      set_error("null mask export for sliced views (offset != 0) is not supported");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     size_t mask_bytes =
         cudf::bitmask_allocation_size_bytes(view->size());
     if (buf_size < mask_bytes) {
@@ -575,10 +571,24 @@ cudf_status_t cudf_column_view_null_mask_to_host_ex(
                            nullptr};
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
-    CUDF_CUDA_TRY(cudaMemcpyAsync(host_buf, view->null_mask(), mask_bytes,
+
+    if (mask_bytes == 0) { return CUDF_SUCCESS; }
+
+    // Zero the full aligned allocation so bits beyond the logical slice
+    // (mask_bytes may be up to 63 bytes larger than compact_mask_bytes due
+    // to cuDF's 64-byte bitmask alignment) are deterministically zero.
+    std::memset(host_buf, 0, mask_bytes);
+    size_t compact_mask_bytes = (static_cast<size_t>(view->size()) + 7) / 8;
+    auto normalized_mask = cudf::copy_bitmask(*view, exec.stream, exec.mr);
+    CUDF_CUDA_TRY(cudaMemcpyAsync(host_buf, normalized_mask.data(), compact_mask_bytes,
                                   cudaMemcpyDeviceToHost, exec.stream.value()));
     // This API promises the caller's host buffer is populated on return.
     exec.stream.synchronize();
+    if ((view->size() % 8) != 0) {
+      uint8_t const last_byte_mask =
+          static_cast<uint8_t>((1u << (view->size() % 8)) - 1u);
+      host_buf[compact_mask_bytes - 1] &= last_byte_mask;
+    }
     cudf_record_synchronized_stream(exec.stream);
     return CUDF_SUCCESS;
   }

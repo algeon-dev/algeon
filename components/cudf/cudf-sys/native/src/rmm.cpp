@@ -83,6 +83,18 @@ void cudf_memory_resource_destroy(cudf_memory_resource_handle handle) {
   delete static_cast<memory_resource_owner*>(handle);
 }
 
+cudf_status_t cudf_memory_resource_raw(
+    cudf_memory_resource_handle handle, void** out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    *out = static_cast<memory_resource_owner*>(handle)->mr.get();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_test_memory_resource_create_stats(
     cudf_memory_resource_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -120,14 +132,7 @@ cudf_status_t cudf_test_memory_resource_allocation_count(
 
 cudf_status_t cudf_test_memory_resource_raw(
     cudf_memory_resource_handle handle, void** out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
-  CUDF_RUST_TRY {
-    *out = static_cast<memory_resource_owner*>(handle)->mr.get();
-    return CUDF_SUCCESS;
-  }
-  CUDF_RUST_CATCH
+  return cudf_memory_resource_raw(handle, out);
 }
 
 cudf_status_t cudf_test_memory_resource_set_current(

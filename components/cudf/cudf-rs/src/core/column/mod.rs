@@ -6,10 +6,12 @@
 //! interop.
 
 mod convert;
+mod device_buffer;
 mod device_slice;
 mod owned;
 mod view;
 
+pub use device_buffer::DeviceBuffer;
 pub use device_slice::DeviceSlice;
 pub use owned::Column;
 pub use view::ColumnView;

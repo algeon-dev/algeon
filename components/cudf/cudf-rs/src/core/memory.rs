@@ -115,7 +115,7 @@ impl DeviceMemoryResource {
     pub(crate) fn interop_raw_handle(&self) -> Result<*mut std::ffi::c_void> {
         let mut out = std::ptr::null_mut();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_test_memory_resource_raw(self.handle.raw.as_ptr(), &mut out) },
+            unsafe { cudf_sys::cudf_memory_resource_raw(self.handle.raw.as_ptr(), &mut out) },
             "memory::device_memory_resource::interop_raw_handle",
         )?;
         Ok(out)

@@ -32,6 +32,14 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
 /// Destroy a memory resource handle.
 void cudf_memory_resource_destroy(cudf_memory_resource_handle handle);
 
+/// Borrow the underlying `device_memory_resource*` from an owning memory
+/// resource handle.
+///
+/// This does not transfer ownership. `*out` is valid only while `handle`
+/// remains alive.
+cudf_status_t cudf_memory_resource_raw(
+    cudf_memory_resource_handle handle, void** out);
+
 /// Create a statistics-wrapped memory resource for allocator-sensitive tests.
 ///
 /// Test-only hook. The returned handle owns an RMM statistics adaptor and can

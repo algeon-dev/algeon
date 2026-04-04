@@ -50,6 +50,22 @@ fn borrowed_column_view_rejects_struct_type() {
 }
 
 #[test]
+fn borrowed_column_view_rejects_dictionary32_type() {
+    let err = BorrowedColumnView::try_new(
+        DataType::new(TypeId::Dictionary32),
+        0,
+        0,
+        ptr::null(),
+        NullMask::absent(),
+        explicit_binding(),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::UnsupportedType);
+    assert!(err.context().iter().any(|(key, value)| *key == "type_id" && value == "dictionary32"));
+}
+
+#[test]
 fn borrowed_column_view_rejects_null_data_pointer_for_non_empty_view() {
     let err = BorrowedColumnView::try_new(
         DataType::new(TypeId::Int32),
