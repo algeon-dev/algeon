@@ -20,11 +20,12 @@ use super::{
         CUGRAPH_VALIDATE_CALL_FUNCTION, CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, CugraphAlgorithm, CugraphSqlConfig,
         literal_string_arg, plan_error,
     },
-    ERROR_UNKNOWN_ALGORITHM, algorithm_for_metadata_name,
+    algorithm_for_metadata_name,
     descriptions::{
-        argument_descriptions_json, examples_json, limitations_json, result_field_descriptions_json, summary,
+        argument_descriptions_json, examples_json, limitations_json, primary_example_sql,
+        result_field_descriptions_json, summary,
     },
-    json_schema::{metadata_output_schema_json, mode_schemas_json, options_schema_json},
+    json_schema::{options_schema_json, result_schemas_json},
     validate::cugraph_validate_call,
 };
 
@@ -67,10 +68,18 @@ struct CugraphDescribeAlgorithmFunction {
 impl TableFunctionImpl for CugraphDescribeAlgorithmFunction {
     fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let function_name = literal_string_arg(args, 0, "function_name")?;
-        if args.len() != 1 {
-            return Err(plan_error("cugraph_describe_algorithm expects exactly one function_name argument"));
+        if !(1..=2).contains(&args.len()) {
+            return Err(plan_error("cugraph_describe_algorithm expects function_name [, verbosity]"));
         }
-        Ok(Arc::new(CugraphMetadataProvider::describe(self.config.clone(), function_name)))
+        let verbosity = if args.len() == 2 {
+            describe_verbosity(&literal_string_arg(args, 1, "verbosity")?)?
+        } else {
+            DescribeVerbosity::Compact
+        };
+        if algorithm_for_metadata_name(&function_name).is_none() {
+            return Err(plan_error(format!("unknown cuGraph algorithm function '{function_name}'")));
+        }
+        Ok(Arc::new(CugraphMetadataProvider::describe(self.config.clone(), function_name, verbosity)))
     }
 }
 
@@ -94,8 +103,22 @@ impl TableFunctionImpl for CugraphValidateCallFunction {
 #[derive(Debug, Clone)]
 enum CugraphMetadataKind {
     List,
-    Describe { function_name: String },
+    Describe { function_name: String, verbosity: DescribeVerbosity },
     Validate { function_name: String, table_name: String, call_json: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DescribeVerbosity {
+    Compact,
+    Verbose,
+}
+
+fn describe_verbosity(value: &str) -> Result<DescribeVerbosity> {
+    match value {
+        "compact" => Ok(DescribeVerbosity::Compact),
+        "verbose" => Ok(DescribeVerbosity::Verbose),
+        _ => Err(plan_error("cugraph_describe_algorithm verbosity must be 'compact' or 'verbose'")),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -109,8 +132,8 @@ impl CugraphMetadataProvider {
         Self { config, kind: CugraphMetadataKind::List }
     }
 
-    fn describe(config: CugraphSqlConfig, function_name: String) -> Self {
-        Self { config, kind: CugraphMetadataKind::Describe { function_name } }
+    fn describe(config: CugraphSqlConfig, function_name: String, verbosity: DescribeVerbosity) -> Self {
+        Self { config, kind: CugraphMetadataKind::Describe { function_name, verbosity } }
     }
 
     fn validate(config: CugraphSqlConfig, function_name: String, table_name: String, call_json: String) -> Self {
@@ -123,7 +146,7 @@ impl TableProvider for CugraphMetadataProvider {
     fn schema(&self) -> SchemaRef {
         match self.kind {
             CugraphMetadataKind::List => list_schema(),
-            CugraphMetadataKind::Describe { .. } => describe_schema(),
+            CugraphMetadataKind::Describe { verbosity, .. } => describe_schema(verbosity),
             CugraphMetadataKind::Validate { .. } => validate_schema(),
         }
     }
@@ -141,7 +164,9 @@ impl TableProvider for CugraphMetadataProvider {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let batch = match &self.kind {
             CugraphMetadataKind::List => list_batch(&self.config)?,
-            CugraphMetadataKind::Describe { function_name } => describe_batch(function_name, &self.config)?,
+            CugraphMetadataKind::Describe { function_name, verbosity } => {
+                describe_batch(function_name, &self.config, *verbosity)?
+            },
             CugraphMetadataKind::Validate { function_name, table_name, call_json } => {
                 validate_batch(state, function_name, table_name, call_json, &self.config).await?
             },
@@ -170,24 +195,46 @@ fn compact_algorithm_fields() -> Vec<Field> {
     ]
 }
 
-pub(super) fn describe_schema() -> SchemaRef {
-    let mut fields = vec![
-        Field::new("valid", DataType::Boolean, false),
-        Field::new("error_code", DataType::Utf8, true),
-        Field::new("message", DataType::Utf8, false),
-    ];
-    fields.extend(compact_algorithm_fields());
-    fields.extend([
-        Field::new("output_schema_json", DataType::Utf8, false),
+fn describe_schema(verbosity: DescribeVerbosity) -> SchemaRef {
+    match verbosity {
+        DescribeVerbosity::Compact => compact_describe_schema(),
+        DescribeVerbosity::Verbose => verbose_describe_schema(),
+    }
+}
+
+fn compact_describe_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("function_name", DataType::Utf8, false),
+        Field::new("algorithm", DataType::Utf8, false),
+        Field::new("source_vertex_policy", DataType::Utf8, false),
+        Field::new("weight_col_policy", DataType::Utf8, false),
+        Field::new("signature", DataType::Utf8, false),
+        Field::new("allowed_arg_counts_json", DataType::Utf8, false),
+        Field::new("summary", DataType::Utf8, false),
+        Field::new("primary_example_sql", DataType::Utf8, false),
+        Field::new("metadata_schema_version", DataType::Int64, false),
+    ]))
+}
+
+fn verbose_describe_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("function_name", DataType::Utf8, false),
+        Field::new("algorithm", DataType::Utf8, false),
+        Field::new("source_vertex_policy", DataType::Utf8, false),
+        Field::new("weight_col_policy", DataType::Utf8, false),
+        Field::new("output_schema_kind", DataType::Utf8, false),
+        Field::new("signature", DataType::Utf8, false),
+        Field::new("allowed_arg_counts_json", DataType::Utf8, false),
+        Field::new("summary", DataType::Utf8, false),
+        Field::new("primary_example_sql", DataType::Utf8, false),
+        Field::new("result_schemas_json", DataType::Utf8, false),
         Field::new("options_schema_json", DataType::Utf8, false),
         Field::new("argument_descriptions_json", DataType::Utf8, false),
         Field::new("result_field_descriptions_json", DataType::Utf8, false),
         Field::new("limitations_json", DataType::Utf8, false),
-        Field::new("mode_schemas_json", DataType::Utf8, false),
         Field::new("examples_json", DataType::Utf8, false),
         Field::new("metadata_schema_version", DataType::Int64, false),
-    ]);
-    Arc::new(Schema::new(fields))
+    ]))
 }
 
 pub(super) fn validate_schema() -> SchemaRef {
@@ -231,61 +278,50 @@ fn list_batch(config: &CugraphSqlConfig) -> Result<RecordBatch> {
     .map_err(Into::into)
 }
 
-fn describe_batch(function_name: &str, config: &CugraphSqlConfig) -> Result<RecordBatch> {
+fn describe_batch(function_name: &str, config: &CugraphSqlConfig, verbosity: DescribeVerbosity) -> Result<RecordBatch> {
     let Some(algorithm) = algorithm_for_metadata_name(function_name) else {
-        return RecordBatch::try_new(
-            describe_schema(),
+        return Err(plan_error(format!("unknown cuGraph algorithm function '{function_name}'")));
+    };
+    let row = algorithm_row(algorithm, config);
+    match verbosity {
+        DescribeVerbosity::Compact => RecordBatch::try_new(
+            compact_describe_schema(),
             vec![
-                bools(vec![false]),
-                opt_strings(vec![Some(ERROR_UNKNOWN_ALGORITHM.to_string())]),
-                strings(vec![format!("unknown cuGraph algorithm function '{function_name}'")]),
-                strings(vec![function_name.to_string()]),
-                strings(vec!["".to_string()]),
-                strings(vec!["".to_string()]),
-                strings(vec!["".to_string()]),
-                strings(vec!["".to_string()]),
-                strings(vec!["".to_string()]),
-                strings(vec!["[]".to_string()]),
-                strings(vec!["".to_string()]),
-                strings(vec!["{}".to_string()]),
-                strings(vec!["{}".to_string()]),
-                strings(vec!["[]".to_string()]),
-                strings(vec!["[]".to_string()]),
-                strings(vec!["[]".to_string()]),
-                strings(vec!["{}".to_string()]),
-                strings(vec!["[]".to_string()]),
+                strings(vec![row.function_name]),
+                strings(vec![row.algorithm]),
+                strings(vec![row.source_vertex_policy.to_string()]),
+                strings(vec![row.weight_col_policy.to_string()]),
+                strings(vec![row.signature]),
+                strings(vec![row.allowed_arg_counts_json]),
+                strings(vec![row.summary]),
+                strings(vec![row.primary_example_sql]),
                 int64s(vec![i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION)]),
             ],
         )
-        .map_err(Into::into);
-    };
-
-    let row = algorithm_row(algorithm, config);
-    RecordBatch::try_new(
-        describe_schema(),
-        vec![
-            bools(vec![true]),
-            opt_strings(vec![None]),
-            strings(vec![format!("{} is a registered cuGraph SQL table function", row.function_name)]),
-            strings(vec![row.function_name]),
-            strings(vec![row.algorithm]),
-            strings(vec![row.source_vertex_policy.to_string()]),
-            strings(vec![row.weight_col_policy.to_string()]),
-            strings(vec![row.output_schema_kind.to_string()]),
-            strings(vec![row.signature]),
-            strings(vec![row.allowed_arg_counts_json]),
-            strings(vec![row.summary]),
-            strings(vec![row.output_schema_json]),
-            strings(vec![row.options_schema_json]),
-            strings(vec![argument_descriptions_json(algorithm)]),
-            strings(vec![result_field_descriptions_json(algorithm)]),
-            strings(vec![limitations_json(algorithm)]),
-            strings(vec![mode_schemas_json(algorithm)]),
-            strings(vec![examples_json(algorithm)]),
-            int64s(vec![i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION)]),
-        ],
-    )
-    .map_err(Into::into)
+        .map_err(Into::into),
+        DescribeVerbosity::Verbose => RecordBatch::try_new(
+            verbose_describe_schema(),
+            vec![
+                strings(vec![row.function_name]),
+                strings(vec![row.algorithm]),
+                strings(vec![row.source_vertex_policy.to_string()]),
+                strings(vec![row.weight_col_policy.to_string()]),
+                strings(vec![row.output_schema_kind.to_string()]),
+                strings(vec![row.signature]),
+                strings(vec![row.allowed_arg_counts_json]),
+                strings(vec![row.summary]),
+                strings(vec![row.primary_example_sql]),
+                strings(vec![result_schemas_json(algorithm)]),
+                strings(vec![row.options_schema_json]),
+                strings(vec![argument_descriptions_json(algorithm)]),
+                strings(vec![result_field_descriptions_json(algorithm)]),
+                strings(vec![limitations_json(algorithm)]),
+                strings(vec![examples_json(algorithm)]),
+                int64s(vec![i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION)]),
+            ],
+        )
+        .map_err(Into::into),
+    }
 }
 
 async fn validate_batch(
@@ -327,9 +363,9 @@ struct AlgorithmMetadataRow {
     source_vertex_policy: &'static str,
     signature: String,
     allowed_arg_counts_json: String,
-    output_schema_json: String,
     options_schema_json: String,
     summary: String,
+    primary_example_sql: String,
     weight_col_policy: &'static str,
     output_schema_kind: &'static str,
 }
@@ -366,9 +402,9 @@ fn algorithm_row(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Algo
         source_vertex_policy: source_vertex_policy(algorithm),
         signature: signature(algorithm),
         allowed_arg_counts_json: allowed_arg_counts_json(algorithm),
-        output_schema_json: metadata_output_schema_json(algorithm),
         options_schema_json: options_schema_json(algorithm, config),
         summary: summary(algorithm).to_string(),
+        primary_example_sql: primary_example_sql(algorithm),
         weight_col_policy: algorithm.weight_col_policy(),
         output_schema_kind: algorithm.output_schema_kind(),
     }

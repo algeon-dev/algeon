@@ -249,6 +249,25 @@ pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
     }
 }
 
+pub(super) fn primary_example_sql(algorithm: CugraphAlgorithm) -> String {
+    let function_name = algorithm.function_name();
+    match algorithm {
+        CugraphAlgorithm::Bfs => {
+            "SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{\"depth_limit\":4}')".to_string()
+        },
+        CugraphAlgorithm::PersonalizedPageRank => {
+            "SELECT * FROM cugraph_personalized_pagerank('target_edges', 'src', 'dst', NULL, '{\"personalization_table\":\"ppr_seeds\",\"personalization_vertex_col\":\"vertex\",\"personalization_value_col\":\"value\"}')".to_string()
+        },
+        CugraphAlgorithm::Sssp => {
+            format!("SELECT * FROM {function_name}('target_edges', 123)")
+        },
+        CugraphAlgorithm::MinimumSpanningTree => {
+            format!("SELECT * FROM {function_name}('target_edges', 'src', 'dst', 'weight')")
+        },
+        _ => format!("SELECT * FROM {function_name}('target_edges')"),
+    }
+}
+
 pub(super) fn examples_json(algorithm: CugraphAlgorithm) -> String {
     match algorithm {
         CugraphAlgorithm::Bfs => bfs_examples_json(),
@@ -267,7 +286,7 @@ fn personalized_pagerank_examples_json() -> String {
     json!([
         {
             "name": "basic_personalized_pagerank",
-            "sql": "SELECT * FROM cugraph_personalized_pagerank('target_edges', 'src', 'dst', NULL, '{\"personalization_table\":\"ppr_seeds\",\"personalization_vertex_col\":\"vertex\",\"personalization_value_col\":\"value\"}')",
+            "function_name": "cugraph_personalized_pagerank",
             "call_json": {
                 "src_col": "src",
                 "dst_col": "dst",
@@ -286,7 +305,7 @@ fn minimal_example(algorithm: CugraphAlgorithm) -> Value {
     let function_name = algorithm.function_name();
     json!({
         "name": format!("basic_{}", algorithm.native_algorithm().definition().name),
-        "sql": format!("SELECT * FROM {function_name}('target_edges')"),
+        "function_name": function_name,
         "call_json": {
             "src_col": "src",
             "dst_col": "dst"
@@ -298,7 +317,7 @@ fn source_vertex_example(algorithm: CugraphAlgorithm, name: &str) -> Value {
     let function_name = algorithm.function_name();
     json!({
         "name": name,
-        "sql": format!("SELECT * FROM {function_name}('target_edges', 123)"),
+        "function_name": function_name,
         "call_json": {
             "source_vertex": 123,
             "src_col": "src",
@@ -311,7 +330,7 @@ fn weighted_example(algorithm: CugraphAlgorithm, name: &str) -> Value {
     let function_name = algorithm.function_name();
     json!({
         "name": name,
-        "sql": format!("SELECT * FROM {function_name}('target_edges', 'src', 'dst', 'weight')"),
+        "function_name": function_name,
         "call_json": {
             "src_col": "src",
             "dst_col": "dst",
@@ -324,7 +343,7 @@ fn weighted_source_vertex_example(algorithm: CugraphAlgorithm, name: &str) -> Va
     let function_name = algorithm.function_name();
     json!({
         "name": name,
-        "sql": format!("SELECT * FROM {function_name}('target_edges', 123, 'src', 'dst', 'weight')"),
+        "function_name": function_name,
         "call_json": {
             "source_vertex": 123,
             "src_col": "src",
@@ -338,7 +357,7 @@ fn bfs_examples_json() -> String {
     json!([
         {
             "name": "basic_bfs",
-            "sql": "SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{\"depth_limit\":4}')",
+            "function_name": "cugraph_bfs",
             "call_json": {
                 "source_vertex": 123,
                 "src_col": "src",
@@ -348,7 +367,7 @@ fn bfs_examples_json() -> String {
         },
         {
             "name": "normalized_bfs",
-            "sql": "SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{\"depth_limit\":4,\"output_mode\":\"normalized\"}')",
+            "function_name": "cugraph_bfs",
             "call_json": {
                 "source_vertex": 123,
                 "src_col": "src",
@@ -358,7 +377,7 @@ fn bfs_examples_json() -> String {
         },
         {
             "name": "multi_source_bfs_list",
-            "sql": "SELECT * FROM cugraph_bfs('target_edges', [123,456], 'src', 'dst', NULL, '{\"output_mode\":\"normalized\"}')",
+            "function_name": "cugraph_bfs",
             "call_json": {
                 "source_vertex": [123, 456],
                 "src_col": "src",
@@ -368,7 +387,7 @@ fn bfs_examples_json() -> String {
         },
         {
             "name": "multi_source_bfs_table",
-            "sql": "SELECT * FROM cugraph_bfs('target_edges', NULL, 'src', 'dst', NULL, '{\"source_vertices_table\":\"bfs_sources\",\"source_vertex_col\":\"vertex_id\",\"output_mode\":\"normalized\"}')",
+            "function_name": "cugraph_bfs",
             "call_json": {
                 "source_vertex": null,
                 "src_col": "src",
@@ -382,7 +401,7 @@ fn bfs_examples_json() -> String {
         },
         {
             "name": "target_metadata",
-            "sql": "SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{\"output_mode\":\"normalized\",\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex_id\",\"return_target_info\":true}')",
+            "function_name": "cugraph_bfs",
             "call_json": {
                 "source_vertex": 123,
                 "src_col": "src",
@@ -397,21 +416,7 @@ fn bfs_examples_json() -> String {
         },
         {
             "name": "path_output",
-            "sql": "SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{\"output_mode\":\"path\",\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex_id\"}') ORDER BY path_index",
-            "call_json": {
-                "source_vertex": 123,
-                "src_col": "src",
-                "dst_col": "dst",
-                "options": {
-                    "output_mode": "path",
-                    "target_vertices_table": "targets",
-                    "target_vertex_col": "vertex_id"
-                }
-            }
-        },
-        {
-            "name": "dry_run_path",
-            "sql": "SELECT valid, error_code, message, output_schema_json, normalized_options_json FROM cugraph_validate_call('cugraph_bfs', 'target_edges', '{\"source_vertex\":123,\"src_col\":\"src\",\"dst_col\":\"dst\",\"options\":{\"output_mode\":\"path\",\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex_id\"}}')",
+            "function_name": "cugraph_bfs",
             "call_json": {
                 "source_vertex": 123,
                 "src_col": "src",

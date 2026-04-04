@@ -42,12 +42,11 @@ pub(super) fn options_schema_json(algorithm: CugraphAlgorithm, config: &CugraphS
     });
     if algorithm == CugraphAlgorithm::Bfs {
         schema.as_object_mut().expect("options schema is an object").insert(
-            "output_schema_authority".to_string(),
+            "result_schema_authority".to_string(),
             json!({
-                "default_schema_field": "output_schema_json",
-                "mode_schema_field": "mode_schemas_json",
+                "schema_field": "result_schemas_json",
                 "call_specific_authority": CUGRAPH_VALIDATE_CALL_FUNCTION,
-                "note": "output_schema_json is the generic default/raw schema; inspect mode_schemas_json for generic mode schemas and run cugraph_validate_call for the concrete table-specific output schema."
+                "note": "result_schemas_json carries generic default and mode schemas; run cugraph_validate_call for the concrete table-specific output schema."
             }),
         );
         schema.as_object_mut().expect("options schema is an object").insert(
@@ -551,13 +550,7 @@ fn bfs_options_schema_json() -> Value {
                 "description": "Optional relation containing BFS source vertices. Use source_vertex=NULL in the positional SQL argument when this option is set.",
                 "side_input": {
                     "role": "source_vertices",
-                    "column_option": "source_vertex_col",
-                    "expected_columns": [
-                        {
-                            "name_from_option": "source_vertex_col",
-                            "type_ref": "vertex_domain"
-                        }
-                    ]
+                    "column_option": "source_vertex_col"
                 }
             },
             "source_vertex_col": {
@@ -584,13 +577,7 @@ fn bfs_options_schema_json() -> Value {
                 "description": "Optional relation containing target vertices for path output or target reachability metadata.",
                 "side_input": {
                     "role": "target_vertices",
-                    "column_option": "target_vertex_col",
-                    "expected_columns": [
-                        {
-                            "name_from_option": "target_vertex_col",
-                            "type_ref": "vertex_domain"
-                        }
-                    ]
+                    "column_option": "target_vertex_col"
                 }
             },
             "target_vertex_col": {
@@ -616,13 +603,7 @@ fn bfs_options_schema_json() -> Value {
                 "description": "Optional relation containing the vertex allowlist.",
                 "side_input": {
                     "role": "include_vertices",
-                    "column_option": "include_vertex_col",
-                    "expected_columns": [
-                        {
-                            "name_from_option": "include_vertex_col",
-                            "type_ref": "vertex_domain"
-                        }
-                    ]
+                    "column_option": "include_vertex_col"
                 }
             },
             "include_vertex_col": {
@@ -641,13 +622,7 @@ fn bfs_options_schema_json() -> Value {
                 "description": "Optional relation containing the vertex denylist.",
                 "side_input": {
                     "role": "exclude_vertices",
-                    "column_option": "exclude_vertex_col",
-                    "expected_columns": [
-                        {
-                            "name_from_option": "exclude_vertex_col",
-                            "type_ref": "vertex_domain"
-                        }
-                    ]
+                    "column_option": "exclude_vertex_col"
                 }
             },
             "exclude_vertex_col": {
@@ -674,13 +649,7 @@ fn bfs_options_schema_json() -> Value {
                 "description": "Optional relation containing allowed edge identifiers.",
                 "side_input": {
                     "role": "include_edge_ids",
-                    "column_option": "include_edge_ids_col",
-                    "expected_columns": [
-                        {
-                            "name_from_option": "include_edge_ids_col",
-                            "type_ref": "edge_id_domain"
-                        }
-                    ]
+                    "column_option": "include_edge_ids_col"
                 }
             },
             "include_edge_ids_col": {
@@ -699,22 +668,7 @@ fn bfs_options_schema_json() -> Value {
                 "description": "Optional relation containing allowed edge endpoints and, when edge_id_col is configured, optional edge identifiers.",
                 "side_input": {
                     "role": "include_edges",
-                    "column_options": ["include_edge_src_col", "include_edge_dst_col", "include_edge_id_col"],
-                    "expected_columns": [
-                        {
-                            "name_from_option": "include_edge_src_col",
-                            "type_ref": "vertex_domain"
-                        },
-                        {
-                            "name_from_option": "include_edge_dst_col",
-                            "type_ref": "vertex_domain"
-                        },
-                        {
-                            "name_from_option": "include_edge_id_col",
-                            "type_ref": "edge_id_domain",
-                            "optional_when": "edge_id_col is set"
-                        }
-                    ]
+                    "column_options": ["include_edge_src_col", "include_edge_dst_col", "include_edge_id_col"]
                 }
             },
             "include_edge_src_col": {
@@ -755,16 +709,26 @@ fn graph_options_value(options: &CugraphGraphOptions) -> Value {
     })
 }
 
-pub(super) fn mode_schemas_json(algorithm: CugraphAlgorithm) -> String {
-    if algorithm != CugraphAlgorithm::Bfs {
-        return "{}".to_string();
-    }
+pub(super) fn result_schemas_json(algorithm: CugraphAlgorithm) -> String {
+    let (default_schema, schemas) = if algorithm == CugraphAlgorithm::Bfs {
+        (
+            "raw",
+            json!({
+                "raw": bfs_raw_mode_schema(false),
+                "normalized": bfs_normalized_mode_schema(false),
+                "raw_with_target_info": bfs_raw_mode_schema(true),
+                "normalized_with_target_info": bfs_normalized_mode_schema(true),
+                "path": bfs_path_mode_schema()
+            }),
+        )
+    } else {
+        ("default", json!({"default": schema_json_value(&stable_result_schema(algorithm))}))
+    };
     json!({
-        "raw": bfs_raw_mode_schema(false),
-        "normalized": bfs_normalized_mode_schema(false),
-        "raw_with_target_info": bfs_raw_mode_schema(true),
-        "normalized_with_target_info": bfs_normalized_mode_schema(true),
-        "path": bfs_path_mode_schema()
+        "default_schema": default_schema,
+        "schemas": schemas,
+        "call_specific_authority": CUGRAPH_VALIDATE_CALL_FUNCTION,
+        "note": "Generic registry schemas; run cugraph_validate_call for the concrete table-specific output schema."
     })
     .to_string()
 }
