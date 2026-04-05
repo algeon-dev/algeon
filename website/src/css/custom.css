@@ -173,18 +173,25 @@
 [data-theme='dark'] .theme-doc-sidebar-container,
 [data-theme='dark'] .table-of-contents,
 [data-theme='dark'] .pagination-nav__link,
-[data-theme='dark'] .card,
-[data-theme='dark'] .theme-admonition,
-[data-theme='dark'] .alert {
+[data-theme='dark'] .card {
   border-color: var(--nx-ayu-line);
 }
 
 [data-theme='dark'] .theme-doc-sidebar-container,
 [data-theme='dark'] .pagination-nav__link,
-[data-theme='dark'] .card,
-[data-theme='dark'] .theme-admonition,
-[data-theme='dark'] .alert {
+[data-theme='dark'] .card {
   background: var(--nx-ayu-surface);
+}
+
+[data-theme='dark'] .alert--warning {
+  --ifm-alert-background-color: color-mix(
+    in srgb,
+    var(--nx-ayu-accent) 18%,
+    var(--nx-ayu-bg-sunk)
+  );
+  --ifm-alert-background-color-highlight: rgba(230, 180, 80, 0.18);
+  --ifm-alert-foreground-color: var(--nx-ayu-heading);
+  --ifm-alert-border-color: var(--nx-ayu-accent);
 }
 
 [data-theme='dark'] .footer,
