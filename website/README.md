@@ -138,14 +138,18 @@ migrate:
 
 ## Deployment
 
-The site is published to GitHub Pages at the apex custom domain
-**<https://datafusion.nexus>** (`url` + `baseUrl: '/'` in
-`docusaurus.config.ts`; the domain is pinned in `static/CNAME`).
+The site is deployed to **Cloudflare Pages** (project `datafusion-nexus`) at the
+apex custom domain **<https://datafusion.nexus>** (`url` + `baseUrl: '/'` in
+`docusaurus.config.ts`).
 
-Deployment is automatic: `.github/workflows/deploy-website.yml` builds this
-directory and publishes it on every push to `main` that touches `website/**`
-(or via a manual **workflow_dispatch** run). There is no manual
-`npm run deploy` step.
+Two paths, both live:
 
-See [`DEPLOY.md`](./DEPLOY.md) for the one-time GitHub Pages + Cloudflare DNS
-setup and the custom-domain / TLS gotchas.
+- **Automatic** — `.github/workflows/deploy-website.yml` builds this directory
+  and deploys via `cloudflare/wrangler-action` on every push to `main` that
+  touches `website/**` (needs the `CLOUDFLARE_API_TOKEN` /
+  `CLOUDFLARE_ACCOUNT_ID` repository secrets).
+- **Manual** —
+  `npm run build && npx wrangler pages deploy build --project-name=datafusion-nexus --branch=main`.
+
+See [`DEPLOY.md`](./DEPLOY.md) for the full Cloudflare Pages setup, secrets, and
+custom-domain reference.
