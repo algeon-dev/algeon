@@ -180,13 +180,14 @@ function Arrowhead({x, y, stroke}: {x: number; y: number; stroke: string}) {
   );
 }
 
-function Figure({hint, caption, svgW, svgH, minW, interactive, center, children, panel}: {
+function Figure({hint, caption, svgW, svgH, minW, interactive, ariaLabel, center, children, panel}: {
   hint?: string;
   caption?: React.ReactNode;
   svgW: number;
   svgH: number;
   minW: number;
   interactive?: boolean;
+  ariaLabel?: string;
   center?: boolean;
   children: React.ReactNode;
   panel?: React.ReactNode;
@@ -198,6 +199,7 @@ function Figure({hint, caption, svgW, svgH, minW, interactive, center, children,
         <div className={styles.scroll}>
           <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" role={interactive ? 'group' : undefined}
             aria-hidden={interactive ? undefined : true}
+            aria-label={interactive ? ariaLabel : undefined}
             style={{maxWidth: svgW, minWidth: Math.min(svgW, minW), display: 'block',
               margin: center ? '0 auto' : undefined, fontFamily: MONO}}>
             {children}
@@ -272,6 +274,7 @@ export interface SystemRegion {
 }
 
 export interface SystemDiagramProps {
+  ariaLabel?: string;
   lanes: SystemLane[];
   nodes: SystemNode[];
   edges: SystemEdge[];
@@ -289,7 +292,7 @@ const MIN_GAP = 56;
  * edges, optional region underlays. Nodes with `detail` are clickable and
  * drive the panel below the SVG.
  */
-export function SystemDiagram({lanes, nodes, edges, regions = [], caption}: SystemDiagramProps) {
+export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], caption}: SystemDiagramProps) {
   const [selectedId, setSelectedId] = useState<string | null>(
     nodes.find((n) => n.detail)?.id ?? null,
   );
@@ -363,7 +366,8 @@ export function SystemDiagram({lanes, nodes, edges, regions = [], caption}: Syst
 
   return (
     <Figure caption={caption} svgW={svgW} svgH={svgH} minW={660} interactive
-      hint="click a stage for details"
+      ariaLabel={ariaLabel ?? 'Interactive system diagram'}
+      hint="select a stage for details"
       panel={selected?.detail ? <DetailPanel node={selected} /> : null}>
       {/* lane bands */}
       {lanes.map((lane) => {
@@ -472,12 +476,13 @@ export function SystemDiagram({lanes, nodes, edges, regions = [], caption}: Syst
 /* ======================= StackDiagram ======================= */
 
 export interface StackDiagramProps {
+  ariaLabel?: string;
   nodes: DiagramNode[];
   caption?: React.ReactNode;
 }
 
 /** A top-down layered stack with optional labelled boundary dividers. */
-export function StackDiagram({nodes, caption}: StackDiagramProps) {
+export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
   const interactive = nodes.some((n) => n.detail);
   const [selectedIdx, setSelectedIdx] = useState<number>(nodes.findIndex((n) => n.detail));
   const sizes = nodes.map(measureNode);
@@ -517,7 +522,8 @@ export function StackDiagram({nodes, caption}: StackDiagramProps) {
   const selected = interactive && selectedIdx >= 0 ? nodes[selectedIdx] : undefined;
   return (
     <Figure caption={caption} svgW={svgW} svgH={y + EDGE} minW={420} interactive={interactive} center
-      hint={interactive ? 'click a layer for details' : undefined}
+      ariaLabel={interactive ? (ariaLabel ?? 'Interactive stack diagram') : undefined}
+      hint={interactive ? 'select a layer for details' : undefined}
       panel={selected?.detail ? <DetailPanel node={selected} /> : null}>
       {parts}
     </Figure>

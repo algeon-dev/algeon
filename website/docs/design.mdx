@@ -1,49 +1,83 @@
 ---
 sidebar_position: 2
 slug: /design
-description: How DataFusion Nexus integrates cuGraph, Iceberg, embedded DataFusion backends, and structured diagnostics around a RAPIDS-backed execution path.
+description: "The DataFusion Nexus architecture contract: integration surfaces, native lowering, cuGraph execution, and developer-facing diagnostics."
 ---
 
 import {StackDiagram, SystemDiagram} from '@site/src/components/design/Diagram';
 
 # Design
 
-DataFusion Nexus is designed as a **DataFusion-native integration layer**, not a
-separate SQL engine boundary. DataFusion keeps SQL parsing, logical planning,
-catalog APIs, and CPU execution. Backend services can embed Nexus directly, or
-run the provided Flight SQL server, to add cuGraph table functions,
-Iceberg/lakehouse sources, structured diagnostics, and optional RAPIDS-backed
-execution for supported relational fragments.
+<div className="nx-design-lede">
+  <div className="nx-design-lede-copy">
+    DataFusion Nexus is a <strong>DataFusion-native integration layer</strong>.
+    DataFusion keeps SQL parsing, logical planning, physical planning, catalogs,
+    DataFrame APIs, and CPU execution. Nexus adds opt-in cuDF execution,
+    SQL-visible cuGraph algorithms, Iceberg/lakehouse source handling, and
+    structured diagnostics around that DataFusion session.
+  </div>
+  <ul>
+    <li><strong>For users:</strong> the GPU path is an implementation detail behind ordinary DataFusion or Flight SQL APIs.</li>
+    <li><strong>For developers:</strong> every native decision must be local, reportable, and backed by an adapter or engine contract.</li>
+    <li><strong>Non-goals:</strong> Nexus is not a separate SQL engine, does not accept Substrait plans, and does not implement single-query cross-GPU execution.</li>
+  </ul>
+</div>
 
-The design center is differentiation through integration:
+## Read this if
 
-- **cuGraph as SQL relations.** Graph algorithms are ordinary `cugraph_*` table
-  functions with discoverable signatures, validation, and result schemas.
-- **Embeddable backend API.** Applications install Nexus on a DataFusion
-  `SessionStateBuilder` and wrap it with their own service API, tenancy, auth,
-  and domain-specific workflow.
-- **Lakehouse-aware source semantics.** Iceberg and object-store sources remain
-  source catalogs; session-local views and edge relations live in a mutable
-  DataFusion workspace.
-- **Structured contracts.** Planning reports, fallback reasons, metric rows,
-  `ErrorCode`s, and error `Facts` are public diagnostic surfaces.
-- **RAPIDS execution where it fits.** Supported relational fragments lower into a
-  DataFusion-free IR and execute through cuDF; unsupported fragments keep the
-  DataFusion CPU path with a structured reason.
+<div className="nx-design-grid nx-design-grid-four nx-design-audience">
+  <div className="nx-design-card">
+    <h3>Backend integrator</h3>
+    <div className="nx-design-card-copy">Start with <a href="#integration-surfaces">Integration surfaces</a> and <a href="#session-wiring">Session wiring</a>. Nexus should fit inside your service boundary, not replace it.</div>
+  </div>
+  <div className="nx-design-card">
+    <h3>Flight SQL operator</h3>
+    <div className="nx-design-card-copy">Read <a href="#lakehouse-and-workspace-boundary">Lakehouse and workspace boundary</a>, then use server config and diagnostics as the deployment contract.</div>
+  </div>
+  <div className="nx-design-card">
+    <h3>Graph SQL user</h3>
+    <div className="nx-design-card-copy">Jump to <a href="#cugraph-sql-path">cuGraph SQL path</a>. Discover and validate calls before running GPU graph work.</div>
+  </div>
+  <div className="nx-design-card">
+    <h3>Native contributor</h3>
+    <div className="nx-design-card-copy">Use <a href="#layering-and-ownership">Layering and ownership</a> and <a href="#developer-checklist">Developer checklist</a> to route code changes.</div>
+  </div>
+</div>
 
-Nexus does not currently accept Substrait plans, and it does not implement
-single-query cross-GPU communication. The public design therefore avoids
-positioning Nexus as a generic GPU SQL engine. The strongest boundary is the
-DataFusion service/backend layer around RAPIDS, cuGraph, Iceberg, and typed
-runtime evidence.
+## The design contract
+
+<div className="nx-design-grid nx-design-grid-four">
+  <div className="nx-design-card">
+    <h3>DataFusion stays in charge</h3>
+    <div className="nx-design-card-copy">SQL, catalogs, physical planning, and CPU-readable fallback remain stock DataFusion. GPU-only table-format leaves fail planning if native lowering cannot consume them.</div>
+  </div>
+  <div className="nx-design-card">
+    <h3>The adapter translates</h3>
+    <div className="nx-design-card-copy"><code>src/</code> recognizes DataFusion physical shapes, lowers supported candidates into <code>QueryPlan</code>, and exposes reports.</div>
+  </div>
+  <div className="nx-design-card">
+    <h3>The engine owns native execution</h3>
+    <div className="nx-design-card-copy"><code>crates/nexus-query-engine</code> has no DataFusion dependency. It owns the IR, capability analysis, execution-time context, and executor.</div>
+  </div>
+  <div className="nx-design-card">
+    <h3>RAPIDS capability belongs below</h3>
+    <div className="nx-design-card-copy">Missing GPU APIs, memory hooks, device interop, or graph contracts belong in <code>cudf-rs</code> / <code>cugraph-rs</code>, not adapter workarounds.</div>
+  </div>
+</div>
 
 ## Integration surfaces
 
-### Embedded DataFusion backend
+| Surface | Use it when | Primary owner |
+| --- | --- | --- |
+| Embedded DataFusion backend | You already own the service API, auth, tenancy, and domain model. Install Nexus on a caller-owned `SessionStateBuilder`. | `src/session.rs` |
+| Flight SQL service | You want a ready remote endpoint for notebooks, BI tools, agents, and non-Rust clients. | `src/server/` |
+| cuGraph SQL | You want graph algorithms as relations that can be joined, filtered, validated, and described from SQL. | `src/graph_sql/` |
+| Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native table-format scan facts while workspace views stay mutable. | `src/table_format/` |
+| Reports and errors | You need stable evidence for admission, fallback, runtime, graph validation, source access, and failures. | `src/report.rs`, `src/native_report/`, `src/error.rs` |
 
-The library surface is the primary extension point for custom backend services.
-`CudfSessionStateBuilderExt` installs Nexus behavior into a caller-owned
-DataFusion session:
+The embedded entry point is intentionally small. The cuGraph line is available
+only when the crate is built with `--features cugraph`; omit it for a pure
+relational/Iceberg session.
 
 ```rust
 let state = SessionStateBuilder::new()
@@ -53,55 +87,33 @@ let state = SessionStateBuilder::new()
     .build();
 ```
 
-That shape lets a backend keep its own API, authorization, state model, and
-domain-specific validation while delegating SQL planning and supported RAPIDS
-execution to the DataFusion session.
+`GpuPreferred` means "use native execution where it is proven supported."
+Rejected CPU-readable candidates are reported and left on DataFusion's CPU
+path. GPU-only table-format scan leaves are different: they are metadata-only
+planning leaves with no CPU Arrow reader, so the leaf guard turns a surviving
+leaf into a structured planning error. `GpuOnly` turns the first native rejection
+into a planning error.
 
-### Flight SQL service
+### Feature gates
 
-The server packages the same session extensions behind Arrow Flight SQL. Its
-configuration controls cuGraph enablement, Iceberg catalogs, workspace overlay,
-memory policy, source credentials, and runtime diagnostics. This is the operable
-deployment shape for notebooks, BI tools, agents, and remote clients.
-
-### cuGraph SQL
-
-With `--features cugraph`, graph algorithms surface as SQL table functions:
-
-```sql
-SELECT * FROM cugraph_pagerank('edges', 'src', 'dst')
-ORDER BY value DESC;
-```
-
-The output is a plain relation — join it, filter it, window over it like any
-other table. Discovery and validation functions (`cugraph_list_algorithms`,
-`cugraph_describe_algorithm`, `cugraph_validate_call`) make the graph API
-self-describing for humans and agents.
-
-### Iceberg and workspace semantics
-
-Iceberg catalogs are source catalogs. Interactive DDL such as `CREATE VIEW`
-belongs in a mutable DataFusion workspace, and an explicit workspace overlay can
-expose short source names without teaching a read-only Iceberg catalog to accept
-views. This keeps remote source metadata, session-local objects, and graph edge
-views separate.
-
-### Structured diagnostics
-
-Every important boundary returns typed evidence: native candidate reports,
-strict/adaptive admission reports, source-read metric rows, graph reservation and
-runtime rows, and adapter errors with stable codes and facts. These contracts are
-how tests, tools, and backend services explain decisions; printed plans and logs
-are secondary.
+| Feature | Adds |
+| --- | --- |
+| `cugraph` | cuGraph SQL algorithms and engine graph execution support. |
+| `server-cugraph` | Flight SQL server plus cuGraph SQL. |
+| `iceberg` | Iceberg / Glue / REST / S3 source integration through native table-format scans. |
+| `iceberg-cpu` | Opt-in CPU Arrow Iceberg reader for CPU-fallback server profiles. |
+| `server` | Arrow Flight SQL service, auth, cancellation, admission, workspace, and diagnostics. |
 
 ## Relational acceleration path
 
-The relational GPU path is deliberately narrow and reportable. After DataFusion
-physical planning, Nexus recognizes supported subtrees, lowers them into
-`nexus-query-engine::QueryPlan`, and executes them through cuDF. Rejected
-subtrees stay on DataFusion's CPU path and carry a structured fallback reason.
+Supported relational fragments lower after DataFusion physical planning. That
+timing is deliberate: the physical plan already encodes aggregate mode,
+partitioning, projection pushdown, join shape, sort requirements, and file scan
+facts. Starting from a logical plan would duplicate DataFusion's physical
+planner inside the adapter.
 
 <SystemDiagram
+  ariaLabel="Relational native execution path"
   lanes={[
     {id: 'host', label: 'host'},
     {id: 'gpu', label: 'gpu', tone: 'gpu'},
@@ -109,64 +121,53 @@ subtrees stay on DataFusion's CPU path and carry a structured fallback reason.
   nodes={[
     {
       id: 'df', lane: 'host', col: 0,
-      kind: 'upstream', name: 'DataFusion', note: 'SQL → physical plan', tone: 'plan',
-      sub: '../datafusion (sibling checkout)',
-      detail: <>Standard DataFusion does all the front-end work: SQL parsing,
-        logical planning, physical planning, and its own optimizer passes.
-        Nexus registers <strong>one extra physical optimizer rule</strong> via{' '}
-        <code>SessionStateBuilder</code> (<code>src/session.rs</code>) and leaves
-        everything else untouched — any DataFusion client (SQL, DataFrame API,
-        the Flight SQL server) gets the same Nexus admission and fallback
-        behavior.</>,
+      kind: 'upstream', name: 'DataFusion', note: 'SQL -> physical plan', tone: 'plan',
+      sub: '../datafusion',
+      detail: <>DataFusion owns SQL, logical and physical planning, catalogs,
+        and the CPU operators. Nexus participates through session wiring, not
+        by replacing the frontend.</>,
     },
     {
       id: 'rule', lane: 'host', col: 1,
-      kind: 'nexus', name: 'optimizer rule', note: ['datafusion_nexus_native', 'capability admission'], tone: 'engine',
-      sub: 'src/planner.rs · src/native/',
-      detail: <><code>CudfNativePhysicalOptimizerRule</code> is the single
-        decision point for relational cuDF rewrites. It recognizes supported
-        whole-plan and bounded-fragment shapes (<code>src/native/normalize.rs</code>),
-        checks that <em>every</em> operator, expression, Arrow type, and
-        reservation contract is individually supported, and lowers admitted
-        subtrees into the DataFusion-free <code>QueryPlan</code> IR. Every
-        candidate lands in a structured <code>PlanningReport</code> with a{' '}
-        <code>Rewritten</code> or <code>Rejected</code> outcome and a{' '}
-        <code>FallbackReason</code> code — tests assert against these reports,
-        never against printed plans.</>,
+      kind: 'adapter', name: 'native rewrite', note: ['datafusion_nexus_native', 'PlanningReport'], tone: 'engine',
+      sub: 'src/session.rs · src/planner/native.rs · src/native/',
+      detail: <>The final native rewrite rule is the relational decision point.
+        It normalizes and validates DataFusion physical candidates, lowers
+        admitted candidates with <code>lower_physical_plan_to_native</code>, and
+        records every <code>Rewritten</code> or <code>Rejected</code> outcome in
+        a <code>PlanningReport</code>. Session wiring also installs a count-only
+        probe and a table-format leaf guard around this rule.</>,
     },
     {
       id: 'native', lane: 'gpu', col: 2,
-      kind: 'gpu', name: 'NativeCudfExec', note: 'QueryPlan on cuDF', tone: 'gpu',
+      kind: 'engine', name: 'NativeCudfExec', note: 'QueryPlan on cuDF', tone: 'gpu',
       sub: 'src/native_exec/ · crates/nexus-query-engine',
-      detail: <>The DataFusion <code>ExecutionPlan</code> wrapper around native
-        execution. Host Arrow batches cross to the GPU once
-        (<code>cudf::DataFrame::from_record_batch</code>), the compiled{' '}
-        <code>QueryPlan</code> runs entirely on the device through{' '}
-        <code>nexus-query-engine</code> and <code>cudf-rs</code>, and results
-        materialize back to host Arrow at the end — no per-operator round-trips.
-        Two execution modes, kept strictly apart: <em>strict bounded</em>{' '}
-        (gate-first; every memory <code>ReservationRequirement</code> satisfied
-        up front) and <em>adaptive</em> (runtime memory-action accounting).
-        Their admission, evidence, and reports never mix.</>,
+      detail: <>DataFusion sees a normal <code>ExecutionPlan</code> wrapper.
+        Inside it is an engine-owned <code>QueryPlan</code>. Host Arrow batches
+        cross to cuDF at the boundary, the native plan runs through
+        <code>nexus-query-engine</code>, and results return according to the
+        sink: host Arrow batches or a GPU-resident handle for composed
+        fragments.</>,
     },
     {
       id: 'cpu', lane: 'host', col: 2,
-      kind: 'cpu', name: 'original operators', note: 'fallback path', tone: 'reject',
+      kind: 'fallback', name: 'original operators', note: 'structured rejection', tone: 'reject',
       sub: 'stock DataFusion execution',
-      detail: <>A rejected subtree keeps its original DataFusion operators and
-        runs on the CPU exactly as it would without Nexus. Falling back is a
-        first-class, <em>reported</em> outcome — never an error — so a query is
-        never blocked by a missing GPU capability; it just runs where it can,
-        and the <code>FallbackReason</code> tells you precisely why.</>,
+      detail: <>A rejected CPU-readable candidate keeps its original DataFusion
+        operators. GPU-only table-format leaves cannot execute through a CPU
+        Arrow reader, so the leaf guard converts leftovers into a structured
+        planning error. Either way, rejection is reportable: the
+        <code>FallbackReason</code> says which operator, expression, type,
+        source contract, reservation contract, or policy blocked the native
+        path.</>,
     },
     {
       id: 'out', lane: 'host', col: 3,
-      kind: 'output', name: 'Arrow batches', note: 'to caller', tone: 'plain',
+      kind: 'output', name: 'Arrow stream', note: 'same caller contract', tone: 'plain',
       sub: 'arrow::RecordBatch',
       detail: <>Both paths produce ordinary Arrow <code>RecordBatch</code>es
-        with identical schemas and semantics. Downstream operators and clients
-        cannot tell which path executed a subtree — the GPU is an
-        implementation detail behind the plan.</>,
+        at the DataFusion boundary. A caller using DataFusion or Flight SQL
+        should not need a different API because a subtree ran on the GPU.</>,
     },
   ]}
   edges={[
@@ -176,117 +177,157 @@ subtrees stay on DataFusion's CPU path and carry a structured fallback reason.
     {from: 'native', to: 'out'},
     {from: 'cpu', to: 'out'},
   ]}
-  caption={<>Relational acceleration path. The optimizer rule makes one
-  gate-first decision per candidate subtree; admitted subtrees dip into the
-  RAPIDS lane, rejected ones stay on the host — and both merge back into the
-  same Arrow output.</>}
+  caption={<>The GPU path is a reported rewrite of supported physical subtrees.
+  Rejection preserves CPU-readable DataFusion operators or, for GPU-only
+  table-format leaves, fails before execution with a stable reason code.</>}
 />
 
-## One optimizer rule, one decision point
+Fallback is a planning-time boundary. If a CPU-readable candidate is rejected,
+DataFusion keeps the CPU plan. If a GPU-only table-format leaf survives native
+planning, the leaf guard fails planning before a placeholder CPU execution path
+can run. Once `NativeCudfExec` or `NativeCudfComposedExec` starts, native
+runtime failures surface as structured errors and metrics; Nexus does not
+silently reroute that already-started native fragment back to CPU.
 
-There is a single entry point for relational cuDF rewrites:
-`CudfNativePhysicalOptimizerRule` (public rule name
-`datafusion_nexus_native`), registered as the last physical optimizer rule
-before DataFusion's sanity check. Three properties of its decision are
-load-bearing:
+## Session wiring
 
-- **Admission is capability-first.** A subtree is admitted only if every
-  operator, expression, Arrow type, edge contract, and reservation contract it
-  needs is individually supported. Rejections are local and structured — "this
-  expression is missing", not "this query family is unsupported".
-- **Every decision is reported.** The rule emits structured `PlanningReport`s
-  with per-candidate `Rewritten` / `Rejected` outcomes and `FallbackReason`
-  codes. Tests and tooling assert against these reports, never against printed
-  plans.
-- **Two execution modes, kept apart.** *Strict bounded* execution is
-  gate-first: every memory `ReservationRequirement` must be satisfiable before
-  it runs. *Adaptive* execution admits more and accounts for memory actions at
-  runtime. They have separate admission, evidence, and report surfaces
-  (`StrictBoundedContractReport` vs `AdaptivePipelineReport`) — never merge
-  them or project one mode's evidence into the other.
+`with_cudf_native` installs three physical optimizer hooks. Only the final
+rewrite is the public relational decision point, but the surrounding hooks are
+part of the operable design.
 
-## The layering
+| Hook | Position | Why it exists |
+| --- | --- | --- |
+| `datafusion_nexus_native_count_only` | Before DataFusion `aggregate_statistics` | Detect count-only shapes before DataFusion's statistics shortcut hides the native candidate. |
+| `datafusion_nexus_native` | After DataFusion's default rules, before the leaf guard | Run final native lowering, fallback policy, fragment composition, and report capture while DataFusion can still validate the rewritten tree. |
+| `datafusion_nexus_table_format_gpu_only_leaf_guard` | Immediately before `SanityCheckPlan` | Fail fast when a GPU-only table-format leaf survived native planning and would otherwise reach a CPU operator. |
+
+The public rule name `datafusion_nexus_native` is also the deduplication key.
+Do not rename it casually.
+
+## Layering and ownership
 
 <StackDiagram
+  ariaLabel="DataFusion Nexus crate and RAPIDS layering"
   nodes={[
     {
       kind: 'upstream', name: 'DataFusion', note: 'SQL · planner · CPU operators', tone: 'plan',
-      sub: '../datafusion (sibling checkout)',
-      detail: <>The upstream query engine, pinned as a sibling path checkout.
-        Nexus consumes its physical-plan and <code>ExecutionPlan</code> APIs and
-        registers one optimizer rule; SQL, catalogs, and CPU operators are
-        stock DataFusion.</>,
+      sub: '../datafusion',
+      detail: <>Nexus consumes DataFusion physical-plan and
+        <code>ExecutionPlan</code> APIs. SQL parsing, catalog resolution, and
+        CPU execution remain upstream behavior.</>,
     },
     {
-      kind: 'adapter', name: 'datafusion-nexus', note: 'optimizer rule · lowering · exec wrappers · reports', tone: 'engine',
+      kind: 'adapter', name: 'datafusion-nexus', note: 'rule wiring · lowering · wrappers · reports', tone: 'engine',
       sub: 'src/',
-      detail: <>Everything DataFusion-specific: shape recognition and lowering
-        (<code>src/native/</code>), the <code>ExecutionPlan</code> wrappers
-        (<code>src/native_exec/</code>), planning/execution report surfaces
-        (<code>src/native_report/</code>), session wiring, and the closed{' '}
-        <code>Error</code>/<code>ErrorCode</code> taxonomy. If it mentions a
-        DataFusion type, it lives here.</>,
+      detail: <>Everything DataFusion-specific lives here:
+        <code>src/native/</code> for shape recognition and lowering,
+        <code>src/native_exec/</code> for wrappers,
+        <code>src/native_report/</code> for report rows, and
+        <code>src/error.rs</code> for adapter errors.</>,
     },
     {
-      kind: 'engine', name: 'nexus-query-engine', note: 'QueryPlan IR · admission · executor — no DataFusion dep', tone: 'bridge',
+      kind: 'engine', name: 'nexus-query-engine', note: 'QueryPlan IR · capability · executor', tone: 'bridge',
       sub: 'crates/nexus-query-engine',
-      detail: <>The DataFusion-free core: the <code>QueryPlan</code> IR,
-        expression and source types, capability-first admission
-        (<code>capability/</code>), the compiled pipeline DAG with reservation
-        gates (<code>pipeline/</code>), and the strict/adaptive executors
-        (<code>exec/bounded/</code>). Reusable by any host, not just
-        DataFusion.</>,
+      detail: <>The closed native engine. It owns <code>QueryPlan</code>,
+        expressions, sources, capability-first admission, compiled pipelines,
+        strict/adaptive bounded execution, runtime metrics, and native errors.
+        It has no DataFusion dependency.</>,
     },
     {
-      kind: 'bindings', name: 'cudf-rs / cugraph-rs', note: 'safe Rust over libcudf & libcugraph · one Runtime', tone: 'gpu',
+      kind: 'bindings', name: 'cudf-rs / cugraph-rs', note: 'safe Rust over RAPIDS', tone: 'gpu',
       boundary: 'FFI / C ABI boundary',
       sub: '../cudf-rs · ../cugraph-rs',
-      detail: <>Safe Rust over NVIDIA's CUDA libraries: RAII ownership of GPU
-        memory, device/stream invariants in the type system, structured errors
-        across FFI, and the one shared <code>cudf::Runtime</code>. These crates
-        are <strong>first-class foundations</strong> — when GPU capability is
-        missing, it gets fixed here, not papered over in the adapter.</>,
+      detail: <>The binding crates own RAII device memory, runtime and stream
+        invariants, RAPIDS interop contracts, structured FFI errors, and missing
+        low-level capability. Fix GPU foundations here first.</>,
     },
     {
-      kind: 'native', name: 'libcudf + libcugraph + RMM', note: 'C++ / CUDA kernels · GPU memory pool', tone: 'gpu',
+      kind: 'native', name: 'libcudf + libcugraph + RMM', note: 'C++ / CUDA kernels · memory pool', tone: 'gpu',
       sub: 'NVIDIA RAPIDS',
-      detail: <>NVIDIA's CUDA C++ kernels and the RMM memory pool. C++
-        exceptions never cross into Rust — they are caught at or below the C
-        ABI and surface as status codes that become structured Rust{' '}
-        <code>Result</code>s.</>,
+      detail: <>CUDA kernels and the RMM allocator live below the Rust
+        boundary. C++ exceptions must be converted below or at the C ABI and
+        surface in Rust as structured <code>Result</code>s.</>,
     },
   ]}
-  caption={<>Everything above the dashed line is Rust; everything below is
-  NVIDIA's C++/CUDA, reached only through the binding crates.</>}
+  caption={<>The important boundary is not "host versus GPU"; it is
+  DataFusion's open <code>ExecutionPlan</code> trait versus the engine's closed,
+  owned <code>QueryPlan</code> IR.</>}
 />
 
-The layering carries a strict placement rule:
+### Why two crates
 
-- **DataFusion-specific code lives in the adapter** (`src/`): plan
-  recognition, lowering, `ExecutionPlan` wrappers, report surfaces.
-- **Reusable native-engine code lives in `nexus-query-engine`**: the
-  `QueryPlan` IR, expression and source types, admission, and the executor. It
-  compiles with no DataFusion dependency.
-- **Missing GPU capability is fixed in the binding crates.** `cudf-rs` and
-  `cugraph-rs` are first-class foundations (pinned as sibling path checkouts,
-  not crates.io dependencies). If native execution needs a better API,
-  ownership model, or memory-control surface, extend the binding crate — don't
-  paper over the gap in the adapter.
+The split is not cosmetic. `nexus-query-engine` deliberately consumes a closed,
+owned `QueryPlan` instead of DataFusion's open `ExecutionPlan` trait.
 
-## How cuGraph plugs in
+- DataFusion's physical trait changes with DataFusion releases; the engine's IR
+  remains a stable native execution contract.
+- Physical planning has already decided aggregate modes, partitioning,
+  projection pushdown, join shape, and scan facts. Native lowering needs those
+  decisions.
+- Engine tests can pin capability analysis, strict/adaptive separation,
+  reservation behavior, and executor semantics without DataFusion in scope.
+- Non-DataFusion frontends can construct the same native IR directly.
 
-With `--features cugraph`, graph algorithms surface as **SQL table functions**:
+The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
+`Aggregate`, `Window`, `Sort`, `Limit`, `Join`, `Union`, `EdgeNormalize`, and
+`GraphAlgorithm`.
+
+### Placement rules
+
+| Change | Correct home | Contract to update |
+| --- | --- | --- |
+| Support a new DataFusion physical shape | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | Planning reports and fallback reasons |
+| Add native IR or executor behavior | `crates/nexus-query-engine/src/plan`, `expr`, `source`, `exec` | Engine contract tests and metrics |
+| Admit a bounded compiled shape | `crates/nexus-query-engine/src/capability`, `pipeline`, `exec/bounded` | Strict/adaptive diagnostics; no family-name shortcuts |
+| Improve GPU memory, streams, source readers, or graph interop | `../cudf-rs`, `../cugraph-rs`, `rapids-interop` | Binding crate API and FFI error mapping |
+| Change public evidence | `src/native_report/`, `src/native_exec/metrics.rs`, `src/error.rs` | Public surface schema/version constants |
+
+## Admission and execution evidence
+
+Admission has two layers. The adapter first normalizes and validates DataFusion
+physical shapes, expressions, Arrow types, sources, and lowering contracts. Once
+that produces a DataFusion-free `QueryPlan`, engine-side capability analysis
+does capability-first admission for bounded and compiled execution. A native IR
+candidate is not admitted because it matches a broad query family; it is
+admitted because the required node, edge, invariant, and reservation contracts
+are locally supported.
+
+| Boundary | Code | Evidence developers should assert |
+| --- | --- | --- |
+| Adapter candidate selection | `src/native/normalize.rs`, `src/native/validate.rs`, `src/native/lowering/` | `PlanningReport` rows with `CandidateOutcome::Rewritten` or `CandidateOutcome::Rejected` and a `FallbackReason`. |
+| Engine capability analysis | `crates/nexus-query-engine/src/capability/entry.rs` | Per-node, edge, invariant, aggregate-strategy, and envelope-admission decisions. |
+| Strict bounded execution | `crates/nexus-query-engine/src/exec/bounded/strict.rs` | `StrictBoundedContractReport`; every `ReservationRequirement` is satisfied before execution. |
+| Adaptive bounded execution | `crates/nexus-query-engine/src/exec/bounded/adaptive.rs` | `AdaptivePipelineReport`; runtime-action counts and optional memory-history evidence stay adaptive-only. |
+| Runtime execution | `execute_query_plan` / `execute_query_plan_with_gpu_inputs` | `QueryMetrics`, DataFusion metrics, and native TSV reports, not printed plans. |
+
+Adapter-side `NativeCudfExecutionConfig` stores the DataFusion-facing knobs and
+builds the native `ExecutionContext` at the DataFusion/native boundary. The
+engine context then owns execution-time memory control, boundary policy,
+reservation, cache, source scheduling, and retry evidence.
+
+Strict and adaptive bounded execution are separate by design. Do not project
+adaptive memory-history rows into strict reports, and do not treat strict
+preflight gaps as adapter-side estimates. Unresolved strict gaps are lower-level
+`cudf-rs` / `libcudf` contract work.
+
+Aggregates follow the same rule: state must be explicit in the engine. AVG is
+partial `SUM + COUNT`, final merge, then final projection; unsupported lookalikes
+stay rejected until their state semantics are modeled and tested.
+
+## cuGraph SQL path
+
+With `--features cugraph`, graph algorithms are SQL table functions. The SQL
+surface has 24 algorithm functions from `CUGRAPH_OPERATION_REGISTRY`, plus
+`cugraph_list_algorithms`, `cugraph_describe_algorithm`, and
+`cugraph_validate_call` for discovery and dry-run validation.
 
 ```sql
 SELECT * FROM cugraph_pagerank('edges', 'src', 'dst')
 ORDER BY value DESC;
 ```
 
-The output is a plain relation — join it, filter it, window over it like any
-other table. Under the hood, one `ExecutionPlan` bridges relational and graph
-execution on a single shared GPU runtime:
-
 <SystemDiagram
+  ariaLabel="cuGraph SQL execution path"
   lanes={[
     {id: 'host', label: 'host'},
     {id: 'gpu', label: 'gpu', tone: 'gpu'},
@@ -295,105 +336,104 @@ execution on a single shared GPU runtime:
     {
       id: 'udtf', lane: 'host', col: 0,
       kind: 'sql', name: 'cugraph_*()', note: ['table function', 'CugraphAlgoExec'], tone: 'plan',
-      sub: 'src/graph_sql/',
-      detail: <><code>register_cugraph_udtfs</code> wires 24 graph algorithms
-        onto the <code>SessionContext</code> as table functions —{' '}
-        <code>cugraph_pagerank</code>, <code>cugraph_bfs</code>,{' '}
-        <code>cugraph_louvain</code>, …. Arguments are the edge table plus
-        src/dst (and optional weight) columns and per-algorithm options.{' '}
-        <code>CugraphAlgoExec</code> (<code>src/graph_sql/exec.rs</code>) is the
-        DataFusion <code>ExecutionPlan</code> behind them: it executes the
-        edge-source plan, collects its Arrow batches, and drives the GPU
-        pipeline to the right.</>,
+      sub: 'src/graph_sql/table_function.rs · src/graph_sql/exec.rs',
+      detail: <><code>CugraphAlgoTableProvider</code> parses SQL arguments,
+        resolves the edge relation in the DataFusion catalog, creates the
+        physical edge-source plan, and returns <code>CugraphAlgoExec</code>.
+        The metadata UDTFs expose the same registry for humans and agents.</>,
     },
     {
       id: 'gdf', lane: 'gpu', col: 1,
-      kind: 'gpu', name: 'cudf::DataFrame', note: 'edge columns on device', tone: 'gpu',
-      sub: 'cudf-rs',
-      detail: <><code>cudf::DataFrame::from_record_batch(context.runtime(),
-        batch)</code> moves the edge columns onto the GPU — allocated from the
-        shared RMM pool, on the shared CUDA stream. This is the{' '}
-        <em>same runtime</em> that <code>NativeCudfExec</code> uses for
-        dataframe execution, which is exactly what makes the next hand-off
-        free.</>,
+      kind: 'edge data', name: 'GpuDataFrame', note: 'native or imported', tone: 'gpu',
+      sub: 'execute_edge_source_to_gpu',
+      detail: <>If the edge source is already <code>NativeCudfExec</code> or
+        <code>NativeCudfComposedExec</code>, it is re-sunk as GPU-resident and
+        handed forward without materializing host Arrow. Otherwise DataFusion
+        produces Arrow batches and Nexus imports them into cuDF.</>,
     },
     {
       id: 'graph', lane: 'gpu', col: 2,
-      kind: 'graph', name: 'cugraph Graph', note: ['zero-copy build', 'algorithm on GPU'], tone: 'graph',
-      sub: 'cugraph-rs · rapids-interop',
-      detail: <><code>cugraph-rs</code> builds the graph directly from the cuDF
-        columns' device pointers — no host round-trip, no copy. The exchange
-        goes through <code>rapids-interop</code>'s ownership contract (prepared
-        export / borrowed view), which proves lifetime, device, and stream
-        safety at compile time. The algorithm then runs on the same stream, in
-        the same memory pool.</>,
+      kind: 'cuGraph', name: 'Graph<T>', note: ['prepared export', 'typed algorithm'], tone: 'graph',
+      sub: 'crates/nexus-query-engine/src/exec/graph_algorithm/',
+      detail: <>The engine prepares a cuDF table export, binds a cuGraph
+        <code>ResourceHandle</code> to a runtime on the same device and stream,
+        builds a typed cuGraph graph, and runs the selected algorithm. Bounded
+        graph execution may use a budget-tracking memory resource instead of the
+        shared runtime. Stable edge-id paths use borrowed device slices
+        directly.</>,
     },
     {
       id: 'res', lane: 'host', col: 3,
-      kind: 'output', name: 'results → Arrow', note: 'one D2D copy', tone: 'plain',
-      sub: 'IntoSeries · *_result_to_dataframe',
-      detail: <>Algorithm results take one device-to-device copy back into cuDF
-        (the cugraph C API owns and frees its result memory), then materialize
-        to host Arrow <code>RecordBatch</code>es. From SQL's point of view the
-        whole thing was just a table function returning rows.</>,
+      kind: 'result', name: 'relation rows', note: 'Arrow or GPU sink', tone: 'plain',
+      sub: 'QueryOutput::HostArrow · QueryOutput::GpuResident',
+      detail: <>Results return through the native query sink. SQL callers get
+        rows; composed GPU fragments may keep a GPU-resident handle. Interop
+        promises no unnecessary edge-source host round-trip, but output
+        conversion is algorithm- and sink-specific.</>,
     },
   ]}
   edges={[
     {from: 'udtf', to: 'gdf'},
-    {from: 'gdf', to: 'graph', label: 'borrows'},
+    {from: 'gdf', to: 'graph', label: 'edge columns'},
     {from: 'graph', to: 'res'},
   ]}
   regions={[
     {
-      label: 'one cudf::Runtime · one stream · one RMM pool',
+      label: 'same device/stream/provenance domain',
       nodes: ['gdf', 'graph'],
       tone: 'gpu',
     },
   ]}
-  caption={<>Edge data is handed to cuGraph <strong>zero-copy</strong> because
-  dataframe execution and graph algorithms share one{' '}
-  <code>cudf::Runtime</code> — one CUDA stream, one RMM allocator. Only the
-  results take a copy back.</>}
+  caption={<>cuGraph is not a separate service boundary. It is a table-function
+  execution path that shares the native cuDF runtime, metrics, memory policy,
+  and structured error handling.</>}
 />
 
-The shared-runtime region is the load-bearing invariant: Nexus carries a
-single `Arc<cudf::Runtime>` across the whole session, so GPU buffers move
-between dataframe operators and graph algorithms without copies or
-cross-stream synchronization hazards. The exchange itself goes through
-`rapids-interop`, a small ownership-contract crate shared by `cudf-rs` and
-`cugraph-rs` — the two binding crates stay loosely coupled while still proving
-lifetime and stream safety at compile time.
+For callers, the recommended workflow is:
 
-## What every developer must know
+1. `cugraph_list_algorithms()` to discover enabled functions.
+2. `cugraph_describe_algorithm('<fn>', 'verbose')` to inspect signatures,
+   options, schemas, and limitations.
+3. `cugraph_validate_call('<fn>', '<table>', '<call_json>')` to check a concrete
+   call without scanning edges or launching CUDA.
+4. Execute the `cugraph_*` function once validation returns `valid = true`.
 
-- **Reports are the contract.** Report row schemas, TSV column ordering,
-  `NATIVE_*_TSV_HEADER` / `NATIVE_*_TSV_SCHEMA_VERSION`, and
-  `NATIVE_CUDF_DATAFUSION_METRIC_NAMES` are
-  [public surface](./reference/public-surface.md) — don't change them casually,
-  and assert tests against reports, not printed plans.
-- **The GPU is one external resource.** Anything touching CUDA — tests,
-  benchmarks, the server — must be serialized against other GPU users with
-  `flock /tmp/cudf-gpu.lock`. Within one test invocation, the `gpu` nextest
-  group caps GPU-test parallelism; see [Build & Test](./build-and-test.md).
-- **Aggregate state is explicit.** Aggregates with partial/final semantics
-  model their state in the engine: AVG is partial SUM + COUNT, merged, then a
-  final projection — never an average of averages. Lookalikes with unmodeled
-  state stay rejected.
-- **Errors stay structured.** The adapter's closed `Error` / `ErrorCode`
-  categories carry typed facts from the FFI boundary up to the reports;
-  convert to `DataFusionError` only at the DataFusion API boundary.
-- **Sibling checkouts are required.** `../cudf-rs`, `../datafusion`,
-  `../iceberg-rust` (and `../cugraph-rs` for `--features cugraph`) are pinned
-  path dependencies; the workspace does not build without them.
-- **Optional surfaces are feature-gated.** Iceberg/Glue/S3 support is behind
-  `--features iceberg`, the Flight SQL server behind `--features server`, and
-  graph SQL behind `--features cugraph`.
+The detailed function reference lives in [cuGraph SQL API](./cugraph/overview.mdx).
 
-## Where to go next
+## Lakehouse and workspace boundary
 
-- [Build & Test](./build-and-test.md) — commands, toolchain, GPU test lanes.
-- [cuGraph SQL API](./cugraph/overview.mdx) — the full `cugraph_*` function
-  reference.
-- [Guides](./guides/benchmarks.md) — benchmark recipes and local E2E flows.
-- [Public surface](./reference/public-surface.md) — the contracts listed above,
-  in detail.
+Iceberg catalogs are source catalogs. They are not the mutable workspace. Nexus
+keeps these concerns separate:
+
+- Iceberg and Glue/REST metadata resolve to adapter-owned table providers and
+  format-neutral scan facts.
+- Interactive DDL such as `CREATE VIEW` belongs in a mutable DataFusion
+  workspace, including graph edge views built over source tables.
+- The Flight SQL server can expose a workspace overlay so users get short names
+  without teaching a read-only Iceberg catalog to accept views.
+- Iceberg/Glue/S3 is feature-gated behind `--features iceberg`; tests must not
+  require a real AWS account.
+
+## Developer checklist
+
+Use this page as the routing table before changing behavior:
+
+| If you are changing... | Inspect first | Keep stable |
+| --- | --- | --- |
+| Native rewrite coverage | `docs/guide/architecture-internals.md`, `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | `PlanningReport`, `FallbackReason`, rule names |
+| Native execution semantics | `crates/nexus-query-engine/src/exec/`, `capability/`, `pipeline/` | Strict/adaptive separation and reservation evidence |
+| cuGraph SQL behavior | `src/graph_sql/types.rs`, `parser.rs`, `metadata/`, `exec.rs`, engine `exec/graph_algorithm/` | Metadata schema versions and validation output |
+| Iceberg/source behavior | `src/table_format/`, `src/table_format/iceberg/`, server workspace docs | Source diagnostics and credential-safe error facts |
+| Public diagnostics | `src/native_report/schema.rs`, `src/native_exec/metrics.rs`, `src/error.rs` | TSV headers, schema versions, metric names, `ErrorCode`s |
+
+## Authoritative references
+
+- [cuGraph SQL API](./cugraph/overview.mdx) for callable graph algorithms and
+  validation metadata.
+- `AGENTS.md` for repository invariants, canonical build/test commands, and GPU
+  serialization rules.
+- `docs/guide/architecture-internals.md` for the module-by-module extension
+  checklist.
+- `Cargo.toml` for feature gates and sibling path dependencies.
+- `src/native_report/schema.rs`, `src/native_exec/metrics.rs`, and
+  `src/error.rs` for stable report, metric, and error contracts.
