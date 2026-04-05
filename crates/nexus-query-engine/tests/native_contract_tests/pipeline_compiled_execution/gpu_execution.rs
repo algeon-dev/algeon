@@ -148,6 +148,103 @@ fn execute_query_plan_rejects_grouped_aggregate_join_build_input_without_strict_
 }
 
 #[test]
+fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("nexus-query-engine-compiled-aggregate-join-input-stream");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_aggregate_join_input_parquets(&left_path, &right_path);
+
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
+    };
+    let plan =
+        optimize_query_plan(aggregate_join_build_input_data_plan(&left_path, &right_path), &optimizer_options).plan;
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate join input plan should compile");
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let context = bounded_context(Arc::new(runtime));
+    let mut metrics = QueryMetrics::default();
+    let gpu_inputs = GpuResidentInputMap::new();
+
+    let (state, batch) = {
+        let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
+        let state = scheduler.run(&mut executor).expect("compiled aggregate join input should execute");
+        let output = executor.take_host_output().expect("compiled host sink should materialize");
+        (state, output)
+    };
+
+    assert_eq!(state.live_resource_count(), 0);
+    assert_eq!(int32_int64_pairs_sorted(&batch, 0, 1), vec![(Some(1), Some(15)), (Some(2), Some(20))]);
+    assert_eq!(
+        metrics.partial_aggregate_count, 2,
+        "the aggregate input source has two row-group chunks and should be reduced as chunk-local partials"
+    );
+    assert_compiled_partial_aggregate_uses_work_reservation_transfer(&metrics);
+    assert_compiled_final_merge_uses_partitioned_strategy(&metrics);
+}
+
+#[test]
+fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggregate() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("nexus-query-engine-compiled-shared-source-aggregate");
+    let fact_path = dir.join("fact.parquet");
+    let dim_path = dir.join("dim.parquet");
+    write_aggregate_join_input_parquets(&fact_path, &dim_path);
+
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
+    };
+    let plan = optimize_query_plan(
+        shared_source_join_build_and_aggregate_data_plan(&fact_path, &dim_path),
+        &optimizer_options,
+    )
+    .plan;
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("shared-source aggregate plan should compile");
+    assert!(
+        pipeline.debug_render().contains("kind=shared_resident_producer"),
+        "shared source must remain represented as one fan-out resource"
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let context = bounded_context(Arc::new(runtime));
+    let mut metrics = QueryMetrics::default();
+    let gpu_inputs = GpuResidentInputMap::new();
+
+    let (state, batch) = {
+        let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
+        let state = scheduler.run(&mut executor).expect("shared source aggregate should execute");
+        let output = executor.take_host_output().expect("compiled host sink should materialize");
+        (state, output)
+    };
+
+    assert_eq!(state.live_resource_count(), 0);
+    assert_eq!(
+        int32_int64_pairs_sorted(&batch, 0, 1),
+        vec![(Some(1), Some(15)), (Some(1), Some(15)), (Some(2), Some(20))]
+    );
+    assert_eq!(
+        metrics.partial_aggregate_count, 2,
+        "the shared aggregate branch should clone the deferred source stream and reduce both row-group chunks"
+    );
+    assert_compiled_final_merge_uses_partitioned_strategy(&metrics);
+}
+
+#[test]
 fn execute_query_plan_routes_d3_6_nonlinear_topk_and_subquery_filter_paths_through_compiled_pipeline() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
@@ -746,6 +843,27 @@ fn assert_compiled_partial_aggregate_uses_work_reservation_transfer(metrics: &Qu
         event.memory_boundary == "compiled_aggregate_partial_state"
             && event.action == MemoryReservationEventAction::Reserve
             && event.reservation_kind == ReservationKind::PartialState
+    }));
+}
+
+fn assert_compiled_final_merge_uses_partitioned_strategy(metrics: &QueryMetrics) {
+    let decision = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| {
+            decision.facts.get("execution_stage").map(String::as_str) == Some("final_merge")
+                && decision.facts.get("selected_strategy").map(String::as_str) == Some("partitioned_merge")
+        })
+        .expect("compiled final merge should record partitioned final-merge strategy");
+    assert_ne!(
+        decision.facts.get("partitioned_merge_partition_count").map(String::as_str),
+        Some("0"),
+        "partitioned final merge should record a positive partition count"
+    );
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.memory_boundary == "compiled_partitioned_final_aggregate_merge"
+            && event.action == MemoryReservationEventAction::Reserve
+            && event.reservation_kind == ReservationKind::FinalMerge
     }));
 }
 

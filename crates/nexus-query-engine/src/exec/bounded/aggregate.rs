@@ -33,7 +33,8 @@ use sizing::{
 };
 pub(in crate::exec::bounded) use source_adjacent::execute_bounded_partitioned_source_adjacent_aggregate_from_raw_chunks;
 pub(in crate::exec::bounded) use stream::{
-    execute_bounded_whole_input_aggregate_from_raw_chunks, execute_compiled_bounded_aggregate_from_stream,
+    execute_bounded_whole_input_aggregate_from_raw_chunks, execute_compiled_bounded_aggregate_from_source_stream,
+    execute_compiled_bounded_aggregate_from_stream,
 };
 
 fn aggregate_source_chunk_planning_policy(

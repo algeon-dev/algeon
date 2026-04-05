@@ -27,6 +27,17 @@ impl SourceTaskMemoryModel {
         }
     }
 
+    /// Shared source reused by a join leaf and an aggregate branch.
+    pub const fn shared_join_aggregate_stream(has_source_adjacent_stages: bool) -> Self {
+        Self {
+            source_read_slots: 1,
+            source_adjacent_operator_slots: if has_source_adjacent_stages { 3 } else { 0 },
+            downstream_operator_slots: 1,
+            retained_output_slots: 2,
+            source_read_preflight_slack_slots: 1,
+        }
+    }
+
     /// Source -> optional source-local unary stages -> join build/probe.
     pub const fn join_leaf_stream(has_source_adjacent_stages: bool) -> Self {
         Self {

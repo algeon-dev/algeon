@@ -1114,22 +1114,9 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
         metrics.partial_aggregate_input_rows >= metrics.partial_aggregate_rows,
         "partial aggregate metrics should distinguish input rows from retained state rows"
     );
-    assert!(
-        metrics.final_merge_attempts > 1,
-        "direct join-output aggregate should use thresholded final-merge fan-in, attempts={}, partials={}",
-        metrics.final_merge_attempts,
-        metrics.partial_aggregate_count
-    );
-    assert!(
-        metrics.final_merge_levels > 1,
-        "direct join-output aggregate should merge partial states level by level, levels={}, partials={}",
-        metrics.final_merge_levels,
-        metrics.partial_aggregate_count
-    );
-    assert!(
-        metrics.final_merge_max_fan_in < metrics.partial_aggregate_count,
-        "direct join-output aggregate should not use a single all-partials final merge"
-    );
+    assert_eq!(metrics.final_merge_attempts, 1);
+    assert_eq!(metrics.final_merge_levels, 1);
+    assert_partitioned_final_merge_strategy(metrics);
     assert!(
         metrics.partial_aggregate_count <= metrics.source_chunks_committed.saturating_mul(2),
         "direct join-output aggregate should keep stream partial count proportional to source chunks, partials={}, source_chunks={}",
@@ -1266,18 +1253,9 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         metrics.partial_aggregate_count > 1,
         "filtered direct join-output aggregate should produce multiple streamed partials"
     );
-    assert!(
-        metrics.final_merge_attempts > 1,
-        "final_merge_attempts={}, partial_aggregate_count={}",
-        metrics.final_merge_attempts,
-        metrics.partial_aggregate_count
-    );
-    assert!(
-        metrics.final_merge_levels > 1,
-        "final_merge_levels={}, partial_aggregate_count={}",
-        metrics.final_merge_levels,
-        metrics.partial_aggregate_count
-    );
+    assert_eq!(metrics.final_merge_attempts, 1);
+    assert_eq!(metrics.final_merge_levels, 1);
+    assert_partitioned_final_merge_strategy(metrics);
     assert!(
         metrics.partial_aggregate_count <= metrics.source_chunks_committed.saturating_mul(2),
         "filtered direct join-output aggregate should keep stream partial count proportional to source chunks, partials={}, source_chunks={}",
@@ -1287,17 +1265,6 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
     assert!(
         metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_output_stream_concat"),
         "join streams feeding filtered join and aggregate should not concatenate at the join output boundary"
-    );
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .filter(|event| {
-                event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate_final_merge"
-            })
-            .count()
-            > 1,
-        "compiled aggregate stream final merge should use thresholded fan-in rather than one all-partials concat"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {

@@ -63,9 +63,25 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
             (ReservationKind::OperatorOutput, "compiled_projection_output"),
             (ReservationKind::OperatorOutput, "compiled_projection_output"),
             (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::PartialState, "compiled_aggregate_partial_state_work"),
+            (ReservationKind::PartialState, "compiled_aggregate_partial_state"),
             (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_concat_output"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate"),
+            (ReservationKind::PartialState, "compiled_aggregate_partial_state_work"),
+            (ReservationKind::PartialState, "compiled_aggregate_partial_state"),
+            (ReservationKind::FinalMerge, "final_aggregate_hash_partition"),
+            (ReservationKind::FinalMerge, "final_aggregate_partition"),
+            (ReservationKind::FinalMerge, "final_aggregate_partition"),
+            (ReservationKind::FinalMerge, "final_aggregate_hash_partition"),
+            (ReservationKind::FinalMerge, "final_aggregate_partition"),
+            (ReservationKind::FinalMerge, "final_aggregate_partition"),
+            (ReservationKind::FinalMerge, "compiled_partitioned_final_aggregate_merge"),
+            (ReservationKind::FinalMerge, "compiled_partitioned_final_aggregate_merge_output"),
+            (ReservationKind::FinalMerge, "compiled_partitioned_final_aggregate_merge"),
+            (ReservationKind::FinalMerge, "compiled_partitioned_final_aggregate_merge_output"),
+            (ReservationKind::FinalMerge, "partitioned_final_aggregate_output_concat"),
+            (ReservationKind::FinalMerge, "partitioned_final_aggregate_output_concat"),
+            (ReservationKind::FinalMerge, "compiled_partitioned_final_aggregate_merge_output"),
+            (ReservationKind::FinalMerge, "compiled_aggregate_final_projection"),
             (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
             (ReservationKind::OperatorOutput, "compiled_projection"),
             (ReservationKind::OperatorOutput, "compiled_projection_output"),
@@ -85,9 +101,9 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
     );
     assert_budgeted_success_event_with_contract(
         metrics,
-        "nexus_query_engine.aggregate.execute",
+        "nexus_query_engine.aggregate.execute_partial",
         2,
-        "compiled_aggregate",
+        "compiled_aggregate_partial_state_work",
         Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"),
     );
 
@@ -177,12 +193,12 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
     let baseline =
         execute_query_plan(&mixed_grouped_aggregate_execution_context(&runtime, 8 * 1024 * 1024 * 1024), &plan)
             .unwrap();
-    let (retained_join_subtree_bytes, source_read_bytes, chunk_operator_bytes) =
+    let (retained_join_subtree_bytes, source_read_bytes, chunk_operator_bytes, retained_partial_state_bytes) =
         grouped_aggregate_chunk_budget_window(baseline.metrics());
-    let operator_token_budget = chunk_operator_bytes;
+    let operator_token_budget = chunk_operator_bytes.saturating_sub(1);
     let constrained_budget = retained_join_subtree_bytes
         .saturating_add(source_read_bytes)
-        .saturating_add(chunk_operator_bytes)
+        .saturating_add(retained_partial_state_bytes)
         .saturating_add(operator_token_budget);
     let constrained_context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -218,11 +234,11 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
             assert_eq!(error.fact_value("budget_boundary"), None);
             assert_eq!(error.fact_value("budget_bytes"), Some(constrained_budget.to_string().as_str()));
             assert_eq!(error.fact_value("budget_enforcement"), None);
-            assert_eq!(error.fact_value("reservation_kind"), Some("operator_output"));
-            assert_eq!(error.fact_value("memory_boundary"), Some("compiled_aggregate_output"));
+            assert_eq!(error.fact_value("reservation_kind"), Some("partial_state"));
+            assert_eq!(error.fact_value("memory_boundary"), Some("compiled_aggregate_partial_state_work"));
             assert_eq!(error.fact_value("stage"), Some("compiled_aggregate"));
-            assert_eq!(error.fact_value("attempt"), Some("1"));
-            assert_eq!(error.fact_value("max_attempts"), Some("1"));
+            assert_eq!(error.fact_value("attempt"), None);
+            assert_eq!(error.fact_value("max_attempts"), None);
         },
         other => panic!("unexpected grouped aggregate hard-budget error code: {other:?}"),
     }
