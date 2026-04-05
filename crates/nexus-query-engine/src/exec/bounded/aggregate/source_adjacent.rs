@@ -332,10 +332,10 @@ fn execute_source_adjacent_partition_aggregate_batch(
 }
 
 fn source_adjacent_aggregate_partitioner(
-    _context: &ExecutionContext,
+    context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     _estimated_input_bytes: u64,
-    _chunk_count: usize,
+    chunk_count: usize,
 ) -> SourceAdjacentAggregatePartitioner {
     let Ok(lowered_keys) = lower_aggregate_spec_keys(&bounded.aggregate.0.spec) else {
         return SourceAdjacentAggregatePartitioner::RowBalanced;
@@ -352,6 +352,11 @@ fn source_adjacent_aggregate_partitioner(
             matches!(field.data_type(), ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View);
     }
     if !has_string_key {
+        return SourceAdjacentAggregatePartitioner::RowBalanced;
+    }
+    if matches!(context.memory_control_policy(), MemoryControlPolicy::Bounded { .. })
+        && !BoundedPartitionRowPolicy::default().source_adjacent_group_key_partitioning_fits_chunk_count(chunk_count)
+    {
         return SourceAdjacentAggregatePartitioner::RowBalanced;
     }
     SourceAdjacentAggregatePartitioner::GroupKey { key_columns: lowered_keys.key_columns }
