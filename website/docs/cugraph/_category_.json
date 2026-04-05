@@ -1,0 +1,9 @@
+{
+  "label": "cuGraph SQL API",
+  "position": 3,
+  "collapsed": false,
+  "link": {
+    "type": "doc",
+    "id": "cugraph/overview"
+  }
+}

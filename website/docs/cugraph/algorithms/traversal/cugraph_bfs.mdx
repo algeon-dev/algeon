@@ -1,0 +1,159 @@
+---
+title: BFS
+sidebar_label: BFS
+description: "Multi-source-capable breadth-first search; source selectors must contain at most one source per connected component."
+---
+
+{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit examples in website/docs/cugraph/_examples/cugraph_bfs.mdx and re-run the generator. */}
+
+# BFS
+
+SQL function: `cugraph_bfs`
+
+Multi-source-capable breadth-first search; source selectors must contain at most one source per connected component.
+
+## Signature
+
+```sql
+cugraph_bfs(table_name, source_vertex_or_vertices [, src_col, dst_col [, weight_col [, options_json]]])
+```
+
+Allowed argument counts: 2, 4, 5, 6.
+
+## Quickstart
+
+```sql
+SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{"depth_limit":4}')
+```
+
+## Positional arguments
+
+| Argument | Type | Required | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `table_name` | `Utf8` | yes |  |  |
+| `source_vertex_or_vertices` | `Int64\|Utf8\|List<Int64>\|List<Utf8>\|null-with-source_vertices_table` | yes |  | selector: literal scalar/list source selector, or NULL with source_vertices_table/source_vertex_col options |
+| `src_col` | `Utf8` | no | `src` |  |
+| `dst_col` | `Utf8` | no | `dst` |  |
+| `weight_col` | `Utf8\|null` | no |  | accepted as an edge-column binding but ignored by BFS traversal; semantic effect: none for traversal; BFS distance is a hop count |
+| `options_json` | `Utf8` | no |  |  |
+
+## JSON options
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `depth_limit` | `Int64\|null` | `null` | min 0 | Maximum BFS depth in hops; null means unbounded traversal. |
+| `edge_id_col` | `Utf8\|null` | `null` | valid when integer vertex domain only | Edge-id column in the edge relation used by edge-id predicate options. |
+| `exclude_vertex_col` | `Utf8\|null` | `null` | required when exclude_vertices_table is set; column of `exclude_vertices_table`; type ref `vertex_domain` | Column in exclude_vertices_table containing excluded vertex identifiers. |
+| `exclude_vertices_table` | `Utf8\|null` | `null` | side input (exclude_vertices, cols: `exclude_vertex_col`) | Optional relation containing the vertex denylist. |
+| `include_edge_dst_col` | `Utf8\|null` | `null` | required when include_edges_table is set; column of `include_edges_table`; type ref `vertex_domain` | Destination endpoint column in include_edges_table. |
+| `include_edge_id_col` | `Utf8\|null` | `null` | valid when edge_id_col is set; column of `include_edges_table`; type ref `edge_id_domain` | Optional edge-id column in include_edges_table; when omitted, include_edges matching uses only endpoint columns. |
+| `include_edge_ids_col` | `Utf8\|null` | `null` | defaults to edge_id_col when omitted and include_edge_ids_table is set; column of `include_edge_ids_table`; type ref `edge_id_domain` | Column in include_edge_ids_table containing allowed edge identifiers. |
+| `include_edge_ids_table` | `Utf8\|null` | `null` | required with `edge_id_col`; side input (include_edge_ids, cols: `include_edge_ids_col`) | Optional relation containing allowed edge identifiers. |
+| `include_edge_src_col` | `Utf8\|null` | `null` | required when include_edges_table is set; column of `include_edges_table`; type ref `vertex_domain` | Source endpoint column in include_edges_table. |
+| `include_edges_table` | `Utf8\|null` | `null` | side input (include_edges, cols: `include_edge_src_col`, `include_edge_dst_col`, `include_edge_id_col`) | Optional relation containing allowed edge endpoints and, when edge_id_col is configured, optional edge identifiers. |
+| `include_vertex_col` | `Utf8\|null` | `null` | required when include_vertices_table is set; column of `include_vertices_table`; type ref `vertex_domain` | Column in include_vertices_table containing allowed vertex identifiers. |
+| `include_vertices_table` | `Utf8\|null` | `null` | side input (include_vertices, cols: `include_vertex_col`) | Optional relation containing the vertex allowlist. |
+| `output_mode` | `Utf8` | `"raw"` | one of `"raw"`, `"normalized"`, `"path"` | Selects the BFS result shape: raw traversal rows, normalized reachability rows, or one reconstructed source-to-target path. |
+| `return_target_info` | `Boolean` | `false` | valid when output_mode in [raw, normalized] | Adds target_found and target_distance columns when target_vertices_table is supplied. |
+| `source_vertex_col` | `Utf8\|null` | `null` | required with `source_vertices_table`; column of `source_vertices_table`; type ref `vertex_domain` | Column in source_vertices_table containing BFS source vertex identifiers. |
+| `source_vertices_table` | `Utf8\|null` | `null` | required with `source_vertex_col`; side input (source_vertices, cols: `source_vertex_col`) | Optional relation containing BFS source vertices. Use source_vertex=NULL in the positional SQL argument when this option is set. |
+| `target_vertex_col` | `Utf8\|null` | `null` | required when output_mode=path or return_target_info=true; column of `target_vertices_table`; type ref `vertex_domain` | Column in target_vertices_table containing target vertex identifiers. |
+| `target_vertices_table` | `Utf8\|null` | `null` | required when output_mode=path or return_target_info=true; side input (target_vertices, cols: `target_vertex_col`) | Optional relation containing target vertices for path output or target reachability metadata. |
+
+### Graph construction options
+
+Shared by all cuGraph functions, shown here with this function's defaults. The `construction_policy` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [graph construction options](../../graph-options.mdx) for the full policy guide.
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
+| `directed` | `Boolean` | `true` |  | Whether graph construction treats edges as directed. |
+| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+
+
+## Output schema
+
+
+#### `raw` (default)
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `vertex` | `Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
+| `distance` | `Int64` | no | Hop-count distance from the nearest selected BFS source vertex. |
+| `predecessor` | `Int64\|Utf8` | yes | Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode. |
+
+#### `normalized`
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `vertex` | `Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
+| `distance` | `Int64` | yes | Hop-count distance from the nearest selected BFS source vertex. |
+| `predecessor` | `Int64\|Utf8` | yes | Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode. |
+| `reachable` | `Boolean` | no | Whether the vertex is reachable under normalized BFS output. |
+
+#### `normalized_with_target_info`
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `vertex` | `Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
+| `distance` | `Int64` | yes | Hop-count distance from the nearest selected BFS source vertex. |
+| `predecessor` | `Int64\|Utf8` | yes | Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode. |
+| `reachable` | `Boolean` | no | Whether the vertex is reachable under normalized BFS output. |
+| `target_found` | `Boolean` | no | Whether a requested target vertex was reached by the BFS traversal. |
+| `target_distance` | `Int64` | yes | Hop-count distance to the requested target vertex, null when the target was not reached. |
+
+#### `path`
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `path_index` | `Int64` | no | Zero-based row position in the reconstructed source-to-target path. |
+| `source` | `Int64\|Utf8` | no | Source vertex for the reconstructed BFS path. |
+| `target` | `Int64\|Utf8` | no | Target vertex for the reconstructed BFS path. |
+| `vertex` | `Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
+| `distance` | `Int64` | no | Hop-count distance from the nearest selected BFS source vertex. |
+
+#### `raw_with_target_info`
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `vertex` | `Int64\|Utf8` | no | Vertex reached or considered by the BFS traversal. |
+| `distance` | `Int64` | no | Hop-count distance from the nearest selected BFS source vertex. |
+| `predecessor` | `Int64\|Utf8` | yes | Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode. |
+| `target_found` | `Boolean` | no | Whether a requested target vertex was reached by the BFS traversal. |
+| `target_distance` | `Int64` | yes | Hop-count distance to the requested target vertex, null when the target was not reached. |
+
+:::note
+These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
+:::
+
+
+## Examples
+
+import Examples from '../../_examples/cugraph_bfs.mdx';
+
+<Examples />
+
+## Limitations & notes
+
+- dry-run validates table resolution, column presence, static dtypes, and options only
+- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
+- source lists and source_vertices_table are multi-source BFS, not one BFS per source
+- source lists and source_vertices_table must contain at most one source per connected component
+- raw/normalized output does not expose origin source per vertex
+- string logical vertex-domain BFS rejects edge_id_col, include_edge_ids_*, and include_edge_id_col
+- path output requires exactly one target row at execution time
+- options_schema_json is typed registry metadata; validate_call remains the authoritative call-specific checker
+
+## Validate before running
+
+Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:
+
+```sql
+SELECT * FROM cugraph_validate_call(
+  'cugraph_bfs',
+  'your_edges_table',
+  '{"src_col":"src","dst_col":"dst"}'
+);
+```
+
+See [Discovery & validation](../../discovery-and-validation.mdx) for the full `cugraph_validate_call` contract.

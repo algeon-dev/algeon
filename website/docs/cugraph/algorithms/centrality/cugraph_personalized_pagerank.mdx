@@ -1,0 +1,96 @@
+---
+title: Personalized PageRank
+sidebar_label: Personalized PageRank
+description: "Compute personalized PageRank scores."
+---
+
+{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit examples in website/docs/cugraph/_examples/cugraph_personalized_pagerank.mdx and re-run the generator. */}
+
+# Personalized PageRank
+
+SQL function: `cugraph_personalized_pagerank`
+
+Compute personalized PageRank scores.
+
+## Signature
+
+```sql
+cugraph_personalized_pagerank(table_name, src_col, dst_col, weight_col, options_json)
+```
+
+Allowed argument counts: 5.
+
+## Quickstart
+
+```sql
+SELECT * FROM cugraph_personalized_pagerank('target_edges', 'src', 'dst', NULL, '{"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value"}')
+```
+
+## Positional arguments
+
+| Argument | Type | Required | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `table_name` | `Utf8` | yes |  |  |
+| `src_col` | `Utf8` | no | `src` |  |
+| `dst_col` | `Utf8` | no | `dst` |  |
+| `weight_col` | `Utf8\|null` | no |  | optional edge weight column for graph construction when supported by the algorithm; semantic effect: edge weights affect algorithm results when provided |
+| `options_json` | `Utf8` | no |  |  |
+
+## JSON options
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `alpha` | `Float64` | `0.85` | min 0; max 1 |  |
+| `epsilon` | `Float64` | `0.00001` | &gt; 0 |  |
+| `max_iterations` | `UInt32` | `100` | min 1 |  |
+| `personalization_table` | `Utf8` |  | required | Table containing personalized PageRank vertex weights. |
+| `personalization_value_col` | `Utf8` |  | required; example `"value"` |  |
+| `personalization_vertex_col` | `Utf8` |  | required; example `"vertex"` |  |
+
+### Graph construction options
+
+Shared by all cuGraph functions, shown here with this function's defaults. The `construction_policy` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [graph construction options](../../graph-options.mdx) for the full policy guide.
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
+| `directed` | `Boolean` | `true` |  | Whether graph construction treats edges as directed. |
+| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+
+
+## Output schema
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `vertex` | `Int64` | no | Vertex receiving the PageRank score. |
+| `value` | `Float64` | no | PageRank score for the vertex. |
+
+:::note
+These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
+:::
+
+
+## Examples
+
+import Examples from '../../_examples/cugraph_personalized_pagerank.mdx';
+
+<Examples />
+
+## Limitations & notes
+
+- dry-run validates table resolution, column presence, static dtypes, and options only
+- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
+
+## Validate before running
+
+Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:
+
+```sql
+SELECT * FROM cugraph_validate_call(
+  'cugraph_personalized_pagerank',
+  'your_edges_table',
+  '{"src_col":"src","dst_col":"dst"}'
+);
+```
+
+See [Discovery & validation](../../discovery-and-validation.mdx) for the full `cugraph_validate_call` contract.

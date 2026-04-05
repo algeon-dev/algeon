@@ -1,0 +1,31 @@
+{/* Hand-owned examples for cugraph_in_degrees_all. NOT generated — safe to edit. */}
+
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### In-graph citations vs. what the metadata claims
+
+`papers.n_citation` is AMiner's global citation count; `in_degree` counts
+only edges present in this corpus. Joining the two measures how much of each
+paper's audience lies *outside* the dataset:
+
+```sql
+SELECT p.year, d.in_degree AS in_graph, p.n_citation AS reported,
+       p.n_citation - d.in_degree AS outside,
+       p.title AS paper
+FROM cugraph_in_degrees_all('citation_edges', 'src', 'dst') d
+JOIN papers p ON p.paper_id = d.vertex
+ORDER BY d.in_degree DESC
+LIMIT 5;
+```
+
+| year | in_graph | reported | outside | paper |
+|---|---|---|---|---|
+| 2004 | 22,892 | 35,541 | 12,649 | Distinctive Image Features from Scale-Invariant Keypoints |
+| 2011 | 19,662 | 31,047 | 11,385 | LIBSVM: A library for support vector machines |
+| 1989 | 17,207 | 44,175 | 26,968 | Genetic algorithms in search, optimization, and machine learning |
+| 1996 | 16,579 | 42,437 | 25,858 | Fuzzy sets |
+| 2001 | 15,048 | 34,741 | 19,693 | Random Forests |
+
+SIFT is the most-cited paper *within* the corpus. Older cross-disciplinary
+classics (genetic algorithms, fuzzy sets) show the biggest gap — more than
+half their citations come from fields this CS-centric corpus doesn't cover.

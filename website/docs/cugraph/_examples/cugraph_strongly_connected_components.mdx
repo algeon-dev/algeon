@@ -1,0 +1,59 @@
+{/* Hand-owned examples for cugraph_strongly_connected_components. NOT generated — safe to edit. */}
+
+These examples run on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Citation loops should not exist — count them anyway
+
+A citation points backward in time, so a *directed* cycle of citations is a
+small anomaly: two or more papers that all cite each other. SCC finds every
+such loop in one pass. Snapshot the run in the mutable `datafusion.public`
+workspace (labels are per-execution), then census the loops:
+
+```sql
+-- Local workspace snapshot; this does not write to lake.citation_network.
+CREATE TABLE scc_snapshot AS
+SELECT vertex, label
+FROM cugraph_strongly_connected_components('citation_edges', 'src', 'dst', NULL,
+                                           '{"directed":true}');
+
+WITH loops AS (
+  SELECT label, COUNT(*) AS members FROM scc_snapshot
+  GROUP BY label HAVING COUNT(*) > 1)
+SELECT COUNT(*) AS loops, MAX(members) AS biggest, SUM(members) AS papers_in_loops
+FROM loops;
+```
+
+| loops | biggest | papers_in_loops |
+|---|---|---|
+| 14,613 | 1,370,029 | 1,404,311 |
+
+The surprise is the giant: **1.37M papers sit inside one strongly connected
+component**. Preprint/journal double versions, simultaneous publication, and
+plain metadata error create enough forward-dated citations to glue a third of
+the graph into one loop — "time travel" is structural in bibliographic data.
+
+### Zoom into the two-paper loops
+
+```sql
+WITH pairs AS (
+  SELECT label FROM scc_snapshot GROUP BY label HAVING COUNT(*) = 2)
+SELECT c.label, p.year, p.title
+FROM pairs x
+JOIN scc_snapshot c ON c.label = x.label
+JOIN papers p ON p.paper_id = c.vertex
+ORDER BY c.label
+LIMIT 6;
+```
+
+| label | year | title |
+|---|---|---|
+| 57 | 2017 | Index Modulation Techniques for Next-Generation Wireless Networks |
+| 57 | 2017 | Multidimensional index modulation in wireless communications |
+| 210 | 2017 | A Survey of Research into Mixed Criticality Systems |
+| 210 | 2017 | Probabilistic analysis for mixed criticality systems using fixed priority… |
+| 265 | 2018 | DC programming and DCA: thirty years of developments |
+| 265 | 2018 | Convergence Analysis of Difference-of-Convex Algorithm with Subanalytic Data |
+
+12,015 of the 14,613 loops are exactly two papers — same-year companion
+papers and surveys citing each other, exactly what mutual citation looks like
+in practice.

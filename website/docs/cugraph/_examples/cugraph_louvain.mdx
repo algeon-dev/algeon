@@ -1,0 +1,64 @@
+{/* Hand-owned examples for cugraph_louvain. NOT generated — safe to edit. */}
+
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Do citation communities match the field labels?
+
+Two views carve out the 2010s AI literature — nodes by field-of-study label,
+edges where **both** endpoints qualify — and Louvain partitions it purely by
+citation structure. Cross-tabulating each community against `primary_fos`
+(with a window function to keep the top 3 labels per community) shows how
+well the labels survive contact with the actual graph:
+
+```sql
+CREATE VIEW ai_nodes AS
+SELECT paper_id FROM papers
+WHERE year >= 2010 AND primary_fos IN (
+  'Deep learning', 'Artificial neural network', 'Convolutional neural network',
+  'Recurrent neural network', 'Natural language processing',
+  'Reinforcement learning', 'Image segmentation', 'Feature extraction',
+  'Object detection', 'Speech recognition');
+
+CREATE VIEW ai_edges AS
+SELECT e.src, e.dst
+FROM citation_edges e
+JOIN ai_nodes a ON a.paper_id = e.src
+JOIN ai_nodes b ON b.paper_id = e.dst;
+
+WITH community_fos AS (
+  SELECT c."partition" AS community, p.primary_fos, COUNT(*) AS n
+  FROM cugraph_louvain('ai_edges', 'src', 'dst') c
+  JOIN papers p ON p.paper_id = c.vertex
+  GROUP BY c."partition", p.primary_fos),
+ranked AS (
+  SELECT SUM(n) OVER (PARTITION BY community) AS members,
+         ROW_NUMBER() OVER (PARTITION BY community ORDER BY n DESC) AS rn,
+         primary_fos,
+         n
+  FROM community_fos)
+SELECT members, rn, primary_fos, n
+FROM ranked
+WHERE members > 2500 AND rn <= 3
+ORDER BY members DESC, rn;
+```
+
+| members | rn | primary_fos | n |
+|---|---|---|---|
+| 10,684 | 1 | Convolutional neural network | 3,002 |
+| 10,684 | 2 | Object detection | 2,467 |
+| 10,684 | 3 | Deep learning | 2,247 |
+| 6,707 | 1 | Deep learning | 2,168 |
+| 6,707 | 2 | Convolutional neural network | 2,061 |
+| 6,707 | 3 | Feature extraction | 778 |
+| 5,118 | 1 | Deep learning | 1,591 |
+| 5,118 | 2 | Recurrent neural network | 1,289 |
+| 5,118 | 3 | Convolutional neural network | 714 |
+| 3,960 | 1 | Reinforcement learning | 3,157 |
+| 3,960 | 2 | Artificial neural network | 337 |
+| 3,960 | 3 | Deep learning | 204 |
+
+Louvain (1,960 communities over 38k papers) recovers real subfield borders:
+a computer-vision community, a sequence-modeling community — and a
+reinforcement-learning community that is 80% one label. Note the quoted
+`"partition"` — the output column name is a SQL keyword. `cugraph_leiden`
+is a drop-in replacement in the same shape.

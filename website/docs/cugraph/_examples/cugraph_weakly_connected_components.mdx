@@ -1,0 +1,61 @@
+{/* Hand-owned examples for cugraph_weakly_connected_components. NOT generated — safe to edit. */}
+
+These examples run on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Is computer science one connected literature?
+
+WCC requires `directed: false`. Of the 4.15M papers that have at least one
+edge, 99.4% form a single giant component:
+
+```sql
+WITH comp AS (
+  SELECT label, COUNT(*) AS members
+  FROM cugraph_weakly_connected_components('citation_edges', 'src', 'dst', NULL,
+                                           '{"directed":false}')
+  GROUP BY label)
+SELECT COUNT(*) AS components, MAX(members) AS giant, SUM(members) AS vertices
+FROM comp;
+```
+
+| components | giant | vertices |
+|---|---|---|
+| 9,751 | 4,123,602 | 4,146,772 |
+
+### Snapshot first, then explore the islands
+
+Component labels are assigned **per execution**, so a query that scans the
+algorithm twice can join mismatched labels. Materialize one run in the mutable
+`datafusion.public` workspace, then summarize the largest islands that never
+touch the mainland — one row per island, represented by its most-cited member:
+
+```sql
+-- Local workspace snapshot; this does not write to lake.citation_network.
+CREATE TABLE wcc_snapshot AS
+SELECT vertex, label
+FROM cugraph_weakly_connected_components('citation_edges', 'src', 'dst', NULL,
+                                         '{"directed":false}');
+
+WITH sizes AS (
+  SELECT label, COUNT(*) AS members FROM wcc_snapshot
+  GROUP BY label ORDER BY members DESC LIMIT 3 OFFSET 1),
+detail AS (
+  SELECT s.members, p.year, p.venue, p.title,
+         ROW_NUMBER() OVER (PARTITION BY s.label ORDER BY p.n_citation DESC) AS rn
+  FROM sizes s
+  JOIN wcc_snapshot c ON c.label = s.label
+  JOIN papers p ON p.paper_id = c.vertex)
+SELECT members, year, venue, title
+FROM detail WHERE rn = 1
+ORDER BY members DESC;
+```
+
+| members | year | venue | title |
+|---|---|---|---|
+| 39 | 2008 | IEICE Transactions on Electronics | Motion of Break Arcs Driven by External Magnetic Field… |
+| 25 | 2013 | IEICE Electronics Express | Cavity-resonator-integrated guided-mode resonance filter… |
+| 21 | 2015 | Symmetry | Inflationary Cosmology in Modified Gravity Theories |
+
+The three largest islands are a 39-paper cluster on electrical-contact arc
+discharge, a 25-paper photonics/electromagnetics cluster, and a 21-paper
+modified-gravity cosmology cluster — each citing only itself. Communities that
+publish in a corpus's blind spot show up as literal islands in the graph.

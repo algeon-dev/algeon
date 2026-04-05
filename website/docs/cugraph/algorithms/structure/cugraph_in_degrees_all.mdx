@@ -1,0 +1,90 @@
+---
+title: In Degrees All
+sidebar_label: In Degrees All
+description: "Compute in-degree for every vertex."
+---
+
+{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit examples in website/docs/cugraph/_examples/cugraph_in_degrees_all.mdx and re-run the generator. */}
+
+# In Degrees All
+
+SQL function: `cugraph_in_degrees_all`
+
+Compute in-degree for every vertex.
+
+## Signature
+
+```sql
+cugraph_in_degrees_all(table_name [, src_col, dst_col [, weight_col [, options_json]]])
+```
+
+Allowed argument counts: 1, 3, 4, 5.
+
+## Quickstart
+
+```sql
+SELECT * FROM cugraph_in_degrees_all('target_edges')
+```
+
+## Positional arguments
+
+| Argument | Type | Required | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `table_name` | `Utf8` | yes |  |  |
+| `src_col` | `Utf8` | no | `src` |  |
+| `dst_col` | `Utf8` | no | `dst` |  |
+| `weight_col` | `Utf8\|null` | no |  | accepted as an edge-column binding; native algorithm execution does not consume weights; semantic effect: none for this algorithm |
+| `options_json` | `Utf8` | no |  |  |
+
+## JSON options
+
+_This algorithm has no algorithm-specific options._
+
+
+### Graph construction options
+
+Shared by all cuGraph functions, shown here with this function's defaults. The `construction_policy` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [graph construction options](../../graph-options.mdx) for the full policy guide.
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
+| `directed` | `Boolean` | `true` |  | Whether graph construction treats edges as directed. |
+| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+
+
+## Output schema
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `vertex` | `Int64` | no | Vertex whose in-degree count is reported. |
+| `in_degree` | `Int64` | no | Number of incoming edges for the vertex. |
+
+:::note
+These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
+:::
+
+
+## Examples
+
+import Examples from '../../_examples/cugraph_in_degrees_all.mdx';
+
+<Examples />
+
+## Limitations & notes
+
+- dry-run validates table resolution, column presence, static dtypes, and options only
+- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
+
+## Validate before running
+
+Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:
+
+```sql
+SELECT * FROM cugraph_validate_call(
+  'cugraph_in_degrees_all',
+  'your_edges_table',
+  '{"src_col":"src","dst_col":"dst"}'
+);
+```
+
+See [Discovery & validation](../../discovery-and-validation.mdx) for the full `cugraph_validate_call` contract.

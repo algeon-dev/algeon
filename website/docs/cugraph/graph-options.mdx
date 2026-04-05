@@ -1,0 +1,124 @@
+---
+sidebar_position: 4
+description: Shared graph construction options accepted by every cuGraph function.
+---
+
+# Graph construction options
+
+Every `cugraph_*` function accepts these shared options inside `options_json`,
+alongside any algorithm-specific options. They control how the GPU graph is
+built from the edge relation.
+
+| Option | Type | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- |
+| `directed` | `Boolean` | `true` base default; some algorithms default to `false` | `true`, `false` | Whether graph construction treats edges as directed. |
+| `renumber` | `Boolean` | `true` | `true`, `false` | Whether construction may renumber external vertex ids internally. |
+| `construction_policy` | `Utf8` | `python_cugraph` | `python_cugraph`, `raw_libcugraph` | Edge-list construction semantics used before calling libcugraph. |
+
+:::note
+Per-algorithm option defaults can differ. `directed` defaults to `false` for
+weakly connected components, triangle count, core number, k-core, minimum
+spanning tree, spectral modularity maximization, balanced cut clustering, and
+ForceAtlas2. The default shown on each function's page and from
+`cugraph_validate_call` is authoritative for that function.
+:::
+
+## Construction policy
+
+`construction_policy` is a graph-ingress choice, not an algorithm choice. It
+decides whether DataFusion Nexus should first make the SQL edge relation match
+Python cuGraph edge-list construction semantics, or pass the relation directly
+to the lower-level libcugraph construction path.
+
+Use `python_cugraph` unless you have a specific reason to bypass Python-style
+edge normalization.
+
+| Policy | Best use | What happens |
+| --- | --- | --- |
+| `python_cugraph` | Default for application SQL, notebooks, Python cuGraph parity checks, and edge tables that may contain duplicate or one-way undirected edges. | Requests Python `cugraph.Graph.from_cudf_edgelist(...)`-compatible construction. DataFusion Nexus inserts an `EdgeNormalize` step when the edge source is not already proven canonical. |
+| `raw_libcugraph` | Pre-normalized edge tables, lower-level libcugraph parity checks, and performance-sensitive paths where duplicate/reverse-edge semantics are intentionally handled upstream. | Skips Python-style `EdgeNormalize` and sends the edge list to the libcugraph-compatible graph builder. Null edge rows are still sanitized because libcugraph has no null-edge semantics. |
+
+For SQL calls, both policies still use simple graph properties selected by
+`directed`; there is no SQL multigraph option. The difference is whether Nexus
+performs the Python-compatible edge normalization before the raw graph build.
+
+## What `python_cugraph` normalizes
+
+When normalization is required, Nexus rewrites the edge list before graph
+construction:
+
+- `directed=true`: duplicate directed `(src, dst)` pairs are collapsed.
+- `directed=false`: reverse `(dst, src)` rows are added, then duplicate directed
+  pairs are collapsed.
+- weighted duplicate conflicts are shape-specific: directed weighted graphs keep
+  the last row in stable input order for each `(src, dst)` pair; undirected
+  weighted graphs keep the minimum weight after reverse-edge expansion.
+
+The optimizer may skip the physical `EdgeNormalize` operator even when the
+selected policy is `python_cugraph`, but only when it can prove the input edge
+source is already canonical for the requested `directed` and edge-column shape.
+
+With either construction policy, source and destination nulls are not valid
+graph edges and are dropped before libcugraph receives the edge list. Null
+weights or edge ids only drop rows when the planned algorithm actually consumes
+that column.
+
+## How to set it
+
+Leave the option unset to use the default `python_cugraph` policy:
+
+```sql
+SELECT *
+FROM cugraph_pagerank('edges', 'src', 'dst');
+```
+
+Override one call when the edge relation is already prepared for raw
+libcugraph-style construction:
+
+```sql
+SELECT *
+FROM cugraph_pagerank(
+  'canonical_edges',
+  'src',
+  'dst',
+  'weight',
+  '{"construction_policy":"raw_libcugraph"}'
+);
+```
+
+On the standalone Flight SQL server, set a process default with
+`NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY`. Per-call `options_json` still wins:
+
+```bash
+NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY=raw_libcugraph \
+NEXUS_SERVER_CUGRAPH_ENABLED=true \
+flock /tmp/cudf-gpu.lock bash scripts/run_server.sh
+```
+
+## Verify the planned path
+
+Use `EXPLAIN` when the distinction matters:
+
+```sql
+EXPLAIN
+SELECT *
+FROM cugraph_louvain(
+  'edges',
+  'src',
+  'dst',
+  'weight',
+  '{"directed":false,"construction_policy":"python_cugraph"}'
+);
+```
+
+Look for both fields in the physical plan:
+
+- `construction_policy=python_cugraph` means the SQL call requested
+  Python-compatible construction semantics.
+- `edge_normalize_inserted=true` means Nexus will run a physical edge
+  normalization step.
+- `construction_policy=python_cugraph` with `edge_normalize_inserted=false`
+  means the optimizer proved the input is already canonical for the requested
+  Python-compatible semantics.
+- `construction_policy=raw_libcugraph` with `edge_normalize_inserted=false`
+  means the call bypasses Python-style normalization.

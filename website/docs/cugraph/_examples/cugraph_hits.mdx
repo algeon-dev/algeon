@@ -1,0 +1,45 @@
+{/* Hand-owned examples for cugraph_hits. NOT generated — safe to edit. */}
+
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Hubs are surveys, authorities are foundations
+
+HITS returns two scores per vertex in one pass. In a citation graph they
+separate two kinds of importance that PageRank blends: a **hub** cites many
+authorities (a good survey), an **authority** is cited by many hubs (a
+foundational result). One call, two `ORDER BY`s:
+
+```sql
+SELECT p.year, p.n_references, p.title
+FROM cugraph_hits('citation_edges', 'src', 'dst') h
+JOIN papers p ON p.paper_id = h.vertex
+ORDER BY h.hub_score DESC
+LIMIT 4;
+```
+
+| year | n_references | title |
+|---|---|---|
+| 2019 | 292 | Deep Learning for Generic Object Detection: A Survey |
+| 2018 | 276 | Deep Learning for Generic Object Detection: A Survey. |
+| 2015 | 299 | Recent Advances in Convolutional Neural Networks |
+| 2019 | 211 | Object Detection With Deep Learning: A Review |
+
+```sql
+SELECT p.year, p.n_citation, p.title
+FROM cugraph_hits('citation_edges', 'src', 'dst') h
+JOIN papers p ON p.paper_id = h.vertex
+ORDER BY h.authority_score DESC
+LIMIT 4;
+```
+
+| year | n_citation | title |
+|---|---|---|
+| 2004 | 35,541 | Distinctive Image Features from Scale-Invariant Keypoints |
+| 2014 | 18,029 | VERY DEEP CONVOLUTIONAL NETWORKS FOR LARGE-SCALE IMAGE RECOGNITION |
+| 2012 | 16,802 | ImageNet Classification with Deep Convolutional Neural Networks |
+| 2005 | 19,433 | Histograms of oriented gradients for human detection |
+
+The top hubs are literally titled "Survey" and "Review"; the top authorities
+are SIFT, VGG, AlexNet, HOG. The mutually-reinforcing definition lands both
+lists in the field with the densest hub/authority structure — computer
+vision — without being told any field labels.

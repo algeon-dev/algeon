@@ -1,0 +1,79 @@
+---
+sidebar_position: 3
+description: The cugraph_list_algorithms, cugraph_describe_algorithm, and cugraph_validate_call meta functions.
+---
+
+# Discovery & validation
+
+Three meta functions let humans and agents discover the API and check calls
+without reading server source.
+
+## `cugraph_list_algorithms`
+
+Inventory of every registered function.
+
+```sql
+SELECT * FROM cugraph_list_algorithms();
+```
+
+Columns: `function_name`, `algorithm`, `source_vertex_policy`,
+`weight_col_policy`, `output_schema_kind`, `signature`,
+`allowed_arg_counts_json`, `summary`, `metadata_schema_version`.
+
+## `cugraph_describe_algorithm`
+
+Machine-readable contract for one function. The optional second argument
+`'verbose'` adds full option, schema, argument, and limitation metadata.
+
+```sql
+SELECT * FROM cugraph_describe_algorithm('cugraph_bfs');
+SELECT * FROM cugraph_describe_algorithm('cugraph_bfs', 'verbose');
+```
+
+The per-function pages in this section are generated from this verbose output.
+
+## `cugraph_validate_call`
+
+Static dry-run of a specific call. Returns the concrete, table-specific output
+schema and a structured verdict — without scanning edges, building a graph, or
+launching CUDA.
+
+```sql
+SELECT * FROM cugraph_validate_call(
+  'cugraph_pagerank',
+  'your_edges_table',
+  '{"src_col":"src","dst_col":"dst","weight_col":"weight"}'
+);
+```
+
+Output columns (in order):
+
+| Column | Meaning |
+| --- | --- |
+| `valid` | whether the call is statically valid |
+| `error_code` | structured code when invalid (for example, `table_not_found`) |
+| `message` | human-readable explanation |
+| `function_name` | the function checked |
+| `algorithm_enabled` | whether the algorithm is enabled on this server |
+| `table_resolved` | whether the edge relation resolved |
+| `src_col_resolved` | whether `src_col` exists |
+| `dst_col_resolved` | whether `dst_col` exists |
+| `weight_col_resolved` | whether `weight_col` exists (when given) |
+| `src_dtype` | resolved source-column dtype |
+| `dst_dtype` | resolved destination-column dtype |
+| `weight_dtype` | resolved weight-column dtype |
+| `output_schema_json` | the concrete output schema for this call |
+| `normalized_options_json` | options after defaulting and normalization |
+| `would_execute_gpu` | whether execution would dispatch to the GPU |
+| `metadata_schema_version` | metadata contract version |
+
+### What validation does and does not do
+
+**Does:** confirm the function exists and is enabled; resolve the relation;
+check that src/dst/weight/predicate columns exist; check vertex dtype
+compatibility; validate JSON option names, types, and values; enforce
+conditional requirements (for example, BFS path mode needs a target relation);
+and compute the concrete output schema.
+
+**Does not:** scan edge rows, materialize Parquet, build the graph, launch CUDA,
+or prove the source vertex or target row actually exists.

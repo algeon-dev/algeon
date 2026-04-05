@@ -1,0 +1,29 @@
+{/* Hand-owned examples for cugraph_degrees_all. NOT generated — safe to edit. */}
+
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Both directions at once: the hybrid giants
+
+One call returns in-degree and out-degree together, so a compound `WHERE`
+finds papers that are simultaneously heavy citers *and* heavily cited —
+encyclopedic works that anchor a field and survey it at the same time:
+
+```sql
+SELECT d.in_degree, d.out_degree, p.year, p.title
+FROM cugraph_degrees_all('citation_edges', 'src', 'dst') d
+JOIN papers p ON p.paper_id = d.vertex
+WHERE d.out_degree > 200 AND d.in_degree > 2000
+ORDER BY d.in_degree DESC
+LIMIT 4;
+```
+
+| in_degree | out_degree | year | title |
+|---|---|---|---|
+| 5,115 | 434 | 1996 | Handbook of Applied Cryptography |
+| 3,666 | 217 | 2002 | Machine learning in automated text categorization |
+| 2,954 | 240 | 2009 | Anomaly detection: A survey |
+| 2,564 | 564 | 2015 | Deep learning in neural networks |
+
+For a single direction with metadata comparisons, see
+[`cugraph_in_degrees_all`](../algorithms/structure/cugraph_in_degrees_all.mdx) and
+[`cugraph_out_degrees_all`](../algorithms/structure/cugraph_out_degrees_all.mdx).

@@ -1,0 +1,95 @@
+---
+title: Edge Betweenness Centrality
+sidebar_label: Edge Betweenness Centrality
+description: "Compute exact or explicitly seeded/k-sampled approximate edge betweenness centrality scores."
+---
+
+{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit examples in website/docs/cugraph/_examples/cugraph_edge_betweenness_centrality.mdx and re-run the generator. */}
+
+# Edge Betweenness Centrality
+
+SQL function: `cugraph_edge_betweenness_centrality`
+
+Compute exact or explicitly seeded/k-sampled approximate edge betweenness centrality scores.
+
+## Signature
+
+```sql
+cugraph_edge_betweenness_centrality(table_name [, src_col, dst_col [, weight_col [, options_json]]])
+```
+
+Allowed argument counts: 1, 3, 4, 5.
+
+## Quickstart
+
+```sql
+SELECT * FROM cugraph_edge_betweenness_centrality('target_edges')
+```
+
+## Positional arguments
+
+| Argument | Type | Required | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `table_name` | `Utf8` | yes |  |  |
+| `src_col` | `Utf8` | no | `src` |  |
+| `dst_col` | `Utf8` | no | `dst` |  |
+| `weight_col` | `Utf8\|null` | no |  | accepted as an edge-column binding; native algorithm execution does not consume weights; semantic effect: none for this algorithm |
+| `options_json` | `Utf8` | no |  |  |
+
+## JSON options
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `exact_vertex_threshold` | `UInt64` | `100000` |  | Maximum actual graph vertex count allowed for exact betweenness without explicit seeds or k. |
+| `k` | `UInt64\|null` | `null` | min 1; mutually exclusive with `seeds` | Deterministic approximate seed count. Execution uses the first k distinct graph vertices in stable order and refuses k larger than the actual vertex count. |
+| `normalized` | `Boolean` | `true` |  |  |
+| `seeds` | `List<Int64>\|null` | `null` | mutually exclusive with `k` | Explicit seed vertices for approximate betweenness. Null requests exact all-vertex betweenness unless k is set. |
+
+### Graph construction options
+
+Shared by all cuGraph functions, shown here with this function's defaults. The `construction_policy` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [graph construction options](../../graph-options.mdx) for the full policy guide.
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
+| `directed` | `Boolean` | `true` |  | Whether graph construction treats edges as directed. |
+| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+
+
+## Output schema
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `source` | `Int64` | no | Algorithm result column. |
+| `destination` | `Int64` | no | Algorithm result column. |
+| `score` | `Float64` | no | Algorithm result column. |
+
+:::note
+These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
+:::
+
+
+## Examples
+
+import Examples from '../../_examples/cugraph_edge_betweenness_centrality.mdx';
+
+<Examples />
+
+## Limitations & notes
+
+- dry-run validates table resolution, column presence, static dtypes, and options only
+- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
+
+## Validate before running
+
+Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:
+
+```sql
+SELECT * FROM cugraph_validate_call(
+  'cugraph_edge_betweenness_centrality',
+  'your_edges_table',
+  '{"src_col":"src","dst_col":"dst"}'
+);
+```
+
+See [Discovery & validation](../../discovery-and-validation.mdx) for the full `cugraph_validate_call` contract.

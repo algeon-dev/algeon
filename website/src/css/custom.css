@@ -1,0 +1,353 @@
+/**
+ * Any CSS included here will be global. The classic template
+ * bundles Infima by default. Infima is a CSS framework designed to
+ * work well for content-centric websites.
+ */
+
+/* You can override the default Infima variables here. */
+:root {
+  --ifm-color-primary: #2e8555;
+  --ifm-color-primary-dark: #29784c;
+  --ifm-color-primary-darker: #277148;
+  --ifm-color-primary-darkest: #205d3b;
+  --ifm-color-primary-light: #33925d;
+  --ifm-color-primary-lighter: #359962;
+  --ifm-color-primary-lightest: #3cad6e;
+  --ifm-code-font-size: 95%;
+  --ifm-navbar-background-color: rgba(255, 255, 255, 0.82);
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+
+  --nx-ayu-bg: #0f1419;
+  --nx-ayu-bg-sunk: #0d1017;
+  --nx-ayu-surface: #10141c;
+  --nx-ayu-panel: #141821;
+  --nx-ayu-line: #1b1f29;
+  --nx-ayu-text: #bfbdb6;
+  --nx-ayu-heading: #e6e1cf;
+  --nx-ayu-muted: #5a6378;
+  --nx-ayu-muted-strong: #8b95a3;
+  --nx-ayu-accent: #e6b450;
+  --nx-ayu-accent-strong: #ffb454;
+  --nx-ayu-blue: #59c2ff;
+  --nx-ayu-green: #aad94c;
+  --nx-ayu-teal: #95e6cb;
+  --nx-ayu-red: #f07178;
+  --nx-ayu-purple: #d2a6ff;
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: var(--nx-ayu-accent);
+  --ifm-color-primary-dark: #d9a84a;
+  --ifm-color-primary-darker: #cc9c43;
+  --ifm-color-primary-darkest: #a87d33;
+  --ifm-color-primary-light: var(--nx-ayu-accent-strong);
+  --ifm-color-primary-lighter: #ffc466;
+  --ifm-color-primary-lightest: #ffd48a;
+
+  --ifm-background-color: var(--nx-ayu-bg);
+  --ifm-background-surface-color: var(--nx-ayu-surface);
+  --ifm-card-background-color: var(--nx-ayu-surface);
+  --ifm-footer-background-color: var(--nx-ayu-bg-sunk);
+  --ifm-navbar-background-color: rgba(20, 24, 33, 0.78);
+  --ifm-navbar-search-input-background-color: rgba(15, 20, 25, 0.62);
+  --ifm-navbar-search-input-color: var(--nx-ayu-text);
+  --ifm-navbar-search-input-placeholder-color: var(--nx-ayu-muted-strong);
+  --ifm-toc-border-color: var(--nx-ayu-line);
+  --ifm-table-border-color: var(--nx-ayu-line);
+  --ifm-table-stripe-background: rgba(20, 24, 33, 0.62);
+  --ifm-hr-border-color: var(--nx-ayu-line);
+
+  --ifm-font-color-base: var(--nx-ayu-text);
+  --ifm-font-color-secondary: var(--nx-ayu-muted-strong);
+  --ifm-heading-color: var(--nx-ayu-heading);
+  --ifm-link-color: var(--nx-ayu-blue);
+  --ifm-link-hover-color: var(--nx-ayu-accent-strong);
+  --ifm-menu-color: var(--nx-ayu-muted-strong);
+  --ifm-menu-color-active: var(--nx-ayu-accent);
+  --ifm-breadcrumb-color-active: var(--nx-ayu-heading);
+
+  --ifm-code-background: var(--nx-ayu-panel);
+  --ifm-code-color: var(--nx-ayu-accent-strong);
+  --ifm-pre-background: var(--nx-ayu-surface);
+  --ifm-blockquote-border-color: var(--nx-ayu-line);
+  --ifm-alert-background-color: var(--nx-ayu-panel);
+  --ifm-alert-border-color: var(--nx-ayu-line);
+
+  --ifm-color-emphasis-0: var(--nx-ayu-bg-sunk);
+  --ifm-color-emphasis-100: var(--nx-ayu-surface);
+  --ifm-color-emphasis-200: var(--nx-ayu-line);
+  --ifm-color-emphasis-300: #252b38;
+  --ifm-color-emphasis-400: #343b4a;
+  --ifm-color-emphasis-500: var(--nx-ayu-muted);
+  --ifm-color-emphasis-600: #7a8494;
+  --ifm-color-emphasis-700: var(--nx-ayu-muted-strong);
+  --ifm-color-emphasis-800: var(--nx-ayu-text);
+  --ifm-color-emphasis-900: var(--nx-ayu-heading);
+
+  --search-local-modal-background: var(--nx-ayu-panel);
+  --search-local-modal-shadow:
+    inset 1px 1px 0 0 rgba(230, 225, 207, 0.04),
+    0 18px 48px rgba(0, 0, 0, 0.42);
+  --search-local-hit-background: var(--nx-ayu-surface);
+  --search-local-hit-shadow: inset 0 0 0 1px var(--nx-ayu-line);
+  --search-local-hit-color: var(--nx-ayu-text);
+  --search-local-hit-active-color: var(--nx-ayu-bg-sunk);
+  --search-local-highlight-color: var(--nx-ayu-accent);
+  --search-local-muted-color: var(--nx-ayu-muted-strong);
+  --search-local-input-active-border-color: var(--nx-ayu-accent);
+
+  --docusaurus-highlighted-code-line-bg: rgba(230, 180, 80, 0.12);
+}
+
+/* Give the wide wordmark logo room to breathe in the navbar. */
+:root {
+  --ifm-navbar-height: 3.75rem;
+}
+
+.navbar__brand {
+  align-items: center;
+}
+
+.navbar__logo {
+  align-items: center;
+  display: flex;
+  height: 3.15rem;
+}
+
+.navbar__logo img {
+  height: 130%;
+  transform: translateY(0.4rem);
+  width: auto;
+}
+
+.footer__copyright {
+  font-size: 0.78rem;
+}
+
+.navbar {
+  background: rgba(255, 255, 255, 0.82);
+  border-bottom: 1px solid rgba(180, 188, 196, 0.42);
+  box-shadow: 0 10px 28px rgba(31, 41, 55, 0.08);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+[data-theme='dark'] .navbar {
+  background: rgba(20, 24, 33, 0.78);
+  border-bottom: 1px solid rgba(91, 102, 115, 0.32);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+@media (min-width: 997px) {
+  .navbar__items--right {
+    /* The wide logo stretches the flex line; lift controls back to center. */
+    transform: translateY(-0.2rem);
+  }
+}
+
+[data-theme='dark'] .navbar-sidebar,
+[data-theme='dark'] .navbar-sidebar__brand {
+  background: var(--nx-ayu-bg-sunk);
+}
+
+[data-theme='dark'] .navbar-sidebar__backdrop {
+  background: rgba(0, 0, 0, 0.54);
+}
+
+[data-theme='dark'] .navbar__link,
+[data-theme='dark'] .navbar__item,
+[data-theme='dark'] .navbar__toggle,
+[data-theme='dark'] .navbar-sidebar__item {
+  color: var(--nx-ayu-muted-strong);
+}
+
+[data-theme='dark'] .navbar__link:hover,
+[data-theme='dark'] .navbar__link--active,
+[data-theme='dark'] .navbar-sidebar__item .menu__link:hover,
+[data-theme='dark'] .navbar-sidebar__item .menu__link--active {
+  color: var(--nx-ayu-accent);
+}
+
+[data-theme='dark'] .theme-doc-sidebar-container,
+[data-theme='dark'] .table-of-contents,
+[data-theme='dark'] .pagination-nav__link,
+[data-theme='dark'] .card,
+[data-theme='dark'] .theme-admonition,
+[data-theme='dark'] .alert {
+  border-color: var(--nx-ayu-line);
+}
+
+[data-theme='dark'] .theme-doc-sidebar-container,
+[data-theme='dark'] .pagination-nav__link,
+[data-theme='dark'] .card,
+[data-theme='dark'] .theme-admonition,
+[data-theme='dark'] .alert {
+  background: var(--nx-ayu-surface);
+}
+
+[data-theme='dark'] .footer,
+[data-theme='dark'] .footer--dark {
+  background: var(--nx-ayu-bg-sunk);
+  border-top: 1px solid var(--nx-ayu-line);
+}
+
+[data-theme='dark'] .footer__title,
+[data-theme='dark'] .footer__link-item:hover {
+  color: var(--nx-ayu-accent);
+}
+
+[data-theme='dark'] .footer__item,
+[data-theme='dark'] .footer__copyright,
+[data-theme='dark'] .footer__link-item {
+  color: var(--nx-ayu-muted-strong);
+}
+
+[data-theme='dark'] .markdown :not(pre) > code {
+  border: 1px solid rgba(91, 102, 115, 0.28);
+}
+
+/* Inline code tokens are identifiers — never break them across lines
+   (e.g. `../cugraph-rs` splitting at the hyphen). Long tokens move to the
+   next line whole; tables already scroll horizontally when needed. */
+.markdown :not(pre) > code {
+  white-space: nowrap;
+}
+
+[data-theme='dark'] .theme-code-block {
+  border: 1px solid var(--nx-ayu-line);
+}
+
+.navbar__search .navbar__search-input {
+  background:
+    rgba(15, 20, 25, 0.08) var(--ifm-navbar-search-input-icon) no-repeat 1rem
+    center / 1.15rem 1.15rem;
+  border-radius: 999px;
+  font-size: 1rem;
+  height: 2.45rem;
+  padding: 0 1rem 0 3rem;
+  width: 11rem;
+}
+
+[data-theme='dark'] .navbar__search .navbar__search-input {
+  background:
+    rgba(230, 225, 207, 0.12) var(--ifm-navbar-search-input-icon) no-repeat
+    1rem center / 1.15rem 1.15rem;
+  color: var(--nx-ayu-text);
+}
+
+[data-theme='dark'] input[type='search']:not(.navbar__search-input) {
+  background-color: rgba(15, 20, 25, 0.62);
+  color: var(--nx-ayu-text);
+}
+
+.navbar__search [class*='searchHintContainer'] {
+  gap: 0;
+  left: 6.65rem;
+  right: auto;
+}
+
+.navbar__search kbd[class*='searchHint'] {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--ifm-navbar-search-input-placeholder-color);
+  font-family: var(--ifm-font-family-base);
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1;
+  opacity: 0.52;
+  padding: 0;
+}
+
+.navbar__search kbd[class*='searchHint']:first-child {
+  text-transform: capitalize;
+}
+
+.navbar__search kbd[class*='searchHint'] + kbd[class*='searchHint']::before {
+  content: '+';
+}
+
+[data-theme='dark'] .navbar__search kbd[class*='searchHint'] {
+  color: var(--nx-ayu-text);
+  opacity: 0.48;
+}
+
+[data-theme='dark'] mark {
+  background: rgba(230, 180, 80, 0.24);
+  color: var(--nx-ayu-heading);
+}
+
+/* ===========================================================================
+ * Architecture diagram design tokens
+ * ---------------------------------------------------------------------------
+ * An engineering-minimal, hairline-first visual language for the architecture
+ * diagrams (StackDiagram / FlowDiagram). Tokens map onto Infima's theme-aware
+ * variables so light and dark stay correct automatically; the tone hues are
+ * fixed and chosen to read on both themes. Components consume --nx-* only and
+ * never hardcode raw hex.
+ * ======================================================================== */
+:root {
+  --nx-dg-bg: var(--ifm-background-color);
+  --nx-dg-surface: var(--ifm-card-background-color);
+  --nx-dg-surface-2: var(--ifm-color-emphasis-100);
+  --nx-dg-border: var(--ifm-color-emphasis-200);
+  --nx-dg-border-strong: var(--ifm-color-emphasis-400);
+  --nx-dg-fg: var(--ifm-font-color-base);
+  --nx-dg-fg-muted: var(--ifm-color-emphasis-700);
+  --nx-dg-fg-subtle: var(--ifm-color-emphasis-600);
+  --nx-dg-bar: var(--ifm-color-emphasis-900);
+  --nx-dg-bar-fg: var(--ifm-background-color);
+  --nx-dg-accent: var(--ifm-color-primary);
+
+  /* Semantic tones — fixed hues, paired with a label so they never carry
+     meaning by color alone. */
+  --nx-tone-safe: #2bb673;   /* compile-time safe region */
+  --nx-tone-ffi: #4d8bf0;    /* the extern "C" / FFI boundary layer */
+  --nx-tone-foreign: #e8716d;/* foreign / unsafe region */
+  --nx-tone-shim: #a884f3;   /* hand-written shim */
+  --nx-tone-rust: #d9a066;   /* Rust-side artifacts */
+  --nx-tone-plain: var(--ifm-color-emphasis-500);
+
+  /* Design-page tones — a DataFusion-orange → NVIDIA-green ramp: the closer a
+     component sits to the GPU, the greener it gets. DataFusion hues come from
+     the DataFusion logo gradient (#EF4136 → #FBB040); GPU is NVIDIA green
+     (#76B900). Light-theme variants are darkened for text contrast. */
+  --nx-design-df: #c93a26;      /* DataFusion / host SQL surface */
+  --nx-design-nexus: #a87414;   /* the Nexus adapter layer */
+  --nx-design-bridge: #7e8f00;  /* nexus-query-engine — halfway to the GPU */
+  --nx-design-gpu: #5e9400;     /* cudf-rs / libcudf / CUDA — NVIDIA green */
+  --nx-design-graph: #1f8b4d;   /* cugraph, one step off the cuDF green */
+
+  --nx-dg-mono: var(--ifm-font-family-monospace);
+  --nx-dg-radius: 10px;
+  --nx-dg-radius-sm: 6px;
+}
+
+[data-theme='dark'] {
+  --nx-dg-bg: var(--nx-ayu-bg-sunk);
+  --nx-dg-surface: var(--nx-ayu-surface);
+  --nx-dg-surface-2: var(--nx-ayu-panel);
+  --nx-dg-border: var(--nx-ayu-line);
+  --nx-dg-border-strong: #343b4a;
+  --nx-dg-fg: var(--nx-ayu-heading);
+  --nx-dg-fg-muted: var(--nx-ayu-muted-strong);
+  --nx-dg-fg-subtle: #7a8494;
+  --nx-dg-bar: var(--nx-ayu-text);
+  --nx-dg-bar-fg: var(--nx-ayu-bg);
+  --nx-dg-accent: var(--nx-ayu-accent);
+
+  --nx-tone-safe: var(--nx-ayu-green);
+  --nx-tone-ffi: var(--nx-ayu-blue);
+  --nx-tone-foreign: var(--nx-ayu-red);
+  --nx-tone-shim: var(--nx-ayu-purple);
+  --nx-tone-rust: var(--nx-ayu-accent);
+
+  /* Design-page tones, dark: full-strength brand hues. */
+  --nx-design-df: #f1543f;      /* DataFusion logo red-orange (#EF4136) */
+  --nx-design-nexus: #fbb040;   /* DataFusion logo amber (#FBB040) */
+  --nx-design-bridge: #b5c400;  /* yellow-green hand-off */
+  --nx-design-gpu: #76b900;     /* NVIDIA green */
+  --nx-design-graph: #2fb56b;   /* cugraph emerald */
+}
