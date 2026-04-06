@@ -201,6 +201,14 @@ fn map_cudf_error(kind: InteropErrorKind, operation: &'static str, error: crate:
     interop
 }
 
+fn map_interop_error(kind: InteropErrorKind, operation: &'static str, error: InteropError) -> InteropError {
+    let mut mapped = InteropError::new(kind, error.to_string()).with_context("operation", operation);
+    for (key, value) in error.context() {
+        mapped = mapped.with_context(key, value.clone());
+    }
+    mapped
+}
+
 fn execution_binding<'a>(
     operation: &'static str,
     domain: &Arc<ExecutionDomain>,
@@ -851,14 +859,7 @@ fn checked_i32_from_usize(field: &'static str, value: usize, operation: &'static
 
 fn prepared_import_profile_supported(profile: ExportProfile, operation: &'static str) -> Result<(), InteropError> {
     match profile {
-        ExportProfile::PreparedDeviceExport => Ok(()),
-        ExportProfile::PreparedHostExport => Err(InteropError::new(
-            InteropErrorKind::ProfileUnsupported,
-            "prepared host export import into cudf-rs is not landed in this slice",
-        )
-        .with_context("operation", operation)
-        .with_context("profile", "prepared_host_export")
-        .with_context("consumer", "cudf-rs")),
+        ExportProfile::PreparedDeviceExport | ExportProfile::PreparedHostExport => Ok(()),
         ExportProfile::BorrowedDeviceCompatibility => Err(InteropError::new(
             InteropErrorKind::ProfileUnsupported,
             "borrowed compatibility descriptors must be imported through the borrowed-view API",
@@ -876,7 +877,7 @@ fn prepared_import_profile_supported(profile: ExportProfile, operation: &'static
     }
 }
 
-fn prepared_export_producer_device(
+fn prepared_device_export_producer_device(
     readiness: &ProducerReadiness<'_>,
     operation: &'static str,
 ) -> Result<i32, InteropError> {
@@ -885,11 +886,11 @@ fn prepared_export_producer_device(
         ProducerReadiness::DeviceEventOrdered { event } => Ok(event.device()),
         ProducerReadiness::HostVisible => Err(InteropError::new(
             InteropErrorKind::ProfileUnsupported,
-            "prepared host export import into cudf-rs is not landed in this slice",
+            "prepared device export import requires device-backed readiness",
         )
         .with_context("operation", operation)
         .with_context("readiness", "host_visible")
-        .with_context("consumer", "cudf-rs")),
+        .with_context("profile", "prepared_device_export")),
     }
 }
 
@@ -1071,6 +1072,18 @@ fn synchronize_runtime_completion_result(
     }
 }
 
+fn synchronize_shared_completion_result(
+    result: LeaseCompletionResult,
+    operation: &'static str,
+) -> Result<(), InteropError> {
+    match result {
+        LeaseCompletionResult::FallbackSynchronized => Ok(()),
+        LeaseCompletionResult::Completed(witness) => witness
+            .synchronize()
+            .map_err(|error| map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error)),
+    }
+}
+
 fn borrowed_null_mask_parts(
     borrowed: &BorrowedColumnView<'_>,
     operation: &'static str,
@@ -1187,41 +1200,92 @@ fn import_column_from_prepared_export(
     operation: &'static str,
 ) -> Result<Column, InteropError> {
     prepared_import_profile_supported(export.diagnostics().profile(), operation)?;
-    let producer_device = prepared_export_producer_device(export.readiness(), operation)?;
-    validate_prepared_import_runtime_device(operation, producer_device, runtime)?;
-
-    let lease = export.try_activate_runtime_read_lease(
-        RuntimeReadStartAuthority::consumer_stream(runtime.stream()),
-        RuntimeCompletionAuthority::same_device_stream(runtime.stream()),
-    )?;
     let graph = prepared_device_import_column_graph(export, operation)?;
     let exec_options = runtime
         .execution_domain()
         .explicit_exec_options_raw()
         .expect("runtime always provides explicit execution options");
-    let mut handle = std::ptr::null_mut();
+    let num_semantic_columns = checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
+    let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
 
-    error::check_status_in(
-        unsafe {
-            cudf_sys::cudf_column_copy_from_prepared_device_export_ex(
-                export.column().id().get(),
-                graph.ffi_columns.as_ptr(),
-                checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?,
-                graph.ffi_bindings.as_ptr(),
-                checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?,
-                &exec_options,
-                &mut handle,
+    match export.diagnostics().profile() {
+        ExportProfile::PreparedDeviceExport => {
+            let producer_device = prepared_device_export_producer_device(export.readiness(), operation)?;
+            validate_prepared_import_runtime_device(operation, producer_device, runtime)?;
+            let lease = export.try_activate_runtime_read_lease(
+                RuntimeReadStartAuthority::consumer_stream(runtime.stream()),
+                RuntimeCompletionAuthority::same_device_stream(runtime.stream()),
+            )?;
+            let mut handle = std::ptr::null_mut();
+
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_copy_from_prepared_device_export_ex(
+                        export.column().id().get(),
+                        graph.ffi_columns.as_ptr(),
+                        num_semantic_columns,
+                        graph.ffi_bindings.as_ptr(),
+                        num_bindings,
+                        &exec_options,
+                        &mut handle,
+                    )
+                },
+                operation,
             )
-        },
-        operation,
-    )
-    .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-    let imported = unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
-    let completion =
-        lease.complete().map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-    synchronize_runtime_completion_result(completion, operation)?;
-    Ok(imported)
+            let imported = unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
+            let completion = lease
+                .complete()
+                .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            synchronize_runtime_completion_result(completion, operation)?;
+            Ok(imported)
+        },
+        ExportProfile::PreparedHostExport => {
+            if !matches!(export.readiness(), ProducerReadiness::HostVisible) {
+                return Err(InteropError::new(
+                    InteropErrorKind::ProfileUnsupported,
+                    "prepared host export import requires host-visible readiness",
+                )
+                .with_context("operation", operation)
+                .with_context("profile", "prepared_host_export"));
+            }
+
+            let lease = export
+                .try_activate_read_lease(
+                    ReadStartAuthority::SynchronousByReturn,
+                    CompletionAuthority::SynchronousByReturn,
+                )
+                .map_err(|error| error.with_context("operation", operation))?;
+            let mut handle = std::ptr::null_mut();
+
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_copy_from_prepared_host_export_ex(
+                        export.column().id().get(),
+                        graph.ffi_columns.as_ptr(),
+                        num_semantic_columns,
+                        graph.ffi_bindings.as_ptr(),
+                        num_bindings,
+                        &exec_options,
+                        &mut handle,
+                    )
+                },
+                operation,
+            )
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+
+            let imported = unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
+            let completion = lease
+                .complete()
+                .map_err(|error| map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            synchronize_shared_completion_result(completion, operation)?;
+            Ok(imported)
+        },
+        // `prepared_import_profile_supported` rejects non-prepared profiles
+        // before this match executes.
+        ExportProfile::BorrowedDeviceCompatibility | ExportProfile::OwnedDeviceTransfer => unreachable!(),
+    }
 }
 
 fn import_table_from_prepared_export(
@@ -1230,41 +1294,94 @@ fn import_table_from_prepared_export(
     operation: &'static str,
 ) -> Result<Table, InteropError> {
     prepared_import_profile_supported(export.diagnostics().profile(), operation)?;
-    let producer_device = prepared_export_producer_device(export.readiness(), operation)?;
-    validate_prepared_import_runtime_device(operation, producer_device, runtime)?;
-
-    let lease = export.try_activate_runtime_read_lease(
-        RuntimeReadStartAuthority::consumer_stream(runtime.stream()),
-        RuntimeCompletionAuthority::same_device_stream(runtime.stream()),
-    )?;
     let graph = prepared_device_import_table_graph(export, operation)?;
     let exec_options = runtime
         .execution_domain()
         .explicit_exec_options_raw()
         .expect("runtime always provides explicit execution options");
-    let mut handle = std::ptr::null_mut();
+    let num_semantic_columns = checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
+    let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
 
-    error::check_status_in(
-        unsafe {
-            cudf_sys::cudf_table_copy_from_prepared_device_export_ex(
-                &graph.ffi_table,
-                graph.ffi_columns.as_ptr(),
-                checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?,
-                graph.ffi_bindings.as_ptr(),
-                checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?,
-                &exec_options,
-                &mut handle,
+    match export.diagnostics().profile() {
+        ExportProfile::PreparedDeviceExport => {
+            let producer_device = prepared_device_export_producer_device(export.readiness(), operation)?;
+            validate_prepared_import_runtime_device(operation, producer_device, runtime)?;
+            let lease = export.try_activate_runtime_read_lease(
+                RuntimeReadStartAuthority::consumer_stream(runtime.stream()),
+                RuntimeCompletionAuthority::same_device_stream(runtime.stream()),
+            )?;
+            let mut handle = std::ptr::null_mut();
+
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_table_copy_from_prepared_device_export_ex(
+                        &graph.ffi_table,
+                        graph.ffi_columns.as_ptr(),
+                        num_semantic_columns,
+                        graph.ffi_bindings.as_ptr(),
+                        num_bindings,
+                        &exec_options,
+                        &mut handle,
+                    )
+                },
+                operation,
             )
-        },
-        operation,
-    )
-    .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-    let imported = unsafe { Table::from_raw(handle) }.with_execution_domain(Arc::clone(runtime.execution_domain()));
-    let completion =
-        lease.complete().map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-    synchronize_runtime_completion_result(completion, operation)?;
-    Ok(imported)
+            let imported =
+                unsafe { Table::from_raw(handle) }.with_execution_domain(Arc::clone(runtime.execution_domain()));
+            let completion = lease
+                .complete()
+                .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            synchronize_runtime_completion_result(completion, operation)?;
+            Ok(imported)
+        },
+        ExportProfile::PreparedHostExport => {
+            if !matches!(export.readiness(), ProducerReadiness::HostVisible) {
+                return Err(InteropError::new(
+                    InteropErrorKind::ProfileUnsupported,
+                    "prepared host export import requires host-visible readiness",
+                )
+                .with_context("operation", operation)
+                .with_context("profile", "prepared_host_export"));
+            }
+
+            let lease = export
+                .try_activate_read_lease(
+                    ReadStartAuthority::SynchronousByReturn,
+                    CompletionAuthority::SynchronousByReturn,
+                )
+                .map_err(|error| error.with_context("operation", operation))?;
+            let mut handle = std::ptr::null_mut();
+
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_table_copy_from_prepared_host_export_ex(
+                        &graph.ffi_table,
+                        graph.ffi_columns.as_ptr(),
+                        num_semantic_columns,
+                        graph.ffi_bindings.as_ptr(),
+                        num_bindings,
+                        &exec_options,
+                        &mut handle,
+                    )
+                },
+                operation,
+            )
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+
+            let imported =
+                unsafe { Table::from_raw(handle) }.with_execution_domain(Arc::clone(runtime.execution_domain()));
+            let completion = lease
+                .complete()
+                .map_err(|error| map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+            synchronize_shared_completion_result(completion, operation)?;
+            Ok(imported)
+        },
+        // `prepared_import_profile_supported` rejects non-prepared profiles
+        // before this match executes.
+        ExportProfile::BorrowedDeviceCompatibility | ExportProfile::OwnedDeviceTransfer => unreachable!(),
+    }
 }
 
 fn prepare_from_column_view<'a>(
@@ -1456,13 +1573,15 @@ impl Column {
         import_column_from_owned_transfer(transfer, "interop::Column::try_from_owned_device_column_transfer")
     }
 
-    /// Deep-copy a shared prepared device-export root into an owned
+    /// Deep-copy a shared prepared export root into an owned
     /// `cudf-rs` column inside the provided explicit runtime.
     ///
-    /// This activates the prepared export as a consumer on the destination
-    /// runtime's CUDA stream, performs a same-device device-to-device copy,
-    /// and synchronizes completion before returning so producer liveness can
-    /// end honestly. Prepared host export import is not landed in this slice.
+    /// Prepared device exports activate on the destination runtime's CUDA
+    /// stream and perform a same-device device-to-device copy. Prepared host
+    /// exports activate synchronously by return and upload their host-visible
+    /// bytes into new device ownership inside the destination runtime. Both
+    /// paths synchronize completion before returning so producer liveness can
+    /// end honestly.
     pub fn try_from_prepared_column_export_with_runtime(
         export: &PreparedColumnExport<'_>,
         runtime: &Runtime,
@@ -1664,14 +1783,16 @@ impl Table {
         import_table_from_owned_transfer(transfer, "interop::Table::try_from_owned_device_table_transfer")
     }
 
-    /// Deep-copy a shared prepared device-export root into an owned
+    /// Deep-copy a shared prepared export root into an owned
     /// `cudf-rs` table inside the provided explicit runtime.
     ///
-    /// This activates the prepared export as a consumer on the destination
-    /// runtime's CUDA stream, performs same-device device-to-device copies for
-    /// the current prepared-device layout set, and synchronizes completion
-    /// before returning so producer liveness can end honestly. Prepared host
-    /// export import is not landed in this slice.
+    /// Prepared device exports activate on the destination runtime's CUDA
+    /// stream and perform same-device device-to-device copies for the current
+    /// prepared-device layout set. Prepared host exports activate
+    /// synchronously by return and upload their host-visible bytes into new
+    /// device ownership inside the destination runtime. Both paths
+    /// synchronize completion before returning so producer liveness can end
+    /// honestly.
     pub fn try_from_prepared_table_export_with_runtime(
         export: &PreparedTableExport<'_>,
         runtime: &Runtime,

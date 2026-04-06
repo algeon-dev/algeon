@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use cudf::{
     Column, DataFrame, Runtime, Table, TypeId,
     interop::{
-        BufferBinding, ColumnLayout, ExportProfile, InteropErrorKind, PhysicalValidity, PreparedColumnExport,
-        SemanticColumn,
+        BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropErrorKind, PhysicalValidity,
+        PreparedColumnExport, ProducerReadiness, SemanticColumn,
     },
     io::json::JsonReaderOptions,
     ops::dictionary,
@@ -33,6 +33,10 @@ fn binding_map<'a>(bindings: &'a [BufferBinding<'a>]) -> HashMap<u32, &'a Buffer
 
 fn semantic_column_map<'a>(columns: &'a [SemanticColumn]) -> HashMap<u32, &'a SemanticColumn> {
     columns.iter().map(|column| (column.id().get(), column)).collect()
+}
+
+fn interop_error_context_value<'a>(err: &'a cudf::interop::InteropError, key: &str) -> Option<&'a str> {
+    err.context().iter().find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then_some(ctx_value.as_str()))
 }
 
 fn assert_binding_equivalent(source: &BufferBinding<'_>, imported: &BufferBinding<'_>) {
@@ -285,6 +289,35 @@ fn prepared_device_column_export_import_copies_data_and_uses_destination_runtime
 }
 
 #[test]
+fn prepared_host_column_export_import_copies_data_and_uses_destination_runtime() {
+    let source_runtime = Runtime::builder().build().unwrap();
+    let source =
+        Column::from_slice_nullable_with_runtime(&source_runtime, &[10i32, 20, 30, 40], &[true, false, true, true])
+            .unwrap();
+    let sliced = source.slice_view(1, 2).unwrap();
+    let export = sliced.try_prepare_host_column_export().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = Column::try_from_prepared_column_export_with_runtime(&export, &destination_runtime).unwrap();
+
+    assert_eq!(
+        imported.__debug_execution_domain_stream_value(),
+        destination_runtime.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        imported.__debug_execution_domain_mr_value(),
+        destination_runtime.memory_resource().__debug_raw_handle_value()
+    );
+    assert_eq!(common::last_exec_device(), destination_runtime.device().ordinal() as i32);
+    assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
+    assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
+
+    let normalized = Column::from_slice_nullable_with_runtime(&source_runtime, &[20i32, 30], &[false, true]).unwrap();
+    assert_host_column_exports_equivalent(&normalized, &imported);
+}
+
+#[test]
 fn borrowed_sliced_nullable_column_import_preserves_active_range() {
     let source_runtime = Runtime::builder().build().unwrap();
     let source =
@@ -316,6 +349,39 @@ fn prepared_sliced_string_column_export_import_preserves_active_range() {
     .unwrap();
     let sliced = source.slice_view(1, 2).unwrap();
     let export = sliced.try_prepare_device_column_export().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = Column::try_from_prepared_column_export_with_runtime(&export, &destination_runtime).unwrap();
+
+    assert_eq!(
+        imported.__debug_execution_domain_stream_value(),
+        destination_runtime.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        imported.__debug_execution_domain_mr_value(),
+        destination_runtime.memory_resource().__debug_raw_handle_value()
+    );
+    assert_eq!(common::last_exec_device(), destination_runtime.device().ordinal() as i32);
+    assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
+    assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
+
+    let normalized =
+        Column::from_strings_nullable_with_runtime(&source_runtime, &["one", "two"], &[false, true]).unwrap();
+    assert_host_column_exports_equivalent(&normalized, &imported);
+}
+
+#[test]
+fn prepared_host_sliced_string_column_export_import_preserves_active_range() {
+    let source_runtime = Runtime::builder().build().unwrap();
+    let source = Column::from_strings_nullable_with_runtime(
+        &source_runtime,
+        &["zero", "one", "two", "three"],
+        &[true, false, true, true],
+    )
+    .unwrap();
+    let sliced = source.slice_view(1, 2).unwrap();
+    let export = sliced.try_prepare_host_column_export().unwrap();
     let destination_runtime = common::sample_runtime();
 
     common::reset_exec_observation();
@@ -408,16 +474,129 @@ fn prepared_device_table_export_import_round_trips_recursive_nested_columns_into
 }
 
 #[test]
-fn prepared_host_column_export_import_is_rejected_as_out_of_scope() {
+fn prepared_host_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime() {
+    let frame = read_json_dataframe(
+        "prepared_host_import_nested.jsonl",
+        "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}\n\
+         {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}\n\
+         {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}\n",
+    );
+
+    let category = frame.series("category").unwrap();
+    let nested = frame.series("nested").unwrap();
+    let point = frame.series("point").unwrap();
+    let id = frame.series("id").unwrap();
+    let encoded = dictionary::encode(&category.as_column_view().unwrap(), TypeId::Int32).unwrap();
+    let category = cudf::Series::from_column(encoded).unwrap().rename("category");
+    let frame =
+        DataFrame::from_columns([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap();
+    let (source, _names) = frame.try_into_table().unwrap();
+    let export = source.try_prepare_host_table_export().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = Table::try_from_prepared_table_export_with_runtime(&export, &destination_runtime).unwrap();
+
+    assert_eq!(
+        imported.__debug_execution_domain_stream_value(),
+        destination_runtime.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        imported.__debug_execution_domain_mr_value(),
+        destination_runtime.memory_resource().__debug_raw_handle_value()
+    );
+    assert_eq!(common::last_exec_device(), destination_runtime.device().ordinal() as i32);
+    assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
+    assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
+    assert_host_table_exports_equivalent(&source, &imported);
+}
+
+#[test]
+fn prepared_host_column_export_constructor_rejects_device_bindings() {
     let runtime = Runtime::builder().build().unwrap();
     let source = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
-    let export = source.try_prepare_host_column_export().unwrap();
+    let device_export = source.try_prepare_device_column_export().unwrap();
+
+    let err = PreparedColumnExport::try_new_with_semantic_columns(
+        device_export.column().clone(),
+        device_export.semantic_columns().to_vec(),
+        device_export.bindings().to_vec(),
+        ProducerReadiness::HostVisible,
+        ExportDiagnostics::new(ExportProfile::PreparedHostExport),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::PlacementUnsupported);
+}
+
+#[test]
+fn prepared_host_column_import_maps_shared_completion_sync_failures_to_readiness_unavailable() {
+    use std::{any::Any, sync::Arc};
+
+    use cudf::interop::{
+        ActiveLeaseBackend, CompletionBinding, CompletionWitness, CompletionWitnessBackend, CompletionWitnessKind,
+        IncompleteDropBehavior, InteropError, LeaseBackend, LeaseCompletionResult, LeaseExportContext,
+    };
+
+    struct SyncFailureWitness;
+
+    impl CompletionWitnessBackend for SyncFailureWitness {
+        fn is_ready(&self) -> std::result::Result<bool, InteropError> {
+            Ok(false)
+        }
+
+        fn synchronize(&self) -> std::result::Result<(), InteropError> {
+            Err(InteropError::new(InteropErrorKind::InvalidView, "test shared completion synchronize failure")
+                .with_context("phase", "synchronize"))
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    struct SyncFailureBackend;
+
+    impl ActiveLeaseBackend for SyncFailureBackend {
+        fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
+            IncompleteDropBehavior::ExplicitCompletionRequired
+        }
+
+        fn complete(
+            &self,
+            _export: &LeaseExportContext,
+            _completion: CompletionBinding,
+        ) -> std::result::Result<LeaseCompletionResult, InteropError> {
+            Ok(LeaseCompletionResult::Completed(CompletionWitness::with_backend(
+                CompletionWitnessKind::ConsumerStream,
+                Arc::new(SyncFailureWitness) as Arc<dyn CompletionWitnessBackend>,
+            )))
+        }
+
+        fn drop_incomplete(
+            &self,
+            _export: &LeaseExportContext,
+            _completion: CompletionBinding,
+        ) -> std::result::Result<(), InteropError> {
+            Ok(())
+        }
+    }
+
+    let source_runtime = Runtime::builder().build().unwrap();
+    let source = Column::from_slice_with_runtime(&source_runtime, &[1i32, 2, 3]).unwrap();
+    let export =
+        source.try_prepare_host_column_export().unwrap().with_lease_backend(LeaseBackend::new(SyncFailureBackend));
     let destination_runtime = common::sample_runtime();
 
     let err = match Column::try_from_prepared_column_export_with_runtime(&export, &destination_runtime) {
-        Ok(_) => panic!("expected prepared host export import to be rejected"),
+        Ok(_) => panic!("expected host import completion synchronization failure"),
         Err(err) => err,
     };
 
-    assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+    assert_eq!(err.kind(), InteropErrorKind::ReadinessUnavailable);
+    assert_eq!(
+        interop_error_context_value(&err, "operation"),
+        Some("interop::Column::try_from_prepared_column_export_with_runtime")
+    );
+    assert_eq!(interop_error_context_value(&err, "phase"), Some("synchronize"));
 }

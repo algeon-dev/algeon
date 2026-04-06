@@ -273,7 +273,7 @@ fn test_device_slice_split_at() {
     assert_eq!(left.as_ptr(), slice.as_ptr());
 
     // Right pointer should be offset by 2 elements = 8 bytes.
-    let expected_right = unsafe { (slice.as_ptr() as *const u8).add(2 * 4) as *mut std::ffi::c_void };
+    let expected_right = unsafe { (slice.as_ptr() as *const u8).add(2 * 4) as *const std::ffi::c_void };
     assert_eq!(right.as_ptr(), expected_right);
 }
 

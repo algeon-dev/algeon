@@ -20,7 +20,9 @@ use crate::core::types::TypeId;
 /// to partition it into sub-regions (e.g., source and destination vertex IDs).
 ///
 /// `DeviceSlice` is `Send + Sync` because the underlying data lives on the GPU
-/// and is not host-dereferenceable.
+/// and is not host-dereferenceable. The safe public API exposes only `*const`
+/// pointers via [`as_ptr()`](Self::as_ptr); mutable access requires `&mut self`
+/// via [`as_mut_ptr()`](Self::as_mut_ptr), which upholds Rust's aliasing rules.
 ///
 /// The lifetime `'a` ties this slice to the [`ColumnView`] (or [`Column`]) that
 /// produced it, preventing the slice from outliving the GPU memory it points to.
@@ -68,7 +70,7 @@ impl DeviceSlice<'_> {
         self.type_id
     }
 
-    /// Returns the raw device pointer.
+    /// Returns the raw device pointer as a read-only pointer.
     ///
     /// This pointer refers to GPU memory and cannot be dereferenced from host
     /// code. It is intended for passing to GPU libraries (e.g., cugraph) that
@@ -76,7 +78,21 @@ impl DeviceSlice<'_> {
     ///
     /// This method exposes only a pointer. It does not communicate null-mask
     /// semantics, original column offset, or execution provenance.
-    pub fn as_ptr(&self) -> *mut c_void {
+    ///
+    /// Returns `*const` (not `*mut`) because `DeviceSlice` is `Sync` — shared
+    /// references can cross threads, so the safe API must not hand out
+    /// mutation-capable pointers from `&self`. Use [`as_mut_ptr()`](Self::as_mut_ptr)
+    /// when mutable access is needed.
+    pub fn as_ptr(&self) -> *const c_void {
+        self.ptr as *const c_void
+    }
+
+    /// Returns the raw device pointer as a mutable pointer.
+    ///
+    /// Requires `&mut self` to uphold Rust's aliasing guarantees: only one
+    /// mutable reference may exist at a time, so no other thread can
+    /// simultaneously obtain a pointer to the same device memory region.
+    pub fn as_mut_ptr(&mut self) -> *mut c_void {
         self.ptr
     }
 

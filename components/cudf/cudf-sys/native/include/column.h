@@ -179,6 +179,33 @@ cudf_status_t cudf_column_copy_from_prepared_device_export_ex(
     cudf_exec_options_t const* options,
     cudf_column_handle* out);
 
+/// Deep-copy a column from a prepared-host export semantic graph.
+///
+/// The semantic graph and bindings must describe one valid single-root
+/// prepared-host export. The bindings are host-visible bytes that this helper
+/// uploads into one owning device column.
+cudf_status_t cudf_column_copy_from_prepared_host_export(
+    uint32_t root_column_id,
+    cudf_interop_semantic_column_t const* semantic_columns,
+    int32_t num_semantic_columns,
+    cudf_interop_buffer_binding_t const* bindings,
+    int32_t num_bindings,
+    cudf_column_handle* out);
+
+/// Deep-copy a column from a prepared-host export semantic graph with explicit
+/// execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+cudf_status_t cudf_column_copy_from_prepared_host_export_ex(
+    uint32_t root_column_id,
+    cudf_interop_semantic_column_t const* semantic_columns,
+    int32_t num_semantic_columns,
+    cudf_interop_buffer_binding_t const* bindings,
+    int32_t num_bindings,
+    cudf_exec_options_t const* options,
+    cudf_column_handle* out);
+
 /// Return payload bytes for this owning column.
 ///
 /// Payload accounting excludes allocator padding. Compound parent columns
