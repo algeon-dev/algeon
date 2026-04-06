@@ -202,9 +202,17 @@ impl Series {
         let raw = cv.to_raw_bytes()?;
 
         fn byte_to_bool<T: CudfType>(b: u8) -> T {
-            let canonical: u8 = if b != 0 { 1 } else { 0 };
-            // SAFETY: T is bool (Bool8, size 1). canonical is 0 or 1, both valid.
-            unsafe { std::mem::transmute_copy::<u8, T>(&canonical) }
+            assert_eq!(
+                std::any::TypeId::of::<T>(),
+                std::any::TypeId::of::<bool>(),
+                "internal bool materialization helper requires T = bool",
+            );
+            debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<bool>());
+
+            let canonical = b != 0;
+            // SAFETY: The runtime type check above constrains T to bool, and
+            // the size assertion keeps the representation contract explicit.
+            unsafe { std::mem::transmute_copy::<bool, T>(&canonical) }
         }
 
         match cv.validity()? {
@@ -766,21 +774,3 @@ impl Series {
 }
 
 // Operator overloads (Add, Sub, Mul, Div) live in the `ops` module.
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn same_provenance_ambient_default_returns_true() {
-        let a = Series::new("a", &[1i32, 2, 3]).expect("series a");
-        let b = Series::new("b", &[4i32, 5, 6]).expect("series b");
-        assert!(a.same_provenance(&b), "ambient-default series should share provenance");
-    }
-
-    #[test]
-    fn same_provenance_self_returns_true() {
-        let a = Series::new("x", &[10i64, 20]).expect("series");
-        assert!(a.same_provenance(&a), "a series should share provenance with itself");
-    }
-}

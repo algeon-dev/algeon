@@ -11,7 +11,8 @@ use rapids_interop::{
     ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseActivation, LeaseBackend,
     LeaseCompletionResult, LeaseExportContext, NullMask, PartitionedPreparedTableExport,
     PartitionedPreparedTablePartition, PhysicalValidity, Placement, PreparedColumnExport, PreparedTableExport,
-    ProducerReadiness, SchemaNullability, SemanticColumn, SemanticTable, TableId, TypeId,
+    ProducerReadiness, ReadStartAuthority, ReadStartBinding, SchemaNullability, SemanticColumn, SemanticTable, TableId,
+    TypeId,
 };
 
 fn fake_ptr(addr: usize) -> *const core::ffi::c_void {
@@ -226,6 +227,10 @@ impl CompletionWitnessBackend for TestWitnessState {
         self.sync_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 struct TestLeaseBackend {
@@ -322,6 +327,7 @@ impl ActiveLeaseBackend for TestLeaseBackend {
     fn activate(
         &self,
         _export: &LeaseExportContext,
+        _read_start: ReadStartBinding,
         _completion: CompletionBinding,
     ) -> rapids_interop::Result<LeaseActivation> {
         self.activation_calls.fetch_add(1, Ordering::SeqCst);
@@ -997,7 +1003,9 @@ fn prepared_host_table_export_activates_with_synchronous_completion() {
     )
     .unwrap();
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
 
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
@@ -1013,7 +1021,8 @@ fn prepared_host_table_export_rejects_stream_completion_authority() {
     )
     .unwrap();
 
-    let err = export.try_activate_read_lease(same_device_completion()).unwrap_err();
+    let err =
+        export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
     assert!(err.context().iter().any(|(key, value)| *key == "completion" && value == "same_device_stream"));
@@ -1604,7 +1613,9 @@ fn prepared_column_export_activates_with_synchronous_completion() {
     )
     .unwrap();
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
 
     assert_eq!(lease.export().column().id(), ColumnId::new(1));
     assert_eq!(lease.completion(), CompletionAuthority::SynchronousByReturn);
@@ -1620,8 +1631,12 @@ fn prepared_column_export_rejects_overlapping_active_leases() {
     )
     .unwrap();
 
-    let _lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
-    let err = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap_err();
+    let _lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
+    let err = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::LeaseAlreadyActive);
     assert!(err.context().iter().any(|(key, value)| *key == "export_kind" && value == "column"));
@@ -1638,7 +1653,8 @@ fn prepared_table_export_activates_with_same_device_stream_completion() {
     )
     .unwrap();
 
-    let lease = export.try_activate_read_lease(same_device_completion()).unwrap();
+    let lease =
+        export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
 
     assert_eq!(lease.export().table().id(), TableId::new(1));
     assert_eq!(lease.completion(), same_device_completion());
@@ -1656,15 +1672,18 @@ fn prepared_table_export_clone_shares_active_lease_state_and_drop_releases_it() 
     .unwrap();
     let cloned = export.clone();
 
-    let lease = export.try_activate_read_lease(same_device_completion()).unwrap();
-    let err = cloned.try_activate_read_lease(same_device_completion()).unwrap_err();
+    let lease =
+        export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
+    let err =
+        cloned.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::LeaseAlreadyActive);
     assert!(err.context().iter().any(|(key, value)| *key == "export_kind" && value == "table"));
 
     drop(lease);
 
-    let reacquired = cloned.try_activate_read_lease(same_device_completion()).unwrap();
+    let reacquired =
+        cloned.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
     assert_eq!(reacquired.completion(), same_device_completion());
 }
 
@@ -1679,7 +1698,8 @@ fn prepared_table_export_activates_with_cross_device_event_completion() {
     )
     .unwrap();
 
-    let lease = export.try_activate_read_lease(cross_device_completion()).unwrap();
+    let lease =
+        export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, cross_device_completion()).unwrap();
 
     assert_eq!(lease.export().table().id(), TableId::new(1));
     assert_eq!(lease.completion(), cross_device_completion());
@@ -1706,7 +1726,9 @@ fn prepared_table_export_rejects_cross_device_event_when_event_device_matches_pr
     )
     .unwrap();
 
-    let err = export.try_activate_read_lease(cross_device_completion_on_device(0)).unwrap_err();
+    let err = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, cross_device_completion_on_device(0))
+        .unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::InvalidView);
     assert!(err.context().iter().any(|(key, value)| *key == "event_device" && value == "0"));
@@ -1734,7 +1756,9 @@ fn prepared_table_export_rejects_same_device_stream_completion_on_wrong_device()
     )
     .unwrap();
 
-    let err = export.try_activate_read_lease(same_device_completion_on_device(1)).unwrap_err();
+    let err = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion_on_device(1))
+        .unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::ReadinessMismatch);
     assert!(err.context().iter().any(|(key, value)| *key == "producer_device" && value == "0"));
@@ -1751,7 +1775,9 @@ fn column_lease_complete_returns_fallback_synchronized_for_synchronous_completio
     )
     .unwrap();
 
-    let lease = export.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
 
     assert_eq!(lease.complete(), Ok(LeaseCompletionResult::FallbackSynchronized));
 }
@@ -1767,7 +1793,8 @@ fn table_lease_complete_returns_completed_witness_for_stream_completion() {
     )
     .unwrap();
 
-    let lease = export.try_activate_read_lease(same_device_completion()).unwrap();
+    let lease =
+        export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
 
     let result = lease.complete();
     assert_eq!(
@@ -1789,7 +1816,8 @@ fn table_lease_complete_returns_completed_witness_for_event_completion() {
     )
     .unwrap();
 
-    let lease = export.try_activate_read_lease(cross_device_completion()).unwrap();
+    let lease =
+        export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, cross_device_completion()).unwrap();
 
     let result = lease.complete();
     assert_eq!(
@@ -1813,7 +1841,8 @@ fn table_lease_completed_witness_supports_ready_and_synchronize() {
     .unwrap()
     .with_lease_backend(backend);
 
-    let lease = export.try_activate_read_lease(same_device_completion()).unwrap();
+    let lease =
+        export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
 
     let witness = match lease.complete() {
         Ok(LeaseCompletionResult::Completed(witness)) => witness,
@@ -1844,12 +1873,15 @@ fn prepared_column_export_drop_fallback_releases_guard_and_invokes_backend() {
     let cloned = export.clone();
 
     {
-        let lease = export.try_activate_read_lease(same_device_completion()).unwrap();
+        let lease =
+            export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
         assert_eq!(lease.incomplete_drop_behavior(), IncompleteDropBehavior::GuaranteedFallback);
     }
 
     assert_eq!(drop_calls.load(Ordering::SeqCst), 1);
-    let reacquired = cloned.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let reacquired = cloned
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(reacquired.complete(), Ok(LeaseCompletionResult::FallbackSynchronized));
 }
 
@@ -1867,7 +1899,8 @@ fn prepared_column_export_activation_invokes_backend_and_releases_activation_sta
     .with_lease_backend(backend);
 
     {
-        let lease = export.try_activate_read_lease(same_device_completion()).unwrap();
+        let lease =
+            export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
         assert_eq!(lease.incomplete_drop_behavior(), IncompleteDropBehavior::GuaranteedFallback);
         assert_eq!(activation_calls.load(Ordering::SeqCst), 1);
         assert_eq!(activation_drop_calls.load(Ordering::SeqCst), 0);
@@ -1892,12 +1925,15 @@ fn prepared_column_export_activation_failure_releases_guard() {
     .with_lease_backend(backend);
     let cloned = export.clone().with_lease_backend(success_backend);
 
-    let err = export.try_activate_read_lease(same_device_completion()).unwrap_err();
+    let err =
+        export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::ReadinessUnavailable);
     assert_eq!(activation_calls.load(Ordering::SeqCst), 1);
 
-    let reacquired = cloned.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let reacquired = cloned
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(reacquired.complete(), Ok(LeaseCompletionResult::FallbackSynchronized));
 }
 
@@ -1915,12 +1951,15 @@ fn prepared_column_export_explicit_completion_required_reports_behavior_without_
     let cloned = export.clone();
 
     {
-        let lease = export.try_activate_read_lease(same_device_completion()).unwrap();
+        let lease =
+            export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
         assert_eq!(lease.incomplete_drop_behavior(), IncompleteDropBehavior::ExplicitCompletionRequired);
     }
 
     assert_eq!(drop_calls.load(Ordering::SeqCst), 0);
-    let reacquired = cloned.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let reacquired = cloned
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(reacquired.complete(), Ok(LeaseCompletionResult::FallbackSynchronized));
 }
 
@@ -1937,11 +1976,13 @@ fn prepared_column_export_builtin_explicit_completion_backend_is_runnable_withou
     let cloned = export.clone();
 
     {
-        let lease = export.try_activate_read_lease(same_device_completion()).unwrap();
+        let lease =
+            export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
         assert_eq!(lease.incomplete_drop_behavior(), IncompleteDropBehavior::ExplicitCompletionRequired);
     }
 
-    let reacquired = cloned.try_activate_read_lease(same_device_completion()).unwrap();
+    let reacquired =
+        cloned.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
     let witness = match reacquired.complete().unwrap() {
         LeaseCompletionResult::Completed(witness) => witness,
         LeaseCompletionResult::FallbackSynchronized => {
@@ -1963,7 +2004,8 @@ fn prepared_table_export_with_event_readiness_activates_with_same_device_stream_
     )
     .unwrap();
 
-    let lease = export.try_activate_read_lease(same_device_completion()).unwrap();
+    let lease =
+        export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
 
     assert_eq!(lease.completion(), same_device_completion());
 }

@@ -3,6 +3,9 @@ mod common;
 #[path = "interop/borrowed_view_tests.rs"]
 mod borrowed_view_tests;
 
+#[path = "interop/import_tests.rs"]
+mod import_tests;
+
 #[path = "interop/prepared_export_tests.rs"]
 mod prepared_export_tests;
 

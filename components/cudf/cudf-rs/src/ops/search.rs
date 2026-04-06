@@ -28,7 +28,8 @@ fn contains_impl(
     Ok(unsafe { Column::from_raw(out) })
 }
 
-/// Check if elements of `needles` exist in `haystack` (set membership / "isin").
+/// Test which elements of `needles` exist anywhere in `haystack`
+/// (element-wise set membership / "isin").
 ///
 /// Returns a `BOOL8` column with the same size as `needles`. Element `i`
 /// is `true` if `needles[i]` is found anywhere in `haystack`, `false`

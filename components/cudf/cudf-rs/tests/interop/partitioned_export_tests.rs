@@ -2,9 +2,11 @@ use cudf::{
     Column, DataFrame,
     interop::{
         CompletionAuthority, ExportProfile, LeaseCompletionResult, PartitionedDataFrameExport, Placement,
-        ProducerReadiness,
+        ProducerReadiness, ReadStartAuthority,
     },
 };
+
+use crate::common::assert_duplicate_name_error;
 
 #[test]
 fn partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_appearance_order() {
@@ -30,10 +32,14 @@ fn partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_a
     assert_eq!(export.partitions()[0].export().diagnostics().profile(), ExportProfile::PreparedDeviceExport);
     assert_eq!(export.partitions()[1].export().diagnostics().profile(), ExportProfile::PreparedDeviceExport);
 
-    let first =
-        export.partitions()[0].export().try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
-    let second =
-        export.partitions()[1].export().try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let first = export.partitions()[0]
+        .export()
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
+    let second = export.partitions()[1]
+        .export()
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(first.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
     assert_eq!(second.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
@@ -53,7 +59,9 @@ fn partitioned_dataframe_export_prepare_host_table_export_returns_one_host_visib
     assert!(prepared.bindings().iter().all(|binding| matches!(binding.placement(), Placement::Host)));
     assert!(matches!(prepared.readiness(), ProducerReadiness::HostVisible));
 
-    let lease = prepared.try_activate_read_lease(CompletionAuthority::SynchronousByReturn).unwrap();
+    let lease = prepared
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
@@ -83,10 +91,30 @@ fn partitioned_dataframe_export_owned_transfer_returns_one_partition_per_retaine
 }
 
 #[test]
-fn ordinary_dataframe_still_rejects_mixed_provenance_device_export() {
+fn ordinary_dataframe_rejects_mixed_provenance_at_construction() {
     let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7301).unwrap();
     let right = Column::from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(7302).unwrap();
     let frame = DataFrame::new(vec!["left".into(), "right".into()], vec![left, right]);
 
     assert!(frame.is_err());
+}
+
+#[test]
+fn partitioned_dataframe_export_rejects_duplicate_names_in_wide_schema() {
+    let names: Vec<String> = (0..12).map(|idx| if idx == 11 { "c3".to_string() } else { format!("c{idx}") }).collect();
+    let columns: Vec<Column> = (0..12)
+        .map(|idx| {
+            Column::from_slice(&[idx, idx + 100])
+                .unwrap()
+                .__debug_rebind_execution_domain_explicit(7400 + idx as u64)
+                .unwrap()
+        })
+        .collect();
+
+    let result = PartitionedDataFrameExport::new(names, columns);
+    let err = match result {
+        Ok(_) => panic!("expected duplicate column name error"),
+        Err(err) => err,
+    };
+    assert_duplicate_name_error(&err, "c3");
 }

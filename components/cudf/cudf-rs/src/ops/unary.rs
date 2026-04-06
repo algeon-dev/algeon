@@ -62,6 +62,37 @@ pub enum UnaryOperator {
     Negate,
 }
 
+impl UnaryOperator {
+    pub(crate) fn to_raw(self) -> cudf_sys::cudf_unary_operator_t {
+        match self {
+            UnaryOperator::Sin => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_SIN,
+            UnaryOperator::Cos => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_COS,
+            UnaryOperator::Tan => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_TAN,
+            UnaryOperator::ArcSin => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_ARCSIN,
+            UnaryOperator::ArcCos => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_ARCCOS,
+            UnaryOperator::ArcTan => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_ARCTAN,
+            UnaryOperator::Sinh => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_SINH,
+            UnaryOperator::Cosh => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_COSH,
+            UnaryOperator::Tanh => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_TANH,
+            UnaryOperator::ArcSinh => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_ARCSINH,
+            UnaryOperator::ArcCosh => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_ARCCOSH,
+            UnaryOperator::ArcTanh => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_ARCTANH,
+            UnaryOperator::Exp => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_EXP,
+            UnaryOperator::Log => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_LOG,
+            UnaryOperator::Sqrt => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_SQRT,
+            UnaryOperator::Cbrt => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_CBRT,
+            UnaryOperator::Ceil => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_CEIL,
+            UnaryOperator::Floor => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_FLOOR,
+            UnaryOperator::Abs => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_ABS,
+            UnaryOperator::Rint => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_RINT,
+            UnaryOperator::BitCount => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_BIT_COUNT,
+            UnaryOperator::BitInvert => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_BIT_INVERT,
+            UnaryOperator::Not => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NOT,
+            UnaryOperator::Negate => cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NEGATE,
+        }
+    }
+}
+
 /// Apply a unary operation element-wise.
 pub fn unary_operation(input: &ColumnView<'_>, op: UnaryOperator) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
@@ -77,9 +108,7 @@ fn unary_operation_impl(
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    // Safety: UnaryOperator and cudf_sys::cudf_unary_operator_t are both #[repr(i32)]
-    // with identical discriminant values.
-    let op_ffi: cudf_sys::cudf_unary_operator_t = unsafe { std::mem::transmute(op) };
+    let op_ffi = op.to_raw();
     let status = match exec_options {
         Some(options) => unsafe { cudf_sys::cudf_unary_operation_ex(input.raw_handle(), op_ffi, &mut out, options) },
         None => unsafe { cudf_sys::cudf_unary_operation(input.raw_handle(), op_ffi, &mut out) },

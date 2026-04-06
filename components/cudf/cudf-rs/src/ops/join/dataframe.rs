@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
-use indexmap::IndexMap;
-
 use crate::{
     core::{
         column::Column,
         error::{Error, ErrorKind, Result},
     },
     frame::dataframe::{DataFrame, DataFrameJoinResult, derive_frame_domain_from_columns},
-    internal::resolve::{
-        build_borrowed_table_view_from_columns, payload_indices, resolve_column_names, validate_no_duplicate_names,
+    internal::{
+        hash::{FastHashSet, FastIndexMap, fast_index_map_with_capacity},
+        resolve::{
+            build_borrowed_table_view_from_columns, payload_indices, resolve_column_names, validate_no_duplicate_names,
+        },
     },
     ops::{join, replace},
     runtime::{Runtime, execution_context::ExecutionContext, execution_domain::ExecutionDomain},
@@ -357,7 +358,7 @@ impl DataFrame {
 /// Build the schema name list for a join result side:
 /// key column names (in `on` order) followed by payload column names.
 fn build_join_schema_names(
-    columns: &IndexMap<String, Arc<Column>>,
+    columns: &FastIndexMap<String, Arc<Column>>,
     key_indices: &[usize],
     payload_indices: &[usize],
 ) -> Vec<String> {
@@ -478,10 +479,9 @@ fn merge_join_result_with_suffixes(
     let right_payload_names: Vec<&str> = right_names[key_count..].iter().map(|s| s.as_str()).collect();
 
     // Find which payload names collide.
-    let left_payload_set: std::collections::HashSet<&str> = left_payload_names.iter().copied().collect();
-    let right_payload_set: std::collections::HashSet<&str> = right_payload_names.iter().copied().collect();
-    let conflicting: std::collections::HashSet<&str> =
-        left_payload_set.intersection(&right_payload_set).copied().collect();
+    let left_payload_set: FastHashSet<&str> = left_payload_names.iter().copied().collect();
+    let right_payload_set: FastHashSet<&str> = right_payload_names.iter().copied().collect();
+    let conflicting: FastHashSet<&str> = left_payload_set.intersection(&right_payload_set).copied().collect();
 
     let mut out_cols: Vec<Arc<Column>> = Vec::new();
     let mut out_names: Vec<String> = Vec::new();
@@ -530,7 +530,7 @@ fn merge_join_result_with_suffixes(
 
     validate_no_duplicate_names(&out_names, operation)?;
 
-    let mut columns = IndexMap::with_capacity(out_names.len());
+    let mut columns = fast_index_map_with_capacity(out_names.len());
     for (name, col) in out_names.into_iter().zip(out_cols) {
         columns.insert(name, col);
     }

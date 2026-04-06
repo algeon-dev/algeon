@@ -1,6 +1,9 @@
+#[path = "common/mod.rs"]
+mod common;
 #[path = "../examples/multi_gpu/mod.rs"]
 mod multi_gpu;
 
+use common::error_context_value;
 use cudf::ErrorKind;
 use multi_gpu::{
     REQUIRED_VISIBLE_DEVICES, WorkflowReport, WorkflowStatus, validate_exact_visible_devices, validate_final_reports,
@@ -8,10 +11,6 @@ use multi_gpu::{
 
 fn report(label: &'static str, device_ordinal: usize, status: WorkflowStatus, summary: &str) -> WorkflowReport {
     WorkflowReport { label, device_ordinal, status, elapsed_ms: 123, summary: summary.to_string() }
-}
-
-fn context_value<'a>(err: &'a cudf::Error, key: &str) -> Option<&'a str> {
-    err.context().iter().find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then_some(ctx_value.as_str()))
 }
 
 #[test]
@@ -23,13 +22,13 @@ fn exact_visible_device_validation_accepts_four_devices() {
 fn exact_visible_device_validation_rejects_non_four_counts() {
     let err = validate_exact_visible_devices(3).expect_err("three visible devices must fail");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert_eq!(context_value(&err, "required_visible_devices"), Some("4"));
-    assert_eq!(context_value(&err, "visible_devices"), Some("3"));
+    assert_eq!(error_context_value(&err, "required_visible_devices"), Some("4"));
+    assert_eq!(error_context_value(&err, "visible_devices"), Some("3"));
 
     let err = validate_exact_visible_devices(5).expect_err("five visible devices must fail");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert_eq!(context_value(&err, "required_visible_devices"), Some("4"));
-    assert_eq!(context_value(&err, "visible_devices"), Some("5"));
+    assert_eq!(error_context_value(&err, "required_visible_devices"), Some("4"));
+    assert_eq!(error_context_value(&err, "visible_devices"), Some("5"));
 }
 
 #[test]
@@ -55,8 +54,8 @@ fn final_report_validation_rejects_missing_expected_oom() {
 
     let err = validate_final_reports(&reports).expect_err("summary must fail without an expected OOM");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert_eq!(context_value(&err, "completed_workflows"), Some("4"));
-    assert_eq!(context_value(&err, "expected_oom_workflows"), Some("0"));
+    assert_eq!(error_context_value(&err, "completed_workflows"), Some("4"));
+    assert_eq!(error_context_value(&err, "expected_oom_workflows"), Some("0"));
 }
 
 #[test]
@@ -70,7 +69,7 @@ fn final_report_validation_rejects_unexpected_failures() {
 
     let err = validate_final_reports(&reports).expect_err("unexpected errors must fail the summary");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert_eq!(context_value(&err, "unexpected_failures"), Some("1"));
+    assert_eq!(error_context_value(&err, "unexpected_failures"), Some("1"));
 }
 
 #[test]
@@ -83,6 +82,6 @@ fn final_report_validation_rejects_wrong_report_count() {
 
     let err = validate_final_reports(&reports).expect_err("summary must require four workflow reports");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert_eq!(context_value(&err, "expected_workflow_reports"), Some("4"));
-    assert_eq!(context_value(&err, "actual_workflow_reports"), Some("3"));
+    assert_eq!(error_context_value(&err, "expected_workflow_reports"), Some("4"));
+    assert_eq!(error_context_value(&err, "actual_workflow_reports"), Some("3"));
 }

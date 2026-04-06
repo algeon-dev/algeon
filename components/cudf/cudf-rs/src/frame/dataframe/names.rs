@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
-use indexmap::IndexMap;
-
 use super::owned::DataFrame;
-use crate::core::error::{Error, ErrorKind, Result};
+use crate::{
+    core::error::{Error, ErrorKind, Result},
+    internal::hash::{
+        FastHashMap, FastHashSet, fast_hash_map_with_capacity, fast_hash_set_with_capacity,
+        fast_index_map_with_capacity,
+    },
+};
 
 impl DataFrame {
     /// Returns column names in insertion (schema) order.
@@ -42,7 +46,7 @@ impl DataFrame {
             renames.into_iter().map(|(old, new)| (old.as_ref().to_string(), new.as_ref().to_string())).collect();
 
         // Build a map from old name → new name.
-        let mut rename_map = std::collections::HashMap::with_capacity(pairs.len());
+        let mut rename_map: FastHashMap<&str, &str> = fast_hash_map_with_capacity(pairs.len());
         for (old, new) in &pairs {
             if !self.columns.contains_key(old.as_str()) {
                 return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
@@ -53,7 +57,7 @@ impl DataFrame {
         }
 
         // Compute the full target name set and check for conflicts.
-        let mut target_names = std::collections::HashSet::with_capacity(self.columns.len());
+        let mut target_names: FastHashSet<String> = fast_hash_set_with_capacity(self.columns.len());
 
         for name in self.columns.keys() {
             let target = if let Some(&new_name) = rename_map.get(name.as_str()) { new_name } else { name.as_str() };
@@ -67,7 +71,7 @@ impl DataFrame {
             }
         }
 
-        let mut new_columns = IndexMap::with_capacity(self.columns.len());
+        let mut new_columns = fast_index_map_with_capacity(self.columns.len());
         for (name, col) in &self.columns {
             let target =
                 if let Some(&new_name) = rename_map.get(name.as_str()) { new_name.to_string() } else { name.clone() };

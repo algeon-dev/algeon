@@ -115,7 +115,6 @@ impl MeltOptions {
 
 use std::sync::Arc;
 
-use indexmap::IndexMap;
 use smallvec::SmallVec;
 
 use super::owned::{DataFrame, derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
@@ -127,7 +126,10 @@ use crate::{
         types::{CudfType, DataType},
     },
     frame::series::{IntoSeries, Series},
-    internal::resolve::resolve_column_names,
+    internal::{
+        hash::{FastHashSet, fast_index_map_with_capacity},
+        resolve::resolve_column_names,
+    },
     ops::{
         self, copying, filter, replace,
         sorting::{self, SortOptions},
@@ -1272,7 +1274,7 @@ impl DataFrame {
     }
 
     fn empty_with_same_schema_in_domain(&self, domain: Arc<ExecutionDomain>) -> Result<Self> {
-        let mut new_columns = IndexMap::with_capacity(self.columns.len());
+        let mut new_columns = fast_index_map_with_capacity(self.columns.len());
         for (name, col) in &self.columns {
             let cv = col.view()?;
             let type_id = cv.data_type()?.id();
@@ -1302,7 +1304,7 @@ impl DataFrame {
     pub fn melt(&self, opts: MeltOptions) -> Result<Self> {
         let id_vars = &opts.id_vars;
         let value_vars: Vec<String> = if opts.value_vars.is_empty() {
-            let id_set: std::collections::HashSet<&str> = id_vars.iter().map(|s| s.as_str()).collect();
+            let id_set: FastHashSet<&str> = id_vars.iter().map(|s| s.as_str()).collect();
             self.columns.keys().filter(|name| !id_set.contains(name.as_str())).cloned().collect()
         } else {
             opts.value_vars.clone()

@@ -110,6 +110,45 @@ fn owned_column_transfer_reports_owned_device_profile_and_release_contract() {
 }
 
 #[test]
+fn owned_column_transfer_can_recover_typed_owner() {
+    let transfer = OwnedColumnTransfer::try_new(
+        fixed_width_column(1, 11, 3, 0),
+        vec![device_binding(11, 0x1000, 12, 0)],
+        owned_transfer_readiness(),
+        owned_transfer_diagnostics(),
+        release_contract(),
+        String::from("column-owner"),
+    )
+    .unwrap();
+
+    let owner = transfer.try_into_owner::<String>().unwrap();
+
+    assert_eq!(owner, "column-owner");
+}
+
+#[test]
+fn owned_column_transfer_owner_type_mismatch_returns_original_transfer() {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let transfer = OwnedColumnTransfer::try_new(
+        fixed_width_column(1, 11, 3, 0),
+        vec![device_binding(11, 0x1000, 12, 0)],
+        owned_transfer_readiness(),
+        owned_transfer_diagnostics(),
+        release_contract(),
+        DropFlagOwner { dropped: Arc::clone(&dropped) },
+    )
+    .unwrap();
+
+    let transfer = transfer.try_into_owner::<String>().unwrap_err();
+
+    assert_eq!(transfer.release_contract(), &release_contract());
+    assert!(!dropped.load(Ordering::SeqCst));
+
+    drop(transfer);
+    assert!(dropped.load(Ordering::SeqCst));
+}
+
+#[test]
 fn owned_column_transfer_rejects_non_transfer_profile() {
     let err = OwnedColumnTransfer::try_new(
         fixed_width_column(1, 11, 3, 0),
@@ -161,6 +200,26 @@ fn owned_table_transfer_reports_owned_device_profile_and_release_contract() {
 
     drop(transfer);
     assert!(dropped.load(Ordering::SeqCst));
+}
+
+#[test]
+fn owned_table_transfer_can_recover_typed_owner() {
+    let columns = vec![fixed_width_column(1, 11, 3, 0)];
+    let table = SemanticTable::new(TableId::new(7), 3, vec![ColumnId::new(1)], None);
+    let transfer = OwnedTableTransfer::try_new(
+        table,
+        columns,
+        vec![device_binding(11, 0x1000, 12, 0)],
+        owned_transfer_readiness(),
+        owned_transfer_diagnostics(),
+        release_contract(),
+        String::from("table-owner"),
+    )
+    .unwrap();
+
+    let owner = transfer.try_into_owner::<String>().unwrap();
+
+    assert_eq!(owner, "table-owner");
 }
 
 #[test]

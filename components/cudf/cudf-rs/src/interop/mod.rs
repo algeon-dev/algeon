@@ -3,14 +3,27 @@
 //! This module re-exports the shared RAPIDS Rust interop contract from
 //! [`rapids_interop`] and implements `cudf-rs` producer adapters for:
 //!
+//! - [`crate::Column`]
 //! - [`crate::ColumnView`]
+//! - [`crate::Table`]
 //! - [`crate::TableView`]
 //! - [`crate::Series`]
 //! - [`crate::DataFrame`]
+//! - [`PartitionedDataFrameExport`]
 //!
 //! # Contract Summary
 //!
 //! - The shared [`rapids_interop`] names are the primary interop contract.
+//! - `cudf-rs` now supports consumer-side import from the shared borrowed
+//!   compatibility descriptors back into low-level owned [`crate::Column`] and
+//!   [`crate::Table`] values via explicit destination [`crate::Runtime`].
+//! - `cudf-rs` also supports zero-copy consumer-side import from
+//!   `cudf-rs`-produced shared owned-transfer roots back into low-level owned
+//!   [`crate::Column`] and [`crate::Table`] values.
+//! - `cudf-rs` now also supports low-level consumer-side import from shared
+//!   prepared-device export roots back into owned [`crate::Column`] and
+//!   [`crate::Table`] values via explicit same-device destination
+//!   [`crate::Runtime`]s.
 //! - [`BorrowedColumnView`] and [`BorrowedTableView`] remain the borrowed GPU
 //!   compatibility profile.
 //! - [`PreparedColumnExport`] and [`PreparedTableExport`] are producer-rooted
@@ -19,15 +32,16 @@
 //!   are explicit multi-device wrappers around multiple already-valid
 //!   single-device table roots.
 //! - [`ActiveColumnReadLease`] and [`ActiveTableReadLease`] model activated
-//!   read access with explicit completion.
+//!   read access with explicit read-start and completion contracts.
 //! - [`CompletionWitness`] and [`LeaseCompletionResult`] make completion and
 //!   drop fallback visible at the shared contract layer.
-//! - [`RuntimeCompletionAuthority`], [`RuntimeActiveColumnReadLease`],
-//!   [`RuntimeActiveTableReadLease`], and their related `Runtime*` result and
-//!   witness types are CUDA-specific compatibility shims layered on that same
-//!   shared contract. Prefer the shared names for new interop APIs unless you
-//!   specifically need `cudf-rs` runtime handles and producer-owned
-//!   [`crate::runtime::CudaEvent`] witnesses.
+//! - [`RuntimeReadStartAuthority`], [`RuntimeCompletionAuthority`],
+//!   [`RuntimeActiveColumnReadLease`], [`RuntimeActiveTableReadLease`], and
+//!   their related `Runtime*` result and witness types are CUDA-specific
+//!   compatibility shims layered on that same shared contract. Prefer the
+//!   shared names for new interop APIs unless you specifically need `cudf-rs`
+//!   runtime handles and producer-owned [`crate::runtime::CudaEvent`]
+//!   witnesses.
 //! - Borrowing and prepared export do not transfer ownership.
 //! - Borrowed compatibility and prepared export both avoid host copies on the
 //!   input path because they describe existing device buffers.
@@ -51,11 +65,13 @@
 //! - Explicit execution provenance is required for producer projection.
 //! - Ambient/default-only objects are rejected at the interop boundary.
 
+mod projection;
 mod runtime_lease;
+mod table_export;
 
 use std::sync::Arc;
 
-use indexmap::IndexMap;
+use projection::{prepared_column_projection_from_view, prepared_host_column_projection_from_view};
 pub use rapids_interop::{
     ActiveColumnReadLease, ActiveLeaseActivation, ActiveLeaseBackend, ActiveTableReadLease, BorrowedColumnView,
     BorrowedTableView, BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority,
@@ -65,16 +81,24 @@ pub use rapids_interop::{
     LeaseCompletionResult, LeaseExportContext, LeaseReadiness, NullMask, NullMaskKind, OwnedColumnTransfer,
     OwnedTableTransfer, PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition,
     PartitionedPreparedTableExport, PartitionedPreparedTablePartition, PhysicalValidity, Placement,
-    PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReleaseContract, ReleaseSynchronization,
-    SchemaNullability, SemanticColumn, SemanticTable, TableId, TransferCompletionRule, TryBorrowColumnView,
-    TryBorrowTableView, TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDevicePartitionedTableTransfer,
-    TryIntoOwnedDeviceTableTransfer, TryPrepareDeviceColumnExport, TryPrepareDevicePartitionedTableExport,
-    TryPrepareDeviceTableExport, TryPrepareHostColumnExport, TryPrepareHostTableExport, TypeId as InteropTypeId,
+    PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, ReadStartBinding,
+    ReleaseContract, ReleaseSynchronization, SchemaNullability, SemanticColumn, SemanticTable, TableId,
+    TransferCompletionRule, TryBorrowColumnView, TryBorrowTableView, TryIntoOwnedDeviceColumnTransfer,
+    TryIntoOwnedDevicePartitionedTableTransfer, TryIntoOwnedDeviceTableTransfer, TryPrepareDeviceColumnExport,
+    TryPrepareDevicePartitionedTableExport, TryPrepareDeviceTableExport, TryPrepareHostColumnExport,
+    TryPrepareHostTableExport, TypeId as InteropTypeId,
 };
 pub use runtime_lease::{
     RuntimeActiveColumnReadLease, RuntimeActiveTableReadLease, RuntimeCompletionAuthority, RuntimeCompletionWitness,
-    RuntimeLeaseCompletionResult, TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
-    cuda_explicit_completion_required_lease_backend,
+    RuntimeLeaseCompletionResult, RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease,
+    TryActivateRuntimeTableReadLease, cuda_explicit_completion_required_lease_backend,
+};
+use table_export::{
+    prepare_device_table_export_from_columns, prepare_device_table_export_from_columns_with_readiness,
+    prepare_host_table_export_from_columns, prepare_host_table_export_from_view,
+    prepare_partitioned_device_table_export_from_columns, prepare_partitioned_host_table_export_from_columns,
+    prepare_table_export_from_view, prepare_table_export_from_view_with_readiness, transfer_from_owned_table,
+    transfer_partitioned_owned_table_from_columns,
 };
 
 use crate::{
@@ -85,9 +109,12 @@ use crate::{
         types::{DataType, TypeId, validity_to_bitmask},
     },
     frame::{dataframe::DataFrame, series::Series},
-    internal::resolve::validate_no_duplicate_names,
+    internal::{
+        hash::{FastIndexMap, fast_index_map, fast_index_map_with_capacity},
+        resolve::validate_no_duplicate_names,
+    },
     ops::dictionary,
-    runtime::{CudaEvent, execution_domain::ExecutionDomain},
+    runtime::{CudaEvent, Runtime, execution_domain::ExecutionDomain},
 };
 
 fn map_type_id(type_id: TypeId) -> InteropTypeId {
@@ -121,6 +148,40 @@ fn map_type_id(type_id: TypeId) -> InteropTypeId {
         TypeId::Decimal64 => InteropTypeId::Decimal64,
         TypeId::Decimal128 => InteropTypeId::Decimal128,
         TypeId::Struct => InteropTypeId::Struct,
+    }
+}
+
+fn map_interop_type_id(type_id: InteropTypeId) -> TypeId {
+    match type_id {
+        InteropTypeId::Empty => TypeId::Empty,
+        InteropTypeId::Int8 => TypeId::Int8,
+        InteropTypeId::Int16 => TypeId::Int16,
+        InteropTypeId::Int32 => TypeId::Int32,
+        InteropTypeId::Int64 => TypeId::Int64,
+        InteropTypeId::UInt8 => TypeId::UInt8,
+        InteropTypeId::UInt16 => TypeId::UInt16,
+        InteropTypeId::UInt32 => TypeId::UInt32,
+        InteropTypeId::UInt64 => TypeId::UInt64,
+        InteropTypeId::Float32 => TypeId::Float32,
+        InteropTypeId::Float64 => TypeId::Float64,
+        InteropTypeId::Bool8 => TypeId::Bool8,
+        InteropTypeId::TimestampDays => TypeId::TimestampDays,
+        InteropTypeId::TimestampSeconds => TypeId::TimestampSeconds,
+        InteropTypeId::TimestampMilliseconds => TypeId::TimestampMilliseconds,
+        InteropTypeId::TimestampMicroseconds => TypeId::TimestampMicroseconds,
+        InteropTypeId::TimestampNanoseconds => TypeId::TimestampNanoseconds,
+        InteropTypeId::DurationDays => TypeId::DurationDays,
+        InteropTypeId::DurationSeconds => TypeId::DurationSeconds,
+        InteropTypeId::DurationMilliseconds => TypeId::DurationMilliseconds,
+        InteropTypeId::DurationMicroseconds => TypeId::DurationMicroseconds,
+        InteropTypeId::DurationNanoseconds => TypeId::DurationNanoseconds,
+        InteropTypeId::Dictionary32 => TypeId::Dictionary32,
+        InteropTypeId::String => TypeId::String,
+        InteropTypeId::List => TypeId::List,
+        InteropTypeId::Decimal32 => TypeId::Decimal32,
+        InteropTypeId::Decimal64 => TypeId::Decimal64,
+        InteropTypeId::Decimal128 => TypeId::Decimal128,
+        InteropTypeId::Struct => TypeId::Struct,
     }
 }
 
@@ -312,11 +373,41 @@ struct PreparedHostColumnProjection {
 }
 
 struct OwnedColumnTransferState {
+    // Retain the owning column so owned-transfer buffer bindings continue to
+    // point at live device memory for the full transfer lifetime.
     _column: Column,
 }
 
+impl OwnedColumnTransferState {
+    fn into_column(self) -> Column {
+        self._column
+    }
+}
+
 struct OwnedTableTransferState {
+    // Retain the owning table so owned-transfer buffer bindings continue to
+    // point at live device memory for the full transfer lifetime.
     _table: Table,
+}
+
+impl OwnedTableTransferState {
+    fn into_table(self) -> Table {
+        self._table
+    }
+}
+
+struct PreparedDeviceImportColumnGraph {
+    ffi_columns: Vec<cudf_sys::cudf_interop_semantic_column_t>,
+    ffi_bindings: Vec<cudf_sys::cudf_interop_buffer_binding_t>,
+    _child_id_buffers: Vec<Box<[u32]>>,
+}
+
+struct PreparedDeviceImportTableGraph {
+    ffi_table: cudf_sys::cudf_interop_semantic_table_t,
+    ffi_columns: Vec<cudf_sys::cudf_interop_semantic_column_t>,
+    ffi_bindings: Vec<cudf_sys::cudf_interop_buffer_binding_t>,
+    _child_id_buffers: Vec<Box<[u32]>>,
+    _table_column_ids: Box<[u32]>,
 }
 
 struct BorrowedPartitionColumnGroup<'a> {
@@ -334,12 +425,15 @@ struct OwnedPartitionColumnGroup {
 /// Interop-only high-level producer for heterogeneous retained-provenance
 /// column sets that still share one row-count relationship.
 ///
+/// Provenance here means the CUDA device and execution-domain lineage on
+/// which each column's buffers were produced and remain valid.
+///
 /// Unlike [`crate::DataFrame`], this type does not claim one shared retained
 /// provenance across all columns and does not participate in general dataframe
 /// algebra. Its role is to drive partitioned device export, heterogeneous
 /// host-visible export, and partitioned owned transfer honestly.
 pub struct PartitionedDataFrameExport {
-    columns: IndexMap<String, Column>,
+    columns: FastIndexMap<String, Column>,
     row_count: usize,
 }
 
@@ -360,7 +454,7 @@ impl PartitionedDataFrameExport {
         validate_no_duplicate_names(&names, "interop::PartitionedDataFrameExport::new")?;
 
         if columns.is_empty() {
-            return Ok(Self { columns: IndexMap::new(), row_count: 0 });
+            return Ok(Self { columns: fast_index_map(), row_count: 0 });
         }
 
         let first_rows = columns[0].view()?.len()?;
@@ -378,7 +472,7 @@ impl PartitionedDataFrameExport {
             }
         }
 
-        let mut map = IndexMap::with_capacity(names.len());
+        let mut map: FastIndexMap<String, Column> = fast_index_map_with_capacity(names.len());
         for (name, column) in names.into_iter().zip(columns) {
             map.insert(name, column);
         }
@@ -474,6 +568,12 @@ fn to_static_binding(
     operation: &'static str,
     binding: BufferBinding<'_>,
 ) -> Result<BufferBinding<'static>, InteropError> {
+    // SAFETY: This lifetime erasure is only used while constructing owned
+    // transfer roots. The raw pointer still refers to producer-owned device
+    // memory, and the corresponding transfer stores that owner in
+    // `OwnedColumnTransferState` or `OwnedTableTransferState`. Those retained
+    // states are boxed into the shared `OwnedTransferOwner`, so the source
+    // `Column`/`Table` outlives every `BufferBinding<'static>` created here.
     Ok(BufferBinding::new(
         binding.id(),
         BoundBytes::from_raw_parts(binding.bytes().base_ptr().as_ptr(), binding.bytes().byte_len())
@@ -607,510 +707,6 @@ fn encode_host_i32_values(values: &[i32]) -> Arc<[u8]> {
     Arc::from(values.iter().flat_map(|value| value.to_ne_bytes()).collect::<Vec<u8>>())
 }
 
-fn prepared_host_leaf_or_string_column_projection_from_view(
-    view: &ColumnView<'_>,
-    operation: &'static str,
-    next_column_id: u32,
-    next_buffer_id: u32,
-) -> Result<PreparedHostColumnProjection, InteropError> {
-    let data_type =
-        view.data_type().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let interop_type = map_data_type(data_type);
-    let num_children =
-        view.num_children().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let null_count = usize::try_from(
-        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "null count must be >= 0").with_context("operation", operation)
-    })?;
-
-    if interop_type.id() == InteropTypeId::String {
-        if num_children < 1 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "string column view must expose an offsets child",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "string")
-            .with_context("num_children", num_children.to_string()));
-        }
-
-        let mut next_column_id = next_column_id;
-        let mut next_buffer_id = next_buffer_id;
-        let column_id = allocate_column_id(operation, &mut next_column_id)?;
-        let offsets_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-        let data_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-        let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-
-        let strings =
-            view.to_strings().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let validity =
-            view.validity().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-
-        let offsets_bytes = encode_host_string_offsets(operation, &strings)?;
-        let data_bytes: Arc<[u8]> =
-            Arc::from(strings.iter().flat_map(|value| value.as_bytes().iter().copied()).collect::<Vec<u8>>());
-
-        let offsets_binding = retained_host_binding(operation, offsets_id, &offsets_bytes)?;
-        let data_binding = retained_host_binding(operation, data_id, &data_bytes)?;
-        let (validity, validity_binding, validity_bytes) =
-            host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
-
-        let mut bindings = vec![offsets_binding, data_binding];
-        let mut retained_host_buffers = vec![offsets_bytes, data_bytes];
-        if let Some(binding) = validity_binding {
-            bindings.push(binding);
-        }
-        if let Some(bytes) = validity_bytes {
-            retained_host_buffers.push(bytes);
-        }
-
-        let column = SemanticColumn::new(
-            column_id,
-            interop_type,
-            len,
-            0,
-            validity,
-            SchemaNullability::Unknown,
-            ColumnLayout::BinaryLike { offsets: offsets_id, data: data_id },
-        );
-        return Ok(PreparedHostColumnProjection {
-            column: column.clone(),
-            semantic_columns: vec![column],
-            bindings,
-            retained_host_buffers,
-            next_buffer_id,
-            next_column_id,
-        });
-    }
-
-    if interop_type.id().fixed_width_size_bytes().is_none() {
-        return Err(InteropError::new(
-            InteropErrorKind::UnsupportedType,
-            "prepared host export currently supports fixed-width, string, list, struct, and dictionary32 column types within the current recursive host layout set",
-        )
-        .with_context("operation", operation)
-        .with_context("type_id", format!("{:?}", data_type.id()).to_lowercase()));
-    }
-    if num_children != 0 {
-        return Err(InteropError::new(
-            InteropErrorKind::UnsupportedLayout,
-            "prepared host export currently supports fixed-width leaf column layouts on the non-list fallback path only",
-        )
-        .with_context("operation", operation)
-        .with_context("type_id", format!("{:?}", data_type.id()).to_lowercase())
-        .with_context("num_children", num_children.to_string()));
-    }
-
-    let mut next_column_id = next_column_id;
-    let mut next_buffer_id = next_buffer_id;
-    let column_id = allocate_column_id(operation, &mut next_column_id)?;
-    let values_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-    let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-
-    let values_bytes: Arc<[u8]> = Arc::from(
-        view.to_fixed_width_host_bytes()
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    );
-    let validity = view.validity().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let values_binding = retained_host_binding(operation, values_id, &values_bytes)?;
-    let (validity, validity_binding, validity_bytes) =
-        host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
-
-    let mut bindings = vec![values_binding];
-    let mut retained_host_buffers = vec![values_bytes];
-    if let Some(binding) = validity_binding {
-        bindings.push(binding);
-    }
-    if let Some(bytes) = validity_bytes {
-        retained_host_buffers.push(bytes);
-    }
-
-    let column = SemanticColumn::new(
-        column_id,
-        interop_type,
-        len,
-        0,
-        validity,
-        SchemaNullability::Unknown,
-        ColumnLayout::FixedWidth { values: values_id },
-    );
-    Ok(PreparedHostColumnProjection {
-        column: column.clone(),
-        semantic_columns: vec![column],
-        bindings,
-        retained_host_buffers,
-        next_buffer_id,
-        next_column_id,
-    })
-}
-
-fn prepared_host_column_projection_with_current_supported_child_projection_from_view(
-    view: &ColumnView<'_>,
-    operation: &'static str,
-    next_column_id: u32,
-    next_buffer_id: u32,
-) -> Result<PreparedHostColumnProjection, InteropError> {
-    let data_type =
-        view.data_type().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let interop_type = map_data_type(data_type);
-    let num_children =
-        view.num_children().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let null_count = usize::try_from(
-        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "null count must be >= 0").with_context("operation", operation)
-    })?;
-
-    if interop_type.id() != InteropTypeId::List {
-        return prepared_host_leaf_or_string_column_projection_from_view(
-            view,
-            operation,
-            next_column_id,
-            next_buffer_id,
-        );
-    }
-
-    if num_children < 2 {
-        return Err(InteropError::new(
-            InteropErrorKind::InvalidView,
-            "list column view must expose offsets and child columns",
-        )
-        .with_context("operation", operation)
-        .with_context("type_id", "list")
-        .with_context("num_children", num_children.to_string()));
-    }
-
-    let root_offset = usize::try_from(
-        view.offset().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "column view offset must be >= 0")
-            .with_context("operation", operation)
-    })?;
-    let root_end = root_offset.checked_add(len).ok_or_else(|| {
-        InteropError::new(InteropErrorKind::InvalidView, "list host export active root range overflowed")
-            .with_context("operation", operation)
-            .with_context("offset", root_offset.to_string())
-            .with_context("len", len.to_string())
-    })?;
-
-    let mut next_column_id = next_column_id;
-    let mut next_buffer_id = next_buffer_id;
-    let column_id = allocate_column_id(operation, &mut next_column_id)?;
-    let offsets_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-    let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-
-    let offsets_view =
-        view.child(0).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let offsets_type =
-        offsets_view.data_type().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let offsets_elem_size = map_data_type(offsets_type).id().fixed_width_size_bytes().ok_or_else(|| {
-        InteropError::new(InteropErrorKind::InvalidView, "list offsets child must be fixed-width")
-            .with_context("operation", operation)
-            .with_context("offsets_type_id", format!("{:?}", offsets_type.id()).to_lowercase())
-    })?;
-    if offsets_elem_size != std::mem::size_of::<i32>() {
-        return Err(InteropError::new(InteropErrorKind::InvalidView, "list offsets child must use 32-bit offsets")
-            .with_context("operation", operation)
-            .with_context("offsets_elem_size", offsets_elem_size.to_string()));
-    }
-    let host_offsets = offsets_view
-        .to_vec::<i32>()
-        .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    if host_offsets.len() <= root_end {
-        return Err(InteropError::new(
-            InteropErrorKind::InvalidView,
-            "list offsets child is too small for the active logical range",
-        )
-        .with_context("operation", operation)
-        .with_context("offset", root_offset.to_string())
-        .with_context("len", len.to_string())
-        .with_context("offsets_len", host_offsets.len().to_string()));
-    }
-
-    let base_child_offset = host_offsets[root_offset];
-    if base_child_offset < 0 {
-        return Err(InteropError::new(
-            InteropErrorKind::InvalidView,
-            "list offsets child must not expose negative offsets",
-        )
-        .with_context("operation", operation)
-        .with_context("offset_index", root_offset.to_string())
-        .with_context("offset_value", base_child_offset.to_string()));
-    }
-    let mut normalized_offsets = Vec::with_capacity(len + 1);
-    let mut previous = base_child_offset;
-    for (position, raw_offset) in host_offsets[root_offset..=root_end].iter().copied().enumerate() {
-        if raw_offset < previous {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "list offsets child must be monotonically non-decreasing",
-            )
-            .with_context("operation", operation)
-            .with_context("offset_index", (root_offset + position).to_string())
-            .with_context("previous_offset", previous.to_string())
-            .with_context("offset_value", raw_offset.to_string()));
-        }
-        normalized_offsets.push(raw_offset - base_child_offset);
-        previous = raw_offset;
-    }
-    let offsets_bytes = encode_host_i32_values(&normalized_offsets);
-    let offsets_binding = retained_host_binding(operation, offsets_id, &offsets_bytes)?;
-
-    let child_view =
-        view.list_sliced_child().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let child_projection =
-        prepared_host_column_projection_from_view(&child_view, operation, next_column_id, next_buffer_id)?;
-    next_buffer_id = child_projection.next_buffer_id;
-    next_column_id = child_projection.next_column_id;
-
-    let validity = view.validity().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let (validity, validity_binding, validity_bytes) =
-        host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
-
-    let mut bindings = vec![offsets_binding];
-    let mut retained_host_buffers = vec![offsets_bytes];
-    if let Some(binding) = validity_binding {
-        bindings.push(binding);
-    }
-    if let Some(bytes) = validity_bytes {
-        retained_host_buffers.push(bytes);
-    }
-    bindings.extend(child_projection.bindings);
-    retained_host_buffers.extend(child_projection.retained_host_buffers);
-
-    let column = SemanticColumn::new(
-        column_id,
-        interop_type,
-        len,
-        0,
-        validity,
-        SchemaNullability::Unknown,
-        ColumnLayout::List { offsets: offsets_id, child: child_projection.column.id() },
-    );
-    let mut semantic_columns = vec![column.clone()];
-    semantic_columns.extend(child_projection.semantic_columns);
-    Ok(PreparedHostColumnProjection {
-        column,
-        semantic_columns,
-        bindings,
-        retained_host_buffers,
-        next_buffer_id,
-        next_column_id,
-    })
-}
-
-fn prepared_host_column_projection_from_view(
-    view: &ColumnView<'_>,
-    operation: &'static str,
-    next_column_id: u32,
-    next_buffer_id: u32,
-) -> Result<PreparedHostColumnProjection, InteropError> {
-    let data_type =
-        view.data_type().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let interop_type = map_data_type(data_type);
-    let num_children =
-        view.num_children().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let null_count = usize::try_from(
-        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "null count must be >= 0").with_context("operation", operation)
-    })?;
-
-    if interop_type.id() == InteropTypeId::Struct {
-        let root_offset = usize::try_from(
-            view.offset().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-        )
-        .map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "column view offset must be >= 0")
-                .with_context("operation", operation)
-        })?;
-        if root_offset != 0 {
-            let normalized = copy_view_to_owned(view)
-                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-            let normalized_view =
-                normalized.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-            return prepared_host_column_projection_from_view(
-                &normalized_view,
-                operation,
-                next_column_id,
-                next_buffer_id,
-            );
-        }
-
-        let child_count = usize::try_from(num_children).map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "struct child count must be >= 0")
-                .with_context("operation", operation)
-                .with_context("type_id", "struct")
-                .with_context("num_children", num_children.to_string())
-        })?;
-        if child_count == 0 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "struct column view must expose at least one child column",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "struct"));
-        }
-
-        let mut next_column_id = next_column_id;
-        let mut next_buffer_id = next_buffer_id;
-        let column_id = allocate_column_id(operation, &mut next_column_id)?;
-        let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-        let validity =
-            view.validity().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let (validity, validity_binding, validity_bytes) =
-            host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
-
-        let mut bindings = Vec::new();
-        let mut retained_host_buffers = Vec::new();
-        if let Some(binding) = validity_binding {
-            bindings.push(binding);
-        }
-        if let Some(bytes) = validity_bytes {
-            retained_host_buffers.push(bytes);
-        }
-
-        let mut child_ids = Vec::with_capacity(child_count);
-        let mut semantic_columns = Vec::new();
-        for index in 0..child_count {
-            let child_index = checked_child_index(operation, index)?;
-            let child_view = view
-                .child(child_index)
-                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-            let child_projection =
-                prepared_host_column_projection_from_view(&child_view, operation, next_column_id, next_buffer_id)?;
-            next_buffer_id = child_projection.next_buffer_id;
-            next_column_id = child_projection.next_column_id;
-            child_ids.push(child_projection.column.id());
-            bindings.extend(child_projection.bindings);
-            retained_host_buffers.extend(child_projection.retained_host_buffers);
-            semantic_columns.extend(child_projection.semantic_columns);
-        }
-
-        let column = SemanticColumn::new(
-            column_id,
-            interop_type,
-            len,
-            0,
-            validity,
-            SchemaNullability::Unknown,
-            ColumnLayout::Struct { children: child_ids },
-        );
-        let mut all_columns = vec![column.clone()];
-        all_columns.extend(semantic_columns);
-        return Ok(PreparedHostColumnProjection {
-            column,
-            semantic_columns: all_columns,
-            bindings,
-            retained_host_buffers,
-            next_buffer_id,
-            next_column_id,
-        });
-    }
-
-    if interop_type.id() == InteropTypeId::Dictionary32 {
-        if num_children < 2 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "dictionary column view must expose indices and keys columns",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "dictionary32")
-            .with_context("num_children", num_children.to_string()));
-        }
-
-        let mut next_column_id = next_column_id;
-        let mut next_buffer_id = next_buffer_id;
-        let column_id = allocate_column_id(operation, &mut next_column_id)?;
-        let indices_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-        let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-
-        let indices_view = dictionary::indices(view)
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let indices_type = indices_view
-            .data_type()
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let indices_elem_size = map_data_type(indices_type).id().fixed_width_size_bytes().ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "dictionary indices child must be fixed-width")
-                .with_context("operation", operation)
-                .with_context("indices_type_id", format!("{:?}", indices_type.id()).to_lowercase())
-        })?;
-        if indices_elem_size != std::mem::size_of::<i32>() {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "dictionary indices child must use 32-bit indices",
-            )
-            .with_context("operation", operation)
-            .with_context("indices_elem_size", indices_elem_size.to_string()));
-        }
-
-        let indices_bytes: Arc<[u8]> = Arc::from(
-            indices_view
-                .to_fixed_width_host_bytes()
-                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-        );
-        let indices_binding = retained_host_binding(operation, indices_id, &indices_bytes)?;
-
-        let keys_view =
-            dictionary::keys(view).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let keys_projection =
-            prepared_host_column_projection_from_view(&keys_view, operation, next_column_id, next_buffer_id)?;
-        next_buffer_id = keys_projection.next_buffer_id;
-        next_column_id = keys_projection.next_column_id;
-
-        let validity =
-            view.validity().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let (validity, validity_binding, validity_bytes) =
-            host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
-
-        let mut bindings = vec![indices_binding];
-        let mut retained_host_buffers = vec![indices_bytes];
-        if let Some(binding) = validity_binding {
-            bindings.push(binding);
-        }
-        if let Some(bytes) = validity_bytes {
-            retained_host_buffers.push(bytes);
-        }
-        bindings.extend(keys_projection.bindings);
-        retained_host_buffers.extend(keys_projection.retained_host_buffers);
-
-        let column = SemanticColumn::new(
-            column_id,
-            interop_type,
-            len,
-            0,
-            validity,
-            SchemaNullability::Unknown,
-            ColumnLayout::Dictionary { indices: indices_id, keys: keys_projection.column.id() },
-        );
-        let mut semantic_columns = vec![column.clone()];
-        semantic_columns.extend(keys_projection.semantic_columns);
-        return Ok(PreparedHostColumnProjection {
-            column,
-            semantic_columns,
-            bindings,
-            retained_host_buffers,
-            next_buffer_id,
-            next_column_id,
-        });
-    }
-
-    prepared_host_column_projection_with_current_supported_child_projection_from_view(
-        view,
-        operation,
-        next_column_id,
-        next_buffer_id,
-    )
-}
-
 fn borrow_from_materialized_view<'a>(
     operation: &'static str,
     data_type: DataType,
@@ -1169,509 +765,6 @@ fn null_mask_for_view<'a>(
     })?;
 
     NullMask::present(ptr, bit_len, null_count).map_err(|error| error.with_context("operation", operation))
-}
-
-fn prepared_column_projection_from_materialized_view<'a>(
-    operation: &'static str,
-    data_type: DataType,
-    num_children: i32,
-    len: usize,
-    offset: usize,
-    data_ptr: *const std::ffi::c_void,
-    nullable: bool,
-    null_mask_ptr: Option<*const std::ffi::c_void>,
-    null_count: usize,
-    default_device: i32,
-    next_column_id: u32,
-    next_buffer_id: u32,
-) -> Result<PreparedColumnProjection<'a>, InteropError> {
-    let interop_type = map_data_type(data_type);
-    let active_elements = offset.checked_add(len).ok_or_else(|| {
-        InteropError::new(InteropErrorKind::InvalidView, "active element range overflowed")
-            .with_context("operation", operation)
-            .with_context("offset", offset.to_string())
-            .with_context("len", len.to_string())
-    })?;
-    let mut next_column_id = next_column_id;
-    let mut next_buffer_id = next_buffer_id;
-    let column_id = allocate_column_id(operation, &mut next_column_id)?;
-
-    if num_children != 0 {
-        return Err(InteropError::new(
-            InteropErrorKind::UnsupportedLayout,
-            "prepared device export currently supports fixed-width leaf, string, list, and struct column layouts only",
-        )
-        .with_context("operation", operation)
-        .with_context("type_id", format!("{:?}", data_type.id()).to_lowercase())
-        .with_context("num_children", num_children.to_string()));
-    }
-
-    let values_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-    let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-    let elem_size = interop_type.id().fixed_width_size_bytes().ok_or_else(|| {
-        InteropError::new(
-            InteropErrorKind::UnsupportedLayout,
-            "prepared device export currently supports fixed-width leaf column layouts on the non-nested fallback path only",
-        )
-        .with_context("operation", operation)
-        .with_context("type_id", format!("{:?}", data_type.id()).to_lowercase())
-    })?;
-    let values_byte_len = active_elements.checked_mul(elem_size).ok_or_else(|| {
-        InteropError::new(InteropErrorKind::InvalidView, "active value byte range overflowed")
-            .with_context("operation", operation)
-            .with_context("offset", offset.to_string())
-            .with_context("len", len.to_string())
-            .with_context("elem_size", elem_size.to_string())
-    })?;
-
-    let values_device = pointer_device(operation, data_ptr, default_device)?;
-    let (validity, validity_binding) = validity_for_prepared_projection(
-        operation,
-        nullable,
-        null_mask_ptr,
-        null_count,
-        active_elements,
-        validity_id,
-        default_device,
-    )?;
-    let mut bindings = vec![BufferBinding::new(
-        values_id,
-        bound_bytes(operation, data_ptr, values_byte_len)?,
-        Placement::CudaDevice { device: values_device },
-    )];
-    if let Some(binding) = validity_binding {
-        bindings.push(binding);
-    }
-
-    let column = SemanticColumn::new(
-        column_id,
-        interop_type,
-        len,
-        offset,
-        validity,
-        SchemaNullability::Unknown,
-        ColumnLayout::FixedWidth { values: values_id },
-    );
-    Ok(PreparedColumnProjection {
-        column: column.clone(),
-        semantic_columns: vec![column],
-        bindings,
-        next_buffer_id,
-        next_column_id,
-    })
-}
-
-fn prepared_column_projection_from_view<'a>(
-    view: &ColumnView<'_>,
-    operation: &'static str,
-    default_device: i32,
-    next_column_id: u32,
-    next_buffer_id: u32,
-) -> Result<PreparedColumnProjection<'a>, InteropError> {
-    let data_type =
-        view.data_type().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let num_children =
-        view.num_children().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let offset = usize::try_from(
-        view.offset().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "column view offset must be >= 0")
-            .with_context("operation", operation)
-    })?;
-    let data_ptr =
-        view.device_data_ptr().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let nullable = view.nullable().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let null_count = usize::try_from(
-        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "null count must be >= 0").with_context("operation", operation)
-    })?;
-    let null_mask_ptr =
-        view.null_mask_ptr().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let active_elements = offset.checked_add(len).ok_or_else(|| {
-        InteropError::new(InteropErrorKind::InvalidView, "active element range overflowed")
-            .with_context("operation", operation)
-            .with_context("offset", offset.to_string())
-            .with_context("len", len.to_string())
-    })?;
-    let mut next_column_id = next_column_id;
-    let column_id = allocate_column_id(operation, &mut next_column_id)?;
-
-    if map_data_type(data_type).id() == InteropTypeId::String {
-        let mut next_buffer_id = next_buffer_id;
-        let offsets_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-        let data_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-        let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-
-        if num_children < 1 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "string column view must expose an offsets child",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "string")
-            .with_context("num_children", num_children.to_string()));
-        }
-
-        let offsets_view =
-            view.child(0).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let offsets_type = offsets_view
-            .data_type()
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let offsets_elem_size = map_data_type(offsets_type).id().fixed_width_size_bytes().ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "string offsets child must be fixed-width")
-                .with_context("operation", operation)
-                .with_context("offsets_type_id", format!("{:?}", offsets_type.id()).to_lowercase())
-        })?;
-        if offsets_elem_size != std::mem::size_of::<i32>() {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "string offsets child must use 32-bit offsets",
-            )
-            .with_context("operation", operation)
-            .with_context("offsets_elem_size", offsets_elem_size.to_string()));
-        }
-        let offsets_required_elements = offset.checked_add(len).and_then(|v| v.checked_add(1)).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "string offsets range overflowed")
-                .with_context("operation", operation)
-                .with_context("offset", offset.to_string())
-                .with_context("len", len.to_string())
-        })?;
-        let offsets_byte_len = offsets_required_elements.checked_mul(offsets_elem_size).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "string offsets byte range overflowed")
-                .with_context("operation", operation)
-                .with_context("offset", offset.to_string())
-                .with_context("len", len.to_string())
-        })?;
-        let offsets_ptr = offsets_view
-            .device_data_ptr()
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let offsets_device = pointer_device(operation, offsets_ptr, default_device)?;
-
-        let (chars_ptr, chars_byte_len) = view
-            .string_chars_ptr_and_size()
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let chars_device = pointer_device(operation, chars_ptr, default_device)?;
-
-        let (validity, validity_binding) = validity_for_prepared_projection(
-            operation,
-            nullable,
-            null_mask_ptr,
-            null_count,
-            active_elements,
-            validity_id,
-            default_device,
-        )?;
-
-        let mut bindings = vec![
-            BufferBinding::new(
-                offsets_id,
-                bound_bytes(operation, offsets_ptr, offsets_byte_len)?,
-                Placement::CudaDevice { device: offsets_device },
-            ),
-            BufferBinding::new(
-                data_id,
-                bound_bytes(operation, chars_ptr, chars_byte_len)?,
-                Placement::CudaDevice { device: chars_device },
-            ),
-        ];
-        if let Some(binding) = validity_binding {
-            bindings.push(binding);
-        }
-
-        let column = SemanticColumn::new(
-            column_id,
-            map_data_type(data_type),
-            len,
-            offset,
-            validity,
-            SchemaNullability::Unknown,
-            ColumnLayout::BinaryLike { offsets: offsets_id, data: data_id },
-        );
-        return Ok(PreparedColumnProjection {
-            column: column.clone(),
-            semantic_columns: vec![column],
-            bindings,
-            next_buffer_id,
-            next_column_id,
-        });
-    }
-
-    if map_data_type(data_type).id() == InteropTypeId::Dictionary32 {
-        let mut next_buffer_id = next_buffer_id;
-        let indices_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-        let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-
-        if num_children < 2 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "dictionary column view must expose indices and keys columns",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "dictionary32")
-            .with_context("num_children", num_children.to_string()));
-        }
-
-        let indices_view = dictionary::indices(view)
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let indices_type = indices_view
-            .data_type()
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let indices_elem_size = map_data_type(indices_type).id().fixed_width_size_bytes().ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "dictionary indices child must be fixed-width")
-                .with_context("operation", operation)
-                .with_context("indices_type_id", format!("{:?}", indices_type.id()).to_lowercase())
-        })?;
-        if indices_elem_size != std::mem::size_of::<i32>() {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "dictionary indices child must use 32-bit indices",
-            )
-            .with_context("operation", operation)
-            .with_context("indices_elem_size", indices_elem_size.to_string()));
-        }
-        let indices_byte_len = active_elements.checked_mul(indices_elem_size).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "dictionary indices byte range overflowed")
-                .with_context("operation", operation)
-                .with_context("offset", offset.to_string())
-                .with_context("len", len.to_string())
-        })?;
-        let indices_ptr = indices_view
-            .device_data_ptr()
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let indices_device = pointer_device(operation, indices_ptr, default_device)?;
-
-        let keys_view =
-            dictionary::keys(view).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let keys_projection = prepared_column_projection_from_view(
-            &keys_view,
-            operation,
-            default_device,
-            next_column_id,
-            next_buffer_id,
-        )?;
-        next_buffer_id = keys_projection.next_buffer_id;
-        next_column_id = keys_projection.next_column_id;
-
-        let (validity, validity_binding) = validity_for_prepared_projection(
-            operation,
-            nullable,
-            null_mask_ptr,
-            null_count,
-            active_elements,
-            validity_id,
-            default_device,
-        )?;
-
-        let mut bindings = vec![BufferBinding::new(
-            indices_id,
-            bound_bytes(operation, indices_ptr, indices_byte_len)?,
-            Placement::CudaDevice { device: indices_device },
-        )];
-        if let Some(binding) = validity_binding {
-            bindings.push(binding);
-        }
-        bindings.extend(keys_projection.bindings);
-
-        let column = SemanticColumn::new(
-            column_id,
-            map_data_type(data_type),
-            len,
-            offset,
-            validity,
-            SchemaNullability::Unknown,
-            ColumnLayout::Dictionary { indices: indices_id, keys: keys_projection.column.id() },
-        );
-        let mut semantic_columns = vec![column.clone()];
-        semantic_columns.extend(keys_projection.semantic_columns);
-        return Ok(PreparedColumnProjection { column, semantic_columns, bindings, next_buffer_id, next_column_id });
-    }
-
-    if map_data_type(data_type).id() == InteropTypeId::List {
-        let mut next_buffer_id = next_buffer_id;
-        let offsets_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-        let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-
-        if num_children < 2 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "list column view must expose offsets and child columns",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "list")
-            .with_context("num_children", num_children.to_string()));
-        }
-
-        let offsets_view =
-            view.child(0).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let offsets_type = offsets_view
-            .data_type()
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let offsets_elem_size = map_data_type(offsets_type).id().fixed_width_size_bytes().ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "list offsets child must be fixed-width")
-                .with_context("operation", operation)
-                .with_context("offsets_type_id", format!("{:?}", offsets_type.id()).to_lowercase())
-        })?;
-        if offsets_elem_size != std::mem::size_of::<i32>() {
-            return Err(InteropError::new(InteropErrorKind::InvalidView, "list offsets child must use 32-bit offsets")
-                .with_context("operation", operation)
-                .with_context("offsets_elem_size", offsets_elem_size.to_string()));
-        }
-        let offsets_required_elements = offset.checked_add(len).and_then(|v| v.checked_add(1)).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "list offsets range overflowed")
-                .with_context("operation", operation)
-                .with_context("offset", offset.to_string())
-                .with_context("len", len.to_string())
-        })?;
-        let offsets_byte_len = offsets_required_elements.checked_mul(offsets_elem_size).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "list offsets byte range overflowed")
-                .with_context("operation", operation)
-                .with_context("offset", offset.to_string())
-                .with_context("len", len.to_string())
-        })?;
-        let offsets_ptr = offsets_view
-            .device_data_ptr()
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let offsets_device = pointer_device(operation, offsets_ptr, default_device)?;
-
-        let child_view = view
-            .list_sliced_child()
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let child_projection = prepared_column_projection_from_view(
-            &child_view,
-            operation,
-            default_device,
-            next_column_id,
-            next_buffer_id,
-        )?;
-        next_buffer_id = child_projection.next_buffer_id;
-        next_column_id = child_projection.next_column_id;
-
-        let (validity, validity_binding) = validity_for_prepared_projection(
-            operation,
-            nullable,
-            null_mask_ptr,
-            null_count,
-            active_elements,
-            validity_id,
-            default_device,
-        )?;
-
-        let mut bindings = vec![BufferBinding::new(
-            offsets_id,
-            bound_bytes(operation, offsets_ptr, offsets_byte_len)?,
-            Placement::CudaDevice { device: offsets_device },
-        )];
-        if let Some(binding) = validity_binding {
-            bindings.push(binding);
-        }
-        bindings.extend(child_projection.bindings);
-
-        let column = SemanticColumn::new(
-            column_id,
-            map_data_type(data_type),
-            len,
-            offset,
-            validity,
-            SchemaNullability::Unknown,
-            ColumnLayout::List { offsets: offsets_id, child: child_projection.column.id() },
-        );
-        let mut semantic_columns = vec![column.clone()];
-        semantic_columns.extend(child_projection.semantic_columns);
-        return Ok(PreparedColumnProjection { column, semantic_columns, bindings, next_buffer_id, next_column_id });
-    }
-
-    if map_data_type(data_type).id() == InteropTypeId::Struct {
-        let mut next_buffer_id = next_buffer_id;
-        let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
-        let child_count = usize::try_from(num_children).map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "struct child count must be >= 0")
-                .with_context("operation", operation)
-                .with_context("type_id", "struct")
-                .with_context("num_children", num_children.to_string())
-        })?;
-        if child_count == 0 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "struct column view must expose at least one child column",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "struct"));
-        }
-
-        let (validity, validity_binding) = validity_for_prepared_projection(
-            operation,
-            nullable,
-            null_mask_ptr,
-            null_count,
-            active_elements,
-            validity_id,
-            default_device,
-        )?;
-
-        let mut bindings = Vec::new();
-        if let Some(binding) = validity_binding {
-            bindings.push(binding);
-        }
-        let mut child_ids = Vec::with_capacity(child_count);
-        let mut semantic_columns = Vec::new();
-
-        for index in 0..child_count {
-            let child_index = checked_child_index(operation, index)?;
-            let child_view = view
-                .child(child_index)
-                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-            let child_projection = prepared_column_projection_from_view(
-                &child_view,
-                operation,
-                default_device,
-                next_column_id,
-                next_buffer_id,
-            )?;
-            next_buffer_id = child_projection.next_buffer_id;
-            next_column_id = child_projection.next_column_id;
-            child_ids.push(child_projection.column.id());
-            bindings.extend(child_projection.bindings);
-            semantic_columns.extend(child_projection.semantic_columns);
-        }
-
-        let column = SemanticColumn::new(
-            column_id,
-            map_data_type(data_type),
-            len,
-            offset,
-            validity,
-            SchemaNullability::Unknown,
-            ColumnLayout::Struct { children: child_ids },
-        );
-        let mut all_columns = vec![column.clone()];
-        all_columns.extend(semantic_columns);
-        return Ok(PreparedColumnProjection {
-            column,
-            semantic_columns: all_columns,
-            bindings,
-            next_buffer_id,
-            next_column_id,
-        });
-    }
-
-    prepared_column_projection_from_materialized_view(
-        operation,
-        data_type,
-        num_children,
-        len,
-        offset,
-        data_ptr,
-        nullable,
-        null_mask_ptr,
-        null_count,
-        default_device,
-        column_id.get(),
-        next_buffer_id,
-    )
 }
 
 /// Extract all fields from a `ColumnView` and produce a `BorrowedColumnView`.
@@ -1746,6 +839,432 @@ fn checked_child_index(operation: &'static str, index: usize) -> Result<i32, Int
             .with_context("index", index.to_string())
     })?;
     Ok(index_i32)
+}
+
+fn checked_i32_from_usize(field: &'static str, value: usize, operation: &'static str) -> Result<i32, InteropError> {
+    i32::try_from(value).map_err(|_| {
+        InteropError::new(InteropErrorKind::InvalidView, format!("{field} exceeds i32::MAX"))
+            .with_context("operation", operation)
+            .with_context(field, value.to_string())
+    })
+}
+
+fn prepared_import_profile_supported(profile: ExportProfile, operation: &'static str) -> Result<(), InteropError> {
+    match profile {
+        ExportProfile::PreparedDeviceExport => Ok(()),
+        ExportProfile::PreparedHostExport => Err(InteropError::new(
+            InteropErrorKind::ProfileUnsupported,
+            "prepared host export import into cudf-rs is not landed in this slice",
+        )
+        .with_context("operation", operation)
+        .with_context("profile", "prepared_host_export")
+        .with_context("consumer", "cudf-rs")),
+        ExportProfile::BorrowedDeviceCompatibility => Err(InteropError::new(
+            InteropErrorKind::ProfileUnsupported,
+            "borrowed compatibility descriptors must be imported through the borrowed-view API",
+        )
+        .with_context("operation", operation)
+        .with_context("profile", "borrowed_device_compatibility")
+        .with_context("consumer", "cudf-rs")),
+        ExportProfile::OwnedDeviceTransfer => Err(InteropError::new(
+            InteropErrorKind::ProfileUnsupported,
+            "owned device transfer roots must be imported through the owned-transfer API",
+        )
+        .with_context("operation", operation)
+        .with_context("profile", "owned_device_transfer")
+        .with_context("consumer", "cudf-rs")),
+    }
+}
+
+fn prepared_export_producer_device(
+    readiness: &ProducerReadiness<'_>,
+    operation: &'static str,
+) -> Result<i32, InteropError> {
+    match readiness {
+        ProducerReadiness::DeviceStreamOrdered { stream } => Ok(stream.device()),
+        ProducerReadiness::DeviceEventOrdered { event } => Ok(event.device()),
+        ProducerReadiness::HostVisible => Err(InteropError::new(
+            InteropErrorKind::ProfileUnsupported,
+            "prepared host export import into cudf-rs is not landed in this slice",
+        )
+        .with_context("operation", operation)
+        .with_context("readiness", "host_visible")
+        .with_context("consumer", "cudf-rs")),
+    }
+}
+
+fn validate_import_runtime_device(
+    operation: &'static str,
+    expected_device: i32,
+    runtime: &Runtime,
+) -> Result<(), InteropError> {
+    let actual_device = runtime.device().ordinal() as i32;
+    if actual_device != expected_device {
+        return Err(InteropError::new(
+            InteropErrorKind::ExecutionBindingMismatch,
+            "borrowed descriptor import requires the destination runtime to use the same CUDA device",
+        )
+        .with_context("operation", operation)
+        .with_context("descriptor_device", expected_device.to_string())
+        .with_context("runtime_device", actual_device.to_string()));
+    }
+    Ok(())
+}
+
+fn validate_prepared_import_runtime_device(
+    operation: &'static str,
+    expected_device: i32,
+    runtime: &Runtime,
+) -> Result<(), InteropError> {
+    let actual_device = runtime.device().ordinal() as i32;
+    if actual_device != expected_device {
+        return Err(InteropError::new(
+            InteropErrorKind::ExecutionBindingMismatch,
+            "prepared device export import requires the destination runtime to use the same CUDA device",
+        )
+        .with_context("operation", operation)
+        .with_context("producer_device", expected_device.to_string())
+        .with_context("runtime_device", actual_device.to_string()));
+    }
+    Ok(())
+}
+
+fn interop_binding_from_prepared_binding(binding: &BufferBinding<'_>) -> cudf_sys::cudf_interop_buffer_binding_t {
+    let (placement_kind, device) = match binding.placement() {
+        Placement::Host => (cudf_sys::cudf_interop_placement_kind_t::CUDF_INTEROP_PLACEMENT_HOST, -1),
+        Placement::CudaDevice { device } => {
+            (cudf_sys::cudf_interop_placement_kind_t::CUDF_INTEROP_PLACEMENT_CUDA_DEVICE, *device)
+        },
+    };
+
+    cudf_sys::cudf_interop_buffer_binding_t {
+        buffer_id: binding.id().get(),
+        data: binding.bytes().base_ptr().as_ptr() as *const _,
+        byte_len: binding.bytes().byte_len(),
+        placement_kind,
+        device,
+    }
+}
+
+fn interop_semantic_column_from_prepared_column(
+    column: &SemanticColumn,
+    operation: &'static str,
+    child_id_buffers: &mut Vec<Box<[u32]>>,
+) -> Result<cudf_sys::cudf_interop_semantic_column_t, InteropError> {
+    let (validity_kind, validity_buffer_id, null_count) = match column.validity() {
+        PhysicalValidity::NoValidityBuffer => {
+            (cudf_sys::cudf_interop_validity_kind_t::CUDF_INTEROP_VALIDITY_NONE, 0, 0)
+        },
+        PhysicalValidity::ValidityMask { mask, null_count } => (
+            cudf_sys::cudf_interop_validity_kind_t::CUDF_INTEROP_VALIDITY_MASK,
+            mask.get(),
+            match null_count {
+                Some(count) => checked_i32_from_usize("null_count", *count, operation)?,
+                None => -1,
+            },
+        ),
+    };
+
+    let mut ffi = cudf_sys::cudf_interop_semantic_column_t {
+        column_id: column.id().get(),
+        type_id: map_interop_type_id(column.data_type().id()).to_raw(),
+        scale: column.data_type().scale(),
+        len: checked_i32_from_usize("len", column.len(), operation)?,
+        offset: checked_i32_from_usize("offset", column.offset(), operation)?,
+        validity_kind,
+        validity_buffer_id,
+        null_count,
+        layout_kind: cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_FIXED_WIDTH,
+        values_buffer_id: 0,
+        offsets_buffer_id: 0,
+        data_buffer_id: 0,
+        indices_buffer_id: 0,
+        child_column_id: 0,
+        child_column_ids: std::ptr::null(),
+        num_child_column_ids: 0,
+        keys_column_id: 0,
+    };
+
+    match column.layout() {
+        ColumnLayout::FixedWidth { values } => {
+            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_FIXED_WIDTH;
+            ffi.values_buffer_id = values.get();
+        },
+        ColumnLayout::BinaryLike { offsets, data } => {
+            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_BINARY_LIKE;
+            ffi.offsets_buffer_id = offsets.get();
+            ffi.data_buffer_id = data.get();
+        },
+        ColumnLayout::List { offsets, child } => {
+            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_LIST;
+            ffi.offsets_buffer_id = offsets.get();
+            ffi.child_column_id = child.get();
+        },
+        ColumnLayout::Struct { children } => {
+            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_STRUCT;
+            let child_ids: Box<[u32]> = children.iter().map(|child| child.get()).collect::<Vec<_>>().into_boxed_slice();
+            ffi.num_child_column_ids = checked_i32_from_usize("num_child_column_ids", child_ids.len(), operation)?;
+            ffi.child_column_ids = child_ids.as_ptr();
+            child_id_buffers.push(child_ids);
+        },
+        ColumnLayout::Dictionary { indices, keys } => {
+            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_DICTIONARY;
+            ffi.indices_buffer_id = indices.get();
+            ffi.keys_column_id = keys.get();
+        },
+    }
+
+    Ok(ffi)
+}
+
+fn prepared_device_import_column_graph(
+    export: &PreparedColumnExport<'_>,
+    operation: &'static str,
+) -> Result<PreparedDeviceImportColumnGraph, InteropError> {
+    let mut child_id_buffers = Vec::new();
+    let ffi_columns = export
+        .semantic_columns()
+        .iter()
+        .map(|column| interop_semantic_column_from_prepared_column(column, operation, &mut child_id_buffers))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ffi_bindings = export.bindings().iter().map(interop_binding_from_prepared_binding).collect();
+    Ok(PreparedDeviceImportColumnGraph { ffi_columns, ffi_bindings, _child_id_buffers: child_id_buffers })
+}
+
+fn prepared_device_import_table_graph(
+    export: &PreparedTableExport<'_>,
+    operation: &'static str,
+) -> Result<PreparedDeviceImportTableGraph, InteropError> {
+    let mut child_id_buffers = Vec::new();
+    let ffi_columns = export
+        .semantic_columns()
+        .iter()
+        .map(|column| interop_semantic_column_from_prepared_column(column, operation, &mut child_id_buffers))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ffi_bindings = export.bindings().iter().map(interop_binding_from_prepared_binding).collect::<Vec<_>>();
+    let table_column_ids: Box<[u32]> =
+        export.table().columns().iter().map(|column| column.get()).collect::<Vec<_>>().into();
+    let ffi_table = cudf_sys::cudf_interop_semantic_table_t {
+        num_rows: checked_i32_from_usize("num_rows", export.table().num_rows(), operation)?,
+        column_ids: table_column_ids.as_ptr(),
+        num_columns: checked_i32_from_usize("num_columns", table_column_ids.len(), operation)?,
+    };
+
+    Ok(PreparedDeviceImportTableGraph {
+        ffi_table,
+        ffi_columns,
+        ffi_bindings,
+        _child_id_buffers: child_id_buffers,
+        _table_column_ids: table_column_ids,
+    })
+}
+
+fn synchronize_runtime_completion_result(
+    result: RuntimeLeaseCompletionResult,
+    operation: &'static str,
+) -> Result<(), InteropError> {
+    match result {
+        RuntimeLeaseCompletionResult::FallbackSynchronized => Ok(()),
+        RuntimeLeaseCompletionResult::Completed(witness) => witness
+            .synchronize()
+            .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error)),
+    }
+}
+
+fn borrowed_null_mask_parts(
+    borrowed: &BorrowedColumnView<'_>,
+    operation: &'static str,
+) -> Result<(*const std::ffi::c_void, i32), InteropError> {
+    match borrowed.null_mask().kind() {
+        NullMaskKind::Absent => Ok((std::ptr::null(), 0)),
+        NullMaskKind::Present { ptr, null_count, .. } => {
+            Ok((ptr.as_ptr() as *const std::ffi::c_void, checked_i32_from_usize("null_count", *null_count, operation)?))
+        },
+    }
+}
+
+fn import_column_from_borrowed_view(
+    borrowed: &BorrowedColumnView<'_>,
+    runtime: &Runtime,
+    operation: &'static str,
+) -> Result<Column, InteropError> {
+    validate_import_runtime_device(operation, borrowed.execution().device(), runtime)?;
+    let len = checked_i32_from_usize("len", borrowed.len(), operation)?;
+    let offset = checked_i32_from_usize("offset", borrowed.offset(), operation)?;
+    let (null_mask, null_count) = borrowed_null_mask_parts(borrowed, operation)?;
+    let exec_options = runtime
+        .execution_domain()
+        .explicit_exec_options_raw()
+        .expect("runtime always provides explicit execution options");
+    let type_id = map_interop_type_id(borrowed.data_type().id());
+    let scale = borrowed.data_type().scale();
+    let mut handle = std::ptr::null_mut();
+
+    error::check_status_in(
+        unsafe {
+            cudf_sys::cudf_column_copy_from_borrowed_view_ex(
+                type_id.to_raw(),
+                scale,
+                len,
+                offset,
+                borrowed.data_ptr(),
+                null_mask,
+                null_count,
+                &exec_options,
+                &mut handle,
+            )
+        },
+        operation,
+    )
+    .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+
+    Ok(unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) })
+}
+
+fn import_table_from_borrowed_view(
+    borrowed: &BorrowedTableView<'_>,
+    runtime: &Runtime,
+    operation: &'static str,
+) -> Result<Table, InteropError> {
+    validate_import_runtime_device(operation, borrowed.execution().device(), runtime)?;
+    if borrowed.num_columns() == 0 {
+        if borrowed.num_rows() != 0 {
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "borrowed table import cannot materialize a zero-column table with non-zero row count",
+            )
+            .with_context("operation", operation)
+            .with_context("num_rows", borrowed.num_rows().to_string()));
+        }
+
+        return Table::from_columns(Vec::new())
+            .map(|table| table.with_execution_domain(Arc::clone(runtime.execution_domain())))
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error));
+    }
+
+    let columns = borrowed
+        .columns()
+        .iter()
+        .map(|column| import_column_from_borrowed_view(column, runtime, operation))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Table::from_columns(columns).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))
+}
+
+fn import_column_from_owned_transfer(
+    transfer: OwnedColumnTransfer,
+    operation: &'static str,
+) -> Result<Column, InteropError> {
+    transfer.try_into_owner::<OwnedColumnTransferState>().map(OwnedColumnTransferState::into_column).map_err(|_| {
+        InteropError::new(
+            InteropErrorKind::ProfileUnsupported,
+            "cudf-rs owned column import requires a cudf-rs-produced owned device transfer root",
+        )
+        .with_context("operation", operation)
+        .with_context("consumer", "cudf-rs")
+        .with_context("profile", "owned_device_transfer")
+    })
+}
+
+fn import_table_from_owned_transfer(
+    transfer: OwnedTableTransfer,
+    operation: &'static str,
+) -> Result<Table, InteropError> {
+    transfer.try_into_owner::<OwnedTableTransferState>().map(OwnedTableTransferState::into_table).map_err(|_| {
+        InteropError::new(
+            InteropErrorKind::ProfileUnsupported,
+            "cudf-rs owned table import requires a cudf-rs-produced owned device transfer root",
+        )
+        .with_context("operation", operation)
+        .with_context("consumer", "cudf-rs")
+        .with_context("profile", "owned_device_transfer")
+    })
+}
+
+fn import_column_from_prepared_export(
+    export: &PreparedColumnExport<'_>,
+    runtime: &Runtime,
+    operation: &'static str,
+) -> Result<Column, InteropError> {
+    prepared_import_profile_supported(export.diagnostics().profile(), operation)?;
+    let producer_device = prepared_export_producer_device(export.readiness(), operation)?;
+    validate_prepared_import_runtime_device(operation, producer_device, runtime)?;
+
+    let lease = export.try_activate_runtime_read_lease(
+        RuntimeReadStartAuthority::consumer_stream(runtime.stream()),
+        RuntimeCompletionAuthority::same_device_stream(runtime.stream()),
+    )?;
+    let graph = prepared_device_import_column_graph(export, operation)?;
+    let exec_options = runtime
+        .execution_domain()
+        .explicit_exec_options_raw()
+        .expect("runtime always provides explicit execution options");
+    let mut handle = std::ptr::null_mut();
+
+    error::check_status_in(
+        unsafe {
+            cudf_sys::cudf_column_copy_from_prepared_device_export_ex(
+                export.column().id().get(),
+                graph.ffi_columns.as_ptr(),
+                checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?,
+                graph.ffi_bindings.as_ptr(),
+                checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?,
+                &exec_options,
+                &mut handle,
+            )
+        },
+        operation,
+    )
+    .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+
+    let imported = unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
+    let completion =
+        lease.complete().map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    synchronize_runtime_completion_result(completion, operation)?;
+    Ok(imported)
+}
+
+fn import_table_from_prepared_export(
+    export: &PreparedTableExport<'_>,
+    runtime: &Runtime,
+    operation: &'static str,
+) -> Result<Table, InteropError> {
+    prepared_import_profile_supported(export.diagnostics().profile(), operation)?;
+    let producer_device = prepared_export_producer_device(export.readiness(), operation)?;
+    validate_prepared_import_runtime_device(operation, producer_device, runtime)?;
+
+    let lease = export.try_activate_runtime_read_lease(
+        RuntimeReadStartAuthority::consumer_stream(runtime.stream()),
+        RuntimeCompletionAuthority::same_device_stream(runtime.stream()),
+    )?;
+    let graph = prepared_device_import_table_graph(export, operation)?;
+    let exec_options = runtime
+        .execution_domain()
+        .explicit_exec_options_raw()
+        .expect("runtime always provides explicit execution options");
+    let mut handle = std::ptr::null_mut();
+
+    error::check_status_in(
+        unsafe {
+            cudf_sys::cudf_table_copy_from_prepared_device_export_ex(
+                &graph.ffi_table,
+                graph.ffi_columns.as_ptr(),
+                checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?,
+                graph.ffi_bindings.as_ptr(),
+                checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?,
+                &exec_options,
+                &mut handle,
+            )
+        },
+        operation,
+    )
+    .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+
+    let imported = unsafe { Table::from_raw(handle) }.with_execution_domain(Arc::clone(runtime.execution_domain()));
+    let completion =
+        lease.complete().map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    synchronize_runtime_completion_result(completion, operation)?;
+    Ok(imported)
 }
 
 fn prepare_from_column_view<'a>(
@@ -1834,6 +1353,8 @@ fn transfer_from_owned_column(column: Column, operation: &'static str) -> Result
     OwnedColumnTransfer::try_new_with_semantic_columns(
         projection.column,
         projection.semantic_columns,
+        // SAFETY: `to_static_bindings` depends on this retained owner to keep
+        // the source column alive for the transfer lifetime.
         to_static_bindings(operation, projection.bindings)?,
         to_static_readiness(readiness),
         owned_transfer_diagnostics(),
@@ -1841,312 +1362,6 @@ fn transfer_from_owned_column(column: Column, operation: &'static str) -> Result
         OwnedColumnTransferState { _column: column },
     )
     .map_err(|error| error.with_context("operation", operation))
-}
-
-fn prepare_table_export_from_view<'a>(
-    view: &'a TableView<'_>,
-    domain: &Arc<ExecutionDomain>,
-    names: Option<Vec<String>>,
-    operation: &'static str,
-) -> Result<PreparedTableExport<'a>, InteropError> {
-    let num_rows = usize::try_from(
-        view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "table row count must be >= 0")
-            .with_context("operation", operation)
-    })?;
-    let num_columns = usize::try_from(
-        view.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "table column count must be >= 0")
-            .with_context("operation", operation)
-    })?;
-    let (default_device, readiness) = prepared_device_readiness(operation, domain)?;
-    prepare_table_export_from_view_with_readiness(
-        view,
-        names,
-        operation,
-        num_rows,
-        num_columns,
-        default_device,
-        readiness,
-    )
-}
-
-fn prepare_host_table_export_from_view(
-    view: &TableView<'_>,
-    names: Option<Vec<String>>,
-    operation: &'static str,
-) -> Result<PreparedTableExport<'static>, InteropError> {
-    let num_rows = usize::try_from(
-        view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "table row count must be >= 0")
-            .with_context("operation", operation)
-    })?;
-    let num_columns = usize::try_from(
-        view.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "table column count must be >= 0")
-            .with_context("operation", operation)
-    })?;
-
-    let mut columns = Vec::with_capacity(num_columns);
-    let mut semantic_columns = Vec::new();
-    let mut bindings = Vec::new();
-    let mut retained_host_buffers = Vec::new();
-    let mut next_buffer_id = 0u32;
-    let mut next_column_id = 0u32;
-
-    for index in 0..num_columns {
-        let index_i32 = checked_column_index(operation, index)?;
-        let column_view =
-            view.column(index_i32).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let projection =
-            prepared_host_column_projection_from_view(&column_view, operation, next_column_id, next_buffer_id)?;
-        next_buffer_id = projection.next_buffer_id;
-        next_column_id = projection.next_column_id;
-        bindings.extend(projection.bindings);
-        retained_host_buffers.extend(projection.retained_host_buffers);
-        columns.push(projection.column.clone());
-        semantic_columns.extend(projection.semantic_columns);
-    }
-
-    let table =
-        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
-    PreparedTableExport::try_new_with_semantic_columns(
-        table,
-        columns,
-        semantic_columns,
-        bindings,
-        ProducerReadiness::HostVisible,
-        host_export_diagnostics(),
-    )
-    .map(|export| export.with_retained_host_buffers(retained_host_buffers))
-    .map_err(|error| error.with_context("operation", operation))
-}
-
-fn prepare_table_export_from_view_with_readiness<'a>(
-    view: &'a TableView<'_>,
-    names: Option<Vec<String>>,
-    operation: &'static str,
-    num_rows: usize,
-    num_columns: usize,
-    default_device: i32,
-    readiness: ProducerReadiness<'a>,
-) -> Result<PreparedTableExport<'a>, InteropError> {
-    let mut columns = Vec::with_capacity(num_columns);
-    let mut semantic_columns = Vec::new();
-    let mut bindings = Vec::new();
-    let mut next_buffer_id = 0u32;
-    let mut next_column_id = 0u32;
-    for index in 0..num_columns {
-        let index_i32 = checked_column_index(operation, index)?;
-        let column_view =
-            view.column(index_i32).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let projection = prepared_column_projection_from_view(
-            &column_view,
-            operation,
-            default_device,
-            next_column_id,
-            next_buffer_id,
-        )?;
-        next_buffer_id = projection.next_buffer_id;
-        next_column_id = projection.next_column_id;
-        bindings.extend(projection.bindings);
-        columns.push(projection.column.clone());
-        semantic_columns.extend(projection.semantic_columns);
-    }
-    let table =
-        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
-    PreparedTableExport::try_new_with_semantic_columns(
-        table,
-        columns,
-        semantic_columns,
-        bindings,
-        readiness,
-        export_diagnostics(),
-    )
-    .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
-    .map_err(|error| error.with_context("operation", operation))
-}
-
-fn transfer_from_owned_table(table: Table, operation: &'static str) -> Result<OwnedTableTransfer, InteropError> {
-    let num_rows = {
-        let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        usize::try_from(
-            view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-        )
-        .map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "table row count must be >= 0")
-                .with_context("operation", operation)
-        })?
-    };
-    let num_columns = {
-        let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        usize::try_from(
-            view.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-        )
-        .map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "table column count must be >= 0")
-                .with_context("operation", operation)
-        })?
-    };
-    let (default_device, readiness) = prepared_device_readiness(operation, table.execution_domain())?;
-    let (columns, semantic_columns, bindings) = {
-        let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let mut columns = Vec::with_capacity(num_columns);
-        let mut semantic_columns = Vec::new();
-        let mut bindings = Vec::new();
-        let mut next_buffer_id = 0u32;
-        let mut next_column_id = 0u32;
-        for index in 0..num_columns {
-            let index_i32 = checked_column_index(operation, index)?;
-            let column_view = view
-                .column(index_i32)
-                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-            let projection = prepared_column_projection_from_view(
-                &column_view,
-                operation,
-                default_device,
-                next_column_id,
-                next_buffer_id,
-            )?;
-            next_buffer_id = projection.next_buffer_id;
-            next_column_id = projection.next_column_id;
-            bindings.extend(projection.bindings);
-            columns.push(projection.column.clone());
-            semantic_columns.extend(projection.semantic_columns);
-        }
-        (columns, semantic_columns, bindings)
-    };
-
-    let table_semantic =
-        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), None);
-    OwnedTableTransfer::try_new_with_semantic_columns(
-        table_semantic,
-        columns,
-        semantic_columns,
-        to_static_bindings(operation, bindings)?,
-        to_static_readiness(readiness),
-        owned_transfer_diagnostics(),
-        owned_transfer_release_contract(default_device),
-        OwnedTableTransferState { _table: table },
-    )
-    .map_err(|error| error.with_context("operation", operation))
-}
-
-fn prepare_partitioned_device_table_export_from_columns<'a>(
-    producer: &'a PartitionedDataFrameExport,
-    operation: &'static str,
-) -> Result<PartitionedPreparedTableExport<'a>, InteropError> {
-    let mut partitions = Vec::new();
-
-    for group in producer.grouped_borrowed_columns() {
-        let (default_device, readiness) = prepared_device_readiness(operation, &group.domain)?;
-        let mut columns = Vec::with_capacity(group.columns.len());
-        let mut semantic_columns = Vec::new();
-        let mut bindings = Vec::new();
-        let mut next_buffer_id = 0u32;
-        let mut next_column_id = 0u32;
-
-        for column in group.columns {
-            let view =
-                column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-            let projection =
-                prepared_column_projection_from_view(&view, operation, default_device, next_column_id, next_buffer_id)?;
-            next_buffer_id = projection.next_buffer_id;
-            next_column_id = projection.next_column_id;
-            bindings.extend(projection.bindings);
-            columns.push(projection.column.clone());
-            semantic_columns.extend(projection.semantic_columns);
-        }
-
-        let table = SemanticTable::new(
-            TableId::new(0),
-            producer.num_rows(),
-            columns.iter().map(|column| column.id()).collect(),
-            None,
-        );
-        let export = PreparedTableExport::try_new_with_semantic_columns(
-            table,
-            columns,
-            semantic_columns,
-            bindings,
-            readiness,
-            export_diagnostics(),
-        )
-        .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
-        .map_err(|error| error.with_context("operation", operation))?;
-
-        partitions.push(PartitionedPreparedTablePartition::new(group.top_level_column_indices, export));
-    }
-
-    PartitionedPreparedTableExport::try_new(Some(producer.column_names_owned()), producer.num_rows(), partitions)
-        .map_err(|error| error.with_context("operation", operation))
-}
-
-fn prepare_partitioned_host_table_export_from_columns(
-    producer: &PartitionedDataFrameExport,
-    operation: &'static str,
-) -> Result<PreparedTableExport<'static>, InteropError> {
-    let mut columns = Vec::with_capacity(producer.columns.len());
-    let mut semantic_columns = Vec::new();
-    let mut bindings = Vec::new();
-    let mut retained_host_buffers = Vec::new();
-    let mut next_buffer_id = 0u32;
-    let mut next_column_id = 0u32;
-
-    for column in producer.columns.values() {
-        let view = column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let projection = prepared_host_column_projection_from_view(&view, operation, next_column_id, next_buffer_id)?;
-        next_buffer_id = projection.next_buffer_id;
-        next_column_id = projection.next_column_id;
-        bindings.extend(projection.bindings);
-        retained_host_buffers.extend(projection.retained_host_buffers);
-        columns.push(projection.column.clone());
-        semantic_columns.extend(projection.semantic_columns);
-    }
-
-    let table = SemanticTable::new(
-        TableId::new(0),
-        producer.num_rows(),
-        columns.iter().map(|column| column.id()).collect(),
-        Some(producer.column_names_owned()),
-    );
-    PreparedTableExport::try_new_with_semantic_columns(
-        table,
-        columns,
-        semantic_columns,
-        bindings,
-        ProducerReadiness::HostVisible,
-        host_export_diagnostics(),
-    )
-    .map(|export| export.with_retained_host_buffers(retained_host_buffers))
-    .map_err(|error| error.with_context("operation", operation))
-}
-
-fn transfer_partitioned_owned_table_from_columns(
-    producer: PartitionedDataFrameExport,
-    operation: &'static str,
-) -> Result<PartitionedOwnedTableTransfer, InteropError> {
-    let schema_names = producer.column_names_owned();
-    let row_count = producer.num_rows();
-    let mut partitions = Vec::new();
-
-    for group in producer.grouped_owned_columns() {
-        let table = Table::from_columns(group.columns)
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let transfer = transfer_from_owned_table(table, operation)?;
-        partitions.push(PartitionedOwnedTableTransferPartition::new(group.top_level_column_indices, transfer));
-    }
-
-    PartitionedOwnedTableTransfer::try_new(Some(schema_names), row_count, partitions)
-        .map_err(|error| error.with_context("operation", operation))
 }
 
 impl<'view> ColumnView<'view> {
@@ -2214,11 +1429,61 @@ impl TryPrepareHostColumnExport for ColumnView<'_> {
 }
 
 impl Column {
+    /// Deep-copy a shared borrowed interop column descriptor into an owned
+    /// `cudf-rs` column inside the provided explicit runtime.
+    ///
+    /// This is a device-to-device copy on the descriptor's CUDA device. It is
+    /// not zero-copy, and the destination runtime must be pinned to the same
+    /// CUDA device as the borrowed execution binding.
+    pub fn try_from_borrowed_column_view_with_runtime(
+        borrowed: &BorrowedColumnView<'_>,
+        runtime: &Runtime,
+    ) -> Result<Self, InteropError> {
+        import_column_from_borrowed_view(
+            borrowed,
+            runtime,
+            "interop::Column::try_from_borrowed_column_view_with_runtime",
+        )
+    }
+
+    /// Consume a shared owned device transfer root back into an owned
+    /// `cudf-rs` column.
+    ///
+    /// This is a zero-copy ownership round-trip for transfer roots produced by
+    /// `cudf-rs` low-level owned columns. It preserves the producer's retained
+    /// execution provenance and does not deep-copy into a destination runtime.
+    pub fn try_from_owned_device_column_transfer(transfer: OwnedColumnTransfer) -> Result<Self, InteropError> {
+        import_column_from_owned_transfer(transfer, "interop::Column::try_from_owned_device_column_transfer")
+    }
+
+    /// Deep-copy a shared prepared device-export root into an owned
+    /// `cudf-rs` column inside the provided explicit runtime.
+    ///
+    /// This activates the prepared export as a consumer on the destination
+    /// runtime's CUDA stream, performs a same-device device-to-device copy,
+    /// and synchronizes completion before returning so producer liveness can
+    /// end honestly. Prepared host export import is not landed in this slice.
+    pub fn try_from_prepared_column_export_with_runtime(
+        export: &PreparedColumnExport<'_>,
+        runtime: &Runtime,
+    ) -> Result<Self, InteropError> {
+        import_column_from_prepared_export(
+            export,
+            runtime,
+            "interop::Column::try_from_prepared_column_export_with_runtime",
+        )
+    }
+
     /// Project this owned low-level column into the shared RAPIDS prepared
     /// device export profile.
     ///
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedColumnExport::try_activate_read_lease`].
+    ///
+    /// Borrowed interop remains explicit on [`crate::ColumnView`]. Use
+    /// [`crate::Column::view`] followed by
+    /// [`crate::ColumnView::try_borrow_column_view`] when you need a
+    /// lifetime-bound borrowed descriptor.
     pub fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
         <Self as TryPrepareDeviceColumnExport>::try_prepare_device_column_export(self)
     }
@@ -2319,30 +1584,8 @@ impl TableView<'_> {
         event: &'a CudaEvent,
     ) -> Result<PreparedTableExport<'a>, InteropError> {
         let operation = "interop::TableView::try_prepare_device_table_export_with_event";
-        let num_rows = usize::try_from(
-            self.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-        )
-        .map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "table row count must be >= 0")
-                .with_context("operation", operation)
-        })?;
-        let num_columns = usize::try_from(
-            self.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-        )
-        .map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "table column count must be >= 0")
-                .with_context("operation", operation)
-        })?;
         let (default_device, readiness) = prepared_device_event_readiness(operation, self.execution_domain(), event)?;
-        prepare_table_export_from_view_with_readiness(
-            self,
-            None,
-            operation,
-            num_rows,
-            num_columns,
-            default_device,
-            readiness,
-        )
+        prepare_table_export_from_view_with_readiness(self, None, operation, default_device, readiness)
     }
 }
 
@@ -2396,11 +1639,60 @@ impl TryPrepareHostTableExport for TableView<'_> {
 }
 
 impl Table {
+    /// Deep-copy a shared borrowed interop table descriptor into an owned
+    /// `cudf-rs` table inside the provided explicit runtime.
+    ///
+    /// This imports each borrowed column through a device-to-device copy on
+    /// the descriptor's CUDA device, then rebuilds one owned table in the
+    /// destination runtime's retained provenance. It is not zero-copy, and the
+    /// destination runtime must be pinned to the same CUDA device as the
+    /// borrowed execution binding.
+    pub fn try_from_borrowed_table_view_with_runtime(
+        borrowed: &BorrowedTableView<'_>,
+        runtime: &Runtime,
+    ) -> Result<Self, InteropError> {
+        import_table_from_borrowed_view(borrowed, runtime, "interop::Table::try_from_borrowed_table_view_with_runtime")
+    }
+
+    /// Consume a shared owned device transfer root back into an owned
+    /// `cudf-rs` table.
+    ///
+    /// This is a zero-copy ownership round-trip for transfer roots produced by
+    /// `cudf-rs` low-level owned tables. It preserves the producer's retained
+    /// execution provenance and does not deep-copy into a destination runtime.
+    pub fn try_from_owned_device_table_transfer(transfer: OwnedTableTransfer) -> Result<Self, InteropError> {
+        import_table_from_owned_transfer(transfer, "interop::Table::try_from_owned_device_table_transfer")
+    }
+
+    /// Deep-copy a shared prepared device-export root into an owned
+    /// `cudf-rs` table inside the provided explicit runtime.
+    ///
+    /// This activates the prepared export as a consumer on the destination
+    /// runtime's CUDA stream, performs same-device device-to-device copies for
+    /// the current prepared-device layout set, and synchronizes completion
+    /// before returning so producer liveness can end honestly. Prepared host
+    /// export import is not landed in this slice.
+    pub fn try_from_prepared_table_export_with_runtime(
+        export: &PreparedTableExport<'_>,
+        runtime: &Runtime,
+    ) -> Result<Self, InteropError> {
+        import_table_from_prepared_export(
+            export,
+            runtime,
+            "interop::Table::try_from_prepared_table_export_with_runtime",
+        )
+    }
+
     /// Project this owned low-level table into the shared RAPIDS prepared
     /// device export profile.
     ///
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedTableExport::try_activate_read_lease`].
+    ///
+    /// Borrowed interop remains explicit on [`crate::TableView`]. Use
+    /// [`crate::Table::view`] followed by
+    /// [`crate::TableView::try_borrow_table_view`] when you need a
+    /// lifetime-bound borrowed descriptor.
     pub fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
         <Self as TryPrepareDeviceTableExport>::try_prepare_device_table_export(self)
     }
@@ -2428,56 +1720,8 @@ impl Table {
     ) -> Result<PreparedTableExport<'a>, InteropError> {
         let operation = "interop::Table::try_prepare_device_table_export_with_event";
         let view = self.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let num_rows = usize::try_from(
-            view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-        )
-        .map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "table row count must be >= 0")
-                .with_context("operation", operation)
-        })?;
-        let num_columns = usize::try_from(
-            view.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-        )
-        .map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "table column count must be >= 0")
-                .with_context("operation", operation)
-        })?;
         let (default_device, readiness) = prepared_device_event_readiness(operation, self.execution_domain(), event)?;
-        let mut columns = Vec::with_capacity(num_columns);
-        let mut semantic_columns = Vec::new();
-        let mut bindings = Vec::new();
-        let mut next_buffer_id = 0u32;
-        let mut next_column_id = 0u32;
-        for index in 0..num_columns {
-            let index_i32 = checked_column_index(operation, index)?;
-            let column_view = view
-                .column(index_i32)
-                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-            let projection = prepared_column_projection_from_view(
-                &column_view,
-                operation,
-                default_device,
-                next_column_id,
-                next_buffer_id,
-            )?;
-            next_buffer_id = projection.next_buffer_id;
-            next_column_id = projection.next_column_id;
-            bindings.extend(projection.bindings);
-            columns.push(projection.column.clone());
-            semantic_columns.extend(projection.semantic_columns);
-        }
-        let table =
-            SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), None);
-        PreparedTableExport::try_new_with_semantic_columns(
-            table,
-            columns,
-            semantic_columns,
-            bindings,
-            readiness,
-            export_diagnostics(),
-        )
-        .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
-        .map_err(|error| error.with_context("operation", operation))
+        prepare_table_export_from_view_with_readiness(&view, None, operation, default_device, readiness)
     }
 }
 
@@ -2485,56 +1729,7 @@ impl TryPrepareDeviceTableExport for Table {
     fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
         let operation = "interop::Table::try_prepare_device_table_export";
         let view = self.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let num_rows = usize::try_from(
-            view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-        )
-        .map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "table row count must be >= 0")
-                .with_context("operation", operation)
-        })?;
-        let num_columns = usize::try_from(
-            view.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-        )
-        .map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "table column count must be >= 0")
-                .with_context("operation", operation)
-        })?;
-        let (default_device, readiness) = prepared_device_readiness(operation, self.execution_domain())?;
-        let mut columns = Vec::with_capacity(num_columns);
-        let mut semantic_columns = Vec::new();
-        let mut bindings = Vec::new();
-        let mut next_buffer_id = 0u32;
-        let mut next_column_id = 0u32;
-        for index in 0..num_columns {
-            let index_i32 = checked_column_index(operation, index)?;
-            let column_view = view
-                .column(index_i32)
-                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-            let projection = prepared_column_projection_from_view(
-                &column_view,
-                operation,
-                default_device,
-                next_column_id,
-                next_buffer_id,
-            )?;
-            next_buffer_id = projection.next_buffer_id;
-            next_column_id = projection.next_column_id;
-            bindings.extend(projection.bindings);
-            columns.push(projection.column.clone());
-            semantic_columns.extend(projection.semantic_columns);
-        }
-        let table =
-            SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), None);
-        PreparedTableExport::try_new_with_semantic_columns(
-            table,
-            columns,
-            semantic_columns,
-            bindings,
-            readiness,
-            export_diagnostics(),
-        )
-        .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
-        .map_err(|error| error.with_context("operation", operation))
+        prepare_table_export_from_view(&view, self.execution_domain(), None, operation)
     }
 }
 
@@ -2569,6 +1764,10 @@ impl Series {
     ///
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedColumnExport::try_activate_read_lease`].
+    ///
+    /// Owned device transfer remains on low-level [`crate::Column`] because
+    /// `Series` is a named, potentially `Arc`-shared wrapper rather than a
+    /// uniquely owned device buffer root.
     pub fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
         <Self as TryPrepareDeviceColumnExport>::try_prepare_device_column_export(self)
     }
@@ -2627,6 +1826,10 @@ impl DataFrame {
     ///
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedTableExport::try_activate_read_lease`].
+    ///
+    /// Owned device transfer remains on low-level [`crate::Table`] because
+    /// `DataFrame` is a named, potentially column-shared wrapper around table
+    /// storage rather than the table owner itself.
     pub fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
         <Self as TryPrepareDeviceTableExport>::try_prepare_device_table_export(self)
     }
@@ -2649,39 +1852,14 @@ impl DataFrame {
     ) -> Result<PreparedTableExport<'a>, InteropError> {
         let operation = "interop::DataFrame::try_prepare_device_table_export_with_event";
         let (default_device, readiness) = prepared_device_event_readiness(operation, self.execution_domain(), event)?;
-        let mut columns = Vec::with_capacity(self.columns_map().len());
-        let mut semantic_columns = Vec::new();
-        let mut bindings = Vec::new();
-        let mut next_buffer_id = 0u32;
-        let mut next_column_id = 0u32;
-        for (index, column) in self.columns_map().values().enumerate() {
-            let _ = checked_column_index(operation, index)?;
-            let view =
-                column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-            let projection =
-                prepared_column_projection_from_view(&view, operation, default_device, next_column_id, next_buffer_id)?;
-            next_buffer_id = projection.next_buffer_id;
-            next_column_id = projection.next_column_id;
-            bindings.extend(projection.bindings);
-            columns.push(projection.column.clone());
-            semantic_columns.extend(projection.semantic_columns);
-        }
-        let table = SemanticTable::new(
-            TableId::new(0),
+        prepare_device_table_export_from_columns_with_readiness(
+            self.columns_map().values().map(AsRef::as_ref),
             self.num_rows(),
-            columns.iter().map(|column| column.id()).collect(),
             Some(self.column_names_owned()),
-        );
-        PreparedTableExport::try_new_with_semantic_columns(
-            table,
-            columns,
-            semantic_columns,
-            bindings,
+            operation,
+            default_device,
             readiness,
-            export_diagnostics(),
         )
-        .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
-        .map_err(|error| error.with_context("operation", operation))
     }
 }
 
@@ -2700,53 +1878,24 @@ impl TryBorrowTableView for DataFrame {
 
 impl TryPrepareDeviceTableExport for DataFrame {
     fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
-        let operation = "interop::DataFrame::try_prepare_device_table_export";
-        let (default_device, readiness) = prepared_device_readiness(operation, self.execution_domain())?;
-        let mut columns = Vec::with_capacity(self.columns_map().len());
-        let mut semantic_columns = Vec::new();
-        let mut bindings = Vec::new();
-        let mut next_buffer_id = 0u32;
-        let mut next_column_id = 0u32;
-        for (index, column) in self.columns_map().values().enumerate() {
-            let _ = checked_column_index(operation, index)?;
-            let view =
-                column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-            let projection =
-                prepared_column_projection_from_view(&view, operation, default_device, next_column_id, next_buffer_id)?;
-            next_buffer_id = projection.next_buffer_id;
-            next_column_id = projection.next_column_id;
-            bindings.extend(projection.bindings);
-            columns.push(projection.column.clone());
-            semantic_columns.extend(projection.semantic_columns);
-        }
-        let table = SemanticTable::new(
-            TableId::new(0),
+        prepare_device_table_export_from_columns(
+            self.columns_map().values().map(AsRef::as_ref),
             self.num_rows(),
-            columns.iter().map(|column| column.id()).collect(),
             Some(self.column_names_owned()),
-        );
-        PreparedTableExport::try_new_with_semantic_columns(
-            table,
-            columns,
-            semantic_columns,
-            bindings,
-            readiness,
-            export_diagnostics(),
+            self.execution_domain(),
+            "interop::DataFrame::try_prepare_device_table_export",
         )
-        .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
-        .map_err(|error| error.with_context("operation", operation))
     }
 }
 
 impl TryPrepareHostTableExport for DataFrame {
     fn try_prepare_host_table_export(&self) -> Result<PreparedTableExport<'static>, InteropError> {
-        let operation = "interop::DataFrame::try_prepare_host_table_export";
-        let (table, _) = self
-            .clone()
-            .try_into_table()
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        prepare_host_table_export_from_view(&view, Some(self.column_names_owned()), operation)
+        prepare_host_table_export_from_columns(
+            self.columns_map().values().map(AsRef::as_ref),
+            self.num_rows(),
+            Some(self.column_names_owned()),
+            "interop::DataFrame::try_prepare_host_table_export",
+        )
     }
 }
 

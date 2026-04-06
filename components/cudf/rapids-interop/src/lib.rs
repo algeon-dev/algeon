@@ -19,7 +19,7 @@
 //! - Borrowed compatibility and prepared export both describe existing buffers;
 //!   neither transfers ownership.
 //! - Borrowed compatibility covers low-level borrowed descriptors and their
-//!   explicit execution/read-start facts.
+//!   explicit execution binding facts.
 //! - Prepared export plus activated lease covers read-start, completion, and
 //!   backend-defined incomplete-drop behavior at the shared contract layer.
 //! - Owned device transfer is a separate ownership-bearing contract with an
@@ -47,11 +47,11 @@
 //!
 //! [`PreparedColumnExport`] and [`PreparedTableExport`] are producer-rooted
 //! export contracts. Consumers activate access explicitly by providing
-//! [`CompletionAuthority`], then finish via [`ActiveColumnReadLease::complete`]
-//! or [`ActiveTableReadLease::complete`], which returns a shared
-//! [`LeaseCompletionResult`].
+//! [`ReadStartAuthority`] plus [`CompletionAuthority`], then finish via
+//! [`ActiveColumnReadLease::complete`] or [`ActiveTableReadLease::complete`],
+//! which returns a shared [`LeaseCompletionResult`].
 
-use core::{ffi::c_void, fmt, marker::PhantomData, ptr::NonNull};
+use core::{any::Any, ffi::c_void, fmt, marker::PhantomData, ptr::NonNull};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -105,21 +105,18 @@ impl TypeId {
         match self {
             Self::Int8 | Self::UInt8 | Self::Bool8 => Some(1),
             Self::Int16 | Self::UInt16 => Some(2),
-            Self::Int32
-            | Self::UInt32
-            | Self::Float32
-            | Self::TimestampDays
-            | Self::TimestampSeconds
-            | Self::TimestampMilliseconds
-            | Self::DurationDays
-            | Self::DurationSeconds
-            | Self::DurationMilliseconds
-            | Self::Decimal32 => Some(4),
+            Self::Int32 | Self::UInt32 | Self::Float32 | Self::TimestampDays | Self::DurationDays | Self::Decimal32 => {
+                Some(4)
+            },
             Self::Int64
             | Self::UInt64
             | Self::Float64
+            | Self::TimestampSeconds
+            | Self::TimestampMilliseconds
             | Self::TimestampMicroseconds
             | Self::TimestampNanoseconds
+            | Self::DurationSeconds
+            | Self::DurationMilliseconds
             | Self::DurationMicroseconds
             | Self::DurationNanoseconds
             | Self::Decimal64 => Some(8),
@@ -595,6 +592,13 @@ pub enum ProducerReadiness<'a> {
     DeviceEventOrdered { event: CudaEventHandle<'a> },
 }
 
+/// Consumer-supplied read-start authority for an activated read lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadStartAuthority<'a> {
+    SynchronousByReturn,
+    ConsumerStream { stream: CudaStreamHandle<'a> },
+}
+
 /// Consumer-supplied completion authority for an activated read lease.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionAuthority<'a> {
@@ -610,6 +614,13 @@ pub enum LeaseReadiness {
     HostVisible,
     DeviceStreamOrdered { raw: *mut c_void, device: i32 },
     DeviceEventOrdered { raw: *mut c_void, device: i32 },
+}
+
+/// Backend-facing read-start authority captured on an active lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadStartBinding {
+    SynchronousByReturn,
+    ConsumerStream { raw: *mut c_void, device: i32 },
 }
 
 /// Backend-facing producer export facts retained for the lifetime of an active
@@ -653,6 +664,8 @@ pub enum CompletionWitnessKind {
 pub trait CompletionWitnessBackend: Send + Sync {
     fn is_ready(&self) -> Result<bool>;
     fn synchronize(&self) -> Result<()>;
+    #[doc(hidden)]
+    fn as_any(&self) -> &dyn Any;
 }
 
 #[derive(Debug)]
@@ -665,6 +678,10 @@ impl CompletionWitnessBackend for ReadyCompletionWitnessBackend {
 
     fn synchronize(&self) -> Result<()> {
         Ok(())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -694,6 +711,11 @@ impl CompletionWitness {
 
     pub fn synchronize(&self) -> Result<()> {
         self.backend.synchronize()
+    }
+
+    #[doc(hidden)]
+    pub fn downcast_backend_ref<T: CompletionWitnessBackend + 'static>(&self) -> Option<&T> {
+        self.backend.as_any().downcast_ref::<T>()
     }
 }
 
@@ -747,7 +769,12 @@ impl fmt::Debug for LeaseActivation {
 
 /// Backend implementation for shared active read leases.
 pub trait ActiveLeaseBackend: Send + Sync {
-    fn activate(&self, _export: &LeaseExportContext, _completion: CompletionBinding) -> Result<LeaseActivation> {
+    fn activate(
+        &self,
+        _export: &LeaseExportContext,
+        _read_start: ReadStartBinding,
+        _completion: CompletionBinding,
+    ) -> Result<LeaseActivation> {
         Ok(LeaseActivation::noop())
     }
 
@@ -815,8 +842,13 @@ impl LeaseBackend {
         self.inner.incomplete_drop_behavior()
     }
 
-    fn activate(&self, export: &LeaseExportContext, completion: CompletionBinding) -> Result<LeaseActivation> {
-        self.inner.activate(export, completion)
+    fn activate(
+        &self,
+        export: &LeaseExportContext,
+        read_start: ReadStartBinding,
+        completion: CompletionBinding,
+    ) -> Result<LeaseActivation> {
+        self.inner.activate(export, read_start, completion)
     }
 
     fn complete(&self, export: &LeaseExportContext, completion: CompletionBinding) -> Result<LeaseCompletionResult> {
@@ -926,13 +958,21 @@ impl ReleaseContract {
 }
 
 struct OwnedTransferOwner {
-    state: Box<dyn Send + Sync>,
+    state: Box<dyn Any + Send + Sync>,
 }
 
 impl OwnedTransferOwner {
     fn new<Owner>(owner: Owner) -> Self
     where Owner: Send + Sync + 'static {
         Self { state: Box::new(owner) }
+    }
+
+    fn try_into<Owner>(self) -> core::result::Result<Owner, Self>
+    where Owner: Send + Sync + 'static {
+        match self.state.downcast::<Owner>() {
+            Ok(owner) => Ok(*owner),
+            Err(state) => Err(Self { state }),
+        }
     }
 }
 
@@ -965,6 +1005,10 @@ impl<'a> NullMask<'a> {
     }
 
     /// Construct the canonical "a null mask is present" descriptor.
+    ///
+    /// `ptr` is accepted as `*const c_void` because this is a read-only
+    /// borrowed descriptor. The internal `NonNull<c_void>` storage is only an
+    /// implementation detail for carrying a non-null raw address.
     ///
     /// `null_count == 0` remains a valid present-mask state.
     pub fn present(ptr: *const c_void, bit_len: usize, null_count: usize) -> Result<Self> {
@@ -2028,6 +2072,40 @@ fn lease_readiness_binding(readiness: ProducerReadiness<'_>) -> LeaseReadiness {
     }
 }
 
+fn validate_read_start_authority(
+    profile: ExportProfile,
+    read_start: ReadStartAuthority<'_>,
+    producer_device: Option<i32>,
+) -> Result<()> {
+    match profile {
+        ExportProfile::PreparedHostExport => match read_start {
+            ReadStartAuthority::SynchronousByReturn => Ok(()),
+            ReadStartAuthority::ConsumerStream { .. } => {
+                Err(prepared_profile_error(profile, "prepared host export does not support CUDA read-start authority")
+                    .with_context("read_start", "consumer_stream"))
+            },
+        },
+        ExportProfile::PreparedDeviceExport => {
+            let _ = producer_device.expect("prepared device export must resolve a producer device");
+            match read_start {
+                ReadStartAuthority::SynchronousByReturn => Ok(()),
+                ReadStartAuthority::ConsumerStream { .. } => Ok(()),
+            }
+        },
+        ExportProfile::BorrowedDeviceCompatibility => unreachable!("borrowed compatibility is not a prepared export"),
+        ExportProfile::OwnedDeviceTransfer => unreachable!("owned transfer is not a prepared export"),
+    }
+}
+
+fn read_start_binding(read_start: ReadStartAuthority<'_>) -> ReadStartBinding {
+    match read_start {
+        ReadStartAuthority::SynchronousByReturn => ReadStartBinding::SynchronousByReturn,
+        ReadStartAuthority::ConsumerStream { stream } => {
+            ReadStartBinding::ConsumerStream { raw: stream.as_raw(), device: stream.device() }
+        },
+    }
+}
+
 fn completion_binding(completion: CompletionAuthority<'_>) -> CompletionBinding {
     match completion {
         CompletionAuthority::SynchronousByReturn => CompletionBinding::SynchronousByReturn,
@@ -2074,6 +2152,7 @@ impl Drop for ActiveLeaseRegistration {
 #[must_use = "lease should be completed explicitly via .complete(); dropping without completion follows the backend-defined incomplete-drop behavior"]
 pub struct ActiveColumnReadLease<'export, 'producer, 'consumer> {
     export: &'export PreparedColumnExport<'producer>,
+    read_start: ReadStartAuthority<'consumer>,
     completion: CompletionAuthority<'consumer>,
     completion_binding: CompletionBinding,
     export_context: LeaseExportContext,
@@ -2086,6 +2165,10 @@ pub struct ActiveColumnReadLease<'export, 'producer, 'consumer> {
 impl<'export, 'producer, 'consumer> ActiveColumnReadLease<'export, 'producer, 'consumer> {
     pub fn export(&self) -> &'export PreparedColumnExport<'producer> {
         self.export
+    }
+
+    pub fn read_start(&self) -> ReadStartAuthority<'consumer> {
+        self.read_start
     }
 
     pub fn completion(&self) -> CompletionAuthority<'consumer> {
@@ -2124,6 +2207,7 @@ impl Drop for ActiveColumnReadLease<'_, '_, '_> {
 #[must_use = "lease should be completed explicitly via .complete(); dropping without completion follows the backend-defined incomplete-drop behavior"]
 pub struct ActiveTableReadLease<'export, 'producer, 'consumer> {
     export: &'export PreparedTableExport<'producer>,
+    read_start: ReadStartAuthority<'consumer>,
     completion: CompletionAuthority<'consumer>,
     completion_binding: CompletionBinding,
     export_context: LeaseExportContext,
@@ -2136,6 +2220,10 @@ pub struct ActiveTableReadLease<'export, 'producer, 'consumer> {
 impl<'export, 'producer, 'consumer> ActiveTableReadLease<'export, 'producer, 'consumer> {
     pub fn export(&self) -> &'export PreparedTableExport<'producer> {
         self.export
+    }
+
+    pub fn read_start(&self) -> ReadStartAuthority<'consumer> {
+        self.read_start
     }
 
     pub fn completion(&self) -> CompletionAuthority<'consumer> {
@@ -2316,6 +2404,24 @@ impl OwnedColumnTransfer {
 
     pub fn release_contract(&self) -> &ReleaseContract {
         &self.release_contract
+    }
+
+    /// Consume this transfer and attempt to recover its transport-specific
+    /// owner payload by type.
+    pub fn try_into_owner<Owner>(self) -> core::result::Result<Owner, Self>
+    where Owner: Send + Sync + 'static {
+        match self._owner.try_into::<Owner>() {
+            Ok(owner) => Ok(owner),
+            Err(owner) => Err(Self {
+                column: self.column,
+                semantic_columns: self.semantic_columns,
+                bindings: self.bindings,
+                readiness: self.readiness,
+                diagnostics: self.diagnostics,
+                release_contract: self.release_contract,
+                _owner: owner,
+            }),
+        }
     }
 }
 
@@ -2526,6 +2632,25 @@ impl OwnedTableTransfer {
 
     pub fn release_contract(&self) -> &ReleaseContract {
         &self.release_contract
+    }
+
+    /// Consume this transfer and attempt to recover its transport-specific
+    /// owner payload by type.
+    pub fn try_into_owner<Owner>(self) -> core::result::Result<Owner, Self>
+    where Owner: Send + Sync + 'static {
+        match self._owner.try_into::<Owner>() {
+            Ok(owner) => Ok(owner),
+            Err(owner) => Err(Self {
+                table: self.table,
+                columns: self.columns,
+                semantic_columns: self.semantic_columns,
+                bindings: self.bindings,
+                readiness: self.readiness,
+                diagnostics: self.diagnostics,
+                release_contract: self.release_contract,
+                _owner: owner,
+            }),
+        }
     }
 }
 
@@ -2959,15 +3084,19 @@ impl<'a> PreparedColumnExport<'a> {
 
     pub fn try_activate_read_lease<'export, 'consumer>(
         &'export self,
+        read_start: ReadStartAuthority<'consumer>,
         completion: CompletionAuthority<'consumer>,
     ) -> Result<ActiveColumnReadLease<'export, 'a, 'consumer>> {
+        validate_read_start_authority(self.diagnostics.profile(), read_start, self.producer_device)?;
         validate_completion_authority(self.diagnostics.profile(), completion, self.producer_device)?;
+        let read_start_binding = read_start_binding(read_start);
         let completion_binding = completion_binding(completion);
         let export_context = self.lease_export_context();
         let registration = self.lease_state.try_acquire("column")?;
-        let activation = self.lease_backend.activate(&export_context, completion_binding)?;
+        let activation = self.lease_backend.activate(&export_context, read_start_binding, completion_binding)?;
         Ok(ActiveColumnReadLease {
             export: self,
+            read_start,
             completion,
             completion_binding,
             export_context,
@@ -3135,18 +3264,16 @@ impl<'a> PreparedTableExport<'a> {
             )
             .with_context("column_id", unreferenced.get().to_string()));
         }
-        if validated_devices.len() != column_map.len() {
-            if profile == ExportProfile::PreparedDeviceExport {
-                let unreferenced = semantic_columns
-                    .iter()
-                    .find(|candidate| !validated_devices.contains_key(&candidate.id()))
-                    .expect("missing validated semantic column must exist");
-                return Err(InteropError::new(
-                    InteropErrorKind::InvalidView,
-                    "prepared table export included an unreferenced semantic column",
-                )
-                .with_context("column_id", unreferenced.id().get().to_string()));
-            }
+        if validated_devices.len() != column_map.len() && profile == ExportProfile::PreparedDeviceExport {
+            let unreferenced = semantic_columns
+                .iter()
+                .find(|candidate| !validated_devices.contains_key(&candidate.id()))
+                .expect("missing validated semantic column must exist");
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "prepared table export included an unreferenced semantic column",
+            )
+            .with_context("column_id", unreferenced.id().get().to_string()));
         }
         if profile == ExportProfile::PreparedHostExport && validated_columns.len() != column_map.len() {
             let unreferenced = semantic_columns
@@ -3240,15 +3367,19 @@ impl<'a> PreparedTableExport<'a> {
 
     pub fn try_activate_read_lease<'export, 'consumer>(
         &'export self,
+        read_start: ReadStartAuthority<'consumer>,
         completion: CompletionAuthority<'consumer>,
     ) -> Result<ActiveTableReadLease<'export, 'a, 'consumer>> {
+        validate_read_start_authority(self.diagnostics.profile(), read_start, self.producer_device)?;
         validate_completion_authority(self.diagnostics.profile(), completion, self.producer_device)?;
+        let read_start_binding = read_start_binding(read_start);
         let completion_binding = completion_binding(completion);
         let export_context = self.lease_export_context();
         let registration = self.lease_state.try_acquire("table")?;
-        let activation = self.lease_backend.activate(&export_context, completion_binding)?;
+        let activation = self.lease_backend.activate(&export_context, read_start_binding, completion_binding)?;
         Ok(ActiveTableReadLease {
             export: self,
+            read_start,
             completion,
             completion_binding,
             export_context,

@@ -6,14 +6,15 @@
 
 use std::sync::Arc;
 
-use indexmap::IndexMap;
-
 use crate::{
     core::{
         column::Column,
         error::{Error, ErrorKind, Result},
     },
-    internal::temp_table::TempTableView,
+    internal::{
+        hash::{FastHashSet, FastIndexMap, fast_hash_set_with_capacity},
+        temp_table::TempTableView,
+    },
 };
 
 /// Validate that `names` contains no duplicates.
@@ -22,7 +23,7 @@ use crate::{
 ///
 /// Returns an error with the first duplicate name found.
 pub(crate) fn validate_no_duplicate_names(names: &[String], operation: &'static str) -> Result<()> {
-    let mut seen = std::collections::HashSet::with_capacity(names.len());
+    let mut seen = fast_hash_set_with_capacity(names.len());
     for name in names {
         if !seen.insert(name) {
             return Err(Error::new(ErrorKind::InvalidOperation, format!("duplicate column name '{}'", name))
@@ -40,7 +41,7 @@ pub(crate) fn validate_no_duplicate_names(names: &[String], operation: &'static 
 ///
 /// Returns an error if any name is not found.
 pub(crate) fn resolve_column_names(
-    columns: &IndexMap<String, Arc<Column>>,
+    columns: &FastIndexMap<String, Arc<Column>>,
     names: &[&str],
     operation: &'static str,
 ) -> Result<Vec<usize>> {
@@ -62,7 +63,7 @@ pub(crate) fn resolve_column_names(
 /// This is zero-copy with respect to device data: it allocates only temporary
 /// FFI view handles over the selected columns.
 pub(crate) fn build_borrowed_table_view_from_columns<'a>(
-    columns: &'a IndexMap<String, Arc<Column>>,
+    columns: &'a FastIndexMap<String, Arc<Column>>,
     indices: &[usize],
 ) -> Result<TempTableView<'a>> {
     let views = indices
@@ -78,8 +79,8 @@ pub(crate) fn build_borrowed_table_view_from_columns<'a>(
 
 /// Compute payload column indices: all positions NOT in `key_indices`,
 /// preserving insertion order.
-pub(crate) fn payload_indices(columns: &IndexMap<String, Arc<Column>>, key_indices: &[usize]) -> Vec<usize> {
-    let key_set: std::collections::HashSet<usize> = key_indices.iter().copied().collect();
+pub(crate) fn payload_indices(columns: &FastIndexMap<String, Arc<Column>>, key_indices: &[usize]) -> Vec<usize> {
+    let key_set: FastHashSet<usize> = key_indices.iter().copied().collect();
     (0..columns.len()).filter(|idx| !key_set.contains(idx)).collect()
 }
 
@@ -103,7 +104,7 @@ mod tests {
 
     #[test]
     fn resolve_column_names_ok() {
-        let mut map = IndexMap::new();
+        let mut map = crate::internal::hash::fast_index_map();
         map.insert("x".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));
         map.insert("y".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int64).unwrap()));
         map.insert("z".into(), Arc::new(Column::empty(crate::core::types::TypeId::Float64).unwrap()));
@@ -114,7 +115,7 @@ mod tests {
 
     #[test]
     fn resolve_column_names_missing() {
-        let mut map = IndexMap::new();
+        let mut map = crate::internal::hash::fast_index_map();
         map.insert("a".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));
 
         let err = resolve_column_names(&map, &["missing"], "test").unwrap_err();
@@ -124,7 +125,7 @@ mod tests {
 
     #[test]
     fn payload_indices_excludes_keys() {
-        let mut map = IndexMap::new();
+        let mut map = crate::internal::hash::fast_index_map();
         map.insert("a".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));
         map.insert("b".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));
         map.insert("c".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));

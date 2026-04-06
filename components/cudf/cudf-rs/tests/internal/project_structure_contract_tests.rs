@@ -14,6 +14,7 @@ use std::{
 
 const LIB_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
 const INTERNAL_MOD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/internal/mod.rs"));
+const INTEROP_MOD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/interop/mod.rs"));
 const DATAFRAME_OWNED_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/frame/dataframe/owned.rs"));
 const SERIES_OWNED_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/frame/series/owned.rs"));
 const JOIN_DATAFRAME_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ops/join/dataframe.rs"));
@@ -246,10 +247,40 @@ fn target_top_level_source_domains_exist() {
 }
 
 #[test]
+fn interop_domain_stays_split_across_projection_and_table_export_submodules() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let interop_dir = manifest_dir.join("src/interop");
+    let mod_rs = fs::read_to_string(interop_dir.join("mod.rs")).unwrap();
+
+    assert!(interop_dir.join("projection/mod.rs").is_file(), "expected src/interop/projection/mod.rs to exist");
+    assert!(interop_dir.join("projection/device.rs").is_file(), "expected src/interop/projection/device.rs to exist");
+    assert!(interop_dir.join("projection/host.rs").is_file(), "expected src/interop/projection/host.rs to exist");
+    assert!(interop_dir.join("table_export.rs").is_file(), "expected src/interop/table_export.rs to exist");
+    assert!(mod_rs.contains("mod projection;"), "expected interop::mod.rs to declare the projection submodule");
+    assert!(mod_rs.contains("mod table_export;"), "expected interop::mod.rs to declare the table_export submodule");
+    assert!(
+        mod_rs.lines().count() < 2200,
+        "expected interop::mod.rs to stay below 2200 lines after splitting heavy projection and table-export logic",
+    );
+}
+
+#[test]
 fn crate_root_docs_do_not_point_users_at_removed_root_modules() {
     assert!(
         !LIB_RS.contains("see the [`stream`] module"),
         "expected public crate docs to send users to visible domain modules instead of removed root modules"
+    );
+}
+
+#[test]
+fn interop_module_docs_reflect_consumer_import_support() {
+    assert!(
+        INTEROP_MOD_RS.contains("consumer-side import from the shared borrowed"),
+        "expected interop module docs to mention borrowed consumer-side import support"
+    );
+    assert!(
+        INTEROP_MOD_RS.contains("zero-copy consumer-side import from"),
+        "expected interop module docs to mention zero-copy owned-transfer consumer-side import support"
     );
 }
 

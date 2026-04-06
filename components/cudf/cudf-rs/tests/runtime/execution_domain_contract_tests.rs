@@ -7,7 +7,7 @@
 use std::{ffi::c_void, ptr};
 
 use cudf::{
-    Agg, AggSpec, Column, DataFrame, DataType, ErrorKind, Runtime, Scalar, Series, Table, TableView, TypeId,
+    Agg, AggSpec, Column, DataFrame, DataType, ErrorKind, Scalar, Series, Table, TableView, TypeId,
     core::memory::DeviceMemoryResource,
     ops::{
         binary::{self, BinaryOperator},
@@ -22,16 +22,10 @@ use cudf::{
 };
 use cudf_sys::{
     cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
-    cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
+    cudf_test_exec_last_sync_stream_value,
 };
 
-fn reset_sync_observation() {
-    unsafe { cudf_test_exec_reset_observation() };
-}
-
-fn reset_exec_observation() {
-    unsafe { cudf_test_exec_reset_observation() };
-}
+use crate::common::{explicit_i32_column, reset_exec_observation, reset_sync_observation, sample_runtime};
 
 fn last_exec_stream_value() -> usize {
     let mut out: usize = 0;
@@ -88,16 +82,6 @@ fn explicit_nullable_i32_series(name: &str, data: &[i32], validity: &[bool], ide
     )
     .unwrap()
     .rename(name)
-}
-
-fn explicit_i32_column(data: &[i32], identity: u64) -> Column {
-    Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap()
-}
-
-fn sample_runtime() -> Runtime {
-    let stream = CudaStream::new().unwrap();
-    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
-    Runtime::builder().with_stream(stream).with_memory_resource(mr).build().unwrap()
 }
 
 #[test]

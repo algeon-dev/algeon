@@ -6,8 +6,6 @@
 //! data.
 use std::sync::Arc;
 
-use indexmap::IndexMap;
-
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -15,7 +13,10 @@ use crate::{
         table::Table,
     },
     frame::series::Series,
-    internal::resolve::validate_no_duplicate_names,
+    internal::{
+        hash::{FastIndexMap, fast_index_map, fast_index_map_with_capacity},
+        resolve::validate_no_duplicate_names,
+    },
     ops::groupby,
     runtime::execution_domain::ExecutionDomain,
 };
@@ -44,7 +45,7 @@ use crate::{
 /// explicitly when you need host-visible values.
 #[derive(Clone)]
 pub struct DataFrame {
-    pub(super) columns: IndexMap<String, Arc<Column>>,
+    pub(super) columns: FastIndexMap<String, Arc<Column>>,
     pub(super) row_count: usize,
     pub(super) domain: Arc<ExecutionDomain>,
 }
@@ -62,7 +63,7 @@ pub struct DataFrameJoinResult {
 }
 
 pub(crate) fn derive_frame_domain_from_columns(
-    columns: &IndexMap<String, Arc<Column>>,
+    columns: &FastIndexMap<String, Arc<Column>>,
     operation: &'static str,
 ) -> Result<Arc<ExecutionDomain>> {
     let Some((first_name, first_column)) = columns.iter().next() else {
@@ -88,14 +89,14 @@ pub(crate) fn derive_frame_domain_from_columns(
 }
 
 pub(crate) fn frame_domain_matches_columns(
-    columns: &IndexMap<String, Arc<Column>>,
+    columns: &FastIndexMap<String, Arc<Column>>,
     frame_domain: &Arc<ExecutionDomain>,
 ) -> bool {
     columns.values().all(|column| ExecutionDomain::same_provenance(frame_domain, column.execution_domain()))
 }
 
 pub(crate) fn resolve_frame_domain_from_authoritative_source(
-    columns: &IndexMap<String, Arc<Column>>,
+    columns: &FastIndexMap<String, Arc<Column>>,
     authoritative_domain: &Arc<ExecutionDomain>,
     operation: &'static str,
 ) -> Result<Arc<ExecutionDomain>> {
@@ -143,7 +144,7 @@ impl DataFrame {
         validate_no_duplicate_names(&names, "dataframe::new")?;
 
         if columns.is_empty() {
-            return Ok(Self { columns: IndexMap::new(), row_count: 0, domain: ExecutionDomain::ambient_default() });
+            return Ok(Self { columns: fast_index_map(), row_count: 0, domain: ExecutionDomain::ambient_default() });
         }
 
         // Validate all columns have the same row count.
@@ -162,7 +163,7 @@ impl DataFrame {
             }
         }
 
-        let mut map = IndexMap::with_capacity(names.len());
+        let mut map: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(names.len());
         for (name, col) in names.into_iter().zip(columns) {
             map.insert(name, Arc::new(col));
         }
@@ -195,7 +196,7 @@ impl DataFrame {
         validate_no_duplicate_names(&names, "dataframe::from_table")?;
 
         let cols = table.into_columns()?;
-        let mut map = IndexMap::with_capacity(names.len());
+        let mut map: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(names.len());
         for (name, col) in names.into_iter().zip(cols) {
             map.insert(name, Arc::new(col));
         }
@@ -238,7 +239,7 @@ impl DataFrame {
     {
         let iter = pairs.into_iter();
         let (lower, _) = iter.size_hint();
-        let mut map = IndexMap::with_capacity(lower);
+        let mut map: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(lower);
 
         for (name, series) in iter {
             let name = name.into();
@@ -251,7 +252,7 @@ impl DataFrame {
         }
 
         if map.is_empty() {
-            return Ok(Self { columns: IndexMap::new(), row_count: 0, domain: ExecutionDomain::ambient_default() });
+            return Ok(Self { columns: fast_index_map(), row_count: 0, domain: ExecutionDomain::ambient_default() });
         }
 
         // Validate all columns have the same row count.
@@ -297,7 +298,7 @@ impl DataFrame {
     /// - No duplicate keys in `columns`
     /// - All columns have `row_count` rows
     pub(crate) fn from_raw_parts(
-        columns: IndexMap<String, Arc<Column>>,
+        columns: FastIndexMap<String, Arc<Column>>,
         row_count: usize,
         domain: Arc<ExecutionDomain>,
     ) -> Self {
@@ -418,7 +419,7 @@ impl DataFrame {
     ///
     /// This is a crate-internal accessor used by high-level types like
     /// [`GroupBy`][crate::ops::groupby::GroupBy].
-    pub(crate) fn columns_map(&self) -> &IndexMap<String, Arc<Column>> {
+    pub(crate) fn columns_map(&self) -> &FastIndexMap<String, Arc<Column>> {
         &self.columns
     }
 
@@ -485,7 +486,7 @@ impl DataFrame {
         &self,
         output_domain: &Arc<ExecutionDomain>,
         operation: &'static str,
-    ) -> Result<IndexMap<String, Arc<Column>>> {
+    ) -> Result<FastIndexMap<String, Arc<Column>>> {
         if ExecutionDomain::same_provenance(&self.domain, output_domain) {
             return Ok(self.columns.clone());
         }
@@ -494,7 +495,7 @@ impl DataFrame {
             .fence_stream(operation)
             .map_err(|e| e.with_context("target_domain", output_domain.debug_label()))?;
 
-        let mut copied = IndexMap::with_capacity(self.columns.len());
+        let mut copied: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(self.columns.len());
         for (name, column) in &self.columns {
             let rebound = column.copy_into_domain(Arc::clone(output_domain), operation).map_err(|e| {
                 e.with_context("column_name", name.clone()).with_context("target_domain", output_domain.debug_label())

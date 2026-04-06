@@ -118,9 +118,7 @@ fn groupby_aggregate_impl(
     let mut out_values: *mut *mut c_void = ptr::null_mut();
     let mut out_total_columns: i32 = 0;
 
-    // Safety: NullPolicy and cudf_sys::cudf_null_policy_t are both #[repr(i32)]
-    // with identical discriminant values.
-    let null_policy_ffi: cudf_sys::cudf_null_policy_t = unsafe { std::mem::transmute(null_policy) };
+    let null_policy_ffi = null_policy.to_raw();
     let status = if let Some(options) = exec_options {
         unsafe {
             cudf_sys::cudf_groupby_aggregate_ex(

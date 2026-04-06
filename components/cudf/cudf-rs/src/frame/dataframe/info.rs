@@ -1,7 +1,8 @@
-use std::collections::HashMap;
-
 use super::owned::DataFrame;
-use crate::core::{error::Result, types::DataType};
+use crate::{
+    core::{error::Result, types::DataType},
+    internal::hash::{FastHashMap, fast_hash_map_with_capacity},
+};
 
 bitflags::bitflags! {
     /// Controls how much metadata [`DataFrame::info_with`] computes.
@@ -176,7 +177,7 @@ impl DataFrame {
         let include_payload_bytes = detail.includes_payload();
         let include_device_allocated_bytes = detail.includes_device_allocated();
 
-        let mut dtype_counts = HashMap::<DataType, usize>::with_capacity(self.columns.len());
+        let mut dtype_counts: FastHashMap<DataType, usize> = fast_hash_map_with_capacity(self.columns.len());
         let mut columns_info = include_columns.then(|| Vec::<DataFrameColumnInfo>::with_capacity(self.columns.len()));
         let mut total_payload_bytes = 0usize;
         let mut total_device_allocated_bytes = 0usize;

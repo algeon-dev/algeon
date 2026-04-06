@@ -254,6 +254,82 @@ cudf_status_t cudf_column_copy_from_view_ex(cudf_column_view_handle src,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_column_copy_from_borrowed_view(
+    cudf_type_id_t type_id,
+    int32_t scale,
+    int32_t size,
+    int32_t offset,
+    void const* data,
+    void const* null_mask,
+    int32_t null_count,
+    cudf_column_handle* out) {
+  return cudf_column_copy_from_borrowed_view_ex(
+      type_id, scale, size, offset, data, null_mask, null_count, nullptr, out);
+}
+
+cudf_status_t cudf_column_copy_from_borrowed_view_ex(
+    cudf_type_id_t type_id,
+    int32_t scale,
+    int32_t size,
+    int32_t offset,
+    void const* data,
+    void const* null_mask,
+    int32_t null_count,
+    cudf_exec_options_t const* options,
+    cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  if (size < 0) {
+    set_error("size must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (offset < 0) {
+    set_error("offset must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (null_count < 0 || null_count > size) {
+    set_error("null_count must be in [0, size]");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (size > 0 && data == nullptr) {
+    set_error("data is null");
+    return CUDF_ERROR_NULL;
+  }
+  if (null_count > 0 && null_mask == nullptr) {
+    set_error("null_mask is null when null_count > 0");
+    return CUDF_ERROR_NULL;
+  }
+  CUDF_RUST_TRY {
+    cudf::type_id const id = static_cast<cudf::type_id>(type_id);
+    cudf::data_type const dtype =
+        id == cudf::type_id::DECIMAL32 || id == cudf::type_id::DECIMAL64 || id == cudf::type_id::DECIMAL128
+            ? cudf::data_type{id, scale}
+            : cudf::data_type{id};
+    if (!cudf::is_fixed_width(dtype)) {
+      set_error("borrowed descriptor import only supports fixed-width types");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    cudf::column_view const view{
+        dtype,
+        static_cast<cudf::size_type>(size),
+        data,
+        static_cast<cudf::bitmask_type const*>(null_mask),
+        static_cast<cudf::size_type>(null_count),
+        static_cast<cudf::size_type>(offset)};
+    auto copy = std::make_unique<cudf::column>(view, exec.stream, exec.mr);
+    *out = static_cast<cudf_column_handle>(copy.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_column_payload_size(cudf_column_handle handle,
                                        size_t* out) {
   return cudf_column_payload_size_ex(handle, nullptr, out);

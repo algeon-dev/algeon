@@ -44,6 +44,8 @@ mod dataframe_metadata_ops_tests;
 mod dataframe_series_bridge_tests;
 #[path = "frame/dataframe/slice_tests.rs"]
 mod dataframe_slice_tests;
+#[path = "frame/series/same_provenance_tests.rs"]
+mod same_provenance_tests;
 #[path = "frame/series/series_concat_tests.rs"]
 mod series_concat_tests;
 #[path = "frame/series/series_constructor_tests.rs"]

@@ -66,9 +66,7 @@ fn join_impl(
 ) -> Result<JoinResult> {
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
-    // Safety: NullEquality and cudf_sys::cudf_null_equality_t are both #[repr(i32)]
-    // with identical discriminant values.
-    let null_eq_ffi: cudf_sys::cudf_null_equality_t = unsafe { std::mem::transmute(null_equality) };
+    let null_eq_ffi = null_equality.to_join_raw();
     let status = match (join_type, exec_options) {
         (JoinType::Inner, None) => unsafe {
             cudf_sys::cudf_inner_join(

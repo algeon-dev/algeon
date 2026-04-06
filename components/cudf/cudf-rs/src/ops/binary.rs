@@ -89,6 +89,42 @@ pub enum BinaryOperator {
 }
 
 impl BinaryOperator {
+    pub(crate) fn to_raw(self) -> cudf_sys::cudf_binary_operator_t {
+        match self {
+            BinaryOperator::Add => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_ADD,
+            BinaryOperator::Sub => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_SUB,
+            BinaryOperator::Mul => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_MUL,
+            BinaryOperator::Div => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_DIV,
+            BinaryOperator::TrueDiv => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_TRUE_DIV,
+            BinaryOperator::FloorDiv => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_FLOOR_DIV,
+            BinaryOperator::Mod => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_MOD,
+            BinaryOperator::Pmod => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_PMOD,
+            BinaryOperator::Pymod => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_PYMOD,
+            BinaryOperator::Pow => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_POW,
+            BinaryOperator::IntPow => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_INT_POW,
+            BinaryOperator::LogBase => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_LOG_BASE,
+            BinaryOperator::Atan2 => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_ATAN2,
+            BinaryOperator::ShiftLeft => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_SHIFT_LEFT,
+            BinaryOperator::ShiftRight => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_SHIFT_RIGHT,
+            BinaryOperator::ShiftRightUnsigned => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_SHIFT_RIGHT_UNSIGNED,
+            BinaryOperator::BitwiseAnd => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_BITWISE_AND,
+            BinaryOperator::BitwiseOr => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_BITWISE_OR,
+            BinaryOperator::BitwiseXor => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_BITWISE_XOR,
+            BinaryOperator::LogicalAnd => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_LOGICAL_AND,
+            BinaryOperator::LogicalOr => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_LOGICAL_OR,
+            BinaryOperator::Equal => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_EQUAL,
+            BinaryOperator::NotEqual => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_NOT_EQUAL,
+            BinaryOperator::Less => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_LESS,
+            BinaryOperator::Greater => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_GREATER,
+            BinaryOperator::LessEqual => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_LESS_EQUAL,
+            BinaryOperator::GreaterEqual => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_GREATER_EQUAL,
+            BinaryOperator::NullEquals => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_NULL_EQUALS,
+            BinaryOperator::NullNotEquals => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_NULL_NOT_EQUALS,
+            BinaryOperator::NullMax => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_NULL_MAX,
+            BinaryOperator::NullMin => cudf_sys::cudf_binary_operator_t::CUDF_BINARY_NULL_MIN,
+        }
+    }
+
     /// Returns `true` if this operator is a comparison operator.
     pub fn is_comparison(self) -> bool {
         matches!(
@@ -237,9 +273,7 @@ fn binary_operation_vv_impl(
 ) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vv")?;
     let mut out = ptr::null_mut();
-    // Safety: BinaryOperator and cudf_sys::cudf_binary_operator_t are both #[repr(i32)]
-    // with identical discriminant values.
-    let op_ffi: cudf_sys::cudf_binary_operator_t = unsafe { std::mem::transmute(op) };
+    let op_ffi = op.to_raw();
     // SAFETY: lhs and rhs handles are valid (NonNull). dtype_handle was
     // returned by a successful to_raw_handle_for call.
     let status = match exec_options {
@@ -297,7 +331,7 @@ fn binary_operation_vs_impl(
 ) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vs")?;
     let mut out = ptr::null_mut();
-    let op_ffi: cudf_sys::cudf_binary_operator_t = unsafe { std::mem::transmute(op) };
+    let op_ffi = op.to_raw();
     // SAFETY: lhs (ColumnView) and rhs (Scalar) handles are valid (NonNull).
     // dtype_handle was returned by a successful to_raw_handle_for call.
     let status = match exec_options {
@@ -355,7 +389,7 @@ fn binary_operation_sv_impl(
 ) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_sv")?;
     let mut out = ptr::null_mut();
-    let op_ffi: cudf_sys::cudf_binary_operator_t = unsafe { std::mem::transmute(op) };
+    let op_ffi = op.to_raw();
     // SAFETY: lhs (Scalar) and rhs (ColumnView) handles are valid (NonNull).
     // dtype_handle was returned by a successful to_raw_handle_for call.
     let status = match exec_options {

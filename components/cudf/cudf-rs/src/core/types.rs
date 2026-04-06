@@ -109,9 +109,37 @@ impl TypeId {
 
     /// Convert to the raw FFI type_id enum.
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_type_id_t {
-        // SAFETY: TypeId and cudf_type_id_t are both #[repr(i32)] with identical
-        // discriminant values (verified by from_raw match coverage).
-        unsafe { std::mem::transmute(self) }
+        match self {
+            TypeId::Empty => cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY,
+            TypeId::Int8 => cudf_sys::cudf_type_id_t::CUDF_TYPE_INT8,
+            TypeId::Int16 => cudf_sys::cudf_type_id_t::CUDF_TYPE_INT16,
+            TypeId::Int32 => cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            TypeId::Int64 => cudf_sys::cudf_type_id_t::CUDF_TYPE_INT64,
+            TypeId::UInt8 => cudf_sys::cudf_type_id_t::CUDF_TYPE_UINT8,
+            TypeId::UInt16 => cudf_sys::cudf_type_id_t::CUDF_TYPE_UINT16,
+            TypeId::UInt32 => cudf_sys::cudf_type_id_t::CUDF_TYPE_UINT32,
+            TypeId::UInt64 => cudf_sys::cudf_type_id_t::CUDF_TYPE_UINT64,
+            TypeId::Float32 => cudf_sys::cudf_type_id_t::CUDF_TYPE_FLOAT32,
+            TypeId::Float64 => cudf_sys::cudf_type_id_t::CUDF_TYPE_FLOAT64,
+            TypeId::Bool8 => cudf_sys::cudf_type_id_t::CUDF_TYPE_BOOL8,
+            TypeId::TimestampDays => cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS,
+            TypeId::TimestampSeconds => cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS,
+            TypeId::TimestampMilliseconds => cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MILLISECONDS,
+            TypeId::TimestampMicroseconds => cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MICROSECONDS,
+            TypeId::TimestampNanoseconds => cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_NANOSECONDS,
+            TypeId::DurationDays => cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS,
+            TypeId::DurationSeconds => cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_SECONDS,
+            TypeId::DurationMilliseconds => cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_MILLISECONDS,
+            TypeId::DurationMicroseconds => cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_MICROSECONDS,
+            TypeId::DurationNanoseconds => cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_NANOSECONDS,
+            TypeId::Dictionary32 => cudf_sys::cudf_type_id_t::CUDF_TYPE_DICTIONARY32,
+            TypeId::String => cudf_sys::cudf_type_id_t::CUDF_TYPE_STRING,
+            TypeId::List => cudf_sys::cudf_type_id_t::CUDF_TYPE_LIST,
+            TypeId::Decimal32 => cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32,
+            TypeId::Decimal64 => cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64,
+            TypeId::Decimal128 => cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128,
+            TypeId::Struct => cudf_sys::cudf_type_id_t::CUDF_TYPE_STRUCT,
+        }
     }
 
     /// Returns the size in bytes of a fixed-width type, or `None` for
@@ -299,6 +327,15 @@ pub enum NullPolicy {
     Include = 1,
 }
 
+impl NullPolicy {
+    pub(crate) fn to_raw(self) -> cudf_sys::cudf_null_policy_t {
+        match self {
+            NullPolicy::Exclude => cudf_sys::cudf_null_policy_t::CUDF_NULL_POLICY_EXCLUDE,
+            NullPolicy::Include => cudf_sys::cudf_null_policy_t::CUDF_NULL_POLICY_INCLUDE,
+        }
+    }
+}
+
 /// Whether null elements should be considered equal in joins and stream compaction.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,6 +344,26 @@ pub enum NullEquality {
     Equal = 0,
     /// Null keys are considered unequal (null == null is false).
     Unequal = 1,
+}
+
+impl NullEquality {
+    pub(crate) fn to_join_raw(self) -> cudf_sys::cudf_null_equality_t {
+        match self {
+            NullEquality::Equal => cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            NullEquality::Unequal => cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_UNEQUAL,
+        }
+    }
+
+    pub(crate) fn to_stream_compaction_raw(self) -> cudf_sys::cudf_stream_compaction_null_equality_t {
+        match self {
+            NullEquality::Equal => {
+                cudf_sys::cudf_stream_compaction_null_equality_t::CUDF_STREAM_COMPACTION_NULL_EQUALITY_EQUAL
+            },
+            NullEquality::Unequal => {
+                cudf_sys::cudf_stream_compaction_null_equality_t::CUDF_STREAM_COMPACTION_NULL_EQUALITY_UNEQUAL
+            },
+        }
+    }
 }
 
 /// Timestamp resolution for convenience cast methods like [`Series::to_datetime`].

@@ -4,14 +4,15 @@ use std::{ffi::c_void, ptr};
 
 use cudf::{
     Agg, AggSpec, CsvReadOptions, CsvWriteOptions, DataFrame, ErrorKind, ExecutionContext, MergeOptions,
-    ParquetReaderOptions, ParquetWriteOptions, Runtime, Series, SortOptions, core::memory::DeviceMemoryResource,
-    runtime::CudaStream,
+    ParquetReaderOptions, ParquetWriteOptions, Runtime, Series, SortOptions, runtime::CudaStream,
 };
 use cudf_sys::{
     cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
     cudf_test_exec_reset_observation,
 };
 use tempfile::TempDir;
+
+use crate::common::sample_runtime;
 
 fn assert_send_sync<T: Send + Sync>() {}
 
@@ -42,12 +43,6 @@ fn obs_current_device_resource() -> *mut c_void {
 
 fn device_ptr(df: &DataFrame, name: &str) -> *const c_void {
     df.series(name).unwrap().as_column_view().unwrap().device_data_ptr().unwrap()
-}
-
-fn sample_runtime() -> Runtime {
-    let stream = CudaStream::new().unwrap();
-    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
-    Runtime::builder().with_stream(stream).with_memory_resource(mr).build().unwrap()
 }
 
 #[test]

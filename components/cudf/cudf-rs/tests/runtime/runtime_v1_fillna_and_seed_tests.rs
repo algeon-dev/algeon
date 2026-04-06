@@ -10,11 +10,13 @@
 
 use std::{ffi::c_void, ptr};
 
-use cudf::{Column, DataFrame, Runtime, Series, TypeId, core::memory::DeviceMemoryResource, runtime::CudaStream};
+use cudf::{Column, DataFrame, Series, TypeId};
 use cudf_sys::{
     cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
     cudf_test_exec_reset_observation,
 };
+
+use crate::common::sample_runtime;
 
 fn obs_reset() {
     unsafe { cudf_test_exec_reset_observation() };
@@ -39,12 +41,6 @@ fn obs_current_device_resource() -> *mut c_void {
     let status = unsafe { cudf_test_current_device_resource_raw(&mut out) };
     assert_eq!(status, 0, "cudf_test_current_device_resource_raw failed");
     out
-}
-
-fn sample_runtime() -> Runtime {
-    let stream = CudaStream::new().unwrap();
-    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
-    Runtime::builder().with_stream(stream).with_memory_resource(mr).build().unwrap()
 }
 
 // ---------------------------------------------------------------------------
