@@ -2,7 +2,7 @@
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Is computer science one connected literature?
+### Measure the largest connected component
 
 WCC requires `directed: false`. Of the 4.15M papers that have at least one
 edge, 99.4% form a single giant component:
@@ -21,12 +21,12 @@ FROM comp;
 |---|---|---|
 | 9,751 | 4,123,602 | 4,146,772 |
 
-### Snapshot first, then explore the islands
+### Snapshot first, then examine the isolated components
 
 Component labels are assigned **per execution**, so a query that scans the
 algorithm twice can join mismatched labels. Materialize one run in the mutable
-`datafusion.public` workspace, then summarize the largest islands that never
-touch the mainland — one row per island, represented by its most-cited member:
+`datafusion.public` workspace, then summarize the largest components outside the
+giant one — one row per component, represented by its most-cited member:
 
 ```sql
 -- Local workspace snapshot; this does not write to lake.citation_network.
@@ -55,7 +55,8 @@ ORDER BY members DESC;
 | 25 | 2013 | IEICE Electronics Express | Cavity-resonator-integrated guided-mode resonance filter… |
 | 21 | 2015 | Symmetry | Inflationary Cosmology in Modified Gravity Theories |
 
-The three largest islands are a 39-paper cluster on electrical-contact arc
-discharge, a 25-paper photonics/electromagnetics cluster, and a 21-paper
-modified-gravity cosmology cluster — each citing only itself. Communities that
-publish in a corpus's blind spot show up as literal islands in the graph.
+The three largest isolated components are a 39-paper cluster on
+electrical-contact arc discharge, a 25-paper photonics/electromagnetics
+cluster, and a 21-paper modified-gravity cosmology cluster — each citing only
+itself. Communities that publish outside the corpus's main subject areas appear
+as disconnected components in the graph.

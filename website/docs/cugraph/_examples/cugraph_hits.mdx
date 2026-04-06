@@ -2,12 +2,12 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Hubs are surveys, authorities are foundations
+### Hubs versus authorities
 
 HITS returns two scores per vertex in one pass. In a citation graph they
 separate two kinds of importance that PageRank blends: a **hub** cites many
-authorities (a good survey), an **authority** is cited by many hubs (a
-foundational result). One call, two `ORDER BY`s:
+authorities (typically a survey), and an **authority** is cited by many hubs
+(typically a foundational result). One call feeds two `ORDER BY` clauses:
 
 ```sql
 SELECT p.year, p.n_references, p.title
@@ -39,7 +39,7 @@ LIMIT 4;
 | 2012 | 16,802 | ImageNet Classification with Deep Convolutional Neural Networks |
 | 2005 | 19,433 | Histograms of oriented gradients for human detection |
 
-The top hubs are literally titled "Survey" and "Review"; the top authorities
-are SIFT, VGG, AlexNet, HOG. The mutually-reinforcing definition lands both
-lists in the field with the densest hub/authority structure — computer
-vision — without being told any field labels.
+The top hubs are titled "Survey" and "Review"; the top authorities are SIFT,
+VGG, AlexNet, and HOG. The mutually reinforcing definition places both lists in
+the field with the densest hub/authority structure — computer vision — without
+any field labels supplied as input.

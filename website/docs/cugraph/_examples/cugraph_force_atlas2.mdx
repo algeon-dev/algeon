@@ -6,8 +6,8 @@ This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
 ### Lay out an ego network on the GPU
 
-Three statements build the one-hop world around *Attention Is All You Need*
-(its ~40 references, its 110 most-cited citers, and every citation among
+Three statements build the one-hop neighborhood around *Attention Is All You
+Need* (its ~40 references, its 110 most-cited citers, and every citation among
 them), and ForceAtlas2 returns drawable coordinates. A second call —
 `cugraph_louvain` on the same edge view — colors the clusters:
 
@@ -45,10 +45,10 @@ JOIN papers p ON p.paper_id = l.vertex;
 ```
 
 The figure below renders that query's actual output — 133 rows of
-`(vertex, x, y, partition, title, year)` — with no client-side layout at all;
-the browser only draws what the SQL returned. Louvain's partitions turn out
-to be readable research threads (labels assigned by inspecting each
-cluster's members):
+`(vertex, x, y, partition, title, year)` — with no client-side layout; the
+browser draws only what the SQL returned. Louvain's partitions correspond to
+distinct research threads (labels assigned by inspecting each cluster's
+members):
 
 <CitationEgoGraph />
 

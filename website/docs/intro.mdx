@@ -1,0 +1,115 @@
+---
+sidebar_position: 1
+sidebar_label: Overview
+slug: /
+description: DataFusion Nexus makes Apache DataFusion run on the GPU — SQL on cuDF, graph algorithms from cuGraph, and Iceberg lakehouse data.
+---
+
+import {OverviewDiagram} from '@site/src/components/design/Diagram';
+
+# Welcome to DataFusion Nexus
+
+**DataFusion Nexus makes [Apache DataFusion](https://datafusion.apache.org/)
+run on the GPU.** It executes SQL with
+[RAPIDS cuDF](https://docs.rapids.ai/api/cudf/stable/), adds
+[cuGraph](https://docs.rapids.ai/api/cugraph/stable/) graph algorithms you can
+call from SQL, and reads [Apache Iceberg](https://iceberg.apache.org/) and
+Parquet data.
+
+You can use it in two ways:
+
+- **As a Rust library** — embed it in your own backend service. Two builder
+  calls on a DataFusion `SessionStateBuilder` (`with_cudf_native` and, with the
+  `cugraph` feature, `with_cugraph_sql`) turn on GPU execution and graph SQL
+  for a session you already control.
+- **As a server** — run the built-in Arrow Flight SQL server and connect from
+  any Flight SQL client. See [Connecting](./cugraph/connecting.mdx) to start
+  one.
+
+Either way, Nexus requires an NVIDIA GPU with CUDA and the RAPIDS libcudf
+stack; GPU execution is its core purpose. [Build & Test](./build-and-test.md)
+covers the toolchain.
+
+## Architecture at a glance
+
+<OverviewDiagram
+  caption={<>Queries reach Nexus over Arrow Flight SQL (or in-process calls
+  when embedded). Nexus reads Iceberg metadata on the host, loads Parquet data
+  straight into GPU memory through KvikIO, executes on cuDF and cuGraph, and
+  streams Arrow record batches back up the same path.</>}
+/>
+
+## Features
+
+- **GPU SQL execution.** The parts of a query that Nexus supports execute on
+  cuDF. Under the default `GpuPreferred` policy, the remainder runs on the
+  standard DataFusion CPU path, so an unsupported operator is a fallback rather
+  than a failure. (`GpuOnly` instead turns the first unsupported fragment into a
+  planning error.)
+- **Graph algorithms in SQL.** The `cugraph_*` table functions (PageRank,
+  BFS, Louvain, ForceAtlas2, and others) behave like ordinary tables: point one
+  at an edge table or view, then filter, join, and aggregate the result.
+
+  ```sql
+  -- Top 10 vertices by PageRank, computed on the GPU.
+  -- 'edges' is any table or view with src / dst columns
+  -- (pass column names explicitly if yours differ).
+  SELECT vertex, value
+  FROM cugraph_pagerank('edges')
+  ORDER BY value DESC
+  LIMIT 10;
+  ```
+
+- **Lakehouse data access.** Query Iceberg tables from REST catalogs, AWS Glue,
+  or S3-compatible object stores. Remote catalogs remain read-only, while views
+  and scratch tables live in a mutable local workspace.
+- **Explainable planning.** Planning reports record which parts of a plan
+  executed on the GPU, which fell back to CPU, and the reason for each. Errors
+  carry stable codes and machine-readable facts rather than log messages alone.
+- **Bounded GPU memory.** Bounded mode reserves GPU memory for a query in
+  advance, so the query is admitted or rejected before it starts rather than
+  failing mid-execution.
+
+## How execution works
+
+Nexus recognizes the query fragments it supports, lowers them into the
+DataFusion-free `nexus-query-engine` plan, and executes them with cuDF.
+Fragments it does not recognize remain on the standard DataFusion CPU path, and
+a structured report records the reason. [Design](./design.mdx) describes this
+boundary in detail.
+
+## Current limitations
+
+- **No Substrait input.** Nexus integrates at the DataFusion API and
+  physical-plan boundary; Substrait plans cannot be submitted over Flight SQL.
+- **No multi-GPU queries.** Independent queries can be placed on different
+  GPUs, but a single query cannot exchange data between GPUs.
+- **Partial Iceberg merge-on-read.** Position deletes are applied natively, but
+  not on a fast path. Equality deletes and delete vectors are unsupported and
+  force CPU fallback or, under `GpuOnly`, a planning error.
+- **Parquet only.** Parquet is the only supported data file format. An
+  unsupported data type generally leaves that operator on the DataFusion CPU
+  path, but a GPU-only table-format scan leaf has no CPU reader, so an
+  unsupported type there fails planning with a structured error.
+
+## Repository layout
+
+The Cargo workspace has four members:
+
+- `datafusion-nexus` — the DataFusion-facing adapter: optimizer rule, table
+  functions, Iceberg integration, the Flight SQL server, and reports.
+- `nexus-query-engine` — the DataFusion-free native plan and GPU executor.
+- `datafusion-nexus-bench` — benchmark, report, fixture, and stress binaries.
+- `datafusion-nexus-tools` — developer and operator tools, including local
+  end-to-end runners.
+
+## Next steps
+
+- [Design](./design.mdx) — the integration surfaces, execution boundary, and
+  diagnostic contracts.
+- [cuGraph SQL API](./cugraph/overview.mdx) — discover and call the
+  `cugraph_*` table functions.
+- [Build & Test](./build-and-test.md) — commands, toolchain, and GPU test
+  lanes.
+- [Guides](./guides/benchmarks.md) — benchmark recipes and local end-to-end
+  flows.
