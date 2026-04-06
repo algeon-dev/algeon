@@ -182,8 +182,8 @@ fn test_domain_modules_export_documented_surface() {
             sorting::SortOptions as DomainSortOptions,
         },
         runtime::{
-            CudaStream as DomainCudaStream, ExecutionContext as DomainExecutionContext, Runtime as DomainRuntime,
-            RuntimeBuilder as DomainRuntimeBuilder,
+            CudaEvent as DomainCudaEvent, CudaStream as DomainCudaStream, ExecutionContext as DomainExecutionContext,
+            Runtime as DomainRuntime, RuntimeBuilder as DomainRuntimeBuilder,
         },
     };
 
@@ -202,6 +202,7 @@ fn test_domain_modules_export_documented_surface() {
     let _ = DomainGroupByOptions::builder().include_null_keys(true).build();
     let _ = DomainAggSpec::new("value", DomainAgg::Sum);
     let _ = DomainNullEquality::Equal;
+    let _ = DomainCudaEvent::new().unwrap();
     let _ = DomainCudaStream::new().unwrap();
     let _expr = cudf::ops::col("value");
 

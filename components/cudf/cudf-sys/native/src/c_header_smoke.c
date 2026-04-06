@@ -5,6 +5,15 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f1)(cudf_stream_handle*) = &cudf_stream_create;
   void (*f2)(cudf_stream_handle)           = &cudf_stream_destroy;
   cudf_status_t (*f2b)(cudf_stream_handle, void**) = &cudf_stream_raw;
+  cudf_status_t (*f2c)(cudf_event_handle*) = &cudf_event_create;
+  void (*f2d)(cudf_event_handle) = &cudf_event_destroy;
+  cudf_status_t (*f2e)(cudf_event_handle, cudf_stream_handle) = &cudf_event_record;
+  cudf_status_t (*f2f)(cudf_event_handle) = &cudf_event_synchronize;
+  cudf_status_t (*f2g)(cudf_event_handle, int32_t*) = &cudf_event_is_ready;
+  cudf_status_t (*f2h)(cudf_stream_handle, cudf_event_handle) = &cudf_stream_wait_event;
+  cudf_status_t (*f2i)(void*, void*) = &cudf_raw_cuda_event_record;
+  cudf_status_t (*f2j)(void*, void*) = &cudf_raw_cuda_stream_wait_event;
+  cudf_status_t (*f2k)(cudf_event_handle, void**) = &cudf_event_raw;
   cudf_status_t (*f3)(cudf_memory_resource_handle*) = &cudf_memory_resource_create_cuda;
   void (*f4)(cudf_memory_resource_handle)           = &cudf_memory_resource_destroy;
   cudf_status_t (*f4b)(cudf_memory_resource_handle, void**) = &cudf_memory_resource_raw;
@@ -126,10 +135,20 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f46)(int32_t*) = &cudf_cuda_get_device;
   cudf_status_t (*f47)(int32_t)  = &cudf_cuda_set_device;
   cudf_status_t (*f48)(int32_t*) = &cudf_cuda_get_device_count;
+  cudf_status_t (*f49)(const void*, int32_t*) = &cudf_cuda_pointer_get_device;
 
   (void)f1;
   (void)f2;
   (void)f2b;
+  (void)f2c;
+  (void)f2d;
+  (void)f2e;
+  (void)f2f;
+  (void)f2g;
+  (void)f2h;
+  (void)f2i;
+  (void)f2j;
+  (void)f2k;
   (void)f3;
   (void)f4;
   (void)f4b;
@@ -189,6 +208,7 @@ int cudf_rust_c_header_smoke(void)
   (void)f46;
   (void)f47;
   (void)f48;
+  (void)f49;
   (void)opts;
   return 0;
 }

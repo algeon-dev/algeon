@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "datasets": [
+    {
+      "id": "dictionary_recursive_nested_mixed",
+      "json_lines": [
+        "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}",
+        "{\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}",
+        "{\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}"
+      ],
+      "dictionary_columns": ["category"]
+    }
+  ],
+  "cases": [
+    {
+      "id": "info_dictionary_recursive_nested_mixed",
+      "dataset": "dictionary_recursive_nested_mixed",
+      "operation": {
+        "kind": "info",
+        "detail": ["columns", "null_counts", "payload_bytes", "device_allocated"]
+      },
+      "expect": {
+        "result_kind": "info_snapshot"
+      },
+      "compare": {
+        "mode": "strict"
+      }
+    },
+    {
+      "id": "schema_dictionary_recursive_nested_mixed",
+      "dataset": "dictionary_recursive_nested_mixed",
+      "operation": {
+        "kind": "schema"
+      },
+      "expect": {
+        "result_kind": "column_list"
+      },
+      "compare": {
+        "mode": "strict"
+      }
+    },
+    {
+      "id": "dtypes_dictionary_recursive_nested_mixed",
+      "dataset": "dictionary_recursive_nested_mixed",
+      "operation": {
+        "kind": "dtypes"
+      },
+      "expect": {
+        "result_kind": "column_list"
+      },
+      "compare": {
+        "mode": "strict"
+      }
+    }
+  ]
+}

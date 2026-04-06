@@ -9,6 +9,8 @@
 #include <cudf/column/column_view.hpp>
 #include <cudf/copying.hpp>
 #include <cudf/detail/null_mask.hpp>
+#include <cudf/lists/lists_column_view.hpp>
+#include <cudf/strings/detail/utilities.hpp>
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/default_stream.hpp>
@@ -410,6 +412,40 @@ cudf_status_t cudf_column_view_child(cudf_column_view_handle handle,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_column_view_list_sliced_child(
+    cudf_column_view_handle handle,
+    cudf_column_view_handle* out) {
+  return cudf_column_view_list_sliced_child_ex(handle, nullptr, out);
+}
+
+cudf_status_t cudf_column_view_list_sliced_child_ex(
+    cudf_column_view_handle handle,
+    cudf_exec_options_t const* options,
+    cudf_column_view_handle* out) {
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_TRY {
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* view = static_cast<cudf::column_view*>(handle);
+    if (view->type().id() != cudf::type_id::LIST) {
+      set_error("column is not LIST type");
+      return CUDF_ERROR_TYPE;
+    }
+
+    cudf::lists_column_view const lists{*view};
+    auto* child = new cudf::column_view(lists.get_sliced_child(exec.stream));
+    *out        = static_cast<cudf_column_view_handle>(child);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle,
                                         const void** out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -420,6 +456,57 @@ cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle,
     // data<uint8_t>() returns the base device pointer. For STRING columns
     // this is nullptr — callers should use child views instead.
     *out = view->head<uint8_t>();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_view_string_chars_ptr_and_size(
+    cudf_column_view_handle handle,
+    const void** out_ptr,
+    size_t* out_size) {
+  return cudf_column_view_string_chars_ptr_and_size_ex(handle, nullptr, out_ptr, out_size);
+}
+
+cudf_status_t cudf_column_view_string_chars_ptr_and_size_ex(
+    cudf_column_view_handle handle,
+    cudf_exec_options_t const* options,
+    const void** out_ptr,
+    size_t* out_size) {
+  CUDF_RUST_NULL_CHECK(out_ptr, "out_ptr is null");
+  CUDF_RUST_NULL_CHECK(out_size, "out_size is null");
+  *out_ptr = nullptr;
+  *out_size = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    auto* view = static_cast<cudf::column_view*>(handle);
+    if (view->type().id() != cudf::type_id::STRING) {
+      set_error("column type is not STRING");
+      return CUDF_ERROR_TYPE;
+    }
+
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    cudf::strings_column_view scv(*view);
+    auto const [first_offset, last_offset] =
+        cudf::strings::detail::get_first_and_last_offset(scv, exec.stream);
+    if (first_offset < 0 || last_offset < first_offset) {
+      set_error("string chars span is invalid");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    auto const required_prefix_bytes = static_cast<uint64_t>(last_offset);
+    if (required_prefix_bytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+      set_error("string chars span exceeds size_t range");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    *out_ptr = scv.chars_begin(exec.stream);
+    *out_size = static_cast<size_t>(required_prefix_bytes);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

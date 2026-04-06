@@ -15,7 +15,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
+import tempfile
 from typing import Any
 
 
@@ -41,13 +43,21 @@ DTYPE_CANONICAL: dict[str, str] = {
     "object": "string",
     "str": "string",
     "string": "string",
+    "category": "dictionary32",
 }
 
 
 def canonicalize_dtype(dtype_str: str) -> str:
     """Map a Python cuDF dtype string to the manifest-canonical name."""
-    canon = DTYPE_CANONICAL.get(dtype_str)
+    normalized = dtype_str.strip().lower()
+    canon = DTYPE_CANONICAL.get(normalized)
     if canon is None:
+        if normalized.startswith("list") or "listdtype" in normalized:
+            return "list"
+        if normalized.startswith("struct") or "structdtype" in normalized:
+            return "struct"
+        if normalized.startswith("categorical") or normalized == "category":
+            return "dictionary32"
         raise ValueError(f"Unmapped Python cuDF dtype: {dtype_str!r}")
     return canon
 
@@ -165,25 +175,47 @@ def _is_na(val: Any) -> bool:
 def build_dataframe(dataset: dict) -> cudf.DataFrame:
     """Construct a cudf.DataFrame from a manifest dataset definition."""
     cudf = _import_cudf()
-    columns = dataset["columns"]
-    data: dict[str, cudf.Series] = {}
-    for col_def in columns:
-        name = col_def["name"]
-        manifest_dtype = col_def["dtype"]
-        values = col_def["values"]
+    columns = dataset.get("columns", [])
+    json_lines = dataset.get("json_lines", [])
 
-        py_dtype = MANIFEST_TO_PYTHON_DTYPE.get(manifest_dtype)
-        if py_dtype is None:
-            raise ValueError(f"Unsupported manifest dtype: {manifest_dtype!r}")
+    if columns:
+        data: dict[str, cudf.Series] = {}
+        for col_def in columns:
+            name = col_def["name"]
+            manifest_dtype = col_def["dtype"]
+            values = col_def["values"]
 
-        if py_dtype == "str":
-            data[name] = cudf.Series(values, dtype="str")
-        elif py_dtype == "bool":
-            data[name] = cudf.Series(values, dtype="bool")
-        else:
-            data[name] = cudf.Series(values, dtype=py_dtype)
+            py_dtype = MANIFEST_TO_PYTHON_DTYPE.get(manifest_dtype)
+            if py_dtype is None:
+                raise ValueError(f"Unsupported manifest dtype: {manifest_dtype!r}")
 
-    return cudf.DataFrame(data)
+            if py_dtype == "str":
+                data[name] = cudf.Series(values, dtype="str")
+            elif py_dtype == "bool":
+                data[name] = cudf.Series(values, dtype="bool")
+            else:
+                data[name] = cudf.Series(values, dtype=py_dtype)
+
+        df = cudf.DataFrame(data)
+    elif json_lines:
+        temp_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
+                temp_path = handle.name
+                for line in json_lines:
+                    handle.write(line)
+                    handle.write("\n")
+            df = cudf.read_json(temp_path, lines=True)
+        finally:
+            if temp_path is not None and os.path.exists(temp_path):
+                os.unlink(temp_path)
+    else:
+        raise ValueError("Dataset must define either 'columns' or 'json_lines'")
+
+    for column_name in dataset.get("dictionary_columns", []):
+        df[column_name] = df[column_name].astype("category")
+
+    return df
 
 
 # ---------------------------------------------------------------------------

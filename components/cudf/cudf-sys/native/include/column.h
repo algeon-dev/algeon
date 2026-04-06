@@ -139,6 +139,23 @@ cudf_status_t cudf_column_view_child(cudf_column_view_handle handle,
                                      int32_t index,
                                      cudf_column_view_handle* out);
 
+/// Get the logical child column view of a LIST column with the root offset
+/// applied to the child range.
+///
+/// Returns `CUDF_ERROR_TYPE` if the input column is not LIST type.
+cudf_status_t cudf_column_view_list_sliced_child(cudf_column_view_handle handle,
+                                                 cudf_column_view_handle* out);
+
+/// Get the logical child column view of a LIST column with the root offset
+/// applied to the child range, using explicit execution options.
+///
+/// `options->mr` is ignored because this helper does not allocate output
+/// storage.
+cudf_status_t cudf_column_view_list_sliced_child_ex(
+    cudf_column_view_handle handle,
+    const cudf_exec_options_t* options,
+    cudf_column_view_handle* out);
+
 /// Copy column data to host buffer. `host_buf` must be large enough.
 /// Only valid for fixed-width types.
 cudf_status_t cudf_column_view_to_host(cudf_column_view_handle handle,
@@ -160,14 +177,36 @@ cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
 /// The pointer remains valid as long as the underlying column/table is alive.
 ///
 /// For fixed-width types the pointer addresses `size` contiguous elements.
-/// For STRING columns the data pointer is NULL — use child column views
-/// (child 0 = offsets, child 1 = chars) to access device data instead.
+/// For STRING columns the data pointer is NULL. Use child column views
+/// for offsets and a string-specific chars helper for the character buffer.
 ///
 /// The offset of the column view is NOT applied — the pointer is to the
 /// base of the device buffer. Callers working with sliced views must add
 /// `offset * element_size` manually.
 cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle,
                                         const void** out);
+
+/// Get the device pointer and active byte length for a STRING column's chars buffer.
+///
+/// Returns CUDF_ERROR_TYPE if the column is not STRING type.
+/// The returned pointer is the base of the chars child buffer. For sliced
+/// parent views, `*out_size` is trimmed so the reported byte span ends at the
+/// last byte needed by the logical slice.
+/// The returned pointer is borrowed producer-owned device memory.
+cudf_status_t cudf_column_view_string_chars_ptr_and_size(
+    cudf_column_view_handle handle,
+    const void** out_ptr,
+    size_t* out_size);
+
+/// Get the device pointer and active byte length for a STRING column's chars buffer
+/// with explicit execution options.
+///
+/// `options->mr` is ignored because this helper does not allocate output storage.
+cudf_status_t cudf_column_view_string_chars_ptr_and_size_ex(
+    cudf_column_view_handle handle,
+    const cudf_exec_options_t* options,
+    const void** out_ptr,
+    size_t* out_size);
 
 /// Get the raw device null-mask pointer of a column_view.
 ///

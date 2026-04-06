@@ -3,7 +3,10 @@
 //! Builds a `cudf::DataFrame` from a manifest [`Dataset`] definition,
 //! translating JSON values and dtype strings into GPU-resident columns.
 
-use cudf::{DataFrame, Series};
+use std::{collections::HashSet, io::Write};
+
+use cudf::{DataFrame, Series, TypeId, io::json::JsonReaderOptions, ops::dictionary};
+use tempfile::NamedTempFile;
 
 use super::manifest::Dataset;
 
@@ -15,12 +18,67 @@ use super::manifest::Dataset;
 /// - String types use `Series::from_strings_nullable`.
 /// - Bool types convert JSON bools to Rust bools and use `Series::new_nullable`.
 pub fn build_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
+    let frame = if !dataset.columns.is_empty() {
+        build_column_dataframe(dataset)?
+    } else if !dataset.json_lines.is_empty() {
+        build_json_lines_dataframe(dataset)?
+    } else {
+        return Err(cudf::Error::new(cudf::ErrorKind::InvalidOperation, "dataset must define columns or json_lines")
+            .with_operation("e2e::build_dataframe")
+            .with_context("dataset_id", dataset.id.clone()));
+    };
+
+    apply_dictionary_columns(frame, dataset)
+}
+
+fn build_column_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
     let pairs: Vec<(String, Series)> = dataset
         .columns
         .iter()
         .map(|col| {
             let series = build_series(&col.name, &col.dtype, &col.values)?;
             Ok((col.name.clone(), series))
+        })
+        .collect::<cudf::Result<Vec<_>>>()?;
+
+    DataFrame::from_series(pairs)
+}
+
+fn build_json_lines_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
+    let mut file = NamedTempFile::new().map_err(|error| {
+        cudf::Error::new(cudf::ErrorKind::IoError, error.to_string())
+            .with_operation("e2e::build_json_lines_dataframe")
+            .with_context("dataset_id", dataset.id.clone())
+    })?;
+
+    for line in &dataset.json_lines {
+        writeln!(file, "{line}").map_err(|error| {
+            cudf::Error::new(cudf::ErrorKind::IoError, error.to_string())
+                .with_operation("e2e::build_json_lines_dataframe")
+                .with_context("dataset_id", dataset.id.clone())
+        })?;
+    }
+
+    DataFrame::read_json_with_options(JsonReaderOptions::builder().filepath(file.path()).build())
+}
+
+fn apply_dictionary_columns(frame: DataFrame, dataset: &Dataset) -> cudf::Result<DataFrame> {
+    if dataset.dictionary_columns.is_empty() {
+        return Ok(frame);
+    }
+
+    let dictionary_columns: HashSet<&str> = dataset.dictionary_columns.iter().map(String::as_str).collect();
+    let names = frame.column_names().to_vec();
+    let pairs = names
+        .iter()
+        .map(|name| {
+            let series = frame.series(name)?;
+            if dictionary_columns.contains(*name) {
+                let encoded = dictionary::encode(&series.as_column_view()?, TypeId::Int32)?;
+                Ok(((*name).to_string(), Series::from_column(encoded)?.rename(*name)))
+            } else {
+                Ok(((*name).to_string(), series))
+            }
         })
         .collect::<cudf::Result<Vec<_>>>()?;
 
@@ -105,4 +163,46 @@ fn build_string_series(name: &str, values: &[serde_json::Value]) -> cudf::Result
 
     let has_nulls = validity.iter().any(|&v| !v);
     if has_nulls { Series::from_strings_nullable(name, &data, &validity) } else { Series::from_strings(name, &data) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json_lines_dataset() -> Dataset {
+        Dataset {
+            id: "dictionary_nested".into(),
+            columns: vec![],
+            json_lines: vec![
+                "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"}}".into(),
+                "{\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"}}".into(),
+            ],
+            dictionary_columns: vec!["category".into()],
+        }
+    }
+
+    #[test]
+    fn build_dataframe_supports_json_lines_with_dictionary_postprocessing() {
+        let df = build_dataframe(&json_lines_dataset()).expect("build dataframe");
+
+        assert_eq!(df.num_columns(), 3);
+        assert_eq!(df.num_rows(), 2);
+        assert_eq!(df.series("category").unwrap().dtype().unwrap().id(), TypeId::Dictionary32);
+        assert_eq!(df.series("nested").unwrap().dtype().unwrap().id(), TypeId::List);
+        assert_eq!(df.series("point").unwrap().dtype().unwrap().id(), TypeId::Struct);
+    }
+
+    #[test]
+    fn build_dataframe_rejects_dataset_without_input_source() {
+        let err = build_dataframe(&Dataset {
+            id: "empty".into(),
+            columns: vec![],
+            json_lines: vec![],
+            dictionary_columns: vec![],
+        })
+        .unwrap_err();
+
+        assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+        assert_eq!(err.operation(), "e2e::build_dataframe");
+    }
 }

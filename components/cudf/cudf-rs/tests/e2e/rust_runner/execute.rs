@@ -342,6 +342,9 @@ fn type_id_to_canonical(type_id: TypeId) -> String {
         TypeId::Float64 => "float64",
         TypeId::Bool8 => "bool8",
         TypeId::String => "string",
+        TypeId::Dictionary32 => "dictionary32",
+        TypeId::List => "list",
+        TypeId::Struct => "struct",
         other => return format!("{:?}", other).to_lowercase(),
     };
     canonical_dtype(native).to_string()
