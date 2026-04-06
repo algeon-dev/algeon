@@ -584,7 +584,7 @@ fn to_static_binding(
     // `Column`/`Table` outlives every `BufferBinding<'static>` created here.
     Ok(BufferBinding::new(
         binding.id(),
-        BoundBytes::from_raw_parts(binding.bytes().base_ptr().as_ptr(), binding.bytes().byte_len())
+        BoundBytes::from_raw_parts(binding.bytes().base_ptr() as *mut std::ffi::c_void, binding.bytes().byte_len())
             .map_err(|error| error.with_context("operation", operation))?,
         *binding.placement(),
     ))
@@ -940,7 +940,7 @@ fn interop_binding_from_prepared_binding(binding: &BufferBinding<'_>) -> cudf_sy
 
     cudf_sys::cudf_interop_buffer_binding_t {
         buffer_id: binding.id().get(),
-        data: binding.bytes().base_ptr().as_ptr() as *const _,
+        data: binding.bytes().base_ptr() as *const _,
         byte_len: binding.bytes().byte_len(),
         placement_kind,
         device,

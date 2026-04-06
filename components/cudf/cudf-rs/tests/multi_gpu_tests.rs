@@ -125,6 +125,7 @@ fn device_guard_restores_device_across_scopes() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
     let before = DeviceId::current().unwrap();
@@ -144,6 +145,7 @@ fn columns_from_different_devices_have_different_domains() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -171,8 +173,6 @@ fn columns_from_different_devices_have_different_domains() {
     // Mixing columns from different devices into one DataFrame must fail.
     let result = DataFrame::from_columns([("x", s0), ("y", s1)]);
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
-
-    common::set_current_device(device0);
 }
 
 #[test]
@@ -181,6 +181,7 @@ fn adopted_device_buffer_preserves_creation_device_provenance() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
     let buffer = DeviceBuffer::from_host_data(&[1i32, 2, 3]).unwrap();
@@ -197,8 +198,6 @@ fn adopted_device_buffer_preserves_creation_device_provenance() {
         device0.ordinal(),
         device1.ordinal()
     );
-
-    common::set_current_device(device0);
 }
 
 #[test]
@@ -207,6 +206,7 @@ fn adopted_nullable_device_buffer_preserves_creation_device_provenance() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
     let data_buffer = DeviceBuffer::from_host_data(&[10i32, 20, 30]).unwrap();
@@ -226,8 +226,6 @@ fn adopted_nullable_device_buffer_preserves_creation_device_provenance() {
         device0.ordinal(),
         device1.ordinal()
     );
-
-    common::set_current_device(device0);
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +241,7 @@ fn runtime_pinned_device_is_used_for_execution() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -301,6 +300,7 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -345,6 +345,7 @@ fn runtime_gt_scalar_mask_filter_regression() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -471,6 +472,7 @@ fn stream_records_creation_device() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -489,6 +491,7 @@ fn memory_resource_records_creation_device() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -511,6 +514,7 @@ fn builder_rejects_cross_device_stream() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -535,6 +539,7 @@ fn builder_rejects_cross_device_mr() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -554,6 +559,7 @@ fn builder_rejects_mismatched_handle_devices() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -620,6 +626,7 @@ fn runtime_expr_literal_with_columns_regression() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -650,6 +657,7 @@ fn runtime_head_tail_slice_regression() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -692,6 +700,7 @@ fn runtime_melt_regression() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -720,6 +729,7 @@ fn runtime_column_map_regression() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -743,6 +753,7 @@ fn nulls_with_runtime_executes_on_target_device() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
@@ -766,6 +777,7 @@ fn from_scalar_with_runtime_executes_on_target_device() {
         return;
     }
 
+    let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 

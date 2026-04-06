@@ -91,12 +91,23 @@ fn partitioned_dataframe_export_owned_transfer_returns_one_partition_per_retaine
 }
 
 #[test]
-fn ordinary_dataframe_rejects_mixed_provenance_at_construction() {
+fn ordinary_dataframe_rejects_mixed_provenance_but_partitioned_export_accepts_it() {
+    // Ordinary DataFrame rejects mixed provenance at construction time.
     let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7301).unwrap();
     let right = Column::from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(7302).unwrap();
     let frame = DataFrame::new(vec!["left".into(), "right".into()], vec![left, right]);
+    assert!(frame.is_err(), "DataFrame::new should reject mixed-provenance columns");
 
-    assert!(frame.is_err());
+    // The same provenance layout succeeds through the partitioned export path,
+    // which is designed to handle heterogeneous provenance by grouping columns
+    // into per-provenance partitions.
+    let left2 = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7301).unwrap();
+    let right2 = Column::from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(7302).unwrap();
+    let export = PartitionedDataFrameExport::new(vec!["left".into(), "right".into()], vec![left2, right2])
+        .expect("PartitionedDataFrameExport should accept mixed-provenance columns");
+
+    let prepared = export.try_prepare_device_partitioned_table_export().unwrap();
+    assert_eq!(prepared.partitions().len(), 2, "mixed provenance should produce two partitions");
 }
 
 #[test]

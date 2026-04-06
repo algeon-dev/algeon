@@ -406,6 +406,12 @@ pub struct Stream {
     handle: cudf_stream_handle,
 }
 
+// SAFETY: CUDA streams are opaque runtime handles that may be used from any
+// host thread. This RAII wrapper owns exactly one stream handle and destroys it
+// exactly once on drop.
+unsafe impl Send for Stream {}
+unsafe impl Sync for Stream {}
+
 impl Stream {
     pub fn new() -> Result<Self, cudf_status_t> {
         let mut handle = std::ptr::null_mut();
@@ -460,6 +466,12 @@ pub struct Event {
     handle: cudf_event_handle,
 }
 
+// SAFETY: CUDA events are opaque synchronization handles that support
+// cross-thread record/query/synchronize operations. This wrapper owns exactly
+// one event handle and destroys it exactly once on drop.
+unsafe impl Send for Event {}
+unsafe impl Sync for Event {}
+
 impl Event {
     pub fn new() -> Result<Self, cudf_status_t> {
         let mut handle = std::ptr::null_mut();
@@ -507,6 +519,12 @@ impl Drop for Event {
 pub struct MemoryResource {
     handle: cudf_memory_resource_handle,
 }
+
+// SAFETY: RMM memory-resource implementations are expected to support
+// concurrent allocation/deallocation. This RAII wrapper owns one allocator
+// handle and destroys it exactly once on drop.
+unsafe impl Send for MemoryResource {}
+unsafe impl Sync for MemoryResource {}
 
 impl MemoryResource {
     pub fn new_cuda() -> Result<Self, cudf_status_t> {
