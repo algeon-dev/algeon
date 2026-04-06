@@ -22,7 +22,7 @@ Usage:
   fixture.sh tpch generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
   fixture.sh tpcds generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
   fixture.sh clickbench fetch [--layout single|partitioned|both] [--out PATH]
-  fixture.sh iceberg rest load --workload tpch|tpcds [--scale sf1]
+  fixture.sh iceberg rest load --workload tpch|tpcds|citation_network [--scale sf1]
   fixture.sh iceberg glue-moto load --workload tpch|tpcds [--scale sf1]
 
 This is a thin router. TPC-H / TPC-DS generation (and layout optimization) live in

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Load generated benchmark Parquet into the local Iceberg REST fixture + RustFS.
+# Load generated benchmark or demo Parquet into the local Iceberg REST fixture + RustFS.
 
 set -euo pipefail
 
@@ -23,23 +23,27 @@ S3_SECRET_KEY="${RUSTFS_SECRET_KEY:-cudfadminsecret}"
 S3_REGION="${S3_REGION:-us-east-1}"
 DATA_ROOT="${DATA_ROOT:-${LOCAL_ICEBERG_DIR}/.loader-data}"
 IVY_CACHE="${IVY_CACHE:-${LOCAL_ICEBERG_DIR}/.ivy-cache}"
+CITATION_NETWORK_DATA_DIR="${CITATION_NETWORK_DATA_DIR:-${REPO_ROOT}/fixture/data/demo/citation_network/v1/parquet}"
 
 TPCH_TABLES="customer,lineitem,nation,orders,part,partsupp,region,supplier"
 TPCDS_TABLES="call_center,catalog_page,catalog_returns,catalog_sales,customer,customer_address,customer_demographics,date_dim,household_demographics,income_band,inventory,item,promotion,reason,ship_mode,store,store_returns,store_sales,time_dim,warehouse,web_page,web_returns,web_sales,web_site"
+CITATION_NETWORK_TABLES="citation_edges=edges_by_src,citation_edges_by_dst=edges_by_dst,papers=profiles_by_paper_id,paper_authors,paper_fos"
 
 usage() {
   cat <<'USAGE'
 Usage: rest_load.sh [options]
 
 Options:
-  --workload tpch|tpcds  Workload to load (default: tpch)
-  --scale N|sfN          Scale factor (default: sf1)
+  --workload tpch|tpcds|citation_network
+                         Workload to load (default: tpch)
+  --scale N|sfN          Scale factor for tpch/tpcds (default: sf1)
   --reuse-parquet        Reuse existing generated Parquet under DATA_ROOT
   -h, --help             Show this help
 
 Environment:
   DATA_ROOT, IVY_CACHE, DOCKER, SPARK_IMAGE, ICEBERG_VERSION, REST_ENDPOINT,
-  S3_ENDPOINT, WAREHOUSE, RUSTFS_ACCESS_KEY, RUSTFS_SECRET_KEY, S3_REGION.
+  S3_ENDPOINT, WAREHOUSE, RUSTFS_ACCESS_KEY, RUSTFS_SECRET_KEY, S3_REGION,
+  CITATION_NETWORK_DATA_DIR.
 USAGE
 }
 
@@ -74,16 +78,29 @@ SF="${SF#SF}"
 case "${WORKLOAD}" in
   tpch) tables="${TPCH_TABLES}" ;;
   tpcds) tables="${TPCDS_TABLES}" ;;
-  *) echo "error: unsupported --workload=${WORKLOAD}; expected tpch or tpcds" >&2; exit 2 ;;
+  citation_network|citation-network) WORKLOAD="citation_network"; tables="${CITATION_NETWORK_TABLES}" ;;
+  *) echo "error: unsupported --workload=${WORKLOAD}; expected tpch, tpcds, or citation_network" >&2; exit 2 ;;
 esac
 
-dataset_root="${DATA_ROOT}/${WORKLOAD}"
-data_dir="${dataset_root}/sf${SF}/parquet"
-namespace="${WORKLOAD}_sf${SF}"
+if [[ "${WORKLOAD}" == "citation_network" ]]; then
+  data_dir="${CITATION_NETWORK_DATA_DIR}"
+  namespace="citation_network"
+else
+  dataset_root="${DATA_ROOT}/${WORKLOAD}"
+  data_dir="${dataset_root}/sf${SF}/parquet"
+  namespace="${WORKLOAD}_sf${SF}"
+fi
 mkdir -p "${DATA_ROOT}" "${IVY_CACHE}"
 chmod 0777 "${IVY_CACHE}"
 
-if [[ "${REUSE_PARQUET}" == "1" && -d "${data_dir}" ]] && compgen -G "${data_dir}/*.parquet" >/dev/null; then
+if [[ "${WORKLOAD}" == "citation_network" ]]; then
+  if [[ ! -d "${data_dir}" ]] || ! compgen -G "${data_dir}/*.parquet" >/dev/null; then
+    echo "error: missing citation network parquet under ${data_dir}" >&2
+    echo "       regenerate it from fixture/data/demo/README.md or set CITATION_NETWORK_DATA_DIR" >&2
+    exit 2
+  fi
+  echo "[iceberg-rest-load] using citation network parquet -> ${data_dir}"
+elif [[ "${REUSE_PARQUET}" == "1" && -d "${data_dir}" ]] && compgen -G "${data_dir}/*.parquet" >/dev/null; then
   echo "[iceberg-rest-load] reusing parquet -> ${data_dir}"
 else
   echo "[iceberg-rest-load] generating ${WORKLOAD} sf${SF} parquet -> ${data_dir}"
@@ -117,4 +134,8 @@ ${DOCKER} run --rm --net host \
   --conf spark.sql.catalog.lake.client.region="${S3_REGION}" \
   /app/spark_write_iceberg.py "${namespace}" /data "${tables}"
 
-echo "[iceberg-rest-load] ${WORKLOAD} sf${SF} done"
+if [[ "${WORKLOAD}" == "citation_network" ]]; then
+  echo "[iceberg-rest-load] ${WORKLOAD} done"
+else
+  echo "[iceberg-rest-load] ${WORKLOAD} sf${SF} done"
+fi
