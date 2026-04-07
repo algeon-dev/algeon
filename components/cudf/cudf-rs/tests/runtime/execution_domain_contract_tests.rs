@@ -1,8 +1,8 @@
-//! Contract tests for retained provenance.
+//! Contract tests for execution-domain propagation.
 //!
-//! The retained-provenance substrate underpins the public `Runtime v1` surface.
+//! The execution-domain substrate underpins the public `Runtime v1` surface.
 //! These tests use `__debug_` observation hooks to validate internal
-//! provenance and synchronization behavior at the domain layer.
+//! domain propagation and synchronization behavior at the runtime layer.
 
 use std::{ffi::c_void, ptr};
 
@@ -106,33 +106,33 @@ fn owned_constructors_seed_ambient_default_domain() {
 }
 
 #[test]
-fn retained_provenance_debug_aliases_match_execution_domain_debug_hooks() {
+fn execution_domain_debug_hooks_report_consistent_metadata() {
     let runtime = sample_runtime();
-    let column = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_retained_provenance_explicit(40).unwrap();
-    let scalar = Scalar::from_value(7i32).unwrap().__debug_rebind_retained_provenance_explicit(41).unwrap();
+    let column = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(40).unwrap();
+    let scalar = Scalar::from_value(7i32).unwrap().__debug_rebind_execution_domain_explicit(41).unwrap();
     let table = Table::from_columns(vec![column.copy().unwrap()]).unwrap();
     let df = DataFrame::from_columns([("id", Series::from_column(column.copy().unwrap()).unwrap())]).unwrap();
 
-    assert_eq!(column.__debug_retained_provenance_kind(), column.__debug_execution_domain_kind());
-    assert_eq!(column.__debug_retained_provenance_id(), column.__debug_execution_domain_id());
-    assert_eq!(column.__debug_retained_provenance_stream_value(), column.__debug_execution_domain_stream_value());
-    assert_eq!(column.__debug_retained_provenance_mr_value(), column.__debug_execution_domain_mr_value());
+    assert_eq!(column.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(column.__debug_execution_domain_id(), 40);
+    assert_ne!(column.__debug_execution_domain_stream_value(), 0);
+    assert_ne!(column.__debug_execution_domain_mr_value(), 0);
 
-    assert_eq!(scalar.__debug_retained_provenance_kind(), scalar.__debug_execution_domain_kind());
-    assert_eq!(scalar.__debug_retained_provenance_id(), scalar.__debug_execution_domain_id());
-    assert_eq!(scalar.__debug_retained_provenance_stream_value(), scalar.__debug_execution_domain_stream_value());
+    assert_eq!(scalar.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(scalar.__debug_execution_domain_id(), 41);
+    assert_ne!(scalar.__debug_execution_domain_stream_value(), 0);
 
-    assert_eq!(table.__debug_retained_provenance_kind(), table.__debug_execution_domain_kind());
-    assert_eq!(table.__debug_retained_provenance_id(), table.__debug_execution_domain_id());
-    assert_eq!(table.__debug_retained_provenance_stream_value(), table.__debug_execution_domain_stream_value());
-    assert_eq!(table.__debug_retained_provenance_mr_value(), table.__debug_execution_domain_mr_value());
+    assert_eq!(table.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(table.__debug_execution_domain_id(), 40);
+    assert_eq!(table.__debug_execution_domain_stream_value(), column.__debug_execution_domain_stream_value());
+    assert_eq!(table.__debug_execution_domain_mr_value(), column.__debug_execution_domain_mr_value());
 
-    assert_eq!(df.__debug_retained_provenance_kind(), df.__debug_execution_domain_kind());
-    assert_eq!(df.__debug_retained_provenance_id(), df.__debug_execution_domain_id());
-    assert_eq!(df.__debug_retained_provenance_stream_value(), df.__debug_execution_domain_stream_value());
-    assert_eq!(df.__debug_retained_provenance_mr_value(), df.__debug_execution_domain_mr_value());
+    assert_eq!(df.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(df.__debug_execution_domain_id(), 40);
+    assert_eq!(df.__debug_execution_domain_stream_value(), column.__debug_execution_domain_stream_value());
+    assert_eq!(df.__debug_execution_domain_mr_value(), column.__debug_execution_domain_mr_value());
 
-    assert_eq!(runtime.__debug_retained_provenance_id(), runtime.__debug_execution_domain_id());
+    assert_ne!(runtime.__debug_execution_domain_id(), 0);
 }
 
 #[test]
@@ -208,7 +208,7 @@ fn dataframe_from_table_preserves_frame_and_column_domain_identity() {
 }
 
 /// [INV-CT-01] Container invariant: `DataFrame::from_columns` / `from_series` rejects columns
-/// with different retained provenance (Rule 4 -- preserved in v2).
+/// with different execution-domain identities (Rule 4 -- preserved in v2).
 #[test]
 fn dataframe_new_rejects_mixed_domain_columns() {
     let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(100).unwrap();

@@ -94,6 +94,14 @@ impl CudaStream {
         )
     }
 
+    /// Borrow this owner as a low-level `cudf-sys` stream handle.
+    ///
+    /// The returned wrapper does not transfer ownership. Its lifetime is tied
+    /// to `&self`, and only `CudaStream` remains responsible for destruction.
+    pub fn as_borrowed_sys(&self) -> cudf_sys::BorrowedStream<'_> {
+        unsafe { cudf_sys::BorrowedStream::from_raw(self.handle.raw.as_ptr()) }
+    }
+
     pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {
         self.handle.raw.as_ptr()
     }

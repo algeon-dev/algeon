@@ -5,7 +5,7 @@ use std::{
     ptr,
 };
 
-use support::{last_exec_stream_value, lock_shim_state, reset_exec_observation, stream_value};
+use support::{OwnedStream, last_exec_stream_value, lock_shim_state, reset_exec_observation, stream_value};
 
 fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
     let mut mask = vec![0u8; validity.len().div_ceil(8)];
@@ -229,8 +229,9 @@ fn empty_table_size_hooks_return_zero() {
 fn column_payload_size_ex_uses_explicit_stream_for_string_columns() {
     let _shim_state = lock_shim_state();
     let col = make_string_column(&["ab", "cde", ""]);
-    let stream = cudf_sys::Stream::new().unwrap();
-    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let stream = OwnedStream::new();
+    let borrowed_stream = stream.borrowed();
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
     let expected_stream = stream_value(stream.as_raw());
 
     reset_exec_observation();

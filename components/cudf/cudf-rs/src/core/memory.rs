@@ -108,6 +108,15 @@ impl DeviceMemoryResource {
         self.handle.device
     }
 
+    /// Borrow this owner as a low-level `cudf-sys` memory-resource handle.
+    ///
+    /// The returned wrapper does not transfer ownership. Its lifetime is tied
+    /// to `&self`, and only `DeviceMemoryResource` remains responsible for
+    /// destruction.
+    pub fn as_borrowed_sys(&self) -> cudf_sys::BorrowedMemoryResource<'_> {
+        unsafe { cudf_sys::BorrowedMemoryResource::from_raw(self.handle.raw.as_ptr()) }
+    }
+
     pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {
         self.handle.raw.as_ptr()
     }
@@ -130,6 +139,32 @@ impl DeviceMemoryResource {
         )
         .expect("failed to read raw device memory resource pointer");
         out as usize
+    }
+
+    #[doc(hidden)]
+    pub fn __test_stats() -> Result<Self> {
+        let device = DeviceId::current()?;
+        let mut handle = ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_test_memory_resource_create_stats(&mut handle) },
+            "memory::device_memory_resource::__test_stats",
+        )?;
+        Ok(Self {
+            handle: Arc::new(DeviceMemoryResourceHandle {
+                raw: NonNull::new(handle).expect("cudf_test_memory_resource_create_stats returned null on success"),
+                device,
+            }),
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn __test_allocation_count(&self) -> Result<i64> {
+        let mut out = 0_i64;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_test_memory_resource_allocation_count(self.handle.raw.as_ptr(), &mut out) },
+            "memory::device_memory_resource::__test_allocation_count",
+        )?;
+        Ok(out)
     }
 }
 

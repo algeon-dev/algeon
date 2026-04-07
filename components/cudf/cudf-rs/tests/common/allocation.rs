@@ -1,5 +1,7 @@
 use std::{ffi::c_void, ptr, sync::Mutex};
 
+use cudf::core::memory::DeviceMemoryResource;
+
 /// Serializes test-only swaps of the process-global current device resource.
 static CURRENT_DEVICE_RESOURCE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -29,13 +31,14 @@ impl Drop for CurrentDeviceResourceRestore {
 pub fn allocation_count_delta<T>(op: impl FnOnce() -> T) -> i64 {
     let _guard = CURRENT_DEVICE_RESOURCE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let previous_raw = current_device_resource_raw();
-    let stats = cudf_sys::MemoryResource::new_test_stats().expect("failed to create stats memory resource");
+    let stats = DeviceMemoryResource::__test_stats().expect("failed to create stats memory resource");
     let _restore = CurrentDeviceResourceRestore { previous_raw };
+    let borrowed = stats.as_borrowed_sys();
 
-    cudf_sys::test_set_current_device_resource(&stats).expect("failed to install stats memory resource");
+    cudf_sys::test_set_current_device_resource(&borrowed).expect("failed to install stats memory resource");
 
-    let before = stats.test_allocation_count().expect("failed to read allocation count before operation");
+    let before = stats.__test_allocation_count().expect("failed to read allocation count before operation");
     let _result = op();
-    let after = stats.test_allocation_count().expect("failed to read allocation count after operation");
+    let after = stats.__test_allocation_count().expect("failed to read allocation count after operation");
     after - before
 }
