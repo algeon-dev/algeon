@@ -273,6 +273,14 @@ pub(super) fn transfer_from_owned_table(
     table: Table,
     operation: &'static str,
 ) -> Result<OwnedTableTransfer, InteropError> {
+    transfer_from_owned_table_with_names(table, None, operation)
+}
+
+pub(super) fn transfer_from_owned_table_with_names(
+    table: Table,
+    names: Option<Vec<String>>,
+    operation: &'static str,
+) -> Result<OwnedTableTransfer, InteropError> {
     let (default_device, readiness) = prepared_device_readiness(operation, table.execution_domain())?;
     let (num_rows, columns, semantic_columns, bindings) = {
         let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
@@ -283,7 +291,7 @@ pub(super) fn transfer_from_owned_table(
     };
 
     let table_semantic =
-        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), None);
+        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
     OwnedTableTransfer::try_new_with_semantic_columns(
         table_semantic,
         columns,

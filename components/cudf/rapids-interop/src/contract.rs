@@ -105,6 +105,10 @@ impl fmt::Debug for CompletionWitness {
     }
 }
 
+/// Semantic equality: two witnesses are equal when they represent the same
+/// completion outcome (`kind`).  The backend that produced the witness is
+/// intentionally ignored because backends are trait objects without identity
+/// equality — what matters to consumers is the observable completion state.
 impl PartialEq for CompletionWitness {
     fn eq(&self, other: &Self) -> bool {
         self.kind == other.kind

@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
-use cudf::interop::{
-    ActiveLeaseActivation, ActiveLeaseBackend, CompletionBinding, IncompleteDropBehavior, InteropError,
-    LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext, LeaseReadiness, ReadStartBinding,
-    cuda_explicit_completion_required_lease_backend,
+use cudf::{
+    DataFrame, Runtime, Series,
+    interop::{
+        ActiveLeaseActivation, ActiveLeaseBackend, BorrowedColumnView, BorrowedTableView, CompletionBinding,
+        IncompleteDropBehavior, InteropError, LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext,
+        LeaseReadiness, OwnedColumnTransfer, OwnedTableTransfer, PreparedColumnExport, PreparedTableExport,
+        ReadStartBinding, cuda_explicit_completion_required_lease_backend,
+    },
 };
 
 struct TestActivation;
@@ -71,4 +75,60 @@ fn cudf_interop_exposes_cuda_explicit_completion_backend() {
     let wrapped = cuda_explicit_completion_required_lease_backend();
 
     assert_eq!(wrapped.incomplete_drop_behavior(), IncompleteDropBehavior::ExplicitCompletionRequired);
+}
+
+#[test]
+fn cudf_interop_exposes_high_level_consumer_import_adapters() {
+    fn assert_series_borrowed_import(
+        _f: for<'a, 'b> fn(&'a BorrowedColumnView<'b>, &'a Runtime) -> std::result::Result<Series, InteropError>,
+    ) {
+    }
+    fn assert_series_prepared_import(
+        _f: for<'a, 'b> fn(&'a PreparedColumnExport<'b>, &'a Runtime) -> std::result::Result<Series, InteropError>,
+    ) {
+    }
+    fn assert_series_owned_import(_f: fn(OwnedColumnTransfer) -> std::result::Result<Series, InteropError>) {}
+    fn assert_dataframe_borrowed_import(
+        _f: for<'a, 'b> fn(
+            &'a BorrowedTableView<'b>,
+            &'a Runtime,
+            Vec<String>,
+        ) -> std::result::Result<DataFrame, InteropError>,
+    ) {
+    }
+    fn assert_dataframe_prepared_import(
+        _f: for<'a, 'b> fn(&'a PreparedTableExport<'b>, &'a Runtime) -> std::result::Result<DataFrame, InteropError>,
+    ) {
+    }
+    fn assert_dataframe_prepared_import_with_names(
+        _f: for<'a, 'b> fn(
+            &'a PreparedTableExport<'b>,
+            &'a Runtime,
+            Vec<String>,
+        ) -> std::result::Result<DataFrame, InteropError>,
+    ) {
+    }
+    fn assert_dataframe_owned_import(_f: fn(OwnedTableTransfer) -> std::result::Result<DataFrame, InteropError>) {}
+    fn assert_dataframe_owned_import_with_names(
+        _f: fn(OwnedTableTransfer, Vec<String>) -> std::result::Result<DataFrame, InteropError>,
+    ) {
+    }
+
+    assert_series_borrowed_import(Series::try_from_borrowed_column_view_with_runtime);
+    assert_series_prepared_import(Series::try_from_prepared_column_export_with_runtime);
+    assert_series_owned_import(Series::try_from_owned_device_column_transfer);
+    assert_dataframe_borrowed_import(DataFrame::try_from_borrowed_table_view_with_runtime_and_names);
+    assert_dataframe_prepared_import(DataFrame::try_from_prepared_table_export_with_runtime);
+    assert_dataframe_prepared_import_with_names(DataFrame::try_from_prepared_table_export_with_runtime_and_names);
+    assert_dataframe_owned_import(DataFrame::try_from_owned_device_table_transfer);
+    assert_dataframe_owned_import_with_names(DataFrame::try_from_owned_device_table_transfer_and_names);
+}
+
+#[test]
+fn cudf_interop_exposes_high_level_owned_transfer_producers() {
+    fn assert_series_owned_producer(_f: fn(Series) -> std::result::Result<OwnedColumnTransfer, InteropError>) {}
+    fn assert_dataframe_owned_producer(_f: fn(DataFrame) -> std::result::Result<OwnedTableTransfer, InteropError>) {}
+
+    assert_series_owned_producer(Series::try_into_owned_device_column_transfer);
+    assert_dataframe_owned_producer(DataFrame::try_into_owned_device_table_transfer);
 }
