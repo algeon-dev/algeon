@@ -200,29 +200,20 @@ impl Series {
     /// `ColumnView::to_raw_bytes` and canonicalize before converting.
     fn to_optional_vec_bool<T: CudfType>(&self, cv: &ColumnView<'_>) -> Result<Vec<Option<T>>> {
         let raw = cv.to_raw_bytes()?;
+        let bool_values: Vec<Option<bool>> = match cv.validity()? {
+            None => raw.into_iter().map(|b| Some(b != 0)).collect(),
+            Some(mask) => raw.into_iter().zip(mask).map(|(b, valid)| if valid { Some(b != 0) } else { None }).collect(),
+        };
 
-        fn byte_to_bool<T: CudfType>(b: u8) -> T {
-            assert_eq!(
-                std::any::TypeId::of::<T>(),
-                std::any::TypeId::of::<bool>(),
-                "internal bool materialization helper requires T = bool",
-            );
-            debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<bool>());
-
-            let canonical = b != 0;
-            // SAFETY: The runtime type check above constrains T to bool, and
-            // the size assertion keeps the representation contract explicit.
-            unsafe { std::mem::transmute_copy::<bool, T>(&canonical) }
-        }
-
-        match cv.validity()? {
-            None => Ok(raw.into_iter().map(|b| Some(byte_to_bool(b))).collect()),
-            Some(mask) => Ok(raw
-                .into_iter()
-                .zip(mask)
-                .map(|(b, valid)| if valid { Some(byte_to_bool(b)) } else { None })
-                .collect()),
-        }
+        // Only `bool` implements `CudfType<TYPE_ID = Bool8>`. Downcasting the
+        // completed vector keeps this helper free of representation-level
+        // unsafe code while preserving the runtime assertion.
+        let boxed: Box<dyn std::any::Any> = Box::new(bool_values);
+        boxed.downcast::<Vec<Option<T>>>().map(|typed| *typed).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "internal bool materialization helper requires T = bool")
+                .with_operation("series::to_optional_vec_bool")
+                .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase())
+        })
     }
 
     /// Copy string column data to a host `Vec<String>`.

@@ -137,7 +137,7 @@ pub mod runtime;
 // — Core types (advanced — most users should prefer DataFrame/Series) —
 // — Types and error —
 pub use core::{
-    column::{Column, ColumnView, DeviceBuffer},
+    column::{Column, ColumnView, DeviceBuffer, DeviceSlice},
     error::{Error, ErrorKind, ErrorStatus, Result},
     scalar::Scalar,
     table::{Table, TableView},

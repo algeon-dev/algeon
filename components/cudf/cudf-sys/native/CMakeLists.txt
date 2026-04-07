@@ -49,7 +49,7 @@ if(DEFINED ENV{CUDF_INSTALL_DIR})
       CACHE STRING "path to libcudf install root"
   )
   set(cudf_ROOT "${CUDF_INSTALL_DIR}")
-  set(CMAKE_PREFIX_PATH ${CUDF_INSTALL_DIR} "${CUDF_INSTALL_DIR}/lib/cmake" "${CUDF_INSTALL_DIR}/lib64/cmake")
+  list(PREPEND CMAKE_PREFIX_PATH ${CUDF_INSTALL_DIR} "${CUDF_INSTALL_DIR}/lib/cmake" "${CUDF_INSTALL_DIR}/lib64/cmake")
   set(CUDF_RUST_CUDF_DISCOVERY_MODE "install")
   message(STATUS "Using dependencies from libcudf installed path: ${CUDF_INSTALL_DIR}")
 elseif(DEFINED ENV{CUDF_CPP_BUILD_DIR})
@@ -70,6 +70,19 @@ get_target_property(CUDF_CXX_FLAGS cudf::cudf CUDF_CXX_FLAGS)
 get_target_property(CUDF_CUDA_FLAGS cudf::cudf CUDF_CUDA_FLAGS)
 get_target_property(CUDF_CXX_DEFINITIONS cudf::cudf CUDF_CXX_DEFINITIONS)
 get_target_property(CUDF_CUDA_DEFINITIONS cudf::cudf CUDF_CUDA_DEFINITIONS)
+
+if("${CUDF_CXX_FLAGS}" STREQUAL "CUDF_CXX_FLAGS-NOTFOUND")
+  set(CUDF_CXX_FLAGS "")
+endif()
+if("${CUDF_CUDA_FLAGS}" STREQUAL "CUDF_CUDA_FLAGS-NOTFOUND")
+  set(CUDF_CUDA_FLAGS "")
+endif()
+if("${CUDF_CXX_DEFINITIONS}" STREQUAL "CUDF_CXX_DEFINITIONS-NOTFOUND")
+  set(CUDF_CXX_DEFINITIONS "")
+endif()
+if("${CUDF_CUDA_DEFINITIONS}" STREQUAL "CUDF_CUDA_DEFINITIONS-NOTFOUND")
+  set(CUDF_CUDA_DEFINITIONS "")
+endif()
 
 # ##################################################################################################
 # * library target --------------------------------------------------------------------------------

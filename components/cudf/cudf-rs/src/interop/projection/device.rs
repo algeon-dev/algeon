@@ -113,12 +113,8 @@ pub(super) fn prepared_column_projection_from_view<'a>(
         view.device_data_ptr().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let nullable = view.nullable().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let schema_nullability = schema_nullability(nullable);
-    let null_count = usize::try_from(
-        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "null count must be >= 0").with_context("operation", operation)
-    })?;
+    let null_count =
+        view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let null_mask_ptr =
         view.null_mask_ptr().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let active_elements = offset.checked_add(len).ok_or_else(|| {

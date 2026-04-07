@@ -1,5 +1,13 @@
-use cudf::{Column, DataFrame, Runtime, Series, Table, TypeId, ops::dictionary};
+use cudf::{
+    Column, DataFrame, Runtime, Series, Table, TypeId,
+    interop::{TryBorrowColumnView, TryBorrowTableView},
+    ops::dictionary,
+};
 use rapids_interop::{InteropErrorKind, NullMaskKind, TypeId as InteropTypeId};
+use static_assertions::assert_impl_all;
+
+assert_impl_all!(Column: TryBorrowColumnView);
+assert_impl_all!(Table: TryBorrowTableView);
 
 #[test]
 fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
@@ -76,6 +84,32 @@ fn table_view_borrow_preserves_shape_and_explicit_execution_binding() {
     assert_eq!(execution.cuda_stream().as_raw() as usize, expected_stream);
     assert_eq!(execution.cuda_stream().device(), runtime.device().ordinal() as i32);
     assert_eq!(execution.memory_resource().as_raw() as usize, expected_mr);
+}
+
+#[test]
+fn owned_column_borrow_matches_underlying_column_view_projection() {
+    let runtime = Runtime::builder().build().unwrap();
+    let column = Column::from_slice_with_runtime(&runtime, &[5i32, 6, 7]).unwrap();
+    let view = column.view().unwrap();
+
+    let borrowed_from_column = column.try_borrow_column_view().unwrap();
+    let borrowed_from_view = view.try_borrow_column_view().unwrap();
+
+    assert_eq!(borrowed_from_column, borrowed_from_view);
+}
+
+#[test]
+fn owned_table_borrow_matches_underlying_table_view_projection() {
+    let runtime = Runtime::builder().build().unwrap();
+    let a = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let b = Column::from_slice_with_runtime(&runtime, &[4i32, 5, 6]).unwrap();
+    let table = Table::from_columns(vec![a, b]).unwrap();
+    let view = table.view().unwrap();
+
+    let borrowed_from_table = table.try_borrow_table_view().unwrap();
+    let borrowed_from_view = view.try_borrow_table_view().unwrap();
+
+    assert_eq!(borrowed_from_table, borrowed_from_view);
 }
 
 #[test]

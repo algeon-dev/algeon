@@ -244,7 +244,8 @@ where T: ArrowPrimitiveMapping {
 
 /// Convert a Bool8 column to an Arrow BooleanArray.
 fn bool_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
-    let data: Vec<bool> = cv.to_vec()?;
+    // Avoid constructing Rust `bool` values directly from raw device bytes.
+    let data: Vec<bool> = cv.to_raw_bytes()?.into_iter().map(|byte| byte != 0).collect();
     let validity = cv.validity()?;
 
     match validity {

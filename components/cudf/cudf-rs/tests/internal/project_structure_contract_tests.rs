@@ -17,6 +17,7 @@ const INTERNAL_MOD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "
 const INTEROP_MOD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/interop/mod.rs"));
 const DATAFRAME_OWNED_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/frame/dataframe/owned.rs"));
 const SERIES_OWNED_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/frame/series/owned.rs"));
+const JSON_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/io/json.rs"));
 const JOIN_DATAFRAME_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ops/join/dataframe.rs"));
 const REMOVED_ROOT_MODULES: &[&str] = &[
     "arrow",
@@ -247,20 +248,52 @@ fn target_top_level_source_domains_exist() {
 }
 
 #[test]
-fn interop_domain_stays_split_across_projection_and_table_export_submodules() {
+fn interop_domain_stays_split_across_focused_submodules() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let interop_dir = manifest_dir.join("src/interop");
     let mod_rs = fs::read_to_string(interop_dir.join("mod.rs")).unwrap();
 
+    assert!(interop_dir.join("borrowed.rs").is_file(), "expected src/interop/borrowed.rs to exist");
+    assert!(interop_dir.join("column.rs").is_file(), "expected src/interop/column.rs to exist");
+    assert!(interop_dir.join("common.rs").is_file(), "expected src/interop/common.rs to exist");
+    assert!(interop_dir.join("frame.rs").is_file(), "expected src/interop/frame.rs to exist");
     assert!(interop_dir.join("projection/mod.rs").is_file(), "expected src/interop/projection/mod.rs to exist");
     assert!(interop_dir.join("projection/device.rs").is_file(), "expected src/interop/projection/device.rs to exist");
     assert!(interop_dir.join("projection/host.rs").is_file(), "expected src/interop/projection/host.rs to exist");
+    assert!(interop_dir.join("table.rs").is_file(), "expected src/interop/table.rs to exist");
     assert!(interop_dir.join("table_export.rs").is_file(), "expected src/interop/table_export.rs to exist");
+    assert!(interop_dir.join("transfer.rs").is_file(), "expected src/interop/transfer.rs to exist");
+    assert!(mod_rs.contains("mod borrowed;"), "expected interop::mod.rs to declare the borrowed submodule");
+    assert!(mod_rs.contains("mod column;"), "expected interop::mod.rs to declare the column submodule");
+    assert!(mod_rs.contains("mod common;"), "expected interop::mod.rs to declare the common submodule");
+    assert!(mod_rs.contains("mod frame;"), "expected interop::mod.rs to declare the frame submodule");
     assert!(mod_rs.contains("mod projection;"), "expected interop::mod.rs to declare the projection submodule");
+    assert!(mod_rs.contains("mod table;"), "expected interop::mod.rs to declare the table submodule");
     assert!(mod_rs.contains("mod table_export;"), "expected interop::mod.rs to declare the table_export submodule");
+    assert!(mod_rs.contains("mod transfer;"), "expected interop::mod.rs to declare the transfer submodule");
     assert!(
-        mod_rs.lines().count() < 2200,
-        "expected interop::mod.rs to stay below 2200 lines after splitting heavy projection and table-export logic",
+        mod_rs.lines().count() < 700,
+        "expected interop::mod.rs to shrink below 700 lines after splitting shared helpers and producer surfaces",
+    );
+}
+
+#[test]
+fn series_bool_materialization_does_not_use_transmute_copy() {
+    assert!(
+        !SERIES_OWNED_RS.contains("transmute_copy"),
+        "expected bool host materialization to avoid transmute_copy in src/frame/series/owned.rs"
+    );
+}
+
+#[test]
+fn json_metadata_name_collection_guards_null_name_entries() {
+    assert!(
+        JSON_RS.contains("name_ptr.is_null()"),
+        "expected JSON metadata name collection to reject null name entries before CStr::from_ptr"
+    );
+    assert!(
+        JSON_RS.contains("ffi returned null column name entry"),
+        "expected JSON metadata name collection to emit a structured null-entry error"
     );
 }
 

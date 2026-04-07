@@ -38,6 +38,8 @@ fn main() {
     rerun_if_changed_recursive(&native_dir.join("src"));
     rerun_if_changed_recursive(&native_dir.join("include"));
     println!("cargo:rerun-if-changed={}", native_dir.join("CMakeLists.txt").display());
+    println!("cargo:rerun-if-changed=build_support.rs");
+    println!("cargo:rerun-if-changed=native/cmake/cargo-link.txt.in");
     println!("cargo:rerun-if-env-changed=CUDF_INSTALL_DIR");
     println!("cargo:rerun-if-env-changed=CUDF_CPP_BUILD_DIR");
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
