@@ -424,6 +424,60 @@ fn borrowed_column_view_rejects_dictionary32_type() {
 }
 
 #[test]
+fn borrowed_column_view_accepts_binary_like_string_semantic_graph() {
+    let root = binary_like_column(1, 10, 11, 3, 1);
+    let borrowed = BorrowedColumnView::try_new_with_semantic_columns(
+        root.clone(),
+        vec![root.clone()],
+        vec![device_binding(10, 0x6000, 5 * std::mem::size_of::<i32>(), 0), device_binding(11, 0x7000, 12, 0)],
+        explicit_binding(),
+    )
+    .unwrap();
+
+    assert_eq!(borrowed.type_id(), TypeId::String);
+    assert_eq!(borrowed.element_size_bytes(), None);
+    assert_eq!(borrowed.column(), Some(&root));
+    assert_eq!(borrowed.semantic_columns(), &[root]);
+}
+
+#[test]
+fn borrowed_column_view_accepts_dictionary32_with_string_keys_semantic_graph() {
+    let root = dictionary_column(1, 10, 2, 3, 0);
+    let keys = binary_like_column(2, 11, 12, 2, 0);
+    let borrowed = BorrowedColumnView::try_new_with_semantic_columns(
+        root.clone(),
+        vec![root.clone(), keys.clone()],
+        vec![
+            device_binding(10, 0x6000, 3 * std::mem::size_of::<i32>(), 0),
+            device_binding(11, 0x7000, 3 * std::mem::size_of::<i32>(), 0),
+            device_binding(12, 0x8000, 9, 0),
+        ],
+        explicit_binding(),
+    )
+    .unwrap();
+
+    assert_eq!(borrowed.type_id(), TypeId::Dictionary32);
+    assert_eq!(borrowed.element_size_bytes(), None);
+    assert_eq!(borrowed.column(), Some(&root));
+    assert_eq!(borrowed.semantic_columns(), &[root, keys]);
+}
+
+#[test]
+fn borrowed_column_view_rejects_list_semantic_graphs_in_current_slice() {
+    let root = list_column(1, 10, 2, 2, 0);
+    let child = fixed_width_column(2, 11, 3, 0);
+    let err = BorrowedColumnView::try_new_with_semantic_columns(
+        root,
+        vec![list_column(1, 10, 2, 2, 0), child],
+        vec![device_binding(10, 0x6000, 3 * std::mem::size_of::<i32>(), 0), device_binding(11, 0x7000, 12, 0)],
+        explicit_binding(),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::UnsupportedLayout);
+}
+
+#[test]
 fn borrowed_column_view_rejects_null_data_pointer_for_non_empty_view() {
     let err = BorrowedColumnView::try_new(
         DataType::new(TypeId::Int32),

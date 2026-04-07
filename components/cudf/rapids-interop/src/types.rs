@@ -4,8 +4,9 @@ pub type Result<T> = core::result::Result<T, InteropError>;
 
 /// Logical type identifiers shared by the borrowed interop ABI.
 ///
-/// The current borrowed compatibility profile validates only the fixed-width
-/// subset of these values.
+/// The legacy raw borrowed constructor validates only the fixed-width subset.
+/// The current semantic borrowed compatibility slice additionally supports
+/// `STRING` and `DICTIONARY32`.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TypeId {

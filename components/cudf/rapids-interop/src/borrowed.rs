@@ -1,6 +1,11 @@
 use core::{ffi::c_void, marker::PhantomData, ptr::NonNull};
+use std::collections::{HashMap, HashSet};
 
-use crate::{DataType, ExecutionBinding, InteropError, InteropErrorKind, Result, TypeId};
+use crate::{
+    BufferBinding, ColumnId, ColumnLayout, DataType, ExecutionBinding, InteropError, InteropErrorKind,
+    PhysicalValidity, Result, SemanticColumn, TypeId,
+    validation::{binding_map, semantic_column_map, validate_prepared_column_against_bindings},
+};
 
 /// Distinguishes between the absence of a null mask and the presence of a null
 /// mask whose null count may still be zero.
@@ -48,32 +53,39 @@ impl<'a> NullMask<'a> {
 /// This is a low-level fact record about producer-owned memory. It does not
 /// transfer ownership, does not allocate output, and must not outlive the
 /// producer borrow that created it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BorrowedColumnView<'a> {
-    data_type: DataType,
-    len: usize,
-    offset: usize,
-    data_ptr: *const c_void,
-    null_mask: NullMask<'a>,
-    execution: ExecutionBinding<'a>,
-    _lifetime: PhantomData<&'a ()>,
-}
-
-impl<'a> BorrowedColumnView<'a> {
-    /// Validate and construct a borrowed column descriptor.
-    ///
-    /// The current borrowed compatibility profile accepts only fixed-width
-    /// types and rejects invalid physical view states such as null data
-    /// pointers for non-empty views, overflowing active ranges, misaligned
-    /// active addresses, and undersized null masks.
-    pub fn try_new(
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BorrowedColumnViewRepr<'a> {
+    RawFixedWidth {
         data_type: DataType,
         len: usize,
         offset: usize,
         data_ptr: *const c_void,
         null_mask: NullMask<'a>,
-        execution: ExecutionBinding<'a>,
-    ) -> Result<Self> {
+    },
+    Semantic {
+        column: SemanticColumn,
+        semantic_columns: Vec<SemanticColumn>,
+        bindings: Vec<BufferBinding<'a>>,
+        data_ptr: *const c_void,
+        null_mask: NullMask<'a>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BorrowedColumnView<'a> {
+    repr: BorrowedColumnViewRepr<'a>,
+    execution: ExecutionBinding<'a>,
+    _lifetime: PhantomData<&'a ()>,
+}
+
+impl<'a> BorrowedColumnView<'a> {
+    fn validate_raw_fixed_width(
+        data_type: DataType,
+        len: usize,
+        offset: usize,
+        data_ptr: *const c_void,
+        null_mask: NullMask<'a>,
+    ) -> Result<()> {
         let elem_size = data_type.id().fixed_width_size_bytes().ok_or_else(|| {
             InteropError::new(InteropErrorKind::UnsupportedType, "borrowed interop v1 supports fixed-width types only")
                 .with_context("type_id", format!("{:?}", data_type.id()).to_lowercase())
@@ -146,43 +158,239 @@ impl<'a> BorrowedColumnView<'a> {
             },
         }
 
-        Ok(Self { data_type, len, offset, data_ptr, null_mask, execution, _lifetime: PhantomData })
+        Ok(())
+    }
+
+    fn validate_supported_semantic_subset(
+        column: &SemanticColumn,
+        columns: &HashMap<ColumnId, &SemanticColumn>,
+        visited: &mut HashSet<ColumnId>,
+    ) -> Result<()> {
+        if !visited.insert(column.id()) {
+            return Ok(());
+        }
+
+        match column.layout() {
+            ColumnLayout::FixedWidth { .. } | ColumnLayout::BinaryLike { .. } => Ok(()),
+            ColumnLayout::Dictionary { keys, .. } => {
+                let keys_column = columns.get(keys).copied().ok_or_else(|| {
+                    InteropError::new(
+                        InteropErrorKind::InvalidView,
+                        "borrowed compatibility dictionary layout referenced a missing keys semantic column",
+                    )
+                    .with_context("column_id", column.id().get().to_string())
+                    .with_context("child_column_id", keys.get().to_string())
+                })?;
+                Self::validate_supported_semantic_subset(keys_column, columns, visited)
+            },
+            ColumnLayout::List { .. } | ColumnLayout::Struct { .. } => Err(InteropError::new(
+                InteropErrorKind::UnsupportedLayout,
+                "borrowed compatibility currently supports fixed-width, string, and dictionary32 semantic layouts only",
+            )
+            .with_context("column_id", column.id().get().to_string())
+            .with_context("type_id", format!("{:?}", column.data_type().id()).to_lowercase())),
+        }
+    }
+
+    /// Validate and construct a borrowed column descriptor.
+    ///
+    /// This raw constructor is the legacy fixed-width-only entry point. It
+    /// rejects invalid physical view states such as null data pointers for
+    /// non-empty views, overflowing active ranges, misaligned active
+    /// addresses, and undersized null masks.
+    pub fn try_new(
+        data_type: DataType,
+        len: usize,
+        offset: usize,
+        data_ptr: *const c_void,
+        null_mask: NullMask<'a>,
+        execution: ExecutionBinding<'a>,
+    ) -> Result<Self> {
+        Self::validate_raw_fixed_width(data_type, len, offset, data_ptr, null_mask)?;
+        Ok(Self {
+            repr: BorrowedColumnViewRepr::RawFixedWidth { data_type, len, offset, data_ptr, null_mask },
+            execution,
+            _lifetime: PhantomData,
+        })
+    }
+
+    /// Validate and construct a borrowed descriptor from a semantic column
+    /// graph plus concrete device bindings.
+    ///
+    /// This is the borrowed compatibility constructor used for the current
+    /// fixed-width, `STRING`, and `DICTIONARY32` slice. The graph must resolve
+    /// to one CUDA device that matches the provided execution binding.
+    pub fn try_new_with_semantic_columns(
+        column: SemanticColumn,
+        semantic_columns: Vec<SemanticColumn>,
+        bindings: Vec<BufferBinding<'a>>,
+        execution: ExecutionBinding<'a>,
+    ) -> Result<Self> {
+        let column_map = semantic_column_map(&semantic_columns, "column_id")?;
+        let mapped_root = column_map.get(&column.id()).copied().ok_or_else(|| {
+            InteropError::new(
+                InteropErrorKind::InvalidView,
+                "borrowed column view root must be present in the semantic column graph",
+            )
+            .with_context("column_id", column.id().get().to_string())
+        })?;
+        if mapped_root != &column {
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "borrowed column view root must match the semantic column graph entry for its column id",
+            )
+            .with_context("column_id", column.id().get().to_string()));
+        }
+
+        let binding_map = binding_map(&bindings)?;
+        let mut validated_devices = HashMap::new();
+        let producer_device = validate_prepared_column_against_bindings(
+            &column,
+            &column_map,
+            &binding_map,
+            InteropErrorKind::ExecutionBindingMismatch,
+            &mut HashSet::new(),
+            &mut validated_devices,
+        )?;
+        if validated_devices.len() != column_map.len() {
+            let unreferenced = semantic_columns
+                .iter()
+                .find(|candidate| !validated_devices.contains_key(&candidate.id()))
+                .expect("missing validated semantic column must exist");
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "borrowed column view included an unreferenced semantic column",
+            )
+            .with_context("column_id", unreferenced.id().get().to_string()));
+        }
+        if producer_device != execution.device() {
+            return Err(InteropError::new(
+                InteropErrorKind::ExecutionBindingMismatch,
+                "borrowed column view semantic graph must live on the execution CUDA device",
+            )
+            .with_context("column_id", column.id().get().to_string())
+            .with_context("producer_device", producer_device.to_string())
+            .with_context("execution_device", execution.device().to_string()));
+        }
+        Self::validate_supported_semantic_subset(&column, &column_map, &mut HashSet::new())?;
+
+        let data_ptr = match column.layout() {
+            ColumnLayout::FixedWidth { values } => {
+                binding_map.get(values).map(|binding| binding.bytes().base_ptr()).ok_or_else(|| {
+                    InteropError::new(
+                        InteropErrorKind::InvalidView,
+                        "borrowed column view fixed-width layout referenced a missing value binding",
+                    )
+                    .with_context("column_id", column.id().get().to_string())
+                    .with_context("buffer_id", values.get().to_string())
+                })?
+            },
+            ColumnLayout::BinaryLike { .. }
+            | ColumnLayout::Dictionary { .. }
+            | ColumnLayout::List { .. }
+            | ColumnLayout::Struct { .. } => core::ptr::null(),
+        };
+
+        let null_mask = match column.validity() {
+            PhysicalValidity::NoValidityBuffer => NullMask::absent(),
+            PhysicalValidity::ValidityMask { mask, null_count } => {
+                let mask_binding = binding_map.get(mask).copied().ok_or_else(|| {
+                    InteropError::new(
+                        InteropErrorKind::InvalidView,
+                        "borrowed column view referenced a missing validity binding",
+                    )
+                    .with_context("column_id", column.id().get().to_string())
+                    .with_context("buffer_id", mask.get().to_string())
+                })?;
+                let null_count = null_count.ok_or_else(|| {
+                    InteropError::new(
+                        InteropErrorKind::InvalidView,
+                        "borrowed column view root validity mask must declare a null count",
+                    )
+                    .with_context("column_id", column.id().get().to_string())
+                    .with_context("buffer_id", mask.get().to_string())
+                })?;
+                NullMask::present(mask_binding.bytes().base_ptr(), mask_binding.bytes().byte_len() * 8, null_count)?
+            },
+        };
+
+        Ok(Self {
+            repr: BorrowedColumnViewRepr::Semantic { column, semantic_columns, bindings, data_ptr, null_mask },
+            execution,
+            _lifetime: PhantomData,
+        })
     }
 
     pub fn data_type(&self) -> DataType {
-        self.data_type
+        match &self.repr {
+            BorrowedColumnViewRepr::RawFixedWidth { data_type, .. } => *data_type,
+            BorrowedColumnViewRepr::Semantic { column, .. } => column.data_type(),
+        }
     }
 
     pub fn type_id(&self) -> TypeId {
-        self.data_type.id()
+        self.data_type().id()
     }
 
     pub fn len(&self) -> usize {
-        self.len
+        match &self.repr {
+            BorrowedColumnViewRepr::RawFixedWidth { len, .. } => *len,
+            BorrowedColumnViewRepr::Semantic { column, .. } => column.len(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.len() == 0
     }
 
     pub fn offset(&self) -> usize {
-        self.offset
+        match &self.repr {
+            BorrowedColumnViewRepr::RawFixedWidth { offset, .. } => *offset,
+            BorrowedColumnViewRepr::Semantic { column, .. } => column.offset(),
+        }
     }
 
     pub fn data_ptr(&self) -> *const c_void {
-        self.data_ptr
+        match &self.repr {
+            BorrowedColumnViewRepr::RawFixedWidth { data_ptr, .. } => *data_ptr,
+            BorrowedColumnViewRepr::Semantic { data_ptr, .. } => *data_ptr,
+        }
     }
 
     pub fn null_mask(&self) -> &NullMask<'a> {
-        &self.null_mask
+        match &self.repr {
+            BorrowedColumnViewRepr::RawFixedWidth { null_mask, .. } => null_mask,
+            BorrowedColumnViewRepr::Semantic { null_mask, .. } => null_mask,
+        }
     }
 
     pub fn execution(&self) -> ExecutionBinding<'a> {
         self.execution
     }
 
-    pub fn element_size_bytes(&self) -> usize {
-        self.type_id().fixed_width_size_bytes().expect("BorrowedColumnView always holds a fixed-width type")
+    pub fn column(&self) -> Option<&SemanticColumn> {
+        match &self.repr {
+            BorrowedColumnViewRepr::RawFixedWidth { .. } => None,
+            BorrowedColumnViewRepr::Semantic { column, .. } => Some(column),
+        }
+    }
+
+    pub fn semantic_columns(&self) -> &[SemanticColumn] {
+        match &self.repr {
+            BorrowedColumnViewRepr::RawFixedWidth { .. } => &[],
+            BorrowedColumnViewRepr::Semantic { semantic_columns, .. } => semantic_columns,
+        }
+    }
+
+    pub fn bindings(&self) -> &[BufferBinding<'a>] {
+        match &self.repr {
+            BorrowedColumnViewRepr::RawFixedWidth { .. } => &[],
+            BorrowedColumnViewRepr::Semantic { bindings, .. } => bindings,
+        }
+    }
+
+    pub fn element_size_bytes(&self) -> Option<usize> {
+        self.type_id().fixed_width_size_bytes()
     }
 }
 
