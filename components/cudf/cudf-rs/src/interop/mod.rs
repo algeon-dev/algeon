@@ -1183,15 +1183,21 @@ fn import_table_from_owned_transfer(
     transfer: OwnedTableTransfer,
     operation: &'static str,
 ) -> Result<Table, InteropError> {
-    transfer.try_into_owner::<OwnedTableTransferState>().map(OwnedTableTransferState::into_table).map_err(|_| {
-        InteropError::new(
-            InteropErrorKind::ProfileUnsupported,
-            "cudf-rs owned table import requires a cudf-rs-produced owned device transfer root",
-        )
-        .with_context("operation", operation)
-        .with_context("consumer", "cudf-rs")
-        .with_context("profile", "owned_device_transfer")
-    })
+    match transfer.try_into_owner::<OwnedTableTransferState>() {
+        Ok(state) => Ok(state.into_table()),
+        Err(transfer) => match transfer.try_into_owner::<OwnedTableTransfer>() {
+            Ok(inner_transfer) => import_table_from_owned_transfer(inner_transfer, operation),
+            Err(_) => Err(
+                InteropError::new(
+                    InteropErrorKind::ProfileUnsupported,
+                    "cudf-rs owned table import requires a cudf-rs-produced owned device transfer root",
+                )
+                .with_context("operation", operation)
+                .with_context("consumer", "cudf-rs")
+                .with_context("profile", "owned_device_transfer"),
+            ),
+        },
+    }
 }
 
 fn import_column_from_prepared_export(
@@ -1382,6 +1388,35 @@ fn import_table_from_prepared_export(
         // before this match executes.
         ExportProfile::BorrowedDeviceCompatibility | ExportProfile::OwnedDeviceTransfer => unreachable!(),
     }
+}
+
+fn wrap_imported_series(column: Column, operation: &'static str) -> Result<Series, InteropError> {
+    Series::from_column(column).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))
+}
+
+fn wrap_imported_dataframe(
+    table: Table,
+    names: Vec<String>,
+    operation: &'static str,
+) -> Result<DataFrame, InteropError> {
+    DataFrame::from_table(table, names).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))
+}
+
+fn required_dataframe_import_names(
+    names: Option<&[String]>,
+    operation: &'static str,
+    explicit_variant: &'static str,
+) -> Result<Vec<String>, InteropError> {
+    names.map(|names| names.to_vec()).ok_or_else(|| {
+        InteropError::new(
+            InteropErrorKind::InvalidView,
+            format!(
+                "high-level DataFrame import requires schema names on the shared root; use {explicit_variant} when the root does not carry schema names"
+            ),
+        )
+        .with_context("operation", operation)
+        .with_context("explicit_names_variant", explicit_variant)
+    })
 }
 
 fn prepare_from_column_view<'a>(
@@ -1869,6 +1904,36 @@ impl TryIntoOwnedDeviceTableTransfer for Table {
 }
 
 impl Series {
+    /// Convenience consumer that deep-copies a shared borrowed interop column
+    /// descriptor into an unnamed high-level `Series`.
+    pub fn try_from_borrowed_column_view_with_runtime(
+        borrowed: &BorrowedColumnView<'_>,
+        runtime: &Runtime,
+    ) -> Result<Self, InteropError> {
+        let operation = "interop::Series::try_from_borrowed_column_view_with_runtime";
+        let column = Column::try_from_borrowed_column_view_with_runtime(borrowed, runtime)?;
+        wrap_imported_series(column, operation)
+    }
+
+    /// Convenience consumer that imports a shared prepared export root into an
+    /// unnamed high-level `Series`.
+    pub fn try_from_prepared_column_export_with_runtime(
+        export: &PreparedColumnExport<'_>,
+        runtime: &Runtime,
+    ) -> Result<Self, InteropError> {
+        let operation = "interop::Series::try_from_prepared_column_export_with_runtime";
+        let column = Column::try_from_prepared_column_export_with_runtime(export, runtime)?;
+        wrap_imported_series(column, operation)
+    }
+
+    /// Convenience consumer that zero-copy imports a shared owned device
+    /// transfer root into an unnamed high-level `Series`.
+    pub fn try_from_owned_device_column_transfer(transfer: OwnedColumnTransfer) -> Result<Self, InteropError> {
+        let operation = "interop::Series::try_from_owned_device_column_transfer";
+        let column = Column::try_from_owned_device_column_transfer(transfer)?;
+        wrap_imported_series(column, operation)
+    }
+
     /// Convenience producer that lends this high-level `Series` as a shared
     /// borrowed interop column view without host copies on the input path.
     ///
@@ -1932,6 +1997,75 @@ impl TryPrepareHostColumnExport for Series {
 }
 
 impl DataFrame {
+    /// Convenience consumer that deep-copies a shared borrowed interop table
+    /// descriptor into a high-level `DataFrame` using explicit caller-provided
+    /// schema names.
+    pub fn try_from_borrowed_table_view_with_runtime_and_names(
+        borrowed: &BorrowedTableView<'_>,
+        runtime: &Runtime,
+        names: Vec<String>,
+    ) -> Result<Self, InteropError> {
+        let operation = "interop::DataFrame::try_from_borrowed_table_view_with_runtime_and_names";
+        let table = Table::try_from_borrowed_table_view_with_runtime(borrowed, runtime)?;
+        wrap_imported_dataframe(table, names, operation)
+    }
+
+    /// Convenience consumer that imports a shared prepared table export root
+    /// into a high-level `DataFrame` using schema names carried on the shared
+    /// root.
+    pub fn try_from_prepared_table_export_with_runtime(
+        export: &PreparedTableExport<'_>,
+        runtime: &Runtime,
+    ) -> Result<Self, InteropError> {
+        let operation = "interop::DataFrame::try_from_prepared_table_export_with_runtime";
+        let names = required_dataframe_import_names(
+            export.table().names(),
+            operation,
+            "DataFrame::try_from_prepared_table_export_with_runtime_and_names",
+        )?;
+        let table = Table::try_from_prepared_table_export_with_runtime(export, runtime)?;
+        wrap_imported_dataframe(table, names, operation)
+    }
+
+    /// Convenience consumer that imports a shared prepared table export root
+    /// into a high-level `DataFrame` using explicit caller-provided schema
+    /// names.
+    pub fn try_from_prepared_table_export_with_runtime_and_names(
+        export: &PreparedTableExport<'_>,
+        runtime: &Runtime,
+        names: Vec<String>,
+    ) -> Result<Self, InteropError> {
+        let operation = "interop::DataFrame::try_from_prepared_table_export_with_runtime_and_names";
+        let table = Table::try_from_prepared_table_export_with_runtime(export, runtime)?;
+        wrap_imported_dataframe(table, names, operation)
+    }
+
+    /// Convenience consumer that zero-copy imports a shared owned device
+    /// transfer root into a high-level `DataFrame` using schema names carried
+    /// on the shared root.
+    pub fn try_from_owned_device_table_transfer(transfer: OwnedTableTransfer) -> Result<Self, InteropError> {
+        let operation = "interop::DataFrame::try_from_owned_device_table_transfer";
+        let names = required_dataframe_import_names(
+            transfer.table().names(),
+            operation,
+            "DataFrame::try_from_owned_device_table_transfer_and_names",
+        )?;
+        let table = Table::try_from_owned_device_table_transfer(transfer)?;
+        wrap_imported_dataframe(table, names, operation)
+    }
+
+    /// Convenience consumer that zero-copy imports a shared owned device
+    /// transfer root into a high-level `DataFrame` using explicit
+    /// caller-provided schema names.
+    pub fn try_from_owned_device_table_transfer_and_names(
+        transfer: OwnedTableTransfer,
+        names: Vec<String>,
+    ) -> Result<Self, InteropError> {
+        let operation = "interop::DataFrame::try_from_owned_device_table_transfer_and_names";
+        let table = Table::try_from_owned_device_table_transfer(transfer)?;
+        wrap_imported_dataframe(table, names, operation)
+    }
+
     /// Convenience producer that lends this high-level `DataFrame` as a shared
     /// borrowed interop table view without host copies on the input path.
     ///

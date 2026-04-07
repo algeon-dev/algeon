@@ -4,7 +4,7 @@ use cudf::{
     Column, DataFrame, Runtime, Table, TypeId,
     interop::{
         BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropErrorKind, PhysicalValidity,
-        PreparedColumnExport, ProducerReadiness, SemanticColumn,
+        OwnedTableTransfer, PreparedColumnExport, ProducerReadiness, SemanticColumn, SemanticTable,
     },
     io::json::JsonReaderOptions,
     ops::dictionary,
@@ -264,6 +264,29 @@ fn borrowed_column_view_import_copies_data_and_uses_destination_runtime() {
 }
 
 #[test]
+fn series_import_from_borrowed_column_view_returns_unnamed_series() {
+    let source_runtime = Runtime::builder().build().unwrap();
+    let source = Column::from_slice_with_runtime(&source_runtime, &[1i32, 2, 3]).unwrap();
+    let source_view = source.view().unwrap();
+    let borrowed = source_view.try_borrow_column_view().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = cudf::Series::try_from_borrowed_column_view_with_runtime(&borrowed, &destination_runtime).unwrap();
+
+    assert_eq!(imported.name(), None);
+    assert_eq!(imported.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(
+        imported.as_column().__debug_execution_domain_stream_value(),
+        destination_runtime.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        imported.as_column().__debug_execution_domain_mr_value(),
+        destination_runtime.memory_resource().__debug_raw_handle_value()
+    );
+}
+
+#[test]
 fn prepared_device_column_export_import_copies_data_and_uses_destination_runtime() {
     let source_runtime = Runtime::builder().build().unwrap();
     let source = Column::from_slice_with_runtime(&source_runtime, &[1i32, 2, 3]).unwrap();
@@ -285,6 +308,28 @@ fn prepared_device_column_export_import_copies_data_and_uses_destination_runtime
     assert_eq!(common::last_exec_device(), destination_runtime.device().ordinal() as i32);
     assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
     assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
+}
+
+#[test]
+fn series_import_from_prepared_column_export_returns_unnamed_series() {
+    let source_runtime = Runtime::builder().build().unwrap();
+    let source = Column::from_strings_with_runtime(&source_runtime, &["one", "two", "three"]).unwrap();
+    let export = source.try_prepare_device_column_export().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = cudf::Series::try_from_prepared_column_export_with_runtime(&export, &destination_runtime).unwrap();
+
+    assert_eq!(imported.name(), None);
+    assert_eq!(imported.to_strings().unwrap(), vec!["one", "two", "three"]);
+    assert_eq!(
+        imported.as_column().__debug_execution_domain_stream_value(),
+        destination_runtime.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        imported.as_column().__debug_execution_domain_mr_value(),
+        destination_runtime.memory_resource().__debug_raw_handle_value()
+    );
 }
 
 #[test]
@@ -314,6 +359,24 @@ fn prepared_host_column_export_import_copies_data_and_uses_destination_runtime()
 
     let normalized = Column::from_slice_nullable_with_runtime(&source_runtime, &[20i32, 30], &[false, true]).unwrap();
     assert_host_column_exports_equivalent(&normalized, &imported);
+}
+
+#[test]
+fn series_import_from_owned_device_column_transfer_returns_unnamed_series() {
+    let runtime = Runtime::builder().build().unwrap();
+    let column = Column::from_slice_with_runtime(&runtime, &[7i32, 8, 9]).unwrap();
+    let expected_ptr = column.view().unwrap().device_data_ptr().unwrap();
+    let expected_stream = column.__debug_execution_domain_stream_value();
+    let expected_mr = column.__debug_execution_domain_mr_value();
+
+    let transfer = column.try_into_owned_device_column_transfer().unwrap();
+    let imported = cudf::Series::try_from_owned_device_column_transfer(transfer).unwrap();
+
+    assert_eq!(imported.name(), None);
+    assert_eq!(imported.to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_eq!(imported.as_column().view().unwrap().device_data_ptr().unwrap(), expected_ptr);
+    assert_eq!(imported.as_column().__debug_execution_domain_stream_value(), expected_stream);
+    assert_eq!(imported.as_column().__debug_execution_domain_mr_value(), expected_mr);
 }
 
 #[test]
@@ -435,6 +498,29 @@ fn borrowed_table_view_import_copies_all_columns_and_uses_destination_runtime() 
 }
 
 #[test]
+fn dataframe_import_from_borrowed_table_view_with_explicit_names_uses_caller_names() {
+    let source_runtime = Runtime::builder().build().unwrap();
+    let first = Column::from_slice_with_runtime(&source_runtime, &[1i32, 2, 3]).unwrap();
+    let second = Column::from_slice_with_runtime(&source_runtime, &[10i64, 20, 30]).unwrap();
+    let source = Table::from_columns(vec![first, second]).unwrap();
+    let source_view = source.view().unwrap();
+    let borrowed = source_view.try_borrow_table_view().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = DataFrame::try_from_borrowed_table_view_with_runtime_and_names(
+        &borrowed,
+        &destination_runtime,
+        vec!["left".to_string(), "right".to_string()],
+    )
+    .unwrap();
+
+    assert_eq!(imported.column_names(), vec!["left", "right"]);
+    assert_eq!(imported.series("left").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(imported.series("right").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+}
+
+#[test]
 fn prepared_device_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime() {
     let frame = read_json_dataframe(
         "prepared_import_nested.jsonl",
@@ -473,6 +559,49 @@ fn prepared_device_table_export_import_round_trips_recursive_nested_columns_into
 }
 
 #[test]
+fn dataframe_import_from_prepared_table_export_uses_root_names_for_recursive_nested_layouts() {
+    let frame = read_json_dataframe(
+        "prepared_dataframe_import_nested.jsonl",
+        "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}\n\
+         {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}\n\
+         {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}\n",
+    );
+
+    let export_frame = frame.clone();
+    let export = export_frame.try_prepare_device_table_export().unwrap();
+    let (source_table, source_names) = frame.try_into_table().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = DataFrame::try_from_prepared_table_export_with_runtime(&export, &destination_runtime).unwrap();
+    let (imported_table, imported_names) = imported.try_into_table().unwrap();
+
+    assert_eq!(imported_names, source_names);
+    assert_host_table_exports_equivalent(&source_table, &imported_table);
+}
+
+#[test]
+fn dataframe_import_from_prepared_table_export_with_explicit_names_uses_caller_names_even_when_root_has_names() {
+    let runtime = Runtime::builder().build().unwrap();
+    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let values = cudf::Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+    let export = frame.try_prepare_device_table_export().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    let imported = DataFrame::try_from_prepared_table_export_with_runtime_and_names(
+        &export,
+        &destination_runtime,
+        vec!["left".to_string(), "right".to_string()],
+    )
+    .unwrap();
+
+    assert_eq!(imported.column_names(), vec!["left", "right"]);
+    assert_eq!(imported.series("left").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(imported.series("right").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+}
+
+#[test]
 fn prepared_host_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime() {
     let frame = read_json_dataframe(
         "prepared_host_import_nested.jsonl",
@@ -508,6 +637,99 @@ fn prepared_host_table_export_import_round_trips_recursive_nested_columns_into_d
     assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
     assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
     assert_host_table_exports_equivalent(&source, &imported);
+}
+
+#[test]
+fn dataframe_import_from_prepared_table_export_without_root_names_fails() {
+    let runtime = Runtime::builder().build().unwrap();
+    let first = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let second = Column::from_slice_with_runtime(&runtime, &[10i32, 20, 30]).unwrap();
+    let table = Table::from_columns(vec![first, second]).unwrap();
+    let export = table.try_prepare_device_table_export().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    let err = DataFrame::try_from_prepared_table_export_with_runtime(&export, &destination_runtime).unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+    assert!(err.to_string().contains("high-level DataFrame import requires schema names"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("try_from_prepared_table_export_with_runtime_and_names"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn dataframe_import_from_owned_device_table_transfer_with_explicit_names_uses_caller_names() {
+    let runtime = Runtime::builder().build().unwrap();
+    let first = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let second = Column::from_slice_with_runtime(&runtime, &[10i64, 20, 30]).unwrap();
+    let table = Table::from_columns(vec![first, second]).unwrap();
+
+    let transfer = table.try_into_owned_device_table_transfer().unwrap();
+    let imported = DataFrame::try_from_owned_device_table_transfer_and_names(
+        transfer,
+        vec!["left".to_string(), "right".to_string()],
+    )
+    .unwrap();
+
+    assert_eq!(imported.column_names(), vec!["left", "right"]);
+    assert_eq!(imported.series("left").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(imported.series("right").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+}
+
+#[test]
+fn dataframe_import_from_owned_device_table_transfer_uses_root_names_when_present() {
+    let runtime = Runtime::builder().build().unwrap();
+    let ids = cudf::Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
+    let values = cudf::Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+
+    let (expected_table, expected_names) = frame.clone().try_into_table().unwrap();
+    let (transfer_table, _) = frame.try_into_table().unwrap();
+    let transfer = transfer_table.try_into_owned_device_table_transfer().unwrap();
+    let named_transfer = owned_table_transfer_with_root_names(transfer, expected_names.clone());
+
+    let imported = DataFrame::try_from_owned_device_table_transfer(named_transfer).unwrap();
+    let (imported_table, imported_names) = imported.try_into_table().unwrap();
+
+    assert_eq!(imported_names, expected_names);
+    assert_host_table_exports_equivalent(&expected_table, &imported_table);
+}
+
+#[test]
+fn dataframe_import_from_owned_device_table_transfer_without_root_names_fails() {
+    let runtime = Runtime::builder().build().unwrap();
+    let first = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let second = Column::from_slice_with_runtime(&runtime, &[10i32, 20, 30]).unwrap();
+    let table = Table::from_columns(vec![first, second]).unwrap();
+
+    let transfer = table.try_into_owned_device_table_transfer().unwrap();
+    let err = DataFrame::try_from_owned_device_table_transfer(transfer).unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+    assert!(err.to_string().contains("high-level DataFrame import requires schema names"), "unexpected error: {err}");
+    assert!(err.to_string().contains("try_from_owned_device_table_transfer_and_names"), "unexpected error: {err}");
+}
+
+fn owned_table_transfer_with_root_names(transfer: OwnedTableTransfer, names: Vec<String>) -> OwnedTableTransfer {
+    let table = SemanticTable::new(
+        transfer.table().id(),
+        transfer.table().num_rows(),
+        transfer.table().columns().to_vec(),
+        Some(names),
+    );
+
+    OwnedTableTransfer::try_new_with_semantic_columns(
+        table,
+        transfer.columns().to_vec(),
+        transfer.semantic_columns().to_vec(),
+        transfer.bindings().to_vec(),
+        *transfer.readiness(),
+        *transfer.diagnostics(),
+        *transfer.release_contract(),
+        transfer,
+    )
+    .unwrap()
 }
 
 #[test]
