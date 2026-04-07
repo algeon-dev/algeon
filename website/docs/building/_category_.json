@@ -1,0 +1,8 @@
+{
+  "label": "Build & Test",
+  "position": 3,
+  "link": {
+    "type": "generated-index",
+    "description": "Build the full GPU stack from source — CUDA and compiler prerequisites, environment variables, upstream native libraries, and the verified test surface."
+  }
+}
