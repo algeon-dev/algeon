@@ -19,11 +19,13 @@ cargo nextest run --all-features -E 'not group(gpu)' --no-fail-fast
 flock /tmp/cudf-gpu.lock cargo nextest run --all-features -E 'group(gpu)' --no-fail-fast
 ```
 
-## GPU is a single external resource
+## GPU test serialization
 
+:::warning[GPU is a single external resource]
 Anything touching CUDA (GPU `cargo test`, the `gpu` nextest group, native
 benchmarks, execution reports) must be serialized against other GPU users —
 wrap it with `flock /tmp/cudf-gpu.lock <cmd>` when running concurrently.
+:::
 
 ## Feature flags
 

@@ -25,7 +25,7 @@ import styles from './styles.module.css';
  * by color alone.
  */
 
-export type Tone = 'plan' | 'gpu' | 'engine' | 'bridge' | 'graph' | 'foreign' | 'reject' | 'plain';
+export type Tone = 'plan' | 'gpu' | 'engine' | 'bridge' | 'graph' | 'lake' | 'foreign' | 'reject' | 'plain';
 
 export interface DiagramNode {
   /** Quiet uppercase type prefix above the name. */
@@ -61,6 +61,7 @@ const TONE: Record<Tone, string> = {
   bridge: 'var(--nx-design-bridge, #b5c400)',
   gpu: 'var(--nx-design-gpu, #76b900)',
   graph: 'var(--nx-design-graph, #2fb56b)',
+  lake: 'var(--nx-design-lake, #5fb3e4)',
   foreign: 'var(--nx-tone-foreign, #e8716d)',
   reject: 'var(--nx-design-df, #f1543f)',
   plain: 'var(--nx-dg-border-strong, #c3c9d4)',
@@ -180,8 +181,7 @@ function Arrowhead({x, y, stroke}: {x: number; y: number; stroke: string}) {
   );
 }
 
-function Figure({hint, caption, svgW, svgH, minW, interactive, ariaLabel, center, children, panel}: {
-  hint?: string;
+function Figure({caption, svgW, svgH, minW, interactive, ariaLabel, center, children, panel}: {
   caption?: React.ReactNode;
   svgW: number;
   svgH: number;
@@ -195,7 +195,6 @@ function Figure({hint, caption, svgW, svgH, minW, interactive, ariaLabel, center
   return (
     <div className={styles.figure}>
       <figure style={{margin: 0}}>
-        {hint ? <span className={styles.hint}>{hint}</span> : null}
         <div className={styles.scroll}>
           <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" role={interactive ? 'group' : undefined}
             aria-hidden={interactive ? undefined : true}
@@ -318,7 +317,10 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
     const c = byId.get(e.to)!.col;
     if (!e.label || c === 0) return;
     const straight = byId.get(e.from)!.lane === byId.get(e.to)!.lane;
-    const need = Math.ceil(textWidth(e.label, LABEL)) + (straight ? 28 : 52);
+    // Elbow labels sit at the midpoint of one leg of the gap, so the gap must
+    // be roughly twice the label width for the text to clear the target box.
+    const lw = Math.ceil(textWidth(e.label, LABEL));
+    const need = straight ? lw + 28 : 2 * lw + 48;
     gap[c] = Math.max(gap[c], need);
   });
 
@@ -367,7 +369,6 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
   return (
     <Figure caption={caption} svgW={svgW} svgH={svgH} minW={660} interactive
       ariaLabel={ariaLabel ?? 'Interactive system diagram'}
-      hint="select a stage for details"
       panel={selected?.detail ? <DetailPanel node={selected} /> : null}>
       {/* lane bands */}
       {lanes.map((lane) => {
@@ -523,9 +524,238 @@ export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
   return (
     <Figure caption={caption} svgW={svgW} svgH={y + EDGE} minW={420} interactive={interactive} center
       ariaLabel={interactive ? (ariaLabel ?? 'Interactive stack diagram') : undefined}
-      hint={interactive ? 'select a layer for details' : undefined}
       panel={selected?.detail ? <DetailPanel node={selected} /> : null}>
       {parts}
+    </Figure>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OverviewDiagram — the static "where Nexus sits" figure on the docs homepage.
+// Top-down and non-interactive, with larger type than the Design-page
+// diagrams: it is the first figure a newcomer sees, so it optimizes for
+// glanceability over information density.
+// ---------------------------------------------------------------------------
+
+const OV_KIND = {size: 11, lh: 17, track: 0.07};
+const OV_NAME = {size: 16, lh: 23};
+const OV_NOTE = {size: 13, lh: 19};
+const OV_LABEL = {size: 12, track: 0.03};
+const OV_CHIP = {size: 13.5};
+
+interface OvSpec {
+  kind: string;
+  name: string;
+  note: string;
+  tone: Tone;
+}
+
+function ovBoxSize(spec: OvSpec): {w: number; h: number} {
+  const w = Math.max(
+    textWidth(spec.kind.toUpperCase(), OV_KIND),
+    textWidth(spec.name, OV_NAME),
+    textWidth(spec.note, OV_NOTE),
+  );
+  return {w: Math.ceil(w) + 32, h: OV_KIND.lh + OV_NAME.lh + OV_NOTE.lh + 22};
+}
+
+function OvBox({cx, y, spec}: {cx: number; y: number; spec: OvSpec}) {
+  const {w, h} = ovBoxSize(spec);
+  const x = cx - w / 2;
+  const toneColor = TONE[spec.tone];
+  const tx = x + 16;
+  const top = y + 11;
+  return (
+    <g>
+      <rect x={x} y={y} width={w} height={h} rx={7} fill={COLOR.surface}
+        stroke={COLOR.border} strokeWidth={1} />
+      {spec.tone !== 'plain' ? (
+        <>
+          <rect x={x} y={y} width={w} height={h} rx={7} fill={toneColor}
+            opacity={0.06} pointerEvents="none" />
+          <line x1={x + 1.25} y1={y + 9} x2={x + 1.25} y2={y + h - 9}
+            stroke={toneColor} strokeWidth={2.5} strokeLinecap="round" />
+        </>
+      ) : null}
+      <text x={tx} y={top + OV_KIND.lh * 0.72} fontSize={OV_KIND.size}
+        letterSpacing={`${OV_KIND.track}em`}
+        fill={spec.tone === 'plain' ? COLOR.subtle : toneColor}>
+        {spec.kind.toUpperCase()}
+      </text>
+      <text x={tx} y={top + OV_KIND.lh + OV_NAME.lh * 0.72} fontSize={OV_NAME.size}
+        fontWeight={600} fill={COLOR.fg}>
+        {spec.name}
+      </text>
+      <text x={tx} y={top + OV_KIND.lh + OV_NAME.lh + OV_NOTE.lh * 0.7}
+        fontSize={OV_NOTE.size} fill={COLOR.muted}>
+        {spec.note}
+      </text>
+    </g>
+  );
+}
+
+function ovHeadDown(x: number, y: number): string {
+  return `M ${x - 4} ${y - 5} L ${x} ${y - 0.5} L ${x + 4} ${y - 5}`;
+}
+
+function ovHeadUp(x: number, y: number): string {
+  return `M ${x - 4} ${y + 5} L ${x} ${y + 0.5} L ${x + 4} ${y + 5}`;
+}
+
+function ovHeadLeft(x: number, y: number): string {
+  return `M ${x + 5} ${y - 4} L ${x + 0.5} ${y} L ${x + 5} ${y + 4}`;
+}
+
+function ovHeadRight(x: number, y: number): string {
+  return `M ${x - 5} ${y - 4} L ${x - 0.5} ${y} L ${x - 5} ${y + 4}`;
+}
+
+export function OverviewDiagram({caption}: {caption?: React.ReactNode}) {
+  const W = 800;
+  const cx = 240; // clients / API / Nexus / GPU column
+  const lakeCx = 680; // lakehouse column
+
+  // Clients group: dashed container with one chip per caller type.
+  const chips = ['web UI', 'agents', 'domain experts', 'apps'];
+  const chipH = 34;
+  const chipGap = 14;
+  const chipWs = chips.map((c) => Math.ceil(textWidth(c, OV_CHIP)) + 26);
+  const chipsW = chipWs.reduce((a, b) => a + b, 0) + chipGap * (chips.length - 1);
+  const gPad = 18;
+  const gHead = 26;
+  const gW = chipsW + gPad * 2;
+  const gX = cx - gW / 2;
+  const gY = 6;
+  const gH = gHead + chipH + gPad;
+
+  const api: OvSpec = {
+    kind: 'your backend', name: 'domain API',
+    note: 'ontology / semantic layer', tone: 'plain',
+  };
+  const nexus: OvSpec = {
+    kind: 'query layer', name: 'DataFusion Nexus',
+    note: 'embedded library or Flight SQL server', tone: 'engine',
+  };
+  const gpu: OvSpec = {
+    kind: 'execution', name: 'GPU', note: 'cuDF · cuGraph', tone: 'gpu',
+  };
+  const catalog: OvSpec = {
+    kind: 'iceberg catalog', name: 'REST / Glue',
+    note: 'table metadata', tone: 'lake',
+  };
+  const store: OvSpec = {
+    kind: 'object storage', name: 'S3 · Parquet',
+    note: 'data files', tone: 'lake',
+  };
+
+  const GROUP_HEAD = 24; // headroom for a group's corner label
+  const apiY = gY + gH + 34;
+  const apiH = ovBoxSize(api).h;
+  // Enough headroom that the Flight SQL edge label clears both the API box
+  // above it and the SAME PROCESS group border below it.
+  const nexusY = apiY + apiH + 84;
+  const nexusH = ovBoxSize(nexus).h;
+  const nexusBottom = nexusY + nexusH;
+  const gpuY = nexusBottom + 56;
+  const rowH = ovBoxSize(gpu).h;
+
+  // Two dashed containers echo the CLIENTS group: Nexus and the GPU executor
+  // share one process (cuDF/cuGraph are linked in — no service hop), and the
+  // catalog + object storage together form the lakehouse.
+  const nexusW = ovBoxSize(nexus).w;
+  const gpuW = ovBoxSize(gpu).w;
+  const procX = cx - Math.max(nexusW, gpuW) / 2 - 14;
+  const procW = Math.max(nexusW, gpuW) + 28;
+  const procY = nexusY - GROUP_HEAD - 8;
+  const procH = gpuY + rowH + 12 - procY;
+  const lakeW = Math.max(ovBoxSize(catalog).w, ovBoxSize(store).w) + 28;
+  const lakeX = lakeCx - lakeW / 2;
+
+  const H = procY + procH + 8;
+
+  const nexusRight = cx + nexusW / 2;
+  const gpuRight = cx + gpuW / 2;
+  const catLeft = lakeCx - ovBoxSize(catalog).w / 2;
+  const storeLeft = lakeCx - ovBoxSize(store).w / 2;
+  const metaY = nexusY + nexusH / 2;
+  const kvikY = gpuY + rowH / 2;
+
+  const stroke = COLOR.border;
+  const label = (x: number, y: number, text: string, anchor: 'start' | 'middle' = 'middle') => (
+    <text x={x} y={y} fontSize={OV_LABEL.size} letterSpacing={`${OV_LABEL.track}em`}
+      textAnchor={anchor} fill={COLOR.subtle}>
+      {text}
+    </text>
+  );
+  const head = (d: string) => (
+    <path d={d} fill="none" stroke={stroke} strokeWidth={1.25}
+      strokeLinecap="round" strokeLinejoin="round" />
+  );
+  const groupBox = (x: number, w: number, name: string) => (
+    <>
+      <rect x={x} y={procY} width={w} height={procH} rx={9} fill="none"
+        stroke={stroke} strokeWidth={1} strokeDasharray="5 4" />
+      <text x={x + 14} y={procY + 17} fontSize={OV_KIND.size}
+        letterSpacing={`${OV_KIND.track}em`} fill={COLOR.subtle}>
+        {name}
+      </text>
+    </>
+  );
+
+  return (
+    <Figure caption={caption} svgW={W} svgH={H} minW={560} center>
+      {/* clients group */}
+      <rect x={gX} y={gY} width={gW} height={gH} rx={9} fill="none"
+        stroke={stroke} strokeWidth={1} strokeDasharray="5 4" />
+      <text x={gX + 14} y={gY + 17} fontSize={OV_KIND.size}
+        letterSpacing={`${OV_KIND.track}em`} fill={COLOR.subtle}>
+        CLIENTS
+      </text>
+      {chips.map((chip, i) => {
+        const x = gX + gPad + chipWs.slice(0, i).reduce((a, b) => a + b, 0) + i * chipGap;
+        return (
+          <g key={chip}>
+            <rect x={x} y={gY + gHead} width={chipWs[i]} height={chipH} rx={6}
+              fill={COLOR.surface} stroke={stroke} strokeWidth={1} />
+            <text x={x + chipWs[i] / 2} y={gY + gHead + chipH / 2 + 4.5}
+              fontSize={OV_CHIP.size} textAnchor="middle" fill={COLOR.fg}>
+              {chip}
+            </text>
+          </g>
+        );
+      })}
+      {/* clients <-> domain API (queries down, results back up) */}
+      <line x1={cx} y1={gY + gH} x2={cx} y2={apiY - 1} stroke={stroke} strokeWidth={1} />
+      {head(ovHeadDown(cx, apiY))}
+      {head(ovHeadUp(cx, gY + gH))}
+      <OvBox cx={cx} y={apiY} spec={api} />
+      {/* domain API <-> nexus */}
+      <line x1={cx} y1={apiY + apiH} x2={cx} y2={nexusY - 1} stroke={stroke} strokeWidth={1} />
+      {head(ovHeadDown(cx, nexusY))}
+      {head(ovHeadUp(cx, apiY + apiH))}
+      {label(cx + 12, (apiY + apiH + procY) / 2 + 4, 'Arrow Flight SQL / in-process', 'start')}
+      {/* same-process group: nexus + gpu executor */}
+      {groupBox(procX, procW, 'SAME PROCESS')}
+      <OvBox cx={cx} y={nexusY} spec={nexus} />
+      {/* nexus <-> gpu (plans down, record batches back up) */}
+      <line x1={cx} y1={nexusBottom} x2={cx} y2={gpuY - 1} stroke={stroke} strokeWidth={1} />
+      {head(ovHeadDown(cx, gpuY))}
+      {head(ovHeadUp(cx, nexusBottom))}
+      {label(cx + 12, (nexusBottom + gpuY) / 2 + 4, 'native plans', 'start')}
+      <OvBox cx={cx} y={gpuY} spec={gpu} />
+      {/* lakehouse group: catalog + object storage */}
+      {groupBox(lakeX, lakeW, 'LAKEHOUSE')}
+      <OvBox cx={lakeCx} y={nexusY} spec={catalog} />
+      <OvBox cx={lakeCx} y={gpuY} spec={store} />
+      {/* nexus -> catalog (host-side metadata) */}
+      <line x1={nexusRight} y1={metaY} x2={catLeft - 1} y2={metaY} stroke={stroke}
+        strokeWidth={1} strokeDasharray="5 4" />
+      {head(ovHeadRight(catLeft, metaY))}
+      {label((nexusRight + catLeft) / 2, metaY - 8, 'catalog · metadata')}
+      {/* storage -> gpu (KvikIO data path) */}
+      <line x1={storeLeft} y1={kvikY} x2={gpuRight + 1} y2={kvikY} stroke={stroke} strokeWidth={1} />
+      {head(ovHeadLeft(gpuRight, kvikY))}
+      {label((gpuRight + storeLeft) / 2, kvikY - 8, 'KvikIO')}
     </Figure>
   );
 }

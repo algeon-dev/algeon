@@ -58,7 +58,7 @@ import {StackDiagram} from '@site/src/components/design/Diagram';
 **Frontmatter.** Common fields used in this site:
 
 - `sidebar_position` — orders the page within its sidebar group (lower first).
-- `slug` — overrides the URL path (e.g. `slug: /` makes `intro.md` the homepage).
+- `slug` — overrides the URL path (e.g. `slug: /` makes `intro.mdx` the homepage).
 - `description` — short summary for SEO and generated category index pages.
 
 **Sidebar.** The sidebar is auto-generated from the `docs/` tree

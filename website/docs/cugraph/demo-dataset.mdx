@@ -4,7 +4,7 @@ sidebar_label: Demo dataset
 description: The DBLP / AMiner citation network used by every runnable example in this section.
 ---
 
-# Citation network demo dataset
+# Demo dataset: Citation network
 
 The per-algorithm **Examples** in this section all run against one dataset: the
 [DBLP / AMiner Citation Network V12](https://www.kaggle.com/datasets/mathurinache/citation-network-dataset)
@@ -14,10 +14,13 @@ support substantive queries: every vertex is a paper with a title, year, venue,
 authors, and fields of study, so every algorithm result can be joined back to
 human-readable metadata.
 
+:::note[Website examples use local Iceberg REST]
 The examples were re-run against the local Iceberg REST catalog backed by
-RustFS on a single NVIDIA RTX PRO 6000 (96 GB VRAM). The same SQL can still
-read direct local Parquet tables, but the primary demo path is the Iceberg
-namespace used below.
+RustFS on a single NVIDIA RTX PRO 6000 (96 GB VRAM). That machine is the
+validation host, not the minimum requirement: this citation-network demo also
+runs on an 8 GB VRAM GPU. The same SQL can still read direct local Parquet
+tables, but the primary demo path is the Iceberg namespace used below.
+:::
 
 ## Tables
 
@@ -65,12 +68,14 @@ NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,pape
 flock /tmp/cudf-gpu.lock bash scripts/run_server.sh
 ```
 
+:::note[Keep example DDL in the local workspace]
 The workspace overlay makes unqualified names such as `citation_edges` and
 `papers` resolve through to `lake.citation_network.*`, while interactive DDL
 stays local to `datafusion.public`. Prefer `CREATE VIEW` for SQL-defined
 subgraphs. Use `CREATE TABLE ... AS` only when an example explicitly needs a
 stable local snapshot of non-deterministic algorithm labels; it does not write
 back to the Iceberg source catalog.
+:::
 
 For direct-Parquet debugging without the REST catalog, start the server with
 Iceberg disabled and register the same logical names manually:
@@ -83,9 +88,11 @@ CREATE EXTERNAL TABLE paper_authors STORED AS PARQUET LOCATION '<data>/parquet/p
 CREATE EXTERNAL TABLE paper_fos STORED AS PARQUET LOCATION '<data>/parquet/paper_fos.parquet';
 ```
 
+:::note[AWS Glue is not the default website path]
 AWS Glue can serve the same table layout for remote demos, but it requires an
 AWS account, a warehouse bucket, and credential setup. The local REST catalog is
 the reproducible path for the website examples.
+:::
 
 ## The two-table pattern
 

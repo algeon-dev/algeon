@@ -126,7 +126,7 @@ function EgoCanvas(): React.ReactElement {
           defaultEdgeColor: edgeColor,
           labelColor: {color: dark ? '#e6e1cf' : '#0b0b0b'},
           labelFont: 'inherit',
-          labelSize: 13,
+          labelSize: 17,
           defaultDrawNodeHover: (context, node, settings) => {
             drawNodeHover(context, node, settings, dark);
           },

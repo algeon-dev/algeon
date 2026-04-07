@@ -23,10 +23,12 @@ FROM comp;
 
 ### Snapshot first, then examine the isolated components
 
+:::note[Snapshot component labels before reusing them]
 Component labels are assigned **per execution**, so a query that scans the
 algorithm twice can join mismatched labels. Materialize one run in the mutable
 `datafusion.public` workspace, then summarize the largest components outside the
-giant one — one row per component, represented by its most-cited member:
+giant one — one row per component, represented by its most-cited member.
+:::
 
 ```sql
 -- Local workspace snapshot; this does not write to lake.citation_network.

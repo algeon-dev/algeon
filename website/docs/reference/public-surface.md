@@ -14,5 +14,7 @@ These are public contracts — treat them as stable:
 - The closed `Error` / `ErrorCode` categories and structured `Facts` in
   `src/error.rs`.
 
-> This page is a scaffold. Expand each contract with its schema and versioning
-> notes.
+:::note[Scaffold]
+This page is a scaffold. Expand each contract with its schema and versioning
+notes.
+:::

@@ -75,5 +75,7 @@ compatibility; validate JSON option names, types, and values; enforce
 conditional requirements (for example, BFS path mode needs a target relation);
 and compute the concrete output schema.
 
-**Does not:** scan edge rows, materialize Parquet, build the graph, launch CUDA,
-or prove the source vertex or target row actually exists.
+:::warning[Validation is not execution]
+Validation does not scan edge rows, materialize Parquet, build the graph, launch
+CUDA, or prove the source vertex or target row actually exists.
+:::

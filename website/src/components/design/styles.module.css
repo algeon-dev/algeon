@@ -1,20 +1,10 @@
 /* Design-page diagram framing. The diagrams themselves are SVG with a
    computed layout (see Diagram.tsx); this file styles the figure shell
-   (hint, scroll container, caption), node interactivity, and the HTML
+   (scroll container, caption), node interactivity, and the HTML
    detail panel below each interactive diagram. */
 
 .figure {
   margin: 2.4rem 0;
-}
-
-.hint {
-  display: block;
-  margin-bottom: 0.55rem;
-  font-family: var(--nx-dg-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.05em;
-  text-align: right;
-  color: var(--nx-dg-fg-subtle);
 }
 
 /* Wide diagrams scale down to the SVG's minWidth, then scroll here instead of
