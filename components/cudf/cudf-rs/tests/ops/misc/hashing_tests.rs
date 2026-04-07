@@ -1,6 +1,10 @@
 //! Tests for hashing functions.
 
-use cudf::{Column, Table, TypeId, ops::hashing};
+use cudf::{
+    TypeId,
+    core::{Column, Table},
+    ops::hashing,
+};
 
 #[test]
 fn test_murmurhash3_i32_column() {

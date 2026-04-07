@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use cudf::{
-    Column, DataFrame, Runtime, Table, TypeId,
+    DataFrame, Runtime, TypeId,
+    core::{Column, Table},
     interop::{
         BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropErrorKind, OwnedTableTransfer,
         PhysicalValidity, PreparedColumnExport, ProducerReadiness, SemanticColumn, SemanticTable,

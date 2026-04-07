@@ -234,9 +234,10 @@ impl Column {
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedColumnExport::try_activate_read_lease`].
     ///
-    /// Borrowed interop is also available directly on [`crate::Column`] via
-    /// [`crate::Column::try_borrow_column_view`] when you need the borrowed
-    /// compatibility descriptor instead of a prepared export.
+    /// Borrowed interop is also available directly on
+    /// [`crate::core::Column`] via
+    /// [`crate::core::Column::try_borrow_column_view`] when you need the
+    /// borrowed compatibility descriptor instead of a prepared export.
     pub fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
         <Self as TryPrepareDeviceColumnExport>::try_prepare_device_column_export(self)
     }

@@ -22,8 +22,8 @@ use std::{
 };
 
 use cudf::{
-    Agg, AggSpec, Column, DataFrame, Scalar, Series, SortOptions, Table,
-    core::memory::DeviceMemoryResource,
+    Agg, AggSpec, DataFrame, Series, SortOptions,
+    core::{Column, Scalar, Table, memory::DeviceMemoryResource},
     runtime::{CudaEvent, CudaStream},
 };
 use static_assertions::assert_not_impl_any;
@@ -102,8 +102,8 @@ fn cuda_event_can_record_wait_and_synchronize() {
 // exactly what we want to guard against.
 // ===========================================================================
 
-assert_not_impl_any!(cudf::ColumnView<'static>: Send, Sync);
-assert_not_impl_any!(cudf::TableView<'static>: Send, Sync);
+assert_not_impl_any!(cudf::core::ColumnView<'static>: Send, Sync);
+assert_not_impl_any!(cudf::core::TableView<'static>: Send, Sync);
 
 // NOTE: The authoritative negative test is that the following code DOES NOT
 // compile (verified manually and kept here as the authoritative example):
@@ -382,14 +382,13 @@ async fn join_inside_spawn_blocking() {
 // ===========================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dataframe_filter_by_mask_in_spawn_blocking() {
+async fn dataframe_filter_in_spawn_blocking() {
     let df = sample_df();
     let result = tokio::task::spawn_blocking(move || -> cudf::Result<Vec<i32>> {
         // Build a boolean mask: score > 20.0
         let score_series = df.series("score")?;
         let mask_series = score_series.gt_scalar(20.0f64)?;
-        let mask_view = mask_series.as_column_view()?;
-        let filtered = df.filter_by_mask(&mask_view)?;
+        let filtered = df.filter(&mask_series)?;
 
         // Materialize filtered ids to host.
         let ids = filtered.series("id").unwrap().to_vec::<i32>()?;

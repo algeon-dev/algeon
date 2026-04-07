@@ -7,7 +7,7 @@ use arrow::{
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf::{Column, DataFrame, TypeId};
+use cudf::{DataFrame, TypeId, core::Column};
 
 // ---------------------------------------------------------------------------
 // Round-trip: DataFrame → RecordBatch → DataFrame

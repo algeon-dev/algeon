@@ -312,7 +312,7 @@ fn materialize_column_values(series: &cudf::Series, type_id: TypeId) -> Result<V
 
 /// Materialize a fixed-width numeric column with null support.
 fn materialize_numeric<T: cudf::CudfType>(
-    cv: &cudf::ColumnView<'_>,
+    cv: &cudf::core::ColumnView<'_>,
     validity: &Option<Vec<bool>>,
     to_json: impl Fn(T) -> serde_json::Value,
 ) -> Result<Vec<serde_json::Value>, ExecutionError> {

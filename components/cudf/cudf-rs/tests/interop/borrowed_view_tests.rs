@@ -1,5 +1,6 @@
 use cudf::{
-    Column, DataFrame, Runtime, Series, Table, TypeId,
+    DataFrame, Runtime, Series, TypeId,
+    core::{Column, Table},
     interop::{ColumnLayout, TryBorrowColumnView, TryBorrowTableView},
     ops::dictionary,
 };

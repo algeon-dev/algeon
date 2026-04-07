@@ -7,7 +7,10 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{Column, Table, ops::join};
+//! use cudf::{
+//!     core::{Column, Table},
+//!     ops::join,
+//! };
 //!
 //! let left_key = Column::from_slice(&[1i32, 2, 3]).unwrap();
 //! let left_val = Column::from_slice(&[10i32, 20, 30]).unwrap();

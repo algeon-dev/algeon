@@ -1,6 +1,6 @@
 //! Tests for string column creation and reading.
 
-use cudf::{Column, Series, TypeId};
+use cudf::{Series, TypeId, core::Column};
 
 #[test]
 fn test_from_strings_basic() {

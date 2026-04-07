@@ -272,7 +272,7 @@ fn create_single_column_table_raw(data: &[i32]) -> cudf_sys::cudf_table_handle {
 
 fn explicit_i32_series(name: &str, data: &[i32], identity: u64) -> cudf::Series {
     cudf::Series::from_column(
-        cudf::Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
+        cudf::core::Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
     )
     .unwrap()
     .rename(name)
@@ -280,7 +280,7 @@ fn explicit_i32_series(name: &str, data: &[i32], identity: u64) -> cudf::Series 
 
 fn explicit_i64_series(name: &str, data: &[i64], identity: u64) -> cudf::Series {
     cudf::Series::from_column(
-        cudf::Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
+        cudf::core::Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
     )
     .unwrap()
     .rename(name)
@@ -927,7 +927,10 @@ fn gather_with_execution_context_rejects_ambient_default_promotion() {
 fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
     let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 506))]).unwrap();
     let mask = cudf::Series::from_column(
-        cudf::Column::from_slice(&[true, false, true]).unwrap().__debug_rebind_execution_domain_explicit(506).unwrap(),
+        cudf::core::Column::from_slice(&[true, false, true])
+            .unwrap()
+            .__debug_rebind_execution_domain_explicit(506)
+            .unwrap(),
     )
     .unwrap()
     .rename("mask");
@@ -980,7 +983,7 @@ fn filter_with_execution_context_rejects_ambient_default_promotion() {
 /// results in the default stream being observed.
 #[test]
 fn column_copy_default_uses_default_stream() {
-    let col = cudf::Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = cudf::core::Column::from_slice(&[1i32, 2, 3]).unwrap();
 
     let default_stream = obs_default_stream();
 

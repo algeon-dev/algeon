@@ -1,6 +1,6 @@
 //! Tests for `SortOptions` and the high-level `DataFrame::sort_values`.
 
-use cudf::{Column, DataFrame, ErrorKind, Series, SortOptions};
+use cudf::{DataFrame, ErrorKind, Series, SortOptions, core::Column};
 
 use crate::common::sample_df;
 

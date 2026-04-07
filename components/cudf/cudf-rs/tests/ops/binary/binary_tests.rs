@@ -1,7 +1,8 @@
 //! Tests for binary operations (numeric and string).
 
 use cudf::{
-    Column, DataType, Scalar, TypeId,
+    DataType, TypeId,
+    core::{Column, Scalar},
     ops::binary::{self, BinaryOperator},
 };
 

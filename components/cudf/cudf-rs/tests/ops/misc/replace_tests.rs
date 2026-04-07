@@ -1,7 +1,8 @@
 //! Tests for CU-4: replace_nulls (fillna), forward fill, and backward fill.
 
 use cudf::{
-    Column, Scalar, Series,
+    Series,
+    core::{Column, Scalar},
     ops::replace::{self, FillPolicy},
 };
 

@@ -1,8 +1,8 @@
-//! Tests for runtime-aware `fillna_with_series` and ambient constructor variants.
+//! Tests for explicit placement before `fillna_with_series` and ambient constructor variants.
 //!
 //! Coverage:
-//! - `DataFrame::fillna_with_series_with_runtime` — explicit context override
-//! - `Series::fillna_with_series_with_runtime` — explicit context override
+//! - `DataFrame::copy_into_runtime` + `fillna_with_series` — explicit placement
+//! - `Series::copy_into_runtime` + `fillna_with_series` — explicit placement
 //! - `DataFrame::fillna_with_series` — v2: mixed-domain default path succeeds
 //! - `Series::fillna_with_series` — v2: mixed-domain default path succeeds
 //! - `Column::empty_with_runtime` — retains explicit domain
@@ -10,7 +10,7 @@
 
 use std::{ffi::c_void, ptr};
 
-use cudf::{Column, DataFrame, Series, TypeId};
+use cudf::{DataFrame, Series, TypeId, core::Column};
 use cudf_sys::{
     cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
     cudf_test_exec_reset_observation,
@@ -44,14 +44,14 @@ fn obs_current_device_resource() -> *mut c_void {
 }
 
 // ---------------------------------------------------------------------------
-// fillna_with_series_with_runtime — DataFrame
+// copy_into_runtime + fillna_with_series — DataFrame
 // ---------------------------------------------------------------------------
 
 /// Left DataFrame in domain A, fill series in domain B, target runtime C.
-/// The `_with_runtime` variant overrides execution context to the target
-/// runtime's domain.
+/// Explicit placement makes the target runtime step visible before
+/// `fillna_with_series` runs.
 #[test]
-fn df_fillna_with_series_with_runtime_overrides_mixed_domains() {
+fn df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
     let target_rt = sample_runtime();
@@ -66,9 +66,11 @@ fn df_fillna_with_series_with_runtime_overrides_mixed_domains() {
     // Fill series in domain B.
     let fill = Series::new_with_runtime(&rt_b, "fill", &[99i32, 99, 99]).unwrap();
 
-    // With target runtime, should succeed with context override.
+    let df = df.copy_into_runtime(&target_rt).unwrap();
+    let fill = fill.copy_into_runtime(&target_rt).unwrap();
+
     obs_reset();
-    let result = df.fillna_with_series_with_runtime("val", &fill, &target_rt).unwrap();
+    let result = df.fillna_with_series("val", &fill).unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());
@@ -108,7 +110,7 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 
 /// Both inputs already in the same runtime — no copy needed.
 #[test]
-fn df_fillna_with_series_with_runtime_same_domain_works() {
+fn df_fillna_after_copy_into_runtime_same_domain_works() {
     let rt = sample_runtime();
     let df = DataFrame::from_series([
         ("id", Series::new_with_runtime(&rt, "id", &[1i32, 2, 3]).unwrap()),
@@ -118,20 +120,21 @@ fn df_fillna_with_series_with_runtime_same_domain_works() {
     let fill = Series::new_with_runtime(&rt, "fill", &[99i32, 99, 99]).unwrap();
 
     obs_reset();
-    let result = df.fillna_with_series_with_runtime("val", &fill, &rt).unwrap();
+    let result =
+        df.copy_into_runtime(&rt).unwrap().fillna_with_series("val", &fill.copy_into_runtime(&rt).unwrap()).unwrap();
 
     assert_eq!(result.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
     assert_eq!(result.series("val").unwrap().to_vec::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
 // ---------------------------------------------------------------------------
-// fillna_with_series_with_runtime — Series
+// copy_into_runtime + fillna_with_series — Series
 // ---------------------------------------------------------------------------
 
 /// Same as the DataFrame test but at the Series level.
-/// The `_with_runtime` variant overrides execution context.
+/// Explicit placement makes the target runtime step visible.
 #[test]
-fn series_fillna_with_series_with_runtime_overrides_mixed_domains() {
+fn series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
     let target_rt = sample_runtime();
@@ -139,9 +142,11 @@ fn series_fillna_with_series_with_runtime_overrides_mixed_domains() {
     let series = Series::new_nullable_with_runtime(&rt_a, "val", &[10i32, 0, 30], &[true, false, true]).unwrap();
     let fill = Series::new_with_runtime(&rt_b, "fill", &[99i32, 99, 99]).unwrap();
 
-    // With runtime, succeeds with context override.
+    let series = series.copy_into_runtime(&target_rt).unwrap();
+    let fill = fill.copy_into_runtime(&target_rt).unwrap();
+
     obs_reset();
-    let result = series.fillna_with_series_with_runtime(&fill, &target_rt).unwrap();
+    let result = series.fillna_with_series(&fill).unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());

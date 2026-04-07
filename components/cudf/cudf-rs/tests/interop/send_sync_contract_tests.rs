@@ -1,8 +1,8 @@
 use std::thread;
 
 use cudf::{
-    Column, DataFrame, DeviceId, Runtime, Series,
-    core::column::DeviceSlice,
+    DataFrame, DeviceId, Runtime, Series,
+    core::{Column, column::DeviceSlice},
     interop::{
         BorrowedColumnView, BorrowedTableView, CompletionWitnessKind, OwnedColumnTransfer, OwnedTableTransfer,
         PreparedColumnExport, PreparedTableExport, ProducerReadiness, RuntimeCompletionAuthority,

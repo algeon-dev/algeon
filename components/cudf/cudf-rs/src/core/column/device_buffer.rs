@@ -39,7 +39,10 @@ fn current_device_snapshot() -> i32 {
 /// # Example
 ///
 /// ```no_run
-/// use cudf::{Column, DeviceBuffer, TypeId};
+/// use cudf::{
+///     TypeId,
+///     core::{Column, DeviceBuffer},
+/// };
 ///
 /// // Upload host data to a device buffer (this copies from host to GPU).
 /// let buf = DeviceBuffer::from_host_data(&[1i32, 2, 3]).unwrap();

@@ -13,7 +13,7 @@ use crate::{
         },
     },
     ops::{join, replace},
-    runtime::{Runtime, execution_context::ExecutionContext, execution_domain::ExecutionDomain},
+    runtime::{execution_context::ExecutionContext, execution_domain::ExecutionDomain},
 };
 
 impl DataFrame {
@@ -31,23 +31,6 @@ impl DataFrame {
             output_domain.explicit_exec_options_raw(),
             Some(output_domain),
             "dataframe::merge_with_context",
-        )
-    }
-
-    /// Merge using a target runtime to recover mixed input domains.
-    pub fn merge_with_runtime(
-        &self,
-        right: &DataFrame,
-        options: join::MergeOptions,
-        runtime: &Runtime,
-    ) -> Result<Self> {
-        let output_domain = Arc::clone(runtime.execution_domain());
-        self.merge_impl(
-            right,
-            options,
-            output_domain.explicit_exec_options_raw(),
-            Some(output_domain),
-            "dataframe::merge_with_runtime",
         )
     }
 
@@ -74,42 +57,6 @@ impl DataFrame {
         }
 
         let output_domain = ctx.resolve_output_domain(self.execution_domain())?;
-        let exec_options = output_domain.explicit_exec_options_raw();
-        self.join_split_on_impl_with_null_eq_and_context(
-            right,
-            &left_on_refs,
-            &right_on_refs,
-            options.join_type(),
-            options.null_eq(),
-            exec_options.as_ref(),
-            Some(output_domain),
-            operation,
-        )
-    }
-
-    /// Merge-split using a target runtime to recover mixed input domains.
-    pub fn merge_split_with_runtime(
-        &self,
-        right: &DataFrame,
-        options: join::MergeOptions,
-        runtime: &Runtime,
-    ) -> Result<DataFrameJoinResult> {
-        let operation: &'static str = "dataframe::merge_split_with_runtime";
-        let (left_on_strs, right_on_strs, _shared_keys) = resolve_merge_keys(&options, operation)?;
-        let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
-        let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
-
-        if left_on_refs.len() != right_on_refs.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "left_on and right_on must have the same number of key columns",
-            )
-            .with_operation(operation)
-            .with_context("left_on_count", left_on_refs.len().to_string())
-            .with_context("right_on_count", right_on_refs.len().to_string()));
-        }
-
-        let output_domain = Arc::clone(runtime.execution_domain());
         let exec_options = output_domain.explicit_exec_options_raw();
         self.join_split_on_impl_with_null_eq_and_context(
             right,

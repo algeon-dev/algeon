@@ -6,7 +6,10 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{Column, Table, ops::hashing};
+//! use cudf::{
+//!     core::{Column, Table},
+//!     ops::hashing,
+//! };
 //!
 //! let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
 //! let table = Table::from_columns(vec![col]).unwrap();

@@ -163,7 +163,10 @@ fn distinct_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Column, Table, ops::stream_compaction};
+/// use cudf::{
+///     core::{Column, Table},
+///     ops::stream_compaction,
+/// };
 ///
 /// let c0 = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
 ///     .unwrap();
@@ -187,7 +190,7 @@ pub fn drop_nulls(input: &TableView<'_>, keys: &[i32], keep_threshold: i32) -> R
 /// # Example
 /// ```no_run
 /// use cudf::{
-///     Column, Table,
+///     core::{Column, Table},
 ///     ops::stream_compaction::{
 ///         self, DuplicateKeepOption, NanEquality, NullEquality,
 ///     },

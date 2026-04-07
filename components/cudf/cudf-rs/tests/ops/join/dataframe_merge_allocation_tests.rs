@@ -1,4 +1,4 @@
-use cudf::{Column, DataFrame, MergeOptions};
+use cudf::{DataFrame, MergeOptions, core::Column};
 
 use crate::allocation::allocation_count_delta;
 

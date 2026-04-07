@@ -1,6 +1,6 @@
 //! Tests for `DataFrame::merge_split`.
 
-use cudf::{Column, DataFrame, DataFrameJoinResult, ExecutionContext, MergeOptions, NullEquality, Series};
+use cudf::{DataFrame, DataFrameJoinResult, ExecutionContext, MergeOptions, NullEquality, Series, core::Column};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,

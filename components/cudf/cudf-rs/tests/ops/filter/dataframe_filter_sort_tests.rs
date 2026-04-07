@@ -1,6 +1,8 @@
-//! Tests for DataFrame filter, filter_isin, sort, deduplicate.
+//! Tests for DataFrame high-level filter, filter_isin, sort, deduplicate.
 
-use cudf::{Column, DataFrame, DistinctOptions, DropNaOptions, DuplicateKeepOption, ErrorKind, Series, SortOptions};
+use cudf::{
+    DataFrame, DistinctOptions, DropNaOptions, DuplicateKeepOption, ErrorKind, Series, SortOptions, core::Column,
+};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
@@ -15,9 +17,8 @@ use crate::common::{
 fn test_filter_basic() {
     let df = sample_df();
     // Keep rows where id > 2: rows 0 (3), 2 (4), 4 (5)
-    let mask_col = Column::from_slice(&[true, false, true, false, true]).unwrap();
-    let mask = mask_col.view().unwrap();
-    let filtered = df.filter_by_mask(&mask).unwrap();
+    let mask = Series::new::<bool>("mask", &[true, false, true, false, true]).unwrap();
+    let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
     assert_eq!(filtered.series("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
@@ -27,9 +28,8 @@ fn test_filter_basic() {
 #[test]
 fn test_filter_preserves_schema() {
     let df = sample_df();
-    let mask_col = Column::from_slice(&[true, true, true, true, true]).unwrap();
-    let mask = mask_col.view().unwrap();
-    let filtered = df.filter_by_mask(&mask).unwrap();
+    let mask = Series::new::<bool>("mask", &[true, true, true, true, true]).unwrap();
+    let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
     assert_eq!(filtered.column_index("id"), Some(0));
@@ -39,9 +39,8 @@ fn test_filter_preserves_schema() {
 #[test]
 fn test_filter_all_false() {
     let df = sample_df();
-    let mask_col = Column::from_slice(&[false, false, false, false, false]).unwrap();
-    let mask = mask_col.view().unwrap();
-    let filtered = df.filter_by_mask(&mask).unwrap();
+    let mask = Series::new::<bool>("mask", &[false, false, false, false, false]).unwrap();
+    let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
@@ -54,9 +53,8 @@ fn test_filter_all_false() {
 #[test]
 fn test_filter_isin_basic() {
     let df = sample_df(); // ids: 3,1,4,1,5
-    let values = Column::from_slice(&[1i32, 5]).unwrap();
-    let values_view = values.view().unwrap();
-    let filtered = df.filter_isin_by_column_view("id", &values_view).unwrap();
+    let values = Series::new::<i32>("values", &[1, 5]).unwrap();
+    let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 3); // rows with id 1,1,5
     let mut ids = filtered.series("id").unwrap().to_vec::<i32>().unwrap();
@@ -67,9 +65,8 @@ fn test_filter_isin_basic() {
 #[test]
 fn test_filter_isin_no_matches() {
     let df = sample_df(); // ids: 3,1,4,1,5
-    let values = Column::from_slice(&[99i32, 100]).unwrap();
-    let values_view = values.view().unwrap();
-    let filtered = df.filter_isin_by_column_view("id", &values_view).unwrap();
+    let values = Series::new::<i32>("values", &[99, 100]).unwrap();
+    let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
 }
@@ -77,9 +74,8 @@ fn test_filter_isin_no_matches() {
 #[test]
 fn test_filter_isin_all_match() {
     let df = sample_df(); // ids: 3,1,4,1,5
-    let values = Column::from_slice(&[1i32, 3, 4, 5]).unwrap();
-    let values_view = values.view().unwrap();
-    let filtered = df.filter_isin_by_column_view("id", &values_view).unwrap();
+    let values = Series::new::<i32>("values", &[1, 3, 4, 5]).unwrap();
+    let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 5);
 }
@@ -87,9 +83,8 @@ fn test_filter_isin_all_match() {
 #[test]
 fn test_filter_isin_preserves_schema() {
     let df = sample_df();
-    let values = Column::from_slice(&[1i32]).unwrap();
-    let values_view = values.view().unwrap();
-    let filtered = df.filter_isin_by_column_view("id", &values_view).unwrap();
+    let values = Series::new::<i32>("values", &[1]).unwrap();
+    let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
     assert_eq!(filtered.column_index("id"), Some(0));
@@ -99,9 +94,8 @@ fn test_filter_isin_preserves_schema() {
 #[test]
 fn test_filter_isin_nonexistent_column() {
     let df = sample_df();
-    let values = Column::from_slice(&[1i32]).unwrap();
-    let values_view = values.view().unwrap();
-    let result = df.filter_isin_by_column_view("nonexistent", &values_view);
+    let values = Series::new::<i32>("values", &[1]).unwrap();
+    let result = df.filter_isin("nonexistent", &values);
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
@@ -110,9 +104,8 @@ fn test_filter_isin_nonexistent_column() {
 #[test]
 fn test_filter_isin_float64() {
     let df = sample_df(); // scores: 30.0, 10.0, 40.0, 15.0, 50.0
-    let values = Column::from_slice(&[10.0f64, 50.0]).unwrap();
-    let values_view = values.view().unwrap();
-    let filtered = df.filter_isin_by_column_view("score", &values_view).unwrap();
+    let values = Series::new::<f64>("values", &[10.0, 50.0]).unwrap();
+    let filtered = df.filter_isin("score", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 2);
     let mut scores = filtered.series("score").unwrap().to_vec::<f64>().unwrap();
@@ -123,15 +116,14 @@ fn test_filter_isin_float64() {
 #[test]
 fn test_filter_isin_empty_values() {
     let df = sample_df();
-    let values = Column::from_slice::<i32>(&[]).unwrap();
-    let values_view = values.view().unwrap();
-    let filtered = df.filter_isin_by_column_view("id", &values_view).unwrap();
+    let values = Series::new::<i32>("values", &[]).unwrap();
+    let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
 }
 
 #[test]
-fn test_filter_isin_by_column_view_succeeds_with_mixed_domains_and_syncs_secondary_input_before_dataframe_exec() {
+fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_syncs_secondary_input_before_dataframe_exec() {
     let df_rt = sample_runtime();
     let values_rt = sample_runtime();
     let df = DataFrame::from_series([
@@ -139,13 +131,13 @@ fn test_filter_isin_by_column_view_succeeds_with_mixed_domains_and_syncs_seconda
         ("score", Series::new_with_runtime(&df_rt, "score", &[100i32, 200, 300]).unwrap()),
     ])
     .unwrap();
-    let values = Column::from_slice_with_runtime(&values_rt, &[20i32, 30]).unwrap();
+    let values = Series::new_with_runtime(&values_rt, "values", &[20i32, 30]).unwrap();
     let expected_exec_stream = df.__debug_execution_domain_stream_value();
     let expected_exec_mr = df.__debug_execution_domain_mr_value();
-    let expected_presync_stream = values.__debug_execution_domain_stream_value();
+    let expected_presync_stream = values.as_column().__debug_execution_domain_stream_value();
 
     reset_exec_observation();
-    let filtered = df.filter_isin_by_column_view("id", &values.view().unwrap()).unwrap();
+    let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.__debug_execution_domain_id(), df.__debug_execution_domain_id());
     assert_eq!(filtered.__debug_execution_domain_mr_value(), expected_exec_mr);

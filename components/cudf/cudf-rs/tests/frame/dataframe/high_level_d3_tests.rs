@@ -5,7 +5,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataFrame, DuplicateKeepOption, ErrorKind, Scalar, Series};
+use cudf::{DataFrame, DuplicateKeepOption, ErrorKind, Series, core::Scalar};
 
 // ===========================================================================
 // Helpers

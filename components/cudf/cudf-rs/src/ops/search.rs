@@ -42,7 +42,7 @@ fn contains_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Column, ops::search};
+/// use cudf::{core::Column, ops::search};
 ///
 /// let haystack = Column::from_slice(&[10i32, 20, 30]).unwrap();
 /// let needles = Column::from_slice(&[20i32, 40]).unwrap();

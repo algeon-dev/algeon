@@ -1,6 +1,6 @@
 //! Tests for DataFrame concat, copy, rename, select.
 
-use cudf::{Column, DataFrame, ErrorKind, Series};
+use cudf::{DataFrame, ErrorKind, Series, core::Column};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,

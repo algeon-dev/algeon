@@ -46,7 +46,10 @@ fn gather_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Column, Table, ops::copying};
+/// use cudf::{
+///     core::{Column, Table},
+///     ops::copying,
+/// };
 ///
 /// let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
 /// let table = Table::from_columns(vec![col]).unwrap();
@@ -99,7 +102,10 @@ pub(crate) fn gather_with_exec_options(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Column, Table, ops::copying};
+/// use cudf::{
+///     core::{Column, Table},
+///     ops::copying,
+/// };
 ///
 /// let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
 /// let table = Table::from_columns(vec![col]).unwrap();

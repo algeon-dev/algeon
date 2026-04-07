@@ -1,7 +1,8 @@
 //! Tests for reduction and scan operations.
 
 use cudf::{
-    Column, DataType, Series, TypeId,
+    DataType, Series, TypeId,
+    core::Column,
     ops::reduction::{self, NullPolicy, ReduceAggregation, ScanAggregation, ScanType},
 };
 

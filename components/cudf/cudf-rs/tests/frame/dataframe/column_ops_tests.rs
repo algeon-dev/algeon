@@ -1,6 +1,9 @@
 //! Tests for DataFrame column-level convenience.
 
-use cudf::{Column, DataFrame, DataType, ErrorKind, Scalar, TypeId};
+use cudf::{
+    DataFrame, DataType, ErrorKind, TypeId,
+    core::{Column, Scalar},
+};
 
 // ---------------------------------------------------------------------------
 // Column-level convenience (with_column, fillna_with_scalar, cast_column)

@@ -1,6 +1,6 @@
 //! Tests for ColumnView::map() — value mapping via left join.
 
-use cudf::{Column, TypeId};
+use cudf::{TypeId, core::Column};
 
 #[test]
 fn test_map_string_to_int() {

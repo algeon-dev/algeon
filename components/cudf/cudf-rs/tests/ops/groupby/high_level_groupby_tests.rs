@@ -1,7 +1,7 @@
 //! Tests for the `DataFrame::groupby` high-level API: `GroupBy`, `Agg`, `AggSpec`,
 //! `GroupByOptions`.
 
-use cudf::{Agg, AggSpec, Column, DataFrame, ErrorKind};
+use cudf::{Agg, AggSpec, DataFrame, ErrorKind, core::Column};
 
 use crate::common::assert_missing_column_error;
 
@@ -584,14 +584,14 @@ fn groupby_new_agg_alias() {
 #[test]
 fn groupby_domain_module_exports_documented_surface() {
     use cudf::{
-        Table,
-        ops::groupby::{Aggregation, AggregationRequest, GroupByResult, NullPolicy, groupby_aggregate},
+        core::Table,
+        ops::groupby::{Agg, AggregationRequest, GroupByResult, NullPolicy, groupby_aggregate},
     };
 
     let keys = Table::from_columns(vec![Column::from_slice(&[1i32, 2, 1, 2]).unwrap()]).unwrap();
     let values = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let value_view = values.view().unwrap();
-    let aggs = [Aggregation::Sum];
+    let aggs = [Agg::Sum];
     let requests = [AggregationRequest { values: &value_view, aggregations: &aggs }];
 
     let result: GroupByResult = groupby_aggregate(&keys.view().unwrap(), &requests, NullPolicy::Exclude).unwrap();

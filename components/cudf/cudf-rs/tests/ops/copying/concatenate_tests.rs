@@ -1,6 +1,9 @@
 //! Tests for concatenation operations.
 
-use cudf::{Column, Table, ops::concatenate};
+use cudf::{
+    core::{Column, Table},
+    ops::concatenate,
+};
 
 use crate::common::{
     explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,

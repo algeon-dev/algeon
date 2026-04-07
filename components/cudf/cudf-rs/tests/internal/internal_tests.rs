@@ -6,13 +6,13 @@
 //!
 //! Direct unit tests for the helpers live inside `src/internal/mod.rs`.
 
-use cudf::{Column, DataFrame, DistinctOptions, DuplicateKeepOption, Series};
+use cudf::{DataFrame, DistinctOptions, DuplicateKeepOption, Series, core::Column};
 
 use crate::common::{assert_duplicate_name_error, assert_missing_column_error};
 
 // ---------------------------------------------------------------------------
 // TempTableView — exercised via filter, sort, distinct, drop_nulls
-// These operations internally build a TempTableView from column views.
+// These operations internally build table views from temporary column views.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -23,9 +23,8 @@ fn filter_preserves_row_and_column_counts() {
     let df = DataFrame::from_columns([("id", ids), ("val", vals)]).unwrap();
 
     // Boolean mask: keep rows 0, 2, 4.
-    let mask = Column::from_slice(&[true, false, true, false, true]).unwrap();
-    let mask_view = mask.view().unwrap();
-    let filtered = df.filter_by_mask(&mask_view).unwrap();
+    let mask = Series::new::<bool>("mask", &[true, false, true, false, true]).unwrap();
+    let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_columns(), 2, "column count preserved");
     assert_eq!(filtered.num_rows(), 3, "filtered row count");

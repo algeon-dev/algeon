@@ -47,14 +47,17 @@ fn test_doc_example_high_level_workflow() {
 }
 
 #[test]
-fn test_lowlevel_types_still_reexported() {
-    // Ensure the low-level types remain accessible from the crate root.
-    let col = cudf::Column::from_slice(&[1i32, 2, 3]).unwrap();
+fn test_lowlevel_types_available_via_core_module() {
+    // Ensure advanced types remain available through `cudf::core::*`.
+    let col = cudf::core::Column::from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.view().unwrap();
     assert_eq!(view.len().unwrap(), 3);
 
     let _dt: cudf::DataType = view.data_type().unwrap();
     let _tid: cudf::TypeId = _dt.id();
+    let _: Option<cudf::core::DeviceBuffer> = None;
+    let _: Option<cudf::core::DeviceSlice<'static>> = None;
+    let _scalar = cudf::core::Scalar::from_value(7i32).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +146,26 @@ fn test_high_level_workflow_groupby() {
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.column_names(), vec!["key", "value_sum"]);
+}
+
+#[test]
+fn test_advanced_workflow_uses_table_view_and_low_level_ops() {
+    use cudf::{
+        DataFrame, Series,
+        ops::copying,
+    };
+
+    let ids = Series::new::<i32>("id", &[10, 20, 30]).unwrap();
+    let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let gather_map = cudf::core::Column::from_slice(&[2i32, 0]).unwrap();
+
+    let table_view = df.table_view().unwrap();
+    let gathered = copying::gather(table_view.table(), &gather_map.view().unwrap()).unwrap();
+    let gathered = DataFrame::from_table(gathered, vec!["id".to_string(), "score".to_string()]).unwrap();
+
+    assert_eq!(gathered.series("id").unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
+    assert_eq!(gathered.series("score").unwrap().to_vec::<f64>().unwrap(), vec![3.0, 1.0]);
 }
 
 #[test]

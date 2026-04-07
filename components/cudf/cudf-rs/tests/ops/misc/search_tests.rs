@@ -1,6 +1,6 @@
 //! Tests for CU-2: contains (isin) and ColumnView::isin.
 
-use cudf::{Column, ErrorKind, ops::search};
+use cudf::{ErrorKind, core::Column, ops::search};
 
 use crate::common::{
     explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,

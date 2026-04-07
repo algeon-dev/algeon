@@ -117,7 +117,7 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
-use super::owned::{DataFrame, derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
+use super::owned::{DataFrame, derive_frame_domain_from_columns};
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -136,7 +136,7 @@ use crate::{
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
         unary,
     },
-    runtime::{Runtime, execution_context::ExecutionContext, execution_domain::ExecutionDomain},
+    runtime::{execution_context::ExecutionContext, execution_domain::ExecutionDomain},
 };
 
 const SORT_KEY_INLINE_CAPACITY: usize = 4;
@@ -261,29 +261,20 @@ impl DataFrame {
     /// null rows (uses [`copying::gather`] which nullifies out-of-bounds indices).
     /// The schema is preserved.
     ///
+    /// Advanced low-level workflows should use [`DataFrame::table_view`]
+    /// together with [`crate::ops::copying::gather`] directly.
+    ///
     /// # Errors
     ///
     /// Returns an error if `indices` is not `Int32`.
     pub fn gather(&self, indices: &Series) -> Result<Self> {
         let cv = indices.as_column_view()?;
-        self.gather_by_column_view(&cv)
-    }
-
-    /// Gather (select) rows by a low-level index `ColumnView`.
-    ///
-    /// This is the advanced entry point. Prefer [`gather`](Self::gather)
-    /// with a `Series` for the cuDF-style API.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `indices` is not `Int32`.
-    pub fn gather_by_column_view(&self, indices: &ColumnView<'_>) -> Result<Self> {
         let output_domain = Arc::clone(&self.domain);
         self.gather_by_column_view_impl(
-            indices,
+            &cv,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::gather_by_column_view",
+            "dataframe::gather",
         )
     }
 
@@ -294,47 +285,36 @@ impl DataFrame {
     /// Rows where `mask` is `true` are kept; `false` or null rows are
     /// dropped. The schema is preserved.
     ///
+    /// Advanced low-level workflows should use [`DataFrame::table_view`]
+    /// together with [`crate::ops::filter::apply_boolean_mask`] directly.
+    ///
     /// # Errors
     ///
     /// - `TypeError` if `mask` dtype is not `Bool8`.
     /// - `InvalidOperation` if `mask` length does not match the DataFrame row count.
     pub fn filter(&self, mask: &Series) -> Result<Self> {
         let mask_view = self.validate_series_mask(mask)?;
-        self.filter_by_mask(&mask_view)
-    }
-
-    /// Filter rows using a low-level `ColumnView` boolean mask.
-    ///
-    /// This is the low-level entry point. Prefer [`filter`](Self::filter)
-    /// with a `Series` mask for the cuDF-style API.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `mask` is not `Bool8`, or if its row count
-    /// does not match the DataFrame's row count.
-    ///
-    /// # Cost
-    ///
-    /// GPU-allocating: always produces a new filtered table via FFI.
-    /// GPU allocation dominates runtime cost, so a consuming variant would
-    /// provide negligible benefit.
-    pub fn filter_by_mask(&self, mask: &ColumnView<'_>) -> Result<Self> {
         let output_domain = Arc::clone(&self.domain);
         self.filter_by_mask_impl(
-            mask,
+            &mask_view,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::filter_by_mask",
+            "dataframe::filter",
         )
     }
 
     /// Filter rows to those where `column` values appear in a `Series`.
     ///
     /// Convenience wrapper around [`crate::ops::search::contains`] +
-    /// [`DataFrame::filter_by_mask`], equivalent to pandas `df[df[column].isin(values)]`.
+    /// [`DataFrame::filter`], equivalent to pandas `df[df[column].isin(values)]`.
     ///
     /// `values` is the haystack (the set to test membership against).
     /// The column and values must have the same data type.
+    ///
+    /// Advanced low-level workflows should use [`DataFrame::table_view`]
+    /// together with [`crate::ops::search`] and [`crate::ops::filter`]
+    /// directly instead of going through a `DataFrame` method that accepts
+    /// raw borrowed views.
     ///
     /// # Errors
     ///
@@ -342,44 +322,26 @@ impl DataFrame {
     /// `contains` / `filter` operation fails.
     pub fn filter_isin(&self, column: &str, values: &Series) -> Result<Self> {
         let cv = values.as_column_view()?;
-        self.filter_isin_by_column_view(column, &cv)
-    }
-
-    /// Filter rows to those where `column` values appear in `values`.
-    ///
-    /// This is the advanced entry point that accepts a raw `ColumnView`.
-    /// Prefer [`filter_isin`](Self::filter_isin) with a `Series` for the
-    /// cuDF-style API.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `column` is not in the schema, or if the
-    /// `contains` / `filter` operation fails.
-    pub fn filter_isin_by_column_view(&self, column: &str, values: &ColumnView<'_>) -> Result<Self> {
         let col = self.columns.get(column).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
-                .with_operation("dataframe::filter_isin_by_column_view")
+                .with_operation("dataframe::filter_isin")
                 .with_context("column_name", column.to_string())
         })?;
         let col_view = col.view()?;
         let output_domain = Arc::clone(&self.domain);
-        if !ExecutionDomain::same_provenance(values.execution_domain(), &output_domain) {
-            values.execution_domain().fence_stream("dataframe::filter_isin_by_column_view")?;
+        if !ExecutionDomain::same_provenance(cv.execution_domain(), &output_domain) {
+            cv.execution_domain().fence_stream("dataframe::filter_isin")?;
         }
         let exec_options = output_domain.explicit_exec_options_raw();
-        let mask = ops::search::contains_with_exec_options(
-            values,
-            &col_view,
-            exec_options.as_ref(),
-            "dataframe::filter_isin_by_column_view",
-        )?
-        .with_execution_domain(Arc::clone(&output_domain));
+        let mask =
+            ops::search::contains_with_exec_options(&cv, &col_view, exec_options.as_ref(), "dataframe::filter_isin")?
+                .with_execution_domain(Arc::clone(&output_domain));
         let mask_view = mask.view()?;
         self.filter_by_mask_impl(
             &mask_view,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::filter_isin_by_column_view",
+            "dataframe::filter_isin",
         )
     }
 
@@ -473,6 +435,10 @@ impl DataFrame {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
+            self.domain.fence_stream(operation)?;
+        }
+
         let by: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> = by.into_iter().map(|s| s.as_ref().to_string()).collect();
         let by_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = by.iter().map(|s| s.as_str()).collect();
         let key_indices = resolve_column_names(&self.columns, &by_refs, operation)?;
@@ -592,18 +558,6 @@ impl DataFrame {
     /// order, or types).
     pub fn concat(&self, other: &DataFrame) -> Result<Self> {
         self.concat_impl(other, None, None, "dataframe::concat")
-    }
-
-    /// Concatenate two DataFrames row-wise into the given target runtime.
-    pub fn concat_with_runtime(&self, other: &DataFrame, runtime: &Runtime) -> Result<Self> {
-        let output_domain = Arc::clone(runtime.execution_domain());
-        self.synchronize_for_forced_output_domain(other, &output_domain, "dataframe::concat_with_runtime")?;
-        self.concat_impl(
-            other,
-            output_domain.explicit_exec_options_raw(),
-            Some(output_domain),
-            "dataframe::concat_with_runtime",
-        )
     }
 
     /// Concatenate two DataFrames row-wise using a borrowed per-operation execution override.
@@ -735,42 +689,6 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count, domain })
     }
 
-    /// Return a new DataFrame with the given column added or replaced,
-    /// copying inputs into the target runtime when needed.
-    ///
-    /// Any source column whose retained domain does not already match
-    /// `runtime` is deep-copied into that runtime before reassembly. This
-    /// makes mixed-domain recovery explicit for metadata-style operations that
-    /// would otherwise only be able to Arc-share incompatible inputs.
-    pub fn with_column_with_runtime(&self, name: &str, col: impl IntoSeries, runtime: &Runtime) -> Result<Self> {
-        let operation = "dataframe::with_column_with_runtime";
-        let series: Series = col.into_series()?;
-        let col_rows = series.len();
-        let expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
-
-        if let Some(self_rows) = expected_rows {
-            if col_rows != self_rows {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
-                )
-                .with_operation(operation)
-                .with_context("column_name", name.to_string())
-                .with_context("column_rows", col_rows.to_string())
-                .with_context("dataframe_rows", self_rows.to_string()));
-            }
-        }
-
-        let output_domain = Arc::clone(runtime.execution_domain());
-        let mut new_columns = self.clone_or_copy_columns_into_domain(&output_domain, operation)?;
-        let copied = Self::clone_or_copy_series_into_domain(&series, &output_domain, operation, name)?;
-        new_columns.insert(name.to_string(), copied);
-
-        let row_count = expected_rows.unwrap_or(col_rows);
-        let domain = resolve_frame_domain_from_authoritative_source(&new_columns, &output_domain, operation)?;
-        Ok(Self { columns: new_columns, row_count, domain })
-    }
-
     /// Return a new DataFrame with multiple columns added or replaced from
     /// `(name, Series)` pairs.
     ///
@@ -840,50 +758,6 @@ impl DataFrame {
 
         let row_count = expected_rows.unwrap_or(self.row_count);
         let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::assign")?;
-        Ok(Self { columns: new_columns, row_count, domain })
-    }
-
-    /// Return a new DataFrame with multiple columns added or replaced,
-    /// copying inputs into the target runtime when needed.
-    ///
-    /// Existing columns are preserved without copying GPU data when they
-    /// already belong to `runtime`; otherwise they are deep-copied into that
-    /// runtime before the final frame is assembled.
-    pub fn assign_with_runtime<I, S>(&self, pairs: I, runtime: &Runtime) -> Result<Self>
-    where
-        I: IntoIterator<Item = (S, Series)>,
-        S: AsRef<str>,
-    {
-        let operation = "dataframe::assign_with_runtime";
-        let output_domain = Arc::clone(runtime.execution_domain());
-        let mut new_columns = self.clone_or_copy_columns_into_domain(&output_domain, operation)?;
-        let mut expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
-
-        for (name, series) in pairs {
-            let name = name.as_ref();
-            let series_rows = series.len();
-
-            if let Some(self_rows) = expected_rows {
-                if series_rows != self_rows {
-                    return Err(Error::new(
-                        ErrorKind::InvalidOperation,
-                        format!("series '{}' has {} rows but DataFrame has {} rows", name, series_rows, self_rows),
-                    )
-                    .with_operation(operation)
-                    .with_context("column_name", name.to_string())
-                    .with_context("series_rows", series_rows.to_string())
-                    .with_context("dataframe_rows", self_rows.to_string()));
-                }
-            } else {
-                expected_rows = Some(series_rows);
-            }
-
-            let copied = Self::clone_or_copy_series_into_domain(&series, &output_domain, operation, name)?;
-            new_columns.insert(name.to_string(), copied);
-        }
-
-        let row_count = expected_rows.unwrap_or(self.row_count);
-        let domain = resolve_frame_domain_from_authoritative_source(&new_columns, &output_domain, operation)?;
         Ok(Self { columns: new_columns, row_count, domain })
     }
 
@@ -1125,57 +999,6 @@ impl DataFrame {
         new_columns.insert(column.to_string(), Arc::new(new_col));
 
         let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::fillna_with_series")?;
-        Ok(Self { columns: new_columns, row_count: self.row_count, domain })
-    }
-
-    /// Replace null values in a column using a [`Series`], copying inputs
-    /// into the target [`Runtime`]'s retained provenance when necessary.
-    ///
-    /// Unlike [`fillna_with_series`](Self::fillna_with_series), this method
-    /// recovers from mixed retained provenance by deep-copying the target
-    /// column and `fill_series` into the runtime's domain before executing
-    /// the replace-nulls operation.
-    ///
-    /// # Cost
-    /// GPU-allocating: a new column is produced. If any input is in a
-    /// different domain, an additional device-to-device copy per mismatched
-    /// column occurs.
-    pub fn fillna_with_series_with_runtime(
-        &self,
-        column: &str,
-        fill_series: &Series,
-        runtime: &Runtime,
-    ) -> Result<Self> {
-        let operation = "dataframe::fillna_with_series_with_runtime";
-        if !self.columns.contains_key(column) {
-            return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
-                .with_operation(operation)
-                .with_context("column_name", column.to_string()));
-        }
-
-        let output_domain = Arc::clone(runtime.execution_domain());
-
-        // Copy all existing columns into the target domain. After this the
-        // target column is guaranteed to be in the output domain.
-        let mut new_columns = self.clone_or_copy_columns_into_domain(&output_domain, operation)?;
-
-        // Copy the fill series into the target domain.
-        let fill_copied = Self::clone_or_copy_series_into_domain(fill_series, &output_domain, operation, column)?;
-
-        // Perform replace-nulls on the target column. Scoped to drop views
-        // before mutating new_columns.
-        let replaced = {
-            let target_col = new_columns.get(column).expect("column validated above");
-            let cv = target_col.view()?;
-            let fill_cv = fill_copied.view()?;
-            let exec_options = output_domain.explicit_exec_options_raw();
-            replace::replace_nulls_column_with_exec_options(&cv, &fill_cv, exec_options.as_ref(), operation)?
-                .with_execution_domain(Arc::clone(&output_domain))
-        };
-
-        new_columns.insert(column.to_string(), Arc::new(replaced));
-
-        let domain = resolve_frame_domain_from_authoritative_source(&new_columns, &output_domain, operation)?;
         Ok(Self { columns: new_columns, row_count: self.row_count, domain })
     }
 }

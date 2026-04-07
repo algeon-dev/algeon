@@ -92,7 +92,7 @@ impl Column {
     ///
     /// # Example
     /// ```no_run
-    /// use cudf::Column;
+    /// use cudf::core::Column;
     /// let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
     /// ```
     pub fn from_slice<T: CudfType>(data: &[T]) -> Result<Self> {
@@ -410,7 +410,7 @@ impl Column {
     ///
     /// # Example
     /// ```no_run
-    /// use cudf::Column;
+    /// use cudf::core::Column;
     /// let col = Column::from_strings(&["hello", "world"]).unwrap();
     /// ```
     pub fn from_strings(data: &[&str]) -> Result<Self> {
@@ -688,7 +688,10 @@ impl Column {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::{Column, DeviceBuffer, TypeId};
+    /// use cudf::{
+    ///     TypeId,
+    ///     core::{Column, DeviceBuffer},
+    /// };
     ///
     /// let buf = DeviceBuffer::from_host_data(&[1i32, 2, 3]).unwrap();
     /// let col = Column::from_device_buffer(buf, 3, TypeId::Int32).unwrap();
@@ -752,7 +755,10 @@ impl Column {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::{Column, DeviceBuffer, TypeId};
+    /// use cudf::{
+    ///     TypeId,
+    ///     core::{Column, DeviceBuffer},
+    /// };
     ///
     /// let data_buf = DeviceBuffer::from_host_data(&[10i32, 20, 30]).unwrap();
     /// // Bitmask: bits 0 and 2 set → rows 0 and 2 are valid, row 1 is null.
@@ -897,7 +903,7 @@ impl Column {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::Column;
+    /// use cudf::core::Column;
     ///
     /// let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
     /// let b = Column::from_slice(&[10i32, 20, 30]).unwrap();
@@ -1017,7 +1023,7 @@ impl Column {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::{Column, Scalar};
+    /// use cudf::core::{Column, Scalar};
     ///
     /// let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
     /// let offset = Scalar::from_value(100i32).unwrap();

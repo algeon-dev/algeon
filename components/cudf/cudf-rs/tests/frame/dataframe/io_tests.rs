@@ -1,6 +1,9 @@
 //! Tests for DataFrame I/O integration.
 
-use cudf::{Column, CsvReadOptions, CsvWriteOptions, DataFrame, ParquetReaderOptions, Series};
+use cudf::{
+    CsvReadOptions, CsvWriteOptions, DataFrame, ParquetReaderOptions, Series,
+    core::{Column, Table},
+};
 use tempfile::TempDir;
 
 #[test]
@@ -11,7 +14,7 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     // Write a parquet file with known column names using the low-level API.
     let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
-    let table = cudf::Table::from_columns(vec![c1, c2]).unwrap();
+    let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
     let write_opts =
         cudf::io::parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["id", "value"]).build();
@@ -38,7 +41,7 @@ fn test_read_parquet_with_options() {
 
     let c1 = Column::from_slice(&[1i32, 2, 3, 4, 5]).unwrap();
     let c2 = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
-    let table = cudf::Table::from_columns(vec![c1, c2]).unwrap();
+    let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
     let write_opts =
         cudf::io::parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["a", "b"]).build();
@@ -154,6 +157,26 @@ fn test_read_csv_without_header_uses_generated_names() {
     assert_eq!(df.column_names(), vec!["column_0", "column_1"]);
     assert_eq!(df.series("column_0").unwrap().to_vec::<i64>().unwrap(), vec![4, 5]);
     assert_eq!(df.series("column_1").unwrap().to_vec::<i64>().unwrap(), vec![40, 50]);
+}
+
+#[test]
+fn test_read_csv_without_header_generates_fallback_names_only_at_dataframe_layer() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_no_header_contract.csv");
+
+    std::fs::write(&path, "11,110\n12,120\n").unwrap();
+
+    let table_result =
+        cudf::io::csv::read_csv(&cudf::io::csv::CsvReaderOptions::builder().filepath(&path).has_header(false).build())
+            .unwrap();
+    assert_eq!(table_result.column_names, None);
+
+    let df =
+        DataFrame::read_csv_with_options(CsvReadOptions::builder().filepath(&path).has_header(false).build()).unwrap();
+
+    assert_eq!(df.column_names(), vec!["column_0", "column_1"]);
+    assert_eq!(df.series("column_0").unwrap().to_vec::<i64>().unwrap(), vec![11, 12]);
+    assert_eq!(df.series("column_1").unwrap().to_vec::<i64>().unwrap(), vec![110, 120]);
 }
 
 #[test]

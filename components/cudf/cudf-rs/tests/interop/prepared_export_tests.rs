@@ -4,7 +4,8 @@ use std::sync::{
 };
 
 use cudf::{
-    Column, DataFrame, DeviceId, Runtime, TypeId,
+    DataFrame, DeviceId, Runtime, TypeId,
+    core::Column,
     interop::{
         ActiveLeaseBackend, BufferBinding, ColumnLayout, CompletionAuthority, CompletionBinding, CompletionWitnessKind,
         CudaEventHandle, CudaStreamHandle, ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind,
@@ -2280,8 +2281,8 @@ fn series_and_dataframe_prepare_device_export_match_underlying_low_level_exports
     assert_eq!(series_export, column_export);
 
     let frame_export = frame.try_prepare_device_table_export().unwrap();
-    let temp_table = frame.temp_table_view().unwrap();
-    let table_export = temp_table.table().try_prepare_device_table_export().unwrap();
+    let table_view = frame.table_view().unwrap();
+    let table_export = table_view.table().try_prepare_device_table_export().unwrap();
 
     assert_eq!(frame_export.table().num_rows(), table_export.table().num_rows());
     assert_eq!(frame_export.columns(), table_export.columns());

@@ -14,6 +14,7 @@ use crate::{
         error::{self, Error, ErrorKind, Result},
         table::{Table, TableView},
     },
+    io::IoTableResult,
     runtime::Runtime,
 };
 
@@ -21,8 +22,8 @@ use crate::{
 ///
 /// **Advanced.** Most users should prefer [`DataFrame::read_csv`](crate::DataFrame::read_csv).
 ///
-/// This type controls parsing only. It does not carry schema names because
-/// the low-level CSV reader returns an unnamed [`Table`].
+/// This type controls CSV parsing only. Truthful schema names, when available
+/// from a header row, are returned through [`IoTableResult`].
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct CsvReaderOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
@@ -35,8 +36,8 @@ pub struct CsvReaderOptions {
     runtime: Option<Runtime>,
 }
 
-/// Read a CSV file into a `Table`.
-pub fn read_csv(options: &CsvReaderOptions) -> Result<Table> {
+/// Read a CSV file into a low-level table result.
+pub fn read_csv(options: &CsvReaderOptions) -> Result<IoTableResult> {
     let filepath = super::path_to_cstring(&options.filepath, "io::csv::read_csv")?;
     let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
     let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
@@ -67,10 +68,23 @@ pub fn read_csv(options: &CsvReaderOptions) -> Result<Table> {
         [("delimiter_char", (options.delimiter as char).to_string()), ("has_header", options.has_header.to_string())],
     )?;
     // SAFETY: table_handle was returned by a successful FFI call, transferring ownership.
-    Ok(match output_domain {
+    let table = match output_domain {
         Some(domain) => unsafe { Table::from_raw(table_handle).with_execution_domain(domain) },
         None => unsafe { Table::from_raw(table_handle) },
-    })
+    };
+    let num_columns = {
+        let view = table.view()?;
+        view.num_columns()? as usize
+    };
+    let column_names = if options.has_header {
+        let names = read_header_names(&options.filepath, options.delimiter)?;
+        validate_header_name_count(names.len(), num_columns)?;
+        Some(names)
+    } else {
+        None
+    };
+
+    Ok(IoTableResult { table, column_names })
 }
 
 /// Options for writing a low-level [`Table`] to a CSV file.
@@ -186,4 +200,38 @@ pub(crate) fn write_csv_with_exec(
             ("include_header", options.include_header.to_string()),
         ],
     )
+}
+
+fn read_header_names(path: &Path, delimiter: u8) -> Result<Vec<String>> {
+    let operation = "io::csv::read_csv";
+    let mut reader =
+        ::csv::ReaderBuilder::new().has_headers(true).delimiter(delimiter).from_path(path).map_err(|source| {
+            Error::new(ErrorKind::IoError, "failed to open CSV file for header parsing")
+                .with_operation(operation)
+                .with_context("path", path.display().to_string())
+                .set_source(source)
+        })?;
+
+    let headers = reader.headers().map_err(|source| {
+        Error::new(ErrorKind::IoError, "failed to read CSV header")
+            .with_operation(operation)
+            .with_context("path", path.display().to_string())
+            .set_source(source)
+    })?;
+
+    Ok(headers.iter().map(str::to_owned).collect())
+}
+
+fn validate_header_name_count(name_count: usize, num_columns: usize) -> Result<()> {
+    if name_count != num_columns {
+        return Err(Error::new(
+            ErrorKind::InvalidOperation,
+            format!("header column count ({name_count}) does not match table column count ({num_columns})"),
+        )
+        .with_operation("io::csv::read_csv")
+        .with_context("header_column_count", name_count.to_string())
+        .with_context("table_column_count", num_columns.to_string()));
+    }
+
+    Ok(())
 }

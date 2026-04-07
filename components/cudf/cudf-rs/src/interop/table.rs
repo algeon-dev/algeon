@@ -199,9 +199,9 @@ impl Table {
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedTableExport::try_activate_read_lease`].
     ///
-    /// Borrowed interop is also available directly on [`crate::Table`] via
-    /// [`crate::Table::try_borrow_table_view`] when you need the borrowed
-    /// compatibility descriptor instead of a prepared export.
+    /// Borrowed interop is also available directly on [`crate::core::Table`]
+    /// via [`crate::core::Table::try_borrow_table_view`] when you need the
+    /// borrowed compatibility descriptor instead of a prepared export.
     pub fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
         <Self as TryPrepareDeviceTableExport>::try_prepare_device_table_export(self)
     }

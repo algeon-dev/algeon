@@ -3,10 +3,10 @@
 //! This module re-exports the shared RAPIDS Rust interop contract from
 //! [`rapids_interop`] and implements `cudf-rs` producer adapters for:
 //!
-//! - [`crate::Column`]
-//! - [`crate::ColumnView`]
-//! - [`crate::Table`]
-//! - [`crate::TableView`]
+//! - [`crate::core::Column`]
+//! - [`crate::core::ColumnView`]
+//! - [`crate::core::Table`]
+//! - [`crate::core::TableView`]
 //! - [`crate::Series`]
 //! - [`crate::DataFrame`]
 //! - [`PartitionedDataFrameExport`]
@@ -15,16 +15,18 @@
 //!
 //! - The shared [`rapids_interop`] names are the primary interop contract.
 //! - `cudf-rs` now supports consumer-side import from the shared borrowed
-//!   compatibility descriptors back into low-level owned [`crate::Column`] and
-//!   [`crate::Table`] values via explicit destination [`crate::Runtime`].
+//!   compatibility descriptors back into low-level owned
+//!   [`crate::core::Column`] and [`crate::core::Table`] values via explicit
+//!   destination [`crate::Runtime`].
 //! - `cudf-rs` also supports zero-copy consumer-side import from
 //!   `cudf-rs`-produced shared owned-transfer roots back into low-level owned
-//!   [`crate::Column`] and [`crate::Table`] values. Owned-transfer roots
+//!   [`crate::core::Column`] and [`crate::core::Table`] values. Owned-transfer
+//!   roots
 //!   produced by other libraries are currently rejected with
 //!   [`InteropErrorKind::ProfileUnsupported`].
 //! - `cudf-rs` now also supports low-level consumer-side import from shared
-//!   prepared-device export roots back into owned [`crate::Column`] and
-//!   [`crate::Table`] values via explicit same-device destination
+//!   prepared-device export roots back into owned [`crate::core::Column`] and
+//!   [`crate::core::Table`] values via explicit same-device destination
 //!   [`crate::Runtime`]s.
 //! - [`BorrowedColumnView`] and [`BorrowedTableView`] remain the borrowed GPU
 //!   compatibility profile.
@@ -50,10 +52,11 @@
 //! - Prepared host export is a separate materialized profile: it copies the
 //!   active logical range to host-visible bytes and is not zero-copy.
 //! - Owned device transfer is a separate zero-copy ownership move profile for
-//!   true owner types such as [`crate::Column`] and [`crate::Table`].
+//!   true owner types such as [`crate::core::Column`] and
+//!   [`crate::core::Table`].
 //! - [`PartitionedDataFrameExport`] is an interop-only heterogeneous producer
 //!   surface; it does not change the ordinary single-provenance semantics of
-//!   [`crate::DataFrame`] or [`crate::Table`].
+//!   [`crate::DataFrame`] or [`crate::core::Table`].
 //! - Consumer algorithms may still allocate or copy for outputs; this module
 //!   does not promise zero-copy output.
 //! - Current device-export support covers fixed-width layouts, the first

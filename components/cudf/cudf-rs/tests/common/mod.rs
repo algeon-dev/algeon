@@ -1,6 +1,10 @@
 use std::{ffi::c_void, ptr};
 
-use cudf::{Column, DataFrame, DeviceId, Runtime, Series, core::memory::DeviceMemoryResource, runtime::CudaStream};
+use cudf::{
+    DataFrame, DeviceId, Runtime, Series,
+    core::{Column, memory::DeviceMemoryResource},
+    runtime::CudaStream,
+};
 use cudf_sys::{
     CUDF_SUCCESS, cudf_cuda_get_device, cudf_cuda_set_device, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,
     cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,

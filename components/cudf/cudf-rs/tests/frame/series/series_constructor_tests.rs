@@ -3,7 +3,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{Scalar, Series, TypeId};
+use cudf::{Series, TypeId, core::Scalar};
 
 // ===========================================================================
 // Series::nulls

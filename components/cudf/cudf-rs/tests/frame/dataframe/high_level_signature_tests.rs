@@ -1,19 +1,14 @@
 //! Tests for high-level primary DataFrame signatures.
 //!
 //! These tests cover the current high-level signatures that accept `Series`
-//! or plain Rust values and preserve explicit lower-level entry points where
-//! needed.
-//!
-//! # Planned changes
-//!
-//! | Method                   | Current signature                          | Target signature                           |
-//! |--------------------------|--------------------------------------------|--------------------------------------------|
-//! | `gather`                 | `&Series` (primary high-level API)         | `gather_by_column_view` for `&ColumnView`  |
-//! | `filter_isin`            | `&Series` (primary high-level API)         | `filter_isin_by_column_view` for `&ColumnView` |
-//! | `fillna`                 | `T: CudfType` (primary high-level API)     | `fillna_with_scalar` for `&Scalar`         |
-//! | `factorize`              | Returns `(Column, Column)`                 | Returns `(Series, Series)`                 |
+//! or plain Rust values. Advanced `ColumnView` / `TableView` workflows now
+//! go through `DataFrame::table_view()` plus low-level `cudf::ops::*`.
 
-use cudf::{Column, DataFrame, Series};
+use cudf::{
+    DataFrame, Series,
+    core::Column,
+    ops::{copying, filter as low_level_filter, search},
+};
 
 use crate::common::{
     assert_missing_column_error, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
@@ -157,7 +152,7 @@ fn test_fillna_with_scalar_still_works() {
     let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
     let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 
-    let fill = cudf::Scalar::from_value(42i32).unwrap();
+    let fill = cudf::core::Scalar::from_value(42i32).unwrap();
     let filled = df.fillna_with_scalar("id", &fill).unwrap();
 
     assert_eq!(filled.num_rows(), 5);
@@ -190,14 +185,16 @@ fn test_factorize_returns_series() {
 }
 
 // ===========================================================================
-// 5. gather_by_column_view(&ColumnView) — advanced entry point
+// 5. Advanced gather uses table_view() + low-level ops::copying
 // ===========================================================================
 
 #[test]
-fn test_gather_columnview_still_works() {
+fn test_advanced_gather_still_works_via_table_view_and_ops() {
     let df = sample_df(); // id: 10,20,30,40,50
     let indices = Column::from_slice(&[0i32, 2, 4]).unwrap();
-    let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
+    let table_view = df.table_view().unwrap();
+    let result = copying::gather(table_view.table(), &indices.view().unwrap()).unwrap();
+    let result = DataFrame::from_table(result, vec!["id".to_string(), "score".to_string()]).unwrap();
 
     assert_eq!(result.num_rows(), 3);
     assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 30, 50]);
@@ -207,15 +204,21 @@ fn test_gather_columnview_still_works() {
 }
 
 // ===========================================================================
-// 6. filter_isin_by_column_view(&str, &ColumnView) — advanced entry point
+// 6. Advanced filter_isin uses table_view() + low-level ops
 // ===========================================================================
 
 #[test]
-fn test_filter_isin_columnview_still_works() {
+fn test_advanced_filter_isin_still_works_via_table_view_and_ops() {
     let df = sample_df(); // id: 10,20,30,40,50
     let values = Column::from_slice(&[10i32, 30, 50]).unwrap();
     let values_view = values.view().unwrap();
-    let result = df.filter_isin_by_column_view("id", &values_view).unwrap();
+    let ids = df.series("id").unwrap();
+    let ids_view = ids.as_column_view().unwrap();
+    let mask = search::contains(&values_view, &ids_view).unwrap();
+    let mask_view = mask.view().unwrap();
+    let table_view = df.table_view().unwrap();
+    let result = low_level_filter::apply_boolean_mask(table_view.table(), &mask_view).unwrap();
+    let result = DataFrame::from_table(result, vec!["id".to_string(), "score".to_string()]).unwrap();
 
     assert_eq!(result.num_rows(), 3);
     let mut ids = result.series("id").unwrap().to_vec::<i32>().unwrap();

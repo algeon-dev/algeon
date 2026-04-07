@@ -1,14 +1,14 @@
 //! Tests for DataFrame::gather().
 
-use cudf::{Column, DataFrame};
+use cudf::{DataFrame, Series, core::Column};
 
 #[test]
 fn test_gather_sequential_indices() {
     let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
     let df = DataFrame::new(vec!["x".to_string()], vec![col]).unwrap();
 
-    let indices = Column::from_slice(&[0i32, 1, 2]).unwrap();
-    let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
+    let indices = Series::new::<i32>("idx", &[0, 1, 2]).unwrap();
+    let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
     let vals = result.series("x").unwrap().to_vec::<i32>().unwrap();
@@ -20,8 +20,8 @@ fn test_gather_reversed() {
     let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
     let df = DataFrame::new(vec!["x".to_string()], vec![col]).unwrap();
 
-    let indices = Column::from_slice(&[2i32, 1, 0]).unwrap();
-    let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
+    let indices = Series::new::<i32>("idx", &[2, 1, 0]).unwrap();
+    let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
     let vals = result.series("x").unwrap().to_vec::<i32>().unwrap();
@@ -33,8 +33,8 @@ fn test_gather_out_of_bounds_nullify() {
     let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
     let df = DataFrame::new(vec!["x".to_string()], vec![col]).unwrap();
 
-    let indices = Column::from_slice(&[0i32, 99, 2]).unwrap();
-    let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
+    let indices = Series::new::<i32>("idx", &[0, 99, 2]).unwrap();
+    let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
     let view = result.series("x").unwrap();
@@ -49,8 +49,8 @@ fn test_gather_duplicate_indices() {
     let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
     let df = DataFrame::new(vec!["x".to_string()], vec![col]).unwrap();
 
-    let indices = Column::from_slice(&[1i32, 1, 1]).unwrap();
-    let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
+    let indices = Series::new::<i32>("idx", &[1, 1, 1]).unwrap();
+    let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
     let vals = result.series("x").unwrap().to_vec::<i32>().unwrap();
@@ -63,8 +63,8 @@ fn test_gather_preserves_schema() {
     let c2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let df = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![c1, c2]).unwrap();
 
-    let indices = Column::from_slice(&[2i32, 0]).unwrap();
-    let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
+    let indices = Series::new::<i32>("idx", &[2, 0]).unwrap();
+    let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.column_names(), &["id", "score"]);
     assert_eq!(result.num_rows(), 2);
@@ -77,8 +77,8 @@ fn test_gather_empty_indices() {
     let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
     let df = DataFrame::new(vec!["x".to_string()], vec![col]).unwrap();
 
-    let indices = Column::from_slice::<i32>(&[]).unwrap();
-    let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
+    let indices = Series::new::<i32>("idx", &[]).unwrap();
+    let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 0);
     assert_eq!(result.column_names(), &["x"]);
@@ -92,8 +92,8 @@ fn test_gather_multi_type() {
     let df =
         DataFrame::new(vec!["ints".to_string(), "floats".to_string(), "strs".to_string()], vec![c1, c2, c3]).unwrap();
 
-    let indices = Column::from_slice(&[2i32, 0]).unwrap();
-    let result = df.gather_by_column_view(&indices.view().unwrap()).unwrap();
+    let indices = Series::new::<i32>("idx", &[2, 0]).unwrap();
+    let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 2);
     assert_eq!(result.series("ints").unwrap().to_vec::<i32>().unwrap(), vec![3, 1]);

@@ -7,7 +7,10 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{Column, Table, ops::sorting};
+//! use cudf::{
+//!     core::{Column, Table},
+//!     ops::sorting,
+//! };
 //!
 //! let col = Column::from_slice(&[30i32, 10, 20]).unwrap();
 //! let table = Table::from_columns(vec![col]).unwrap();

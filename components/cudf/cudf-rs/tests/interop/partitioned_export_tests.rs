@@ -1,5 +1,6 @@
 use cudf::{
-    Column, DataFrame,
+    DataFrame,
+    core::Column,
     interop::{
         CompletionAuthority, ExportProfile, LeaseCompletionResult, PartitionedDataFrameExport, Placement,
         ProducerReadiness, ReadStartAuthority,

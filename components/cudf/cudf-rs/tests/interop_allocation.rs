@@ -6,7 +6,7 @@ mod allocation;
 // they do not run in the same libtest process as the broader interop suite.
 
 mod interop_allocation_tests {
-    use cudf::{Column, DataFrame, interop::ProducerReadiness};
+    use cudf::{DataFrame, core::Column, interop::ProducerReadiness};
 
     use crate::allocation::allocation_count_delta;
 

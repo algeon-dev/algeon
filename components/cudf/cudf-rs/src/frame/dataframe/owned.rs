@@ -6,6 +6,7 @@
 //! data.
 use std::sync::Arc;
 
+use super::DataFrameTableView;
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -18,7 +19,7 @@ use crate::{
         resolve::validate_no_duplicate_names,
     },
     ops::groupby,
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{Runtime, execution_domain::ExecutionDomain},
 };
 
 /// A GPU DataFrame: a named, ordered collection of GPU columns.
@@ -346,6 +347,19 @@ impl DataFrame {
         Ok(table.with_execution_domain(Arc::clone(&self.domain)))
     }
 
+    /// Ensure this DataFrame is placed in the target runtime.
+    ///
+    /// Columns already in the target runtime's retained provenance are shared
+    /// without copying. Columns from a different retained provenance are
+    /// fenced and deep-copied into the target runtime.
+    pub fn copy_into_runtime(&self, runtime: &Runtime) -> Result<Self> {
+        let operation = "dataframe::copy_into_runtime";
+        let output_domain = Arc::clone(runtime.execution_domain());
+        let columns = self.clone_or_copy_columns_into_domain(&output_domain, operation)?;
+        let domain = resolve_frame_domain_from_authoritative_source(&columns, &output_domain, operation)?;
+        Ok(Self { columns, row_count: self.row_count, domain })
+    }
+
     /// Consume the `DataFrame`, returning an owned table and column names.
     ///
     /// Columns that are uniquely owned (`Arc` strong count == 1) are moved
@@ -377,31 +391,32 @@ impl DataFrame {
         Ok((table, names))
     }
 
-    /// Create a temporary borrowed table-view bundle over this DataFrame.
+    /// Create a public zero-copy table-view bridge over this DataFrame.
     ///
-    /// The returned `TempTableView` keeps the intermediate `ColumnView`s alive
-    /// alongside the final `TableView`, so the borrowed table view remains
-    /// valid. Call `.table()` on the returned bundle when passing a
-    /// `&TableView` to low-level libcudf-style APIs.
+    /// The returned [`DataFrameTableView`] keeps the intermediate
+    /// [`ColumnView`] values alive alongside the final [`crate::core::TableView`],
+    /// so the borrowed table view remains valid. Call `.table()` on the
+    /// returned bridge when passing a `&TableView` to low-level libcudf-style
+    /// APIs.
     ///
     /// # Cost
     ///
     /// Zero-copy with respect to GPU column data: this reuses the existing
     /// device memory and creates only lightweight FFI view handles.
-    pub fn temp_table_view(&self) -> Result<crate::internal::temp_table::TempTableView<'_>> {
+    pub fn table_view(&self) -> Result<DataFrameTableView<'_>> {
         self.build_table_view()
     }
 
     // -- Internal helpers ----------------------------------------------------
 
-    /// Build a [`TempTableView`] from the individual `Arc<Column>`s.
+    /// Build a [`DataFrameTableView`] from the individual `Arc<Column>`s.
     ///
     /// The returned value owns the column views and the table view,
     /// solving the lifetime management problem where column views must
     /// outlive the table view.
-    pub(crate) fn build_table_view(&self) -> Result<crate::internal::temp_table::TempTableView<'_>> {
+    pub(crate) fn build_table_view(&self) -> Result<DataFrameTableView<'_>> {
         let views: Vec<ColumnView<'_>> = self.columns.values().map(|col| col.view()).collect::<Result<Vec<_>>>()?;
-        crate::internal::temp_table::TempTableView::from_column_views(views)
+        DataFrameTableView::from_column_views(views)
     }
 
     /// Create a DataFrame from a Table and column names, decomposing the
@@ -546,7 +561,7 @@ impl DataFrame {
 /// ```
 ///
 /// ```compile_fail
-/// use cudf::Column;
+/// use cudf::core::Column;
 ///
 /// let x = Column::from_slice(&[1i32, 2, 3]).unwrap();
 /// let _ = cudf::dataframe! { "x" => x }.unwrap();

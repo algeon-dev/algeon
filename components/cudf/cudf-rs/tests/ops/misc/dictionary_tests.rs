@@ -1,12 +1,12 @@
 //! Tests for dictionary encode/decode.
 
-use cudf::{Column, ErrorKind, TypeId, ops::dictionary};
+use cudf::{ErrorKind, TypeId, core::Column, ops::dictionary};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
-fn dictionary_indices_to_i64(dict_view: &cudf::ColumnView<'_>) -> Vec<i64> {
+fn dictionary_indices_to_i64(dict_view: &cudf::core::ColumnView<'_>) -> Vec<i64> {
     let indices_view = dictionary::indices(dict_view).unwrap();
     match indices_view.data_type().unwrap().id() {
         TypeId::Int8 => indices_view.to_vec::<i8>().unwrap().into_iter().map(i64::from).collect(),
