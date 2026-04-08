@@ -283,11 +283,13 @@ impl Column {
     ///
     /// The returned transfer declares
     /// [`TransferCompletionRule::ReleaseWaitsOnConsumerSignal`] with
-    /// [`ReleaseSynchronization::MaySynchronizeInternally`]. The caller must
-    /// eventually drive release through the returned releaser when a foreign
-    /// consumer keeps the shared transfer root. If the transfer is instead
-    /// imported back into a native `cudf-rs` owner, that native owner claims
-    /// the underlying ownership and the releaser becomes invalid.
+    /// [`ReleaseSynchronization::Asynchronous`]. Calling the returned releaser
+    /// accepts release and schedules the consumer-signal wait onto a
+    /// background runtime job instead of blocking the caller thread. The
+    /// caller must eventually drive release through that releaser when a
+    /// foreign consumer keeps the shared transfer root. If the transfer is
+    /// instead imported back into a native `cudf-rs` owner, that native owner
+    /// claims the underlying ownership and the releaser becomes invalid.
     pub fn try_into_owned_device_column_transfer_with_runtime_release(
         self,
     ) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {

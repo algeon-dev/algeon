@@ -1,6 +1,7 @@
 use std::{
     mem::ManuallyDrop,
     sync::{Arc, Mutex, MutexGuard},
+    thread,
 };
 
 pub use rapids_interop::{
@@ -10,6 +11,7 @@ pub use rapids_interop::{
 };
 
 use super::*;
+use crate::runtime::{CudaEvent, CudaStream};
 
 pub(super) struct OwnedColumnTransferState {
     // Retain the owning column so owned-transfer buffer bindings continue to
@@ -72,6 +74,75 @@ struct RuntimeOwnedTransferState<T> {
     release_device: i32,
 }
 
+enum RuntimeOwnedReleaseCompletion {
+    SameDeviceStream { stream: CudaStream },
+    CrossDeviceEvent { event: CudaEvent },
+}
+
+impl RuntimeOwnedReleaseCompletion {
+    fn try_capture(
+        completion: RuntimeCompletionAuthority<'_>,
+        release_device: i32,
+        operation: &'static str,
+    ) -> std::result::Result<Self, InteropError> {
+        match completion {
+            RuntimeCompletionAuthority::SynchronousByReturn => Err(InteropError::new(
+                InteropErrorKind::ProfileUnsupported,
+                "runtime-backed owned-transfer release requires a consumer signal completion authority",
+            )
+            .with_context("operation", operation)
+            .with_context("completion", "synchronous_by_return")
+            .with_context("release_device", release_device.to_string())),
+            RuntimeCompletionAuthority::SameDeviceStream { stream } => {
+                let stream_device = stream.device().ordinal_raw() as i32;
+                if stream_device != release_device {
+                    return Err(InteropError::new(
+                        InteropErrorKind::ReadinessMismatch,
+                        "runtime-backed owned-transfer release stream must live on the release CUDA device",
+                    )
+                    .with_context("operation", operation)
+                    .with_context("completion", "same_device_stream")
+                    .with_context("release_device", release_device.to_string())
+                    .with_context("stream_device", stream_device.to_string()));
+                }
+
+                Ok(Self::SameDeviceStream { stream: stream.clone() })
+            },
+            RuntimeCompletionAuthority::CrossDeviceEvent { event } => {
+                Ok(Self::CrossDeviceEvent { event: event.clone() })
+            },
+        }
+    }
+
+    fn wait_for_release(&self, release_device: i32, operation: &'static str) -> std::result::Result<(), InteropError> {
+        match self {
+            Self::SameDeviceStream { stream } => runtime_lease::synchronize_runtime_release_completion(
+                RuntimeCompletionAuthority::same_device_stream(stream),
+                release_device,
+                operation,
+            ),
+            Self::CrossDeviceEvent { event } => runtime_lease::synchronize_runtime_release_completion(
+                RuntimeCompletionAuthority::cross_device_event(event),
+                release_device,
+                operation,
+            ),
+        }
+    }
+
+    fn synchronize_fallback(&self, operation: &'static str) -> crate::Result<()> {
+        match self {
+            Self::SameDeviceStream { stream } => runtime_lease::synchronize_completion_fallback(
+                RuntimeCompletionAuthority::same_device_stream(stream),
+                operation,
+            ),
+            Self::CrossDeviceEvent { event } => runtime_lease::synchronize_completion_fallback(
+                RuntimeCompletionAuthority::cross_device_event(event),
+                operation,
+            ),
+        }
+    }
+}
+
 impl<T> RuntimeOwnedTransferState<T> {
     fn new(owner: T, release_device: i32) -> Arc<Self> {
         Arc::new(Self {
@@ -112,14 +183,35 @@ impl<T> RuntimeOwnedTransferState<T> {
         }
     }
 
+    fn finish_release_job(
+        self: Arc<Self>,
+        mut owner: ManuallyDrop<T>,
+        completion: RuntimeOwnedReleaseCompletion,
+        operation: &'static str,
+    ) {
+        if completion.wait_for_release(self.release_device, operation).is_err() {
+            let _ = completion.synchronize_fallback(operation);
+        }
+
+        unsafe {
+            ManuallyDrop::drop(&mut owner);
+        }
+
+        let mut inner = self.lock_inner();
+        inner.status = RuntimeOwnedTransferStatus::Released;
+    }
+
     fn release(
-        &self,
+        state: &Arc<Self>,
         completion: RuntimeCompletionAuthority<'_>,
         operation: &'static str,
         transfer_kind: &'static str,
-    ) -> std::result::Result<(), InteropError> {
+    ) -> std::result::Result<(), InteropError>
+    where
+        T: Send + 'static,
+    {
         let owner = {
-            let mut inner = self.lock_inner();
+            let mut inner = state.lock_inner();
             match inner.status {
                 RuntimeOwnedTransferStatus::Pending => {
                     inner.status = RuntimeOwnedTransferStatus::Releasing;
@@ -132,27 +224,24 @@ impl<T> RuntimeOwnedTransferState<T> {
                     )
                     .with_context("operation", operation)
                     .with_context("state", status.as_str())
-                    .with_context("release_device", self.release_device.to_string()));
+                    .with_context("release_device", state.release_device.to_string()));
                 },
             }
         };
 
-        if let Err(error) =
-            runtime_lease::synchronize_runtime_release_completion(completion, self.release_device, operation)
-        {
-            let mut inner = self.lock_inner();
-            inner.owner = Some(owner);
-            inner.status = RuntimeOwnedTransferStatus::Pending;
-            return Err(error);
-        }
+        let completion = match RuntimeOwnedReleaseCompletion::try_capture(completion, state.release_device, operation) {
+            Ok(completion) => completion,
+            Err(error) => {
+                let mut inner = state.lock_inner();
+                inner.owner = Some(owner);
+                inner.status = RuntimeOwnedTransferStatus::Pending;
+                return Err(error);
+            },
+        };
 
-        let mut owner = owner;
-        unsafe {
-            ManuallyDrop::drop(&mut owner);
-        }
+        let release_state = Arc::clone(state);
+        thread::spawn(move || release_state.finish_release_job(owner, completion, operation));
 
-        let mut inner = self.lock_inner();
-        inner.status = RuntimeOwnedTransferStatus::Released;
         Ok(())
     }
 }
@@ -163,7 +252,12 @@ pub struct RuntimeOwnedColumnTransferReleaser {
 
 impl RuntimeOwnedColumnTransferReleaser {
     pub fn release(self, completion: RuntimeCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
-        self.state.release(completion, "interop::RuntimeOwnedColumnTransferReleaser::release", "owned column transfer")
+        RuntimeOwnedTransferState::release(
+            &self.state,
+            completion,
+            "interop::RuntimeOwnedColumnTransferReleaser::release",
+            "owned column transfer",
+        )
     }
 }
 
@@ -173,7 +267,12 @@ pub struct RuntimeOwnedTableTransferReleaser {
 
 impl RuntimeOwnedTableTransferReleaser {
     pub fn release(self, completion: RuntimeCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
-        self.state.release(completion, "interop::RuntimeOwnedTableTransferReleaser::release", "owned table transfer")
+        RuntimeOwnedTransferState::release(
+            &self.state,
+            completion,
+            "interop::RuntimeOwnedTableTransferReleaser::release",
+            "owned table transfer",
+        )
     }
 }
 

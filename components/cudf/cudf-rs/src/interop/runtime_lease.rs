@@ -692,7 +692,10 @@ fn synchronize_producer_readiness(
     }
 }
 
-fn synchronize_completion_fallback(completion: RuntimeCompletionAuthority<'_>, operation: &'static str) -> Result<()> {
+pub(crate) fn synchronize_completion_fallback(
+    completion: RuntimeCompletionAuthority<'_>,
+    operation: &'static str,
+) -> Result<()> {
     match completion {
         RuntimeCompletionAuthority::SynchronousByReturn => Ok(()),
         RuntimeCompletionAuthority::SameDeviceStream { stream } => {

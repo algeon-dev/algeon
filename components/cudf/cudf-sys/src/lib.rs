@@ -1321,6 +1321,12 @@ extern "C" {
     /// Reset CUDA event observation hooks used by integration tests.
     pub fn cudf_test_event_reset_observation();
 
+    /// Make subsequent observed `cudaEventSynchronize` calls block until released.
+    pub fn cudf_test_event_block_synchronize();
+
+    /// Release any test-only block applied to observed `cudaEventSynchronize` calls.
+    pub fn cudf_test_event_unblock_synchronize();
+
     /// Read the number of observed `cudaEventSynchronize` calls.
     pub fn cudf_test_event_synchronize_call_count(out: *mut i32) -> cudf_status_t;
 

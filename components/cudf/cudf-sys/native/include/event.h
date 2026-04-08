@@ -51,6 +51,12 @@ cudf_status_t cudf_event_raw(cudf_event_handle handle, void** out);
 /// Reset CUDA event observation hooks used by integration tests.
 void cudf_test_event_reset_observation();
 
+/// Make subsequent `cudaEventSynchronize` shim calls block until explicitly released.
+void cudf_test_event_block_synchronize();
+
+/// Release any test-only block applied to `cudaEventSynchronize` shim calls.
+void cudf_test_event_unblock_synchronize();
+
 /// Read the number of `cudaEventSynchronize` calls observed through the shim.
 cudf_status_t cudf_test_event_synchronize_call_count(int32_t* out);
 

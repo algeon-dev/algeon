@@ -1,10 +1,15 @@
-use std::sync::{
-    Arc, Mutex, MutexGuard, OnceLock,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    sync::{
+        Arc, Mutex, MutexGuard, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
 use cudf::{
-    DataFrame, JsonReadOptions, Runtime, Series, TypeId,
+    DataFrame, DeviceId, JsonReadOptions, Runtime, Series, TypeId,
     core::{Column, Table},
     interop::{
         BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, ExportDiagnostics, ExportProfile,
@@ -138,6 +143,45 @@ fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let status = unsafe { cudf_sys::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-stream raw event-record observation count");
     out
+}
+
+fn block_event_synchronize() {
+    unsafe { cudf_sys::cudf_test_event_block_synchronize() };
+}
+
+fn unblock_event_synchronize() {
+    unsafe { cudf_sys::cudf_test_event_unblock_synchronize() };
+}
+
+struct EventSynchronizeBlockGuard;
+
+impl EventSynchronizeBlockGuard {
+    fn new() -> Self {
+        block_event_synchronize();
+        Self
+    }
+}
+
+impl Drop for EventSynchronizeBlockGuard {
+    fn drop(&mut self) {
+        unblock_event_synchronize();
+    }
+}
+
+fn wait_for_condition(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if predicate() {
+            return;
+        }
+        thread::yield_now();
+    }
+
+    assert!(predicate(), "condition was not met within {:?}", timeout);
+}
+
+fn has_multiple_gpus() -> bool {
+    DeviceId::count().expect("failed to query visible CUDA devices") >= 2
 }
 
 fn foreign_owned_column_transfer(
@@ -482,7 +526,7 @@ fn column_try_into_owned_device_transfer_with_runtime_release_preserves_zero_cop
     assert_eq!(transfer.column().len(), 3);
     assert!(binding_ptr_eq(&transfer, expected_ptr));
     assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
+    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::Asynchronous);
     assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
 
     match transfer.readiness() {
@@ -531,7 +575,7 @@ fn table_try_into_owned_device_transfer_with_runtime_release_preserves_table_sha
     assert_eq!(transfer.table().num_rows(), 3);
     assert_eq!(transfer.columns().len(), 2);
     assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
+    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::Asynchronous);
     assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
 
     drop(transfer);
@@ -580,7 +624,7 @@ fn series_try_into_owned_device_transfer_with_runtime_release_preserves_zero_cop
     assert_eq!(transfer.column().len(), 3);
     assert!(binding_ptr_eq(&transfer, expected_ptr));
     assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
+    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::Asynchronous);
     assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
 
     match transfer.readiness() {
@@ -628,7 +672,7 @@ fn dataframe_try_into_owned_device_transfer_with_runtime_release_preserves_names
     assert_eq!(transfer.columns().len(), 2);
     assert_eq!(transfer.table().names(), Some(expected_names.as_slice()));
     assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
-    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::MaySynchronizeInternally);
+    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::Asynchronous);
     assert_eq!(transfer.release_contract().release_device(), runtime.device().ordinal() as i32);
 
     drop(transfer);
@@ -670,13 +714,24 @@ fn runtime_release_owned_column_transfer_release_waits_on_same_device_stream() {
     let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
 
     reset_event_observation();
+    let _sync_block = EventSynchronizeBlockGuard::new();
     let baseline_sync = observed_event_synchronize_call_count();
     let baseline_record = observed_raw_record_call_count_for_stream_raw(consumer_stream_raw);
 
-    releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let release_thread = thread::spawn(move || {
+        let result = releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream));
+        tx.send(result).unwrap();
+    });
 
-    assert_eq!(observed_event_synchronize_call_count(), baseline_sync + 1);
-    assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_record + 1);
+    rx.recv_timeout(Duration::from_secs(2))
+        .expect("runtime-backed same-device release did not return promptly")
+        .unwrap();
+    wait_for_condition(Duration::from_secs(2), || {
+        observed_raw_record_call_count_for_stream_raw(consumer_stream_raw) >= baseline_record + 1
+    });
+    wait_for_condition(Duration::from_secs(2), || observed_event_synchronize_call_count() >= baseline_sync + 1);
+    release_thread.join().unwrap();
 }
 
 #[test]
@@ -693,13 +748,53 @@ fn runtime_release_owned_column_transfer_release_waits_on_consumer_event() {
     let consumer_event_raw = consumer_event.__debug_interop_raw_handle_value();
 
     reset_event_observation();
+    let _sync_block = EventSynchronizeBlockGuard::new();
     let baseline_sync = observed_event_synchronize_call_count();
     let baseline_wait = observed_stream_wait_call_count_for_event_raw(consumer_event_raw);
 
-    releaser.release(RuntimeCompletionAuthority::cross_device_event(&consumer_event)).unwrap();
+    let release_event = consumer_event.clone();
+    let (tx, rx) = mpsc::channel();
+    let release_thread = thread::spawn(move || {
+        let result = releaser.release(RuntimeCompletionAuthority::cross_device_event(&release_event));
+        tx.send(result).unwrap();
+    });
 
-    assert_eq!(observed_event_synchronize_call_count(), baseline_sync + 1);
-    assert_eq!(observed_stream_wait_call_count_for_event_raw(consumer_event_raw), baseline_wait + 1);
+    rx.recv_timeout(Duration::from_secs(2))
+        .expect("runtime-backed consumer-event release did not return promptly")
+        .unwrap();
+    wait_for_condition(Duration::from_secs(2), || {
+        observed_stream_wait_call_count_for_event_raw(consumer_event_raw) >= baseline_wait + 1
+    });
+    wait_for_condition(Duration::from_secs(2), || observed_event_synchronize_call_count() >= baseline_sync + 1);
+    release_thread.join().unwrap();
+}
+
+#[test]
+fn runtime_release_owned_column_transfer_rejects_synchronous_by_return_completion() {
+    let runtime = Runtime::builder().build().unwrap();
+    let column = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let (transfer, releaser) = column.try_into_owned_device_column_transfer_with_runtime_release().unwrap();
+    drop(transfer);
+
+    let err = releaser.release(RuntimeCompletionAuthority::SynchronousByReturn).unwrap_err();
+    assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+}
+
+#[test]
+fn runtime_release_owned_column_transfer_rejects_wrong_device_stream_synchronously() {
+    if !has_multiple_gpus() {
+        eprintln!("skipping wrong-device runtime release test because fewer than 2 CUDA devices are visible");
+        return;
+    }
+
+    let runtime = Runtime::builder().with_device(DeviceId::new(0).unwrap()).build().unwrap();
+    let column = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let (transfer, releaser) = column.try_into_owned_device_column_transfer_with_runtime_release().unwrap();
+    drop(transfer);
+
+    let other_runtime = Runtime::builder().with_device(DeviceId::new(1).unwrap()).build().unwrap();
+    let err = releaser.release(RuntimeCompletionAuthority::same_device_stream(other_runtime.stream())).unwrap_err();
+    assert_eq!(err.kind(), InteropErrorKind::ReadinessMismatch);
 }
 
 #[test]

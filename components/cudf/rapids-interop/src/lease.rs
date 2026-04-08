@@ -75,11 +75,6 @@ impl<'export, 'producer, 'consumer> ActiveColumnReadLease<'export, 'producer, 'c
         self.completed = true;
         Ok(result)
     }
-
-    #[doc(hidden)]
-    pub fn release_after_external_completion(mut self) {
-        self.completed = true;
-    }
 }
 
 impl Drop for ActiveColumnReadLease<'_, '_, '_> {
@@ -129,11 +124,6 @@ impl<'export, 'producer, 'consumer> ActiveTableReadLease<'export, 'producer, 'co
         let result = self.lease_backend.complete(&self.export_context, self.completion_binding)?;
         self.completed = true;
         Ok(result)
-    }
-
-    #[doc(hidden)]
-    pub fn release_after_external_completion(mut self) {
-        self.completed = true;
     }
 }
 

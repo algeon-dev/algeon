@@ -210,7 +210,7 @@ pub(super) fn owned_transfer_runtime_release_contract(device: i32) -> ReleaseCon
     ReleaseContract::new(
         device,
         TransferCompletionRule::ReleaseWaitsOnConsumerSignal,
-        ReleaseSynchronization::MaySynchronizeInternally,
+        ReleaseSynchronization::Asynchronous,
     )
 }
 
