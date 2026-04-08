@@ -49,7 +49,7 @@ async fn test_cudf_api_inside_spawn_blocking_is_thread_safe_and_runtime_responsi
                 assert_eq!(view.data_type()?.id(), TypeId::Int32);
 
                 // Per-thread deep copy and host transfer.
-                let copied = shared.copy()?;
+                let copied = shared.deep_copy()?;
                 let host = copied.view()?.to_vec::<i32>()?;
                 assert_eq!(host.first().copied(), Some(0));
                 assert_eq!(host.last().copied(), Some(4095));

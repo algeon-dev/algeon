@@ -24,7 +24,7 @@ use crate::{
 /// Used by both the low-level [`read_parquet`] function and the high-level
 /// [`DataFrame::read_parquet_with_options`](crate::DataFrame::read_parquet_with_options).
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct ParquetTableReadOptions {
+pub struct ParquetReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
@@ -39,25 +39,12 @@ pub struct ParquetTableReadOptions {
     runtime: Option<Runtime>,
 }
 
-impl ParquetTableReadOptions {
-    pub(crate) fn from_parts(
-        filepath: PathBuf,
-        columns: Option<Vec<String>>,
-        skip_rows: i64,
-        num_rows: i64,
-        row_groups: Option<Vec<i32>>,
-        runtime: Option<Runtime>,
-    ) -> Self {
-        Self { filepath, columns, skip_rows, num_rows, row_groups, runtime }
-    }
-}
-
 /// Read a Parquet file into a low-level table result.
 ///
 /// Returns the table data and the column names stored in the Parquet file's
 /// schema. This avoids having to hardcode column indices when working with
 /// Parquet files.
-pub fn read_parquet(options: ParquetTableReadOptions) -> Result<IoTableResult> {
+pub fn read_parquet(options: &ParquetReadOptions) -> Result<IoTableResult> {
     let filepath = super::path_to_cstring(&options.filepath, "io::parquet::read_parquet")?;
 
     // Validate that row_groups is not combined with skip_rows or num_rows.

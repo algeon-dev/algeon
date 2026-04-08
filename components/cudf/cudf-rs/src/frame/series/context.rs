@@ -144,7 +144,7 @@ impl Series {
     ) -> Result<Series> {
         let resolution = resolution.unwrap_or(TimestampResolution::Microseconds);
         let source_type = self.dtype()?.id();
-        if source_type.is_numeric() {
+        if source_type.is_numeric() || source_type.is_boolean() {
             let duration =
                 self.cast_in_context(resolution.duration_type_id(), ctx, "series::in_context::to_datetime_duration")?;
             duration.cast_in_context(resolution.type_id(), ctx, "series::in_context::to_datetime")
@@ -474,22 +474,22 @@ impl<'series, 'ctx, 'handles> SeriesExecutionScope<'series, 'ctx, 'handles> {
     }
 
     /// Reduce to a scalar standard deviation using the borrowed execution override.
-    pub fn std(&self, ddof: i32) -> Result<Scalar> {
+    pub fn std(&self, ddof: u32) -> Result<Scalar> {
         self.series.reduce_in_context(ReduceAggregation::Std { ddof }, self.ctx, "series::in_context::std")
     }
 
     /// Reduce to a host standard deviation value using the borrowed execution override.
-    pub fn std_value(&self, ddof: i32) -> Result<Option<f64>> {
+    pub fn std_value(&self, ddof: u32) -> Result<Option<f64>> {
         scalar_to_optional_value(self.std(ddof)?)
     }
 
     /// Reduce to a scalar variance using the borrowed execution override.
-    pub fn var(&self, ddof: i32) -> Result<Scalar> {
+    pub fn var(&self, ddof: u32) -> Result<Scalar> {
         self.series.reduce_in_context(ReduceAggregation::Variance { ddof }, self.ctx, "series::in_context::var")
     }
 
     /// Reduce to a host variance value using the borrowed execution override.
-    pub fn var_value(&self, ddof: i32) -> Result<Option<f64>> {
+    pub fn var_value(&self, ddof: u32) -> Result<Option<f64>> {
         scalar_to_optional_value(self.var(ddof)?)
     }
 
@@ -625,7 +625,7 @@ impl<'series, 'ctx, 'handles> SeriesExecutionScope<'series, 'ctx, 'handles> {
 
     /// Cast to a numeric type using the borrowed execution override.
     pub fn to_numeric(&self, target: TypeId) -> Result<Series> {
-        if !target.is_numeric() {
+        if !target.is_numeric() && !target.is_boolean() {
             return Err(Error::new(ErrorKind::InvalidOperation, format!("target type {target:?} is not numeric"))
                 .with_operation("series::in_context::to_numeric"));
         }

@@ -16,7 +16,7 @@ use cudf::{Series, StripSide};
 fn test_str_lower() {
     let s = Series::from_strings("s", &["Hello", "WORLD", "Foo123"]).unwrap();
     let result = s.str_lower().unwrap();
-    let vals = result.to_strings().unwrap();
+    let vals = result.to_strings_strict().unwrap();
     assert_eq!(vals, vec!["hello", "world", "foo123"]);
 }
 
@@ -24,7 +24,7 @@ fn test_str_lower() {
 fn test_str_upper() {
     let s = Series::from_strings("s", &["Hello", "world", "Foo123"]).unwrap();
     let result = s.str_upper().unwrap();
-    let vals = result.to_strings().unwrap();
+    let vals = result.to_strings_strict().unwrap();
     assert_eq!(vals, vec!["HELLO", "WORLD", "FOO123"]);
 }
 
@@ -39,7 +39,7 @@ fn test_str_lower_preserves_name() {
 fn test_str_upper_preserves_nulls() {
     let s = Series::from_strings_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str_upper().unwrap();
-    let vals = result.to_optional_strings().unwrap();
+    let vals = result.to_strings_optional().unwrap();
     assert_eq!(vals, vec![Some("HELLO".to_string()), None, Some("WORLD".to_string())]);
 }
 
@@ -58,7 +58,7 @@ fn test_str_lower_empty() {
 fn test_str_contains_basic() {
     let s = Series::from_strings("s", &["hello world", "goodbye", "hello there"]).unwrap();
     let result = s.str_contains("hello").unwrap();
-    let vals = result.to_vec::<bool>().unwrap();
+    let vals = result.to_vec_strict::<bool>().unwrap();
     assert_eq!(vals, vec![true, false, true]);
 }
 
@@ -66,7 +66,7 @@ fn test_str_contains_basic() {
 fn test_str_contains_empty_pattern_matches_all() {
     let s = Series::from_strings("s", &["abc", "def"]).unwrap();
     let result = s.str_contains("").unwrap();
-    let vals = result.to_vec::<bool>().unwrap();
+    let vals = result.to_vec_strict::<bool>().unwrap();
     assert_eq!(vals, vec![true, true]);
 }
 
@@ -74,7 +74,7 @@ fn test_str_contains_empty_pattern_matches_all() {
 fn test_str_contains_preserves_nulls() {
     let s = Series::from_strings_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str_contains("hello").unwrap();
-    let vals = result.to_optional_vec::<bool>().unwrap();
+    let vals = result.to_vec_optional::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
@@ -93,7 +93,7 @@ fn test_str_contains_preserves_name() {
 fn test_str_startswith_basic() {
     let s = Series::from_strings("s", &["hello", "help", "world"]).unwrap();
     let result = s.str_startswith("hel").unwrap();
-    let vals = result.to_vec::<bool>().unwrap();
+    let vals = result.to_vec_strict::<bool>().unwrap();
     assert_eq!(vals, vec![true, true, false]);
 }
 
@@ -101,7 +101,7 @@ fn test_str_startswith_basic() {
 fn test_str_endswith_basic() {
     let s = Series::from_strings("s", &["hello", "fellow", "world"]).unwrap();
     let result = s.str_endswith("llo").unwrap();
-    let vals = result.to_vec::<bool>().unwrap();
+    let vals = result.to_vec_strict::<bool>().unwrap();
     assert_eq!(vals, vec![true, false, false]);
 }
 
@@ -109,7 +109,7 @@ fn test_str_endswith_basic() {
 fn test_str_startswith_preserves_nulls() {
     let s = Series::from_strings_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str_startswith("hel").unwrap();
-    let vals = result.to_optional_vec::<bool>().unwrap();
+    let vals = result.to_vec_optional::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
@@ -117,7 +117,7 @@ fn test_str_startswith_preserves_nulls() {
 fn test_str_endswith_preserves_nulls() {
     let s = Series::from_strings_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str_endswith("rld").unwrap();
-    let vals = result.to_optional_vec::<bool>().unwrap();
+    let vals = result.to_vec_optional::<bool>().unwrap();
     assert_eq!(vals, vec![Some(false), None, Some(true)]);
 }
 
@@ -129,7 +129,7 @@ fn test_str_endswith_preserves_nulls() {
 fn test_str_strip_whitespace() {
     let s = Series::from_strings("s", &["  hello  ", "\tworld\n", "  foo"]).unwrap();
     let result = s.str_strip().unwrap();
-    let vals = result.to_strings().unwrap();
+    let vals = result.to_strings_strict().unwrap();
     assert_eq!(vals, vec!["hello", "world", "foo"]);
 }
 
@@ -137,7 +137,7 @@ fn test_str_strip_whitespace() {
 fn test_str_lstrip_whitespace() {
     let s = Series::from_strings("s", &["  hello  ", "\tworld"]).unwrap();
     let result = s.str_lstrip().unwrap();
-    let vals = result.to_strings().unwrap();
+    let vals = result.to_strings_strict().unwrap();
     assert_eq!(vals, vec!["hello  ", "world"]);
 }
 
@@ -145,7 +145,7 @@ fn test_str_lstrip_whitespace() {
 fn test_str_rstrip_whitespace() {
     let s = Series::from_strings("s", &["  hello  ", "world\t"]).unwrap();
     let result = s.str_rstrip().unwrap();
-    let vals = result.to_strings().unwrap();
+    let vals = result.to_strings_strict().unwrap();
     assert_eq!(vals, vec!["  hello", "world"]);
 }
 
@@ -153,7 +153,7 @@ fn test_str_rstrip_whitespace() {
 fn test_str_strip_specific_chars() {
     let s = Series::from_strings("s", &["xxhelloxx", "xworld"]).unwrap();
     let result = s.str_strip_chars(StripSide::Both, "x").unwrap();
-    let vals = result.to_strings().unwrap();
+    let vals = result.to_strings_strict().unwrap();
     assert_eq!(vals, vec!["hello", "world"]);
 }
 
@@ -161,7 +161,7 @@ fn test_str_strip_specific_chars() {
 fn test_str_strip_preserves_nulls() {
     let s = Series::from_strings_nullable("s", &["  hi  ", "x", "  there  "], &[true, false, true]).unwrap();
     let result = s.str_strip().unwrap();
-    let vals = result.to_optional_strings().unwrap();
+    let vals = result.to_strings_optional().unwrap();
     assert_eq!(vals, vec![Some("hi".to_string()), None, Some("there".to_string())]);
 }
 
@@ -180,7 +180,7 @@ fn test_str_strip_preserves_name() {
 fn test_str_len_basic() {
     let s = Series::from_strings("s", &["hello", "hi", ""]).unwrap();
     let result = s.str_len().unwrap();
-    let vals = result.to_vec::<i32>().unwrap();
+    let vals = result.to_vec_strict::<i32>().unwrap();
     assert_eq!(vals, vec![5, 2, 0]);
 }
 
@@ -189,7 +189,7 @@ fn test_str_len_utf8() {
     // Multi-byte characters: each CJK character is 1 character but 3 bytes
     let s = Series::from_strings("s", &["abc", "\u{4F60}\u{597D}"]).unwrap(); // "你好"
     let result = s.str_len().unwrap();
-    let vals = result.to_vec::<i32>().unwrap();
+    let vals = result.to_vec_strict::<i32>().unwrap();
     assert_eq!(vals, vec![3, 2]); // character count, not byte count
 }
 
@@ -197,7 +197,7 @@ fn test_str_len_utf8() {
 fn test_str_byte_count_utf8() {
     let s = Series::from_strings("s", &["abc", "\u{4F60}\u{597D}"]).unwrap();
     let result = s.str_byte_count().unwrap();
-    let vals = result.to_vec::<i32>().unwrap();
+    let vals = result.to_vec_strict::<i32>().unwrap();
     assert_eq!(vals, vec![3, 6]); // byte count: 3 bytes per CJK char
 }
 
@@ -205,7 +205,7 @@ fn test_str_byte_count_utf8() {
 fn test_str_len_preserves_nulls() {
     let s = Series::from_strings_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str_len().unwrap();
-    let vals = result.to_optional_vec::<i32>().unwrap();
+    let vals = result.to_vec_optional::<i32>().unwrap();
     assert_eq!(vals, vec![Some(5), None, Some(5)]);
 }
 

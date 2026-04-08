@@ -50,11 +50,11 @@ pub enum ReduceAggregation {
     All,
     /// Variance with degrees-of-freedom correction.
     Variance {
-        ddof: i32,
+        ddof: u32,
     },
     /// Standard deviation with degrees-of-freedom correction.
     Std {
-        ddof: i32,
+        ddof: u32,
     },
 }
 
@@ -105,6 +105,14 @@ fn reduce_agg_name(agg: &ReduceAggregation) -> &'static str {
         ReduceAggregation::Variance { .. } => "variance",
         ReduceAggregation::Std { .. } => "std",
     }
+}
+
+pub(crate) fn checked_ddof_to_i32(ddof: u32, operation: &'static str) -> Result<i32> {
+    i32::try_from(ddof).map_err(|_| {
+        Error::new(ErrorKind::InvalidOperation, "ddof exceeds libcudf i32 range")
+            .with_operation(operation)
+            .with_context("ddof", ddof.to_string())
+    })
 }
 
 /// Create a C-side reduce aggregation handle.
@@ -165,26 +173,18 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_voi
             )?;
         },
         ReduceAggregation::Variance { ddof } => {
-            if *ddof < 0 {
-                return Err(Error::new(ErrorKind::InvalidOperation, "ddof must be >= 0")
-                    .with_operation("reduction::create_reduce_agg_handle(variance)")
-                    .with_context("ddof", ddof.to_string()));
-            }
+            let ddof = checked_ddof_to_i32(*ddof, "reduction::create_reduce_agg_handle(variance)")?;
             // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create_variance(*ddof, &mut handle),
+                cudf_sys::cudf_reduce_aggregation_create_variance(ddof, &mut handle),
                 "reduction::create_reduce_agg_handle(variance)",
             )?;
         },
         ReduceAggregation::Std { ddof } => {
-            if *ddof < 0 {
-                return Err(Error::new(ErrorKind::InvalidOperation, "ddof must be >= 0")
-                    .with_operation("reduction::create_reduce_agg_handle(std)")
-                    .with_context("ddof", ddof.to_string()));
-            }
+            let ddof = checked_ddof_to_i32(*ddof, "reduction::create_reduce_agg_handle(std)")?;
             // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create_std(*ddof, &mut handle),
+                cudf_sys::cudf_reduce_aggregation_create_std(ddof, &mut handle),
                 "reduction::create_reduce_agg_handle(std)",
             )?;
         },

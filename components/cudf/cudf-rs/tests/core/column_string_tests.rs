@@ -153,7 +153,7 @@ fn test_to_optional_strings_distinguishes_null_from_empty() {
 fn test_series_to_optional_strings_distinguishes_null_from_empty() {
     let series = Series::from_strings_nullable("names", &["", "placeholder", ""], &[true, false, true]).unwrap();
 
-    let result = series.to_optional_strings().unwrap();
+    let result = series.to_strings_optional().unwrap();
     assert_eq!(result, vec![Some(String::new()), None, Some(String::new())]);
 }
 
@@ -169,10 +169,10 @@ fn test_to_optional_strings_rejects_non_string_column() {
 }
 
 #[test]
-fn test_from_strings_copy_roundtrip() {
+fn test_from_strings_deep_copy_roundtrip() {
     let strings = &["deep", "copy", "test"];
     let col = Column::from_strings(strings).unwrap();
-    let copy = col.copy().unwrap();
+    let copy = col.deep_copy().unwrap();
 
     // Original can be dropped; copy should still be valid
     drop(col);

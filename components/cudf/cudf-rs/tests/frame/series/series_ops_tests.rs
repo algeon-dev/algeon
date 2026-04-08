@@ -22,7 +22,7 @@ fn test_series_add_operator_returns_result() {
     let s = result.unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(s.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn test_series_sub_operator_returns_result() {
     let result: cudf::Result<Series> = &a - &b;
     let s = result.unwrap();
 
-    assert_eq!(s.to_vec::<i32>().unwrap(), vec![9, 18, 27]);
+    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![9, 18, 27]);
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn test_series_mul_operator_returns_result() {
     let result: cudf::Result<Series> = &a * &b;
     let s = result.unwrap();
 
-    assert_eq!(s.to_vec::<i32>().unwrap(), vec![20, 30, 40]);
+    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![20, 30, 40]);
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn test_series_div_operator_returns_result_f64() {
     let s = result.unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
-    assert_eq!(s.to_vec::<f64>().unwrap(), vec![5.0, 5.0, 6.0]);
+    assert_eq!(s.to_vec_strict::<f64>().unwrap(), vec![5.0, 5.0, 6.0]);
 }
 
 // -- owned/ref combo variants --
@@ -67,7 +67,7 @@ fn test_series_add_owned_owned() {
     let b = Series::new::<i32>("b", &[10, 20]).unwrap();
 
     let result: cudf::Result<Series> = a + b;
-    assert_eq!(result.unwrap().to_vec::<i32>().unwrap(), vec![11, 22]);
+    assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn test_series_add_owned_ref() {
     let b = Series::new::<i32>("b", &[10, 20]).unwrap();
 
     let result: cudf::Result<Series> = a + &b;
-    assert_eq!(result.unwrap().to_vec::<i32>().unwrap(), vec![11, 22]);
+    assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn test_series_add_ref_owned() {
     let b = Series::new::<i32>("b", &[10, 20]).unwrap();
 
     let result: cudf::Result<Series> = &a + b;
-    assert_eq!(result.unwrap().to_vec::<i32>().unwrap(), vec![11, 22]);
+    assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
 }
 
 // -- naming behavior: Series op Series produces unnamed result --
@@ -108,7 +108,7 @@ fn test_series_add_operator_mixed_type_promotion() {
 
     let result = (&a + &b).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
-    assert_eq!(result.to_vec::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
 }
 
 // ===========================================================================
@@ -122,7 +122,7 @@ fn test_series_mul_scalar_f64_operator() {
     let result: cudf::Result<Series> = &s * 2.0_f64;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
+    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn test_series_add_scalar_i32_operator() {
     let result: cudf::Result<Series> = &s + 10_i32;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<i32>().unwrap(), vec![11, 12, 13]);
+    assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![11, 12, 13]);
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn test_series_sub_scalar_i64_operator() {
     let result: cudf::Result<Series> = &s - 50_i64;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<i64>().unwrap(), vec![50, 150, 250]);
+    assert_eq!(out.to_vec_strict::<i64>().unwrap(), vec![50, 150, 250]);
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn test_series_div_scalar_f32_operator() {
     let result: cudf::Result<Series> = &s / 5.0_f32;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<f32>().unwrap(), vec![2.0, 4.0, 6.0]);
+    assert_eq!(out.to_vec_strict::<f32>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
 // -- owned Series op scalar --
@@ -164,7 +164,7 @@ fn test_series_mul_scalar_owned_operator() {
     let result: cudf::Result<Series> = s * 2.0_f64;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
+    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
 // -- naming behavior: Series op scalar inherits Series name --
@@ -198,7 +198,7 @@ fn test_scalar_mul_series_f64_operator() {
     let result: cudf::Result<Series> = 2.0_f64 * &s;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
+    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
 #[test]
@@ -208,7 +208,7 @@ fn test_scalar_add_series_i32_operator() {
     let result: cudf::Result<Series> = 10_i32 + &s;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<i32>().unwrap(), vec![11, 12, 13]);
+    assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![11, 12, 13]);
 }
 
 // -- non-commutative: scalar - Series --
@@ -220,7 +220,7 @@ fn test_scalar_sub_series_f64_operator() {
     let result: cudf::Result<Series> = 10.0_f64 - &s;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<f64>().unwrap(), vec![9.0, 8.0, 7.0]);
+    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![9.0, 8.0, 7.0]);
 }
 
 #[test]
@@ -230,7 +230,7 @@ fn test_scalar_sub_series_i32_operator() {
     let result: cudf::Result<Series> = 100_i32 - &s;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<i32>().unwrap(), vec![99, 98, 97]);
+    assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![99, 98, 97]);
 }
 
 // -- non-commutative: scalar / Series --
@@ -242,7 +242,7 @@ fn test_scalar_div_series_f64_operator() {
     let result: cudf::Result<Series> = 20.0_f64 / &s;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<f64>().unwrap(), vec![10.0, 5.0, 4.0]);
+    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![10.0, 5.0, 4.0]);
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn test_scalar_div_series_i64_operator() {
     let result: cudf::Result<Series> = 100_i64 / &s;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<i64>().unwrap(), vec![50, 20, 10]);
+    assert_eq!(out.to_vec_strict::<i64>().unwrap(), vec![50, 20, 10]);
 }
 
 // -- scalar op owned Series --
@@ -264,7 +264,7 @@ fn test_scalar_mul_owned_series_operator() {
     let result: cudf::Result<Series> = 2.0_f64 * s;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
+    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
 // -- naming behavior: scalar op Series inherits Series name --
@@ -357,7 +357,7 @@ fn test_series_rem_operator_i32() {
     let s = result.unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(s.to_vec::<i32>().unwrap(), vec![1, 3, 1]);
+    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 3, 1]);
 }
 
 #[test]
@@ -369,7 +369,7 @@ fn test_series_rem_operator_f64() {
     let s = result.unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
-    let vals = s.to_vec::<f64>().unwrap();
+    let vals = s.to_vec_strict::<f64>().unwrap();
     assert!((vals[0] - 1.5).abs() < 1e-10);
     assert!((vals[1] - 2.0).abs() < 1e-10);
 }
@@ -381,7 +381,7 @@ fn test_series_rem_scalar_i32_operator() {
     let result: cudf::Result<Series> = &s % 3_i32;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<i32>().unwrap(), vec![1, 2, 2]);
+    assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![1, 2, 2]);
 }
 
 #[test]
@@ -391,7 +391,7 @@ fn test_series_rem_scalar_f64_operator() {
     let result: cudf::Result<Series> = &s % 3.0_f64;
     let out = result.unwrap();
 
-    let vals = out.to_vec::<f64>().unwrap();
+    let vals = out.to_vec_strict::<f64>().unwrap();
     assert!((vals[0] - 1.5).abs() < 1e-10);
     assert!((vals[1] - 1.0).abs() < 1e-10);
 }
@@ -402,7 +402,7 @@ fn test_series_rem_owned_owned() {
     let b = Series::new::<i32>("b", &[3, 4]).unwrap();
 
     let result: cudf::Result<Series> = a % b;
-    assert_eq!(result.unwrap().to_vec::<i32>().unwrap(), vec![1, 3]);
+    assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
 }
 
 #[test]
@@ -429,7 +429,7 @@ fn test_scalar_rem_series_i32() {
     let result: cudf::Result<Series> = 10_i32 % &s;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<i32>().unwrap(), vec![1, 2]);
+    assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![1, 2]);
 }
 
 #[test]
@@ -439,7 +439,7 @@ fn test_scalar_rem_series_f64() {
     let result: cudf::Result<Series> = 10.0_f64 % &s;
     let out = result.unwrap();
 
-    let vals = out.to_vec::<f64>().unwrap();
+    let vals = out.to_vec_strict::<f64>().unwrap();
     assert!((vals[0] - 1.0).abs() < 1e-10);
 }
 
@@ -454,7 +454,7 @@ fn test_series_neg_operator_i32() {
     let result: cudf::Result<Series> = -&s;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<i32>().unwrap(), vec![-1, 2, -3]);
+    assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![-1, 2, -3]);
 }
 
 #[test]
@@ -464,7 +464,7 @@ fn test_series_neg_operator_f64() {
     let result: cudf::Result<Series> = -&s;
     let out = result.unwrap();
 
-    assert_eq!(out.to_vec::<f64>().unwrap(), vec![-1.5, 2.5]);
+    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![-1.5, 2.5]);
 }
 
 #[test]
@@ -472,7 +472,7 @@ fn test_series_neg_owned() {
     let s = Series::new::<i32>("x", &[1, -2]).unwrap();
 
     let result: cudf::Result<Series> = -s;
-    assert_eq!(result.unwrap().to_vec::<i32>().unwrap(), vec![-1, 2]);
+    assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![-1, 2]);
 }
 
 #[test]
@@ -495,7 +495,7 @@ fn test_series_not_operator_bool() {
     let out = result.unwrap();
 
     assert_eq!(out.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(out.to_vec::<bool>().unwrap(), vec![false, true, false]);
+    assert_eq!(out.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
 #[test]
@@ -503,7 +503,7 @@ fn test_series_not_owned() {
     let s = Series::new::<bool>("x", &[true, false]).unwrap();
 
     let result: cudf::Result<Series> = !s;
-    assert_eq!(result.unwrap().to_vec::<bool>().unwrap(), vec![false, true]);
+    assert_eq!(result.unwrap().to_vec_strict::<bool>().unwrap(), vec![false, true]);
 }
 
 #[test]
@@ -524,7 +524,7 @@ fn test_series_rem_method() {
     let b = Series::new::<i32>("b", &[3, 5]).unwrap();
 
     let result = a.rem(&b).unwrap();
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 3]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 3]);
 }
 
 #[test]
@@ -533,7 +533,7 @@ fn test_series_rem_scalar_method() {
 
     let result = s.rem_scalar(3i32).unwrap();
     assert_eq!(result.name(), Some("x"));
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 2]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2]);
 }
 
 // ===========================================================================
@@ -547,8 +547,8 @@ fn test_scalar_sub_is_not_commutative() {
     let forward = (&s - 10_i32).unwrap();
     let reverse = (10_i32 - &s).unwrap();
 
-    let fwd_vals = forward.to_vec::<i32>().unwrap();
-    let rev_vals = reverse.to_vec::<i32>().unwrap();
+    let fwd_vals = forward.to_vec_strict::<i32>().unwrap();
+    let rev_vals = reverse.to_vec_strict::<i32>().unwrap();
 
     assert_eq!(fwd_vals, vec![-9, -8, -7]);
     assert_eq!(rev_vals, vec![9, 8, 7]);
@@ -561,8 +561,8 @@ fn test_scalar_div_is_not_commutative() {
     let forward = (&s / 20.0_f64).unwrap();
     let reverse = (20.0_f64 / &s).unwrap();
 
-    let fwd_vals = forward.to_vec::<f64>().unwrap();
-    let rev_vals = reverse.to_vec::<f64>().unwrap();
+    let fwd_vals = forward.to_vec_strict::<f64>().unwrap();
+    let rev_vals = reverse.to_vec_strict::<f64>().unwrap();
 
     assert_eq!(fwd_vals, vec![0.1, 0.2, 0.25]);
     assert_eq!(rev_vals, vec![10.0, 5.0, 4.0]);

@@ -21,7 +21,7 @@ fn sample_df_with_nulls() -> DataFrame {
         Series::new_nullable::<f64>("score", &[10.0, 0.0, 30.0, 0.0, 50.0], &[true, false, true, false, true]).unwrap();
     let tags =
         Series::from_strings_nullable("tag", &["a", "b", "", "d", ""], &[true, true, false, true, false]).unwrap();
-    DataFrame::from_series([("id", ids), ("score", scores), ("tag", tags)]).unwrap()
+    DataFrame::from_series([ids, scores, tags]).unwrap()
 }
 
 /// Build a 5-row DataFrame with duplicate values:
@@ -30,7 +30,7 @@ fn sample_df_with_nulls() -> DataFrame {
 fn sample_df_with_dupes() -> DataFrame {
     let a = Series::new::<i32>("a", &[1, 2, 1, 2, 3]).unwrap();
     let b = Series::new::<i32>("b", &[10, 20, 10, 20, 30]).unwrap();
-    DataFrame::from_series([("a", a), ("b", b)]).unwrap()
+    DataFrame::from_series([a, b]).unwrap()
 }
 
 // ===========================================================================
@@ -50,7 +50,7 @@ fn test_dropna_default_drops_any_null_row() {
     //       row 3 = (4, null, "d") — null in score → dropped
     //       row 4 = (5, 50.0, null) — null in tag → dropped
     assert_eq!(result.num_rows(), 1);
-    assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1]);
+    assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
 }
 
 // ===========================================================================
@@ -80,7 +80,7 @@ fn test_dropna_subset_single_column() {
 
     // score is null at rows 1,3 → 3 rows survive.
     assert_eq!(result.num_rows(), 3);
-    assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 5]);
+    assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3, 5]);
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn test_dropna_threshold() {
     // Row 3: score=null, tag=valid → 1 non-null → drop
     // Row 4: score=valid, tag=null → 1 non-null → drop
     assert_eq!(result.num_rows(), 1);
-    assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1]);
+    assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn test_dropna_empty_result_preserves_schema() {
     // All rows have nulls in some column.
     let a = Series::new_nullable::<i32>("a", &[0, 0], &[false, false]).unwrap();
     let b = Series::new_nullable::<i32>("b", &[0, 0], &[false, false]).unwrap();
-    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([a, b]).unwrap();
 
     let result = df.dropna(Default::default()).unwrap();
     assert_eq!(result.num_rows(), 0);
@@ -188,7 +188,7 @@ fn test_drop_duplicates_subset() {
 fn test_drop_duplicates_keep_first() {
     let a = Series::new::<i32>("a", &[1, 1, 2]).unwrap();
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([a, b]).unwrap();
 
     let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepFirst).build();
     let result = df.drop_duplicates(opts).unwrap();
@@ -198,10 +198,10 @@ fn test_drop_duplicates_keep_first() {
     let mut rows: Vec<(i32, i32)> = result
         .series("a")
         .unwrap()
-        .to_vec::<i32>()
+        .to_vec_strict::<i32>()
         .unwrap()
         .into_iter()
-        .zip(result.series("b").unwrap().to_vec::<i32>().unwrap())
+        .zip(result.series("b").unwrap().to_vec_strict::<i32>().unwrap())
         .collect();
     rows.sort();
     assert_eq!(rows, vec![(1, 10), (2, 30)]);
@@ -211,7 +211,7 @@ fn test_drop_duplicates_keep_first() {
 fn test_drop_duplicates_keep_last() {
     let a = Series::new::<i32>("a", &[1, 1, 2]).unwrap();
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([a, b]).unwrap();
 
     let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepLast).build();
     let result = df.drop_duplicates(opts).unwrap();
@@ -220,10 +220,10 @@ fn test_drop_duplicates_keep_last() {
     let mut rows: Vec<(i32, i32)> = result
         .series("a")
         .unwrap()
-        .to_vec::<i32>()
+        .to_vec_strict::<i32>()
         .unwrap()
         .into_iter()
-        .zip(result.series("b").unwrap().to_vec::<i32>().unwrap())
+        .zip(result.series("b").unwrap().to_vec_strict::<i32>().unwrap())
         .collect();
     rows.sort();
     assert_eq!(rows, vec![(1, 20), (2, 30)]);
@@ -233,14 +233,14 @@ fn test_drop_duplicates_keep_last() {
 fn test_drop_duplicates_keep_none() {
     let a = Series::new::<i32>("a", &[1, 1, 2]).unwrap();
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([a, b]).unwrap();
 
     let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepNone).build();
     let result = df.drop_duplicates(opts).unwrap();
 
     // a=1 appears twice → both removed; a=2 appears once → kept.
     assert_eq!(result.num_rows(), 1);
-    assert_eq!(result.series("a").unwrap().to_vec::<i32>().unwrap(), vec![2]);
+    assert_eq!(result.series("a").unwrap().to_vec_strict::<i32>().unwrap(), vec![2]);
 }
 
 // ===========================================================================
@@ -279,11 +279,11 @@ fn test_fillna_scalar_single_column() {
     let result = df.fillna_with_scalar("score", &fill).unwrap();
 
     // score nulls at rows 1,3 replaced with 999.0
-    let scores = result.series("score").unwrap().to_vec::<f64>().unwrap();
+    let scores = result.series("score").unwrap().to_vec_strict::<f64>().unwrap();
     assert_eq!(scores, vec![10.0, 999.0, 30.0, 999.0, 50.0]);
 
     // Other columns untouched.
-    assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
 }
 
 // ===========================================================================
@@ -296,7 +296,7 @@ fn test_fillna_with_series_single_column() {
     let fill_series = Series::new::<f64>("fill", &[0.0, 20.0, 0.0, 40.0, 0.0]).unwrap();
     let result = df.fillna_with_series("score", &fill_series).unwrap();
 
-    let scores = result.series("score").unwrap().to_vec::<f64>().unwrap();
+    let scores = result.series("score").unwrap().to_vec_strict::<f64>().unwrap();
     assert_eq!(scores, vec![10.0, 20.0, 30.0, 40.0, 50.0]);
 }
 

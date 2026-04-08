@@ -29,12 +29,12 @@ fn test_groupby_sum_skips_nulls_in_values() {
     // key=2: [30, 40] -> sum=70
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
-    let key_data = result.series("key").unwrap().to_vec::<i32>().unwrap();
-    let sum_data = result.series("value_sum").unwrap().to_vec::<i64>().unwrap();
+    let key_data = result.series("key").unwrap().to_vec_optional::<i32>().unwrap();
+    let sum_data = result.series("value_sum").unwrap().to_vec_optional::<i64>().unwrap();
 
-    let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(sum_data).collect();
+    let mut pairs: Vec<(Option<i32>, Option<i64>)> = key_data.into_iter().zip(sum_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
-    assert_eq!(pairs, vec![(1, 10), (2, 70)]);
+    assert_eq!(pairs, vec![(Some(1), Some(10)), (Some(2), Some(70))]);
 }
 
 // ===========================================================================
@@ -46,14 +46,14 @@ fn test_groupby_min_skips_nulls() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Min)]).unwrap();
 
-    let key_data = result.series("key").unwrap().to_vec::<i32>().unwrap();
-    let min_data = result.series("value_min").unwrap().to_vec::<i64>().unwrap();
+    let key_data = result.series("key").unwrap().to_vec_optional::<i32>().unwrap();
+    let min_data = result.series("value_min").unwrap().to_vec_optional::<i64>().unwrap();
 
-    let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(min_data).collect();
+    let mut pairs: Vec<(Option<i32>, Option<i64>)> = key_data.into_iter().zip(min_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
     // key=1: [10, null] -> min=10
     // key=2: [30, 40] -> min=30
-    assert_eq!(pairs, vec![(1, 10), (2, 30)]);
+    assert_eq!(pairs, vec![(Some(1), Some(10)), (Some(2), Some(30))]);
 }
 
 #[test]
@@ -61,14 +61,14 @@ fn test_groupby_max_skips_nulls() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Max)]).unwrap();
 
-    let key_data = result.series("key").unwrap().to_vec::<i32>().unwrap();
-    let max_data = result.series("value_max").unwrap().to_vec::<i64>().unwrap();
+    let key_data = result.series("key").unwrap().to_vec_optional::<i32>().unwrap();
+    let max_data = result.series("value_max").unwrap().to_vec_optional::<i64>().unwrap();
 
-    let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(max_data).collect();
+    let mut pairs: Vec<(Option<i32>, Option<i64>)> = key_data.into_iter().zip(max_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
     // key=1: [10, null] -> max=10
     // key=2: [30, 40] -> max=40
-    assert_eq!(pairs, vec![(1, 10), (2, 40)]);
+    assert_eq!(pairs, vec![(Some(1), Some(10)), (Some(2), Some(40))]);
 }
 
 // ===========================================================================
@@ -80,8 +80,8 @@ fn test_groupby_mean_skips_nulls() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Mean)]).unwrap();
 
-    let key_data = result.series("key").unwrap().to_vec::<i32>().unwrap();
-    let mean_data = result.series("value_mean").unwrap().to_vec::<f64>().unwrap();
+    let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
+    let mean_data = result.series("value_mean").unwrap().to_vec_strict::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(mean_data).collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -100,8 +100,8 @@ fn test_groupby_count_excludes_nulls_by_default() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Count { include_nulls: false })]).unwrap();
 
-    let key_data = result.series("key").unwrap().to_vec::<i32>().unwrap();
-    let count_data = result.series("value_count").unwrap().to_vec::<i32>().unwrap();
+    let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
+    let count_data = result.series("value_count").unwrap().to_vec_strict::<i32>().unwrap();
 
     let mut pairs: Vec<(i32, i32)> = key_data.into_iter().zip(count_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -115,8 +115,8 @@ fn test_groupby_count_includes_nulls_when_requested() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Count { include_nulls: true })]).unwrap();
 
-    let key_data = result.series("key").unwrap().to_vec::<i32>().unwrap();
-    let count_data = result.series("value_count").unwrap().to_vec::<i32>().unwrap();
+    let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
+    let count_data = result.series("value_count").unwrap().to_vec_strict::<i32>().unwrap();
 
     let mut pairs: Vec<(i32, i32)> = key_data.into_iter().zip(count_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -138,9 +138,9 @@ fn test_groupby_sum_all_null_group() {
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
-    let key_data = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
     let sum_series = result.series("value_sum").unwrap();
-    let sum_data = sum_series.to_optional_vec::<i64>().unwrap();
+    let sum_data = sum_series.to_vec_optional::<i64>().unwrap();
 
     let mut pairs: Vec<(i32, Option<i64>)> = key_data.into_iter().zip(sum_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -161,9 +161,9 @@ fn test_groupby_min_all_null_group() {
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Min)]).unwrap();
 
-    let key_data = result.series("key").unwrap().to_vec::<i32>().unwrap();
+    let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
     let min_series = result.series("value_min").unwrap();
-    let min_data = min_series.to_optional_vec::<i64>().unwrap();
+    let min_data = min_series.to_vec_optional::<i64>().unwrap();
 
     let mut pairs: Vec<(i32, Option<i64>)> = key_data.into_iter().zip(min_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -191,14 +191,14 @@ fn test_groupby_null_keys_excluded_by_default() {
     // Without include_null_keys, the null-key row should be dropped
     assert_eq!(result.num_rows(), 2);
 
-    let key_data = result.series("key").unwrap().to_vec::<i32>().unwrap();
-    let sum_data = result.series("value_sum").unwrap().to_vec::<i64>().unwrap();
+    let key_data = result.series("key").unwrap().to_vec_optional::<i32>().unwrap();
+    let sum_data = result.series("value_sum").unwrap().to_vec_optional::<i64>().unwrap();
 
-    let mut pairs: Vec<(i32, i64)> = key_data.into_iter().zip(sum_data).collect();
+    let mut pairs: Vec<(Option<i32>, Option<i64>)> = key_data.into_iter().zip(sum_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
     // key=1: [10, 30] -> sum=40
     // key=2: [40] -> sum=40
-    assert_eq!(pairs, vec![(1, 40), (2, 40)]);
+    assert_eq!(pairs, vec![(Some(1), Some(40)), (Some(2), Some(40))]);
 }
 
 #[test]
@@ -218,8 +218,8 @@ fn test_groupby_null_keys_included_when_requested() {
 
     let key_series = result.series("key").unwrap();
     let sum_series = result.series("value_sum").unwrap();
-    let key_data = key_series.to_optional_vec::<i32>().unwrap();
-    let _sum_data = sum_series.to_vec::<i64>().unwrap();
+    let key_data = key_series.to_vec_optional::<i32>().unwrap();
+    let _sum_data = sum_series.to_vec_strict::<i64>().unwrap();
 
     // Should have groups for key=1, key=2, and key=null
     let null_key_count = key_data.iter().filter(|k| k.is_none()).count();

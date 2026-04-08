@@ -18,7 +18,7 @@ fn test_concat_two_i32_series() {
     assert_eq!(result.name(), None, "concat produces unnamed Series");
     assert_eq!(result.len(), 5);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
 }
 
 #[test]
@@ -30,7 +30,7 @@ fn test_concat_three_f64_series() {
     let result = Series::concat(&[&a, &b, &c]).unwrap();
 
     assert_eq!(result.len(), 4);
-    assert_eq!(result.to_vec::<f64>().unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn test_concat_strings() {
     let result = Series::concat(&[&a, &b]).unwrap();
 
     assert_eq!(result.len(), 2);
-    assert_eq!(result.to_strings().unwrap(), vec!["hello", "world"]);
+    assert_eq!(result.to_strings_strict().unwrap(), vec!["hello", "world"]);
 }
 
 // ===========================================================================
@@ -55,7 +55,7 @@ fn test_concat_single_series() {
     let result = Series::concat(&[&a]).unwrap();
 
     assert_eq!(result.len(), 3);
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn test_concat_with_empty_series() {
     let result = Series::concat(&[&a, &b, &c]).unwrap();
 
     assert_eq!(result.len(), 3);
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]

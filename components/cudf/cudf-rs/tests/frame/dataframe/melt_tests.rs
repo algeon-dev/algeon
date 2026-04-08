@@ -16,7 +16,7 @@ fn test_melt_single_value_var() {
     let a = Series::from_strings("A", &["a", "b", "c"]).unwrap();
     let b = Series::new::<i32>("B", &[1, 3, 5]).unwrap();
     let c = Series::new::<i32>("C", &[2, 4, 6]).unwrap();
-    let df = DataFrame::from_series(vec![("A", a), ("B", b), ("C", c)]).unwrap();
+    let df = DataFrame::from_series(vec![a, b, c]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).build();
     let result = df.melt(opts).unwrap();
@@ -25,13 +25,13 @@ fn test_melt_single_value_var() {
     assert_eq!(result.num_columns(), 3);
 
     let var_col = result.series("variable").unwrap();
-    assert_eq!(var_col.to_strings().unwrap(), vec!["B", "B", "B"]);
+    assert_eq!(var_col.to_strings_strict().unwrap(), vec!["B", "B", "B"]);
 
     let val_col = result.series("value").unwrap();
-    assert_eq!(val_col.to_vec::<i32>().unwrap(), vec![1, 3, 5]);
+    assert_eq!(val_col.to_vec_strict::<i32>().unwrap(), vec![1, 3, 5]);
 
     let id_col = result.series("A").unwrap();
-    assert_eq!(id_col.to_strings().unwrap(), vec!["a", "b", "c"]);
+    assert_eq!(id_col.to_strings_strict().unwrap(), vec!["a", "b", "c"]);
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn test_melt_multiple_value_vars() {
     let a = Series::from_strings("A", &["a", "b", "c"]).unwrap();
     let b = Series::new::<i32>("B", &[1, 3, 5]).unwrap();
     let c = Series::new::<i32>("C", &[2, 4, 6]).unwrap();
-    let df = DataFrame::from_series(vec![("A", a), ("B", b), ("C", c)]).unwrap();
+    let df = DataFrame::from_series(vec![a, b, c]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B", "C"]).build();
     let result = df.melt(opts).unwrap();
@@ -50,10 +50,10 @@ fn test_melt_multiple_value_vars() {
     assert_eq!(result.num_columns(), 3);
 
     let var_col = result.series("variable").unwrap();
-    assert_eq!(var_col.to_strings().unwrap(), vec!["B", "B", "B", "C", "C", "C"]);
+    assert_eq!(var_col.to_strings_strict().unwrap(), vec!["B", "B", "B", "C", "C", "C"]);
 
     let val_col = result.series("value").unwrap();
-    assert_eq!(val_col.to_vec::<i32>().unwrap(), vec![1, 3, 5, 2, 4, 6]);
+    assert_eq!(val_col.to_vec_strict::<i32>().unwrap(), vec![1, 3, 5, 2, 4, 6]);
 }
 
 // ===========================================================================
@@ -64,7 +64,7 @@ fn test_melt_multiple_value_vars() {
 fn test_melt_custom_var_value_names() {
     let a = Series::from_strings("A", &["x"]).unwrap();
     let b = Series::new::<i32>("B", &[10]).unwrap();
-    let df = DataFrame::from_series(vec![("A", a), ("B", b)]).unwrap();
+    let df = DataFrame::from_series(vec![a, b]).unwrap();
 
     let opts =
         MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).var_name("my_var").value_name("my_val").build();
@@ -85,7 +85,7 @@ fn test_melt_default_value_vars() {
     let a = Series::from_strings("A", &["x", "y"]).unwrap();
     let b = Series::new::<i32>("B", &[1, 2]).unwrap();
     let c = Series::new::<i32>("C", &[3, 4]).unwrap();
-    let df = DataFrame::from_series(vec![("A", a), ("B", b), ("C", c)]).unwrap();
+    let df = DataFrame::from_series(vec![a, b, c]).unwrap();
 
     // Only id_vars specified → value_vars = [B, C]
     let opts = MeltOptions::builder().id_vars(&["A"]).build();
@@ -103,7 +103,7 @@ fn test_melt_default_value_vars() {
 fn test_melt_no_id_vars() {
     let b = Series::new::<i32>("B", &[1, 2]).unwrap();
     let c = Series::new::<i32>("C", &[3, 4]).unwrap();
-    let df = DataFrame::from_series(vec![("B", b), ("C", c)]).unwrap();
+    let df = DataFrame::from_series(vec![b, c]).unwrap();
 
     let opts = MeltOptions::builder().value_vars(&["B", "C"]).build();
     let result = df.melt(opts).unwrap();
@@ -120,14 +120,14 @@ fn test_melt_no_id_vars() {
 fn test_melt_preserves_nulls_in_values() {
     let a = Series::from_strings("A", &["x", "y"]).unwrap();
     let b = Series::new_nullable::<i32>("B", &[1, 0], &[true, false]).unwrap();
-    let df = DataFrame::from_series(vec![("A", a), ("B", b)]).unwrap();
+    let df = DataFrame::from_series(vec![a, b]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).build();
     let result = df.melt(opts).unwrap();
 
     let val_col = result.series("value").unwrap();
     assert_eq!(val_col.null_count(), 1);
-    let vals = val_col.to_optional_vec::<i32>().unwrap();
+    let vals = val_col.to_vec_optional::<i32>().unwrap();
     assert_eq!(vals, vec![Some(1), None]);
 }
 
@@ -139,7 +139,7 @@ fn test_melt_preserves_nulls_in_values() {
 fn test_melt_empty_dataframe() {
     let a = Series::from_strings("A", &[]).unwrap();
     let b = Series::new::<i32>("B", &[]).unwrap();
-    let df = DataFrame::from_series(vec![("A", a), ("B", b)]).unwrap();
+    let df = DataFrame::from_series(vec![a, b]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).build();
     let result = df.melt(opts).unwrap();
@@ -152,17 +152,17 @@ fn test_melt_empty_dataframe() {
 fn test_melt_all_columns_as_id_vars_returns_empty_long_frame() {
     let a = Series::from_strings("A", &["x", "y"]).unwrap();
     let b = Series::new::<i32>("B", &[1, 2]).unwrap();
-    let df = DataFrame::from_series(vec![("A", a), ("B", b)]).unwrap();
+    let df = DataFrame::from_series(vec![a, b]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A", "B"]).build();
     let result = df.melt(opts).unwrap();
 
     assert_eq!(result.num_rows(), 0);
     assert_eq!(result.num_columns(), 4);
-    assert_eq!(result.series("A").unwrap().to_strings().unwrap(), Vec::<String>::new());
-    assert_eq!(result.series("B").unwrap().to_vec::<i32>().unwrap(), Vec::<i32>::new());
-    assert_eq!(result.series("variable").unwrap().to_strings().unwrap(), Vec::<String>::new());
-    assert_eq!(result.series("value").unwrap().to_vec::<i32>().unwrap(), Vec::<i32>::new());
+    assert_eq!(result.series("A").unwrap().to_strings_strict().unwrap(), Vec::<String>::new());
+    assert_eq!(result.series("B").unwrap().to_vec_strict::<i32>().unwrap(), Vec::<i32>::new());
+    assert_eq!(result.series("variable").unwrap().to_strings_strict().unwrap(), Vec::<String>::new());
+    assert_eq!(result.series("value").unwrap().to_vec_strict::<i32>().unwrap(), Vec::<i32>::new());
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn test_melt_single_row() {
     let a = Series::from_strings("A", &["x"]).unwrap();
     let b = Series::new::<i32>("B", &[10]).unwrap();
     let c = Series::new::<i32>("C", &[20]).unwrap();
-    let df = DataFrame::from_series(vec![("A", a), ("B", b), ("C", c)]).unwrap();
+    let df = DataFrame::from_series(vec![a, b, c]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B", "C"]).build();
     let result = df.melt(opts).unwrap();
@@ -181,7 +181,7 @@ fn test_melt_single_row() {
 #[test]
 fn test_melt_missing_id_var_returns_error() {
     let b = Series::new::<i32>("B", &[1]).unwrap();
-    let df = DataFrame::from_series(vec![("B", b)]).unwrap();
+    let df = DataFrame::from_series(vec![b]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["nonexistent"]).value_vars(&["B"]).build();
     let result = df.melt(opts);
@@ -191,7 +191,7 @@ fn test_melt_missing_id_var_returns_error() {
 #[test]
 fn test_melt_missing_value_var_returns_error() {
     let a = Series::new::<i32>("A", &[1]).unwrap();
-    let df = DataFrame::from_series(vec![("A", a)]).unwrap();
+    let df = DataFrame::from_series(vec![a]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["nonexistent"]).build();
     let result = df.melt(opts);

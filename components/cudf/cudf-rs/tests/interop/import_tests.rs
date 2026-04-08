@@ -276,7 +276,7 @@ fn series_import_from_borrowed_column_view_returns_unnamed_series() {
         cudf::Series::try_import_from_borrowed_column_view_into_runtime(&borrowed, &destination_runtime).unwrap();
 
     assert_eq!(imported.name(), None);
-    assert_eq!(imported.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(
         imported.as_column().__debug_execution_domain_stream_value(),
         destination_runtime.stream().__debug_raw_handle_value()
@@ -323,7 +323,7 @@ fn series_import_from_prepared_column_export_returns_unnamed_series() {
         cudf::Series::try_import_from_prepared_column_export_into_runtime(&export, &destination_runtime).unwrap();
 
     assert_eq!(imported.name(), None);
-    assert_eq!(imported.to_strings().unwrap(), vec!["one", "two", "three"]);
+    assert_eq!(imported.to_strings_strict().unwrap(), vec!["one", "two", "three"]);
     assert_eq!(
         imported.as_column().__debug_execution_domain_stream_value(),
         destination_runtime.stream().__debug_raw_handle_value()
@@ -375,7 +375,7 @@ fn series_import_from_owned_device_column_transfer_returns_unnamed_series() {
     let imported = cudf::Series::try_from_owned_device_column_transfer(transfer).unwrap();
 
     assert_eq!(imported.name(), None);
-    assert_eq!(imported.to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
     assert_eq!(imported.as_column().view().unwrap().device_data_ptr().unwrap(), expected_ptr);
     assert_eq!(imported.as_column().__debug_execution_domain_stream_value(), expected_stream);
     assert_eq!(imported.as_column().__debug_execution_domain_mr_value(), expected_mr);
@@ -606,8 +606,8 @@ fn dataframe_import_from_borrowed_table_view_with_explicit_names_uses_caller_nam
     .unwrap();
 
     assert_eq!(imported.column_names(), vec!["left", "right"]);
-    assert_eq!(imported.series("left").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(imported.series("right").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(imported.series("left").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(imported.series("right").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -625,8 +625,7 @@ fn prepared_device_table_export_import_round_trips_recursive_nested_columns_into
     let id = frame.series("id").unwrap();
     let encoded = dictionary::encode(&category.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(encoded).unwrap().rename("category");
-    let frame =
-        DataFrame::from_series([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap();
+    let frame = DataFrame::from_series([category, nested, point, id]).unwrap();
     let (source, _names) = frame.try_into_table().unwrap();
     let export = source.try_prepare_device_table_export().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -676,7 +675,7 @@ fn dataframe_import_from_prepared_table_export_with_explicit_names_uses_caller_n
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
+    let frame = DataFrame::from_series([ids, values]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
     let destination_runtime = common::sample_runtime();
 
@@ -688,8 +687,8 @@ fn dataframe_import_from_prepared_table_export_with_explicit_names_uses_caller_n
     .unwrap();
 
     assert_eq!(imported.column_names(), vec!["left", "right"]);
-    assert_eq!(imported.series("left").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(imported.series("right").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(imported.series("left").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(imported.series("right").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -707,8 +706,7 @@ fn prepared_host_table_export_import_round_trips_recursive_nested_columns_into_d
     let id = frame.series("id").unwrap();
     let encoded = dictionary::encode(&category.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(encoded).unwrap().rename("category");
-    let frame =
-        DataFrame::from_series([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap();
+    let frame = DataFrame::from_series([category, nested, point, id]).unwrap();
     let (source, _names) = frame.try_into_table().unwrap();
     let export = source.try_prepare_host_table_export().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -764,8 +762,8 @@ fn dataframe_import_from_owned_device_table_transfer_with_explicit_names_uses_ca
     .unwrap();
 
     assert_eq!(imported.column_names(), vec!["left", "right"]);
-    assert_eq!(imported.series("left").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(imported.series("right").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(imported.series("left").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(imported.series("right").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -773,7 +771,7 @@ fn dataframe_import_from_owned_device_table_transfer_uses_root_names_when_presen
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
+    let frame = DataFrame::from_series([ids, values]).unwrap();
 
     let (expected_table, expected_names) = frame.clone().try_into_table().unwrap();
     let (transfer_table, _) = frame.try_into_table().unwrap();

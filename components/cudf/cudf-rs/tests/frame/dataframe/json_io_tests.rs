@@ -16,7 +16,7 @@ fn test_dataframe_json_roundtrip_convenience() {
 
     let s1 = Series::new("ids", &[1i32, 2, 3]).unwrap();
     let s2 = Series::new("values", &[10.0f64, 20.0, 30.0]).unwrap();
-    let df = DataFrame::from_series([("ids", s1), ("values", s2)]).unwrap();
+    let df = DataFrame::from_series([s1, s2]).unwrap();
     df.write_json(&path).unwrap();
 
     let read_df = DataFrame::read_json(&path).unwrap();
@@ -34,7 +34,7 @@ fn test_dataframe_json_preserves_column_names() {
     let s1 = Series::new("alpha", &[100i64]).unwrap();
     let s2 = Series::new("beta", &[200i64]).unwrap();
     let s3 = Series::new("gamma", &[300i64]).unwrap();
-    let df = DataFrame::from_series([("alpha", s1), ("beta", s2), ("gamma", s3)]).unwrap();
+    let df = DataFrame::from_series([s1, s2, s3]).unwrap();
     df.write_json(&path).unwrap();
 
     let read_df = DataFrame::read_json(&path).unwrap();
@@ -54,7 +54,7 @@ fn test_dataframe_json_roundtrip_with_options() {
     let path = dir.path().join("opts.jsonl");
 
     let s1 = Series::new("x", &[42i32]).unwrap();
-    let df = DataFrame::from_series([("x", s1)]).unwrap();
+    let df = DataFrame::from_series([s1]).unwrap();
 
     let write_opts = JsonWriteOptions::builder().filepath(&path).build();
     df.write_json_with_options(write_opts).unwrap();
@@ -71,7 +71,7 @@ fn test_dataframe_json_write_no_nulls_option() {
     let path = dir.path().join("no_nulls.jsonl");
 
     let s1 = Series::new("a", &[1i32, 2]).unwrap();
-    let df = DataFrame::from_series([("a", s1)]).unwrap();
+    let df = DataFrame::from_series([s1]).unwrap();
 
     let write_opts = JsonWriteOptions::builder().filepath(&path).include_nulls(false).build();
     df.write_json_with_options(write_opts).unwrap();

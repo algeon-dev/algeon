@@ -20,7 +20,7 @@ use cudf::{
 fn sample_df() -> DataFrame {
     let ids = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
     let scores = Series::new::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
-    DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
+    DataFrame::from_series([ids, scores]).unwrap()
 }
 
 /// Get device data pointer for a named column in a DataFrame.
@@ -58,8 +58,8 @@ fn to_table_copy_source_still_usable() {
     let df = sample_df();
     let _table = df.to_table_copy().unwrap();
 
-    assert_eq!(df.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(df.series("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(df.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 // ===========================================================================
@@ -188,8 +188,8 @@ fn table_view_bridges_into_low_level_ops() {
     .unwrap();
 
     let sorted = DataFrame::from_table(sorted, vec!["id".to_string(), "score".to_string()]).unwrap();
-    assert_eq!(sorted.series("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 2, 1]);
-    assert_eq!(sorted.series("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 20.0, 10.0]);
+    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 2, 1]);
+    assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 20.0, 10.0]);
 }
 
 // ===========================================================================

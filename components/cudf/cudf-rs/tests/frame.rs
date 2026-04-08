@@ -42,6 +42,8 @@ mod dataframe_melt_tests;
 mod dataframe_metadata_ops_tests;
 #[path = "frame/dataframe/series_bridge_tests.rs"]
 mod dataframe_series_bridge_tests;
+#[path = "frame/dataframe/series_naming_tests.rs"]
+mod dataframe_series_naming_tests;
 #[path = "frame/dataframe/slice_tests.rs"]
 mod dataframe_slice_tests;
 #[path = "frame/series/same_provenance_tests.rs"]
@@ -54,6 +56,8 @@ mod series_constructor_tests;
 mod series_convenience_tests;
 #[path = "frame/series/host_materialization_tests.rs"]
 mod series_host_materialization_tests;
+#[path = "frame/series/materialization_naming_tests.rs"]
+mod series_materialization_naming_tests;
 #[path = "frame/series/series_ops_tests.rs"]
 mod series_ops_tests;
 #[path = "frame/series/series_reduction_tests.rs"]

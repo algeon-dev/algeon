@@ -32,16 +32,13 @@ pub fn build_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
 }
 
 fn build_column_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
-    let pairs: Vec<(String, Series)> = dataset
+    let columns: Vec<Series> = dataset
         .columns
         .iter()
-        .map(|col| {
-            let series = build_series(&col.name, &col.dtype, &col.values)?;
-            Ok((col.name.clone(), series))
-        })
+        .map(|col| build_series(&col.name, &col.dtype, &col.values))
         .collect::<cudf::Result<Vec<_>>>()?;
 
-    DataFrame::from_series(pairs)
+    DataFrame::from_series(columns)
 }
 
 fn build_json_lines_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
@@ -69,20 +66,20 @@ fn apply_dictionary_columns(frame: DataFrame, dataset: &Dataset) -> cudf::Result
 
     let dictionary_columns: HashSet<&str> = dataset.dictionary_columns.iter().map(String::as_str).collect();
     let names = frame.column_names().to_vec();
-    let pairs = names
+    let columns = names
         .iter()
         .map(|name| {
             let series = frame.series(name)?;
             if dictionary_columns.contains(*name) {
                 let encoded = dictionary::encode(&series.as_column_view()?, TypeId::Int32)?;
-                Ok(((*name).to_string(), Series::from_column(encoded)?.rename(*name)))
+                Ok(Series::from_column(encoded)?.rename(*name))
             } else {
-                Ok(((*name).to_string(), series))
+                Ok(series)
             }
         })
         .collect::<cudf::Result<Vec<_>>>()?;
 
-    DataFrame::from_series(pairs)
+    DataFrame::from_series(columns)
 }
 
 /// Build a single `Series` from a column name, dtype string, and JSON values.

@@ -16,7 +16,8 @@ fn test_drop_nulls_basic() {
     let tv = table.view().unwrap();
 
     // Drop rows where column 0 has nulls (threshold = num_keys = 1 → require all keys valid).
-    let result = stream_compaction::drop_nulls(&tv, &[0], 1).unwrap();
+    let keys = [0usize];
+    let result = stream_compaction::drop_nulls(&tv, &keys, 1).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 2);
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 3]);
@@ -69,7 +70,8 @@ fn test_drop_nulls_multi_key() {
     let tv = table.view().unwrap();
 
     // threshold=2: need both keys to be non-null.
-    let result = stream_compaction::drop_nulls(&tv, &[0, 1], 2).unwrap();
+    let keys = [0usize, 1usize];
+    let result = stream_compaction::drop_nulls(&tv, &keys, 2).unwrap();
     let rv = result.view().unwrap();
     // Row 0: both valid → kept
     // Row 1: c0 null → dropped
@@ -77,6 +79,20 @@ fn test_drop_nulls_multi_key() {
     // Row 3: both valid → kept
     assert_eq!(rv.num_rows().unwrap(), 2);
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 4]);
+}
+
+#[test]
+fn test_drop_nulls_rejects_out_of_bounds_key_index() {
+    let c0 = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let table = Table::from_columns(vec![c0]).unwrap();
+    let tv = table.view().unwrap();
+
+    let keys = [1usize];
+    let err = stream_compaction::drop_nulls(&tv, &keys, 1).err().expect("expected out-of-bounds error");
+
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "stream_compaction::drop_nulls");
+    assert!(err.context().iter().any(|(k, _)| *k == "key_index"));
 }
 
 // ===== CU-1: unique (single-column dedup) ====================================
@@ -87,9 +103,10 @@ fn test_unique_basic_i32() {
     let table = Table::from_columns(vec![col]).unwrap();
     let tv = table.view().unwrap();
 
+    let keys = [0usize];
     let result = stream_compaction::distinct(
         &tv,
-        &[0],
+        &keys,
         stream_compaction::DuplicateKeepOption::KeepAny,
         stream_compaction::NullEquality::Equal,
         stream_compaction::NanEquality::AllEqual,
@@ -208,9 +225,10 @@ fn test_distinct_keep_none() {
     let table = Table::from_columns(vec![col]).unwrap();
     let tv = table.view().unwrap();
 
+    let keys = [0usize];
     let result = stream_compaction::distinct(
         &tv,
-        &[0],
+        &keys,
         stream_compaction::DuplicateKeepOption::KeepNone,
         stream_compaction::NullEquality::Equal,
         stream_compaction::NanEquality::AllEqual,

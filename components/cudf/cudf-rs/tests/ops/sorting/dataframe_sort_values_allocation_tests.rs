@@ -21,9 +21,9 @@ fn subset_key_sort_values_allocates_no_more_than_low_level_borrowed_sort_by_key(
         let result = df.sort_values(["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
 
         assert_eq!(result.column_names(), vec!["id", "score", "tag"]);
-        assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
-        assert_eq!(result.series("score").unwrap().to_vec::<i32>().unwrap(), vec![30, 10, 40, 20]);
-        assert_eq!(result.series("tag").unwrap().to_vec::<i32>().unwrap(), vec![300, 100, 400, 200]);
+        assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 2, 2]);
+        assert_eq!(result.series("score").unwrap().to_vec_strict::<i32>().unwrap(), vec![30, 10, 40, 20]);
+        assert_eq!(result.series("tag").unwrap().to_vec_strict::<i32>().unwrap(), vec![300, 100, 400, 200]);
         result
     });
 
@@ -44,9 +44,9 @@ fn subset_key_sort_values_allocates_no_more_than_low_level_borrowed_sort_by_key(
                 .unwrap();
 
         assert_eq!(result.column_names(), vec!["id", "score", "tag"]);
-        assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
-        assert_eq!(result.series("score").unwrap().to_vec::<i32>().unwrap(), vec![30, 10, 40, 20]);
-        assert_eq!(result.series("tag").unwrap().to_vec::<i32>().unwrap(), vec![300, 100, 400, 200]);
+        assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 2, 2]);
+        assert_eq!(result.series("score").unwrap().to_vec_strict::<i32>().unwrap(), vec![30, 10, 40, 20]);
+        assert_eq!(result.series("tag").unwrap().to_vec_strict::<i32>().unwrap(), vec![300, 100, 400, 200]);
         result
     });
 

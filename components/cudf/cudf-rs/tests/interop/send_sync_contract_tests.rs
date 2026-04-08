@@ -130,7 +130,7 @@ fn prepared_table_export_survives_cross_thread_cross_device_completion_stress() 
         let producer_runtime = Runtime::builder().with_device(producer_device).build().unwrap();
         let ids = producer_runtime.series("id", &[1i32, 2, 3, round as i32]).unwrap();
         let vals = producer_runtime.series("value", &[10i64, 20, 30, 40]).unwrap();
-        let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
+        let frame = DataFrame::from_series([ids, vals]).unwrap();
         let producer_ready = CudaEvent::new().unwrap();
         producer_ready.record(producer_runtime.stream()).unwrap();
         let export = frame.try_prepare_device_table_export_with_event(&producer_ready).unwrap();

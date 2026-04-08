@@ -21,8 +21,8 @@ fn test_filter_series_mask_basic() {
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
-    assert_eq!(filtered.series("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
-    assert_eq!(filtered.series("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 4, 5]);
+    assert_eq!(filtered.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
 }
 
 #[test]
@@ -30,8 +30,8 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
     let df_rt = sample_runtime();
     let mask_rt = sample_runtime();
     let df = cudf::DataFrame::from_series([
-        ("id", df_rt.series("id", &[3i32, 1, 4, 1, 5]).unwrap()),
-        ("score", df_rt.series("score", &[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap()),
+        df_rt.series("id", &[3i32, 1, 4, 1, 5]).unwrap(),
+        df_rt.series("score", &[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap(),
     ])
     .unwrap();
     let mask = mask_rt.series("mask", &[true, false, true, false, true]).unwrap();
@@ -49,7 +49,7 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
     assert_eq!(last_sync_stream_value(), expected_sync_stream);
 
     reset_sync_observation();
-    assert_eq!(filtered.series("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 4, 5]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
@@ -134,7 +134,7 @@ fn test_filter_series_with_eq_scalar_mask() {
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 2);
-    assert_eq!(filtered.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1]);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1]);
 }
 
 #[test]
@@ -147,7 +147,7 @@ fn test_filter_series_with_le_scalar_mask() {
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 2);
-    assert_eq!(filtered.series("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 15.0]);
+    assert_eq!(filtered.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 15.0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ fn test_advanced_low_level_filter_still_works_via_table_view() {
     let filtered = DataFrame::from_table(filtered, vec!["id".to_string(), "score".to_string()]).unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
-    assert_eq!(filtered.series("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 4, 5]);
 }
 
 #[test]

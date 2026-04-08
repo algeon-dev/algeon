@@ -21,8 +21,8 @@ fn test_filter_basic() {
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
-    assert_eq!(filtered.series("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
-    assert_eq!(filtered.series("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 4, 5]);
+    assert_eq!(filtered.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn test_filter_isin_basic() {
     let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 3); // rows with id 1,1,5
-    let mut ids = filtered.series("id").unwrap().to_vec::<i32>().unwrap();
+    let mut ids = filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     ids.sort();
     assert_eq!(ids, vec![1, 1, 5]);
 }
@@ -108,7 +108,7 @@ fn test_filter_isin_float64() {
     let filtered = df.filter_isin("score", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 2);
-    let mut scores = filtered.series("score").unwrap().to_vec::<f64>().unwrap();
+    let mut scores = filtered.series("score").unwrap().to_vec_strict::<f64>().unwrap();
     scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert_eq!(scores, vec![10.0, 50.0]);
 }
@@ -127,8 +127,8 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_syncs_secondary_
     let df_rt = sample_runtime();
     let values_rt = sample_runtime();
     let df = DataFrame::from_series([
-        ("id", df_rt.series("id", &[10i32, 20, 30]).unwrap()),
-        ("score", df_rt.series("score", &[100i32, 200, 300]).unwrap()),
+        df_rt.series("id", &[10i32, 20, 30]).unwrap(),
+        df_rt.series("score", &[100i32, 200, 300]).unwrap(),
     ])
     .unwrap();
     let values = values_rt.series("values", &[20i32, 30]).unwrap();
@@ -146,8 +146,8 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_syncs_secondary_
     assert_eq!(last_sync_stream_value(), expected_presync_stream);
 
     reset_sync_observation();
-    assert_eq!(filtered.series("id").unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
-    assert_eq!(filtered.series("score").unwrap().to_vec::<i32>().unwrap(), vec![200, 300]);
+    assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30]);
+    assert_eq!(filtered.series("score").unwrap().to_vec_strict::<i32>().unwrap(), vec![200, 300]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
@@ -160,7 +160,7 @@ fn test_sort_single_column_ascending() {
     let df = sample_df();
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
 
-    assert_eq!(sorted.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
+    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
     assert_eq!(sorted.column_names(), vec!["id", "score"]);
 }
 
@@ -169,7 +169,7 @@ fn test_sort_single_column_descending() {
     let df = sample_df();
     let sorted = df.sort_values(["score"], SortOptions::new().with_descending(vec![true])).unwrap();
 
-    assert_eq!(sorted.series("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
+    assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
 }
 
 #[test]
@@ -181,8 +181,8 @@ fn test_sort_by_subset_of_columns() {
 
     let sorted = df.sort_values(["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
 
-    assert_eq!(sorted.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
-    assert_eq!(sorted.series("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
+    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 2, 2]);
+    assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn test_nlargest() {
     let top2 = df.nlargest(2, "score").unwrap();
 
     assert_eq!(top2.num_rows(), 2);
-    assert_eq!(top2.series("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0]);
+    assert_eq!(top2.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![50.0, 40.0]);
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn test_nsmallest() {
     let bot2 = df.nsmallest(2, "id").unwrap();
 
     assert_eq!(bot2.num_rows(), 2);
-    assert_eq!(bot2.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1]);
+    assert_eq!(bot2.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1]);
 }
 
 #[test]
@@ -292,8 +292,11 @@ fn test_dropna_basic() {
     let cleaned = df.dropna(DropNaOptions::builder().subset(&["id"]).thresh(1).build()).unwrap();
 
     assert_eq!(cleaned.num_rows(), 3);
-    assert_eq!(cleaned.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 5]);
-    assert_eq!(cleaned.series("val").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 30.0, 50.0]);
+    assert_eq!(cleaned.series("id").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(1), Some(3), Some(5)]);
+    assert_eq!(
+        cleaned.series("val").unwrap().to_vec_optional::<f64>().unwrap(),
+        vec![Some(10.0), Some(30.0), Some(50.0)]
+    );
 }
 
 #[test]
@@ -317,12 +320,12 @@ fn test_dropna_any_equivalent_to_thresh() {
 
     assert_eq!(actual.num_rows(), expected.num_rows());
     assert_eq!(
-        actual.series("id").unwrap().to_vec::<i32>().unwrap(),
-        expected.series("id").unwrap().to_vec::<i32>().unwrap(),
+        actual.series("id").unwrap().to_vec_optional::<i32>().unwrap(),
+        expected.series("id").unwrap().to_vec_optional::<i32>().unwrap(),
     );
     assert_eq!(
-        actual.series("val").unwrap().to_vec::<f64>().unwrap(),
-        expected.series("val").unwrap().to_vec::<f64>().unwrap(),
+        actual.series("val").unwrap().to_vec_optional::<f64>().unwrap(),
+        expected.series("val").unwrap().to_vec_optional::<f64>().unwrap(),
     );
 }
 
@@ -342,9 +345,9 @@ fn test_dropna_any_mixed_null_patterns() {
     let cleaned = df.dropna(DropNaOptions::builder().subset(&["a", "b"]).build()).unwrap();
 
     assert_eq!(cleaned.num_rows(), 2);
-    assert_eq!(cleaned.series("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 4]);
-    assert_eq!(cleaned.series("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 40]);
-    assert_eq!(cleaned.series("c").unwrap().to_vec::<f64>().unwrap(), vec![100.0, 400.0]);
+    assert_eq!(cleaned.series("a").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(1), Some(4)]);
+    assert_eq!(cleaned.series("b").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(10), Some(40)]);
+    assert_eq!(cleaned.series("c").unwrap().to_vec_optional::<f64>().unwrap(), vec![Some(100.0), Some(400.0)]);
 }
 
 #[test]

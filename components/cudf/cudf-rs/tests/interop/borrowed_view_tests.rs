@@ -118,7 +118,7 @@ fn series_and_dataframe_convenience_producers_match_underlying_low_level_views()
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([("id", ids.clone()), ("value", vals.clone())]).unwrap();
+    let frame = DataFrame::from_series([ids.clone(), vals.clone()]).unwrap();
 
     let series_borrowed = ids.try_borrow_column_view().unwrap();
     let frame_borrowed = frame.try_borrow_table_view().unwrap();
@@ -146,7 +146,7 @@ fn ambient_column_view_borrow_is_rejected() {
 fn ambient_dataframe_borrow_is_rejected() {
     let ids = Series::new("id", &[1i32, 2, 3]).unwrap();
     let vals = Series::new("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([ids, vals]).unwrap();
 
     let err = frame.try_borrow_table_view().unwrap_err();
 

@@ -16,7 +16,7 @@ fn sample_df() -> DataFrame {
     let scores = Series::new::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
     let flags = Series::new::<i32>("flags", &[100, 200, 300]).unwrap();
 
-    DataFrame::from_series([("id", ids), ("score", scores), ("flag", flags)]).unwrap()
+    DataFrame::from_named_pairs([("id", ids), ("score", scores), ("flag", flags)]).unwrap()
 }
 
 /// Returns the raw device data pointer for a named column in a DataFrame.
@@ -93,7 +93,7 @@ fn test_without_columns_original_dataframe_still_reads_excluded_column() {
     let result = df.without_columns(["score"]).unwrap();
 
     assert_eq!(result.column_names(), &["id", "flag"]);
-    assert_eq!(df.series("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(df.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 // ===========================================================================
@@ -206,7 +206,7 @@ fn test_select_wide_projection_reorders_columns_without_copying() {
     let pairs: Vec<(String, Series)> = (0..16)
         .map(|idx| (format!("c{idx}"), Series::new::<i32>(format!("source_{idx}"), &[idx, idx + 100]).unwrap()))
         .collect();
-    let df = DataFrame::from_series(pairs).unwrap();
+    let df = DataFrame::from_named_pairs(pairs).unwrap();
 
     let selected = df.select(["c15", "c0", "c7", "c3"]).unwrap();
 
@@ -242,7 +242,7 @@ fn test_with_column_replaces_existing_column() {
     let result = df.with_column("score", new_score).unwrap();
 
     assert_eq!(result.num_columns(), 3);
-    assert_eq!(result.series("score").unwrap().to_vec::<f64>().unwrap(), vec![99.0, 88.0, 77.0]);
+    assert_eq!(result.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![99.0, 88.0, 77.0]);
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn test_assign_replaces_existing_column() {
     let result = df.assign([("score", new_score)]).unwrap();
 
     assert_eq!(result.num_columns(), 3); // no new columns, just replaced
-    assert_eq!(result.series("score").unwrap().to_vec::<f64>().unwrap(), vec![99.0, 88.0, 77.0]);
+    assert_eq!(result.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![99.0, 88.0, 77.0]);
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn test_assign_mix_of_add_and_replace() {
     let result = df.assign([("id", new_id), ("extra", extra)]).unwrap();
 
     assert_eq!(result.num_columns(), 4);
-    assert_eq!(result.series("id").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -376,7 +376,7 @@ fn test_assign_duplicate_names_last_wins() {
     let result = df.assign([("extra", first), ("extra", second)]).unwrap();
 
     // The second value should win
-    assert_eq!(result.series("extra").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(result.series("extra").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -388,7 +388,7 @@ fn test_assign_on_zero_column_frame_preserves_logical_row_count() {
 
     assert_eq!(result.num_columns(), 1);
     assert_eq!(result.num_rows(), 3);
-    assert_eq!(result.series("replacement").unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_eq!(result.series("replacement").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
 }
 
 #[test]
@@ -411,7 +411,7 @@ fn test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
 
     assert_eq!(result.num_columns(), 1);
     assert_eq!(result.num_rows(), 2);
-    assert_eq!(result.series("values").unwrap().to_vec::<i32>().unwrap(), vec![7, 8]);
+    assert_eq!(result.series("values").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8]);
 }
 
 // ===========================================================================
@@ -463,7 +463,7 @@ fn test_with_column_on_zero_column_frame_preserves_logical_row_count() {
 
     assert_eq!(result.num_columns(), 1);
     assert_eq!(result.num_rows(), 3);
-    assert_eq!(result.series("values").unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(result.series("values").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }
 
 #[test]
@@ -497,5 +497,5 @@ fn test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column()
 
     assert_eq!(result.num_columns(), 1);
     assert_eq!(result.num_rows(), 2);
-    assert_eq!(result.series("values").unwrap().to_vec::<i32>().unwrap(), vec![11, 22]);
+    assert_eq!(result.series("values").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
 }

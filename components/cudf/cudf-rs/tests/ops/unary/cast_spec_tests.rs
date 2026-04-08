@@ -15,7 +15,7 @@ use cudf::{DataType, Series, TimestampResolution, TypeId};
 fn test_cast_i8_to_i16() {
     let s = Series::new::<i8>("x", &[i8::MIN, 0, i8::MAX]).unwrap();
     let result = s.astype(TypeId::Int16).unwrap();
-    let vals = result.to_vec::<i16>().unwrap();
+    let vals = result.to_vec_strict::<i16>().unwrap();
     assert_eq!(vals, vec![i8::MIN as i16, 0, i8::MAX as i16]);
 }
 
@@ -23,7 +23,7 @@ fn test_cast_i8_to_i16() {
 fn test_cast_i16_to_i32() {
     let s = Series::new::<i16>("x", &[i16::MIN, 0, i16::MAX]).unwrap();
     let result = s.astype(TypeId::Int32).unwrap();
-    let vals = result.to_vec::<i32>().unwrap();
+    let vals = result.to_vec_strict::<i32>().unwrap();
     assert_eq!(vals, vec![i16::MIN as i32, 0, i16::MAX as i32]);
 }
 
@@ -31,7 +31,7 @@ fn test_cast_i16_to_i32() {
 fn test_cast_i32_to_i64() {
     let s = Series::new::<i32>("x", &[i32::MIN, 0, i32::MAX]).unwrap();
     let result = s.astype(TypeId::Int64).unwrap();
-    let vals = result.to_vec::<i64>().unwrap();
+    let vals = result.to_vec_strict::<i64>().unwrap();
     assert_eq!(vals, vec![i32::MIN as i64, 0, i32::MAX as i64]);
 }
 
@@ -43,7 +43,7 @@ fn test_cast_i32_to_i64() {
 fn test_cast_i32_to_f32() {
     let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
     let result = s.astype(TypeId::Float32).unwrap();
-    let vals = result.to_vec::<f32>().unwrap();
+    let vals = result.to_vec_strict::<f32>().unwrap();
     assert_eq!(vals, vec![1.0, 2.0, 3.0]);
 }
 
@@ -51,7 +51,7 @@ fn test_cast_i32_to_f32() {
 fn test_cast_f32_to_i32_truncates() {
     let s = Series::new::<f32>("x", &[1.9, -2.7, 0.1]).unwrap();
     let result = s.astype(TypeId::Int32).unwrap();
-    let vals = result.to_vec::<i32>().unwrap();
+    let vals = result.to_vec_strict::<i32>().unwrap();
     assert_eq!(vals, vec![1, -2, 0]);
 }
 
@@ -59,7 +59,7 @@ fn test_cast_f32_to_i32_truncates() {
 fn test_cast_f64_to_f32() {
     let s = Series::new::<f64>("x", &[1.5, 2.5, 3.5]).unwrap();
     let result = s.astype(TypeId::Float32).unwrap();
-    let vals = result.to_vec::<f32>().unwrap();
+    let vals = result.to_vec_strict::<f32>().unwrap();
     assert_eq!(vals, vec![1.5, 2.5, 3.5]);
 }
 
@@ -71,7 +71,7 @@ fn test_cast_f64_to_f32() {
 fn test_cast_bool_to_i32() {
     let s = Series::new::<bool>("x", &[true, false, true]).unwrap();
     let result = s.astype(TypeId::Int32).unwrap();
-    let vals = result.to_vec::<i32>().unwrap();
+    let vals = result.to_vec_strict::<i32>().unwrap();
     assert_eq!(vals, vec![1, 0, 1]);
 }
 
@@ -79,7 +79,7 @@ fn test_cast_bool_to_i32() {
 fn test_cast_i32_to_bool() {
     let s = Series::new::<i32>("x", &[0, 1, 42, -1]).unwrap();
     let result = s.astype(TypeId::Bool8).unwrap();
-    let vals = result.to_vec::<bool>().unwrap();
+    let vals = result.to_vec_strict::<bool>().unwrap();
     assert_eq!(vals, vec![false, true, true, true]);
 }
 
@@ -87,7 +87,7 @@ fn test_cast_i32_to_bool() {
 fn test_cast_bool_to_i64() {
     let s = Series::new::<bool>("x", &[false, true]).unwrap();
     let result = s.astype(TypeId::Int64).unwrap();
-    let vals = result.to_vec::<i64>().unwrap();
+    let vals = result.to_vec_strict::<i64>().unwrap();
     assert_eq!(vals, vec![0, 1]);
 }
 
@@ -99,7 +99,7 @@ fn test_cast_bool_to_i64() {
 fn test_cast_u8_to_i16() {
     let s = Series::new::<u8>("x", &[0, 127, 255]).unwrap();
     let result = s.astype(TypeId::Int16).unwrap();
-    let vals = result.to_vec::<i16>().unwrap();
+    let vals = result.to_vec_strict::<i16>().unwrap();
     assert_eq!(vals, vec![0, 127, 255]);
 }
 
@@ -107,7 +107,7 @@ fn test_cast_u8_to_i16() {
 fn test_cast_u32_to_i64() {
     let s = Series::new::<u32>("x", &[0, u32::MAX]).unwrap();
     let result = s.astype(TypeId::Int64).unwrap();
-    let vals = result.to_vec::<i64>().unwrap();
+    let vals = result.to_vec_strict::<i64>().unwrap();
     assert_eq!(vals, vec![0, u32::MAX as i64]);
 }
 
@@ -120,7 +120,7 @@ fn test_cast_preserves_null_mask() {
     let s = Series::new_nullable::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let result = s.astype(TypeId::Float64).unwrap();
     assert_eq!(result.null_count(), 1);
-    let vals = result.to_optional_vec::<f64>().unwrap();
+    let vals = result.to_vec_optional::<f64>().unwrap();
     assert_eq!(vals, vec![Some(10.0), None, Some(30.0)]);
 }
 
@@ -130,7 +130,7 @@ fn test_cast_all_null_column() {
     let result = s.astype(TypeId::Float64).unwrap();
     assert_eq!(result.null_count(), 2);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
-    let vals = result.to_optional_vec::<f64>().unwrap();
+    let vals = result.to_vec_optional::<f64>().unwrap();
     assert_eq!(vals, vec![None, None]);
 }
 
@@ -154,7 +154,7 @@ fn test_cast_empty_column() {
 fn test_cast_same_type() {
     let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
     let result = s.astype(TypeId::Int32).unwrap();
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 // ===========================================================================
@@ -215,7 +215,7 @@ fn test_cast_timestamp_to_i64() {
     let ts = dur.astype(TypeId::TimestampMicroseconds).unwrap();
     let back_dur = ts.astype(TypeId::DurationMicroseconds).unwrap();
     let back = back_dur.astype(TypeId::Int64).unwrap();
-    assert_eq!(back.to_vec::<i64>().unwrap(), vec![0, 1000, 2000]);
+    assert_eq!(back.to_vec_strict::<i64>().unwrap(), vec![0, 1000, 2000]);
 }
 
 // ===========================================================================
@@ -258,7 +258,7 @@ fn test_to_datetime_round_trip() {
     // libcudf requires timestamp → duration → int64 for the reverse path.
     let dur = dt.astype(TypeId::DurationMicroseconds).unwrap();
     let back = dur.astype(TypeId::Int64).unwrap();
-    assert_eq!(back.to_vec::<i64>().unwrap(), vec![0, 1000, 2000]);
+    assert_eq!(back.to_vec_strict::<i64>().unwrap(), vec![0, 1000, 2000]);
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn test_to_datetime_preserves_nulls() {
 fn test_to_numeric_f64_to_i64() {
     let s = Series::new::<f64>("x", &[1.9, 2.0, 3.1]).unwrap();
     let result = s.to_numeric(TypeId::Int64).unwrap();
-    assert_eq!(result.to_vec::<i64>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(result.to_vec_strict::<i64>().unwrap(), vec![1, 2, 3]);
     assert_eq!(result.name(), Some("x"));
 }
 
@@ -285,14 +285,14 @@ fn test_to_numeric_f64_to_i64() {
 fn test_to_numeric_i32_to_f64() {
     let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
     let result = s.to_numeric(TypeId::Float64).unwrap();
-    assert_eq!(result.to_vec::<f64>().unwrap(), vec![1.0, 2.0, 3.0]);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![1.0, 2.0, 3.0]);
 }
 
 #[test]
 fn test_to_numeric_bool_to_i32() {
     let s = Series::new::<bool>("x", &[true, false, true]).unwrap();
     let result = s.to_numeric(TypeId::Int32).unwrap();
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![1, 0, 1]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 0, 1]);
 }
 
 #[test]

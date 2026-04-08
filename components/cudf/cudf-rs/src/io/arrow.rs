@@ -11,7 +11,7 @@
 //!
 //! let ids = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
 //! let scores = Series::new::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
-//! let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
+//! let df = DataFrame::from_series([ids, scores]).unwrap();
 //!
 //! // GPU → Arrow RecordBatch (host-copy)
 //! let batch = df.to_record_batch().unwrap();

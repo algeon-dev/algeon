@@ -2,8 +2,6 @@
 //!
 //! All tests require a GPU.
 
-use std::sync::Arc;
-
 use cudf::{Series, TypeId, core::Column};
 
 // ---------------------------------------------------------------------------
@@ -139,13 +137,13 @@ fn test_from_column_round_trip() {
 }
 
 #[test]
-fn test_from_column_arc_shares_arc() {
-    let col = Arc::new(Column::from_slice(&[1i64, 2]).unwrap());
-    let arc_clone = Arc::clone(&col);
-    let s = Series::from_column_arc(arc_clone);
-
-    // The Series should share the same Arc (same device pointer).
+fn test_from_column_shares_data() {
+    let col = Column::from_slice(&[1i64, 2]).unwrap();
     let ptr_orig = col.view().unwrap().device_data_ptr().unwrap();
+
+    let s = Series::from_column(col).unwrap();
+
+    // The Series should share the same device pointer.
     let ptr_series = s.as_column_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr_orig, ptr_series);
 
@@ -178,7 +176,7 @@ fn test_gt_scalar_i32() {
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.len(), 3);
     assert_eq!(mask.name(), Some("x"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, false, true]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, false, true]);
 }
 
 #[test]
@@ -188,7 +186,7 @@ fn test_lt_scalar_f64() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("y"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, false, false]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
 }
 
 #[test]
@@ -198,7 +196,7 @@ fn test_eq_scalar_i32() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("z"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, true, false]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true, false]);
 }
 
 #[test]
@@ -208,7 +206,7 @@ fn test_eq_scalar_str() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("status"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]
@@ -218,7 +216,7 @@ fn test_ne_scalar_str() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("status"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, false]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
 #[test]
@@ -229,7 +227,7 @@ fn test_gt_scalar_str() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("fruit"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, true]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
 #[test]
@@ -239,7 +237,7 @@ fn test_lt_scalar_str() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("fruit"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, false, false]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
 }
 
 #[test]
@@ -249,7 +247,7 @@ fn test_ge_scalar_str() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("fruit"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, true]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
 #[test]
@@ -259,7 +257,7 @@ fn test_le_scalar_str() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("fruit"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, true, false]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, false]);
 }
 
 #[test]
@@ -269,7 +267,7 @@ fn test_gt_scalar_preserves_input() {
 
     // Original series is unchanged.
     assert_eq!(s.name(), Some("x"));
-    assert_eq!(s.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 // ===========================================================================
@@ -283,7 +281,7 @@ fn test_ne_scalar_i32() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("x"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]
@@ -293,7 +291,7 @@ fn test_ge_scalar_i32() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("x"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, true]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
 #[test]
@@ -303,7 +301,7 @@ fn test_le_scalar_i32() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("x"));
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, true, false]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, false]);
 }
 
 // ===========================================================================
@@ -318,7 +316,7 @@ fn test_eq_series() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), None);
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]
@@ -328,7 +326,7 @@ fn test_ne_series() {
     let mask = a.ne(&b).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, false]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
 #[test]
@@ -338,7 +336,7 @@ fn test_gt_series() {
     let mask = a.gt(&b).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, false]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
 #[test]
@@ -348,7 +346,7 @@ fn test_lt_series() {
     let mask = a.lt(&b).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, false, false]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
 }
 
 #[test]
@@ -358,7 +356,7 @@ fn test_ge_series() {
     let mask = a.ge(&b).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![false, true, true]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
 #[test]
@@ -368,7 +366,7 @@ fn test_le_series() {
     let mask = a.le(&b).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]
@@ -379,7 +377,7 @@ fn test_comparison_mixed_types_f64_i32() {
     let mask = a.eq(&b).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
 // ===========================================================================
@@ -394,7 +392,7 @@ fn test_add_series() {
 
     assert_eq!(result.name(), None);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }
 
 #[test]
@@ -404,7 +402,7 @@ fn test_sub_series() {
     let result = a.sub(&b).unwrap();
 
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![9, 18, 27]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![9, 18, 27]);
 }
 
 #[test]
@@ -414,7 +412,7 @@ fn test_mul_series() {
     let result = a.mul(&b).unwrap();
 
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![20, 30, 40]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![20, 30, 40]);
 }
 
 #[test]
@@ -424,7 +422,7 @@ fn test_div_series_f64() {
     let result = a.div(&b).unwrap();
 
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
-    assert_eq!(result.to_vec::<f64>().unwrap(), vec![5.0, 5.0, 6.0]);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![5.0, 5.0, 6.0]);
 }
 
 #[test]
@@ -434,7 +432,7 @@ fn test_add_scalar_i32() {
 
     assert_eq!(result.name(), Some("x"));
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![11, 12, 13]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![11, 12, 13]);
 }
 
 #[test]
@@ -443,7 +441,7 @@ fn test_sub_scalar_i32() {
     let result = s.sub_scalar(5i32).unwrap();
 
     assert_eq!(result.name(), Some("x"));
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![5, 15, 25]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![5, 15, 25]);
 }
 
 #[test]
@@ -452,7 +450,7 @@ fn test_mul_scalar_f64() {
     let result = s.mul_scalar(2.0f64).unwrap();
 
     assert_eq!(result.name(), Some("x"));
-    assert_eq!(result.to_vec::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
 #[test]
@@ -461,7 +459,7 @@ fn test_div_scalar_f64() {
     let result = s.div_scalar(5.0f64).unwrap();
 
     assert_eq!(result.name(), Some("x"));
-    assert_eq!(result.to_vec::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
 #[test]
@@ -472,7 +470,7 @@ fn test_arithmetic_mixed_types() {
     let result = a.add(&b).unwrap();
 
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
-    assert_eq!(result.to_vec::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
 }
 
 #[test]
@@ -483,7 +481,7 @@ fn test_add_operator_with_borrowed_operands() {
     let result = (&a + &b).unwrap();
 
     assert_eq!(result.name(), None);
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }
 
 #[test]
@@ -493,5 +491,5 @@ fn test_add_operator_with_owned_and_borrowed_operands() {
 
     let result = (a + &b).unwrap();
 
-    assert_eq!(result.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }

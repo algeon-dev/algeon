@@ -774,7 +774,7 @@ fn table_copy_ex_uses_explicit_stream_and_mr() {
 
 #[test]
 fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
-    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 501))]).unwrap();
+    let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 501)]).unwrap();
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.__debug_raw_handle_value();
@@ -796,7 +796,7 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retai
 #[test]
 fn sort_with_execution_context_rejects_ambient_default_promotion() {
     let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
+    let df = cudf::DataFrame::from_series([ids]).unwrap();
 
     let stream = CudaStream::new().unwrap();
     let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
@@ -814,7 +814,7 @@ fn sort_with_execution_context_rejects_ambient_default_promotion() {
 
 #[test]
 fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource() {
-    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 502))]).unwrap();
+    let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 502)]).unwrap();
 
     let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
     let explicit_mr = mr.__debug_raw_handle_value();
@@ -832,13 +832,13 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource(
 #[test]
 fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
     let left = cudf::DataFrame::from_series([
-        ("id", explicit_i32_series("id", &[1, 2, 3], 503)),
-        ("val", explicit_i64_series("val", &[10, 20, 30], 503)),
+        explicit_i32_series("id", &[1, 2, 3], 503),
+        explicit_i64_series("val", &[10, 20, 30], 503),
     ])
     .unwrap();
     let right = cudf::DataFrame::from_series([
-        ("id", explicit_i32_series("id", &[2, 3, 4], 503)),
-        ("score", explicit_i64_series("score", &[200, 300, 400], 503)),
+        explicit_i32_series("id", &[2, 3, 4], 503),
+        explicit_i64_series("score", &[200, 300, 400], 503),
     ])
     .unwrap();
 
@@ -858,8 +858,8 @@ fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
 #[test]
 fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
     let df = cudf::DataFrame::from_series([
-        ("key", explicit_i32_series("key", &[1, 1, 2, 2], 504)),
-        ("val", explicit_i64_series("val", &[10, 20, 30, 40], 504)),
+        explicit_i32_series("key", &[1, 1, 2, 2], 504),
+        explicit_i64_series("val", &[10, 20, 30, 40], 504),
     ])
     .unwrap();
 
@@ -879,7 +879,7 @@ fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
 
 #[test]
 fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
-    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 505))]).unwrap();
+    let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 505)]).unwrap();
     let indices = explicit_i32_series("gather", &[2, 0], 505);
 
     let stream = CudaStream::new().unwrap();
@@ -902,7 +902,7 @@ fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
 #[test]
 fn gather_with_execution_context_rejects_ambient_default_promotion() {
     let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
+    let df = cudf::DataFrame::from_series([ids]).unwrap();
     let indices = cudf::Series::new::<i32>("gather", &[2, 0]).unwrap();
 
     let stream = CudaStream::new().unwrap();
@@ -921,7 +921,7 @@ fn gather_with_execution_context_rejects_ambient_default_promotion() {
 
 #[test]
 fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
-    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 506))]).unwrap();
+    let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 506)]).unwrap();
     let mask = cudf::Series::from_column(
         cudf::core::Column::from_slice(&[true, false, true])
             .unwrap()
@@ -951,7 +951,7 @@ fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
 #[test]
 fn filter_with_execution_context_rejects_ambient_default_promotion() {
     let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
+    let df = cudf::DataFrame::from_series([ids]).unwrap();
     let mask = cudf::Series::new::<bool>("mask", &[true, false, true]).unwrap();
 
     let stream = CudaStream::new().unwrap();
@@ -975,21 +975,21 @@ fn filter_with_execution_context_rejects_ambient_default_promotion() {
 // by checking the observation hook after a regular operation.
 // ===========================================================================
 
-/// Calling `Column::copy()` (the safe API, which uses `cudf_column_copy`)
+/// Calling `Column::deep_copy()` (the safe API, which uses `cudf_column_copy`)
 /// results in the default stream being observed.
 #[test]
-fn column_copy_default_uses_default_stream() {
+fn column_deep_copy_default_uses_default_stream() {
     let col = cudf::core::Column::from_slice(&[1i32, 2, 3]).unwrap();
 
     let default_stream = obs_default_stream();
 
     obs_reset();
-    let _copy = col.copy().unwrap();
+    let _copy = col.deep_copy().unwrap();
 
-    // Column::copy() uses cudf_column_copy which internally calls
+    // Column::deep_copy() uses cudf_column_copy which internally calls
     // cudf_column_copy_ex with null options, resolving to default stream.
     let observed = obs_last_stream();
-    assert_eq!(observed, default_stream, "Column::copy() should use the default stream");
+    assert_eq!(observed, default_stream, "Column::deep_copy() should use the default stream");
 }
 
 /// Existing `DataFrame::sort_values` (no context) should produce correct
@@ -998,7 +998,7 @@ fn column_copy_default_uses_default_stream() {
 #[test]
 fn sort_values_default_produces_correct_results() {
     let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
+    let df = cudf::DataFrame::from_series([ids]).unwrap();
 
     let sorted = df.sort_values(["id"], cudf::SortOptions::default()).unwrap();
 
@@ -1013,11 +1013,11 @@ fn sort_values_default_produces_correct_results() {
 fn merge_default_produces_correct_results() {
     let left_ids = cudf::Series::new::<i32>("id", &[1, 2, 3]).unwrap();
     let left_vals = cudf::Series::new::<f64>("val", &[10.0, 20.0, 30.0]).unwrap();
-    let left = cudf::DataFrame::from_series([("id", left_ids), ("val", left_vals)]).unwrap();
+    let left = cudf::DataFrame::from_series([left_ids, left_vals]).unwrap();
 
     let right_ids = cudf::Series::new::<i32>("id", &[2, 3, 4]).unwrap();
     let right_scores = cudf::Series::new::<f64>("score", &[200.0, 300.0, 400.0]).unwrap();
-    let right = cudf::DataFrame::from_series([("id", right_ids), ("score", right_scores)]).unwrap();
+    let right = cudf::DataFrame::from_series([right_ids, right_scores]).unwrap();
 
     let joined = left.merge(&right, cudf::MergeOptions::new().how_inner().on(["id"])).unwrap();
 
@@ -1030,7 +1030,7 @@ fn merge_default_produces_correct_results() {
 fn groupby_agg_default_produces_correct_results() {
     let keys = cudf::Series::new::<i32>("key", &[1, 1, 2, 2]).unwrap();
     let vals = cudf::Series::new::<i64>("val", &[10, 20, 30, 40]).unwrap();
-    let df = cudf::DataFrame::from_series([("key", keys), ("val", vals)]).unwrap();
+    let df = cudf::DataFrame::from_series([keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[cudf::AggSpec::new("val", cudf::Agg::Sum)]).unwrap();
 

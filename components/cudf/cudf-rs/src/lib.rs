@@ -14,11 +14,11 @@
 //! let rt = Runtime::builder().build().unwrap();
 //!
 //! // Create named Series from host data inside that runtime.
-//! let ids = rt.series("ids", &[1i32, 2, 3]).unwrap();
-//! let scores = rt.series("scores", &[10.0f64, 20.0, 30.0]).unwrap();
+//! let ids = rt.series("id", &[1i32, 2, 3]).unwrap();
+//! let scores = rt.series("score", &[10.0f64, 20.0, 30.0]).unwrap();
 //!
-//! // Build a DataFrame from Series.
-//! let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
+//! // Build a DataFrame from Series — names come from the Series.
+//! let df = DataFrame::from_series([ids, scores]).unwrap();
 //!
 //! assert_eq!(df.num_columns(), 2);
 //! assert_eq!(df.num_rows(), 3);
@@ -158,12 +158,13 @@ pub use core::{
 
 pub use frame::{
     dataframe::{
-        ColumnMemoryAccounting, CsvReadOptions, CsvWriteOptions, DataFrame, DataFrameColumnInfo, DataFrameInfo,
-        DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DistinctOptions, DropNaOptions, InfoDetail,
-        JsonReadOptions, JsonWriteOptions, MeltOptions, ParquetReadOptions, ParquetWriteOptions,
+        ColumnMemoryAccounting, CsvWriteOptions, DataFrame, DataFrameColumnInfo, DataFrameInfo, DataFrameJoinResult,
+        DataFrameMemoryAccounting, DataTypeCount, DistinctOptions, DropNaOptions, InfoDetail, JsonWriteOptions,
+        MeltOptions, ParquetWriteOptions,
     },
     series::{IntoSeries, Series},
 };
+pub use io::{csv::CsvReadOptions, json::JsonReadOptions, parquet::ParquetReadOptions};
 // — High-level operations —
 pub use ops::Expr;
 pub use ops::{

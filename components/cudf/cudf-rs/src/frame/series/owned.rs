@@ -147,17 +147,26 @@ impl Series {
         self.column.view()
     }
 
-    /// Copy fixed-width column data to a host `Vec<T>`.
+    /// Copy fixed-width column data to a host `Vec<T>`, rejecting nullable
+    /// columns.
     ///
-    /// The column's dtype must match `T::TYPE_ID`.
+    /// Returns an error if the column is nullable — use
+    /// [`to_vec_optional`](Self::to_vec_optional) instead when nulls are
+    /// expected.
     ///
     /// # Cost
     /// Device-to-host copy: one synchronous memcpy of `len * size_of::<T>()` bytes.
     ///
     /// # Errors
-    /// Returns `TypeError` if the column dtype does not match `T`.
-    pub fn to_vec<T: CudfType>(&self) -> Result<Vec<T>> {
-        self.column.view()?.to_vec::<T>()
+    /// - `InvalidOperation` if the column is nullable.
+    /// - `TypeError` if the column dtype does not match `T`.
+    pub fn to_vec_strict<T: CudfType>(&self) -> Result<Vec<T>> {
+        let cv = self.column.view()?;
+        if cv.null_count()? > 0 {
+            return Err(Error::new(ErrorKind::InvalidOperation, "to_vec_strict rejects nullable columns")
+                .with_operation("series::to_vec_strict"));
+        }
+        cv.to_vec::<T>()
     }
 
     /// Copy fixed-width column data to host as `Vec<Option<T>>`, encoding
@@ -174,7 +183,7 @@ impl Series {
     ///
     /// # Errors
     /// Returns `TypeError` if the column dtype does not match `T`.
-    pub fn to_optional_vec<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
+    pub fn to_vec_optional<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
         let cv = self.column.view()?;
 
         // Bool8 safety: libcudf stores booleans as int8 and makes no guarantee
@@ -182,7 +191,7 @@ impl Series {
         // to be exactly 0 or 1; any other value is UB. To avoid constructing
         // an invalid bool, we materialize as u8 and only convert valid slots.
         if T::TYPE_ID == TypeId::Bool8 {
-            return self.to_optional_vec_bool::<T>(&cv);
+            return self.to_vec_optional_bool::<T>(&cv);
         }
 
         let vals = cv.to_vec::<T>()?;
@@ -198,7 +207,7 @@ impl Series {
     /// value of null (masked-off) slots. Rust requires `bool` to be exactly
     /// 0 or 1; any other value is UB. We materialize as `u8` via
     /// `ColumnView::to_raw_bytes` and canonicalize before converting.
-    fn to_optional_vec_bool<T: CudfType>(&self, cv: &ColumnView<'_>) -> Result<Vec<Option<T>>> {
+    fn to_vec_optional_bool<T: CudfType>(&self, cv: &ColumnView<'_>) -> Result<Vec<Option<T>>> {
         let raw = cv.to_raw_bytes()?;
         let bool_values: Vec<Option<bool>> = match cv.validity()? {
             None => raw.into_iter().map(|b| Some(b != 0)).collect(),
@@ -211,21 +220,28 @@ impl Series {
         let boxed: Box<dyn std::any::Any> = Box::new(bool_values);
         boxed.downcast::<Vec<Option<T>>>().map(|typed| *typed).map_err(|_| {
             Error::new(ErrorKind::InvalidOperation, "internal bool materialization helper requires T = bool")
-                .with_operation("series::to_optional_vec_bool")
+                .with_operation("series::to_vec_optional_bool")
                 .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase())
         })
     }
 
-    /// Copy string column data to a host `Vec<String>`.
+    /// Copy string column data to a host `Vec<String>`, rejecting nullable
+    /// columns.
     ///
-    /// Null elements are returned as empty strings (`""`). Use
-    /// [`to_optional_strings`](Self::to_optional_strings) to distinguish
-    /// nulls from genuinely empty strings.
+    /// Returns an error if the column is nullable — use
+    /// [`to_strings_optional`](Self::to_strings_optional) or
+    /// [`to_strings_lossy`](Self::to_strings_lossy) instead.
     ///
     /// # Errors
-    /// Returns `TypeError` if the underlying column type is not `STRING`.
-    pub fn to_strings(&self) -> Result<Vec<String>> {
-        self.column.view()?.to_strings()
+    /// - `InvalidOperation` if the column is nullable.
+    /// - `TypeError` if the underlying column type is not `STRING`.
+    pub fn to_strings_strict(&self) -> Result<Vec<String>> {
+        let cv = self.column.view()?;
+        if cv.null_count()? > 0 {
+            return Err(Error::new(ErrorKind::InvalidOperation, "to_strings_strict rejects nullable columns")
+                .with_operation("series::to_strings_strict"));
+        }
+        cv.to_strings()
     }
 
     /// Copy string data to host as `Vec<Option<String>>`, distinguishing null
@@ -235,10 +251,23 @@ impl Series {
     /// Non-nullable columns return all `Some`.
     ///
     /// # Errors
-    ///
     /// Returns `TypeError` if the underlying column type is not `STRING`.
-    pub fn to_optional_strings(&self) -> Result<Vec<Option<String>>> {
+    pub fn to_strings_optional(&self) -> Result<Vec<Option<String>>> {
         self.column.view()?.to_optional_strings()
+    }
+
+    /// Copy string column data to a host `Vec<String>`, mapping null elements
+    /// to empty strings (`""`).
+    ///
+    /// This is a lossy conversion: null and genuinely empty strings become
+    /// indistinguishable. When null fidelity matters, use
+    /// [`to_strings_optional`](Self::to_strings_optional).
+    ///
+    /// # Errors
+    /// Returns `TypeError` if the underlying column type is not `STRING`.
+    pub fn to_strings_lossy(&self) -> Result<Vec<String>> {
+        let opt = self.column.view()?.to_optional_strings()?;
+        Ok(opt.into_iter().map(|o| o.unwrap_or_default()).collect())
     }
 
     // -- Scalar comparison ops -----------------------------------------
@@ -335,37 +364,37 @@ impl Series {
 
     /// Element-wise `self == rhs`. Returns an unnamed `BOOL8` Series.
     pub fn eq(&self, rhs: &Series) -> Result<Series> {
-        let col = self.column.eq_col(&rhs.column)?;
+        let col = self.column.eq(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self != rhs`. Returns an unnamed `BOOL8` Series.
     pub fn ne(&self, rhs: &Series) -> Result<Series> {
-        let col = self.column.ne_col(&rhs.column)?;
+        let col = self.column.ne(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self > rhs`. Returns an unnamed `BOOL8` Series.
     pub fn gt(&self, rhs: &Series) -> Result<Series> {
-        let col = self.column.gt_col(&rhs.column)?;
+        let col = self.column.gt(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self < rhs`. Returns an unnamed `BOOL8` Series.
     pub fn lt(&self, rhs: &Series) -> Result<Series> {
-        let col = self.column.lt_col(&rhs.column)?;
+        let col = self.column.lt(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self >= rhs`. Returns an unnamed `BOOL8` Series.
     pub fn ge(&self, rhs: &Series) -> Result<Series> {
-        let col = self.column.ge_col(&rhs.column)?;
+        let col = self.column.ge(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self <= rhs`. Returns an unnamed `BOOL8` Series.
     pub fn le(&self, rhs: &Series) -> Result<Series> {
-        let col = self.column.le_col(&rhs.column)?;
+        let col = self.column.le(&rhs.column)?;
         Self::from_column(col)
     }
 
@@ -545,7 +574,7 @@ impl Series {
         let source_type = self.dtype()?.id();
         // libcudf does not support direct numeric → timestamp casts; it
         // requires numeric → duration → timestamp.
-        if source_type.is_numeric() {
+        if source_type.is_numeric() || source_type.is_boolean() {
             let duration = self.astype(res.duration_type_id())?;
             duration.astype(res.type_id())
         } else {
@@ -564,7 +593,7 @@ impl Series {
     /// # Cost
     /// GPU-allocating: a new column is produced with the target numeric dtype.
     pub fn to_numeric(&self, target: TypeId) -> Result<Series> {
-        if !target.is_numeric() {
+        if !target.is_numeric() && !target.is_boolean() {
             return Err(Error::new(ErrorKind::InvalidOperation, format!("target type {target:?} is not numeric"))
                 .with_operation("series::to_numeric"));
         }

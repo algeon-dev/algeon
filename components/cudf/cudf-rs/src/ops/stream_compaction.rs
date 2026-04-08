@@ -63,26 +63,60 @@ impl NanEquality {
     }
 }
 
+fn checked_key_indices_i32(input: &TableView<'_>, keys: &[usize], operation: &'static str) -> Result<Vec<i32>> {
+    let num_columns = usize::try_from(input.num_columns()?).map_err(|_| {
+        Error::new(ErrorKind::InvalidOperation, "number of table columns must be >= 0").with_operation(operation)
+    })?;
+
+    keys.iter()
+        .map(|&key| {
+            if key >= num_columns {
+                Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("key column index {} out of bounds for {} columns", key, num_columns),
+                )
+                .with_operation(operation)
+                .with_context("key_index", key.to_string())
+                .with_context("num_columns", num_columns.to_string()))
+            } else {
+                i32::try_from(key).map_err(|_| {
+                    Error::new(ErrorKind::InvalidOperation, "key column index exceeds i32::MAX")
+                        .with_operation(operation)
+                        .with_context("key_index", key.to_string())
+                })
+            }
+        })
+        .collect()
+}
+
 fn drop_nulls_impl(
     input: &TableView<'_>,
-    keys: &[i32],
+    keys: &[usize],
     keep_threshold: i32,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
-    let num_keys = i32::try_from(keys.len()).map_err(|_| {
+    let keys_i32 = checked_key_indices_i32(input, keys, operation)?;
+    let num_keys = i32::try_from(keys_i32.len()).map_err(|_| {
         Error::new(ErrorKind::InvalidOperation, "num_keys exceeds i32::MAX")
             .with_operation(operation)
-            .with_context("num_keys", keys.len().to_string())
+            .with_context("num_keys", keys_i32.len().to_string())
     })?;
 
     let mut out = ptr::null_mut();
     let status = match exec_options {
         Some(options) => unsafe {
-            cudf_sys::cudf_drop_nulls_ex(input.raw_handle(), keys.as_ptr(), num_keys, keep_threshold, &mut out, options)
+            cudf_sys::cudf_drop_nulls_ex(
+                input.raw_handle(),
+                keys_i32.as_ptr(),
+                num_keys,
+                keep_threshold,
+                &mut out,
+                options,
+            )
         },
         None => unsafe {
-            cudf_sys::cudf_drop_nulls(input.raw_handle(), keys.as_ptr(), num_keys, keep_threshold, &mut out)
+            cudf_sys::cudf_drop_nulls(input.raw_handle(), keys_i32.as_ptr(), num_keys, keep_threshold, &mut out)
         },
     };
     error::check_status_in_with(
@@ -99,17 +133,18 @@ fn drop_nulls_impl(
 
 pub(crate) fn distinct_impl(
     input: &TableView<'_>,
-    keys: &[i32],
+    keys: &[usize],
     keep: DuplicateKeepOption,
     null_equality: NullEquality,
     nan_equality: NanEquality,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
-    let num_keys = i32::try_from(keys.len()).map_err(|_| {
+    let keys_i32 = checked_key_indices_i32(input, keys, operation)?;
+    let num_keys = i32::try_from(keys_i32.len()).map_err(|_| {
         Error::new(ErrorKind::InvalidOperation, "num_keys exceeds i32::MAX")
             .with_operation(operation)
-            .with_context("num_keys", keys.len().to_string())
+            .with_context("num_keys", keys_i32.len().to_string())
     })?;
 
     let mut out = ptr::null_mut();
@@ -120,7 +155,7 @@ pub(crate) fn distinct_impl(
         Some(options) => unsafe {
             cudf_sys::cudf_distinct_ex(
                 input.raw_handle(),
-                keys.as_ptr(),
+                keys_i32.as_ptr(),
                 num_keys,
                 keep_ffi,
                 null_eq_ffi,
@@ -132,7 +167,7 @@ pub(crate) fn distinct_impl(
         None => unsafe {
             cudf_sys::cudf_distinct(
                 input.raw_handle(),
-                keys.as_ptr(),
+                keys_i32.as_ptr(),
                 num_keys,
                 keep_ffi,
                 null_eq_ffi,
@@ -175,7 +210,7 @@ pub(crate) fn distinct_impl(
 ///     stream_compaction::drop_nulls(&table.view().unwrap(), &[0], 1).unwrap();
 /// // Rows with null in column 0 are removed.
 /// ```
-pub fn drop_nulls(input: &TableView<'_>, keys: &[i32], keep_threshold: i32) -> Result<Table> {
+pub fn drop_nulls(input: &TableView<'_>, keys: &[usize], keep_threshold: i32) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     drop_nulls_impl(input, keys, keep_threshold, exec_options.as_ref(), "stream_compaction::drop_nulls")
@@ -210,7 +245,7 @@ pub fn drop_nulls(input: &TableView<'_>, keys: &[i32], keep_threshold: i32) -> R
 /// ```
 pub fn distinct(
     input: &TableView<'_>,
-    keys: &[i32],
+    keys: &[usize],
     keep: DuplicateKeepOption,
     null_equality: NullEquality,
     nan_equality: NanEquality,

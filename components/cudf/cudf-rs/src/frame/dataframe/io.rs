@@ -10,70 +10,12 @@ use crate::{
     core::error::{Error, ErrorKind, Result},
     io::{
         IoTableResult,
-        csv::{self, CsvTableReadOptions, CsvTableWriteOptions},
-        json::{self, JsonTableReadOptions, JsonTableWriteOptions},
-        parquet::{self, ParquetTableReadOptions, ParquetTableWriteOptions},
+        csv::{self, CsvReadOptions, CsvTableWriteOptions},
+        json::{self, JsonReadOptions, JsonTableWriteOptions},
+        parquet::{self, ParquetReadOptions, ParquetTableWriteOptions},
     },
     runtime::{Runtime, execution_domain::ExecutionDomain},
 };
-
-/// Options for [`DataFrame::read_csv_with_options`].
-///
-/// This is the schema-aware CSV reader API for `DataFrame`. Unlike the
-/// lower-level [`crate::io::csv::CsvTableReadOptions`], it can also resolve
-/// DataFrame column names from either an explicit override, low-level header
-/// metadata, or generated fallback names.
-#[derive(Debug, Clone, TypedBuilder)]
-pub struct CsvReadOptions {
-    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
-    filepath: PathBuf,
-    #[builder(default = b',')]
-    delimiter: u8,
-    #[builder(default = true)]
-    has_header: bool,
-    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
-    column_names: Option<Vec<String>>,
-    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
-    runtime: Option<Runtime>,
-}
-
-impl CsvReadOptions {
-    fn to_table_options(&self) -> CsvTableReadOptions {
-        match self.runtime.as_ref() {
-            Some(rt) => CsvTableReadOptions::builder()
-                .filepath(&self.filepath)
-                .delimiter(self.delimiter)
-                .has_header(self.has_header)
-                .with_runtime(rt)
-                .build(),
-            None => CsvTableReadOptions::builder()
-                .filepath(&self.filepath)
-                .delimiter(self.delimiter)
-                .has_header(self.has_header)
-                .build(),
-        }
-    }
-
-    fn resolve_column_names(&self, result: &IoTableResult) -> Result<Vec<String>> {
-        let operation = "dataframe::read_csv_with_options";
-        let num_columns = {
-            let view = result.table.view()?;
-            view.num_columns()? as usize
-        };
-
-        if let Some(names) = self.column_names.as_ref() {
-            validate_dataframe_csv_column_name_count(names.len(), num_columns, operation)?;
-            return Ok(names.clone());
-        }
-
-        if let Some(names) = result.column_names.as_ref() {
-            validate_dataframe_csv_column_name_count(names.len(), num_columns, operation)?;
-            return Ok(names.clone());
-        }
-
-        Ok((0..num_columns).map(|idx| format!("column_{idx}")).collect())
-    }
-}
 
 /// Options for [`DataFrame::write_csv_with_options`].
 ///
@@ -113,65 +55,24 @@ impl CsvWriteOptions {
     }
 }
 
-/// Options for [`DataFrame::read_parquet_with_options`].
-///
-/// This is the schema-aware Parquet reader API for `DataFrame`. It controls
-/// which rows and columns are materialized and, via [`Self::builder`]'s
-/// `with_runtime(...)` setter, which runtime receives the newly created
-/// outputs.
-#[derive(Debug, Clone, TypedBuilder)]
-pub struct ParquetReadOptions {
-    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
-    filepath: PathBuf,
-    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
-    columns: Option<Vec<String>>,
-    #[builder(default)]
-    skip_rows: i64,
-    #[builder(default = -1)]
-    num_rows: i64,
-    #[builder(default, setter(transform = |groups: &[i32]| if groups.is_empty() { None } else { Some(groups.to_vec()) }))]
-    row_groups: Option<Vec<i32>>,
-    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
-    runtime: Option<Runtime>,
-}
+fn resolve_csv_column_names(options: &CsvReadOptions, result: &IoTableResult) -> Result<Vec<String>> {
+    let operation = "dataframe::read_csv_with_options";
+    let num_columns = {
+        let view = result.table.view()?;
+        view.num_columns()? as usize
+    };
 
-impl ParquetReadOptions {
-    fn to_table_options(&self) -> ParquetTableReadOptions {
-        ParquetTableReadOptions::from_parts(
-            self.filepath.clone(),
-            self.columns.clone(),
-            self.skip_rows,
-            self.num_rows,
-            self.row_groups.clone(),
-            self.runtime.clone(),
-        )
+    if let Some(names) = options.column_names() {
+        validate_dataframe_csv_column_name_count(names.len(), num_columns, operation)?;
+        return Ok(names.to_vec());
     }
-}
 
-/// Options for [`DataFrame::read_json_with_options`].
-///
-/// This is the schema-aware JSON reader API for `DataFrame`. It controls the
-/// input format and, via `with_runtime(...)`, the placement runtime for the
-/// newly created outputs.
-#[derive(Debug, Clone, TypedBuilder)]
-pub struct JsonReadOptions {
-    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
-    filepath: PathBuf,
-    #[builder(default = true)]
-    lines: bool,
-    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
-    runtime: Option<Runtime>,
-}
-
-impl JsonReadOptions {
-    fn to_table_options(&self) -> JsonTableReadOptions {
-        match self.runtime.as_ref() {
-            Some(runtime) => {
-                JsonTableReadOptions::builder().filepath(&self.filepath).lines(self.lines).with_runtime(runtime).build()
-            },
-            None => JsonTableReadOptions::builder().filepath(&self.filepath).lines(self.lines).build(),
-        }
+    if let Some(names) = result.column_names.as_ref() {
+        validate_dataframe_csv_column_name_count(names.len(), num_columns, operation)?;
+        return Ok(names.clone());
     }
+
+    Ok((0..num_columns).map(|idx| format!("column_{idx}")).collect())
 }
 
 fn validate_dataframe_csv_column_name_count(
@@ -226,8 +127,8 @@ impl DataFrame {
     /// names are used unless the caller provides an explicit override.
     /// Generated fallback names are used only for headerless CSV results.
     pub fn read_csv_with_options(options: CsvReadOptions) -> Result<Self> {
-        let result = csv::read_csv(&options.to_table_options())?;
-        let names = options.resolve_column_names(&result)?;
+        let result = csv::read_csv(&options)?;
+        let names = resolve_csv_column_names(&options, &result)?;
         Self::from_table(result.table, names)
     }
 
@@ -270,7 +171,7 @@ impl DataFrame {
     ///
     /// Column names are taken from the Parquet file's schema metadata.
     pub fn read_parquet_with_options(options: ParquetReadOptions) -> Result<Self> {
-        let result = parquet::read_parquet(options.to_table_options())?;
+        let result = parquet::read_parquet(&options)?;
         let names = result.column_names.ok_or_else(|| {
             Error::new(
                 ErrorKind::InvalidOperation,
@@ -319,7 +220,7 @@ impl DataFrame {
     /// Column names are extracted from JSON key names when the low-level
     /// reader can recover them truthfully from the file.
     pub fn read_json_with_options(options: JsonReadOptions) -> Result<Self> {
-        let result = json::read_json(&options.to_table_options())?;
+        let result = json::read_json(&options)?;
         Self::from_table(result.table, result.column_names.unwrap_or_default())
     }
 

@@ -79,13 +79,14 @@ fn test_scan_exclusive_sum() {
 }
 
 #[test]
-fn test_reduce_negative_ddof_contains_context() {
+fn test_reduce_ddof_above_i32_max_contains_context() {
     let col = Column::from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
     let view = col.view().unwrap();
 
-    let err = reduction::reduce(&view, &ReduceAggregation::Variance { ddof: -1 }, &DataType::new(TypeId::Float64))
-        .err()
-        .expect("expected error");
+    let err =
+        reduction::reduce(&view, &ReduceAggregation::Variance { ddof: u32::MAX }, &DataType::new(TypeId::Float64))
+            .err()
+            .expect("expected error");
 
     assert_eq!(err.operation(), "reduction::create_reduce_agg_handle(variance)");
     let ctx = err.context();

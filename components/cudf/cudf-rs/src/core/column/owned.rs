@@ -198,8 +198,8 @@ impl Column {
     }
 
     /// Deep-copy this column.
-    pub fn copy(&self) -> Result<Self> {
-        self.copy_into_domain(Arc::clone(&self.domain), "column::copy")
+    pub fn deep_copy(&self) -> Result<Self> {
+        self.copy_into_domain(Arc::clone(&self.domain), "column::deep_copy")
     }
 
     /// Create an immutable view of this column.
@@ -980,33 +980,33 @@ impl Column {
     // -- Comparison methods ---------------------------------------------------
 
     /// Element-wise equal: `self == rhs`. Returns Bool8 column.
-    pub fn eq_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Equal).map_err(|e| e.with_operation("column::eq_col"))
+    pub fn eq(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, binary::BinaryOperator::Equal).map_err(|e| e.with_operation("column::eq"))
     }
 
     /// Element-wise not-equal: `self != rhs`. Returns Bool8 column.
-    pub fn ne_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::NotEqual).map_err(|e| e.with_operation("column::ne_col"))
+    pub fn ne(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, binary::BinaryOperator::NotEqual).map_err(|e| e.with_operation("column::ne"))
     }
 
     /// Element-wise less-than: `self < rhs`. Returns Bool8 column.
-    pub fn lt_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Less).map_err(|e| e.with_operation("column::lt_col"))
+    pub fn lt(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, binary::BinaryOperator::Less).map_err(|e| e.with_operation("column::lt"))
     }
 
     /// Element-wise greater-than: `self > rhs`. Returns Bool8 column.
-    pub fn gt_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Greater).map_err(|e| e.with_operation("column::gt_col"))
+    pub fn gt(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, binary::BinaryOperator::Greater).map_err(|e| e.with_operation("column::gt"))
     }
 
     /// Element-wise less-or-equal: `self <= rhs`. Returns Bool8 column.
-    pub fn le_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::LessEqual).map_err(|e| e.with_operation("column::le_col"))
+    pub fn le(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, binary::BinaryOperator::LessEqual).map_err(|e| e.with_operation("column::le"))
     }
 
     /// Element-wise greater-or-equal: `self >= rhs`. Returns Bool8 column.
-    pub fn ge_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::GreaterEqual).map_err(|e| e.with_operation("column::ge_col"))
+    pub fn ge(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, binary::BinaryOperator::GreaterEqual).map_err(|e| e.with_operation("column::ge"))
     }
 
     // -- Scalar operations ----------------------------------------------------

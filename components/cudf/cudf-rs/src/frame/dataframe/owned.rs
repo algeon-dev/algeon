@@ -122,8 +122,8 @@ impl DataFrame {
     /// Create a new `DataFrame` from column names and owned [`Column`] values.
     ///
     /// Advanced constructor. For most user-facing code, prefer
-    /// [`DataFrame::from_series`] with named [`Series`](crate::Series)
-    /// values.
+    /// [`DataFrame::from_series`] with named [`Series`](crate::Series) values,
+    /// or [`DataFrame::from_named_pairs`] for explicit schema override.
     ///
     /// # Errors
     ///
@@ -203,32 +203,39 @@ impl DataFrame {
         Ok(Self { columns: map, row_count, domain })
     }
 
-    /// Create a `DataFrame` from an iterator of `(name, Series)` pairs.
+    /// Create a `DataFrame` from an iterator of named [`Series`](crate::Series).
     ///
-    /// Each Series' `Arc<Column>` is shared without copying GPU data.
+    /// Each `Series` must carry a name (constructed via `Series::new`,
+    /// `Series::from_strings`, etc.). The Series name becomes the DataFrame
+    /// column name. GPU data is shared via `Arc` — no device copy.
+    ///
+    /// For explicit schema override (external names), use
+    /// [`from_named_pairs`](Self::from_named_pairs).
     ///
     /// # Errors
     ///
     /// Returns an error if:
+    /// - Any `Series` is unnamed
     /// - Any name is duplicated
     /// - Columns have different row counts
-    pub fn from_series<I, S>(pairs: I) -> Result<Self>
-    where
-        I: IntoIterator<Item = (S, Series)>,
-        S: Into<String>,
-    {
-        let iter = pairs.into_iter();
+    pub fn from_series<I>(series: I) -> Result<Self>
+    where I: IntoIterator<Item = Series> {
+        let iter = series.into_iter();
         let (lower, _) = iter.size_hint();
         let mut map: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(lower);
 
-        for (name, series) in iter {
-            let name = name.into();
+        for (idx, s) in iter.enumerate() {
+            let name = s.name().map(String::from).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidOperation, format!("Series at position {} has no name", idx))
+                    .with_operation("dataframe::from_series")
+                    .with_context("series_index", idx.to_string())
+            })?;
             if map.contains_key(&name) {
                 return Err(Error::new(ErrorKind::InvalidOperation, format!("duplicate column name '{}'", name))
                     .with_operation("dataframe::from_series")
                     .with_context("duplicate_name", name));
             }
-            map.insert(name, Arc::clone(series.column_arc()));
+            map.insert(name, Arc::clone(s.column_arc()));
         }
 
         if map.is_empty() {
@@ -263,6 +270,79 @@ impl DataFrame {
         }
 
         let domain = derive_frame_domain_from_columns(&map, "dataframe::from_series")?;
+        Ok(Self { columns: map, row_count: first_rows, domain })
+    }
+
+    /// Create a `DataFrame` from an iterator of `(name, Series)` pairs.
+    ///
+    /// The pair key becomes the column name, overriding any name carried by the
+    /// `Series` itself. GPU data is shared via `Arc` — no device copy.
+    ///
+    /// For the primary path where Series carry their own names, use
+    /// [`from_series`](Self::from_series).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Any name is duplicated
+    /// - Columns have different row counts
+    pub fn from_named_pairs<I, S>(pairs: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (S, Series)>,
+        S: Into<String>,
+    {
+        let iter = pairs.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut map: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(lower);
+
+        for (name, series) in iter {
+            let name = name.into();
+            if map.contains_key(&name) {
+                return Err(Error::new(ErrorKind::InvalidOperation, format!("duplicate column name '{}'", name))
+                    .with_operation("dataframe::from_named_pairs")
+                    .with_context("duplicate_name", name));
+            }
+            map.insert(name, Arc::clone(series.column_arc()));
+        }
+
+        if map.is_empty() {
+            return Ok(Self { columns: fast_index_map(), row_count: 0, domain: ExecutionDomain::ambient_default() });
+        }
+
+        // Validate all columns have the same row count.
+        let mut iter = map.iter();
+        let (first_name, first_col) = iter.next().expect("non-empty: checked above");
+        let first_rows = first_col
+            .view()
+            .map_err(|e| {
+                e.with_operation("dataframe::from_named_pairs").with_context("column_name", first_name.clone())
+            })?
+            .len()
+            .map_err(|e| {
+                e.with_operation("dataframe::from_named_pairs").with_context("column_name", first_name.clone())
+            })?;
+
+        for (name, col) in iter {
+            let rows = col
+                .view()
+                .map_err(|e| e.with_operation("dataframe::from_named_pairs").with_context("column_name", name.clone()))?
+                .len()
+                .map_err(|e| {
+                    e.with_operation("dataframe::from_named_pairs").with_context("column_name", name.clone())
+                })?;
+            if rows != first_rows {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows),
+                )
+                .with_operation("dataframe::from_named_pairs")
+                .with_context("column_name", name.clone())
+                .with_context("column_rows", rows.to_string())
+                .with_context("expected_rows", first_rows.to_string()));
+            }
+        }
+
+        let domain = derive_frame_domain_from_columns(&map, "dataframe::from_named_pairs")?;
         Ok(Self { columns: map, row_count: first_rows, domain })
     }
 
@@ -516,7 +596,7 @@ impl DataFrame {
     /// # use cudf::{Agg, AggSpec, DataFrame, Series};
     /// # let keys = Series::new::<i32>("key", &[1, 2]).unwrap();
     /// # let vals = Series::new::<i64>("val", &[10, 20]).unwrap();
-    /// # let df = DataFrame::from_series([("key", keys), ("val", vals)]).unwrap();
+    /// # let df = DataFrame::from_named_pairs([("key", keys), ("val", vals)]).unwrap();
     /// let result =
     ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", Agg::Sum)]).unwrap();
     /// ```
@@ -529,10 +609,11 @@ impl DataFrame {
     }
 }
 
-/// Construct a [`DataFrame`](crate::frame::dataframe::DataFrame) from named columns.
+/// Construct a [`DataFrame`](crate::frame::dataframe::DataFrame) from named pairs.
 ///
-/// This macro is Series-oriented: each value must evaluate to a
-/// [`Series`](crate::Series). The pair key becomes the DataFrame schema name.
+/// This macro is a shorthand for [`DataFrame::from_named_pairs`]. Each value
+/// must evaluate to a [`Series`](crate::Series). The pair key becomes the
+/// DataFrame schema name, overriding any name carried by the Series.
 ///
 /// # Example
 ///
@@ -553,7 +634,7 @@ impl DataFrame {
 #[macro_export]
 macro_rules! dataframe {
     ($($name:expr => $series:expr),+ $(,)?) => {{
-        $crate::DataFrame::from_series(vec![
+        $crate::DataFrame::from_named_pairs(vec![
             $(($name.to_string(), $series)),+
         ])
     }};
