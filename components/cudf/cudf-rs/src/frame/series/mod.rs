@@ -11,7 +11,7 @@ mod display;
 mod naming;
 mod ops;
 mod owned;
-mod reduction;
+pub(crate) mod reduction;
 mod strings;
 
 pub use owned::{IntoSeries, Series};

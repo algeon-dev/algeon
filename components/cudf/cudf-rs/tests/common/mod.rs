@@ -31,7 +31,9 @@ pub fn dataframe_from_columns(names: Vec<String>, columns: Vec<Column>) -> cudf:
     let pairs = names
         .into_iter()
         .zip(columns)
-        .map(|(name, column)| Series::from_column(column).map(|series| (name, series)).map_err(|e| e.with_operation(operation)))
+        .map(|(name, column)| {
+            Series::from_column(column).map(|series| (name, series)).map_err(|e| e.with_operation(operation))
+        })
         .collect::<cudf::Result<Vec<_>>>()?;
 
     DataFrame::from_named_pairs(pairs).map_err(|e| e.with_operation(operation))
