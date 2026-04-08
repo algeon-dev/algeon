@@ -1,4 +1,4 @@
-use super::*;
+use super::{table_export::transfer_from_owned_table_with_runtime_release, *};
 
 fn borrow_table_view_from_table_view<'a>(
     view: &'a TableView<'_>,
@@ -220,6 +220,17 @@ impl Table {
     /// profile.
     pub fn try_into_owned_device_table_transfer(self) -> Result<OwnedTableTransfer, InteropError> {
         <Self as TryIntoOwnedDeviceTableTransfer>::try_into_owned_device_table_transfer(self)
+    }
+
+    /// Move this owned table into the shared RAPIDS owned device transfer
+    /// profile plus a CUDA-backed releaser for signal-driven release.
+    pub fn try_into_owned_device_table_transfer_with_runtime_release(
+        self,
+    ) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+        transfer_from_owned_table_with_runtime_release(
+            self,
+            "interop::Table::try_into_owned_device_table_transfer_with_runtime_release",
+        )
     }
 
     /// Project this owned low-level table into the shared RAPIDS prepared

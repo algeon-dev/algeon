@@ -85,6 +85,13 @@ pub struct SeriesExecutionScope<'series, 'ctx, 'handles> {
     ctx: &'ctx ExecutionContext<'handles>,
 }
 
+/// Scoped string namespace for one `SeriesExecutionScope` operation chain.
+#[must_use]
+pub struct SeriesExecutionScopeStringNamespace<'series, 'ctx, 'handles> {
+    series: &'series Series,
+    ctx: &'ctx ExecutionContext<'handles>,
+}
+
 impl Series {
     /// Borrow a per-operation execution override for subsequent high-level calls.
     pub fn in_context<'series, 'ctx, 'handles>(
@@ -398,6 +405,11 @@ impl Series {
 }
 
 impl<'series, 'ctx, 'handles> SeriesExecutionScope<'series, 'ctx, 'handles> {
+    /// Enter the string namespace for string-specific scoped operations.
+    pub fn str(&self) -> SeriesExecutionScopeStringNamespace<'series, 'ctx, 'handles> {
+        SeriesExecutionScopeStringNamespace { series: self.series, ctx: self.ctx }
+    }
+
     /// Sort using the borrowed execution override.
     pub fn sort_values(&self, options: SortOptions) -> Result<Series> {
         self.series.sort_values_in_context(options, self.ctx)
@@ -768,26 +780,6 @@ impl<'series, 'ctx, 'handles> SeriesExecutionScope<'series, 'ctx, 'handles> {
         self.series.factorize_in_context(self.ctx)
     }
 
-    /// Lowercase strings using the borrowed execution override.
-    pub fn str_lower(&self) -> Result<Series> {
-        self.series.string_unary_in_context(strings::to_lower_impl, self.ctx, "series::in_context::str_lower")
-    }
-
-    /// Uppercase strings using the borrowed execution override.
-    pub fn str_upper(&self) -> Result<Series> {
-        self.series.string_unary_in_context(strings::to_upper_impl, self.ctx, "series::in_context::str_upper")
-    }
-
-    /// Literal substring containment using the borrowed execution override.
-    pub fn str_contains(&self, pat: &str) -> Result<Series> {
-        self.series.string_scalar_in_context(
-            pat,
-            self.ctx,
-            "series::in_context::str_contains",
-            strings::str_contains_impl,
-        )
-    }
-
     /// Equality-to-string-scalar using the borrowed execution override.
     pub fn eq_scalar_str(&self, rhs: &str) -> Result<Series> {
         self.series.binary_string_scalar_in_context(
@@ -847,49 +839,76 @@ impl<'series, 'ctx, 'handles> SeriesExecutionScope<'series, 'ctx, 'handles> {
             "series::in_context::le_scalar_str",
         )
     }
+}
 
-    /// Starts-with test using the borrowed execution override.
-    pub fn str_startswith(&self, pat: &str) -> Result<Series> {
+impl SeriesExecutionScopeStringNamespace<'_, '_, '_> {
+    /// Lowercase strings using the borrowed execution override.
+    pub fn lower(&self) -> Result<Series> {
+        self.series.string_unary_in_context(strings::to_lower_impl, self.ctx, "series::in_context::str::lower")
+    }
+
+    /// Uppercase strings using the borrowed execution override.
+    pub fn upper(&self) -> Result<Series> {
+        self.series.string_unary_in_context(strings::to_upper_impl, self.ctx, "series::in_context::str::upper")
+    }
+
+    /// Literal substring containment using the borrowed execution override.
+    pub fn contains(&self, pat: &str) -> Result<Series> {
         self.series.string_scalar_in_context(
             pat,
             self.ctx,
-            "series::in_context::str_startswith",
+            "series::in_context::str::contains",
+            strings::str_contains_impl,
+        )
+    }
+
+    /// Starts-with test using the borrowed execution override.
+    pub fn starts_with(&self, pat: &str) -> Result<Series> {
+        self.series.string_scalar_in_context(
+            pat,
+            self.ctx,
+            "series::in_context::str::starts_with",
             strings::starts_with_impl,
         )
     }
 
     /// Ends-with test using the borrowed execution override.
-    pub fn str_endswith(&self, pat: &str) -> Result<Series> {
-        self.series.string_scalar_in_context(pat, self.ctx, "series::in_context::str_endswith", strings::ends_with_impl)
+    pub fn ends_with(&self, pat: &str) -> Result<Series> {
+        self.series.string_scalar_in_context(
+            pat,
+            self.ctx,
+            "series::in_context::str::ends_with",
+            strings::ends_with_impl,
+        )
     }
 
     /// Strip whitespace using the borrowed execution override.
-    pub fn str_strip(&self) -> Result<Series> {
-        self.series.strip_in_context(StripSide::Both, "", self.ctx, "series::in_context::str_strip")
+    pub fn strip(&self) -> Result<Series> {
+        self.series.strip_in_context(StripSide::Both, "", self.ctx, "series::in_context::str::strip")
     }
 
     /// Strip leading whitespace using the borrowed execution override.
-    pub fn str_lstrip(&self) -> Result<Series> {
-        self.series.strip_in_context(StripSide::Left, "", self.ctx, "series::in_context::str_lstrip")
+    pub fn lstrip(&self) -> Result<Series> {
+        self.series.strip_in_context(StripSide::Left, "", self.ctx, "series::in_context::str::lstrip")
     }
 
     /// Strip trailing whitespace using the borrowed execution override.
-    pub fn str_rstrip(&self) -> Result<Series> {
-        self.series.strip_in_context(StripSide::Right, "", self.ctx, "series::in_context::str_rstrip")
+    pub fn rstrip(&self) -> Result<Series> {
+        self.series.strip_in_context(StripSide::Right, "", self.ctx, "series::in_context::str::rstrip")
     }
 
     /// Strip specific characters using the borrowed execution override.
-    pub fn str_strip_chars(&self, side: StripSide, to_strip: &str) -> Result<Series> {
-        self.series.strip_in_context(side, to_strip, self.ctx, "series::in_context::str_strip_chars")
+    pub fn strip_chars(&self, side: StripSide, to_strip: &str) -> Result<Series> {
+        self.series.strip_in_context(side, to_strip, self.ctx, "series::in_context::str::strip_chars")
     }
 
     /// Character counts using the borrowed execution override.
-    pub fn str_len(&self) -> Result<Series> {
-        self.series.string_unary_in_context(strings::count_characters_impl, self.ctx, "series::in_context::str_len")
+    pub fn len(&self) -> Result<Series> {
+        self.series.string_unary_in_context(strings::count_characters_impl, self.ctx, "series::in_context::str::len")
     }
 
     /// Byte counts using the borrowed execution override.
-    pub fn str_byte_count(&self) -> Result<Series> {
-        self.series.string_unary_in_context(strings::count_bytes_impl, self.ctx, "series::in_context::str_byte_count")
+    pub fn byte_count(&self) -> Result<Series> {
+        self.series.string_unary_in_context(strings::count_bytes_impl, self.ctx, "series::in_context::str::byte_count")
     }
 }

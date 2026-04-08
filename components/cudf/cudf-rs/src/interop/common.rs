@@ -206,6 +206,14 @@ pub(super) fn owned_transfer_release_contract(device: i32) -> ReleaseContract {
     )
 }
 
+pub(super) fn owned_transfer_runtime_release_contract(device: i32) -> ReleaseContract {
+    ReleaseContract::new(
+        device,
+        TransferCompletionRule::ReleaseWaitsOnConsumerSignal,
+        ReleaseSynchronization::MaySynchronizeInternally,
+    )
+}
+
 pub(super) fn pointer_device(
     operation: &'static str,
     ptr: *const std::ffi::c_void,

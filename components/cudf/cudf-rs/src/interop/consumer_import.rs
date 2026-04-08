@@ -11,9 +11,9 @@ use rapids_interop::{
 
 use super::{
     OwnedColumnTransferState, OwnedTableTransferState, PreparedDeviceImportColumnGraph, PreparedDeviceImportTableGraph,
-    RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, RuntimeReadStartAuthority,
-    TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease, checked_i32_from_usize, map_cudf_error,
-    map_interop_error, map_interop_type_id,
+    RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, RuntimeOwnedColumnTransferOwner,
+    RuntimeOwnedTableTransferOwner, RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease,
+    TryActivateRuntimeTableReadLease, checked_i32_from_usize, map_cudf_error, map_interop_error, map_interop_type_id,
 };
 use crate::{
     core::{column::Column, error, table::Table},
@@ -405,37 +405,43 @@ pub(super) fn import_column_from_owned_transfer(
 ) -> Result<Column, InteropError> {
     match transfer.try_into_owner::<OwnedColumnTransferState>() {
         Ok(state) => Ok(state.into_column()),
-        Err(transfer) => {
-            let graph = prepared_device_import_column_graph_from_parts(
-                transfer.semantic_columns(),
-                transfer.bindings(),
-                operation,
-            )?;
-            let num_semantic_columns =
-                checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
-            let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
-            let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
-            let root_column_id = transfer.column().id().get();
-            let domain = crate::runtime::execution_domain::ExecutionDomain::debug_explicit_for_device(producer_device)
-                .map_err(|error| map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error))?;
-            let retained_owner: Arc<dyn Any + Send + Sync> = Arc::new(transfer);
-            let mut handle = std::ptr::null_mut();
-            error::check_status_in(
-                unsafe {
-                    cudf_sys::cudf_column_create_from_owned_device_transfer(
-                        root_column_id,
-                        graph.ffi_columns.as_ptr(),
-                        num_semantic_columns,
-                        graph.ffi_bindings.as_ptr(),
-                        num_bindings,
-                        &mut handle,
-                    )
-                },
-                operation,
-            )
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        Err(transfer) => match transfer.try_into_owner::<RuntimeOwnedColumnTransferOwner>() {
+            Ok(owner) => owner.into_column(operation),
+            Err(transfer) => {
+                let graph = prepared_device_import_column_graph_from_parts(
+                    transfer.semantic_columns(),
+                    transfer.bindings(),
+                    operation,
+                )?;
+                let num_semantic_columns =
+                    checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
+                let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
+                let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
+                let root_column_id = transfer.column().id().get();
+                let domain =
+                    crate::runtime::execution_domain::ExecutionDomain::debug_explicit_for_device(producer_device)
+                        .map_err(|error| {
+                            map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error)
+                        })?;
+                let retained_owner: Arc<dyn Any + Send + Sync> = Arc::new(transfer);
+                let mut handle = std::ptr::null_mut();
+                error::check_status_in(
+                    unsafe {
+                        cudf_sys::cudf_column_create_from_owned_device_transfer(
+                            root_column_id,
+                            graph.ffi_columns.as_ptr(),
+                            num_semantic_columns,
+                            graph.ffi_bindings.as_ptr(),
+                            num_bindings,
+                            &mut handle,
+                        )
+                    },
+                    operation,
+                )
+                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-            Ok(unsafe { Column::from_raw_with_domain_and_owner(handle, domain, retained_owner) })
+                Ok(unsafe { Column::from_raw_with_domain_and_owner(handle, domain, retained_owner) })
+            },
         },
     }
 }
@@ -451,52 +457,56 @@ pub(super) fn import_table_from_owned_transfer(
     loop {
         match current.try_into_owner::<OwnedTableTransferState>() {
             Ok(state) => return Ok(state.into_table()),
-            Err(transfer) => match transfer.try_into_owner::<OwnedTableTransfer>() {
-                Ok(inner_transfer) => {
-                    nesting += 1;
-                    if nesting > MAX_OWNED_TABLE_TRANSFER_NESTING {
-                        return Err(InteropError::new(
-                            InteropErrorKind::ProfileUnsupported,
-                            "cudf-rs owned table import rejected an owned-transfer root with excessive nesting",
+            Err(transfer) => match transfer.try_into_owner::<RuntimeOwnedTableTransferOwner>() {
+                Ok(owner) => return owner.into_table(operation),
+                Err(transfer) => match transfer.try_into_owner::<OwnedTableTransfer>() {
+                    Ok(inner_transfer) => {
+                        nesting += 1;
+                        if nesting > MAX_OWNED_TABLE_TRANSFER_NESTING {
+                            return Err(InteropError::new(
+                                InteropErrorKind::ProfileUnsupported,
+                                "cudf-rs owned table import rejected an owned-transfer root with excessive nesting",
+                            )
+                            .with_context("operation", operation)
+                            .with_context("consumer", "cudf-rs")
+                            .with_context("profile", "owned_device_transfer")
+                            .with_context("max_nesting", MAX_OWNED_TABLE_TRANSFER_NESTING.to_string())
+                            .with_context("observed_nesting", nesting.to_string()));
+                        }
+                        current = inner_transfer;
+                    },
+                    Err(transfer) => {
+                        let graph = owned_device_import_table_graph(&transfer, operation)?;
+                        let num_semantic_columns =
+                            checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
+                        let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
+                        let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
+                        let owner_count = transfer.table().columns().len();
+                        let domain = crate::runtime::execution_domain::ExecutionDomain::debug_explicit_for_device(
+                            producer_device,
                         )
-                        .with_context("operation", operation)
-                        .with_context("consumer", "cudf-rs")
-                        .with_context("profile", "owned_device_transfer")
-                        .with_context("max_nesting", MAX_OWNED_TABLE_TRANSFER_NESTING.to_string())
-                        .with_context("observed_nesting", nesting.to_string()));
-                    }
-                    current = inner_transfer;
-                },
-                Err(transfer) => {
-                    let graph = owned_device_import_table_graph(&transfer, operation)?;
-                    let num_semantic_columns =
-                        checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
-                    let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
-                    let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
-                    let owner_count = transfer.table().columns().len();
-                    let domain =
-                        crate::runtime::execution_domain::ExecutionDomain::debug_explicit_for_device(producer_device)
-                            .map_err(|error| {
+                        .map_err(|error| {
                             map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error)
                         })?;
-                    let shared_owner: Arc<dyn Any + Send + Sync> = Arc::new(transfer);
-                    let retained_owners = (0..owner_count).map(|_| Some(Arc::clone(&shared_owner))).collect();
-                    let mut handle = std::ptr::null_mut();
-                    error::check_status_in(
-                        unsafe {
-                            cudf_sys::cudf_table_create_from_owned_device_transfer(
-                                &graph.ffi_table,
-                                graph.ffi_columns.as_ptr(),
-                                num_semantic_columns,
-                                graph.ffi_bindings.as_ptr(),
-                                num_bindings,
-                                &mut handle,
-                            )
-                        },
-                        operation,
-                    )
-                    .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-                    return Ok(unsafe { Table::from_raw_with_domain_and_owners(handle, domain, retained_owners) });
+                        let shared_owner: Arc<dyn Any + Send + Sync> = Arc::new(transfer);
+                        let retained_owners = (0..owner_count).map(|_| Some(Arc::clone(&shared_owner))).collect();
+                        let mut handle = std::ptr::null_mut();
+                        error::check_status_in(
+                            unsafe {
+                                cudf_sys::cudf_table_create_from_owned_device_transfer(
+                                    &graph.ffi_table,
+                                    graph.ffi_columns.as_ptr(),
+                                    num_semantic_columns,
+                                    graph.ffi_bindings.as_ptr(),
+                                    num_bindings,
+                                    &mut handle,
+                                )
+                            },
+                            operation,
+                        )
+                        .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+                        return Ok(unsafe { Table::from_raw_with_domain_and_owners(handle, domain, retained_owners) });
+                    },
                 },
             },
         }

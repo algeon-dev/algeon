@@ -1,4 +1,4 @@
-//! `Series` convenience methods for GPU string operations.
+//! `Series` string namespace for GPU string operations.
 
 use super::owned::Series;
 use crate::{
@@ -7,6 +7,17 @@ use crate::{
 };
 
 impl Series {
+    /// Enter the string namespace for string-specific series methods.
+    pub fn str(&self) -> SeriesStringNamespace<'_> {
+        SeriesStringNamespace(self)
+    }
+}
+
+/// String namespace for [`Series`].
+#[must_use]
+pub struct SeriesStringNamespace<'series>(&'series Series);
+
+impl SeriesStringNamespace<'_> {
     // -- Case conversion ---------------------------------------------------
 
     /// Convert each string element to lowercase. Inherits the source Series' name.
@@ -15,10 +26,10 @@ impl Series {
     ///
     /// # Cost
     /// GPU-allocating: produces a new STRING column.
-    pub fn str_lower(&self) -> Result<Series> {
-        let cv = self.column.view()?;
+    pub fn lower(&self) -> Result<Series> {
+        let cv = self.0.column.view()?;
         let col = strings::to_lower(&cv)?;
-        self.with_inherited_name(col)
+        self.0.with_inherited_name(col)
     }
 
     /// Convert each string element to uppercase. Inherits the source Series' name.
@@ -27,10 +38,10 @@ impl Series {
     ///
     /// # Cost
     /// GPU-allocating: produces a new STRING column.
-    pub fn str_upper(&self) -> Result<Series> {
-        let cv = self.column.view()?;
+    pub fn upper(&self) -> Result<Series> {
+        let cv = self.0.column.view()?;
         let col = strings::to_upper(&cv)?;
-        self.with_inherited_name(col)
+        self.0.with_inherited_name(col)
     }
 
     // -- Find / contains / starts_with / ends_with -------------------------
@@ -44,11 +55,11 @@ impl Series {
     ///
     /// # Cost
     /// GPU-allocating: produces a new BOOL8 column.
-    pub fn str_contains(&self, pat: &str) -> Result<Series> {
-        let cv = self.column.view()?;
-        let scalar = Scalar::from_string_in_domain(pat, self.column.execution_domain())?;
+    pub fn contains(&self, pat: &str) -> Result<Series> {
+        let cv = self.0.column.view()?;
+        let scalar = Scalar::from_string_in_domain(pat, self.0.column.execution_domain())?;
         let col = strings::str_contains(&cv, &scalar)?;
-        self.with_inherited_name(col)
+        self.0.with_inherited_name(col)
     }
 
     /// Element-wise starts-with test.
@@ -59,11 +70,11 @@ impl Series {
     ///
     /// # Cost
     /// GPU-allocating: produces a new BOOL8 column.
-    pub fn str_startswith(&self, pat: &str) -> Result<Series> {
-        let cv = self.column.view()?;
-        let scalar = Scalar::from_string_in_domain(pat, self.column.execution_domain())?;
+    pub fn starts_with(&self, pat: &str) -> Result<Series> {
+        let cv = self.0.column.view()?;
+        let scalar = Scalar::from_string_in_domain(pat, self.0.column.execution_domain())?;
         let col = strings::starts_with(&cv, &scalar)?;
-        self.with_inherited_name(col)
+        self.0.with_inherited_name(col)
     }
 
     /// Element-wise ends-with test.
@@ -74,11 +85,11 @@ impl Series {
     ///
     /// # Cost
     /// GPU-allocating: produces a new BOOL8 column.
-    pub fn str_endswith(&self, pat: &str) -> Result<Series> {
-        let cv = self.column.view()?;
-        let scalar = Scalar::from_string_in_domain(pat, self.column.execution_domain())?;
+    pub fn ends_with(&self, pat: &str) -> Result<Series> {
+        let cv = self.0.column.view()?;
+        let scalar = Scalar::from_string_in_domain(pat, self.0.column.execution_domain())?;
         let col = strings::ends_with(&cv, &scalar)?;
-        self.with_inherited_name(col)
+        self.0.with_inherited_name(col)
     }
 
     // -- Strip / trim -------------------------------------------------------
@@ -91,33 +102,33 @@ impl Series {
     ///
     /// # Cost
     /// GPU-allocating: produces a new STRING column.
-    pub fn str_strip(&self) -> Result<Series> {
-        self.str_strip_chars(StripSide::Both, "")
+    pub fn strip(&self) -> Result<Series> {
+        self.strip_chars(StripSide::Both, "")
     }
 
     /// Strip whitespace from the left (beginning) of each string.
     ///
     /// Equivalent to cuDF Python's `Series.str.lstrip()`.
-    pub fn str_lstrip(&self) -> Result<Series> {
-        self.str_strip_chars(StripSide::Left, "")
+    pub fn lstrip(&self) -> Result<Series> {
+        self.strip_chars(StripSide::Left, "")
     }
 
     /// Strip whitespace from the right (end) of each string.
     ///
     /// Equivalent to cuDF Python's `Series.str.rstrip()`.
-    pub fn str_rstrip(&self) -> Result<Series> {
-        self.str_strip_chars(StripSide::Right, "")
+    pub fn rstrip(&self) -> Result<Series> {
+        self.strip_chars(StripSide::Right, "")
     }
 
     /// Strip specific characters from the given side(s) of each string.
     ///
     /// `to_strip` is the set of characters to remove. An empty string
     /// means strip whitespace.
-    pub fn str_strip_chars(&self, side: StripSide, to_strip: &str) -> Result<Series> {
-        let cv = self.column.view()?;
-        let scalar = Scalar::from_string_in_domain(to_strip, self.column.execution_domain())?;
+    pub fn strip_chars(&self, side: StripSide, to_strip: &str) -> Result<Series> {
+        let cv = self.0.column.view()?;
+        let scalar = Scalar::from_string_in_domain(to_strip, self.0.column.execution_domain())?;
         let col = strings::strip(&cv, side, &scalar)?;
-        self.with_inherited_name(col)
+        self.0.with_inherited_name(col)
     }
 
     // -- Attributes ---------------------------------------------------------
@@ -131,10 +142,10 @@ impl Series {
     ///
     /// # Cost
     /// GPU-allocating: produces a new INT32 column.
-    pub fn str_len(&self) -> Result<Series> {
-        let cv = self.column.view()?;
+    pub fn len(&self) -> Result<Series> {
+        let cv = self.0.column.view()?;
         let col = strings::count_characters(&cv)?;
-        self.with_inherited_name(col)
+        self.0.with_inherited_name(col)
     }
 
     /// Byte count per string.
@@ -143,9 +154,9 @@ impl Series {
     ///
     /// # Cost
     /// GPU-allocating: produces a new INT32 column.
-    pub fn str_byte_count(&self) -> Result<Series> {
-        let cv = self.column.view()?;
+    pub fn byte_count(&self) -> Result<Series> {
+        let cv = self.0.column.view()?;
         let col = strings::count_bytes(&cv)?;
-        self.with_inherited_name(col)
+        self.0.with_inherited_name(col)
     }
 }

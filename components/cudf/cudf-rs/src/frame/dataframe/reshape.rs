@@ -141,6 +141,30 @@ use crate::{
 
 const SORT_KEY_INLINE_CAPACITY: usize = 4;
 
+/// Trait for values that can be normalized into a `with_columns()` item.
+///
+/// This supports either a bare [`Expr`](crate::ops::Expr) or an explicit
+/// `(name, expr)` pair.
+#[doc(hidden)]
+pub trait IntoWithColumnExpr {
+    /// Convert into a normalized `with_columns()` item.
+    fn into_with_column_expr(self) -> (Option<String>, ops::expr::Expr);
+}
+
+impl IntoWithColumnExpr for ops::expr::Expr {
+    fn into_with_column_expr(self) -> (Option<String>, ops::expr::Expr) {
+        (None, self)
+    }
+}
+
+impl<S> IntoWithColumnExpr for (S, ops::expr::Expr)
+where S: Into<String>
+{
+    fn into_with_column_expr(self) -> (Option<String>, ops::expr::Expr) {
+        (Some(self.0.into()), self.1)
+    }
+}
+
 impl DataFrame {
     /// Sort using a borrowed per-operation execution override.
     pub(crate) fn sort_values_in_context<I, S>(
@@ -808,38 +832,52 @@ impl DataFrame {
     /// reference columns that other expressions will overwrite, and the order
     /// of evaluation does not matter.
     ///
-    /// Each expression must have a determinable output name: either via
+    /// Each item must resolve to an output name. You can provide either:
+    ///
+    /// - a bare expression, which uses [`Expr::output_name()`](crate::ops::expr::Expr::output_name)
+    /// - an explicit `(name, expr)` pair, which always uses the provided name
+    ///
+    /// Bare expressions can still get their names via
     /// [`.alias()`](crate::ops::expr::Expr::alias), by being a bare
     /// [`col()`](crate::ops::expr::col) reference, or by being a single-input
     /// transform that inherits its input name (for example `cast`, `is_null`,
-    /// `fillna`, cumulative scans, broadcast reductions, and string unary
-    /// operations). Expressions without a name produce an error **before** any
-    /// GPU work.
+    /// `fillna`, cumulative scans, and string unary operations). Broadcast
+    /// reductions do **not** inherit an output name; give them an alias or an
+    /// explicit `(name, expr)` pair. Items without a resolvable name produce
+    /// an error **before** any GPU work.
     ///
     /// # Errors
     ///
-    /// Returns an error if any expression lacks an output name, or if
+    /// Returns an error if any item lacks an output name, or if
     /// evaluation of any expression fails.
-    pub fn with_columns<I>(&self, exprs: I) -> Result<Self>
-    where I: IntoIterator<Item = ops::expr::Expr> {
-        let exprs: Vec<ops::expr::Expr> = exprs.into_iter().collect();
+    pub fn with_columns<I, T>(&self, exprs: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = T>,
+        T: IntoWithColumnExpr,
+    {
+        let exprs: Vec<(Option<String>, ops::expr::Expr)> =
+            exprs.into_iter().map(IntoWithColumnExpr::into_with_column_expr).collect();
 
         // Validate all names up-front before doing any GPU work.
-        let names: Vec<&str> = exprs
+        let names: Vec<String> = exprs
             .iter()
-            .map(|e| {
-                e.output_name().ok_or_else(|| {
-                    Error::new(ErrorKind::InvalidOperation, "expression has no output name; use .alias() to name it")
-                        .with_operation("dataframe::with_columns")
-                })
+            .map(|(explicit_name, expr)| {
+                explicit_name
+                    .as_deref()
+                    .or_else(|| expr.output_name())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        Error::new(ErrorKind::InvalidOperation, "expression has no output name; use .alias() to name it")
+                            .with_operation("dataframe::with_columns")
+                    })
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<_>>()?;
 
         // Evaluate all expressions against the original DataFrame.
-        let results: Vec<Series> = exprs.iter().map(|e| e.eval(self)).collect::<Result<Vec<_>>>()?;
+        let results: Vec<Series> = exprs.iter().map(|(_, expr)| expr.eval(self)).collect::<Result<_>>()?;
 
         // Build the new DataFrame.
-        let pairs: Vec<(&str, Series)> = names.into_iter().zip(results).collect();
+        let pairs: Vec<(&str, Series)> = names.iter().map(String::as_str).zip(results).collect();
         self.assign(pairs)
     }
 

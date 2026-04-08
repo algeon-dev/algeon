@@ -3,6 +3,23 @@
 //! Provides a cuDF-Python / Polars-style expression API where users compose
 //! column operations as an AST and evaluate them against a [`DataFrame`].
 //!
+//! # Reduction Shape
+//!
+//! Expr reductions accessed through [`Expr::agg`] are **broadcast
+//! aggregates**. They reduce their input to a single scalar internally, then
+//! broadcast that scalar back to the DataFrame row count so the result remains
+//! row-aligned and can participate in larger expressions.
+//!
+//! That means `col("x").agg().sum()` is appropriate in expressions like
+//! `col("x") / col("x").agg().sum()`, but broadcast reductions do not
+//! inherit an output name for
+//! [`DataFrame::with_columns`](crate::frame::dataframe::DataFrame::with_columns).
+//! Use [`.alias()`](Expr::alias) or an explicit `(name, expr)` pair when you
+//! want to materialize the broadcast result as a named column.
+//!
+//! If you want an actual scalar reduction, use the [`Series`] reduction APIs
+//! such as [`Series::sum`] or [`Series::sum_value`] instead.
+//!
 //! # Example
 //!
 //! ```no_run
@@ -20,7 +37,8 @@
 //! let df2 = df
 //!     .with_columns([
 //!         (col("x") + col("y")).alias("sum"),
-//!         (col("x") * lit(2i32)).alias("doubled"),
+//!         (col("x") * 2i32).alias("doubled"),
+//!         (col("x") / col("x").agg().sum()).alias("share_of_total"),
 //!     ])
 //!     .unwrap();
 //! ```
@@ -165,34 +183,43 @@ impl Expr {
         Expr::Cast { input: Box::new(self), target: target.into() }
     }
 
+    /// Enter the aggregation namespace for broadcast aggregate expressions.
+    ///
+    /// Methods on the returned namespace reduce once, then broadcast the
+    /// result back to the frame row count so it can participate in larger
+    /// row-aligned expressions.
+    pub fn agg(self) -> ExprAggNamespace {
+        ExprAggNamespace(self)
+    }
+
     /// Element-wise greater-than comparison.
-    pub fn gt(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Greater, rhs: Box::new(rhs) }
+    pub fn gt(self, rhs: impl IntoExpr) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Greater, rhs: Box::new(rhs.into_expr()) }
     }
 
     /// Element-wise less-than comparison.
-    pub fn lt(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Less, rhs: Box::new(rhs) }
+    pub fn lt(self, rhs: impl IntoExpr) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Less, rhs: Box::new(rhs.into_expr()) }
     }
 
     /// Element-wise equality comparison.
-    pub fn eq(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Equal, rhs: Box::new(rhs) }
+    pub fn eq(self, rhs: impl IntoExpr) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Equal, rhs: Box::new(rhs.into_expr()) }
     }
 
     /// Element-wise inequality comparison.
-    pub fn ne(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::NotEqual, rhs: Box::new(rhs) }
+    pub fn ne(self, rhs: impl IntoExpr) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::NotEqual, rhs: Box::new(rhs.into_expr()) }
     }
 
     /// Element-wise greater-than-or-equal comparison.
-    pub fn ge(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::GreaterEqual, rhs: Box::new(rhs) }
+    pub fn ge(self, rhs: impl IntoExpr) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::GreaterEqual, rhs: Box::new(rhs.into_expr()) }
     }
 
     /// Element-wise less-than-or-equal comparison.
-    pub fn le(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::LessEqual, rhs: Box::new(rhs) }
+    pub fn le(self, rhs: impl IntoExpr) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::LessEqual, rhs: Box::new(rhs.into_expr()) }
     }
 
     /// Element-wise null check. Produces BOOL8.
@@ -212,13 +239,13 @@ impl Expr {
     }
 
     /// Exponentiation (`self ^ rhs`). Result type follows cuDF `Pow` rules.
-    pub fn pow(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Pow, rhs: Box::new(rhs) }
+    pub fn pow(self, rhs: impl IntoExpr) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Pow, rhs: Box::new(rhs.into_expr()) }
     }
 
     /// Integer floor division.
-    pub fn floor_div(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::FloorDiv, rhs: Box::new(rhs) }
+    pub fn floor_div(self, rhs: impl IntoExpr) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::FloorDiv, rhs: Box::new(rhs.into_expr()) }
     }
 
     /// Element-wise absolute value.
@@ -287,109 +314,11 @@ impl Expr {
         Expr::Scan { input: Box::new(self), agg: ScanAggregation::Product }
     }
 
-    // -- Aggregation builders (Phase 3) ------------------------------------
-
-    /// Broadcast sum: reduce to scalar, then broadcast to all rows.
-    pub fn sum(self) -> Expr {
-        Expr::Reduce { input: Box::new(self), agg: ReduceAggregation::Sum }
-    }
-
-    /// Broadcast mean (always Float64).
-    pub fn mean(self) -> Expr {
-        Expr::Reduce { input: Box::new(self), agg: ReduceAggregation::Mean }
-    }
-
-    /// Broadcast minimum.
-    #[allow(clippy::should_implement_trait)]
-    pub fn min(self) -> Expr {
-        Expr::Reduce { input: Box::new(self), agg: ReduceAggregation::Min }
-    }
-
-    /// Broadcast maximum.
-    pub fn max(self) -> Expr {
-        Expr::Reduce { input: Box::new(self), agg: ReduceAggregation::Max }
-    }
-
-    /// Broadcast standard deviation with given degrees-of-freedom correction.
-    pub fn std(self, ddof: u32) -> Expr {
-        Expr::Reduce { input: Box::new(self), agg: ReduceAggregation::Std { ddof } }
-    }
-
-    /// Broadcast variance with given degrees-of-freedom correction.
-    pub fn var(self, ddof: u32) -> Expr {
-        Expr::Reduce { input: Box::new(self), agg: ReduceAggregation::Variance { ddof } }
-    }
-
-    /// Broadcast median (always Float64).
-    pub fn median(self) -> Expr {
-        Expr::Reduce { input: Box::new(self), agg: ReduceAggregation::Median }
-    }
-
-    /// Broadcast logical ANY (true if any element is true).
-    pub fn any(self) -> Expr {
-        Expr::Reduce { input: Box::new(self), agg: ReduceAggregation::Any }
-    }
-
-    /// Broadcast logical ALL (true if all elements are true).
-    pub fn all(self) -> Expr {
-        Expr::Reduce { input: Box::new(self), agg: ReduceAggregation::All }
-    }
-
-    /// Broadcast product of all elements.
-    pub fn product(self) -> Expr {
-        Expr::Reduce { input: Box::new(self), agg: ReduceAggregation::Product }
-    }
-
     // -- String builders (Phase 4a) ----------------------------------------
 
-    /// Convert each string element to lowercase.
-    pub fn str_lower(self) -> Expr {
-        Expr::StringOp { input: Box::new(self), op: StringOperator::Lower }
-    }
-
-    /// Convert each string element to uppercase.
-    pub fn str_upper(self) -> Expr {
-        Expr::StringOp { input: Box::new(self), op: StringOperator::Upper }
-    }
-
-    /// Strip whitespace from both sides.
-    pub fn str_strip(self) -> Expr {
-        Expr::StringOp { input: Box::new(self), op: StringOperator::Strip }
-    }
-
-    /// Strip leading whitespace.
-    pub fn str_lstrip(self) -> Expr {
-        Expr::StringOp { input: Box::new(self), op: StringOperator::LStrip }
-    }
-
-    /// Strip trailing whitespace.
-    pub fn str_rstrip(self) -> Expr {
-        Expr::StringOp { input: Box::new(self), op: StringOperator::RStrip }
-    }
-
-    /// Character count per string element.
-    pub fn str_len(self) -> Expr {
-        Expr::StringOp { input: Box::new(self), op: StringOperator::Len }
-    }
-
-    /// Byte count per string element.
-    pub fn str_byte_count(self) -> Expr {
-        Expr::StringOp { input: Box::new(self), op: StringOperator::ByteCount }
-    }
-
-    /// Literal substring containment test. Returns BOOL8.
-    pub fn str_contains(self, pat: impl Into<String>) -> Expr {
-        Expr::StringOp { input: Box::new(self), op: StringOperator::Contains(pat.into()) }
-    }
-
-    /// Starts-with test. Returns BOOL8.
-    pub fn str_startswith(self, pat: impl Into<String>) -> Expr {
-        Expr::StringOp { input: Box::new(self), op: StringOperator::StartsWith(pat.into()) }
-    }
-
-    /// Ends-with test. Returns BOOL8.
-    pub fn str_endswith(self, pat: impl Into<String>) -> Expr {
-        Expr::StringOp { input: Box::new(self), op: StringOperator::EndsWith(pat.into()) }
+    /// Enter the string namespace for string-specific expression methods.
+    pub fn str(self) -> ExprStringNamespace {
+        ExprStringNamespace(self)
     }
 
     // -- Name resolution ---------------------------------------------------
@@ -399,6 +328,7 @@ impl Expr {
     /// - `Alias` always overrides.
     /// - `Column(name)` → `Some(name)`.
     /// - Single-input nodes (transforms) inherit from their inner expression.
+    /// - Broadcast reductions do not inherit a name; use `.alias()`.
     /// - Multi-input nodes (`BinaryOp`, `Literal`) → `None`.
     pub fn output_name(&self) -> Option<&str> {
         match self {
@@ -413,8 +343,8 @@ impl Expr {
             | Expr::FillNaExpr { input, .. }
             | Expr::FillNullPolicy { input, .. }
             | Expr::Scan { input, .. }
-            | Expr::Reduce { input, .. }
             | Expr::StringOp { input, .. } => input.output_name(),
+            Expr::Reduce { .. } => None,
             // Multi-input or no-source nodes.
             Expr::BinaryOp { .. } | Expr::Literal(_) | Expr::IfElse { .. } => None,
         }
@@ -571,6 +501,175 @@ impl Expr {
 }
 
 // ===========================================================================
+// Aggregation namespace
+// ===========================================================================
+
+/// Aggregation namespace for row-aligned broadcast aggregate expressions.
+///
+/// Construct via [`Expr::agg`]. Methods on this type reduce their input to a
+/// scalar internally, then broadcast the result back to the DataFrame row
+/// count. This keeps the output usable inside larger row-aligned expressions
+/// such as `col("x") / col("x").agg().sum()`.
+pub struct ExprAggNamespace(Expr);
+
+impl ExprAggNamespace {
+    /// Sum all rows, then materialize the result as a full-length column.
+    ///
+    /// Use [`Series::sum`](crate::frame::series::Series::sum) or
+    /// [`Series::sum_value`](crate::frame::series::Series::sum_value) when you
+    /// want a scalar result instead of a broadcast expression operand.
+    pub fn sum(self) -> Expr {
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Sum }
+    }
+
+    /// Mean of all rows, materialized as a full-length `Float64` column.
+    ///
+    /// Use [`Series::mean`](crate::frame::series::Series::mean) or
+    /// [`Series::mean_value`](crate::frame::series::Series::mean_value) when
+    /// you want a scalar result instead of a broadcast expression operand.
+    pub fn mean(self) -> Expr {
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Mean }
+    }
+
+    /// Minimum of all rows, materialized as a full-length column.
+    ///
+    /// Use [`Series::min`](crate::frame::series::Series::min) or
+    /// [`Series::min_value`](crate::frame::series::Series::min_value) when you
+    /// want a scalar result instead of a broadcast expression operand.
+    #[allow(clippy::should_implement_trait)]
+    pub fn min(self) -> Expr {
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Min }
+    }
+
+    /// Maximum of all rows, materialized as a full-length column.
+    ///
+    /// Use [`Series::max`](crate::frame::series::Series::max) or
+    /// [`Series::max_value`](crate::frame::series::Series::max_value) when you
+    /// want a scalar result instead of a broadcast expression operand.
+    pub fn max(self) -> Expr {
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Max }
+    }
+
+    /// Standard deviation of all rows, materialized as a full-length column.
+    ///
+    /// Use [`Series::std`](crate::frame::series::Series::std) or
+    /// [`Series::std_value`](crate::frame::series::Series::std_value) when you
+    /// want a scalar result instead of a broadcast expression operand.
+    pub fn std(self, ddof: u32) -> Expr {
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Std { ddof } }
+    }
+
+    /// Variance of all rows, materialized as a full-length column.
+    ///
+    /// Use [`Series::var`](crate::frame::series::Series::var) or
+    /// [`Series::var_value`](crate::frame::series::Series::var_value) when you
+    /// want a scalar result instead of a broadcast expression operand.
+    pub fn var(self, ddof: u32) -> Expr {
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Variance { ddof } }
+    }
+
+    /// Median of all rows, materialized as a full-length `Float64` column.
+    ///
+    /// Use [`Series::median`](crate::frame::series::Series::median) or
+    /// [`Series::median_value`](crate::frame::series::Series::median_value)
+    /// when you want a scalar result instead of a broadcast expression
+    /// operand.
+    pub fn median(self) -> Expr {
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Median }
+    }
+
+    /// Logical ANY over all rows, materialized as a full-length BOOL8 column.
+    ///
+    /// Use [`Series::any`](crate::frame::series::Series::any) or
+    /// [`Series::any_value`](crate::frame::series::Series::any_value) when you
+    /// want a scalar result instead of a broadcast expression operand.
+    pub fn any(self) -> Expr {
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Any }
+    }
+
+    /// Logical ALL over all rows, materialized as a full-length BOOL8 column.
+    ///
+    /// Use [`Series::all`](crate::frame::series::Series::all) or
+    /// [`Series::all_value`](crate::frame::series::Series::all_value) when you
+    /// want a scalar result instead of a broadcast expression operand.
+    pub fn all(self) -> Expr {
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::All }
+    }
+
+    /// Product of all rows, materialized as a full-length column.
+    ///
+    /// Use [`Series::product`](crate::frame::series::Series::product) or
+    /// [`Series::product_value`](crate::frame::series::Series::product_value)
+    /// when you want a scalar result instead of a broadcast expression
+    /// operand.
+    pub fn product(self) -> Expr {
+        Expr::Reduce { input: Box::new(self.0), agg: ReduceAggregation::Product }
+    }
+}
+
+// ===========================================================================
+// String namespace
+// ===========================================================================
+
+/// String namespace for expression methods on string columns.
+///
+/// Construct via [`Expr::str`]. Methods on this type produce row-aligned
+/// expressions that preserve the input column name.
+pub struct ExprStringNamespace(Expr);
+
+impl ExprStringNamespace {
+    /// Convert each string element to lowercase.
+    pub fn lower(self) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::Lower }
+    }
+
+    /// Convert each string element to uppercase.
+    pub fn upper(self) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::Upper }
+    }
+
+    /// Strip whitespace from both sides.
+    pub fn strip(self) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::Strip }
+    }
+
+    /// Strip leading whitespace.
+    pub fn lstrip(self) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::LStrip }
+    }
+
+    /// Strip trailing whitespace.
+    pub fn rstrip(self) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::RStrip }
+    }
+
+    /// Character count per string element.
+    pub fn len(self) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::Len }
+    }
+
+    /// Byte count per string element.
+    pub fn byte_count(self) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::ByteCount }
+    }
+
+    /// Literal substring containment test. Returns BOOL8.
+    pub fn contains(self, pat: impl Into<String>) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::Contains(pat.into()) }
+    }
+
+    /// Starts-with test. Returns BOOL8.
+    pub fn starts_with(self, pat: impl Into<String>) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::StartsWith(pat.into()) }
+    }
+
+    /// Ends-with test. Returns BOOL8.
+    pub fn ends_with(self, pat: impl Into<String>) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::EndsWith(pat.into()) }
+    }
+}
+
+// ===========================================================================
 // Free functions: col(), lit(), when()
 // ===========================================================================
 
@@ -597,9 +696,9 @@ pub fn lit<L: IntoLit>(value: L) -> Expr {
 /// ```no_run
 /// use cudf::ops::expr::{col, lit, when};
 ///
-/// let expr = when(col("age").ge(lit(18i32)))
-///     .then(lit("adult"))
-///     .otherwise(lit("minor"))
+/// let expr = when(col("age").ge(18i32))
+///     .then("adult")
+///     .otherwise("minor")
 ///     .alias("category");
 /// ```
 pub fn when(condition: Expr) -> WhenBuilder {
@@ -615,8 +714,8 @@ pub struct WhenBuilder(Expr);
 
 impl WhenBuilder {
     /// Provide the value to produce when the condition is `true`.
-    pub fn then(self, value: Expr) -> ThenBuilder {
-        ThenBuilder { condition: self.0, true_val: value }
+    pub fn then(self, value: impl IntoExpr) -> ThenBuilder {
+        ThenBuilder { condition: self.0, true_val: value.into_expr() }
     }
 }
 
@@ -629,12 +728,37 @@ pub struct ThenBuilder {
 impl ThenBuilder {
     /// Provide the value to produce when the condition is `false` (or null),
     /// completing the conditional expression.
-    pub fn otherwise(self, value: Expr) -> Expr {
+    pub fn otherwise(self, value: impl IntoExpr) -> Expr {
         Expr::IfElse {
             condition: Box::new(self.condition),
             true_val: Box::new(self.true_val),
-            false_val: Box::new(value),
+            false_val: Box::new(value.into_expr()),
         }
+    }
+}
+
+// ===========================================================================
+// IntoExpr trait
+// ===========================================================================
+
+/// Trait for values that can be converted into an [`Expr`] operand.
+pub trait IntoExpr {
+    /// Convert this value into an [`Expr`].
+    fn into_expr(self) -> Expr;
+}
+
+impl IntoExpr for Expr {
+    fn into_expr(self) -> Expr {
+        self
+    }
+}
+
+// SAFETY (coherence): This blanket impl covers every `IntoLit` type. `Expr`
+// itself must *never* implement `IntoLit`, otherwise the compiler will see
+// overlapping implementations of `IntoExpr` and refuse to compile.
+impl<T: IntoLit> IntoExpr for T {
+    fn into_expr(self) -> Expr {
+        IntoLit::into_expr(self)
     }
 }
 
@@ -672,35 +796,35 @@ impl IntoLit for String {
 // Operator overloads: Add, Sub, Mul, Div, Not
 // ===========================================================================
 
-impl std::ops::Add for Expr {
+impl<R: IntoExpr> std::ops::Add<R> for Expr {
     type Output = Expr;
 
-    fn add(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Add, rhs: Box::new(rhs) }
+    fn add(self, rhs: R) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Add, rhs: Box::new(rhs.into_expr()) }
     }
 }
 
-impl std::ops::Sub for Expr {
+impl<R: IntoExpr> std::ops::Sub<R> for Expr {
     type Output = Expr;
 
-    fn sub(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Sub, rhs: Box::new(rhs) }
+    fn sub(self, rhs: R) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Sub, rhs: Box::new(rhs.into_expr()) }
     }
 }
 
-impl std::ops::Mul for Expr {
+impl<R: IntoExpr> std::ops::Mul<R> for Expr {
     type Output = Expr;
 
-    fn mul(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Mul, rhs: Box::new(rhs) }
+    fn mul(self, rhs: R) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Mul, rhs: Box::new(rhs.into_expr()) }
     }
 }
 
-impl std::ops::Div for Expr {
+impl<R: IntoExpr> std::ops::Div<R> for Expr {
     type Output = Expr;
 
-    fn div(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Div, rhs: Box::new(rhs) }
+    fn div(self, rhs: R) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Div, rhs: Box::new(rhs.into_expr()) }
     }
 }
 
@@ -712,11 +836,11 @@ impl std::ops::Not for Expr {
     }
 }
 
-impl std::ops::Rem for Expr {
+impl<R: IntoExpr> std::ops::Rem<R> for Expr {
     type Output = Expr;
 
-    fn rem(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Mod, rhs: Box::new(rhs) }
+    fn rem(self, rhs: R) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Mod, rhs: Box::new(rhs.into_expr()) }
     }
 }
 
@@ -728,18 +852,40 @@ impl std::ops::Neg for Expr {
     }
 }
 
-impl std::ops::BitAnd for Expr {
+impl<R: IntoExpr> std::ops::BitAnd<R> for Expr {
     type Output = Expr;
 
-    fn bitand(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::LogicalAnd, rhs: Box::new(rhs) }
+    fn bitand(self, rhs: R) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::LogicalAnd, rhs: Box::new(rhs.into_expr()) }
     }
 }
 
-impl std::ops::BitOr for Expr {
+impl<R: IntoExpr> std::ops::BitOr<R> for Expr {
     type Output = Expr;
 
-    fn bitor(self, rhs: Expr) -> Expr {
-        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::LogicalOr, rhs: Box::new(rhs) }
+    fn bitor(self, rhs: R) -> Expr {
+        Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::LogicalOr, rhs: Box::new(rhs.into_expr()) }
     }
 }
+
+macro_rules! impl_scalar_lhs_binop {
+    ($trait:ident, $method:ident, $op:expr; $($ty:ty),+ $(,)?) => {
+        $(
+            impl std::ops::$trait<Expr> for $ty {
+                type Output = Expr;
+
+                fn $method(self, rhs: Expr) -> Expr {
+                    Expr::BinaryOp { lhs: Box::new(IntoExpr::into_expr(self)), op: $op, rhs: Box::new(rhs) }
+                }
+            }
+        )+
+    };
+}
+
+impl_scalar_lhs_binop!(Add, add, BinaryOperator::Add; i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+impl_scalar_lhs_binop!(Sub, sub, BinaryOperator::Sub; i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+impl_scalar_lhs_binop!(Mul, mul, BinaryOperator::Mul; i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+impl_scalar_lhs_binop!(Div, div, BinaryOperator::Div; i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+impl_scalar_lhs_binop!(Rem, rem, BinaryOperator::Mod; i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+impl_scalar_lhs_binop!(BitAnd, bitand, BinaryOperator::LogicalAnd; bool);
+impl_scalar_lhs_binop!(BitOr, bitor, BinaryOperator::LogicalOr; bool);

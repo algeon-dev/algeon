@@ -307,6 +307,45 @@ pub(super) fn transfer_from_owned_table_with_names(
     .map_err(|error| error.with_context("operation", operation))
 }
 
+pub(super) fn transfer_from_owned_table_with_runtime_release(
+    table: Table,
+    operation: &'static str,
+) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+    transfer_from_owned_table_with_names_and_runtime_release(table, None, operation)
+}
+
+pub(super) fn transfer_from_owned_table_with_names_and_runtime_release(
+    table: Table,
+    names: Option<Vec<String>>,
+    operation: &'static str,
+) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+    let (default_device, readiness) = prepared_device_readiness(operation, table.execution_domain())?;
+    let (num_rows, columns, semantic_columns, bindings) = {
+        let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        let (num_rows, _) = table_dimensions(&view, operation)?;
+        let (columns, semantic_columns, bindings) =
+            build_device_table_projection_from_view(&view, operation, default_device)?;
+        (num_rows, columns, semantic_columns, bindings)
+    };
+
+    let table_semantic =
+        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
+    let (owner, releaser) = runtime_owned_table_owner_and_releaser(table, default_device);
+    let transfer = OwnedTableTransfer::try_new_with_semantic_columns(
+        table_semantic,
+        columns,
+        semantic_columns,
+        to_static_bindings(operation, bindings)?,
+        to_static_readiness(readiness),
+        owned_transfer_diagnostics(),
+        owned_transfer_runtime_release_contract(default_device),
+        owner,
+    )
+    .map_err(|error| error.with_context("operation", operation))?;
+
+    Ok((transfer, releaser))
+}
+
 pub(super) fn prepare_partitioned_device_table_export_from_columns<'a>(
     producer: &'a PartitionedDataFrameExport,
     operation: &'static str,

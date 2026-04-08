@@ -1,5 +1,6 @@
 #include "owning_handle.hpp"
 
+#include "interop_common.hpp"
 #include "shim_common.h"
 
 #include <cudf/column/column_factories.hpp>
@@ -8,12 +9,18 @@
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/traits.hpp>
 
-#include <limits>
 #include <memory>
-#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+using cudf_interop::require_non_negative_i32;
+using cudf_interop::require_size_type_from_size_t;
+using cudf_interop::interop_data_type;
+using cudf_interop::column_index_t;
+using cudf_interop::binding_index_t;
+using cudf_interop::build_column_index;
+using cudf_interop::build_binding_index;
 
 namespace {
 
@@ -151,60 +158,11 @@ struct foreign_column_common {
   std::size_t validity_byte_len;
 };
 
-cudf::size_type require_non_negative_i32(int32_t value, char const* field) {
-  if (value < 0) { throw cudf::logic_error(field); }
-  return static_cast<cudf::size_type>(value);
-}
-
-cudf::size_type require_size_type_from_size_t(size_t value, char const* field) {
-  if (value > static_cast<size_t>(std::numeric_limits<cudf::size_type>::max())) {
-    throw cudf::logic_error(field);
-  }
-  return static_cast<cudf::size_type>(value);
-}
-
-cudf::data_type interop_data_type(cudf_interop_semantic_column_t const& column) {
-  auto const id = static_cast<cudf::type_id>(column.type_id);
-  switch (id) {
-    case cudf::type_id::DECIMAL32:
-    case cudf::type_id::DECIMAL64:
-    case cudf::type_id::DECIMAL128:
-      return cudf::data_type{id, column.scale};
-    default:
-      return cudf::data_type{id};
-  }
-}
-
-using column_index_t =
-    std::unordered_map<uint32_t, cudf_interop_semantic_column_t const*>;
-using binding_index_t =
-    std::unordered_map<uint32_t, cudf_interop_buffer_binding_t const*>;
-
 cudf_interop_buffer_binding_t const* require_device_binding(
     binding_index_t const& index,
     uint32_t id,
     char const* missing_message,
     char const* placement_message);
-
-column_index_t build_column_index(cudf_interop_semantic_column_t const* columns,
-                                  int32_t num_columns) {
-  column_index_t index;
-  index.reserve(static_cast<std::size_t>(num_columns));
-  for (int32_t i = 0; i < num_columns; ++i) {
-    index.emplace(columns[i].column_id, &columns[i]);
-  }
-  return index;
-}
-
-binding_index_t build_binding_index(cudf_interop_buffer_binding_t const* bindings,
-                                    int32_t num_bindings) {
-  binding_index_t index;
-  index.reserve(static_cast<std::size_t>(num_bindings));
-  for (int32_t i = 0; i < num_bindings; ++i) {
-    index.emplace(bindings[i].buffer_id, &bindings[i]);
-  }
-  return index;
-}
 
 foreign_column_common build_foreign_column_common(
     cudf_interop_semantic_column_t const& column,

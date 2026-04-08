@@ -827,7 +827,7 @@ fn in_context_scopes_series_string_accessors() {
     let ctx = ExecutionContext::new().with_stream(ctx_rt.stream()).with_memory_resource(ctx_rt.memory_resource());
 
     obs_reset();
-    let lower = strings.in_context(&ctx).str_lower().unwrap();
+    let lower = strings.in_context(&ctx).str().lower().unwrap();
     assert_eq!(obs_last_stream(), ctx_stream_value);
     assert_eq!(obs_last_mr() as usize, ctx_mr_value);
     assert_eq!(lower.as_column().__debug_execution_domain_id(), strings.as_column().__debug_execution_domain_id());
@@ -839,7 +839,7 @@ fn in_context_scopes_series_string_accessors() {
     );
 
     obs_reset();
-    let contains = strings.in_context(&ctx).str_contains("A").unwrap();
+    let contains = strings.in_context(&ctx).str().contains("A").unwrap();
     assert_eq!(obs_last_stream(), ctx_stream_value);
     assert_eq!(obs_last_mr() as usize, ctx_mr_value);
     assert_eq!(contains.as_column().__debug_execution_domain_id(), strings.as_column().__debug_execution_domain_id());
@@ -848,7 +848,7 @@ fn in_context_scopes_series_string_accessors() {
     assert_eq!(contains.to_vec_optional::<bool>().unwrap(), vec![Some(true), Some(false), None, Some(true)]);
 
     obs_reset();
-    let stripped = strings.in_context(&ctx).str_strip().unwrap();
+    let stripped = strings.in_context(&ctx).str().strip().unwrap();
     assert_eq!(obs_last_stream(), ctx_stream_value);
     assert_eq!(obs_last_mr() as usize, ctx_mr_value);
     assert_eq!(stripped.as_column().__debug_execution_domain_id(), strings.as_column().__debug_execution_domain_id());
@@ -860,7 +860,7 @@ fn in_context_scopes_series_string_accessors() {
     );
 
     obs_reset();
-    let lengths = strings.in_context(&ctx).str_len().unwrap();
+    let lengths = strings.in_context(&ctx).str().len().unwrap();
     assert_eq!(obs_last_stream(), ctx_stream_value);
     assert_eq!(obs_last_mr() as usize, ctx_mr_value);
     assert_eq!(lengths.as_column().__debug_execution_domain_id(), strings.as_column().__debug_execution_domain_id());

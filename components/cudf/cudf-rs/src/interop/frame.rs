@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    column::transfer_from_owned_column_with_runtime_release,
+    table_export::transfer_from_owned_table_with_names_and_runtime_release, *,
+};
 
 pub(crate) struct BorrowedPartitionColumnGroup<'a> {
     pub(crate) top_level_column_indices: Vec<usize>,
@@ -237,6 +240,17 @@ impl Series {
         <Self as TryIntoOwnedDeviceColumnTransfer>::try_into_owned_device_column_transfer(self)
     }
 
+    /// Convenience producer that moves this high-level `Series` into the
+    /// shared owned device transfer profile plus a CUDA-backed releaser for
+    /// signal-driven release.
+    pub fn try_into_owned_device_column_transfer_with_runtime_release(
+        self,
+    ) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {
+        let operation = "interop::Series::try_into_owned_device_column_transfer_with_runtime_release";
+        let column = into_owned_column_for_transfer(self, operation)?;
+        transfer_from_owned_column_with_runtime_release(column, operation)
+    }
+
     /// Convenience producer that projects this high-level `Series` into the
     /// shared prepared device export profile with producer event-ordered
     /// readiness.
@@ -394,6 +408,17 @@ impl DataFrame {
     /// preserves the `DataFrame` schema names on the shared root.
     pub fn try_into_owned_device_table_transfer(self) -> Result<OwnedTableTransfer, InteropError> {
         <Self as TryIntoOwnedDeviceTableTransfer>::try_into_owned_device_table_transfer(self)
+    }
+
+    /// Convenience producer that moves this high-level `DataFrame` into the
+    /// shared owned device transfer profile plus a CUDA-backed releaser for
+    /// signal-driven release.
+    pub fn try_into_owned_device_table_transfer_with_runtime_release(
+        self,
+    ) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+        let operation = "interop::DataFrame::try_into_owned_device_table_transfer_with_runtime_release";
+        let (table, names) = into_owned_table_for_transfer(self, operation)?;
+        transfer_from_owned_table_with_names_and_runtime_release(table, Some(names), operation)
     }
 
     /// Convenience producer that projects this high-level `DataFrame` into the

@@ -100,6 +100,30 @@ pub(super) fn transfer_from_owned_column(
     .map_err(|error| error.with_context("operation", operation))
 }
 
+pub(super) fn transfer_from_owned_column_with_runtime_release(
+    column: Column,
+    operation: &'static str,
+) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {
+    let (default_device, readiness) = prepared_device_readiness(operation, column.execution_domain())?;
+    let projection = {
+        let view = column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?
+    };
+    let (owner, releaser) = runtime_owned_column_owner_and_releaser(column, default_device);
+    let transfer = OwnedColumnTransfer::try_new_with_semantic_columns(
+        projection.column,
+        projection.semantic_columns,
+        to_static_bindings(operation, projection.bindings)?,
+        to_static_readiness(readiness),
+        owned_transfer_diagnostics(),
+        owned_transfer_runtime_release_contract(default_device),
+        owner,
+    )
+    .map_err(|error| error.with_context("operation", operation))?;
+
+    Ok((transfer, releaser))
+}
+
 impl<'view> ColumnView<'view> {
     /// Project this low-level borrowed column view into the shared RAPIDS
     /// borrowed interop ABI.
@@ -252,6 +276,25 @@ impl Column {
     /// profile.
     pub fn try_into_owned_device_column_transfer(self) -> Result<OwnedColumnTransfer, InteropError> {
         <Self as TryIntoOwnedDeviceColumnTransfer>::try_into_owned_device_column_transfer(self)
+    }
+
+    /// Move this owned column into the shared RAPIDS owned device transfer
+    /// profile plus a CUDA-backed releaser for signal-driven release.
+    ///
+    /// The returned transfer declares
+    /// [`TransferCompletionRule::ReleaseWaitsOnConsumerSignal`] with
+    /// [`ReleaseSynchronization::MaySynchronizeInternally`]. The caller must
+    /// eventually drive release through the returned releaser when a foreign
+    /// consumer keeps the shared transfer root. If the transfer is instead
+    /// imported back into a native `cudf-rs` owner, that native owner claims
+    /// the underlying ownership and the releaser becomes invalid.
+    pub fn try_into_owned_device_column_transfer_with_runtime_release(
+        self,
+    ) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {
+        transfer_from_owned_column_with_runtime_release(
+            self,
+            "interop::Column::try_into_owned_device_column_transfer_with_runtime_release",
+        )
     }
 
     /// Project this owned low-level column into the shared RAPIDS prepared

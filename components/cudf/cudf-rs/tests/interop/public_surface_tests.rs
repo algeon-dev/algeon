@@ -11,7 +11,10 @@ use cudf::{
             PreparedColumnExport, PreparedTableExport, ReadStartBinding,
         },
         runtime::cuda_explicit_completion_required_lease_backend,
-        transfer::{OwnedColumnTransfer, OwnedTableTransfer},
+        transfer::{
+            OwnedColumnTransfer, OwnedTableTransfer, RuntimeOwnedColumnTransferReleaser,
+            RuntimeOwnedTableTransferReleaser,
+        },
     },
 };
 
@@ -135,9 +138,21 @@ fn cudf_interop_exposes_high_level_consumer_import_adapters() {
 fn cudf_interop_exposes_high_level_owned_transfer_producers() {
     fn assert_series_owned_producer(_f: fn(Series) -> std::result::Result<OwnedColumnTransfer, InteropError>) {}
     fn assert_dataframe_owned_producer(_f: fn(DataFrame) -> std::result::Result<OwnedTableTransfer, InteropError>) {}
+    fn assert_series_runtime_release_owned_producer(
+        _f: fn(Series) -> std::result::Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError>,
+    ) {
+    }
+    fn assert_dataframe_runtime_release_owned_producer(
+        _f: fn(DataFrame) -> std::result::Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError>,
+    ) {
+    }
 
     assert_series_owned_producer(Series::try_into_owned_device_column_transfer);
     assert_dataframe_owned_producer(DataFrame::try_into_owned_device_table_transfer);
+    assert_series_runtime_release_owned_producer(Series::try_into_owned_device_column_transfer_with_runtime_release);
+    assert_dataframe_runtime_release_owned_producer(
+        DataFrame::try_into_owned_device_table_transfer_with_runtime_release,
+    );
 }
 
 #[test]
