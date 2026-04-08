@@ -38,7 +38,7 @@ cudf_status_t cudf_replace_nulls_scalar_ex(
     }
 
     auto result = cudf::replace_nulls(*view, *scalar, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -71,7 +71,7 @@ cudf_status_t cudf_replace_nulls_column_ex(
     }
 
     auto result = cudf::replace_nulls(*view_input, *view_replacement, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -110,7 +110,7 @@ cudf_status_t cudf_replace_nulls_policy_ex(
     }
 
     auto result = cudf::replace_nulls(*view, rp, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

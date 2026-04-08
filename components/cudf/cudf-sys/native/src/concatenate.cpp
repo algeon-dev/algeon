@@ -51,7 +51,7 @@ cudf_status_t cudf_concatenate_columns_ex(
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto result = cudf::concatenate(views, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -94,7 +94,7 @@ cudf_status_t cudf_concatenate_tables_ex(
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto result = cudf::concatenate(views, exec.stream, exec.mr);
-    *out = static_cast<cudf_table_handle>(result.release());
+    *out = cudf_release_table_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

@@ -106,7 +106,7 @@ cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
     }
 
     auto result = cudf::sort(*view, orders, null_orders, exec.stream, exec.mr);
-    *out = static_cast<cudf_table_handle>(result.release());
+    *out = cudf_release_table_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -158,7 +158,7 @@ cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
     }
 
     auto result = cudf::stable_sort(*view, orders, null_orders, exec.stream, exec.mr);
-    *out = static_cast<cudf_table_handle>(result.release());
+    *out = cudf_release_table_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -217,7 +217,7 @@ cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
 
     auto result =
         cudf::sort_by_key(*vals, *ks, orders, null_orders, exec.stream, exec.mr);
-    *out = static_cast<cudf_table_handle>(result.release());
+    *out = cudf_release_table_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -276,7 +276,7 @@ cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
 
     auto result =
         cudf::stable_sort_by_key(*vals, *ks, orders, null_orders, exec.stream, exec.mr);
-    *out = static_cast<cudf_table_handle>(result.release());
+    *out = cudf_release_table_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -328,7 +328,7 @@ cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
     }
 
     auto result = cudf::sorted_order(*view, orders, null_orders, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

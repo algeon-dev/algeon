@@ -699,6 +699,15 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_column_create_from_owned_device_transfer(
+        root_column_id: u32,
+        semantic_columns: *const cudf_interop_semantic_column_t,
+        num_semantic_columns: i32,
+        bindings: *const cudf_interop_buffer_binding_t,
+        num_bindings: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
     pub fn cudf_column_payload_size(handle: cudf_column_handle, out: *mut usize) -> cudf_status_t;
 
     pub fn cudf_column_payload_size_ex(
@@ -1036,6 +1045,15 @@ extern "C" {
         bindings: *const cudf_interop_buffer_binding_t,
         num_bindings: i32,
         options: *const cudf_exec_options_t,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_table_create_from_owned_device_transfer(
+        table: *const cudf_interop_semantic_table_t,
+        semantic_columns: *const cudf_interop_semantic_column_t,
+        num_semantic_columns: i32,
+        bindings: *const cudf_interop_buffer_binding_t,
+        num_bindings: i32,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 

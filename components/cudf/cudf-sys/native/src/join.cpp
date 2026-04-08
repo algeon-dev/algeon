@@ -124,8 +124,8 @@ cudf_status_t cudf_inner_join_ex(cudf_table_view_handle left_keys,
                                      cudf::out_of_bounds_policy::DONT_CHECK,
                                      exec.stream, exec.mr);
 
-    *out_left = static_cast<cudf_table_handle>(left_result.release());
-    *out_right = static_cast<cudf_table_handle>(right_result.release());
+    *out_left = cudf_release_table_handle(std::move(left_result));
+    *out_right = cudf_release_table_handle(std::move(right_result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -188,8 +188,8 @@ cudf_status_t cudf_left_join_ex(cudf_table_view_handle left_keys,
                                      cudf::out_of_bounds_policy::NULLIFY,
                                      exec.stream, exec.mr);
 
-    *out_left = static_cast<cudf_table_handle>(left_result.release());
-    *out_right = static_cast<cudf_table_handle>(right_result.release());
+    *out_left = cudf_release_table_handle(std::move(left_result));
+    *out_right = cudf_release_table_handle(std::move(right_result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -252,8 +252,8 @@ cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
                                      cudf::out_of_bounds_policy::NULLIFY,
                                      exec.stream, exec.mr);
 
-    *out_left = static_cast<cudf_table_handle>(left_result.release());
-    *out_right = static_cast<cudf_table_handle>(right_result.release());
+    *out_left = cudf_release_table_handle(std::move(left_result));
+    *out_right = cudf_release_table_handle(std::move(right_result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

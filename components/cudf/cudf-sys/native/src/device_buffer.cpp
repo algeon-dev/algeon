@@ -112,7 +112,7 @@ cudf_status_t cudf_column_adopt_device_buffer(
     // Delete the heap wrapper so the Rust side doesn't double-free.
     delete buf;
 
-    *out = static_cast<cudf_column_handle>(col.release());
+    *out = cudf_release_column_handle(std::move(col));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -174,7 +174,7 @@ cudf_status_t cudf_column_adopt_device_buffer_nullable(
     delete data_buf;
     delete mask_buf;
 
-    *out = static_cast<cudf_column_handle>(col.release());
+    *out = cudf_release_column_handle(std::move(col));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

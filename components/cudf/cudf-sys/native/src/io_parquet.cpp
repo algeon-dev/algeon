@@ -105,7 +105,7 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
     auto options = builder.build();
     auto result = cudf::io::read_parquet(options, exec.stream, exec.mr);
 
-    *out = static_cast<cudf_table_handle>(result.tbl.release());
+    *out = cudf_release_table_handle(std::move(result.tbl));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
@@ -306,7 +306,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(
       }
     }
 
-    *out_table = static_cast<cudf_table_handle>(result.tbl.release());
+    *out_table = cudf_release_table_handle(std::move(result.tbl));
     *out_names = names;
     *out_num_names = n;
     return CUDF_SUCCESS;

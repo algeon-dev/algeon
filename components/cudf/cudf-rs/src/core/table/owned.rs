@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     os::raw::c_void,
     ptr::{self, NonNull},
     sync::Arc,
@@ -22,6 +23,7 @@ use crate::{
 pub struct Table {
     handle: NonNull<c_void>,
     domain: Arc<ExecutionDomain>,
+    retained_owners: Option<Vec<Option<Arc<dyn Any + Send + Sync>>>>,
 }
 
 // SAFETY: Table owns a GPU table via an opaque C++ handle. The handle is not
@@ -33,7 +35,15 @@ unsafe impl Sync for Table {}
 
 impl Table {
     fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
-        Self { handle: NonNull::new(handle).expect("null table handle"), domain }
+        Self::from_handle_with_domain_and_owners(handle, domain, None)
+    }
+
+    fn from_handle_with_domain_and_owners(
+        handle: *mut c_void,
+        domain: Arc<ExecutionDomain>,
+        retained_owners: Option<Vec<Option<Arc<dyn Any + Send + Sync>>>>,
+    ) -> Self {
+        Self { handle: NonNull::new(handle).expect("null table handle"), domain, retained_owners }
     }
 
     /// Create a table from a vector of columns.
@@ -62,8 +72,14 @@ impl Table {
                 .with_operation("table::from_columns")
                 .with_context("num_columns", columns.len().to_string())
         })?;
-        let mut handles: SmallVec<[*mut c_void; TABLE_HANDLE_INLINE_CAPACITY]> =
-            columns.into_iter().map(|c| c.into_raw()).collect();
+        let mut retained_owners = Vec::with_capacity(columns.len());
+        let mut handles: SmallVec<[*mut c_void; TABLE_HANDLE_INLINE_CAPACITY]> = SmallVec::with_capacity(columns.len());
+        for column in columns {
+            let (handle, retained_owner) = column.into_raw_parts();
+            handles.push(handle);
+            retained_owners.push(retained_owner);
+        }
+        let table_retained_owners = retained_owners.iter().any(Option::is_some).then_some(retained_owners);
 
         let mut table_handle = ptr::null_mut();
         // SAFETY: handles contains valid column pointers from into_raw(). num_columns matches.
@@ -82,7 +98,7 @@ impl Table {
             error::check_status_in(status, "table::from_columns")?;
         }
 
-        Ok(Self::from_handle_with_domain(table_handle, domain))
+        Ok(Self::from_handle_with_domain_and_owners(table_handle, domain, table_retained_owners))
     }
 
     /// Deep-copy this table.
@@ -125,6 +141,14 @@ impl Table {
         self
     }
 
+    pub(crate) unsafe fn from_raw_with_domain_and_owners(
+        handle: *mut c_void,
+        domain: Arc<ExecutionDomain>,
+        retained_owners: Vec<Option<Arc<dyn Any + Send + Sync>>>,
+    ) -> Self {
+        Self::from_handle_with_domain_and_owners(handle, domain, Some(retained_owners))
+    }
+
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
         &self.domain
     }
@@ -137,11 +161,10 @@ impl Table {
     /// This is a zero-copy operation on the GPU — column device memory is
     /// transferred, not copied.
     pub fn into_columns(self) -> Result<Vec<Column>> {
-        let raw_handle = self.handle.as_ptr();
-        let domain = Arc::clone(&self.domain);
-        // Prevent the Drop impl from destroying the table — ownership
-        // is transferred to the C shim which will consume it.
-        std::mem::forget(self);
+        let this = std::mem::ManuallyDrop::new(self);
+        let raw_handle = this.handle.as_ptr();
+        let domain = unsafe { std::ptr::read(&this.domain) };
+        let retained_owners = unsafe { std::ptr::read(&this.retained_owners) };
 
         let mut out_columns: *mut *mut c_void = ptr::null_mut();
         let mut out_count: i32 = 0;
@@ -169,8 +192,18 @@ impl Table {
 
         // SAFETY: Each pointer was returned by the successful FFI call and
         // represents an owned column handle being transferred to Column RAII.
-        let columns: Vec<Column> =
-            col_ptrs.iter().map(|&ptr| unsafe { Column::from_raw_with_domain(ptr, Arc::clone(&domain)) }).collect();
+        let owners = retained_owners.unwrap_or_else(|| vec![None; count]);
+        debug_assert_eq!(owners.len(), count, "retained owners count mismatch");
+        let columns: Vec<Column> = col_ptrs
+            .iter()
+            .zip(owners)
+            .map(|(&ptr, retained_owner)| match retained_owner {
+                Some(retained_owner) => unsafe {
+                    Column::from_raw_with_domain_and_owner(ptr, Arc::clone(&domain), retained_owner)
+                },
+                None => unsafe { Column::from_raw_with_domain(ptr, Arc::clone(&domain)) },
+            })
+            .collect();
 
         // Free the array (not the columns — they are now owned by Column).
         // SAFETY: out_columns was allocated by the C shim for the column pointer array.

@@ -228,7 +228,7 @@ cudf_status_t cudf_scan_ex(cudf_column_view_handle input,
 
     auto result = cudf::scan(*view, *scan_agg, cudf_scan_type,
                              cudf_null_policy, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

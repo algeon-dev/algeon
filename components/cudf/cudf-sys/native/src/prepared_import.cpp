@@ -553,7 +553,7 @@ cudf_status_t cudf_column_copy_from_prepared_device_export_ex(
     auto const bind_index = build_binding_index(bindings, num_bindings);
     auto const view = build_prepared_column_view(root_column_id, col_index, bind_index);
     auto copy = std::make_unique<cudf::column>(view, exec.stream, exec.mr);
-    *out      = static_cast<cudf_column_handle>(copy.release());
+    *out      = cudf_release_column_handle(std::move(copy));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -622,7 +622,7 @@ cudf_status_t cudf_table_copy_from_prepared_device_export_ex(
     }
 
     auto copy = std::make_unique<cudf::table>(cudf::table_view(columns), exec.stream, exec.mr);
-    *out      = static_cast<cudf_table_handle>(copy.release());
+    *out      = cudf_release_table_handle(std::move(copy));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -669,7 +669,7 @@ cudf_status_t cudf_column_copy_from_prepared_host_export_ex(
     auto const col_index = build_column_index(semantic_columns, num_semantic_columns);
     auto const bind_index = build_binding_index(bindings, num_bindings);
     auto column = build_prepared_host_column(root_column_id, col_index, bind_index, exec);
-    *out = static_cast<cudf_column_handle>(column.release());
+    *out = cudf_release_column_handle(std::move(column));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -737,7 +737,7 @@ cudf_status_t cudf_table_copy_from_prepared_host_export_ex(
     }
 
     auto owned = std::make_unique<cudf::table>(std::move(columns));
-    *out       = static_cast<cudf_table_handle>(owned.release());
+    *out       = cudf_release_table_handle(std::move(owned));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

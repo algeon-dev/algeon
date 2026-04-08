@@ -312,4 +312,3 @@ pub fn groupby_aggregate(
     groupby_aggregate_impl(keys, requests, null_policy, exec_options.as_ref(), "groupby::groupby_aggregate")
         .map(|result| bind_groupby_result_domain(result, output_domain))
 }
-

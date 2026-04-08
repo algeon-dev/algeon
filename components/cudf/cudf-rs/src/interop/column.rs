@@ -185,14 +185,11 @@ impl Column {
     /// Consume a shared owned device transfer root back into an owned
     /// `cudf-rs` column.
     ///
-    /// This is a zero-copy ownership round-trip for transfer roots produced by
-    /// `cudf-rs` low-level owned columns. It preserves the producer's retained
-    /// execution provenance and does not deep-copy into a destination runtime.
-    /// Only roots originally produced by
-    /// [`Self::try_into_owned_device_column_transfer`] are accepted. Roots
-    /// produced by other libraries that implement the shared owned-transfer
-    /// contract are currently rejected with
-    /// [`InteropErrorKind::ProfileUnsupported`].
+    /// This is a zero-copy ownership import. `cudf-rs` round-trips preserve
+    /// the original retained execution provenance, while foreign owner roots
+    /// in the current consumer slice are accepted for the supported foreign
+    /// layout set
+    /// without deep-copying into a destination runtime.
     pub fn try_from_owned_device_column_transfer(transfer: OwnedColumnTransfer) -> Result<Self, InteropError> {
         import_column_from_owned_transfer(transfer, "interop::Column::try_from_owned_device_column_transfer")
     }

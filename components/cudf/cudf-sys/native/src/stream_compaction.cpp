@@ -57,7 +57,7 @@ cudf_status_t cudf_drop_nulls_ex(cudf_table_view_handle input,
     auto result = cudf::drop_nulls(*view, key_vec,
                                    static_cast<cudf::size_type>(keep_threshold),
                                    exec.stream, exec.mr);
-    *out = static_cast<cudf_table_handle>(result.release());
+    *out = cudf_release_table_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -152,7 +152,7 @@ cudf_status_t cudf_distinct_ex(cudf_table_view_handle input,
 
     auto result = cudf::distinct(*view, key_vec, keep_opt, nulls_eq, nans_eq,
                                  exec.stream, exec.mr);
-    *out = static_cast<cudf_table_handle>(result.release());
+    *out = cudf_release_table_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

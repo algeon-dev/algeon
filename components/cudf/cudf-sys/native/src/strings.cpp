@@ -59,7 +59,7 @@ cudf_status_t cudf_strings_to_lower_ex(cudf_column_view_handle input,
 
     auto result = cudf::strings::to_lower(to_strings_view(input),
                                           exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -85,7 +85,7 @@ cudf_status_t cudf_strings_to_upper_ex(cudf_column_view_handle input,
 
     auto result = cudf::strings::to_upper(to_strings_view(input),
                                           exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -121,7 +121,7 @@ cudf_status_t cudf_strings_contains_ex(cudf_column_view_handle input,
     if (type_status != CUDF_SUCCESS) { return type_status; }
     auto result = cudf::strings::contains(to_strings_view(input),
                                           *scalar, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -153,7 +153,7 @@ cudf_status_t cudf_strings_starts_with_ex(cudf_column_view_handle input,
     if (type_status != CUDF_SUCCESS) { return type_status; }
     auto result = cudf::strings::starts_with(to_strings_view(input),
                                              *scalar, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -185,7 +185,7 @@ cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
     if (type_status != CUDF_SUCCESS) { return type_status; }
     auto result = cudf::strings::ends_with(to_strings_view(input),
                                            *scalar, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -234,7 +234,7 @@ cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
     auto result = cudf::strings::strip(to_strings_view(input),
                                        cudf_side, *scalar,
                                        exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -264,7 +264,7 @@ cudf_status_t cudf_strings_count_characters_ex(cudf_column_view_handle input,
 
     auto result = cudf::strings::count_characters(to_strings_view(input),
                                                   exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -290,7 +290,7 @@ cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
 
     auto result = cudf::strings::count_bytes(to_strings_view(input),
                                              exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

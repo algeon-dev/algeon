@@ -18,12 +18,11 @@
 //!   compatibility descriptors back into low-level owned
 //!   [`crate::core::Column`] and [`crate::core::Table`] values via explicit
 //!   destination [`crate::Runtime`].
-//! - `cudf-rs` also supports zero-copy consumer-side import from
-//!   `cudf-rs`-produced shared owned-transfer roots back into low-level owned
-//!   [`crate::core::Column`] and [`crate::core::Table`] values. Owned-transfer
-//!   roots
-//!   produced by other libraries are currently rejected with
-//!   [`InteropErrorKind::ProfileUnsupported`].
+//! - `cudf-rs` also supports zero-copy consumer-side import from shared owned-transfer
+//!   roots back into low-level owned [`crate::core::Column`] and [`crate::core::Table`]
+//!   values. The current foreign-owner consumer slice covers the supported
+//!   fixed-width, binary-like string, list, struct, and dictionary layouts
+//!   while preserving `cudf-rs` round-trip fast paths.
 //! - `cudf-rs` now also supports low-level consumer-side import from shared
 //!   prepared-device export roots back into owned [`crate::core::Column`] and
 //!   [`crate::core::Table`] values via explicit same-device destination

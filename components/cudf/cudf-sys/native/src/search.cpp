@@ -36,7 +36,7 @@ cudf_status_t cudf_contains_ex(cudf_column_view_handle haystack,
     }
 
     auto result = cudf::contains(*haystack_view, *needles_view, exec.stream, exec.mr);
-    *out = static_cast<cudf_column_handle>(result.release());
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
