@@ -587,10 +587,16 @@ impl Column {
     /// Create a column by repeating a scalar value `size` times inside the
     /// given explicit runtime.
     ///
-    /// The resulting column carries the runtime's retained provenance.
+    /// If the input scalar belongs to a different retained provenance, it is
+    /// recreated in the target runtime first so placement and execution
+    /// resource selection remain honest.
     pub fn from_scalar_with_runtime(runtime: &Runtime, scalar: &Scalar, size: usize) -> Result<Self> {
-        let col = Self::from_scalar(scalar, size)?;
-        Ok(col.with_execution_domain(Arc::clone(runtime.execution_domain())))
+        if ExecutionDomain::same_provenance(scalar.execution_domain(), runtime.execution_domain()) {
+            return Self::from_scalar(scalar, size);
+        }
+
+        let runtime_scalar = scalar.copy_into_domain(runtime.execution_domain())?;
+        Self::from_scalar(&runtime_scalar, size)
     }
 
     /// Create a nullable STRING type column from host string data and a validity mask.

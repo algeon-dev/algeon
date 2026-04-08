@@ -101,7 +101,7 @@ pub fn unary_operation(input: &ColumnView<'_>, op: UnaryOperator) -> Result<Colu
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn unary_operation_impl(
+pub(crate) fn unary_operation_impl(
     input: &ColumnView<'_>,
     op: UnaryOperator,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
@@ -140,7 +140,7 @@ pub fn is_null(input: &ColumnView<'_>) -> Result<Column> {
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn is_null_impl(
+pub(crate) fn is_null_impl(
     input: &ColumnView<'_>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
@@ -167,7 +167,7 @@ pub fn is_valid(input: &ColumnView<'_>) -> Result<Column> {
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn is_valid_impl(
+pub(crate) fn is_valid_impl(
     input: &ColumnView<'_>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
@@ -194,7 +194,7 @@ pub fn cast(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn cast_impl(
+pub(crate) fn cast_impl(
     input: &ColumnView<'_>,
     output_type: &DataType,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
@@ -253,7 +253,7 @@ pub fn is_nan(input: &ColumnView<'_>) -> Result<Column> {
     is_nan_impl(input, exec_options.as_ref(), "unary::is_nan").map(|column| column.with_execution_domain(output_domain))
 }
 
-fn is_nan_impl(
+pub(crate) fn is_nan_impl(
     input: &ColumnView<'_>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
@@ -280,7 +280,7 @@ pub fn is_not_nan(input: &ColumnView<'_>) -> Result<Column> {
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn is_not_nan_impl(
+pub(crate) fn is_not_nan_impl(
     input: &ColumnView<'_>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,

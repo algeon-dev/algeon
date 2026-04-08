@@ -131,6 +131,23 @@ fn validate_dataframe_csv_column_name_count(
     Ok(())
 }
 
+fn prepare_write_domain(
+    frame_domain: &Arc<ExecutionDomain>,
+    write_domain: &Arc<ExecutionDomain>,
+    operation: &'static str,
+) -> Result<()> {
+    ExecutionDomain::require_same_device_for_mixed_inputs(frame_domain, write_domain, operation).map_err(|e| {
+        e.with_context("frame_domain", frame_domain.debug_label())
+            .with_context("write_domain", write_domain.debug_label())
+    })?;
+
+    if !ExecutionDomain::same_provenance(frame_domain, write_domain) {
+        frame_domain.fence_stream(operation)?;
+    }
+
+    Ok(())
+}
+
 impl DataFrame {
     /// Read a CSV file into a `DataFrame`.
     ///
@@ -171,9 +188,7 @@ impl DataFrame {
         } else {
             Arc::clone(&self.domain)
         };
-        if !ExecutionDomain::same_provenance(&self.domain, &write_domain) {
-            self.domain.fence_stream("dataframe::write_csv_with_options")?;
-        }
+        prepare_write_domain(&self.domain, &write_domain, "dataframe::write_csv_with_options")?;
         let tv = self.build_table_view()?;
         let exec_options = write_domain.explicit_exec_options_raw();
         csv::write_csv_with_exec(tv.table(), &opts, exec_options.as_ref())?;
@@ -220,9 +235,7 @@ impl DataFrame {
         } else {
             Arc::clone(&self.domain)
         };
-        if !ExecutionDomain::same_provenance(&self.domain, &write_domain) {
-            self.domain.fence_stream("dataframe::write_parquet_with_options")?;
-        }
+        prepare_write_domain(&self.domain, &write_domain, "dataframe::write_parquet_with_options")?;
         let tv = self.build_table_view()?;
         let exec_options = write_domain.explicit_exec_options_raw();
         parquet::write_parquet_with_exec(tv.table(), &table_options, exec_options.as_ref())?;
@@ -267,9 +280,7 @@ impl DataFrame {
         } else {
             Arc::clone(&self.domain)
         };
-        if !ExecutionDomain::same_provenance(&self.domain, &write_domain) {
-            self.domain.fence_stream("dataframe::write_json_with_options")?;
-        }
+        prepare_write_domain(&self.domain, &write_domain, "dataframe::write_json_with_options")?;
         let tv = self.build_table_view()?;
         let exec_options = write_domain.explicit_exec_options_raw();
         json::write_json_with_exec(tv.table(), &opts, exec_options.as_ref())?;

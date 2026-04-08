@@ -12,7 +12,7 @@ use std::{
 
 use super::{
     error::{self, Error, ErrorKind, Result},
-    types::{CudfType, DataType},
+    types::{CudfType, DataType, TypeId},
 };
 use crate::runtime::execution_domain::ExecutionDomain;
 
@@ -62,6 +62,36 @@ impl Scalar {
         Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
     }
 
+    pub(crate) fn null_numeric_in_domain<T: CudfType>(domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        // SAFETY: All CudfType implementors have valid all-zero bit patterns.
+        let zero = unsafe { std::mem::zeroed::<T>() };
+        let mut handle = ptr::null_mut();
+        let exec_options = domain.explicit_exec_options_raw();
+        error::check_status_in(
+            match exec_options.as_ref() {
+                Some(options) => unsafe {
+                    cudf_sys::cudf_scalar_create_numeric_ex(
+                        T::TYPE_ID.to_raw(),
+                        &zero as *const T as *const c_void,
+                        0,
+                        options,
+                        &mut handle,
+                    )
+                },
+                None => unsafe {
+                    cudf_sys::cudf_scalar_create_numeric(
+                        T::TYPE_ID.to_raw(),
+                        &zero as *const T as *const c_void,
+                        0,
+                        &mut handle,
+                    )
+                },
+            },
+            "scalar::null_numeric_in_domain",
+        )?;
+        Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
+    }
+
     pub(crate) fn from_string_in_domain(value: &str, domain: &Arc<ExecutionDomain>) -> Result<Self> {
         let c_str = CString::new(value).map_err(|_| {
             Error::new(ErrorKind::InvalidOperation, "string contains interior null byte")
@@ -77,6 +107,23 @@ impl Scalar {
                 None => unsafe { cudf_sys::cudf_scalar_create_string(c_str.as_ptr(), 1, &mut handle) },
             },
             "scalar::from_string_in_domain",
+        )?;
+        Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
+    }
+
+    pub(crate) fn null_string_in_domain(domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        // SAFETY (unwrap): empty string literal "" contains no interior null bytes.
+        let empty = CString::new("").unwrap();
+        let mut handle = ptr::null_mut();
+        let exec_options = domain.explicit_exec_options_raw();
+        error::check_status_in(
+            match exec_options.as_ref() {
+                Some(options) => unsafe {
+                    cudf_sys::cudf_scalar_create_string_ex(empty.as_ptr(), 0, options, &mut handle)
+                },
+                None => unsafe { cudf_sys::cudf_scalar_create_string(empty.as_ptr(), 0, &mut handle) },
+            },
+            "scalar::null_string_in_domain",
         )?;
         Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
     }
@@ -149,6 +196,123 @@ impl Scalar {
     pub(crate) fn with_execution_domain(mut self, domain: Arc<ExecutionDomain>) -> Self {
         self.domain = domain;
         self
+    }
+
+    pub(crate) fn copy_into_domain(&self, domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        self.copy_into_domain_with_operation(domain, "scalar::copy_into_domain")
+    }
+
+    fn copy_into_domain_with_operation(&self, domain: &Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
+        match self.data_type()?.id() {
+            TypeId::Int8 => self.copy_numeric_into_domain::<i8>(domain),
+            TypeId::Int16 => self.copy_numeric_into_domain::<i16>(domain),
+            TypeId::Int32 => self.copy_numeric_into_domain::<i32>(domain),
+            TypeId::Int64 => self.copy_numeric_into_domain::<i64>(domain),
+            TypeId::UInt8 => self.copy_numeric_into_domain::<u8>(domain),
+            TypeId::UInt16 => self.copy_numeric_into_domain::<u16>(domain),
+            TypeId::UInt32 => self.copy_numeric_into_domain::<u32>(domain),
+            TypeId::UInt64 => self.copy_numeric_into_domain::<u64>(domain),
+            TypeId::Float32 => self.copy_numeric_into_domain::<f32>(domain),
+            TypeId::Float64 => self.copy_numeric_into_domain::<f64>(domain),
+            TypeId::Bool8 => self.copy_numeric_into_domain::<bool>(domain),
+            TypeId::String => {
+                if self.is_valid()? {
+                    Scalar::from_string_in_domain(&self.string_value()?, domain)
+                } else {
+                    Scalar::null_string_in_domain(domain)
+                }
+            },
+            // Timestamp types: stored as i32 (Days) or i64 (all others)
+            TypeId::TimestampDays => self.copy_reinterpreted_into_domain::<i32>(TypeId::TimestampDays, domain),
+            TypeId::TimestampSeconds => self.copy_reinterpreted_into_domain::<i64>(TypeId::TimestampSeconds, domain),
+            TypeId::TimestampMilliseconds => self.copy_reinterpreted_into_domain::<i64>(TypeId::TimestampMilliseconds, domain),
+            TypeId::TimestampMicroseconds => self.copy_reinterpreted_into_domain::<i64>(TypeId::TimestampMicroseconds, domain),
+            TypeId::TimestampNanoseconds => self.copy_reinterpreted_into_domain::<i64>(TypeId::TimestampNanoseconds, domain),
+            // Duration types: stored as i32 (Days) or i64 (all others)
+            TypeId::DurationDays => self.copy_reinterpreted_into_domain::<i32>(TypeId::DurationDays, domain),
+            TypeId::DurationSeconds => self.copy_reinterpreted_into_domain::<i64>(TypeId::DurationSeconds, domain),
+            TypeId::DurationMilliseconds => self.copy_reinterpreted_into_domain::<i64>(TypeId::DurationMilliseconds, domain),
+            TypeId::DurationMicroseconds => self.copy_reinterpreted_into_domain::<i64>(TypeId::DurationMicroseconds, domain),
+            TypeId::DurationNanoseconds => self.copy_reinterpreted_into_domain::<i64>(TypeId::DurationNanoseconds, domain),
+            type_id => Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "scalar copy into runtime does not yet support List, Struct, Dictionary32, or Decimal types",
+            )
+            .with_operation(operation)
+            .with_context("type_id", format!("{type_id:?}").to_lowercase())),
+        }
+        .map_err(|e| e.with_operation(operation))
+    }
+
+    fn copy_numeric_into_domain<T: CudfType>(&self, domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        if self.is_valid()? {
+            Scalar::from_value_in_domain(self.value::<T>()?, domain)
+        } else {
+            Scalar::null_numeric_in_domain::<T>(domain)
+        }
+    }
+
+    fn copy_reinterpreted_into_domain<T: CudfType>(
+        &self,
+        type_id: TypeId,
+        domain: &Arc<ExecutionDomain>,
+    ) -> Result<Self> {
+        if self.is_valid()? {
+            let raw_value = self.value::<T>()?;
+            let mut handle = ptr::null_mut();
+            let exec_options = domain.explicit_exec_options_raw();
+            error::check_status_in(
+                match exec_options.as_ref() {
+                    Some(options) => unsafe {
+                        cudf_sys::cudf_scalar_create_numeric_ex(
+                            type_id.to_raw(),
+                            &raw_value as *const T as *const c_void,
+                            1,
+                            options,
+                            &mut handle,
+                        )
+                    },
+                    None => unsafe {
+                        cudf_sys::cudf_scalar_create_numeric(
+                            type_id.to_raw(),
+                            &raw_value as *const T as *const c_void,
+                            1,
+                            &mut handle,
+                        )
+                    },
+                },
+                "scalar::copy_reinterpreted_into_domain",
+            )?;
+            Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
+        } else {
+            // Null scalar: zeroed value with validity=0
+            let zero = unsafe { std::mem::zeroed::<T>() };
+            let mut handle = ptr::null_mut();
+            let exec_options = domain.explicit_exec_options_raw();
+            error::check_status_in(
+                match exec_options.as_ref() {
+                    Some(options) => unsafe {
+                        cudf_sys::cudf_scalar_create_numeric_ex(
+                            type_id.to_raw(),
+                            &zero as *const T as *const c_void,
+                            0,
+                            options,
+                            &mut handle,
+                        )
+                    },
+                    None => unsafe {
+                        cudf_sys::cudf_scalar_create_numeric(
+                            type_id.to_raw(),
+                            &zero as *const T as *const c_void,
+                            0,
+                            &mut handle,
+                        )
+                    },
+                },
+                "scalar::copy_reinterpreted_into_domain",
+            )?;
+            Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
+        }
     }
 
     #[doc(hidden)]

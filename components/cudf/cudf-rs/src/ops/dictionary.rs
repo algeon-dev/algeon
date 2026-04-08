@@ -32,7 +32,7 @@ use crate::{
     runtime::execution_domain::ExecutionDomain,
 };
 
-fn encode_impl(
+pub(crate) fn encode_impl(
     input: &ColumnView<'_>,
     indices_type: TypeId,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
@@ -243,6 +243,11 @@ pub fn indices<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
 /// so their indices are directly comparable.
 pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(dict_column.execution_domain());
+    ExecutionDomain::require_same_device_for_mixed_inputs(
+        dict_column.execution_domain(),
+        keys.execution_domain(),
+        "dictionary::set_keys",
+    )?;
     if !ExecutionDomain::same_provenance(keys.execution_domain(), &output_domain) {
         keys.execution_domain().fence_stream("dictionary::set_keys")?;
     }
@@ -294,6 +299,11 @@ pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column
 
     let output_domain = primary_column_domain(dict_columns)?;
     for dict_column in &dict_columns[1..] {
+        ExecutionDomain::require_same_device_for_mixed_inputs(
+            &output_domain,
+            dict_column.execution_domain(),
+            "dictionary::match_dictionaries",
+        )?;
         if !ExecutionDomain::same_provenance(dict_column.execution_domain(), &output_domain) {
             dict_column.execution_domain().fence_stream("dictionary::match_dictionaries")?;
         }

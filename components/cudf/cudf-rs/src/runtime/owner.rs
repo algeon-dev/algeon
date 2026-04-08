@@ -3,9 +3,15 @@
 use std::sync::Arc;
 
 use super::{device::DeviceId, device_guard::DeviceGuard, execution_domain::ExecutionDomain, stream::CudaStream};
-use crate::core::{
-    error::{Error, ErrorKind, Result},
-    memory::DeviceMemoryResource,
+use crate::{
+    core::{
+        column::Column,
+        error::{Error, ErrorKind, Result},
+        memory::DeviceMemoryResource,
+        scalar::Scalar,
+        types::{CudfType, TypeId},
+    },
+    frame::series::Series,
 };
 
 /// Owns one explicit retained provenance bundle for a `cudf-rs` pipeline.
@@ -15,11 +21,10 @@ use crate::core::{
 /// runtime live on that device.
 ///
 /// **Multi-GPU execution guarantee:** when an operation is invoked through
-/// this runtime (via `_with_runtime` methods), the runtime's device is
-/// re-entered at the FFI boundary before any GPU work is enqueued. This
-/// ensures that compute runs on the correct device regardless of the calling
-/// thread's ambient CUDA device. The ambient device is restored after each
-/// FFI call.
+/// this runtime, the runtime's device is re-entered at the FFI boundary before
+/// any GPU work is enqueued. This ensures that compute runs on the correct
+/// device regardless of the calling thread's ambient CUDA device. The ambient
+/// device is restored after each FFI call.
 #[derive(Clone)]
 pub struct Runtime {
     domain: Arc<ExecutionDomain>,
@@ -71,6 +76,54 @@ impl Runtime {
     /// Access the runtime's owned device memory resource.
     pub fn memory_resource(&self) -> &DeviceMemoryResource {
         self.domain.explicit_memory_resource().expect("runtime always owns an explicit memory resource")
+    }
+
+    /// Create a fixed-width `Series` inside this runtime.
+    pub fn series<T: CudfType>(&self, name: impl Into<String>, data: &[T]) -> Result<Series> {
+        Series::from_named_column(name, Column::from_slice_with_runtime(self, data)?)
+    }
+
+    /// Create a nullable fixed-width `Series` inside this runtime.
+    pub fn nullable_series<T: CudfType>(
+        &self,
+        name: impl Into<String>,
+        data: &[T],
+        validity: &[bool],
+    ) -> Result<Series> {
+        Series::from_named_column(name, Column::from_slice_nullable_with_runtime(self, data, validity)?)
+    }
+
+    /// Create a UTF-8 string `Series` inside this runtime.
+    pub fn string_series(&self, name: impl Into<String>, data: &[&str]) -> Result<Series> {
+        Series::from_named_column(name, Column::from_strings_with_runtime(self, data)?)
+    }
+
+    /// Create a nullable UTF-8 string `Series` inside this runtime.
+    pub fn nullable_string_series(&self, name: impl Into<String>, data: &[&str], validity: &[bool]) -> Result<Series> {
+        Series::from_named_column(name, Column::from_strings_nullable_with_runtime(self, data, validity)?)
+    }
+
+    /// Create an all-null `Series` inside this runtime.
+    pub fn nulls(&self, name: impl Into<String>, type_id: TypeId, len: usize) -> Result<Series> {
+        Series::from_named_column(name, Column::nulls_with_runtime(self, type_id, len)?)
+    }
+
+    /// Create an empty `Series` inside this runtime.
+    pub fn empty_series(&self, name: impl Into<String>, type_id: TypeId) -> Result<Series> {
+        Series::from_named_column(name, Column::empty_with_runtime(self, type_id)?)
+    }
+
+    /// Create a `Series` by repeating a scalar inside this runtime.
+    ///
+    /// If `scalar` does not already belong to this runtime's execution domain,
+    /// the scalar is recreated in this runtime first so placement and
+    /// allocator selection remain honest.
+    ///
+    /// Supports numeric, boolean, string, timestamp, and duration scalars.
+    /// List, Struct, Dictionary32, and Decimal scalars are not yet supported.
+    pub fn series_from_scalar(&self, name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Series> {
+        let runtime_scalar = scalar.copy_into_domain(self.execution_domain())?;
+        Series::from_named_column(name, Column::from_scalar_with_runtime(self, &runtime_scalar, size)?)
     }
 
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {

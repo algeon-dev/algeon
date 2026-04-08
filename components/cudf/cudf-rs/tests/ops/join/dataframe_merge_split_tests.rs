@@ -1,6 +1,6 @@
 //! Tests for `DataFrame::merge_split`.
 
-use cudf::{DataFrame, DataFrameJoinResult, ExecutionContext, MergeOptions, NullEquality, Series, core::Column};
+use cudf::{DataFrame, DataFrameJoinResult, ExecutionContext, MergeOptions, NullEquality, core::Column};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
@@ -177,19 +177,19 @@ fn test_merge_split_respects_null_equality() {
 }
 
 #[test]
-fn test_merge_split_with_context_succeeds_on_mixed_domains_and_uses_context_resources() {
+fn test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resources() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
 
     let left = DataFrame::from_series([
-        ("id", Series::new_with_runtime(&left_rt, "id", &[1i32, 2, 3]).unwrap()),
-        ("score", Series::new_with_runtime(&left_rt, "score", &[10i32, 20, 30]).unwrap()),
+        ("id", left_rt.series("id", &[1i32, 2, 3]).unwrap()),
+        ("score", left_rt.series("score", &[10i32, 20, 30]).unwrap()),
     ])
     .unwrap();
     let right = DataFrame::from_series([
-        ("id", Series::new_with_runtime(&right_rt, "id", &[2i32, 3, 4]).unwrap()),
-        ("value", Series::new_with_runtime(&right_rt, "value", &[200i32, 300, 400]).unwrap()),
+        ("id", right_rt.series("id", &[2i32, 3, 4]).unwrap()),
+        ("value", right_rt.series("value", &[200i32, 300, 400]).unwrap()),
     ])
     .unwrap();
     let ctx = ExecutionContext::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
@@ -197,7 +197,7 @@ fn test_merge_split_with_context_succeeds_on_mixed_domains_and_uses_context_reso
     let expected_mr = target_rt.memory_resource().__debug_raw_handle_value();
 
     reset_exec_observation();
-    let split = left.merge_split_with_context(&right, MergeOptions::new().how_inner().on(["id"]), &ctx).unwrap();
+    let split = left.in_context(&ctx).merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
 
     assert_eq!(split.left.__debug_execution_domain_id(), left.__debug_execution_domain_id());
     assert_eq!(split.right.__debug_execution_domain_id(), left.__debug_execution_domain_id());
@@ -225,13 +225,13 @@ fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_series([
-        ("id", Series::new_with_runtime(&left_rt, "id", &[1i32, 2, 3]).unwrap()),
-        ("score", Series::new_with_runtime(&left_rt, "score", &[10i32, 20, 30]).unwrap()),
+        ("id", left_rt.series("id", &[1i32, 2, 3]).unwrap()),
+        ("score", left_rt.series("score", &[10i32, 20, 30]).unwrap()),
     ])
     .unwrap();
     let right = DataFrame::from_series([
-        ("id", Series::new_with_runtime(&right_rt, "id", &[2i32, 3, 4]).unwrap()),
-        ("value", Series::new_with_runtime(&right_rt, "value", &[200i32, 300, 400]).unwrap()),
+        ("id", right_rt.series("id", &[2i32, 3, 4]).unwrap()),
+        ("value", right_rt.series("value", &[200i32, 300, 400]).unwrap()),
     ])
     .unwrap();
     let expected_exec_stream = left.__debug_execution_domain_stream_value();

@@ -1,31 +1,24 @@
 use std::sync::Arc;
 
 use super::owned::Series;
-use crate::{
-    core::{
-        column::Column,
-        error::Result,
-        scalar::Scalar,
-        types::{CudfType, TypeId},
-    },
-    runtime::Runtime,
+use crate::core::{
+    column::Column,
+    error::Result,
+    scalar::Scalar,
+    types::{CudfType, TypeId},
 };
 
 impl Series {
-    /// Create a `Series` from a host slice of fixed-width elements.
-    pub fn new<T: CudfType>(name: impl Into<String>, data: &[T]) -> Result<Self> {
-        let column = Column::from_slice(data)?;
+    pub(crate) fn from_named_column(name: impl Into<String>, column: Column) -> Result<Self> {
         let mut s = Self::from_column_with_cache(column)?;
         s.name = Some(name.into());
         Ok(s)
     }
 
-    /// Create a `Series` from a host slice inside the given explicit runtime.
-    pub fn new_with_runtime<T: CudfType>(runtime: &Runtime, name: impl Into<String>, data: &[T]) -> Result<Self> {
-        let column = Column::from_slice_with_runtime(runtime, data)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
+    /// Create a `Series` from a host slice of fixed-width elements.
+    pub fn new<T: CudfType>(name: impl Into<String>, data: &[T]) -> Result<Self> {
+        let column = Column::from_slice(data)?;
+        Self::from_named_column(name, column)
     }
 
     /// Create a nullable `Series` from host data and a validity mask.
@@ -33,59 +26,19 @@ impl Series {
     /// `validity[i]` is `true` if element `i` is valid (non-null).
     pub fn new_nullable<T: CudfType>(name: impl Into<String>, data: &[T], validity: &[bool]) -> Result<Self> {
         let column = Column::from_slice_nullable(data, validity)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
-    }
-
-    /// Create a nullable `Series` inside the given explicit runtime.
-    pub fn new_nullable_with_runtime<T: CudfType>(
-        runtime: &Runtime,
-        name: impl Into<String>,
-        data: &[T],
-        validity: &[bool],
-    ) -> Result<Self> {
-        let column = Column::from_slice_nullable_with_runtime(runtime, data, validity)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
+        Self::from_named_column(name, column)
     }
 
     /// Create a `Series` of UTF-8 strings from host data.
     pub fn from_strings(name: impl Into<String>, data: &[&str]) -> Result<Self> {
         let column = Column::from_strings(data)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
-    }
-
-    /// Create a `Series` of UTF-8 strings from host data inside the given explicit runtime.
-    pub fn from_strings_with_runtime(runtime: &Runtime, name: impl Into<String>, data: &[&str]) -> Result<Self> {
-        let column = Column::from_strings_with_runtime(runtime, data)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
+        Self::from_named_column(name, column)
     }
 
     /// Create a nullable `Series` of UTF-8 strings from host data and a validity mask.
     pub fn from_strings_nullable(name: impl Into<String>, data: &[&str], validity: &[bool]) -> Result<Self> {
         let column = Column::from_strings_nullable(data, validity)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
-    }
-
-    /// Create a nullable `Series` of UTF-8 strings inside the given explicit runtime.
-    pub fn from_strings_nullable_with_runtime(
-        runtime: &Runtime,
-        name: impl Into<String>,
-        data: &[&str],
-        validity: &[bool],
-    ) -> Result<Self> {
-        let column = Column::from_strings_nullable_with_runtime(runtime, data, validity)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
+        Self::from_named_column(name, column)
     }
 
     /// Wrap an owned `Column` as an unnamed `Series`.
@@ -126,9 +79,7 @@ impl Series {
     /// GPU-allocating: one device allocation.
     pub fn nulls(name: impl Into<String>, type_id: TypeId, len: usize) -> Result<Self> {
         let column = Column::nulls(type_id, len)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
+        Self::from_named_column(name, column)
     }
 
     /// Create a `Series` by repeating a scalar value `size` times.
@@ -139,9 +90,7 @@ impl Series {
     /// GPU-allocating: one device allocation of `size` elements.
     pub fn from_scalar(name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Self> {
         let column = Column::from_scalar(scalar, size)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
+        Self::from_named_column(name, column)
     }
 
     /// Create an empty (zero-length) `Series` of the given type.
@@ -150,54 +99,7 @@ impl Series {
     /// slightly cheaper.
     pub fn empty(name: impl Into<String>, type_id: TypeId) -> Result<Self> {
         let column = Column::empty(type_id)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
-    }
-
-    /// Create an all-null `Series` inside the given explicit runtime.
-    ///
-    /// The resulting series carries the runtime's retained provenance so it can
-    /// participate in explicit-provenance DataFrames without triggering
-    /// mixed-provenance rejection.
-    ///
-    /// # Cost
-    /// GPU-allocating: one device allocation.
-    pub fn nulls_with_runtime(runtime: &Runtime, name: impl Into<String>, type_id: TypeId, len: usize) -> Result<Self> {
-        let column = Column::nulls_with_runtime(runtime, type_id, len)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
-    }
-
-    /// Create a `Series` by repeating a scalar value inside the given explicit
-    /// runtime.
-    ///
-    /// The resulting series carries the runtime's retained provenance.
-    ///
-    /// # Cost
-    /// GPU-allocating: one device allocation of `size` elements.
-    pub fn from_scalar_with_runtime(
-        runtime: &Runtime,
-        name: impl Into<String>,
-        scalar: &Scalar,
-        size: usize,
-    ) -> Result<Self> {
-        let column = Column::from_scalar_with_runtime(runtime, scalar, size)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
-    }
-
-    /// Create an empty (zero-length) `Series` inside the given explicit
-    /// runtime.
-    ///
-    /// The resulting series carries the runtime's retained provenance.
-    pub fn empty_with_runtime(runtime: &Runtime, name: impl Into<String>, type_id: TypeId) -> Result<Self> {
-        let column = Column::empty_with_runtime(runtime, type_id)?;
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
+        Self::from_named_column(name, column)
     }
 
     /// Private helper: wrap a `Column` and read its cached metadata.

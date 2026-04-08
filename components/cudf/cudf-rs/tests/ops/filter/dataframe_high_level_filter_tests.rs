@@ -1,10 +1,6 @@
 //! Tests for the high-level `DataFrame::filter` that accepts `&Series` masks.
 
-use cudf::{
-    DataFrame, ErrorKind, Series,
-    core::Column,
-    ops::filter as low_level_filter,
-};
+use cudf::{DataFrame, ErrorKind, Series, core::Column, ops::filter as low_level_filter};
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
@@ -34,11 +30,11 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
     let df_rt = sample_runtime();
     let mask_rt = sample_runtime();
     let df = cudf::DataFrame::from_series([
-        ("id", Series::new_with_runtime(&df_rt, "id", &[3i32, 1, 4, 1, 5]).unwrap()),
-        ("score", Series::new_with_runtime(&df_rt, "score", &[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap()),
+        ("id", df_rt.series("id", &[3i32, 1, 4, 1, 5]).unwrap()),
+        ("score", df_rt.series("score", &[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap()),
     ])
     .unwrap();
-    let mask = Series::new_with_runtime(&mask_rt, "mask", &[true, false, true, false, true]).unwrap();
+    let mask = mask_rt.series("mask", &[true, false, true, false, true]).unwrap();
     let expected_exec_stream = df.__debug_execution_domain_stream_value();
     let expected_exec_mr = df.__debug_execution_domain_mr_value();
     let expected_sync_stream = mask.as_column().__debug_execution_domain_stream_value();

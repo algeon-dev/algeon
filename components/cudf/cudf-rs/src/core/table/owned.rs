@@ -43,16 +43,14 @@ impl Table {
         let domain = if let Some(first) = columns.first() {
             let domain = Arc::clone(first.execution_domain());
             for (index, column) in columns.iter().enumerate().skip(1) {
-                if !ExecutionDomain::same_provenance(&domain, column.execution_domain()) {
-                    return Err(Error::new(
-                        ErrorKind::InvalidOperation,
-                        "all columns in a table must share one retained provenance",
-                    )
-                    .with_operation("table::from_columns")
-                    .with_context("left_domain", domain.debug_label())
-                    .with_context("right_domain", column.execution_domain().debug_label())
-                    .with_context("column_index", index.to_string()));
-                }
+                ExecutionDomain::require_same_provenance(
+                    &domain,
+                    column.execution_domain(),
+                    "table::from_columns",
+                    "all columns in a table must share one retained provenance",
+                    "use copy_into_runtime(...) on higher-level Series/DataFrame values or rebuild the table from columns already placed in one Runtime before calling this operation",
+                )
+                .map_err(|e| e.with_context("column_index", index.to_string()))?;
             }
             domain
         } else {

@@ -69,6 +69,36 @@
 //!   the contract itself.
 //! - Explicit execution provenance is required for producer projection.
 //! - Ambient/default-only objects are rejected at the interop boundary.
+//!
+//! # Module Position
+//!
+//! `cudf::interop` deliberately remains at the crate root rather than under
+//! `cudf::core::interop`. The interop module spans both high-level types
+//! ([`crate::DataFrame`], [`crate::Series`]) and low-level types
+//! ([`crate::core::Column`], [`crate::core::ColumnView`],
+//! [`crate::core::Table`], [`crate::core::TableView`]), so it does not
+//! belong exclusively under `cudf::core`. High-level users should prefer
+//! the [`crate::DataFrame`] and [`crate::Series`] interop adapters;
+//! advanced users may use the low-level [`crate::core::Column`] /
+//! [`crate::core::ColumnView`] adapters directly.
+//!
+//! # `ColumnView` in Interop Signatures
+//!
+//! [`crate::core::ColumnView`] appears in interop producer signatures (e.g.,
+//! [`crate::core::ColumnView::try_borrow_column_view`],
+//! [`crate::core::ColumnView::try_prepare_device_column_export`]). This is
+//! intentional: interop operates at the `cudf::core::*` level where
+//! `ColumnView` is an appropriate advanced type. The public API layering
+//! refactor (Slice 3) removed `ColumnView` from `DataFrame`'s public
+//! surface, but it remains correct in interop signatures.
+//!
+//! # Consumer Import Naming
+//!
+//! Consumer import methods use the `try_import_from_*_into_runtime` naming
+//! convention. These are interop-boundary placement operations — they bring
+//! external data into a target [`crate::Runtime`]. This is distinct from the
+//! removed `DataFrame` operation-specific `_with_runtime` methods (Slice 4),
+//! which hid placement as a side effect of a compute operation.
 
 mod borrowed;
 mod column;

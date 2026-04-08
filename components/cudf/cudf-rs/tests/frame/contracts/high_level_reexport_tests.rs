@@ -30,10 +30,11 @@ fn test_crate_root_reexports_dataframe() {
 fn test_doc_example_high_level_workflow() {
     // This mirrors the crate-level doc example: construct a DataFrame
     // from Series, retrieve a Series back, and inspect metadata.
-    use cudf::{DataFrame, Series};
+    use cudf::{DataFrame, Runtime};
 
-    let ids = Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
-    let scores = Series::new::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
+    let rt = Runtime::builder().build().unwrap();
+    let ids = rt.series("ids", &[1i32, 2, 3]).unwrap();
+    let scores = rt.series("scores", &[10.0f64, 20.0, 30.0]).unwrap();
 
     let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 
@@ -44,6 +45,57 @@ fn test_doc_example_high_level_workflow() {
     let score_series = df.series("score").unwrap();
     assert_eq!(score_series.name(), Some("score"));
     assert_eq!(score_series.len(), 3);
+    assert_eq!(score_series.sum_value::<f64>().unwrap(), 60.0);
+    assert_eq!(score_series.mean_value().unwrap(), Some(20.0));
+}
+
+#[test]
+fn test_runtime_first_factories_cover_high_level_named_series_creation() {
+    use cudf::{Runtime, TypeId, core::Scalar};
+
+    let rt = Runtime::builder().build().unwrap();
+
+    let ints = rt.series("ints", &[1i32, 2, 3]).unwrap();
+    let nullable = rt.nullable_series("nullable", &[10i32, 0, 30], &[true, false, true]).unwrap();
+    let strings = rt.string_series("names", &["alice", "bob"]).unwrap();
+    let nullable_strings = rt.nullable_string_series("nick", &["ally", "", "zed"], &[true, false, true]).unwrap();
+    let nulls = rt.nulls("missing", TypeId::Int32, 2).unwrap();
+    let empty = rt.empty_series("empty", TypeId::Float64).unwrap();
+    let scalar = Scalar::from_value(7i32).unwrap();
+    let repeated = rt.series_from_scalar("seed", &scalar, 3).unwrap();
+
+    assert_eq!(ints.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(nullable.to_optional_vec::<i32>().unwrap(), vec![Some(10), None, Some(30)]);
+    assert_eq!(strings.to_strings().unwrap(), vec!["alice".to_string(), "bob".to_string()]);
+    assert_eq!(
+        nullable_strings.to_optional_strings().unwrap(),
+        vec![Some("ally".to_string()), None, Some("zed".to_string())]
+    );
+    assert_eq!(nulls.null_count(), 2);
+    assert!(empty.is_empty());
+    assert_eq!(repeated.to_vec::<i32>().unwrap(), vec![7, 7, 7]);
+}
+
+#[test]
+fn test_high_level_control_plane_flows_through_runtime_and_scoped_context() {
+    use cudf::{Agg, AggSpec, DataFrame, ExecutionContext, Runtime, SortOptions, runtime::CudaStream};
+
+    let rt = Runtime::builder().build().unwrap();
+    let df = DataFrame::from_columns([
+        ("id", rt.series("id", &[2i32, 1, 2]).unwrap()),
+        ("value", rt.series("value", &[10i64, 20, 30]).unwrap()),
+    ])
+    .unwrap();
+
+    let override_stream = CudaStream::new().unwrap();
+    let ctx = ExecutionContext::new().with_stream(&override_stream);
+
+    let sorted = df.in_context(&ctx).sort_values(["id"], SortOptions::new()).unwrap();
+    let grouped = sorted.groupby(["id"]).in_context(&ctx).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+
+    assert_eq!(grouped.column_names(), vec!["id", "value_sum"]);
+    assert_eq!(grouped.series("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2]);
+    assert_eq!(grouped.series("value_sum").unwrap().to_vec::<i64>().unwrap(), vec![20, 40]);
 }
 
 #[test]
@@ -58,6 +110,17 @@ fn test_lowlevel_types_available_via_core_module() {
     let _: Option<cudf::core::DeviceBuffer> = None;
     let _: Option<cudf::core::DeviceSlice<'static>> = None;
     let _scalar = cudf::core::Scalar::from_value(7i32).unwrap();
+}
+
+#[test]
+fn test_runtime_aware_column_constructors_remain_advanced_core_tools() {
+    use cudf::{Runtime, core::Column};
+
+    let rt = Runtime::builder().build().unwrap();
+    let col = Column::from_slice_with_runtime(&rt, &[7i32, 8, 9]).unwrap();
+
+    assert_eq!(col.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(col.view().unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
 }
 
 // ---------------------------------------------------------------------------
@@ -150,10 +213,7 @@ fn test_high_level_workflow_groupby() {
 
 #[test]
 fn test_advanced_workflow_uses_table_view_and_low_level_ops() {
-    use cudf::{
-        DataFrame, Series,
-        ops::copying,
-    };
+    use cudf::{DataFrame, Series, ops::copying};
 
     let ids = Series::new::<i32>("id", &[10, 20, 30]).unwrap();
     let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0]).unwrap();
@@ -232,6 +292,12 @@ fn test_domain_modules_export_documented_surface() {
     let series = DomainSeries::new::<i32>("key", &[1, 2, 1]).unwrap();
     let df = DomainDataFrame::from_columns([("key", series)]).unwrap();
     let _gb: DomainGroupBy<'_> = df.groupby(["key"]);
+
+    let rt = DomainRuntime::builder().build().unwrap();
+    let runtime_series = rt.series("ids", &[1i32, 2, 3]).unwrap();
+    let runtime_nulls = rt.nulls("missing", cudf::TypeId::Int32, 2).unwrap();
+    assert_eq!(runtime_series.len(), 3);
+    assert_eq!(runtime_nulls.null_count(), 2);
 
     assert_into_series::<DomainSeries>();
 }

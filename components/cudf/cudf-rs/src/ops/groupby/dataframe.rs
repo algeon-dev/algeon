@@ -5,7 +5,7 @@ use std::sync::Arc;
 use smallvec::SmallVec;
 use typed_builder::TypedBuilder;
 
-use super::agg::{Agg, AggregationRequest, NullPolicy, groupby_aggregate, groupby_aggregate_with_exec_options};
+use super::agg::{Agg, AggregationRequest, NullPolicy, groupby_aggregate, groupby_aggregate_impl};
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -103,6 +103,13 @@ pub struct GroupBy<'a> {
     options: GroupByOptions,
 }
 
+/// Scoped borrowed execution override for one groupby operation chain.
+#[must_use]
+pub struct GroupByExecutionScope<'a, 'ctx, 'handles> {
+    groupby: GroupBy<'a>,
+    ctx: &'ctx ExecutionContext<'handles>,
+}
+
 impl<'a> GroupBy<'a> {
     /// Create a new `GroupBy` for the given DataFrame and key column names.
     pub(crate) fn new(df: &'a DataFrame, keys: Vec<String>) -> Self {
@@ -113,6 +120,14 @@ impl<'a> GroupBy<'a> {
     pub fn options(mut self, options: GroupByOptions) -> Self {
         self.options = options;
         self
+    }
+
+    /// Borrow a per-operation execution override for subsequent groupby calls.
+    pub fn in_context<'ctx, 'handles>(
+        self,
+        ctx: &'ctx ExecutionContext<'handles>,
+    ) -> GroupByExecutionScope<'a, 'ctx, 'handles> {
+        GroupByExecutionScope { groupby: self, ctx }
     }
 
     /// Execute the groupby with the given aggregation specifications.
@@ -128,23 +143,19 @@ impl<'a> GroupBy<'a> {
     }
 
     /// Execute the groupby with a borrowed per-operation execution override.
-    pub fn agg_with_context(self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+    pub(crate) fn agg_in_context(self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
         self.agg_impl(
             specs,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "groupby::GroupBy::agg_with_context",
+            "groupby::GroupBy::in_context::agg",
         )
     }
 
     #[doc(hidden)]
-    pub fn __debug_agg_with_execution_context(
-        self,
-        specs: &[AggSpec],
-        ctx: &ExecutionContext<'_>,
-    ) -> Result<DataFrame> {
-        self.agg_with_context(specs, ctx)
+    pub fn __debug_agg_in_context(self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+        self.agg_in_context(specs, ctx)
     }
 
     fn agg_impl(
@@ -239,11 +250,11 @@ impl<'a> GroupBy<'a> {
             .collect();
 
         let gb_result = if let Some(exec_options) = exec_options.as_ref() {
-            groupby_aggregate_with_exec_options(
+            groupby_aggregate_impl(
                 keys_table.table(),
                 &requests,
                 self.options.null_policy(),
-                exec_options,
+                Some(exec_options),
                 operation,
             )?
         } else {
@@ -364,6 +375,86 @@ impl<'a> GroupBy<'a> {
 
     /// Shortcut: compute the sample variance (ddof=1) of each named column
     /// per group.
+    pub fn var<I, S>(self, columns: I) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> =
+            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Variance { ddof: 1 })).collect();
+        self.agg(&specs)
+    }
+}
+
+impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
+    /// Execute the groupby with the given aggregation specifications.
+    pub fn agg(self, specs: &[AggSpec]) -> Result<DataFrame> {
+        self.groupby.agg_in_context(specs, self.ctx)
+    }
+
+    /// Shortcut: compute the sum of each named column per group.
+    pub fn sum<I, S>(self, columns: I) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Sum)).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: compute the mean of each named column per group.
+    pub fn mean<I, S>(self, columns: I) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Mean)).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: count non-null values of each named column per group.
+    pub fn count<I, S>(self, columns: I) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> =
+            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Count { include_nulls: false })).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: compute the median of each named column per group.
+    pub fn median<I, S>(self, columns: I) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Median)).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: count unique non-null values of each named column per group.
+    pub fn nunique<I, S>(self, columns: I) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::NUnique)).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: compute the sample standard deviation (ddof=1) of each named column per group.
+    pub fn std<I, S>(self, columns: I) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> =
+            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Std { ddof: 1 })).collect();
+        self.agg(&specs)
+    }
+
+    /// Shortcut: compute the sample variance (ddof=1) of each named column per group.
     pub fn var<I, S>(self, columns: I) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,

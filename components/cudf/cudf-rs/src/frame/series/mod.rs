@@ -6,6 +6,7 @@
 //! Clone is cheap: it bumps the `Arc` reference count — no GPU data is copied.
 
 mod constructors;
+mod context;
 mod naming;
 mod ops;
 mod owned;

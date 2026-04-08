@@ -97,7 +97,7 @@ fn drop_nulls_impl(
     Ok(unsafe { Table::from_raw(out) })
 }
 
-fn distinct_impl(
+pub(crate) fn distinct_impl(
     input: &TableView<'_>,
     keys: &[i32],
     keep: DuplicateKeepOption,
@@ -220,3 +220,4 @@ pub fn distinct(
     distinct_impl(input, keys, keep, null_equality, nan_equality, exec_options.as_ref(), "stream_compaction::distinct")
         .map(|table| table.with_execution_domain(output_domain))
 }
+

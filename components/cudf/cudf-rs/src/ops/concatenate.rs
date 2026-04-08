@@ -35,6 +35,11 @@ fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Ar
     // Fence any input from a different execution domain so its GPU work
     // completes before the concatenation kernel reads its data.
     for col in &columns[1..] {
+        ExecutionDomain::require_same_device_for_mixed_inputs(
+            first.execution_domain(),
+            col.execution_domain(),
+            "concatenate::concatenate_columns",
+        )?;
         if !ExecutionDomain::same_provenance(col.execution_domain(), &output_domain) {
             col.execution_domain().fence_stream("concatenate::concatenate_columns")?;
         }
@@ -50,6 +55,11 @@ fn compatible_table_domain(tables: &[&TableView<'_>]) -> Result<std::sync::Arc<E
     // Fence any input from a different execution domain so its GPU work
     // completes before the concatenation kernel reads its data.
     for tbl in &tables[1..] {
+        ExecutionDomain::require_same_device_for_mixed_inputs(
+            first.execution_domain(),
+            tbl.execution_domain(),
+            "concatenate::concatenate_tables",
+        )?;
         if !ExecutionDomain::same_provenance(tbl.execution_domain(), &output_domain) {
             tbl.execution_domain().fence_stream("concatenate::concatenate_tables")?;
         }

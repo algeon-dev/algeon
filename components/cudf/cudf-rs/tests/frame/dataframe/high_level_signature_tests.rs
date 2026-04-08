@@ -45,11 +45,11 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
     let df_rt = sample_runtime();
     let indices_rt = sample_runtime();
     let df = DataFrame::from_series([
-        ("id", Series::new_with_runtime(&df_rt, "id", &[10i32, 20, 30]).unwrap()),
-        ("score", Series::new_with_runtime(&df_rt, "score", &[1.0f64, 2.0, 3.0]).unwrap()),
+        ("id", df_rt.series("id", &[10i32, 20, 30]).unwrap()),
+        ("score", df_rt.series("score", &[1.0f64, 2.0, 3.0]).unwrap()),
     ])
     .unwrap();
-    let indices = Series::new_with_runtime(&indices_rt, "idx", &[2i32, 0]).unwrap();
+    let indices = indices_rt.series("idx", &[2i32, 0]).unwrap();
     let expected_exec_stream = df.__debug_execution_domain_stream_value();
     let expected_exec_mr = df.__debug_execution_domain_mr_value();
     let expected_sync_stream = indices.as_column().__debug_execution_domain_stream_value();
@@ -89,9 +89,8 @@ fn test_filter_isin_with_series() {
 fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
     let df_rt = sample_runtime();
     let values_rt = sample_runtime();
-    let df =
-        DataFrame::from_series([("id", Series::new_with_runtime(&df_rt, "id", &[10i32, 20, 30]).unwrap())]).unwrap();
-    let values = Series::new_with_runtime(&values_rt, "vals", &[20i32, 30]).unwrap();
+    let df = DataFrame::from_series([("id", df_rt.series("id", &[10i32, 20, 30]).unwrap())]).unwrap();
+    let values = values_rt.series("vals", &[20i32, 30]).unwrap();
     let expected_exec_stream = df.__debug_execution_domain_stream_value();
     let expected_exec_mr = df.__debug_execution_domain_mr_value();
     let expected_sync_stream = values.as_column().__debug_execution_domain_stream_value();

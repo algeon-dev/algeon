@@ -223,7 +223,7 @@ pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAggregation, output_type: &Dat
         .map(|scalar| scalar.with_execution_domain(output_domain))
 }
 
-fn reduce_impl(
+pub(crate) fn reduce_impl(
     input: &ColumnView<'_>,
     agg: &ReduceAggregation,
     output_type: &DataType,
@@ -277,7 +277,7 @@ pub fn scan(
         .map(|column| column.with_execution_domain(output_domain))
 }
 
-fn scan_impl(
+pub(crate) fn scan_impl(
     input: &ColumnView<'_>,
     agg: ScanAggregation,
     scan_type: ScanType,
@@ -327,7 +327,7 @@ pub fn minmax(input: &ColumnView<'_>) -> Result<(Scalar, Scalar)> {
     })
 }
 
-fn minmax_impl(
+pub(crate) fn minmax_impl(
     input: &ColumnView<'_>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,

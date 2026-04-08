@@ -116,8 +116,8 @@ fn owned_table_borrow_matches_underlying_table_view_projection() {
 #[test]
 fn series_and_dataframe_convenience_producers_match_underlying_low_level_views() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = Series::new_with_runtime(&runtime, "id", &[1i32, 2, 3]).unwrap();
-    let vals = Series::new_with_runtime(&runtime, "value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
+    let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns([("id", ids.clone()), ("value", vals.clone())]).unwrap();
 
     let series_borrowed = ids.try_borrow_column_view().unwrap();

@@ -22,13 +22,16 @@
 
 use std::ptr;
 
-use crate::core::{
-    column::ColumnView,
-    error::{self, Result},
-    table::{Table, TableView},
+use crate::{
+    core::{
+        column::ColumnView,
+        error::{self, Result},
+        table::{Table, TableView},
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
-fn apply_boolean_mask_impl(
+pub(crate) fn apply_boolean_mask_impl(
     input: &TableView<'_>,
     mask: &ColumnView<'_>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
@@ -56,16 +59,16 @@ fn apply_boolean_mask_impl(
 /// number of rows as the input table.
 pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
+    ExecutionDomain::require_same_device_for_mixed_inputs(
+        input.execution_domain(),
+        mask.execution_domain(),
+        "filter::apply_boolean_mask",
+    )?;
+    if !ExecutionDomain::same_provenance(mask.execution_domain(), &output_domain) {
+        mask.execution_domain().fence_stream("filter::apply_boolean_mask")?;
+    }
     let exec_options = output_domain.explicit_exec_options_raw();
     apply_boolean_mask_impl(input, mask, exec_options.as_ref(), "filter::apply_boolean_mask")
         .map(|table| table.with_execution_domain(output_domain))
 }
 
-pub(crate) fn apply_boolean_mask_with_exec_options(
-    input: &TableView<'_>,
-    mask: &ColumnView<'_>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
-    operation: &'static str,
-) -> Result<Table> {
-    apply_boolean_mask_impl(input, mask, exec_options, operation)
-}

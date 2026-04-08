@@ -2,13 +2,16 @@
 
 use std::ptr;
 
-use crate::core::{
-    column::ColumnView,
-    error::{self, Result},
-    table::{Table, TableView},
+use crate::{
+    core::{
+        column::ColumnView,
+        error::{self, Result},
+        table::{Table, TableView},
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
-fn gather_impl(
+pub(crate) fn gather_impl(
     input: &TableView<'_>,
     gather_map: &ColumnView<'_>,
     bounds_policy: cudf_sys::cudf_out_of_bounds_policy_t,
@@ -60,6 +63,14 @@ fn gather_impl(
 /// ```
 pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
+    ExecutionDomain::require_same_device_for_mixed_inputs(
+        input.execution_domain(),
+        gather_map.execution_domain(),
+        "copying::gather",
+    )?;
+    if !ExecutionDomain::same_provenance(gather_map.execution_domain(), &output_domain) {
+        gather_map.execution_domain().fence_stream("copying::gather")?;
+    }
     let exec_options = output_domain.explicit_exec_options_raw();
     gather_impl(
         input,
@@ -70,22 +81,6 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
         "copying::gather",
     )
     .map(|table| table.with_execution_domain(output_domain))
-}
-
-pub(crate) fn gather_with_exec_options(
-    input: &TableView<'_>,
-    gather_map: &ColumnView<'_>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
-    operation: &'static str,
-) -> Result<Table> {
-    gather_impl(
-        input,
-        gather_map,
-        cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
-        "nullify",
-        exec_options,
-        operation,
-    )
 }
 
 /// Gather (select) rows from a table by index, without bounds checking.
@@ -120,6 +115,14 @@ pub(crate) fn gather_with_exec_options(
 /// Prefer [`gather`] unless profiling shows the bounds check is a bottleneck.
 pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
+    ExecutionDomain::require_same_device_for_mixed_inputs(
+        input.execution_domain(),
+        gather_map.execution_domain(),
+        "copying::gather_unchecked",
+    )?;
+    if !ExecutionDomain::same_provenance(gather_map.execution_domain(), &output_domain) {
+        gather_map.execution_domain().fence_stream("copying::gather_unchecked")?;
+    }
     let exec_options = output_domain.explicit_exec_options_raw();
     gather_impl(
         input,
@@ -132,18 +135,3 @@ pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_
     .map(|table| table.with_execution_domain(output_domain))
 }
 
-pub(crate) unsafe fn gather_unchecked_with_exec_options(
-    input: &TableView<'_>,
-    gather_map: &ColumnView<'_>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
-    operation: &'static str,
-) -> Result<Table> {
-    gather_impl(
-        input,
-        gather_map,
-        cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
-        "dont_check",
-        exec_options,
-        operation,
-    )
-}

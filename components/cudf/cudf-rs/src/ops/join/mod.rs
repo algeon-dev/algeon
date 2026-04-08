@@ -57,7 +57,8 @@ pub struct JoinResult {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn join_impl(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn join_impl(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,
     left_payload: &TableView<'_>,
@@ -159,9 +160,22 @@ fn compatible_join_domain(
     right_keys: &TableView<'_>,
     left_payload: &TableView<'_>,
     right_payload: &TableView<'_>,
+    operation: &'static str,
 ) -> Result<std::sync::Arc<ExecutionDomain>> {
-    let _ = (right_keys, left_payload, right_payload);
-    Ok(std::sync::Arc::clone(left_keys.execution_domain()))
+    let output_domain = std::sync::Arc::clone(left_keys.execution_domain());
+
+    for input in [right_keys, left_payload, right_payload] {
+        ExecutionDomain::require_same_device_for_mixed_inputs(
+            left_keys.execution_domain(),
+            input.execution_domain(),
+            operation,
+        )?;
+        if !ExecutionDomain::same_provenance(input.execution_domain(), &output_domain) {
+            input.execution_domain().fence_stream(operation)?;
+        }
+    }
+
+    Ok(output_domain)
 }
 
 /// Inner join: returns only rows with matching keys in both tables.
@@ -176,7 +190,7 @@ pub fn inner_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinResult> {
-    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload)?;
+    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::inner_join")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(
         left_keys,
@@ -203,7 +217,7 @@ pub fn left_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinResult> {
-    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload)?;
+    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::left_join")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(
         left_keys,
@@ -234,7 +248,7 @@ pub fn full_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinResult> {
-    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload)?;
+    let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::full_join")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(
         left_keys,
@@ -252,25 +266,3 @@ pub fn full_join(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn join_with_exec_options(
-    left_keys: &TableView<'_>,
-    right_keys: &TableView<'_>,
-    left_payload: &TableView<'_>,
-    right_payload: &TableView<'_>,
-    null_equality: NullEquality,
-    join_type: JoinType,
-    exec_options: &cudf_sys::cudf_exec_options_t,
-    operation: &'static str,
-) -> Result<JoinResult> {
-    join_impl(
-        left_keys,
-        right_keys,
-        left_payload,
-        right_payload,
-        null_equality,
-        join_type,
-        Some(exec_options),
-        operation,
-    )
-}

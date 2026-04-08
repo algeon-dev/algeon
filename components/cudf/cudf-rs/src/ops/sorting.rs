@@ -26,10 +26,13 @@
 
 use std::ptr;
 
-use crate::core::{
-    column::Column,
-    error::{self, Error, ErrorKind, Result},
-    table::{Table, TableView},
+use crate::{
+    core::{
+        column::Column,
+        error::{self, Error, ErrorKind, Result},
+        table::{Table, TableView},
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Column sort order.
@@ -103,7 +106,7 @@ fn sort_params(
     (co, np)
 }
 
-fn sort_table_impl(
+pub(crate) fn sort_table_impl(
     input: &TableView<'_>,
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
@@ -140,7 +143,7 @@ fn sort_table_impl(
     Ok(unsafe { Table::from_raw(out) })
 }
 
-fn sort_by_key_impl(
+pub(crate) fn sort_by_key_impl(
     values: &TableView<'_>,
     keys: &TableView<'_>,
     column_order: Option<&[Order]>,
@@ -233,6 +236,14 @@ pub fn sort_by_key(
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(values.execution_domain());
+    ExecutionDomain::require_same_device_for_mixed_inputs(
+        values.execution_domain(),
+        keys.execution_domain(),
+        "sorting::sort_by_key",
+    )?;
+    if !ExecutionDomain::same_provenance(keys.execution_domain(), &output_domain) {
+        keys.execution_domain().fence_stream("sorting::sort_by_key")?;
+    }
     let exec_options = output_domain.explicit_exec_options_raw();
     sort_by_key_impl(values, keys, column_order, null_precedence, false, exec_options.as_ref(), "sorting::sort_by_key")
         .map(|table| table.with_execution_domain(output_domain))
@@ -248,6 +259,14 @@ pub fn stable_sort_by_key(
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(values.execution_domain());
+    ExecutionDomain::require_same_device_for_mixed_inputs(
+        values.execution_domain(),
+        keys.execution_domain(),
+        "sorting::stable_sort_by_key",
+    )?;
+    if !ExecutionDomain::same_provenance(keys.execution_domain(), &output_domain) {
+        keys.execution_domain().fence_stream("sorting::stable_sort_by_key")?;
+    }
     let exec_options = output_domain.explicit_exec_options_raw();
     sort_by_key_impl(
         values,
@@ -261,28 +280,6 @@ pub fn stable_sort_by_key(
     .map(|table| table.with_execution_domain(output_domain))
 }
 
-pub(crate) fn sort_with_exec_options(
-    input: &TableView<'_>,
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
-    stable: bool,
-    exec_options: &cudf_sys::cudf_exec_options_t,
-    operation: &'static str,
-) -> Result<Table> {
-    sort_table_impl(input, column_order, null_precedence, stable, Some(exec_options), operation)
-}
-
-pub(crate) fn sort_by_key_with_exec_options(
-    values: &TableView<'_>,
-    keys: &TableView<'_>,
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
-    stable: bool,
-    exec_options: &cudf_sys::cudf_exec_options_t,
-    operation: &'static str,
-) -> Result<Table> {
-    sort_by_key_impl(values, keys, column_order, null_precedence, stable, Some(exec_options), operation)
-}
 
 /// Return the row indices that would sort the table.
 ///

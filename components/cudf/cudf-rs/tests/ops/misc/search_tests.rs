@@ -104,7 +104,9 @@ fn test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance() {
     let needles = explicit_i32_column(&[20, 50, 10], 911);
     let expected_stream = haystack.__debug_execution_domain_stream_value();
     let expected_mr = haystack.__debug_execution_domain_mr_value();
+    let expected_sync_stream = needles.__debug_execution_domain_stream_value();
 
+    reset_sync_observation();
     reset_exec_observation();
     let result = search::contains(&haystack.view().unwrap(), &needles.view().unwrap()).unwrap();
 
@@ -112,6 +114,7 @@ fn test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance() {
     assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
+    assert_eq!(last_sync_stream_value(), expected_sync_stream);
 
     reset_sync_observation();
     assert_eq!(result.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);

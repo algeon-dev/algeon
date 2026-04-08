@@ -1,7 +1,7 @@
 use std::thread;
 
 use cudf::{
-    DataFrame, DeviceId, Runtime, Series,
+    DataFrame, DeviceId, Runtime,
     core::{Column, column::DeviceSlice},
     interop::{
         BorrowedColumnView, BorrowedTableView, CompletionWitnessKind, OwnedColumnTransfer, OwnedTableTransfer,
@@ -77,7 +77,7 @@ fn owned_column_transfer_round_trips_across_thread_boundary() {
 #[test]
 fn prepared_column_export_can_activate_and_complete_on_worker_thread() {
     let producer_runtime = Runtime::builder().build().unwrap();
-    let series = Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
 
     let consumer_stream = CudaStream::new().unwrap();
@@ -128,8 +128,8 @@ fn prepared_table_export_survives_cross_thread_cross_device_completion_stress() 
 
         common::set_current_device(producer_device);
         let producer_runtime = Runtime::builder().with_device(producer_device).build().unwrap();
-        let ids = Series::new_with_runtime(&producer_runtime, "id", &[1i32, 2, 3, round as i32]).unwrap();
-        let vals = Series::new_with_runtime(&producer_runtime, "value", &[10i64, 20, 30, 40]).unwrap();
+        let ids = producer_runtime.series("id", &[1i32, 2, 3, round as i32]).unwrap();
+        let vals = producer_runtime.series("value", &[10i64, 20, 30, 40]).unwrap();
         let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
         let producer_ready = CudaEvent::new().unwrap();
         producer_ready.record(producer_runtime.stream()).unwrap();
@@ -145,8 +145,7 @@ fn prepared_table_export_survives_cross_thread_cross_device_completion_stress() 
                         .with_stream(consumer_stream.clone())
                         .build()
                         .unwrap();
-                    let _consumer_work =
-                        Series::new_with_runtime(&consumer_runtime, "tmp", &[7i32, 8, 9, round as i32]).unwrap();
+                    let _consumer_work = consumer_runtime.series("tmp", &[7i32, 8, 9, round as i32]).unwrap();
                     let consumer_event = CudaEvent::new().unwrap();
                     consumer_event.record(&consumer_stream).unwrap();
 
