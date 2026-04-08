@@ -1,10 +1,10 @@
-//! GPU-accelerated row gathering (take / index-select) operations.
+//! GPU-accelerated row gathering (take / index-select) and conditional copy operations.
 
-use std::ptr;
+use std::{ptr, sync::Arc};
 
 use crate::{
     core::{
-        column::ColumnView,
+        column::{Column, ColumnView},
         error::{self, Result},
         table::{Table, TableView},
     },
@@ -133,4 +133,87 @@ pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_
         "copying::gather_unchecked",
     )
     .map(|table| table.with_execution_domain(output_domain))
+}
+
+// ---------------------------------------------------------------------------
+// copy_if_else (column-column)
+// ---------------------------------------------------------------------------
+
+fn copy_if_else_impl(
+    lhs: &ColumnView<'_>,
+    rhs: &ColumnView<'_>,
+    boolean_mask: &ColumnView<'_>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_copy_if_else_vv_ex(
+                lhs.raw_handle(),
+                rhs.raw_handle(),
+                boolean_mask.raw_handle(),
+                &mut out,
+                options,
+            )
+        },
+        None => unsafe {
+            cudf_sys::cudf_copy_if_else_vv(lhs.raw_handle(), rhs.raw_handle(), boolean_mask.raw_handle(), &mut out)
+        },
+    };
+    error::check_status_in_with(
+        status,
+        operation,
+        [("execution_context_provided", exec_options.is_some().to_string())],
+    )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
+    Ok(unsafe { Column::from_raw(out) })
+}
+
+/// Conditionally select elements from two columns based on a boolean mask.
+///
+/// Produces a new column where:
+/// - `output[i] = lhs[i]` when `boolean_mask[i]` is valid and `true`
+/// - `output[i] = rhs[i]` when `boolean_mask[i]` is null or `false`
+///
+/// `lhs` and `rhs` must have the same type and length as `boolean_mask`.
+/// `boolean_mask` must be of type `BOOL8`.
+///
+/// # Example
+/// ```no_run
+/// use cudf::{
+///     core::Column,
+///     ops::copying,
+/// };
+///
+/// let lhs = Column::from_slice(&[10i32, 20, 30]).unwrap();
+/// let rhs = Column::from_slice(&[1i32, 2, 3]).unwrap();
+/// let mask = Column::from_slice(&[true, false, true]).unwrap();
+/// let result = copying::copy_if_else(
+///     &lhs.view().unwrap(),
+///     &rhs.view().unwrap(),
+///     &mask.view().unwrap(),
+/// )
+/// .unwrap();
+/// // result: [10, 2, 30]
+/// ```
+pub fn copy_if_else(
+    lhs: &ColumnView<'_>,
+    rhs: &ColumnView<'_>,
+    boolean_mask: &ColumnView<'_>,
+) -> Result<Column> {
+    let output_domain = Arc::clone(lhs.execution_domain());
+    ExecutionDomain::require_same_device_and_fence_secondary(
+        &output_domain,
+        rhs.execution_domain(),
+        "copying::copy_if_else",
+    )?;
+    ExecutionDomain::require_same_device_and_fence_secondary(
+        &output_domain,
+        boolean_mask.execution_domain(),
+        "copying::copy_if_else",
+    )?;
+    let exec_options = output_domain.explicit_exec_options_raw();
+    copy_if_else_impl(lhs, rhs, boolean_mask, exec_options.as_ref(), "copying::copy_if_else")
+        .map(|col| col.with_execution_domain(output_domain))
 }

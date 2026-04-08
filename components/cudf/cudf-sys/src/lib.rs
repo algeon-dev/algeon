@@ -2211,6 +2211,23 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    // -- Copying (copy_if_else) ----------------------------------------------
+
+    pub fn cudf_copy_if_else_vv(
+        lhs: cudf_column_view_handle,
+        rhs: cudf_column_view_handle,
+        boolean_mask: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_copy_if_else_vv_ex(
+        lhs: cudf_column_view_handle,
+        rhs: cudf_column_view_handle,
+        boolean_mask: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     // -- Stream Compaction ---------------------------------------------------
 
     pub fn cudf_drop_nulls(
