@@ -50,7 +50,9 @@ fn test_type_id_try_from_arrow_datatype_rejects_unsupported_types() {
 
 #[test]
 fn test_round_trip_i32() {
-    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()])
+            .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(batch.num_columns(), 1);
@@ -66,7 +68,11 @@ fn test_round_trip_i32() {
 
 #[test]
 fn test_round_trip_i64() {
-    let df = DataFrame::new(vec!["x".to_string()], vec![Column::from_slice(&[100i64, 200, 300]).unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["x".to_string()],
+        vec![Column::from_slice(&[100i64, 200, 300]).unwrap()],
+    )
+    .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Int64);
@@ -78,7 +84,7 @@ fn test_round_trip_i64() {
 
 #[test]
 fn test_round_trip_f32_f64() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["f32_col".to_string(), "f64_col".to_string()],
         vec![Column::from_slice(&[1.5f32, 2.5, 3.5]).unwrap(), Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap()],
     )
@@ -102,7 +108,7 @@ fn test_round_trip_f32_f64() {
 
 #[test]
 fn test_round_trip_nullable_i32() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string()],
         vec![Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap()],
     )
@@ -131,7 +137,7 @@ fn test_round_trip_nullable_i32() {
 
 #[test]
 fn test_round_trip_nullable_f64() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["v".to_string()],
         vec![Column::from_slice_nullable(&[1.1f64, 0.0, 3.3, 0.0], &[true, false, true, false]).unwrap()],
     )
@@ -163,7 +169,11 @@ fn test_round_trip_nullable_f64() {
 
 #[test]
 fn test_round_trip_bool8() {
-    let df = DataFrame::new(vec!["flag".to_string()], vec![Column::from_slice(&[true, false, true]).unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["flag".to_string()],
+        vec![Column::from_slice(&[true, false, true]).unwrap()],
+    )
+    .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Boolean);
@@ -180,7 +190,7 @@ fn test_round_trip_bool8() {
 
 #[test]
 fn test_round_trip_nullable_bool8() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["flag".to_string()],
         vec![Column::from_slice_nullable(&[true, false, true], &[true, false, true]).unwrap()],
     )
@@ -224,7 +234,7 @@ fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
 
 #[test]
 fn test_schema_preserved_multi_column() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "score".to_string(), "active".to_string()],
         vec![
             Column::from_slice(&[1i32, 2]).unwrap(),
@@ -299,9 +309,11 @@ fn test_from_record_batch_with_nulls() {
 
 #[test]
 fn test_round_trip_string_only() {
-    let df =
-        DataFrame::new(vec!["name".to_string()], vec![Column::from_strings(&["alice", "bob", "charlie"]).unwrap()])
-            .unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["name".to_string()],
+        vec![Column::from_strings(&["alice", "bob", "charlie"]).unwrap()],
+    )
+    .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(batch.num_columns(), 1);
@@ -323,7 +335,7 @@ fn test_round_trip_string_only() {
 
 #[test]
 fn test_round_trip_mixed_string_and_numeric() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["city".to_string(), "pop".to_string()],
         vec![
             Column::from_strings(&["tokyo", "london", "paris"]).unwrap(),
@@ -349,7 +361,7 @@ fn test_round_trip_mixed_string_and_numeric() {
 
 #[test]
 fn test_round_trip_nullable_string() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["tag".to_string()],
         vec![Column::from_strings_nullable(&["hello", "", "world"], &[true, false, true]).unwrap()],
     )
@@ -378,7 +390,11 @@ fn test_round_trip_nullable_string() {
 
 #[test]
 fn test_round_trip_string_with_empty_values() {
-    let df = DataFrame::new(vec!["s".to_string()], vec![Column::from_strings(&["", "data", ""]).unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["s".to_string()],
+        vec![Column::from_strings(&["", "data", ""]).unwrap()],
+    )
+    .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     let df2 = DataFrame::from_record_batch(&batch).unwrap();
@@ -388,9 +404,11 @@ fn test_round_trip_string_with_empty_values() {
 
 #[test]
 fn test_round_trip_string_unicode() {
-    let df =
-        DataFrame::new(vec!["text".to_string()], vec![Column::from_strings(&["héllo", "日本語", "🚀🎉"]).unwrap()])
-            .unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["text".to_string()],
+        vec![Column::from_strings(&["héllo", "日本語", "🚀🎉"]).unwrap()],
+    )
+    .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     let arr = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
@@ -449,7 +467,8 @@ fn test_from_record_batch_large_string_array() {
 
 #[test]
 fn test_round_trip_empty_string_schema() {
-    let df = DataFrame::new(vec!["s".to_string()], vec![Column::from_strings(&[]).unwrap()]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["s".to_string()], vec![Column::from_strings(&[]).unwrap()]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(batch.num_columns(), 1);

@@ -404,7 +404,7 @@ fn test_assign_on_zero_column_frame_rejects_row_count_mismatch() {
 
 #[test]
 fn test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
-    let df = DataFrame::new(vec![], vec![]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec![], vec![]).unwrap();
     let values = Series::new::<i32>("values", &[7, 8]).unwrap();
 
     let result = df.assign([("values", values)]).unwrap();
@@ -490,7 +490,7 @@ fn test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch() 
 
 #[test]
 fn test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
-    let df = DataFrame::new(vec![], vec![]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec![], vec![]).unwrap();
     let values = Series::new::<i32>("values", &[11, 22]).unwrap();
 
     let result = df.with_column("values", values).unwrap();

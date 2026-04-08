@@ -225,7 +225,7 @@ fn test_factorize_codes_are_owned_independent_of_input() {
 #[test]
 fn test_dataframe_factorize_by_name() {
     let col = Column::from_slice(&[10i32, 20, 10, 30, 20]).unwrap();
-    let df = cudf::DataFrame::new(vec!["values".to_string()], vec![col]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["values".to_string()], vec![col]).unwrap();
 
     let (codes, uniques) = df.factorize("values").unwrap();
 
@@ -239,7 +239,7 @@ fn test_dataframe_factorize_by_name() {
 #[test]
 fn test_dataframe_factorize_missing_column() {
     let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let df = cudf::DataFrame::new(vec!["x".to_string()], vec![col]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
     let result = df.factorize("nonexistent");
     assert!(result.is_err());

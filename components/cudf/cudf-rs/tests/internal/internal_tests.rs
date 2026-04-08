@@ -121,6 +121,6 @@ fn from_named_pairs_rejects_duplicate_names() {
 fn dataframe_new_rejects_duplicate_names() {
     let c1 = Column::from_slice(&[1i32]).unwrap();
     let c2 = Column::from_slice(&[2i32]).unwrap();
-    let err = DataFrame::new(vec!["dup".into(), "dup".into()], vec![c1, c2]).unwrap_err();
+    let err = crate::common::dataframe_from_columns(vec!["dup".into(), "dup".into()], vec![c1, c2]).unwrap_err();
     assert_duplicate_name_error(&err, "dup");
 }

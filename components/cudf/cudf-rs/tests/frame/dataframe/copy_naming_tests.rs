@@ -70,7 +70,8 @@ fn to_table_copy_source_still_usable() {
 /// `try_into_table()` unwraps without deep-copying.
 #[test]
 fn try_into_table_unique_owner_no_copy() {
-    let df = DataFrame::new(vec!["a".into()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["a".into()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()])
+        .unwrap();
 
     let original_ptr = device_ptr(&df, "a");
     let (table, names) = df.try_into_table().unwrap();

@@ -1,7 +1,7 @@
 use std::{ffi::c_void, ptr};
 
 use cudf::{
-    DataFrame, DeviceId, Runtime, Series,
+    DataFrame, DeviceId, Error, ErrorKind, Runtime, Series,
     core::{Column, memory::DeviceMemoryResource},
     runtime::CudaStream,
 };
@@ -14,7 +14,27 @@ use cudf_sys::{
 pub fn sample_df() -> DataFrame {
     let ids = Column::from_slice(&[3i32, 1, 4, 1, 5]).unwrap();
     let scores = Column::from_slice(&[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap();
-    DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
+    dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
+}
+
+#[allow(dead_code)]
+pub fn dataframe_from_columns(names: Vec<String>, columns: Vec<Column>) -> cudf::Result<DataFrame> {
+    let operation = "dataframe::new";
+
+    if names.len() != columns.len() {
+        return Err(Error::new(ErrorKind::InvalidOperation, "number of names must equal number of columns")
+            .with_operation(operation)
+            .with_context("names_count", names.len().to_string())
+            .with_context("columns_count", columns.len().to_string()));
+    }
+
+    let pairs = names
+        .into_iter()
+        .zip(columns)
+        .map(|(name, column)| Series::from_column(column).map(|series| (name, series)).map_err(|e| e.with_operation(operation)))
+        .collect::<cudf::Result<Vec<_>>>()?;
+
+    DataFrame::from_named_pairs(pairs).map_err(|e| e.with_operation(operation))
 }
 
 #[allow(dead_code)]

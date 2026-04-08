@@ -119,7 +119,7 @@ pub(crate) fn resolve_frame_domain_from_authoritative_source(
 }
 
 impl DataFrame {
-    /// Create a new `DataFrame` from column names and owned [`Column`] values.
+    /// Crate-private constructor from column names and owned [`Column`] values.
     ///
     /// Advanced constructor. For most user-facing code, prefer
     /// [`DataFrame::from_series`] with named [`Series`](crate::Series) values,
@@ -131,7 +131,7 @@ impl DataFrame {
     /// - `names.len() != columns.len()`
     /// - Any name is duplicated
     /// - Columns have different row counts
-    pub fn new(names: Vec<String>, columns: Vec<Column>) -> Result<Self> {
+    pub(crate) fn new(names: Vec<String>, columns: Vec<Column>) -> Result<Self> {
         if names.len() != columns.len() {
             return Err(Error::new(ErrorKind::InvalidOperation, "number of names must equal number of columns")
                 .with_operation("dataframe::new")
@@ -519,21 +519,6 @@ impl DataFrame {
     #[doc(hidden)]
     pub fn __debug_execution_domain_mr_value(&self) -> usize {
         self.domain.debug_mr_value()
-    }
-
-    pub(crate) fn synchronize_for_forced_output_domain(
-        &self,
-        other: &DataFrame,
-        output_domain: &Arc<ExecutionDomain>,
-        operation: &'static str,
-    ) -> Result<()> {
-        if !ExecutionDomain::same_provenance(&self.domain, output_domain) {
-            self.domain.fence_stream(operation)?;
-        }
-        if !ExecutionDomain::same_provenance(&other.domain, output_domain) {
-            other.domain.fence_stream(operation)?;
-        }
-        Ok(())
     }
 
     pub(crate) fn clone_or_copy_columns_into_domain(

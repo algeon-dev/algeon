@@ -1,23 +1,25 @@
 #[path = "common/allocation.rs"]
 mod allocation;
+#[path = "common/mod.rs"]
+mod common;
 
 // These tests temporarily replace the process-global current device resource
 // via cudf-sys test hooks. Keep them in their own integration-test binary so
 // they do not run in the same libtest process as the broader interop suite.
 
 mod interop_allocation_tests {
-    use cudf::{DataFrame, core::Column, interop::ProducerReadiness};
+    use cudf::{core::Column, interop::ProducerReadiness};
 
     use crate::allocation::allocation_count_delta;
 
     #[test]
     fn dataframe_prepare_host_export_does_not_allocate_extra_device_memory_when_columns_are_shared() {
-        let baseline = DataFrame::new(
+        let baseline = crate::common::dataframe_from_columns(
             vec!["id".to_string(), "value".to_string()],
             vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i64, 20, 30]).unwrap()],
         )
         .unwrap();
-        let original = DataFrame::new(
+        let original = crate::common::dataframe_from_columns(
             vec!["id".to_string(), "value".to_string()],
             vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i64, 20, 30]).unwrap()],
         )

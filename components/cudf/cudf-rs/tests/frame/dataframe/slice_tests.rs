@@ -6,7 +6,7 @@ use cudf::{DataFrame, core::Column};
 fn sample_df() -> DataFrame {
     let ids = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let vals = Column::from_slice(&[1.0f64, 2.0, 3.0, 4.0, 5.0]).unwrap();
-    DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap()
+    crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap()
 }
 
 // ---------------------------------------------------------------------------

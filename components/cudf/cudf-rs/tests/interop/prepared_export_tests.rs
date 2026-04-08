@@ -2922,7 +2922,7 @@ fn mixed_device_table_prepare_device_export_is_rejected() {
         .unwrap()
         .__debug_rebind_execution_domain_explicit(9001)
         .unwrap();
-    let frame = DataFrame::new(vec!["left".into(), "right".into()], vec![left, right]).unwrap();
+    let frame = crate::common::dataframe_from_columns(vec!["left".into(), "right".into()], vec![left, right]).unwrap();
 
     let err = frame.try_prepare_device_table_export().unwrap_err();
 

@@ -7,6 +7,7 @@ use crate::{
     validation::{
         binding_map, first_buffer_id, owned_transfer_profile_error, semantic_column_map,
         validate_owned_transfer_profile, validate_owned_transfer_readiness, validate_prepared_column_against_bindings,
+        validate_release_contract,
     },
 };
 
@@ -58,13 +59,7 @@ impl OwnedColumnTransfer {
         Owner: Send + Sync + 'static,
     {
         validate_owned_transfer_profile(diagnostics)?;
-        if release_contract.release_device() < 0 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "owned device transfer release device must be >= 0",
-            )
-            .with_context("release_device", release_contract.release_device().to_string()));
-        }
+        validate_release_contract(release_contract)?;
 
         let column_map = semantic_column_map(&semantic_columns, "column_id")?;
         let mapped_root = column_map.get(&column.id()).copied().ok_or_else(|| {
@@ -230,13 +225,7 @@ impl OwnedTableTransfer {
         Owner: Send + Sync + 'static,
     {
         validate_owned_transfer_profile(diagnostics)?;
-        if release_contract.release_device() < 0 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "owned device transfer release device must be >= 0",
-            )
-            .with_context("release_device", release_contract.release_device().to_string()));
-        }
+        validate_release_contract(release_contract)?;
 
         if let Some(names) = table.names() {
             if names.len() != table.columns().len() {

@@ -13,7 +13,7 @@ use crate::common::assert_missing_column_error;
 fn groupby_sum() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
@@ -33,7 +33,7 @@ fn groupby_sum() {
 fn groupby_mean() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Mean)]).unwrap();
 
@@ -51,7 +51,7 @@ fn groupby_mean() {
 fn groupby_count() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Count { include_nulls: false })]).unwrap();
 
@@ -73,7 +73,7 @@ fn groupby_count() {
 fn groupby_alias() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum).with_alias("total")]).unwrap();
 
@@ -91,7 +91,7 @@ fn groupby_alias() {
 fn groupby_deterministic_naming_without_alias() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let prices = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
-    let df = DataFrame::new(vec!["id".into(), "price".into()], vec![keys, prices]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["id".into(), "price".into()], vec![keys, prices]).unwrap();
 
     let result = df
         .groupby(["id"])
@@ -122,7 +122,8 @@ fn groupby_multi_column_agg_ordering() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let a = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let b = Column::from_slice(&[1i64, 2, 3, 4]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "a".into(), "b".into()], vec![keys, a, b]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".into(), "a".into(), "b".into()], vec![keys, a, b]).unwrap();
 
     let result = df
         .groupby(["key"])
@@ -154,7 +155,7 @@ fn groupby_multi_column_agg_ordering() {
 fn groupby_missing_value_column() {
     let keys = Column::from_slice(&[1i32, 2, 1]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let err = df
         .groupby(["key"])
@@ -168,7 +169,7 @@ fn groupby_missing_value_column() {
 fn groupby_missing_key_column() {
     let keys = Column::from_slice(&[1i32, 2, 1]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let err = df
         .groupby(["missing_key"])
@@ -182,7 +183,7 @@ fn groupby_missing_key_column() {
 fn groupby_empty_agg_specs() {
     let keys = Column::from_slice(&[1i32, 2, 1]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let err = df.groupby(["key"]).agg(&[]).expect_err("expected error for empty aggregation specs");
 
@@ -197,7 +198,7 @@ fn groupby_empty_agg_specs() {
 fn groupby_sum_shortcut() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).sum(["value"]).unwrap();
 
@@ -215,7 +216,7 @@ fn groupby_sum_shortcut() {
 fn groupby_mean_shortcut() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).mean(["value"]).unwrap();
 
@@ -233,7 +234,7 @@ fn groupby_mean_shortcut() {
 fn groupby_count_shortcut() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).count(["value"]).unwrap();
 
@@ -251,7 +252,7 @@ fn groupby_count_shortcut() {
 fn groupby_shortcut_handle_is_reusable() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let groupby = df.groupby(["key"]);
     let summed = groupby.sum(["value"]).unwrap();
@@ -291,7 +292,8 @@ fn groupby_sum_shortcut_multi_columns() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let a = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let b = Column::from_slice(&[1i64, 2, 3, 4]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "a".into(), "b".into()], vec![keys, a, b]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".into(), "a".into(), "b".into()], vec![keys, a, b]).unwrap();
 
     let result = df.groupby(["key"]).sum(["a", "b"]).unwrap();
 
@@ -318,7 +320,7 @@ fn groupby_with_options_include_null_keys() {
 
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let options = GroupByOptions::builder().include_null_keys(true).build();
     let result = df.groupby(["key"]).options(options).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
@@ -341,7 +343,7 @@ fn groupby_median() {
     // key=1 median=20.0, key=2 median=150.0
     let keys = Column::from_slice(&[1i32, 1, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 100.0, 200.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Median)]).unwrap();
 
@@ -359,7 +361,7 @@ fn groupby_median() {
 fn groupby_median_shortcut() {
     let keys = Column::from_slice(&[1i32, 1, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 100.0, 200.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).median(["value"]).unwrap();
 
@@ -383,7 +385,7 @@ fn groupby_nunique() {
     // key=1 nunique=2, key=2 nunique=1
     let keys = Column::from_slice(&[1i32, 1, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10i32, 10, 20, 30, 30]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::NUnique)]).unwrap();
 
@@ -401,7 +403,7 @@ fn groupby_nunique() {
 fn groupby_nunique_shortcut() {
     let keys = Column::from_slice(&[1i32, 1, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10i32, 10, 20, 30, 30]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).nunique(["value"]).unwrap();
 
@@ -426,7 +428,7 @@ fn groupby_std_ddof1() {
     // key=2: std(ddof=1) = sqrt(((100-150)^2 + (200-150)^2) / 1) = sqrt(5000) ≈ 70.7107
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Std { ddof: 1 })]).unwrap();
 
@@ -451,7 +453,7 @@ fn groupby_std_ddof0() {
     // key=2: std(ddof=0) = sqrt(((100-150)^2 + (200-150)^2) / 2) = sqrt(2500) = 50.0
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Std { ddof: 0 })]).unwrap();
 
@@ -469,7 +471,7 @@ fn groupby_std_ddof0() {
 fn groupby_std_shortcut() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     // Default ddof=1 for the shortcut.
     let result = df.groupby(["key"]).std(["value"]).unwrap();
@@ -496,7 +498,7 @@ fn groupby_variance_ddof1() {
     // key=2: var(ddof=1) = 5000.0
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Variance { ddof: 1 })]).unwrap();
 
@@ -518,7 +520,7 @@ fn groupby_variance_ddof0() {
     // key=2: var(ddof=0) = 2500.0
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Variance { ddof: 0 })]).unwrap();
 
@@ -536,7 +538,7 @@ fn groupby_variance_ddof0() {
 fn groupby_var_shortcut() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     // Default ddof=1 for the shortcut.
     let result = df.groupby(["key"]).var(["value"]).unwrap();
@@ -561,7 +563,7 @@ fn groupby_var_shortcut() {
 fn groupby_all_agg_variants_naming() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df
         .groupby(["key"])
@@ -603,7 +605,7 @@ fn groupby_all_agg_variants_naming() {
 fn groupby_new_agg_alias() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
-    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let result = df
         .groupby(["key"])

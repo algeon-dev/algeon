@@ -48,6 +48,11 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         self.df.concat_in_context(other, self.ctx)
     }
 
+    /// Concatenate with multiple frames using the borrowed execution override.
+    pub fn concat_many(&self, others: &[&DataFrame]) -> Result<DataFrame> {
+        self.df.concat_many_in_context(others, self.ctx)
+    }
+
     /// Merge with another frame using the borrowed execution override.
     pub fn merge(&self, right: &DataFrame, options: MergeOptions) -> Result<DataFrame> {
         self.df.merge_in_context(right, options, self.ctx)

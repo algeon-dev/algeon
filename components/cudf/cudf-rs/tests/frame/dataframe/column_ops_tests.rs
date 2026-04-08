@@ -1,7 +1,7 @@
 //! Tests for DataFrame column-level convenience.
 
 use cudf::{
-    DataFrame, DataType, ErrorKind, TypeId,
+    DataType, ErrorKind, TypeId,
     core::{Column, Scalar},
 };
 
@@ -11,7 +11,9 @@ use cudf::{
 
 #[test]
 fn test_with_column_adds_new_column() {
-    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()])
+            .unwrap();
 
     let new_col = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let result = df.with_column("b", new_col).unwrap();
@@ -31,7 +33,7 @@ fn test_with_column_adds_new_column() {
 
 #[test]
 fn test_with_column_replaces_existing_column() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
     )
@@ -54,7 +56,7 @@ fn test_with_column_replaces_existing_column() {
 
 #[test]
 fn test_with_column_preserves_schema_order_on_replace() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["x".to_string(), "y".to_string(), "z".to_string()],
         vec![
             Column::from_slice(&[1i32]).unwrap(),
@@ -76,7 +78,9 @@ fn test_with_column_preserves_schema_order_on_replace() {
 
 #[test]
 fn test_with_column_mismatched_row_count_returns_error() {
-    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()])
+            .unwrap();
 
     // New column has 2 rows, DataFrame has 3.
     let new_col = Column::from_slice(&[10i32, 20]).unwrap();
@@ -89,7 +93,7 @@ fn test_fillna_with_scalar_fills_values() {
     let col_a = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let col_b = Column::from_slice_nullable(&[10i32, 0, 30], &[true, false, true]).unwrap();
 
-    let df = DataFrame::new(vec!["a".to_string(), "b".to_string()], vec![col_a, col_b]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![col_a, col_b]).unwrap();
 
     let fill = Scalar::from_value(99i32).unwrap();
     let result = df.fillna_with_scalar("b", &fill).unwrap();
@@ -108,7 +112,8 @@ fn test_fillna_with_scalar_fills_values() {
 
 #[test]
 fn test_fillna_with_scalar_nonexistent_column_returns_error() {
-    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()])
+        .unwrap();
 
     let fill = Scalar::from_value(0i32).unwrap();
     let err = df.fillna_with_scalar("missing", &fill).expect_err("expected error");
@@ -121,8 +126,11 @@ fn test_fillna_with_scalar_preserves_other_columns() {
     let col_b = Column::from_slice_nullable(&[10i32, 0], &[true, false]).unwrap();
     let col_c = Column::from_slice(&[100i64, 200]).unwrap();
 
-    let df =
-        DataFrame::new(vec!["a".to_string(), "b".to_string(), "c".to_string()], vec![col_a, col_b, col_c]).unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        vec![col_a, col_b, col_c],
+    )
+    .unwrap();
 
     let fill = Scalar::from_value(99i32).unwrap();
     let result = df.fillna_with_scalar("b", &fill).unwrap();
@@ -138,7 +146,7 @@ fn test_fillna_with_scalar_preserves_other_columns() {
 
 #[test]
 fn test_cast_column_changes_type() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i32, 20, 30]).unwrap()],
     )
@@ -163,7 +171,8 @@ fn test_cast_column_changes_type() {
 
 #[test]
 fn test_cast_column_nonexistent_returns_error() {
-    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()])
+        .unwrap();
 
     let target = DataType::new(TypeId::Float64);
     let err = df.cast_column("missing", target).expect_err("expected error");
@@ -172,7 +181,7 @@ fn test_cast_column_nonexistent_returns_error() {
 
 #[test]
 fn test_cast_column_preserves_schema_order() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["x".to_string(), "y".to_string(), "z".to_string()],
         vec![
             Column::from_slice(&[1i32]).unwrap(),
@@ -196,7 +205,7 @@ fn test_cast_column_preserves_schema_order() {
 
 #[test]
 fn test_with_column_add_preserves_existing_string_column() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "a".to_string()],
         vec![Column::from_strings(&["alice", "bob", "cara"]).unwrap(), Column::from_slice(&[1i32, 2, 3]).unwrap()],
     )
@@ -218,7 +227,7 @@ fn test_with_column_add_preserves_existing_string_column() {
 
 #[test]
 fn test_fillna_with_scalar_with_string_sibling_column() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "b".to_string()],
         vec![
             Column::from_strings(&["x", "y", "z"]).unwrap(),
@@ -239,7 +248,7 @@ fn test_fillna_with_scalar_with_string_sibling_column() {
 
 #[test]
 fn test_cast_column_with_string_sibling_column() {
-    let df = DataFrame::new(
+    let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "qty".to_string()],
         vec![Column::from_strings(&["a", "b", "c"]).unwrap(), Column::from_slice(&[1i32, 2, 3]).unwrap()],
     )

@@ -13,7 +13,11 @@ fn sample_df() -> DataFrame {
     let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let scores = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let flags = Column::from_slice(&[true, false, true]).unwrap();
-    DataFrame::new(vec!["id".to_string(), "score".to_string(), "flag".to_string()], vec![ids, scores, flags]).unwrap()
+    crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "score".to_string(), "flag".to_string()],
+        vec![ids, scores, flags],
+    )
+    .unwrap()
 }
 
 /// Returns the raw device data pointer for a named column in a DataFrame.

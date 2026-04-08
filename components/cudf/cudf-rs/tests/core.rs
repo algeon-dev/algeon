@@ -1,3 +1,6 @@
+#[path = "common/mod.rs"]
+mod common;
+
 #[path = "core/column_map_tests.rs"]
 mod column_map_tests;
 #[path = "core/column_ops_tests.rs"]

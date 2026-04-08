@@ -323,7 +323,7 @@ async fn chained_pipeline_in_spawn_blocking() {
     let result = tokio::task::spawn_blocking(|| -> cudf::Result<Vec<(i32, i64)>> {
         let keys = Column::from_slice(&[2i32, 1, 2, 1, 3, 3]).unwrap();
         let vals = Column::from_slice(&[10i64, 20, 30, 40, 50, 60]).unwrap();
-        let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals])?;
+        let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals])?;
 
         // Sort by key.
         let sorted = df.sort_values(["key"], SortOptions::new())?;
@@ -355,12 +355,12 @@ async fn chained_pipeline_in_spawn_blocking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn join_inside_spawn_blocking() {
     let result = tokio::task::spawn_blocking(|| -> cudf::Result<usize> {
-        let left = DataFrame::new(
+        let left = crate::common::dataframe_from_columns(
             vec!["id".into(), "name".into()],
             vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_strings(&["Alice", "Bob", "Carol"]).unwrap()],
         )?;
 
-        let right = DataFrame::new(
+        let right = crate::common::dataframe_from_columns(
             vec!["id".into(), "score".into()],
             vec![Column::from_slice(&[2i32, 3, 4]).unwrap(), Column::from_slice(&[85.0f64, 92.0, 78.0]).unwrap()],
         )?;

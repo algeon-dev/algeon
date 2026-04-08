@@ -551,40 +551,98 @@ impl DataFrame {
     /// Returns an error if the schemas do not match (different names, count,
     /// order, or types).
     pub fn concat(&self, other: &DataFrame) -> Result<Self> {
-        self.concat_impl(other, None, None, "dataframe::concat")
+        self.concat_many_impl(&[other], None, None, "dataframe::concat")
+    }
+
+    /// Concatenate multiple DataFrames row-wise.
+    ///
+    /// All DataFrames must have the same column names in the same order
+    /// and matching column types. An empty `others` slice returns a clone
+    /// of `self`.
+    ///
+    /// This is more efficient than chaining multiple [`concat`](Self::concat)
+    /// calls because it passes all table views to a single FFI call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any DataFrame's schema does not match `self`
+    /// (different names, count, order, or types).
+    pub fn concat_many(&self, others: &[&DataFrame]) -> Result<Self> {
+        self.concat_many_impl(others, None, None, "dataframe::concat_many")
     }
 
     /// Concatenate two DataFrames row-wise using a borrowed per-operation execution override.
     pub(crate) fn concat_in_context(&self, other: &DataFrame, ctx: &ExecutionContext<'_>) -> Result<Self> {
-        let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.synchronize_for_forced_output_domain(other, &output_domain, "dataframe::in_context::concat")?;
-        self.concat_impl(
-            other,
-            output_domain.explicit_exec_options_raw(),
-            Some(output_domain),
-            "dataframe::in_context::concat",
-        )
+        self.concat_many_in_context(&[other], ctx)
     }
 
-    fn concat_impl(
+    /// Concatenate multiple DataFrames row-wise using a borrowed per-operation execution override.
+    pub(crate) fn concat_many_in_context(&self, others: &[&DataFrame], ctx: &ExecutionContext<'_>) -> Result<Self> {
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        let operation = "dataframe::in_context::concat_many";
+        // Fence self if needed.
+        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
+            self.domain.fence_stream(operation)?;
+        }
+        // Fence each other if needed.
+        for other in others {
+            if !ExecutionDomain::same_provenance(&other.domain, &output_domain) {
+                other.domain.fence_stream(operation)?;
+            }
+        }
+        self.concat_many_impl(others, output_domain.explicit_exec_options_raw(), Some(output_domain), operation)
+    }
+
+    fn concat_many_impl(
         &self,
-        other: &DataFrame,
+        others: &[&DataFrame],
         exec_options: Option<cudf_sys::cudf_exec_options_t>,
         forced_output_domain: Option<Arc<ExecutionDomain>>,
         operation: &'static str,
     ) -> Result<Self> {
+        if others.is_empty() {
+            return Ok(self.clone());
+        }
+
         let output_domain = forced_output_domain.unwrap_or_else(|| Arc::clone(&self.domain));
         let exec_options = exec_options.or_else(|| output_domain.explicit_exec_options_raw());
 
-        ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, &other.domain, operation)?;
+        // Validate device compatibility and fence streams for all inputs.
+        for other in others {
+            ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, &other.domain, operation)?;
+        }
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
             self.domain.fence_stream(operation)?;
         }
-        if !ExecutionDomain::same_provenance(&other.domain, &output_domain) {
-            other.domain.fence_stream(operation)?;
+        for other in others {
+            if !ExecutionDomain::same_provenance(&other.domain, &output_domain) {
+                other.domain.fence_stream(operation)?;
+            }
         }
 
-        // Validate schemas match: same names, same order.
+        // Validate schemas match: same names, same order, same types.
+        for other in others {
+            self.validate_concat_schema(other, operation)?;
+        }
+
+        // Build all table views and pass them in a single FFI call.
+        let self_tv = self.build_table_view()?;
+        let other_tvs: Vec<_> = others.iter().map(|df| df.build_table_view()).collect::<Result<_>>()?;
+
+        let mut table_refs: Vec<&crate::core::table::TableView<'_>> = Vec::with_capacity(1 + others.len());
+        table_refs.push(self_tv.table());
+        for tv in &other_tvs {
+            table_refs.push(tv.table());
+        }
+
+        let result_table = ops::concatenate::concatenate_tables_with_exec(&table_refs, exec_options.as_ref())?
+            .with_execution_domain(output_domain);
+
+        Self::from_table_with_names(result_table, self.column_names_owned())
+    }
+
+    /// Validate that `other` has the same schema (column count, names, types) as `self`.
+    fn validate_concat_schema(&self, other: &DataFrame, operation: &'static str) -> Result<()> {
         if self.columns.len() != other.columns.len() {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
@@ -607,7 +665,6 @@ impl DataFrame {
             }
         }
 
-        // Validate matching types column-by-column up front for clearer errors.
         for (i, ((name, left_col), (_, right_col))) in self.columns.iter().zip(other.columns.iter()).enumerate() {
             let left_type = left_col.view()?.data_type()?.id();
             let right_type = right_col.view()?.data_type()?.id();
@@ -624,15 +681,7 @@ impl DataFrame {
             }
         }
 
-        let left_tv = self.build_table_view()?;
-        let right_tv = other.build_table_view()?;
-        let result_table = ops::concatenate::concatenate_tables_with_exec(
-            &[left_tv.table(), right_tv.table()],
-            exec_options.as_ref(),
-        )?
-        .with_execution_domain(output_domain);
-
-        Self::from_table_with_names(result_table, self.column_names_owned())
+        Ok(())
     }
     /// Return a new DataFrame with a single column added or replaced.
     ///
