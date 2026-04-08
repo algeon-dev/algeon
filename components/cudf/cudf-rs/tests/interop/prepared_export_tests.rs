@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use cudf::{
-    DataFrame, DeviceId, Runtime, TypeId,
+    DataFrame, DeviceId, JsonReadOptions, Runtime, TypeId,
     core::Column,
     interop::{
         ActiveLeaseBackend, BufferBinding, ColumnLayout, CompletionAuthority, CompletionBinding, CompletionWitnessKind,
@@ -14,7 +14,6 @@ use cudf::{
         RuntimeReadStartAuthority, SchemaNullability, TryActivateRuntimeColumnReadLease,
         TryActivateRuntimeTableReadLease, cuda_explicit_completion_required_lease_backend,
     },
-    io::json::JsonReaderOptions,
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
 };
@@ -125,7 +124,7 @@ fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
     let path = dir.path().join(filename);
     std::fs::write(&path, rows).unwrap();
     let runtime = Runtime::builder().build().unwrap();
-    DataFrame::read_json_with_options(JsonReaderOptions::builder().filepath(&path).with_runtime(&runtime).build())
+    DataFrame::read_json_with_options(JsonReadOptions::builder().filepath(&path).with_runtime(&runtime).build())
         .unwrap()
 }
 
@@ -155,7 +154,7 @@ fn dataframe_prepare_device_export_can_activate_stream_read_lease() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
 
     let export = frame.try_prepare_device_table_export().unwrap();
     // Test-only shortcut: reusing the producer's stream as the consumer's
@@ -189,7 +188,7 @@ fn shared_table_read_lease_orders_consumer_stream_after_stream_ordered_producer_
     let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
     let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
     let consumer_stream = CudaStream::new().unwrap();
     let _consumer_runtime =
@@ -494,7 +493,7 @@ fn runtime_table_read_lease_preserves_accessor_and_debug_surface() {
     let producer_runtime = Runtime::builder().build().unwrap();
     let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
 
     let consumer_stream = CudaStream::new().unwrap();
@@ -688,7 +687,7 @@ fn runtime_table_read_lease_with_explicit_backend_drop_does_not_synchronize_and_
     let producer_runtime = Runtime::builder().build().unwrap();
     let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
     let export = frame
         .try_prepare_device_table_export()
         .unwrap()
@@ -747,7 +746,7 @@ fn runtime_cross_device_event_read_lease_with_explicit_backend_complete_returns_
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
     let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
     let export = frame
         .try_prepare_device_table_export()
         .unwrap()
@@ -867,7 +866,7 @@ fn runtime_table_read_lease_orders_consumer_stream_after_stream_ordered_producer
     let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
     let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
     let consumer_stream = CudaStream::new().unwrap();
     let _consumer_runtime =
@@ -984,7 +983,7 @@ fn dataframe_prepare_device_export_can_activate_runtime_cross_device_event_read_
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
     let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
 
     common::set_current_device(device1);
@@ -1030,7 +1029,7 @@ fn shared_cross_device_read_lease_orders_consumer_stream_on_activation_then_wait
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
     let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
     let export = frame
         .try_prepare_device_table_export()
         .unwrap()
@@ -1093,7 +1092,7 @@ fn runtime_cross_device_event_read_lease_complete_does_not_fallback_synchronize_
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
     let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
 
     common::set_current_device(device1);
@@ -1146,7 +1145,7 @@ fn runtime_cross_device_read_lease_orders_consumer_stream_on_activation_then_wai
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
     let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
     let export = frame
         .try_prepare_device_table_export()
         .unwrap()
@@ -1259,7 +1258,7 @@ fn dataframe_prepare_device_export_with_event_can_activate_runtime_cross_device_
     let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
     let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
     let producer_ready = CudaEvent::new().unwrap();
     producer_ready.record(producer_runtime.stream()).unwrap();
     let export = frame.try_prepare_device_table_export_with_event(&producer_ready).unwrap();
@@ -1396,7 +1395,7 @@ fn table_view_prepare_device_export_preserves_num_rows_names_and_uniform_readine
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
     let expected_stream = frame.__debug_execution_domain_stream_value();
 
     let frame_export = frame.try_prepare_device_table_export().unwrap();
@@ -1427,7 +1426,7 @@ fn table_view_prepare_device_export_preserves_schema_nullability_metadata() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = runtime.nullable_series("value", &[10i64, 0, 30], &[true, false, true]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
 
     let export = frame.try_prepare_device_table_export().unwrap();
 
@@ -1520,7 +1519,7 @@ fn dataframe_prepare_host_export_preserves_names_and_host_profile() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
 
     let export = frame.try_prepare_host_table_export().unwrap();
 
@@ -1536,7 +1535,7 @@ fn dataframe_prepare_host_export_preserves_schema_nullability_metadata() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = runtime.nullable_series("value", &[10i64, 0, 30], &[true, false, true]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
 
     let export = frame.try_prepare_host_table_export().unwrap();
 
@@ -1886,7 +1885,7 @@ fn host_export_accepts_broader_recursive_nested_columns() {
     let encoded = dictionary::encode(&category.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(encoded).unwrap().rename("category");
     let frame =
-        DataFrame::from_columns([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap();
+        DataFrame::from_series([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap();
 
     let export = frame.try_prepare_host_table_export().unwrap();
 
@@ -2076,7 +2075,7 @@ fn dataframe_prepare_host_export_accepts_string_columns() {
     let runtime = Runtime::builder().build().unwrap();
     let names = runtime.string_series("name", &["alice", "bob", "cara"]).unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let frame = DataFrame::from_columns([("name", names), ("id", ids)]).unwrap();
+    let frame = DataFrame::from_series([("name", names), ("id", ids)]).unwrap();
 
     let export = frame.try_prepare_host_table_export().unwrap();
 
@@ -2242,7 +2241,7 @@ fn dataframe_prepare_host_export_accepts_struct_and_dictionary_columns_with_supp
     let category = frame.series("category").unwrap();
     let encoded = dictionary::encode(&category.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(encoded).unwrap().rename("category");
-    let frame = DataFrame::from_columns([("point", point), ("category", category), ("id", id)]).unwrap();
+    let frame = DataFrame::from_series([("point", point), ("category", category), ("id", id)]).unwrap();
 
     let export = frame.try_prepare_host_table_export().unwrap();
 
@@ -2266,7 +2265,7 @@ fn series_and_dataframe_prepare_device_export_match_underlying_low_level_exports
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids.clone()), ("value", vals.clone())]).unwrap();
+    let frame = DataFrame::from_series([("id", ids.clone()), ("value", vals.clone())]).unwrap();
 
     let series_export = ids.try_prepare_device_column_export().unwrap();
     let column_export = ids.as_column().try_prepare_device_column_export().unwrap();
@@ -2299,7 +2298,7 @@ fn ambient_column_prepare_device_export_is_rejected() {
 fn ambient_dataframe_prepare_device_export_is_rejected() {
     let ids = cudf::Series::new("id", &[1i32, 2, 3]).unwrap();
     let vals = cudf::Series::new("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
 
     let err = frame.try_prepare_device_table_export().unwrap_err();
 
@@ -2403,7 +2402,7 @@ fn dataframe_prepare_device_export_accepts_string_columns() {
     let runtime = Runtime::builder().build().unwrap();
     let names = runtime.string_series("name", &["alice", "bob", "cara"]).unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let frame = DataFrame::from_columns([("name", names), ("id", ids)]).unwrap();
+    let frame = DataFrame::from_series([("name", names), ("id", ids)]).unwrap();
 
     let export = frame.try_prepare_device_table_export().unwrap();
 
@@ -2712,7 +2711,7 @@ fn dataframe_prepare_device_export_accepts_dictionary_columns() {
     let ids = runtime.series("id", &[10i32, 20, 30, 40]).unwrap();
     let dict = dictionary::encode(&base.as_column().view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(dict).unwrap().rename("category");
-    let frame = DataFrame::from_columns([("category", category), ("id", ids)]).unwrap();
+    let frame = DataFrame::from_series([("category", category), ("id", ids)]).unwrap();
 
     let export = frame.try_prepare_device_table_export().unwrap();
 
@@ -2844,7 +2843,7 @@ fn dataframe_prepare_device_export_accepts_dictionary_and_recursive_nested_colum
     let encoded = dictionary::encode(&category.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(encoded).unwrap().rename("category");
     let frame =
-        DataFrame::from_columns([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap();
+        DataFrame::from_series([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap();
 
     let export = frame.try_prepare_device_table_export().unwrap();
 

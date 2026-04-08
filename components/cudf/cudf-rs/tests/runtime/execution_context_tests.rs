@@ -847,9 +847,7 @@ fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
     let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
     obs_reset();
-    let joined = left
-        .__debug_merge_in_context(&right, cudf::MergeOptions::new().how_inner().on(["id"]), &ctx)
-        .unwrap();
+    let joined = left.__debug_merge_in_context(&right, cudf::MergeOptions::new().how_inner().on(["id"]), &ctx).unwrap();
 
     assert_eq!(obs_last_stream(), explicit_stream);
     assert_eq!(joined.num_rows(), 2);
@@ -870,10 +868,8 @@ fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
     let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
     obs_reset();
-    let result = df
-        .groupby(["key"])
-        .__debug_agg_in_context(&[cudf::AggSpec::new("val", cudf::Agg::Sum)], &ctx)
-        .unwrap();
+    let result =
+        df.groupby(["key"]).__debug_agg_in_context(&[cudf::AggSpec::new("val", cudf::Agg::Sum)], &ctx).unwrap();
 
     assert_eq!(obs_last_stream(), explicit_stream);
     assert_eq!(result.num_rows(), 2);

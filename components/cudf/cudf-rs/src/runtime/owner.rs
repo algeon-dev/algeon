@@ -119,8 +119,8 @@ impl Runtime {
     /// the scalar is recreated in this runtime first so placement and
     /// allocator selection remain honest.
     ///
-    /// Supports numeric, boolean, string, timestamp, and duration scalars.
-    /// List, Struct, Dictionary32, and Decimal scalars are not yet supported.
+    /// Supports all scalar types except Dictionary32 (no libcudf scalar
+    /// subclass exists for dictionary-encoded scalars).
     pub fn series_from_scalar(&self, name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Series> {
         let runtime_scalar = scalar.copy_into_domain(self.execution_domain())?;
         Series::from_named_column(name, Column::from_scalar_with_runtime(self, &runtime_scalar, size)?)

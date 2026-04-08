@@ -405,7 +405,7 @@ impl DataFrame {
     /// use cudf::{DataFrame, Series, SortOptions};
     ///
     /// let ids = Series::new::<i32>("id", &[3, 1, 2]).unwrap();
-    /// let df = DataFrame::from_columns([("id", ids)]).unwrap();
+    /// let df = DataFrame::from_series([("id", ids)]).unwrap();
     ///
     /// let sorted = df
     ///     .sort_values(&["id"], SortOptions::new().with_descending(vec![true]))
@@ -1045,9 +1045,8 @@ impl DataFrame {
 
         self.validate_mask_view(mask, operation)?;
         let tv = self.build_table_view()?;
-        let result_table =
-            filter::apply_boolean_mask_impl(tv.table(), mask, exec_options.as_ref(), operation)?
-                .with_execution_domain(output_domain);
+        let result_table = filter::apply_boolean_mask_impl(tv.table(), mask, exec_options.as_ref(), operation)?
+            .with_execution_domain(output_domain);
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 

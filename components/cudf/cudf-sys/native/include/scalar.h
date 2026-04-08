@@ -51,6 +51,28 @@ cudf_status_t cudf_scalar_create_string_ex(const char* value,
                                            const cudf_exec_options_t* options,
                                            cudf_scalar_handle* out);
 
+/// Deep-copy a scalar on cuDF's default stream.
+///
+/// Supports all scalar subtypes: numeric, boolean, string, timestamp,
+/// duration, fixed-point decimal, list, and struct.  Returns
+/// CUDF_ERROR_TYPE for DICTIONARY32 (no corresponding scalar class).
+///
+/// This is a device-only operation: no stream synchronization is added
+/// before returning.
+cudf_status_t cudf_scalar_copy(cudf_scalar_handle src,
+                                cudf_scalar_handle* out);
+
+/// Deep-copy a scalar with explicit execution options.
+///
+/// When `options` is NULL, or `options->stream` / `options->mr` are NULL,
+/// cuDF's default stream and current device memory resource are used.
+/// This is a device-only operation: no stream synchronization is added
+/// before returning.
+/// When `options->mr` is non-NULL, it must outlive the returned scalar.
+cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
+                                   const cudf_exec_options_t* options,
+                                   cudf_scalar_handle* out);
+
 /// Destroy a scalar handle.
 void cudf_scalar_destroy(cudf_scalar_handle handle);
 

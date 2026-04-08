@@ -7,6 +7,9 @@
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/traits.hpp>
+#include <cudf/wrappers/timestamps.hpp>
+#include <cudf/wrappers/durations.hpp>
+#include <cudf/fixed_point/fixed_point.hpp>
 
 #include <cstring>
 #include <cstdlib>
@@ -125,6 +128,119 @@ cudf_status_t cudf_scalar_create_string_ex(const char* value,
     exec.stream.synchronize();
     cudf_record_synchronized_stream(exec.stream);
     *out = static_cast<cudf_scalar_handle>(s.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_scalar_copy(cudf_scalar_handle src,
+                                cudf_scalar_handle* out) {
+  return cudf_scalar_copy_ex(src, nullptr, out);
+}
+
+cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
+                                   cudf_exec_options_t const* options,
+                                   cudf_scalar_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(src, "src is null");
+  CUDF_RUST_TRY {
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* s = static_cast<cudf::scalar*>(src);
+    std::unique_ptr<cudf::scalar> copy;
+
+    switch (s->type().id()) {
+      // Numeric types
+#define CUDF_COPY_NUMERIC(ENUM, TYPE) \
+      case cudf::type_id::ENUM: \
+        copy = std::make_unique<cudf::numeric_scalar<TYPE>>( \
+            static_cast<cudf::numeric_scalar<TYPE> const&>(*s), exec.stream, exec.mr); \
+        break;
+      CUDF_COPY_NUMERIC(INT8, int8_t)
+      CUDF_COPY_NUMERIC(INT16, int16_t)
+      CUDF_COPY_NUMERIC(INT32, int32_t)
+      CUDF_COPY_NUMERIC(INT64, int64_t)
+      CUDF_COPY_NUMERIC(UINT8, uint8_t)
+      CUDF_COPY_NUMERIC(UINT16, uint16_t)
+      CUDF_COPY_NUMERIC(UINT32, uint32_t)
+      CUDF_COPY_NUMERIC(UINT64, uint64_t)
+      CUDF_COPY_NUMERIC(FLOAT32, float)
+      CUDF_COPY_NUMERIC(FLOAT64, double)
+      CUDF_COPY_NUMERIC(BOOL8, bool)
+#undef CUDF_COPY_NUMERIC
+
+      // Timestamp types
+#define CUDF_COPY_TIMESTAMP(ENUM, TYPE) \
+      case cudf::type_id::ENUM: \
+        copy = std::make_unique<cudf::timestamp_scalar<TYPE>>( \
+            static_cast<cudf::timestamp_scalar<TYPE> const&>(*s), exec.stream, exec.mr); \
+        break;
+      CUDF_COPY_TIMESTAMP(TIMESTAMP_DAYS, cudf::timestamp_D)
+      CUDF_COPY_TIMESTAMP(TIMESTAMP_SECONDS, cudf::timestamp_s)
+      CUDF_COPY_TIMESTAMP(TIMESTAMP_MILLISECONDS, cudf::timestamp_ms)
+      CUDF_COPY_TIMESTAMP(TIMESTAMP_MICROSECONDS, cudf::timestamp_us)
+      CUDF_COPY_TIMESTAMP(TIMESTAMP_NANOSECONDS, cudf::timestamp_ns)
+#undef CUDF_COPY_TIMESTAMP
+
+      // Duration types
+#define CUDF_COPY_DURATION(ENUM, TYPE) \
+      case cudf::type_id::ENUM: \
+        copy = std::make_unique<cudf::duration_scalar<TYPE>>( \
+            static_cast<cudf::duration_scalar<TYPE> const&>(*s), exec.stream, exec.mr); \
+        break;
+      CUDF_COPY_DURATION(DURATION_DAYS, cudf::duration_D)
+      CUDF_COPY_DURATION(DURATION_SECONDS, cudf::duration_s)
+      CUDF_COPY_DURATION(DURATION_MILLISECONDS, cudf::duration_ms)
+      CUDF_COPY_DURATION(DURATION_MICROSECONDS, cudf::duration_us)
+      CUDF_COPY_DURATION(DURATION_NANOSECONDS, cudf::duration_ns)
+#undef CUDF_COPY_DURATION
+
+      // String
+      case cudf::type_id::STRING:
+        copy = std::make_unique<cudf::string_scalar>(
+            static_cast<cudf::string_scalar const&>(*s), exec.stream, exec.mr);
+        break;
+
+      // Fixed-point decimal
+      case cudf::type_id::DECIMAL32:
+        copy = std::make_unique<cudf::fixed_point_scalar<numeric::decimal32>>(
+            static_cast<cudf::fixed_point_scalar<numeric::decimal32> const&>(*s),
+            exec.stream, exec.mr);
+        break;
+      case cudf::type_id::DECIMAL64:
+        copy = std::make_unique<cudf::fixed_point_scalar<numeric::decimal64>>(
+            static_cast<cudf::fixed_point_scalar<numeric::decimal64> const&>(*s),
+            exec.stream, exec.mr);
+        break;
+      case cudf::type_id::DECIMAL128:
+        copy = std::make_unique<cudf::fixed_point_scalar<numeric::decimal128>>(
+            static_cast<cudf::fixed_point_scalar<numeric::decimal128> const&>(*s),
+            exec.stream, exec.mr);
+        break;
+
+      // List
+      case cudf::type_id::LIST:
+        copy = std::make_unique<cudf::list_scalar>(
+            static_cast<cudf::list_scalar const&>(*s), exec.stream, exec.mr);
+        break;
+
+      // Struct
+      case cudf::type_id::STRUCT:
+        copy = std::make_unique<cudf::struct_scalar>(
+            static_cast<cudf::struct_scalar const&>(*s), exec.stream, exec.mr);
+        break;
+
+      default:
+        set_error("Unsupported type for scalar copy");
+        return CUDF_ERROR_TYPE;
+    }
+
+    *out = static_cast<cudf_scalar_handle>(copy.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

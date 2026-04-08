@@ -14,7 +14,7 @@ impl Series {
     /// **Name authority note:** When a Series is inserted into a DataFrame
     /// via [`DataFrame::with_column`](crate::DataFrame::with_column),
     /// [`DataFrame::assign`](crate::DataFrame::assign), or
-    /// [`DataFrame::from_columns`](crate::DataFrame::from_columns), the
+    /// [`DataFrame::from_series`](crate::DataFrame::from_series), the
     /// *parameter name* controls the column name in the DataFrame — this
     /// Series name is ignored. `rename` is useful for standalone Series
     /// operations (display, serialization) but does not propagate into

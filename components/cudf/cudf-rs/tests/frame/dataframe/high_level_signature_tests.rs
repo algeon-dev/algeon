@@ -23,7 +23,7 @@ use crate::common::{
 fn sample_df() -> DataFrame {
     let ids = Series::new::<i32>("id", &[10, 20, 30, 40, 50]).unwrap();
     let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
-    DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap()
+    DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
 }
 
 // ===========================================================================
@@ -136,7 +136,7 @@ fn test_filter_isin_with_series_rejects_missing_column() {
 fn test_fillna_scalar_plain_value() {
     let ids = Series::new_nullable::<i32>("id", &[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
     let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     let filled = df.fillna::<i32>("id", 42).unwrap();
     assert_eq!(filled.num_rows(), 5);
@@ -149,7 +149,7 @@ fn test_fillna_scalar_plain_value() {
 fn test_fillna_with_scalar_still_works() {
     let ids = Series::new_nullable::<i32>("id", &[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
     let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     let fill = cudf::core::Scalar::from_value(42i32).unwrap();
     let filled = df.fillna_with_scalar("id", &fill).unwrap();
@@ -162,7 +162,7 @@ fn test_fillna_with_scalar_still_works() {
 #[test]
 fn test_fillna_rejects_missing_column() {
     let ids = Series::new::<i32>("id", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_columns([("id", ids)]).unwrap();
+    let df = DataFrame::from_series([("id", ids)]).unwrap();
     let err = df.fillna::<i32>("nonexistent", 42).unwrap_err();
 
     assert_missing_column_error(&err, "nonexistent");

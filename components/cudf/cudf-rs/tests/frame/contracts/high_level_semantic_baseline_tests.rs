@@ -20,7 +20,7 @@ use cudf::{DataFrame, Series, TypeId, core::Column};
 fn sample_df() -> DataFrame {
     let ids = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
     let scores = Series::new::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
-    DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap()
+    DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
 }
 
 /// Get device data pointer for a named column in a DataFrame.

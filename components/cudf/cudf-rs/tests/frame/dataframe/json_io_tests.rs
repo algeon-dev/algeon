@@ -2,7 +2,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataFrame, JsonReaderOptions, JsonWriteOptions, Series};
+use cudf::{DataFrame, JsonReadOptions, JsonWriteOptions, Series};
 use tempfile::TempDir;
 
 // ===========================================================================
@@ -59,7 +59,7 @@ fn test_dataframe_json_roundtrip_with_options() {
     let write_opts = JsonWriteOptions::builder().filepath(&path).build();
     df.write_json_with_options(write_opts).unwrap();
 
-    let read_opts = JsonReaderOptions::builder().filepath(&path).build();
+    let read_opts = JsonReadOptions::builder().filepath(&path).build();
     let read_df = DataFrame::read_json_with_options(read_opts).unwrap();
     assert_eq!(read_df.num_rows(), 1);
     assert!(read_df.contains("x"));

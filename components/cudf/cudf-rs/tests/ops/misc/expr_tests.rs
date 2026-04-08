@@ -19,7 +19,7 @@ use cudf::{
 fn xy_df() -> DataFrame {
     let x = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
     let y = Series::new::<i32>("y", &[1, 2, 3]).unwrap();
-    DataFrame::from_columns([("x", x), ("y", y)]).unwrap()
+    DataFrame::from_series([("x", x), ("y", y)]).unwrap()
 }
 
 // ===========================================================================
@@ -139,7 +139,7 @@ fn gt_lit_produces_bool() {
 fn eq_col_col() {
     let x = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
     let y = Series::new::<i32>("b", &[1, 99, 3]).unwrap();
-    let df = DataFrame::from_columns([("a", x), ("b", y)]).unwrap();
+    let df = DataFrame::from_series([("a", x), ("b", y)]).unwrap();
     let result = col("a").eq(col("b")).alias("same").eval(&df).unwrap();
     assert_eq!(result.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
@@ -155,7 +155,7 @@ fn lt_lit_with_alias() {
 fn ne_col_col() {
     let x = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
     let y = Series::new::<i32>("b", &[1, 99, 3]).unwrap();
-    let df = DataFrame::from_columns([("a", x), ("b", y)]).unwrap();
+    let df = DataFrame::from_series([("a", x), ("b", y)]).unwrap();
     let result = col("a").ne(col("b")).alias("diff").eval(&df).unwrap();
     assert_eq!(result.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
@@ -176,7 +176,7 @@ fn ge_and_le() {
 #[test]
 fn is_null_expr() {
     let s = Series::new_nullable::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("v", s)]).unwrap();
+    let df = DataFrame::from_series([("v", s)]).unwrap();
     let result = col("v").is_null().alias("nulls").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec::<bool>().unwrap(), vec![false, true, false]);
@@ -185,7 +185,7 @@ fn is_null_expr() {
 #[test]
 fn is_not_null_expr() {
     let s = Series::new_nullable::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("v", s)]).unwrap();
+    let df = DataFrame::from_series([("v", s)]).unwrap();
     let result = col("v").is_not_null().alias("valid").eval(&df).unwrap();
     assert_eq!(result.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
@@ -201,7 +201,7 @@ fn cast_i32_to_f64() {
 #[test]
 fn not_operator() {
     let s = Series::new::<bool>("mask", &[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("mask", s)]).unwrap();
+    let df = DataFrame::from_series([("mask", s)]).unwrap();
     let result = (!col("mask")).alias("inv").eval(&df).unwrap();
     assert_eq!(result.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }

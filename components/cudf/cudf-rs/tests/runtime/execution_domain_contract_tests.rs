@@ -11,8 +11,9 @@ use cudf::{
     core::{Column, Scalar, Table, TableView, memory::DeviceMemoryResource},
     ops::{
         binary::{self, BinaryOperator},
-        concatenate, copying, dictionary, filter,
+        concatenate, copying, dictionary,
         expr::lit,
+        filter,
         groupby::{self, AggregationRequest},
         hashing, join,
         reduction::{self, ReduceAggregation, ScanAggregation, ScanType},
@@ -109,7 +110,7 @@ fn owned_constructors_seed_ambient_default_domain() {
     assert_eq!(table.__debug_execution_domain_id(), 0);
 
     let series = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_columns([("id", series)]).unwrap();
+    let df = DataFrame::from_series([("id", series)]).unwrap();
     assert_eq!(df.__debug_execution_domain_kind(), "ambient_default");
     assert_eq!(df.__debug_execution_domain_id(), 0);
     assert_eq!(df.series("id").unwrap().as_column().__debug_execution_domain_id(), 0);
@@ -121,7 +122,7 @@ fn execution_domain_debug_hooks_report_consistent_metadata() {
     let column = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(40).unwrap();
     let scalar = Scalar::from_value(7i32).unwrap().__debug_rebind_execution_domain_explicit(41).unwrap();
     let table = Table::from_columns(vec![column.copy().unwrap()]).unwrap();
-    let df = DataFrame::from_columns([("id", Series::from_column(column.copy().unwrap()).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("id", Series::from_column(column.copy().unwrap()).unwrap())]).unwrap();
 
     assert_eq!(column.__debug_execution_domain_kind(), "explicit");
     assert_eq!(column.__debug_execution_domain_id(), 40);
@@ -217,7 +218,7 @@ fn dataframe_from_table_preserves_frame_and_column_domain_identity() {
     assert_eq!(df.series("b").unwrap().as_column().__debug_execution_domain_id(), 19);
 }
 
-/// [INV-CT-01] Container invariant: `DataFrame::from_columns` / `from_series` rejects columns
+/// [INV-CT-01] Container invariant: `DataFrame::from_series` / `from_series` rejects columns
 /// with different execution-domain identities (Rule 4 -- preserved in v2).
 #[test]
 fn dataframe_new_rejects_mixed_domain_columns() {
@@ -269,7 +270,7 @@ fn table_from_columns_rejects_mixed_domain_columns() {
 
 #[test]
 fn dataframe_high_level_row_ops_preserve_explicit_domain_identity() {
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", explicit_i32_series("id", &[3, 1, 2], 55)),
         ("value", explicit_i32_series("value", &[30, 10, 20], 55)),
     ])
@@ -312,8 +313,8 @@ fn dataframe_high_level_row_ops_preserve_explicit_domain_identity() {
 
 #[test]
 fn dataframe_concat_preserves_explicit_domain_identity() {
-    let left = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2], 81))]).unwrap();
-    let right = DataFrame::from_columns([("id", explicit_i32_series("id", &[3, 4], 81))]).unwrap();
+    let left = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2], 81))]).unwrap();
+    let right = DataFrame::from_series([("id", explicit_i32_series("id", &[3, 4], 81))]).unwrap();
 
     let combined = left.concat(&right).unwrap();
 
@@ -326,8 +327,8 @@ fn dataframe_concat_preserves_explicit_domain_identity() {
 /// Output provenance follows the first table (left).
 #[test]
 fn dataframe_concat_succeeds_with_mixed_explicit_domains() {
-    let left = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2], 8))]).unwrap();
-    let right = DataFrame::from_columns([("id", explicit_i32_series("id", &[3, 4], 9))]).unwrap();
+    let left = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2], 8))]).unwrap();
+    let right = DataFrame::from_series([("id", explicit_i32_series("id", &[3, 4], 9))]).unwrap();
     let expected_stream = left.__debug_execution_domain_stream_value();
 
     reset_exec_observation();
@@ -350,12 +351,12 @@ fn dataframe_concat_succeeds_with_mixed_explicit_domains() {
 
 #[test]
 fn dataframe_merge_preserves_explicit_domain_identity() {
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", explicit_i32_series("id", &[1, 2, 3], 64)),
         ("left", explicit_i32_series("left", &[10, 20, 30], 64)),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([
+    let right = DataFrame::from_series([
         ("id", explicit_i32_series("id", &[2, 3, 4], 64)),
         ("right", explicit_i32_series("right", &[200, 300, 400], 64)),
     ])
@@ -379,12 +380,12 @@ fn dataframe_merge_preserves_explicit_domain_identity() {
 /// Output provenance follows the left table.
 #[test]
 fn dataframe_merge_succeeds_with_mixed_explicit_domains() {
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", explicit_i32_series("id", &[1, 2, 3], 11)),
         ("left", explicit_i32_series("left", &[10, 20, 30], 11)),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([
+    let right = DataFrame::from_series([
         ("id", explicit_i32_series("id", &[2, 3, 4], 12)),
         ("right", explicit_i32_series("right", &[200, 300, 400], 12)),
     ])
@@ -414,7 +415,7 @@ fn dataframe_merge_succeeds_with_mixed_explicit_domains() {
 /// Output provenance follows the input DataFrame (replace nulls primary = input column).
 #[test]
 fn dataframe_fillna_with_series_succeeds_with_mixed_explicit_domains() {
-    let df = DataFrame::from_columns([(
+    let df = DataFrame::from_series([(
         "value",
         Series::from_column(
             Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
@@ -518,7 +519,7 @@ fn series_to_strings_uses_retained_explicit_domain_stream() {
 
 #[test]
 fn dataframe_write_parquet_synchronizes_retained_explicit_domain_stream() {
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", explicit_i32_series("id", &[1, 2, 3], 74)),
         ("value", explicit_i32_series("value", &[10, 20, 30], 74)),
     ])
@@ -537,7 +538,7 @@ fn dataframe_write_parquet_synchronizes_retained_explicit_domain_stream() {
 
 #[test]
 fn dataframe_write_csv_synchronizes_retained_explicit_domain_stream() {
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", explicit_i32_series("id", &[1, 2, 3], 75)),
         ("value", explicit_i32_series("value", &[10, 20, 30], 75)),
     ])
@@ -714,7 +715,7 @@ fn series_fillna_uses_retained_explicit_domain_stream() {
 
 #[test]
 fn dataframe_fillna_with_series_uses_retained_explicit_domain_stream_and_mr() {
-    let df = DataFrame::from_columns([(
+    let df = DataFrame::from_series([(
         "value",
         explicit_nullable_i32_series("value", &[1, 0, 3], &[true, false, true], 81),
     )])
@@ -736,7 +737,7 @@ fn dataframe_fillna_with_series_uses_retained_explicit_domain_stream_and_mr() {
 
 #[test]
 fn dataframe_gather_uses_retained_explicit_domain_stream_and_mr() {
-    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[10, 20, 30], 92))]).unwrap();
+    let df = DataFrame::from_series([("id", explicit_i32_series("id", &[10, 20, 30], 92))]).unwrap();
     let indices = explicit_i32_series("gather", &[2, 0], 92);
     let expected_stream = df.__debug_execution_domain_stream_value();
     let default_mr = current_device_resource_value();
@@ -754,7 +755,7 @@ fn dataframe_gather_uses_retained_explicit_domain_stream_and_mr() {
 
 #[test]
 fn dataframe_filter_uses_retained_explicit_domain_stream_and_mr() {
-    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[10, 20, 30], 93))]).unwrap();
+    let df = DataFrame::from_series([("id", explicit_i32_series("id", &[10, 20, 30], 93))]).unwrap();
     let mask = explicit_bool_series("mask", &[true, false, true], 93);
     let expected_stream = df.__debug_execution_domain_stream_value();
     let default_mr = current_device_resource_value();
@@ -772,7 +773,7 @@ fn dataframe_filter_uses_retained_explicit_domain_stream_and_mr() {
 
 #[test]
 fn dataframe_slice_uses_retained_explicit_domain_stream_and_mr() {
-    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[10, 20, 30, 40], 94))]).unwrap();
+    let df = DataFrame::from_series([("id", explicit_i32_series("id", &[10, 20, 30, 40], 94))]).unwrap();
     let expected_stream = df.__debug_execution_domain_stream_value();
     let default_mr = current_device_resource_value();
 
@@ -789,7 +790,7 @@ fn dataframe_slice_uses_retained_explicit_domain_stream_and_mr() {
 
 #[test]
 fn dataframe_groupby_agg_preserves_explicit_domain_identity() {
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("key", explicit_i32_series("key", &[1, 1, 2, 2], 77)),
         ("value", explicit_i32_series("value", &[10, 20, 30, 40], 77)),
     ])
@@ -811,7 +812,7 @@ fn dataframe_groupby_agg_preserves_explicit_domain_identity() {
 
 #[test]
 fn zero_column_dataframe_try_into_table_and_from_table_preserve_explicit_domain() {
-    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 78))]).unwrap();
+    let df = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 78))]).unwrap();
     let zero = df.without_columns(["id"]).unwrap();
 
     assert_eq!(zero.num_columns(), 0);
@@ -831,7 +832,7 @@ fn zero_column_dataframe_try_into_table_and_from_table_preserve_explicit_domain(
 
 #[test]
 fn zero_column_dataframe_to_table_copy_preserves_explicit_domain() {
-    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 79))]).unwrap();
+    let df = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 79))]).unwrap();
     let zero = df.select(std::iter::empty::<&str>()).unwrap();
 
     assert_eq!(zero.num_columns(), 0);
@@ -845,7 +846,7 @@ fn zero_column_dataframe_to_table_copy_preserves_explicit_domain() {
 
 #[test]
 fn dataframe_to_table_copy_uses_retained_explicit_domain_stream_and_mr() {
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", explicit_i32_series("id", &[1, 2, 3], 90)),
         ("value", explicit_i32_series("value", &[10, 20, 30], 90)),
     ])
@@ -864,7 +865,7 @@ fn dataframe_to_table_copy_uses_retained_explicit_domain_stream_and_mr() {
 
 #[test]
 fn dataframe_try_into_table_shared_copy_uses_retained_explicit_domain_stream_and_mr() {
-    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 91))]).unwrap();
+    let df = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 91))]).unwrap();
     let _shared = df.series("id").unwrap();
     let expected_stream = df.__debug_execution_domain_stream_value();
     let default_mr = current_device_resource_value();
@@ -881,11 +882,11 @@ fn dataframe_try_into_table_shared_copy_uses_retained_explicit_domain_stream_and
 
 #[test]
 fn zero_column_dataframe_concat_preserves_explicit_domain() {
-    let left = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2], 80))])
+    let left = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2], 80))])
         .unwrap()
         .without_columns(["id"])
         .unwrap();
-    let right = DataFrame::from_columns([("id", explicit_i32_series("id", &[3, 4], 80))])
+    let right = DataFrame::from_series([("id", explicit_i32_series("id", &[3, 4], 80))])
         .unwrap()
         .select(std::iter::empty::<&str>())
         .unwrap();
@@ -901,7 +902,7 @@ fn zero_column_dataframe_concat_preserves_explicit_domain() {
 /// explicit-domain DataFrame is rejected (Rule 4 -- preserved in v2).
 #[test]
 fn zero_column_explicit_dataframe_with_column_rejects_ambient_series() {
-    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 81))])
+    let zero = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 81))])
         .unwrap()
         .without_columns(["id"])
         .unwrap();
@@ -918,7 +919,7 @@ fn zero_column_explicit_dataframe_with_column_rejects_ambient_series() {
 
 #[test]
 fn zero_column_explicit_dataframe_with_column_preserves_same_explicit_domain() {
-    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 82))])
+    let zero = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 82))])
         .unwrap()
         .without_columns(["id"])
         .unwrap();
@@ -933,7 +934,7 @@ fn zero_column_explicit_dataframe_with_column_preserves_same_explicit_domain() {
 
 #[test]
 fn zero_column_explicit_dataframe_with_column_rejects_same_device_mixed_runtime_series() {
-    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 821))])
+    let zero = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 821))])
         .unwrap()
         .without_columns(["id"])
         .unwrap();
@@ -952,7 +953,7 @@ fn zero_column_explicit_dataframe_with_column_rejects_same_device_mixed_runtime_
 /// implicit relocation.
 #[test]
 fn zero_column_explicit_dataframe_assign_rejects_mixed_domain_series() {
-    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 83))])
+    let zero = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 83))])
         .unwrap()
         .without_columns(["id"])
         .unwrap();
@@ -969,7 +970,7 @@ fn zero_column_explicit_dataframe_assign_rejects_mixed_domain_series() {
 
 #[test]
 fn zero_column_explicit_dataframe_assign_preserves_same_explicit_domain() {
-    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 88))])
+    let zero = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 88))])
         .unwrap()
         .without_columns(["id"])
         .unwrap();
@@ -984,7 +985,7 @@ fn zero_column_explicit_dataframe_assign_preserves_same_explicit_domain() {
 
 #[test]
 fn zero_column_explicit_dataframe_assign_rejects_same_device_mixed_runtime_series() {
-    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 89))])
+    let zero = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 89))])
         .unwrap()
         .without_columns(["id"])
         .unwrap();
@@ -1001,7 +1002,7 @@ fn zero_column_explicit_dataframe_assign_rejects_same_device_mixed_runtime_serie
 
 #[test]
 fn zero_column_explicit_dataframe_with_columns_literal_preserves_same_explicit_domain() {
-    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 91))])
+    let zero = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 91))])
         .unwrap()
         .without_columns(["id"])
         .unwrap();
@@ -1018,7 +1019,7 @@ fn zero_column_explicit_dataframe_with_columns_literal_preserves_same_explicit_d
 
 #[test]
 fn explicit_dataframe_with_column_rejects_same_device_mixed_runtime_series() {
-    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 84))]).unwrap();
+    let df = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 84))]).unwrap();
     let replacement = explicit_i32_series("value", &[10, 20, 30], 85);
 
     let err = df.with_column("value", replacement).unwrap_err();
@@ -1032,7 +1033,7 @@ fn explicit_dataframe_with_column_rejects_same_device_mixed_runtime_series() {
 
 #[test]
 fn explicit_dataframe_assign_rejects_same_device_mixed_runtime_series() {
-    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 86))]).unwrap();
+    let df = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 86))]).unwrap();
     let replacement = explicit_i32_series("value", &[10, 20, 30], 87);
 
     let err = df.assign([("value", replacement)]).unwrap_err();
@@ -1598,7 +1599,7 @@ fn stream_compaction_distinct_retains_explicit_domain_and_uses_exec_options() {
 fn dataframe_filter_isin_succeeds_with_mixed_domains() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let df = DataFrame::from_columns([("id", left_rt.series("id", &[10i32, 20, 30]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("id", left_rt.series("id", &[10i32, 20, 30]).unwrap())]).unwrap();
     let values = right_rt.series("values", &[20i32, 30]).unwrap();
     let expected_stream = df.__debug_execution_domain_stream_value();
     let expected_mr = df.__debug_execution_domain_mr_value();
@@ -2584,13 +2585,13 @@ fn join_inner_join_succeeds_with_mixed_domains() {
 fn join_left_join_succeeds_with_mixed_domains() {
     let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3], 1850)]).unwrap();
     let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 4], 1851)]).unwrap();
-    let left_payload = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 1850))])
+    let left_payload = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 1850))])
         .unwrap()
         .select(std::iter::empty::<&str>())
         .unwrap()
         .to_table_copy()
         .unwrap();
-    let right_payload = DataFrame::from_columns([("id", explicit_i32_series("id", &[2, 4], 1851))])
+    let right_payload = DataFrame::from_series([("id", explicit_i32_series("id", &[2, 4], 1851))])
         .unwrap()
         .select(std::iter::empty::<&str>())
         .unwrap()
@@ -2634,13 +2635,13 @@ fn join_left_join_succeeds_with_mixed_domains() {
 fn join_full_join_succeeds_with_mixed_domains() {
     let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2], 1852)]).unwrap();
     let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 3], 1853)]).unwrap();
-    let left_payload = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2], 1852))])
+    let left_payload = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2], 1852))])
         .unwrap()
         .select(std::iter::empty::<&str>())
         .unwrap()
         .to_table_copy()
         .unwrap();
-    let right_payload = DataFrame::from_columns([("id", explicit_i32_series("id", &[2, 3], 1853))])
+    let right_payload = DataFrame::from_series([("id", explicit_i32_series("id", &[2, 3], 1853))])
         .unwrap()
         .select(std::iter::empty::<&str>())
         .unwrap()

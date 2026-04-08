@@ -18,7 +18,7 @@
 //! let scores = rt.series("scores", &[10.0f64, 20.0, 30.0]).unwrap();
 //!
 //! // Build a DataFrame from Series.
-//! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+//! let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 //!
 //! assert_eq!(df.num_columns(), 2);
 //! assert_eq!(df.num_rows(), 3);
@@ -160,11 +160,10 @@ pub use frame::{
     dataframe::{
         ColumnMemoryAccounting, CsvReadOptions, CsvWriteOptions, DataFrame, DataFrameColumnInfo, DataFrameInfo,
         DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DistinctOptions, DropNaOptions, InfoDetail,
-        JsonWriteOptions, MeltOptions, ParquetWriteOptions,
+        JsonReadOptions, JsonWriteOptions, MeltOptions, ParquetReadOptions, ParquetWriteOptions,
     },
     series::{IntoSeries, Series},
 };
-pub use io::{json::JsonReaderOptions, parquet::ParquetReaderOptions};
 // — High-level operations —
 pub use ops::Expr;
 pub use ops::{

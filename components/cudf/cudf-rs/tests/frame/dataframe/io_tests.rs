@@ -1,7 +1,7 @@
 //! Tests for DataFrame I/O integration.
 
 use cudf::{
-    CsvReadOptions, CsvWriteOptions, DataFrame, ParquetReaderOptions, Series,
+    CsvReadOptions, CsvWriteOptions, DataFrame, ParquetReadOptions, Series,
     core::{Column, Table},
 };
 use tempfile::TempDir;
@@ -17,7 +17,7 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
     let write_opts =
-        cudf::io::parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["id", "value"]).build();
+        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["id", "value"]).build();
     cudf::io::parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read back via DataFrame.
@@ -44,11 +44,11 @@ fn test_read_parquet_with_options() {
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
     let write_opts =
-        cudf::io::parquet::ParquetWriterOptions::builder().filepath(&path).column_names(&["a", "b"]).build();
+        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["a", "b"]).build();
     cudf::io::parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read with column selection and row limit.
-    let opts = ParquetReaderOptions::builder().filepath(&path).columns(&["b"]).num_rows(3).build();
+    let opts = ParquetReadOptions::builder().filepath(&path).columns(&["b"]).num_rows(3).build();
     let df = DataFrame::read_parquet_with_options(opts).unwrap();
 
     assert_eq!(df.num_columns(), 1);
@@ -166,9 +166,10 @@ fn test_read_csv_without_header_generates_fallback_names_only_at_dataframe_layer
 
     std::fs::write(&path, "11,110\n12,120\n").unwrap();
 
-    let table_result =
-        cudf::io::csv::read_csv(&cudf::io::csv::CsvReaderOptions::builder().filepath(&path).has_header(false).build())
-            .unwrap();
+    let table_result = cudf::io::csv::read_csv(
+        &cudf::io::csv::CsvTableReadOptions::builder().filepath(&path).has_header(false).build(),
+    )
+    .unwrap();
     assert_eq!(table_result.column_names, None);
 
     let df =

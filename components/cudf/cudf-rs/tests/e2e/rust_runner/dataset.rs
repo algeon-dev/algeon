@@ -5,7 +5,7 @@
 
 use std::{collections::HashSet, io::Write};
 
-use cudf::{DataFrame, Series, TypeId, io::json::JsonReaderOptions, ops::dictionary};
+use cudf::{DataFrame, JsonReadOptions, Series, TypeId, ops::dictionary};
 use tempfile::NamedTempFile;
 
 use super::manifest::Dataset;
@@ -59,7 +59,7 @@ fn build_json_lines_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
         })?;
     }
 
-    DataFrame::read_json_with_options(JsonReaderOptions::builder().filepath(file.path()).build())
+    DataFrame::read_json_with_options(JsonReadOptions::builder().filepath(file.path()).build())
 }
 
 fn apply_dictionary_columns(frame: DataFrame, dataset: &Dataset) -> cudf::Result<DataFrame> {

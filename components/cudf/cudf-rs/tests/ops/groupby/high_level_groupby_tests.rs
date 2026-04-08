@@ -247,6 +247,41 @@ fn groupby_count_shortcut() {
     assert_eq!(pairs, vec![(1, 2), (2, 3)]);
 }
 
+#[test]
+fn groupby_shortcut_handle_is_reusable() {
+    let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+
+    let groupby = df.groupby(["key"]);
+    let summed = groupby.sum(["value"]).unwrap();
+    let counted = groupby.count(["value"]).unwrap();
+
+    assert_eq!(summed.column_names(), vec!["key", "value_sum"]);
+    assert_eq!(counted.column_names(), vec!["key", "value_count"]);
+}
+
+#[test]
+fn scoped_groupby_handle_is_reusable() {
+    use cudf::{ExecutionContext, Runtime, runtime::CudaStream};
+
+    let rt = Runtime::builder().build().unwrap();
+    let df = DataFrame::from_series([
+        ("key", rt.series("key", &[1i32, 2, 1, 2]).unwrap()),
+        ("value", rt.series("value", &[10i64, 20, 30, 40]).unwrap()),
+    ])
+    .unwrap();
+
+    let stream = CudaStream::new().unwrap();
+    let ctx = ExecutionContext::new().with_stream(&stream);
+    let groupby = df.groupby(["key"]).in_context(&ctx);
+    let summed = groupby.sum(["value"]).unwrap();
+    let averaged = groupby.mean(["value"]).unwrap();
+
+    assert_eq!(summed.column_names(), vec!["key", "value_sum"]);
+    assert_eq!(averaged.column_names(), vec!["key", "value_mean"]);
+}
+
 // ---------------------------------------------------------------------------
 // Shortcut with multiple value columns
 // ---------------------------------------------------------------------------

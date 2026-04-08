@@ -25,7 +25,7 @@ use crate::{
 /// This type controls CSV parsing only. Truthful schema names, when available
 /// from a header row, are returned through [`IoTableResult`].
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct CsvReaderOptions {
+pub struct CsvTableReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     #[builder(default = b',')]
@@ -37,7 +37,7 @@ pub struct CsvReaderOptions {
 }
 
 /// Read a CSV file into a low-level table result.
-pub fn read_csv(options: &CsvReaderOptions) -> Result<IoTableResult> {
+pub fn read_csv(options: &CsvTableReadOptions) -> Result<IoTableResult> {
     let filepath = super::path_to_cstring(&options.filepath, "io::csv::read_csv")?;
     let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
     let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
@@ -94,7 +94,7 @@ pub fn read_csv(options: &CsvReaderOptions) -> Result<IoTableResult> {
 /// Column names here control only the emitted CSV header row. They do not
 /// rename the input table because [`Table`] itself is unnamed.
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct CsvWriterOptions {
+pub struct CsvTableWriteOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
@@ -107,14 +107,14 @@ pub struct CsvWriterOptions {
     runtime: Option<Runtime>,
 }
 
-impl CsvWriterOptions {
+impl CsvTableWriteOptions {
     pub(crate) fn runtime(&self) -> Option<&Runtime> {
         self.runtime.as_ref()
     }
 }
 
 /// Write a table to a CSV file.
-pub fn write_csv(table: &TableView<'_>, options: &CsvWriterOptions) -> Result<()> {
+pub fn write_csv(table: &TableView<'_>, options: &CsvTableWriteOptions) -> Result<()> {
     let exec_options =
         options.runtime.as_ref().and_then(|runtime| runtime.execution_domain().explicit_exec_options_raw());
     write_csv_with_exec(table, options, exec_options.as_ref())
@@ -122,7 +122,7 @@ pub fn write_csv(table: &TableView<'_>, options: &CsvWriterOptions) -> Result<()
 
 pub(crate) fn write_csv_with_exec(
     table: &TableView<'_>,
-    options: &CsvWriterOptions,
+    options: &CsvTableWriteOptions,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<()> {
     let filepath = super::path_to_cstring(&options.filepath, "io::csv::write_csv")?;

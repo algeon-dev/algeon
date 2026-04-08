@@ -21,7 +21,7 @@ fn sample_df_with_nulls() -> DataFrame {
         Series::new_nullable::<f64>("score", &[10.0, 0.0, 30.0, 0.0, 50.0], &[true, false, true, false, true]).unwrap();
     let tags =
         Series::from_strings_nullable("tag", &["a", "b", "", "d", ""], &[true, true, false, true, false]).unwrap();
-    DataFrame::from_columns([("id", ids), ("score", scores), ("tag", tags)]).unwrap()
+    DataFrame::from_series([("id", ids), ("score", scores), ("tag", tags)]).unwrap()
 }
 
 /// Build a 5-row DataFrame with duplicate values:
@@ -30,7 +30,7 @@ fn sample_df_with_nulls() -> DataFrame {
 fn sample_df_with_dupes() -> DataFrame {
     let a = Series::new::<i32>("a", &[1, 2, 1, 2, 3]).unwrap();
     let b = Series::new::<i32>("b", &[10, 20, 10, 20, 30]).unwrap();
-    DataFrame::from_columns([("a", a), ("b", b)]).unwrap()
+    DataFrame::from_series([("a", a), ("b", b)]).unwrap()
 }
 
 // ===========================================================================
@@ -146,7 +146,7 @@ fn test_dropna_empty_result_preserves_schema() {
     // All rows have nulls in some column.
     let a = Series::new_nullable::<i32>("a", &[0, 0], &[false, false]).unwrap();
     let b = Series::new_nullable::<i32>("b", &[0, 0], &[false, false]).unwrap();
-    let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
 
     let result = df.dropna(Default::default()).unwrap();
     assert_eq!(result.num_rows(), 0);
@@ -188,7 +188,7 @@ fn test_drop_duplicates_subset() {
 fn test_drop_duplicates_keep_first() {
     let a = Series::new::<i32>("a", &[1, 1, 2]).unwrap();
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
 
     let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepFirst).build();
     let result = df.drop_duplicates(opts).unwrap();
@@ -211,7 +211,7 @@ fn test_drop_duplicates_keep_first() {
 fn test_drop_duplicates_keep_last() {
     let a = Series::new::<i32>("a", &[1, 1, 2]).unwrap();
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
 
     let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepLast).build();
     let result = df.drop_duplicates(opts).unwrap();
@@ -233,7 +233,7 @@ fn test_drop_duplicates_keep_last() {
 fn test_drop_duplicates_keep_none() {
     let a = Series::new::<i32>("a", &[1, 1, 2]).unwrap();
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
 
     let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepNone).build();
     let result = df.drop_duplicates(opts).unwrap();

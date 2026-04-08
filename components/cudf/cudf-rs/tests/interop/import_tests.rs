@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 
 use cudf::{
-    DataFrame, Runtime, TypeId,
+    DataFrame, JsonReadOptions, Runtime, TypeId,
     core::{Column, Table},
     interop::{
         BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropErrorKind, OwnedTableTransfer,
         PhysicalValidity, PreparedColumnExport, ProducerReadiness, SemanticColumn, SemanticTable,
     },
-    io::json::JsonReaderOptions,
     ops::dictionary,
 };
 use tempfile::TempDir;
@@ -23,7 +22,7 @@ fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
     let path = dir.path().join(filename);
     std::fs::write(&path, rows).unwrap();
     let runtime = Runtime::builder().build().unwrap();
-    DataFrame::read_json_with_options(JsonReaderOptions::builder().filepath(&path).with_runtime(&runtime).build())
+    DataFrame::read_json_with_options(JsonReadOptions::builder().filepath(&path).with_runtime(&runtime).build())
         .unwrap()
 }
 
@@ -627,7 +626,7 @@ fn prepared_device_table_export_import_round_trips_recursive_nested_columns_into
     let encoded = dictionary::encode(&category.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(encoded).unwrap().rename("category");
     let frame =
-        DataFrame::from_columns([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap();
+        DataFrame::from_series([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap();
     let (source, _names) = frame.try_into_table().unwrap();
     let export = source.try_prepare_device_table_export().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -677,7 +676,7 @@ fn dataframe_import_from_prepared_table_export_with_explicit_names_uses_caller_n
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
     let export = frame.try_prepare_device_table_export().unwrap();
     let destination_runtime = common::sample_runtime();
 
@@ -709,7 +708,7 @@ fn prepared_host_table_export_import_round_trips_recursive_nested_columns_into_d
     let encoded = dictionary::encode(&category.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(encoded).unwrap().rename("category");
     let frame =
-        DataFrame::from_columns([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap();
+        DataFrame::from_series([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap();
     let (source, _names) = frame.try_into_table().unwrap();
     let export = source.try_prepare_host_table_export().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -774,7 +773,7 @@ fn dataframe_import_from_owned_device_table_transfer_uses_root_names_when_presen
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids), ("value", values)]).unwrap();
+    let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
 
     let (expected_table, expected_names) = frame.clone().try_into_table().unwrap();
     let (transfer_table, _) = frame.try_into_table().unwrap();

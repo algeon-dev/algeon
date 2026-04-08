@@ -1,3 +1,9 @@
+pub use rapids_interop::{
+    OwnedColumnTransfer, OwnedTableTransfer, PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition,
+    TransferCompletionRule, TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDevicePartitionedTableTransfer,
+    TryIntoOwnedDeviceTableTransfer,
+};
+
 use super::*;
 
 pub(super) struct OwnedColumnTransferState {

@@ -1143,6 +1143,22 @@ extern "C" {
         out: *mut cudf_scalar_handle,
     ) -> cudf_status_t;
 
+    /// Deep-copy a scalar on cuDF's default stream.
+    ///
+    /// Supports all scalar subtypes except DICTIONARY32.
+    /// This is a device-only operation with no stream synchronization.
+    pub fn cudf_scalar_copy(src: cudf_scalar_handle, out: *mut cudf_scalar_handle) -> cudf_status_t;
+
+    /// Deep-copy a scalar with explicit execution options.
+    ///
+    /// When `options` is null, uses cuDF's default stream and memory resource.
+    /// This is a device-only operation with no stream synchronization.
+    pub fn cudf_scalar_copy_ex(
+        src: cudf_scalar_handle,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_scalar_handle,
+    ) -> cudf_status_t;
+
     pub fn cudf_scalar_destroy(handle: cudf_scalar_handle);
 
     pub fn cudf_scalar_type(handle: cudf_scalar_handle, out: *mut cudf_type_id_t) -> cudf_status_t;

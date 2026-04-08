@@ -1,3 +1,9 @@
+pub use rapids_interop::{
+    BorrowedColumnView, BorrowedTableView, BoundBytes, BufferBinding, ColumnId, ColumnLayout,
+    DataType as InteropDataType, ExecutionBinding, NullMask, NullMaskKind, PhysicalValidity, SchemaNullability,
+    SemanticColumn, SemanticTable, TableId, TryBorrowColumnView, TryBorrowTableView, TypeId as InteropTypeId,
+};
+
 use super::*;
 
 /// Extract all fields from a `ColumnView` and produce a `BorrowedColumnView`.

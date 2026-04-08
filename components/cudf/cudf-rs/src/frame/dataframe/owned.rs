@@ -122,7 +122,7 @@ impl DataFrame {
     /// Create a new `DataFrame` from column names and owned [`Column`] values.
     ///
     /// Advanced constructor. For most user-facing code, prefer
-    /// [`DataFrame::from_columns`] with named [`Series`](crate::Series)
+    /// [`DataFrame::from_series`] with named [`Series`](crate::Series)
     /// values.
     ///
     /// # Errors
@@ -201,24 +201,6 @@ impl DataFrame {
 
         let domain = resolve_frame_domain_from_authoritative_source(&map, &table_domain, "dataframe::from_table")?;
         Ok(Self { columns: map, row_count, domain })
-    }
-
-    /// Create a `DataFrame` from a fixed-size array of `(name, Series)` pairs.
-    ///
-    /// This is the ergonomic constructor for building DataFrames from Series.
-    /// Each Series' `Arc<Column>` is shared without copying GPU data.
-    ///
-    /// The pair name becomes the DataFrame schema name. The input `Series`
-    /// value is treated as the data source; its own `Series::name()` does not
-    /// control the output column name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Any name is duplicated
-    /// - Columns have different row counts
-    pub fn from_columns<const N: usize>(pairs: [(&str, Series); N]) -> Result<Self> {
-        Self::from_series(pairs)
     }
 
     /// Create a `DataFrame` from an iterator of `(name, Series)` pairs.
@@ -534,7 +516,7 @@ impl DataFrame {
     /// # use cudf::{Agg, AggSpec, DataFrame, Series};
     /// # let keys = Series::new::<i32>("key", &[1, 2]).unwrap();
     /// # let vals = Series::new::<i64>("val", &[10, 20]).unwrap();
-    /// # let df = DataFrame::from_columns([("key", keys), ("val", vals)]).unwrap();
+    /// # let df = DataFrame::from_series([("key", keys), ("val", vals)]).unwrap();
     /// let result =
     ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", Agg::Sum)]).unwrap();
     /// ```

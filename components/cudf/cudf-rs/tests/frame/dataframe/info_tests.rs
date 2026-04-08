@@ -25,7 +25,7 @@ fn sample_info_frame() -> DataFrame {
     let maybe = Series::new_nullable::<i32>("maybe", &[10, 0, 30], &[true, false, true]).unwrap();
     let names = Series::from_strings("names", &["ab", "cde", ""]).unwrap();
 
-    DataFrame::from_columns([("ids", ids), ("maybe", maybe), ("names", names)]).unwrap()
+    DataFrame::from_series([("ids", ids), ("maybe", maybe), ("names", names)]).unwrap()
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn test_info_payload_and_device_allocated_memory_for_dictionary_column() {
     let plain = Series::from_strings("plain", &["beta", "alpha", "beta", "gamma"]).unwrap();
     let dict = dictionary::encode(&plain.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let category = Series::from_column(dict).unwrap().rename("category");
-    let df = DataFrame::from_columns([("category", category)]).unwrap();
+    let df = DataFrame::from_series([("category", category)]).unwrap();
 
     let info = df.info_with(InfoDetail::COLUMNS | InfoDetail::MEMORY).unwrap();
 
@@ -222,7 +222,7 @@ fn test_info_empty_dataframe_returns_valid_empty_snapshot() {
 fn test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_stream() {
     let rt = sample_runtime();
     let expected_stream = rt.stream().__debug_raw_handle_value();
-    let df = DataFrame::from_columns([("names", rt.string_series("names", &["ab", "cde", ""]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("names", rt.string_series("names", &["ab", "cde", ""]).unwrap())]).unwrap();
 
     obs_reset();
     let info = df.info_with(InfoDetail::COLUMNS | InfoDetail::PAYLOAD_BYTES).unwrap();

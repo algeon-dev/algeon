@@ -21,7 +21,7 @@ fn test_crate_root_reexports_dataframe() {
     let ids = cudf::Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
     let scores = cudf::Series::new::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
 
-    let df = cudf::DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = cudf::DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
 }
@@ -36,7 +36,7 @@ fn test_doc_example_high_level_workflow() {
     let ids = rt.series("ids", &[1i32, 2, 3]).unwrap();
     let scores = rt.series("scores", &[10.0f64, 20.0, 30.0]).unwrap();
 
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
@@ -77,11 +77,31 @@ fn test_runtime_first_factories_cover_high_level_named_series_creation() {
 }
 
 #[test]
+fn test_high_level_io_option_types_reexported_at_crate_root() {
+    use cudf::{JsonReadOptions, JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions};
+
+    let _ = JsonReadOptions::builder().filepath("/tmp/input.jsonl").build();
+    let _ = JsonWriteOptions::builder().filepath("/tmp/output.jsonl").build();
+    let _ = ParquetReadOptions::builder().filepath("/tmp/input.parquet").build();
+    let _ = ParquetWriteOptions::builder().filepath("/tmp/output.parquet").build();
+}
+
+#[test]
+fn test_low_level_io_option_types_live_under_io_modules() {
+    let _ = cudf::io::csv::CsvTableReadOptions::builder().filepath("/tmp/input.csv").build();
+    let _ = cudf::io::csv::CsvTableWriteOptions::builder().filepath("/tmp/output.csv").build();
+    let _ = cudf::io::json::JsonTableReadOptions::builder().filepath("/tmp/input.jsonl").build();
+    let _ = cudf::io::json::JsonTableWriteOptions::builder().filepath("/tmp/output.jsonl").build();
+    let _ = cudf::io::parquet::ParquetTableReadOptions::builder().filepath("/tmp/input.parquet").build();
+    let _ = cudf::io::parquet::ParquetTableWriteOptions::builder().filepath("/tmp/output.parquet").build();
+}
+
+#[test]
 fn test_high_level_control_plane_flows_through_runtime_and_scoped_context() {
     use cudf::{Agg, AggSpec, DataFrame, ExecutionContext, Runtime, SortOptions, runtime::CudaStream};
 
     let rt = Runtime::builder().build().unwrap();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", rt.series("id", &[2i32, 1, 2]).unwrap()),
         ("value", rt.series("value", &[10i64, 20, 30]).unwrap()),
     ])
@@ -167,7 +187,7 @@ fn test_high_level_workflow_sort_values() {
     use cudf::{DataFrame, Series, SortOptions};
 
     let ids = Series::new::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = DataFrame::from_columns([("id", ids)]).unwrap();
+    let df = DataFrame::from_series([("id", ids)]).unwrap();
 
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
     let data: Vec<i32> = sorted.series("id").unwrap().to_vec::<i32>().unwrap();
@@ -181,11 +201,11 @@ fn test_high_level_workflow_merge() {
 
     let left_id = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
     let left_val = Series::new::<i32>("score", &[10, 20, 30]).unwrap();
-    let left = DataFrame::from_columns([("id", left_id), ("score", left_val)]).unwrap();
+    let left = DataFrame::from_series([("id", left_id), ("score", left_val)]).unwrap();
 
     let right_id = Series::new::<i32>("id", &[2, 3, 4]).unwrap();
     let right_val = Series::new::<i32>("rank", &[200, 300, 400]).unwrap();
-    let right = DataFrame::from_columns([("id", right_id), ("rank", right_val)]).unwrap();
+    let right = DataFrame::from_series([("id", right_id), ("rank", right_val)]).unwrap();
 
     let opts = MergeOptions::new().on(["id"]).how(JoinType::Inner);
     let merged = left.merge(&right, opts).unwrap();
@@ -202,7 +222,7 @@ fn test_high_level_workflow_groupby() {
 
     let keys = Series::new::<i32>("key", &[1, 2, 1, 2]).unwrap();
     let vals = Series::new::<i64>("value", &[10, 20, 30, 40]).unwrap();
-    let df = DataFrame::from_columns([("key", keys), ("value", vals)]).unwrap();
+    let df = DataFrame::from_series([("key", keys), ("value", vals)]).unwrap();
 
     let result =
         df.groupby(["key"]).options(GroupByOptions::default()).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
@@ -217,7 +237,7 @@ fn test_advanced_workflow_uses_table_view_and_low_level_ops() {
 
     let ids = Series::new::<i32>("id", &[10, 20, 30]).unwrap();
     let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
     let gather_map = cudf::core::Column::from_slice(&[2i32, 0]).unwrap();
 
     let table_view = df.table_view().unwrap();
@@ -241,7 +261,7 @@ fn test_all_high_level_types_in_single_import() {
     let _ = GroupByOptions::default();
 
     let s = Series::new::<i32>("a", &[1]).unwrap();
-    let df = DataFrame::from_columns([("a", s)]).unwrap();
+    let df = DataFrame::from_series([("a", s)]).unwrap();
     let _gb: GroupBy<'_> = df.groupby(["a"]);
 }
 
@@ -290,7 +310,7 @@ fn test_domain_modules_export_documented_surface() {
     let _expr = cudf::ops::col("value");
 
     let series = DomainSeries::new::<i32>("key", &[1, 2, 1]).unwrap();
-    let df = DomainDataFrame::from_columns([("key", series)]).unwrap();
+    let df = DomainDataFrame::from_series([("key", series)]).unwrap();
     let _gb: DomainGroupBy<'_> = df.groupby(["key"]);
 
     let rt = DomainRuntime::builder().build().unwrap();

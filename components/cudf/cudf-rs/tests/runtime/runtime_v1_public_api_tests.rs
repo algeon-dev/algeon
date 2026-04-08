@@ -4,7 +4,7 @@ use std::{ffi::c_void, ptr};
 
 use cudf::{
     Agg, AggSpec, CsvReadOptions, CsvWriteOptions, DataFrame, ErrorKind, ExecutionContext, JsonWriteOptions,
-    MergeOptions, ParquetReaderOptions, ParquetWriteOptions, Runtime, Series, SortOptions,
+    MergeOptions, ParquetReadOptions, ParquetWriteOptions, Runtime, Series, SortOptions,
     core::{Column, Scalar, TimestampResolution, TypeId},
     runtime::CudaStream,
 };
@@ -996,7 +996,7 @@ fn parquet_read_with_runtime_seeds_explicit_domain_and_uses_runtime_stream() {
 
     let rt = sample_runtime();
     let expected_stream = rt.stream().__debug_raw_handle_value();
-    let opts = ParquetReaderOptions::builder().filepath(&path).with_runtime(&rt).build();
+    let opts = ParquetReadOptions::builder().filepath(&path).with_runtime(&rt).build();
 
     obs_reset();
     let read_df = DataFrame::read_parquet_with_options(opts).unwrap();

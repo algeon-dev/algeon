@@ -4,7 +4,7 @@
 
 use cudf::{
     core::{Column, Table},
-    io::json::{self, JsonReaderOptions, JsonWriterOptions},
+    io::json::{self, JsonTableReadOptions, JsonTableWriteOptions},
 };
 use tempfile::TempDir;
 
@@ -23,11 +23,11 @@ fn test_json_lines_roundtrip_i32() {
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = JsonWriterOptions::builder().filepath(&path).column_names(&["ids", "values"]).build();
+    let write_opts = JsonTableWriteOptions::builder().filepath(&path).column_names(&["ids", "values"]).build();
     json::write_json(&view, &write_opts).unwrap();
 
     // Read back through the shared low-level result envelope.
-    let read_opts = JsonReaderOptions::builder().filepath(&path).build();
+    let read_opts = JsonTableReadOptions::builder().filepath(&path).build();
     let result = json::read_json(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -47,7 +47,7 @@ fn test_json_lines_roundtrip_strings() {
     // Write a NDJSON file manually
     std::fs::write(&path, "{\"name\":\"alice\",\"age\":30}\n{\"name\":\"bob\",\"age\":25}\n").unwrap();
 
-    let read_opts = JsonReaderOptions::builder().filepath(&path).build();
+    let read_opts = JsonTableReadOptions::builder().filepath(&path).build();
     let result = json::read_json(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -68,7 +68,7 @@ fn test_json_lines_empty_file() {
 
     std::fs::write(&path, "").unwrap();
 
-    let read_opts = JsonReaderOptions::builder().filepath(&path).build();
+    let read_opts = JsonTableReadOptions::builder().filepath(&path).build();
     let result = json::read_json(&read_opts).unwrap();
 
     assert_eq!(result.table.view().unwrap().num_rows().unwrap(), 0);
@@ -87,7 +87,7 @@ fn test_json_lines_write_defaults_to_ndjson() {
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = JsonWriterOptions::builder().filepath(&path).column_names(&["x"]).build();
+    let write_opts = JsonTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     json::write_json(&view, &write_opts).unwrap();
 
     // NDJSON: each line should be a JSON object
@@ -104,7 +104,7 @@ fn test_json_write_rejects_column_name_with_nul_byte() {
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = JsonWriterOptions::builder().filepath(&path).column_names(&["bad\0name"]).build();
+    let write_opts = JsonTableWriteOptions::builder().filepath(&path).column_names(&["bad\0name"]).build();
     let err = json::write_json(&view, &write_opts).unwrap_err();
 
     assert!(err.to_string().contains("null byte"), "unexpected error: {err}");
@@ -116,7 +116,7 @@ fn test_json_write_rejects_column_name_with_nul_byte() {
 
 #[test]
 fn test_json_read_nonexistent_file() {
-    let read_opts = JsonReaderOptions::builder().filepath("/nonexistent/file.jsonl").build();
+    let read_opts = JsonTableReadOptions::builder().filepath("/nonexistent/file.jsonl").build();
     let result = json::read_json(&read_opts);
     assert!(result.is_err());
 }

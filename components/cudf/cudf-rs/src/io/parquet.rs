@@ -24,7 +24,7 @@ use crate::{
 /// Used by both the low-level [`read_parquet`] function and the high-level
 /// [`DataFrame::read_parquet_with_options`](crate::DataFrame::read_parquet_with_options).
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct ParquetReaderOptions {
+pub struct ParquetTableReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
@@ -39,12 +39,25 @@ pub struct ParquetReaderOptions {
     runtime: Option<Runtime>,
 }
 
+impl ParquetTableReadOptions {
+    pub(crate) fn from_parts(
+        filepath: PathBuf,
+        columns: Option<Vec<String>>,
+        skip_rows: i64,
+        num_rows: i64,
+        row_groups: Option<Vec<i32>>,
+        runtime: Option<Runtime>,
+    ) -> Self {
+        Self { filepath, columns, skip_rows, num_rows, row_groups, runtime }
+    }
+}
+
 /// Read a Parquet file into a low-level table result.
 ///
 /// Returns the table data and the column names stored in the Parquet file's
 /// schema. This avoids having to hardcode column indices when working with
 /// Parquet files.
-pub fn read_parquet(options: ParquetReaderOptions) -> Result<IoTableResult> {
+pub fn read_parquet(options: ParquetTableReadOptions) -> Result<IoTableResult> {
     let filepath = super::path_to_cstring(&options.filepath, "io::parquet::read_parquet")?;
 
     // Validate that row_groups is not combined with skip_rows or num_rows.
@@ -158,7 +171,7 @@ pub fn read_parquet(options: ParquetReaderOptions) -> Result<IoTableResult> {
 ///
 /// **Advanced.** Most users should prefer [`DataFrame::write_parquet`](crate::DataFrame::write_parquet).
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct ParquetWriterOptions {
+pub struct ParquetTableWriteOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
@@ -169,7 +182,7 @@ pub struct ParquetWriterOptions {
     runtime: Option<Runtime>,
 }
 
-impl ParquetWriterOptions {
+impl ParquetTableWriteOptions {
     pub(crate) fn runtime(&self) -> Option<&Runtime> {
         self.runtime.as_ref()
     }
@@ -179,7 +192,7 @@ impl ParquetWriterOptions {
 ///
 /// Returns an error if `column_names` were set on the options and their count
 /// does not match the number of columns in the table.
-pub fn write_parquet(table: &TableView<'_>, options: &ParquetWriterOptions) -> Result<()> {
+pub fn write_parquet(table: &TableView<'_>, options: &ParquetTableWriteOptions) -> Result<()> {
     let exec_options =
         options.runtime.as_ref().and_then(|runtime| runtime.execution_domain().explicit_exec_options_raw());
     write_parquet_with_exec(table, options, exec_options.as_ref())
@@ -187,7 +200,7 @@ pub fn write_parquet(table: &TableView<'_>, options: &ParquetWriterOptions) -> R
 
 pub(crate) fn write_parquet_with_exec(
     table: &TableView<'_>,
-    options: &ParquetWriterOptions,
+    options: &ParquetTableWriteOptions,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<()> {
     let filepath = super::path_to_cstring(&options.filepath, "io::parquet::write_parquet")?;

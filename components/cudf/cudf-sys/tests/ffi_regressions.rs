@@ -548,6 +548,7 @@ fn test_event_create_null_out_rejected() {
 
 #[test]
 fn test_event_create_record_wait_and_synchronize_smoke() {
+    let _shim_state = lock_shim_state();
     unsafe { cudf_sys::cudf_test_event_reset_observation() };
 
     let mut stream: *mut c_void = ptr::null_mut();
@@ -596,6 +597,7 @@ fn test_event_create_record_wait_and_synchronize_smoke() {
 
 #[test]
 fn test_raw_cuda_event_record_and_wait_smoke() {
+    let _shim_state = lock_shim_state();
     let stream = OwnedStream::new();
     let event = OwnedEvent::new();
 

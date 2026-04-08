@@ -15,7 +15,7 @@ fn dataframe_ops_with_device_runtime() {
     // Create data and seed with runtime's provenance.
     let ids = Series::new::<i32>("id", &[3, 1, 4, 1, 5]).unwrap();
     let scores = Series::new::<f64>("score", &[30.0, 10.0, 40.0, 15.0, 50.0]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
     let result: Vec<i32> = sorted.series("id").unwrap().to_vec::<i32>().unwrap();
