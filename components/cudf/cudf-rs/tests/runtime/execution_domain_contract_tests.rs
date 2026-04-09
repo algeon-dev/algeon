@@ -7,7 +7,7 @@
 use std::{ffi::c_void, ptr};
 
 use cudf::{
-    Agg, AggSpec, DataFrame, DataType, ErrorKind, Series, TypeId,
+    AggSpec, DataFrame, DataType, ErrorKind, GroupByAgg, Series, TypeId,
     core::{Column, Scalar, Table, TableView, memory::DeviceMemoryResource},
     ops::{
         binary::{self, BinaryOperator},
@@ -16,11 +16,11 @@ use cudf::{
         filter,
         groupby::{self, AggregationRequest},
         hashing, join,
-        reduction::{self, ReduceAggregation, ScanAggregation, ScanType},
+        reduction::{self, ReduceAgg, ScanAgg, ScanType},
         replace, search, sorting, stream_compaction, strings,
         unary::{self, UnaryOperator},
     },
-    runtime::CudaStream,
+    runtime::{CudaStream, ExecutionContext},
 };
 use cudf_sys::{
     cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
@@ -69,8 +69,19 @@ fn explicit_bool_series(name: &str, data: &[bool], identity: u64) -> Series {
         .rename(name)
 }
 
-fn explicit_string_series(name: &str, data: &[&str], identity: u64) -> Series {
-    Series::from_column(Column::from_strings(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap())
+fn explicit_nullable_bool_series(name: &str, data: &[bool], validity: &[bool], identity: u64) -> Series {
+    Series::from_column(
+        Column::from_slice_nullable(data, validity)
+            .unwrap()
+            .__debug_rebind_execution_domain_explicit(identity)
+            .unwrap(),
+    )
+    .unwrap()
+    .rename(name)
+}
+
+fn explicit_str_series(name: &str, data: &[&str], identity: u64) -> Series {
+    Series::from_column(Column::from_strs(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap())
         .unwrap()
         .rename(name)
 }
@@ -475,7 +486,7 @@ fn scalar_value_synchronizes_retained_explicit_domain_stream() {
 
 #[test]
 fn scalar_string_value_synchronizes_retained_explicit_domain_stream() {
-    let scalar = Scalar::from_string("hello").unwrap().__debug_rebind_execution_domain_explicit(73).unwrap();
+    let scalar = Scalar::from_str("hello").unwrap().__debug_rebind_execution_domain_explicit(73).unwrap();
     let expected_stream = scalar.__debug_execution_domain_stream_value();
     assert_ne!(expected_stream, 0, "explicit domains should expose a non-zero retained stream value");
 
@@ -503,7 +514,7 @@ fn scalar_is_valid_synchronizes_retained_explicit_domain_stream() {
 
 #[test]
 fn series_to_strings_uses_retained_explicit_domain_stream() {
-    let series = explicit_string_series("name", &["alice", "", "bob"], 732);
+    let series = explicit_str_series("name", &["alice", "", "bob"], 732);
     let expected_stream = series.as_column().__debug_execution_domain_stream_value();
     assert_ne!(expected_stream, 0, "explicit domains should expose a non-zero retained stream value");
 
@@ -791,7 +802,7 @@ fn dataframe_groupby_agg_preserves_explicit_domain_identity() {
     ])
     .unwrap();
 
-    let grouped = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+    let grouped = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     assert_eq!(grouped.__debug_execution_domain_kind(), "explicit");
     assert_eq!(grouped.__debug_execution_domain_id(), 77);
@@ -1142,8 +1153,8 @@ fn dictionary_indices_retains_explicit_domain_and_sync_stream() {
 #[test]
 fn search_contains_retains_explicit_domain_and_uses_exec_options() {
     let rt = sample_runtime();
-    let haystack = Column::from_slice_with_runtime(&rt, &[10i32, 20, 30, 40]).unwrap();
-    let needles = Column::from_slice_with_runtime(&rt, &[20i32, 50, 10]).unwrap();
+    let haystack = rt.column_from_slice(&[10i32, 20, 30, 40]).unwrap();
+    let needles = rt.column_from_slice(&[20i32, 50, 10]).unwrap();
     let expected_stream = haystack.__debug_execution_domain_stream_value();
     let default_mr = current_device_resource_value();
 
@@ -1163,11 +1174,11 @@ fn search_contains_retains_explicit_domain_and_uses_exec_options() {
 
 #[test]
 fn strings_contains_with_same_device_mixed_explicit_domains_fences_scalar_stream() {
-    let input = Column::from_strings(&["alpha", "beta", "alphabet"])
+    let input = Column::from_strs(&["alpha", "beta", "alphabet"])
         .unwrap()
         .__debug_rebind_execution_domain_explicit(2001)
         .unwrap();
-    let target = Scalar::from_string("alpha").unwrap().__debug_rebind_execution_domain_explicit(2002).unwrap();
+    let target = Scalar::from_str("alpha").unwrap().__debug_rebind_execution_domain_explicit(2002).unwrap();
     let expected_exec_stream = input.__debug_execution_domain_stream_value();
     let fenced_stream = target.__debug_execution_domain_stream_value();
 
@@ -1183,11 +1194,11 @@ fn strings_contains_with_same_device_mixed_explicit_domains_fences_scalar_stream
 
 #[test]
 fn strings_starts_with_with_same_device_mixed_explicit_domains_fences_scalar_stream() {
-    let input = Column::from_strings(&["alpha", "beta", "alphabet"])
+    let input = Column::from_strs(&["alpha", "beta", "alphabet"])
         .unwrap()
         .__debug_rebind_execution_domain_explicit(2003)
         .unwrap();
-    let target = Scalar::from_string("alp").unwrap().__debug_rebind_execution_domain_explicit(2004).unwrap();
+    let target = Scalar::from_str("alp").unwrap().__debug_rebind_execution_domain_explicit(2004).unwrap();
     let expected_exec_stream = input.__debug_execution_domain_stream_value();
     let fenced_stream = target.__debug_execution_domain_stream_value();
 
@@ -1203,11 +1214,11 @@ fn strings_starts_with_with_same_device_mixed_explicit_domains_fences_scalar_str
 
 #[test]
 fn strings_ends_with_with_same_device_mixed_explicit_domains_fences_scalar_stream() {
-    let input = Column::from_strings(&["alpha", "beta", "alphabet"])
+    let input = Column::from_strs(&["alpha", "beta", "alphabet"])
         .unwrap()
         .__debug_rebind_execution_domain_explicit(2005)
         .unwrap();
-    let target = Scalar::from_string("ha").unwrap().__debug_rebind_execution_domain_explicit(2006).unwrap();
+    let target = Scalar::from_str("ha").unwrap().__debug_rebind_execution_domain_explicit(2006).unwrap();
     let expected_exec_stream = input.__debug_execution_domain_stream_value();
     let fenced_stream = target.__debug_execution_domain_stream_value();
 
@@ -1223,11 +1234,11 @@ fn strings_ends_with_with_same_device_mixed_explicit_domains_fences_scalar_strea
 
 #[test]
 fn strings_strip_with_same_device_mixed_explicit_domains_fences_scalar_stream() {
-    let input = Column::from_strings(&["xxalpha", "betaxx", "xxalphabetxx"])
+    let input = Column::from_strs(&["xxalpha", "betaxx", "xxalphabetxx"])
         .unwrap()
         .__debug_rebind_execution_domain_explicit(2007)
         .unwrap();
-    let target = Scalar::from_string("x").unwrap().__debug_rebind_execution_domain_explicit(2008).unwrap();
+    let target = Scalar::from_str("x").unwrap().__debug_rebind_execution_domain_explicit(2008).unwrap();
     let expected_exec_stream = input.__debug_execution_domain_stream_value();
     let fenced_stream = target.__debug_execution_domain_stream_value();
 
@@ -1239,7 +1250,7 @@ fn strings_strip_with_same_device_mixed_explicit_domains_fences_scalar_stream() 
     assert_eq!(last_sync_stream_value(), fenced_stream);
     assert_eq!(result.__debug_execution_domain_id(), input.__debug_execution_domain_id());
     assert_eq!(
-        result.view().unwrap().to_strings().unwrap(),
+        result.view().unwrap().to_strings_lossy().unwrap(),
         vec!["alpha".to_string(), "beta".to_string(), "alphabet".to_string()]
     );
 }
@@ -1274,7 +1285,7 @@ fn search_contains_succeeds_with_mixed_domains() {
 #[test]
 fn dictionary_encode_retains_explicit_domain_and_uses_exec_options() {
     let rt = sample_runtime();
-    let input = Column::from_slice_with_runtime(&rt, &[429i32, 111, 213, 111]).unwrap();
+    let input = rt.column_from_slice(&[429i32, 111, 213, 111]).unwrap();
     let expected_stream = input.__debug_execution_domain_stream_value();
     let default_mr = current_device_resource_value();
 
@@ -1603,7 +1614,7 @@ fn dataframe_filter_isin_succeeds_with_mixed_domains() {
 #[test]
 fn column_view_factorize_uses_retained_explicit_domain_stream_end_to_end() {
     let rt = sample_runtime();
-    let input = Column::from_slice_with_runtime(&rt, &[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
+    let input = rt.column_from_slice(&[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
     let expected_stream = input.__debug_execution_domain_stream_value();
     let default_mr = current_device_resource_value();
 
@@ -2134,14 +2145,36 @@ fn binary_operation_sv_with_same_device_mixed_explicit_domains_fences_column_str
 }
 
 #[test]
+fn series_in_context_logical_and_with_same_device_mixed_explicit_domains_fences_rhs_stream() {
+    let runtime = sample_runtime();
+    let lhs = explicit_nullable_bool_series("lhs", &[true, false, true], &[true, false, true], 1584);
+    let rhs = explicit_bool_series("rhs", &[true, true, false], 1585);
+    let ctx = ExecutionContext::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let expected_exec_stream = runtime.stream().__debug_raw_handle_value();
+    let fenced_stream = rhs.as_column().__debug_execution_domain_stream_value();
+
+    reset_exec_observation();
+    reset_sync_observation();
+    let result = lhs.in_context(&ctx).logical_and(&rhs).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_sync_stream_value(), fenced_stream);
+    assert_eq!(result.as_column().__debug_execution_domain_id(), lhs.as_column().__debug_execution_domain_id());
+    assert_eq!(result.as_column().__debug_execution_domain_stream_value(), expected_exec_stream);
+
+    reset_sync_observation();
+    assert_eq!(result.to_vec_optional::<bool>().unwrap(), vec![Some(true), None, Some(false)]);
+    assert_eq!(last_sync_stream_value(), expected_exec_stream);
+}
+
+#[test]
 fn reduction_reduce_retains_explicit_domain_and_uses_exec_options() {
     let input = explicit_i32_column(&[1, 2, 3, 4], 160);
     let expected_stream = input.__debug_execution_domain_stream_value();
     let default_mr = current_device_resource_value();
 
     reset_exec_observation();
-    let result =
-        reduction::reduce(&input.view().unwrap(), &ReduceAggregation::Sum, &DataType::new(TypeId::Int64)).unwrap();
+    let result = reduction::reduce(&input.view().unwrap(), &ReduceAgg::Sum, &DataType::new(TypeId::Int64)).unwrap();
 
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_ne!(last_exec_mr_value(), 0);
@@ -2162,8 +2195,7 @@ fn reduction_scan_retains_explicit_domain_and_uses_exec_options() {
 
     reset_exec_observation();
     let result =
-        reduction::scan(&input.view().unwrap(), ScanAggregation::Sum, ScanType::Inclusive, cudf::NullPolicy::Exclude)
-            .unwrap();
+        reduction::scan(&input.view().unwrap(), ScanAgg::Sum, ScanType::Inclusive, cudf::NullPolicy::Exclude).unwrap();
 
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_ne!(last_exec_mr_value(), 0);
@@ -2665,7 +2697,7 @@ fn groupby_aggregate_retains_explicit_domain_and_uses_exec_options() {
     let keys = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 2], 186)]).unwrap();
     let values = explicit_i32_column(&[10, 20, 30, 40], 186);
     let values_view = values.view().unwrap();
-    let aggregations = [Agg::Sum];
+    let aggregations = [GroupByAgg::Sum];
     let requests = [AggregationRequest { values: &values_view, aggregations: &aggregations }];
     let expected_stream = keys.__debug_execution_domain_stream_value();
     let default_mr = current_device_resource_value();
@@ -2697,7 +2729,7 @@ fn groupby_aggregate_succeeds_with_mixed_domains() {
     let keys = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 2], 187)]).unwrap();
     let values = explicit_i32_column(&[10, 20, 30, 40], 188);
     let values_view = values.view().unwrap();
-    let aggregations = [Agg::Sum];
+    let aggregations = [GroupByAgg::Sum];
     let requests = [AggregationRequest { values: &values_view, aggregations: &aggregations }];
     let expected_stream = keys.__debug_execution_domain_stream_value();
     let expected_mr = keys.__debug_execution_domain_mr_value();
@@ -2732,7 +2764,7 @@ fn groupby_aggregate_with_same_device_mixed_explicit_domains_uses_keys_domain_an
     let keys = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 2], 1870)]).unwrap();
     let values = explicit_i32_column(&[10, 20, 30, 40], 1871);
     let values_view = values.view().unwrap();
-    let aggregations = [Agg::Sum];
+    let aggregations = [GroupByAgg::Sum];
     let requests = [AggregationRequest { values: &values_view, aggregations: &aggregations }];
     let expected_exec_stream = keys.__debug_execution_domain_stream_value();
     let expected_mr = keys.__debug_execution_domain_mr_value();

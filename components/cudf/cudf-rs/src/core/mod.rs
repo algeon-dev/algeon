@@ -1,6 +1,7 @@
 //! Core ownership, memory, and type primitives.
 
 pub mod column;
+mod debug;
 pub mod error;
 pub mod memory;
 pub mod scalar;

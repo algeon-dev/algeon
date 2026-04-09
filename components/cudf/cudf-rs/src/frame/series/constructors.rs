@@ -9,6 +9,31 @@ use crate::core::{
 };
 
 impl Series {
+    pub(crate) fn split_optional_host_values<T: CudfType>(data: &[Option<T>]) -> (Vec<T>, Vec<bool>, bool) {
+        let mut values = Vec::with_capacity(data.len());
+        let mut validity = Vec::with_capacity(data.len());
+        let mut has_nulls = false;
+
+        for value in data {
+            match value {
+                Some(value) => {
+                    values.push(*value);
+                    validity.push(true);
+                },
+                None => {
+                    has_nulls = true;
+                    // SAFETY: All `CudfType` implementors have valid all-zero
+                    // bit patterns, matching the existing host materialization
+                    // assumptions elsewhere in the crate.
+                    values.push(unsafe { std::mem::zeroed::<T>() });
+                    validity.push(false);
+                },
+            }
+        }
+
+        (values, validity, has_nulls)
+    }
+
     pub(crate) fn from_named_column(name: impl Into<String>, column: Column) -> Result<Self> {
         let mut s = Self::from_column_with_cache(column)?;
         s.name = Some(name.into());
@@ -29,15 +54,25 @@ impl Series {
         Self::from_named_column(name, column)
     }
 
+    /// Create a nullable `Series` from a host slice of optional fixed-width values.
+    ///
+    /// `Some(value)` becomes a valid row; `None` becomes a null row. If every
+    /// element is `Some`, this uses the non-nullable constructor path and does
+    /// not allocate a null mask.
+    pub fn from_optional<T: CudfType>(name: impl Into<String>, data: &[Option<T>]) -> Result<Self> {
+        let (values, validity, has_nulls) = Self::split_optional_host_values(data);
+        if has_nulls { Self::new_nullable(name, &values, &validity) } else { Self::new(name, &values) }
+    }
+
     /// Create a `Series` of UTF-8 strings from host data.
-    pub fn from_strings(name: impl Into<String>, data: &[&str]) -> Result<Self> {
-        let column = Column::from_strings(data)?;
+    pub fn from_strs(name: impl Into<String>, data: &[&str]) -> Result<Self> {
+        let column = Column::from_strs(data)?;
         Self::from_named_column(name, column)
     }
 
     /// Create a nullable `Series` of UTF-8 strings from host data and a validity mask.
-    pub fn from_strings_nullable(name: impl Into<String>, data: &[&str], validity: &[bool]) -> Result<Self> {
-        let column = Column::from_strings_nullable(data, validity)?;
+    pub fn from_strs_nullable(name: impl Into<String>, data: &[&str], validity: &[bool]) -> Result<Self> {
+        let column = Column::from_strs_nullable(data, validity)?;
         Self::from_named_column(name, column)
     }
 

@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc, Mutex, MutexGuard, OnceLock,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -19,7 +19,7 @@ use cudf::{
 };
 use tempfile::TempDir;
 
-use crate::common;
+use crate::common::{self, lock_event_observation};
 
 const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
 
@@ -42,14 +42,6 @@ fn first_two_test_devices() -> (DeviceId, DeviceId) {
     let first = DeviceId::new(0).unwrap();
     let second = DeviceId::new(1).unwrap();
     (first, second)
-}
-
-fn lock_event_observation() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    match LOCK.get_or_init(|| Mutex::new(())).lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
 }
 
 fn reset_event_observation() {
@@ -1332,7 +1324,7 @@ fn series_prepare_device_export_with_event_rejects_mismatched_event_device() {
 #[test]
 fn column_view_prepare_device_export_preserves_fixed_width_metadata() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = column.view().unwrap();
     let expected_stream = column.__debug_execution_domain_stream_value();
 
@@ -1364,7 +1356,7 @@ fn column_view_prepare_device_export_preserves_fixed_width_metadata() {
 #[test]
 fn nullable_column_prepare_device_export_preserves_present_validity_mask() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_slice_nullable_with_runtime(&runtime, &[10i32, 20, 30], &[true, false, true]).unwrap();
+    let column = runtime.column_from_slice_nullable(&[10i32, 20, 30], &[true, false, true]).unwrap();
     let view = column.view().unwrap();
 
     let export = view.try_prepare_device_column_export().unwrap();
@@ -1385,7 +1377,7 @@ fn nullable_column_prepare_device_export_preserves_present_validity_mask() {
 #[test]
 fn sliced_column_prepare_device_export_preserves_base_pointer_and_offset() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_slice_with_runtime(&runtime, &[11i32, 22, 33, 44]).unwrap();
+    let column = runtime.column_from_slice(&[11i32, 22, 33, 44]).unwrap();
     let base = column.view().unwrap();
     let sliced = column.slice_view(1, 2).unwrap();
 
@@ -1463,7 +1455,7 @@ fn series_prepare_host_export_can_activate_synchronous_read_lease() {
 #[test]
 fn column_view_prepare_host_export_materializes_fixed_width_bytes() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = column.view().unwrap();
 
     let export = view.try_prepare_host_column_export().unwrap();
@@ -1487,7 +1479,7 @@ fn column_view_prepare_host_export_materializes_fixed_width_bytes() {
 #[test]
 fn sliced_column_prepare_host_export_resets_offset_and_materializes_active_range_only() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_slice_with_runtime(&runtime, &[11i32, 22, 33, 44]).unwrap();
+    let column = runtime.column_from_slice(&[11i32, 22, 33, 44]).unwrap();
     let sliced = column.slice_view(1, 2).unwrap();
 
     let export = sliced.try_prepare_host_column_export().unwrap();
@@ -1508,8 +1500,7 @@ fn sliced_column_prepare_host_export_resets_offset_and_materializes_active_range
 #[test]
 fn nullable_column_prepare_host_export_preserves_packed_validity_mask() {
     let runtime = Runtime::builder().build().unwrap();
-    let column =
-        Column::from_slice_nullable_with_runtime(&runtime, &[10i32, 20, 30, 40], &[true, false, true, false]).unwrap();
+    let column = runtime.column_from_slice_nullable(&[10i32, 20, 30, 40], &[true, false, true, false]).unwrap();
     let view = column.view().unwrap();
 
     let export = view.try_prepare_host_column_export().unwrap();
@@ -1757,7 +1748,7 @@ fn sliced_struct_column_prepare_host_export_resets_root_and_child_offsets_to_act
 #[test]
 fn dictionary_column_prepare_host_export_materializes_indices_and_string_keys() {
     let runtime = Runtime::builder().build().unwrap();
-    let base = runtime.string_series("category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
+    let base = runtime.str_series("category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
     let dict = dictionary::encode(&base.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let export = dict.try_prepare_host_column_export().unwrap();
     let (indices, keys) = match export.column().layout() {
@@ -1798,7 +1789,7 @@ fn dictionary_column_prepare_host_export_materializes_indices_and_string_keys() 
 #[test]
 fn sliced_dictionary_column_prepare_host_export_resets_root_offset_and_materializes_active_indices_only() {
     let runtime = Runtime::builder().build().unwrap();
-    let base = runtime.string_series("category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
+    let base = runtime.str_series("category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
     let dict = dictionary::encode(&base.as_column_view().unwrap(), TypeId::Int32).unwrap();
     let sliced = dict.slice_view(1, 2).unwrap();
 
@@ -2004,7 +1995,7 @@ fn host_export_accepts_broader_recursive_nested_columns() {
 #[test]
 fn string_column_prepare_host_export_materializes_binary_like_bytes() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_strings_with_runtime(&runtime, &["alice", "bob"]).unwrap();
+    let column = runtime.column_from_strs(&["alice", "bob"]).unwrap();
     let view = column.view().unwrap();
 
     let export = view.try_prepare_host_column_export().unwrap();
@@ -2037,7 +2028,7 @@ fn string_column_prepare_host_export_materializes_binary_like_bytes() {
 #[test]
 fn sliced_string_column_prepare_host_export_resets_offset_and_materializes_active_range_only() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_strings_with_runtime(&runtime, &["zero", "one", "two", "three"]).unwrap();
+    let column = runtime.column_from_strs(&["zero", "one", "two", "three"]).unwrap();
     let sliced = column.slice_view(1, 2).unwrap();
 
     let export = sliced.try_prepare_host_column_export().unwrap();
@@ -2064,7 +2055,7 @@ fn sliced_string_column_prepare_host_export_resets_offset_and_materializes_activ
 fn nullable_string_column_prepare_host_export_preserves_packed_validity_mask() {
     let runtime = Runtime::builder().build().unwrap();
     let series = runtime
-        .nullable_string_series("name", &["alice", "placeholder", "bob", "unused"], &[true, false, true, false])
+        .nullable_str_series("name", &["alice", "placeholder", "bob", "unused"], &[true, false, true, false])
         .unwrap();
 
     let export = series.try_prepare_host_column_export().unwrap();
@@ -2085,7 +2076,7 @@ fn nullable_string_column_prepare_host_export_preserves_packed_validity_mask() {
 #[test]
 fn dataframe_prepare_host_export_accepts_string_columns() {
     let runtime = Runtime::builder().build().unwrap();
-    let names = runtime.string_series("name", &["alice", "bob", "cara"]).unwrap();
+    let names = runtime.str_series("name", &["alice", "bob", "cara"]).unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let frame = DataFrame::from_series([names, ids]).unwrap();
 
@@ -2325,7 +2316,7 @@ fn ambient_dataframe_prepare_device_export_is_rejected() {
 #[test]
 fn string_column_prepare_device_export_preserves_binary_like_metadata() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_strings_with_runtime(&runtime, &["alice", "bob"]).unwrap();
+    let column = runtime.column_from_strs(&["alice", "bob"]).unwrap();
     let view = column.view().unwrap();
     let offsets_view = view.child(0).unwrap();
     let expected_stream = column.__debug_execution_domain_stream_value();
@@ -2362,7 +2353,7 @@ fn string_column_prepare_device_export_preserves_binary_like_metadata() {
 #[test]
 fn sliced_string_column_prepare_device_export_preserves_active_binary_like_span() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_strings_with_runtime(&runtime, &["zero", "one", "two", "three"]).unwrap();
+    let column = runtime.column_from_strs(&["zero", "one", "two", "three"]).unwrap();
     let base = column.view().unwrap();
     let base_export = base.try_prepare_device_column_export().unwrap();
     let sliced = column.slice_view(1, 2).unwrap();
@@ -2412,7 +2403,7 @@ fn sliced_string_column_prepare_device_export_preserves_active_binary_like_span(
 #[test]
 fn dataframe_prepare_device_export_accepts_string_columns() {
     let runtime = Runtime::builder().build().unwrap();
-    let names = runtime.string_series("name", &["alice", "bob", "cara"]).unwrap();
+    let names = runtime.str_series("name", &["alice", "bob", "cara"]).unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let frame = DataFrame::from_series([names, ids]).unwrap();
 
@@ -2650,7 +2641,7 @@ fn sliced_list_of_strings_prepare_device_export_preserves_binary_like_child_slic
 #[test]
 fn dictionary_column_prepare_device_export_preserves_indices_and_keys_metadata() {
     let runtime = Runtime::builder().build().unwrap();
-    let base = Column::from_slice_with_runtime(&runtime, &[3i32, 1, 3, 2]).unwrap();
+    let base = runtime.column_from_slice(&[3i32, 1, 3, 2]).unwrap();
     let dict = dictionary::encode(&base.view().unwrap(), TypeId::Int32).unwrap();
     let dict_view = dict.view().unwrap();
     let indices_view = dictionary::indices(&dict_view).unwrap();
@@ -2686,7 +2677,7 @@ fn dictionary_column_prepare_device_export_preserves_indices_and_keys_metadata()
 #[test]
 fn dictionary_string_column_prepare_device_export_preserves_binary_like_keys() {
     let runtime = Runtime::builder().build().unwrap();
-    let base = runtime.string_series("name", &["gamma", "alpha", "gamma", "beta"]).unwrap();
+    let base = runtime.str_series("name", &["gamma", "alpha", "gamma", "beta"]).unwrap();
     let dict = dictionary::encode(&base.as_column().view().unwrap(), TypeId::Int32).unwrap();
     let dict_view = dict.view().unwrap();
     let keys_view = dictionary::keys(&dict_view).unwrap();
@@ -2719,7 +2710,7 @@ fn dictionary_string_column_prepare_device_export_preserves_binary_like_keys() {
 #[test]
 fn dataframe_prepare_device_export_accepts_dictionary_columns() {
     let runtime = Runtime::builder().build().unwrap();
-    let base = runtime.string_series("category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
+    let base = runtime.str_series("category", &["gamma", "alpha", "gamma", "beta"]).unwrap();
     let ids = runtime.series("id", &[10i32, 20, 30, 40]).unwrap();
     let dict = dictionary::encode(&base.as_column().view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(dict).unwrap().rename("category");
@@ -2749,7 +2740,7 @@ fn dataframe_prepare_device_export_accepts_dictionary_columns() {
 #[test]
 fn sliced_dictionary_column_prepare_device_export_preserves_root_offset_and_indices_slice() {
     let runtime = Runtime::builder().build().unwrap();
-    let base = Column::from_slice_with_runtime(&runtime, &[3i32, 1, 3, 2]).unwrap();
+    let base = runtime.column_from_slice(&[3i32, 1, 3, 2]).unwrap();
     let dict = dictionary::encode(&base.view().unwrap(), TypeId::Int32).unwrap();
     let dict_view = dict.view().unwrap();
     let keys_view = dictionary::keys(&dict_view).unwrap();
@@ -2927,14 +2918,8 @@ fn mixed_device_table_prepare_device_export_is_rejected() {
     let rt0 = Runtime::builder().with_device(device0).build().unwrap();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
 
-    let left = Column::from_slice_with_runtime(&rt0, &[1i32, 2, 3])
-        .unwrap()
-        .__debug_rebind_execution_domain_explicit(9001)
-        .unwrap();
-    let right = Column::from_slice_with_runtime(&rt1, &[4i32, 5, 6])
-        .unwrap()
-        .__debug_rebind_execution_domain_explicit(9001)
-        .unwrap();
+    let left = rt0.column_from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(9001).unwrap();
+    let right = rt1.column_from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(9001).unwrap();
     let frame = crate::common::dataframe_from_columns(vec!["left".into(), "right".into()], vec![left, right]).unwrap();
 
     let err = frame.try_prepare_device_table_export().unwrap_err();

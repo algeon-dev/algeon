@@ -58,6 +58,13 @@ impl Runtime {
         RuntimeBuilder::default()
     }
 
+    /// Build a new explicit runtime with default device, stream, and memory resource selection.
+    ///
+    /// This is shorthand for `Runtime::builder().build()`.
+    pub fn new() -> Result<Self> {
+        Self::builder().build()
+    }
+
     /// The CUDA device this runtime is pinned to.
     pub fn device(&self) -> DeviceId {
         self.domain.device().expect("runtime always owns an explicit domain with a device")
@@ -78,9 +85,69 @@ impl Runtime {
         self.domain.explicit_memory_resource().expect("runtime always owns an explicit memory resource")
     }
 
+    /// Create a fixed-width low-level `Column` inside this runtime.
+    pub fn column_from_slice<T: CudfType>(&self, data: &[T]) -> Result<Column> {
+        Column::from_slice_with_runtime(self, data)
+    }
+
+    /// Create a nullable fixed-width low-level `Column` inside this runtime.
+    pub fn column_from_slice_nullable<T: CudfType>(&self, data: &[T], validity: &[bool]) -> Result<Column> {
+        Column::from_slice_nullable_with_runtime(self, data, validity)
+    }
+
+    /// Create a UTF-8 string low-level `Column` inside this runtime.
+    pub fn column_from_strs(&self, data: &[&str]) -> Result<Column> {
+        Column::from_strs_with_runtime(self, data)
+    }
+
+    /// Create a nullable UTF-8 string low-level `Column` inside this runtime.
+    pub fn column_from_strs_nullable(&self, data: &[&str], validity: &[bool]) -> Result<Column> {
+        Column::from_strs_nullable_with_runtime(self, data, validity)
+    }
+
+    /// Create an all-null low-level `Column` inside this runtime.
+    pub fn null_column(&self, type_id: TypeId, len: usize) -> Result<Column> {
+        Column::nulls_with_runtime(self, type_id, len)
+    }
+
+    /// Create an empty low-level `Column` inside this runtime.
+    pub fn empty_column(&self, type_id: TypeId) -> Result<Column> {
+        Column::empty_with_runtime(self, type_id)
+    }
+
+    /// Create a low-level `Column` by repeating a scalar inside this runtime.
+    pub fn column_from_scalar(&self, scalar: &Scalar, size: usize) -> Result<Column> {
+        Column::from_scalar_with_runtime(self, scalar, size)
+    }
+
+    /// Create a low-level `Column` by copying from a borrowed device pointer
+    /// into this runtime.
+    ///
+    /// Uses the runtime's stream and memory resource. Unlike the ambient
+    /// `Column::from_device_ptr` path, this does not synchronize before
+    /// returning; the caller must keep `device_ptr` valid until this runtime's
+    /// stream has completed the copy.
+    ///
+    /// # Safety
+    ///
+    /// - `device_ptr` must point to a valid device allocation containing at
+    ///   least `len` elements of `type_id`.
+    /// - Any prior GPU writes to `device_ptr` must be ordered before this
+    ///   runtime's stream.
+    /// - The pointer must remain valid until this runtime's stream has
+    ///   completed the copy.
+    pub unsafe fn column_from_device_ptr(
+        &self,
+        device_ptr: *const std::ffi::c_void,
+        len: usize,
+        type_id: TypeId,
+    ) -> Result<Column> {
+        Column::from_device_ptr_with_runtime(self, device_ptr, len, type_id)
+    }
+
     /// Create a fixed-width `Series` inside this runtime.
     pub fn series<T: CudfType>(&self, name: impl Into<String>, data: &[T]) -> Result<Series> {
-        Series::from_named_column(name, Column::from_slice_with_runtime(self, data)?)
+        Series::from_named_column(name, self.column_from_slice(data)?)
     }
 
     /// Create a nullable fixed-width `Series` inside this runtime.
@@ -90,27 +157,41 @@ impl Runtime {
         data: &[T],
         validity: &[bool],
     ) -> Result<Series> {
-        Series::from_named_column(name, Column::from_slice_nullable_with_runtime(self, data, validity)?)
+        Series::from_named_column(name, self.column_from_slice_nullable(data, validity)?)
+    }
+
+    /// Create a fixed-width `Series` from optional host values inside this runtime.
+    ///
+    /// `Some(value)` becomes a valid row; `None` becomes a null row. If every
+    /// element is `Some`, this uses the non-nullable constructor path and does
+    /// not allocate a null mask.
+    pub fn series_opt<T: CudfType>(&self, name: impl Into<String>, data: &[Option<T>]) -> Result<Series> {
+        let (values, validity, has_nulls) = Series::split_optional_host_values(data);
+        if has_nulls {
+            Series::from_named_column(name, self.column_from_slice_nullable(&values, &validity)?)
+        } else {
+            Series::from_named_column(name, self.column_from_slice(&values)?)
+        }
     }
 
     /// Create a UTF-8 string `Series` inside this runtime.
-    pub fn string_series(&self, name: impl Into<String>, data: &[&str]) -> Result<Series> {
-        Series::from_named_column(name, Column::from_strings_with_runtime(self, data)?)
+    pub fn str_series(&self, name: impl Into<String>, data: &[&str]) -> Result<Series> {
+        Series::from_named_column(name, self.column_from_strs(data)?)
     }
 
     /// Create a nullable UTF-8 string `Series` inside this runtime.
-    pub fn nullable_string_series(&self, name: impl Into<String>, data: &[&str], validity: &[bool]) -> Result<Series> {
-        Series::from_named_column(name, Column::from_strings_nullable_with_runtime(self, data, validity)?)
+    pub fn nullable_str_series(&self, name: impl Into<String>, data: &[&str], validity: &[bool]) -> Result<Series> {
+        Series::from_named_column(name, self.column_from_strs_nullable(data, validity)?)
     }
 
     /// Create an all-null `Series` inside this runtime.
     pub fn nulls(&self, name: impl Into<String>, type_id: TypeId, len: usize) -> Result<Series> {
-        Series::from_named_column(name, Column::nulls_with_runtime(self, type_id, len)?)
+        Series::from_named_column(name, self.null_column(type_id, len)?)
     }
 
     /// Create an empty `Series` inside this runtime.
     pub fn empty_series(&self, name: impl Into<String>, type_id: TypeId) -> Result<Series> {
-        Series::from_named_column(name, Column::empty_with_runtime(self, type_id)?)
+        Series::from_named_column(name, self.empty_column(type_id)?)
     }
 
     /// Create a `Series` by repeating a scalar inside this runtime.
@@ -122,8 +203,7 @@ impl Runtime {
     /// Supports all scalar types except Dictionary32 (no libcudf scalar
     /// subclass exists for dictionary-encoded scalars).
     pub fn series_from_scalar(&self, name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Series> {
-        let runtime_scalar = scalar.copy_into_domain(self.execution_domain())?;
-        Series::from_named_column(name, Column::from_scalar_with_runtime(self, &runtime_scalar, size)?)
+        Series::from_named_column(name, self.column_from_scalar(scalar, size)?)
     }
 
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {

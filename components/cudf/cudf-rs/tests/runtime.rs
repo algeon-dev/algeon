@@ -1,6 +1,8 @@
 #[path = "common/mod.rs"]
 mod common;
 
+#[path = "runtime/debug_tests.rs"]
+mod debug_tests;
 #[path = "runtime/device_guard_tests.rs"]
 mod device_guard_tests;
 #[path = "runtime/device_id_tests.rs"]

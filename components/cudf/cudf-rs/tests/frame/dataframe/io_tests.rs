@@ -172,9 +172,10 @@ fn test_read_csv_without_header_generates_fallback_names_only_at_dataframe_layer
 
     std::fs::write(&path, "11,110\n12,120\n").unwrap();
 
-    let table_result =
-        cudf::io::csv::read_csv(&cudf::io::csv::CsvReadOptions::builder().filepath(&path).has_header(false).build())
-            .unwrap();
+    let table_result = cudf::io::csv::read_csv(
+        &cudf::io::csv::CsvTableReadOptions::builder().filepath(&path).has_header(false).build(),
+    )
+    .unwrap();
     assert_eq!(table_result.column_names, None);
 
     let df =

@@ -179,11 +179,11 @@ impl DataFrame {
     pub fn from_table(table: Table, names: Vec<String>) -> Result<Self> {
         let view = table.view()?;
         let num_cols = view.num_columns()?;
-        let row_count = if num_cols > 0 { view.num_rows()? as usize } else { 0 };
+        let row_count = if num_cols > 0 { view.num_rows()? } else { 0 };
         drop(view);
         let table_domain = Arc::clone(table.execution_domain());
 
-        let expected = names.len() as i32;
+        let expected = names.len();
         if expected != num_cols {
             return Err(Error::new(ErrorKind::InvalidOperation, "number of names must equal number of table columns")
                 .with_operation("dataframe::from_table")
@@ -206,7 +206,7 @@ impl DataFrame {
     /// Create a `DataFrame` from an iterator of named [`Series`](crate::Series).
     ///
     /// Each `Series` must carry a name (constructed via `Series::new`,
-    /// `Series::from_strings`, etc.). The Series name becomes the DataFrame
+    /// `Series::from_strs`, etc.). The Series name becomes the DataFrame
     /// column name. GPU data is shared via `Arc` — no device copy.
     ///
     /// For explicit schema override (external names), use
@@ -578,12 +578,12 @@ impl DataFrame {
     /// # Example
     ///
     /// ```no_run
-    /// # use cudf::{Agg, AggSpec, DataFrame, Series};
+    /// # use cudf::{GroupByAgg, AggSpec, DataFrame, Series};
     /// # let keys = Series::new::<i32>("key", &[1, 2]).unwrap();
     /// # let vals = Series::new::<i64>("val", &[10, 20]).unwrap();
     /// # let df = DataFrame::from_named_pairs([("key", keys), ("val", vals)]).unwrap();
     /// let result =
-    ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", Agg::Sum)]).unwrap();
+    ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", GroupByAgg::Sum)]).unwrap();
     /// ```
     pub fn groupby<I, S>(&self, keys: I) -> groupby::GroupBy<'_>
     where

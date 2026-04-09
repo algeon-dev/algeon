@@ -1,3 +1,9 @@
+use std::{
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
+
 use cudf::{
     Runtime,
     core::{Column, Table},
@@ -8,21 +14,8 @@ use cudf::{
     },
     runtime::CudaStream,
 };
-use std::{
-    sync::{Mutex, MutexGuard, OnceLock, mpsc},
-    thread,
-    time::{Duration, Instant},
-};
 
-use crate::common::assert_duplicate_name_error;
-
-fn lock_event_observation() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    match LOCK.get_or_init(|| Mutex::new(())).lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
+use crate::common::{assert_duplicate_name_error, lock_event_observation};
 
 fn reset_event_observation() {
     unsafe { cudf_sys::cudf_test_event_reset_observation() };
@@ -146,7 +139,7 @@ fn partitioned_dataframe_export_owned_transfer_returns_one_partition_per_retaine
         vec![left, middle, right],
     )
     .unwrap()
-    .try_into_owned_device_partitioned_table_transfer()
+    .try_into_owned_transfer()
     .unwrap();
 
     assert_eq!(transfer.num_rows(), 3);
@@ -163,16 +156,16 @@ fn partitioned_dataframe_export_owned_transfer_returns_one_partition_per_retaine
 fn partitioned_dataframe_export_runtime_release_owned_transfer_preserves_async_contract_per_partition() {
     let left_runtime = Runtime::builder().build().unwrap();
     let right_runtime = Runtime::builder().build().unwrap();
-    let left = Column::from_slice_with_runtime(&left_runtime, &[1i32, 2, 3]).unwrap();
-    let middle = Column::from_slice_with_runtime(&right_runtime, &[10i32, 20, 30]).unwrap();
-    let right = Column::from_slice_with_runtime(&left_runtime, &[100i32, 200, 300]).unwrap();
+    let left = left_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let middle = right_runtime.column_from_slice(&[10i32, 20, 30]).unwrap();
+    let right = left_runtime.column_from_slice(&[100i32, 200, 300]).unwrap();
 
     let (transfer, releaser) = PartitionedDataFrameExport::new(
         vec!["left".into(), "middle".into(), "right".into()],
         vec![left, middle, right],
     )
     .unwrap()
-    .try_into_owned_device_partitioned_table_transfer_with_runtime_release()
+    .try_into_owned_transfer_with_release()
     .unwrap();
 
     assert_eq!(transfer.num_rows(), 3);
@@ -184,9 +177,41 @@ fn partitioned_dataframe_export_runtime_release_owned_transfer_preserves_async_c
             partition.transfer().release_contract().completion(),
             TransferCompletionRule::ReleaseWaitsOnConsumerSignal
         );
+        assert_eq!(partition.transfer().release_contract().synchronization(), ReleaseSynchronization::Asynchronous);
+    }
+
+    let releaser_partitions = releaser.into_partitions();
+    assert_eq!(releaser_partitions.len(), 2);
+    assert_eq!(releaser_partitions[0].top_level_column_indices(), &[0, 2]);
+    assert_eq!(releaser_partitions[1].top_level_column_indices(), &[1]);
+}
+
+#[test]
+fn partitioned_dataframe_export_runtime_release_synchronization_preserves_blocking_signal_contract_per_partition() {
+    let left_runtime = Runtime::builder().build().unwrap();
+    let right_runtime = Runtime::builder().build().unwrap();
+    let left = left_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let middle = right_runtime.column_from_slice(&[10i32, 20, 30]).unwrap();
+    let right = left_runtime.column_from_slice(&[100i32, 200, 300]).unwrap();
+
+    let (transfer, releaser) = PartitionedDataFrameExport::new(
+        vec!["left".into(), "middle".into(), "right".into()],
+        vec![left, middle, right],
+    )
+    .unwrap()
+    .try_into_owned_transfer_with_release_synchronization(ReleaseSynchronization::MaySynchronizeInternally)
+    .unwrap();
+
+    assert_eq!(transfer.num_rows(), 3);
+    assert_eq!(transfer.partitions().len(), 2);
+    for partition in transfer.partitions() {
+        assert_eq!(
+            partition.transfer().release_contract().completion(),
+            TransferCompletionRule::ReleaseWaitsOnConsumerSignal
+        );
         assert_eq!(
             partition.transfer().release_contract().synchronization(),
-            ReleaseSynchronization::Asynchronous
+            ReleaseSynchronization::MaySynchronizeInternally
         );
     }
 
@@ -201,16 +226,16 @@ fn partitioned_dataframe_export_runtime_release_accepts_per_partition_release_wi
     let _observation_lock = lock_event_observation();
     let left_runtime = Runtime::builder().build().unwrap();
     let right_runtime = Runtime::builder().build().unwrap();
-    let left = Column::from_slice_with_runtime(&left_runtime, &[1i32, 2, 3]).unwrap();
-    let middle = Column::from_slice_with_runtime(&right_runtime, &[10i32, 20, 30]).unwrap();
-    let right = Column::from_slice_with_runtime(&left_runtime, &[100i32, 200, 300]).unwrap();
+    let left = left_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let middle = right_runtime.column_from_slice(&[10i32, 20, 30]).unwrap();
+    let right = left_runtime.column_from_slice(&[100i32, 200, 300]).unwrap();
 
     let (transfer, releaser) = PartitionedDataFrameExport::new(
         vec!["left".into(), "middle".into(), "right".into()],
         vec![left, middle, right],
     )
     .unwrap()
-    .try_into_owned_device_partitioned_table_transfer_with_runtime_release()
+    .try_into_owned_transfer_with_release()
     .unwrap();
     drop(transfer);
 
@@ -264,13 +289,13 @@ fn partitioned_dataframe_export_runtime_release_accepts_per_partition_release_wi
 fn partitioned_dataframe_export_runtime_release_import_and_release_remain_mutually_exclusive_per_partition() {
     let left_runtime = Runtime::builder().build().unwrap();
     let right_runtime = Runtime::builder().build().unwrap();
-    let left = Column::from_slice_with_runtime(&left_runtime, &[1i32, 2, 3]).unwrap();
-    let right = Column::from_slice_with_runtime(&right_runtime, &[4i32, 5, 6]).unwrap();
+    let left = left_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let right = right_runtime.column_from_slice(&[4i32, 5, 6]).unwrap();
     let left_expected_ptr = left.view().unwrap().device_data_ptr().unwrap();
 
     let (transfer, releaser) = PartitionedDataFrameExport::new(vec!["left".into(), "right".into()], vec![left, right])
         .unwrap()
-        .try_into_owned_device_partitioned_table_transfer_with_runtime_release()
+        .try_into_owned_transfer_with_release()
         .unwrap();
 
     let mut transfer_partitions = transfer.into_partitions().into_iter();
@@ -294,9 +319,7 @@ fn partitioned_dataframe_export_runtime_release_import_and_release_remain_mutual
     assert_eq!(left_release_err.kind(), InteropErrorKind::ProfileUnsupported);
 
     let _sync_block = EventSynchronizeBlockGuard::new();
-    right_releaser
-        .release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
-        .unwrap();
+    right_releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
     let right_import_err = match Table::try_from_owned_device_table_transfer(right_transfer) {
         Ok(_) => panic!("expected partition import to fail after release was accepted"),
         Err(err) => err,

@@ -125,24 +125,22 @@ impl<'a> ColumnView<'a> {
     }
 
     /// Returns the number of child columns (for nested types).
-    pub fn num_children(&self) -> Result<i32> {
+    pub fn num_children(&self) -> Result<usize> {
         let mut out: i32 = 0;
         // SAFETY: self.handle is valid (NonNull from construction/from_raw).
         error::check_status_in(
             unsafe { cudf_sys::cudf_column_view_num_children(self.handle.as_ptr(), &mut out) },
             "column_view::num_children",
         )?;
-        Ok(out)
+        usize::try_from(out).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "column child count must be >= 0")
+                .with_operation("column_view::num_children")
+                .with_context("num_children", out.to_string())
+        })
     }
 
     /// Get a child column view by index.
-    pub fn child(&self, index: i32) -> Result<ColumnView<'a>> {
-        if index < 0 {
-            return Err(Error::new(ErrorKind::InvalidOperation, "column child index must be >= 0")
-                .with_operation("column_view::child")
-                .with_context("child_index", index.to_string()));
-        }
-
+    pub fn child(&self, index: usize) -> Result<ColumnView<'a>> {
         let num_children = self.num_children()?;
         if index >= num_children {
             return Err(Error::new(ErrorKind::InvalidOperation, "column child index out of bounds")
@@ -150,6 +148,12 @@ impl<'a> ColumnView<'a> {
                 .with_context("child_index", index.to_string())
                 .with_context("num_children", num_children.to_string()));
         }
+
+        let index = i32::try_from(index).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "column child index exceeds i32::MAX")
+                .with_operation("column_view::child")
+                .with_context("child_index", index.to_string())
+        })?;
 
         let mut child_handle = ptr::null_mut();
         // SAFETY: self.handle is valid and the child index is validated above.
@@ -302,6 +306,29 @@ impl<'a> ColumnView<'a> {
         Ok(buf)
     }
 
+    /// Copy fixed-width column data to host as `Vec<Option<T>>`, encoding
+    /// null positions as `None`.
+    ///
+    /// Non-nullable columns return all `Some`. For nullable columns, this
+    /// performs two separate device-to-host transfers (data buffer + null-mask
+    /// buffer), then merges them on the host.
+    ///
+    /// For `bool`, libcudf stores values as raw bytes and does not guarantee a
+    /// canonical value for null slots. This method materializes Bool8 through a
+    /// byte buffer and only converts valid positions, avoiding invalid `bool`
+    /// construction.
+    pub fn to_optional_vec<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
+        if T::TYPE_ID == TypeId::Bool8 {
+            return self.to_optional_vec_bool::<T>();
+        }
+
+        let vals = self.to_vec::<T>()?;
+        match self.validity()? {
+            None => Ok(vals.into_iter().map(Some).collect()),
+            Some(mask) => Ok(vals.into_iter().zip(mask).map(|(v, valid)| if valid { Some(v) } else { None }).collect()),
+        }
+    }
+
     /// Copy column data to a host `Vec<u8>`, one byte per element.
     ///
     /// Requires the column to be a 1-byte fixed-width type (Bool8, Int8, Uint8).
@@ -343,6 +370,21 @@ impl<'a> ColumnView<'a> {
         }
 
         Ok(buf)
+    }
+
+    fn to_optional_vec_bool<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
+        let raw = self.to_raw_bytes()?;
+        let bool_values: Vec<Option<bool>> = match self.validity()? {
+            None => raw.into_iter().map(|b| Some(b != 0)).collect(),
+            Some(mask) => raw.into_iter().zip(mask).map(|(b, valid)| if valid { Some(b != 0) } else { None }).collect(),
+        };
+
+        let boxed: Box<dyn std::any::Any> = Box::new(bool_values);
+        boxed.downcast::<Vec<Option<T>>>().map(|typed| *typed).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "internal bool materialization helper requires T = bool")
+                .with_operation("column_view::to_optional_vec")
+                .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase())
+        })
     }
 
     /// Copy any fixed-width column view to raw host bytes.
@@ -449,17 +491,31 @@ impl<'a> ColumnView<'a> {
         Ok(Some(validity))
     }
 
-    /// Copy string column data to a host `Vec<String>`.
+    /// Copy string column data to a host `Vec<String>`, mapping null elements
+    /// to empty strings (`""`).
     ///
     /// The column's type must be `TypeId::String`.
     ///
-    /// For null elements, the returned string is empty (`""`). Use
-    /// [`validity()`](Self::validity) to distinguish nulls from empty strings.
-    pub fn to_strings(&self) -> Result<Vec<String>> {
+    /// This is a lossy conversion: nulls and genuinely empty strings become
+    /// indistinguishable. Use [`to_optional_strings`](Self::to_optional_strings)
+    /// when null fidelity matters.
+    pub fn to_strings_lossy(&self) -> Result<Vec<String>> {
+        let strings = self.to_strings_host_raw("column_view::to_strings_lossy")?;
+        match self.validity()? {
+            None => Ok(strings),
+            Some(valid) => Ok(strings
+                .into_iter()
+                .zip(valid)
+                .map(|(value, is_valid)| if is_valid { value } else { String::new() })
+                .collect()),
+        }
+    }
+
+    fn to_strings_host_raw(&self, operation: &'static str) -> Result<Vec<String>> {
         let dt = self.data_type()?;
         if dt.id() != TypeId::String {
             return Err(Error::new(ErrorKind::TypeError, "column type is not STRING")
-                .with_operation("column_view::to_strings")
+                .with_operation(operation)
                 .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase()));
         }
 
@@ -467,7 +523,7 @@ impl<'a> ColumnView<'a> {
             // Normalize sliced views to a zero-offset owned column first so
             // host string materialization only covers the active logical range.
             let normalized = copy_view_to_owned(self)?;
-            return normalized.view()?.to_strings();
+            return normalized.view()?.to_strings_host_raw(operation);
         }
 
         let size = self.len()?;
@@ -512,7 +568,7 @@ impl<'a> ColumnView<'a> {
                     )
                 }
             },
-            "column_view::to_strings",
+            operation,
         )?;
 
         // Phase 2: now allocate chars buffer and re-call
@@ -546,7 +602,7 @@ impl<'a> ColumnView<'a> {
                         )
                     }
                 },
-                "column_view::to_strings",
+                operation,
             )?;
         }
 
@@ -557,7 +613,7 @@ impl<'a> ColumnView<'a> {
             let end = offsets[i + 1] as usize;
             let s = std::str::from_utf8(&chars[start..end]).map_err(|e| {
                 Error::new(ErrorKind::InvalidOperation, format!("invalid UTF-8 in string column at row {}: {}", i, e))
-                    .with_operation("column_view::to_strings")
+                    .with_operation(operation)
             })?;
             result.push(s.to_string());
         }
@@ -575,7 +631,7 @@ impl<'a> ColumnView<'a> {
     ///
     /// Returns `TypeError` if the column type is not `STRING`.
     pub fn to_optional_strings(&self) -> Result<Vec<Option<String>>> {
-        let strings = self.to_strings()?;
+        let strings = self.to_strings_host_raw("column_view::to_optional_strings")?;
         match self.validity()? {
             None => Ok(strings.into_iter().map(Some).collect()),
             Some(valid) => Ok(strings.into_iter().zip(valid).map(|(s, v)| if v { Some(s) } else { None }).collect()),
@@ -744,8 +800,8 @@ impl ColumnView<'_> {
     /// # Example
     /// ```no_run
     /// use cudf::core::Column;
-    /// let input = Column::from_strings(&["a", "b", "c", "a"]).unwrap();
-    /// let keys = Column::from_strings(&["a", "b", "c"]).unwrap();
+    /// let input = Column::from_strs(&["a", "b", "c", "a"]).unwrap();
+    /// let keys = Column::from_strs(&["a", "b", "c"]).unwrap();
     /// let values = Column::from_slice(&[1i32, 2, 3]).unwrap();
     /// let mapped = input
     ///     .view()

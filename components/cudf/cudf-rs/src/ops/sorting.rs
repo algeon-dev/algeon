@@ -53,21 +53,21 @@ pub enum NullOrder {
 
 fn validate_sort_params(
     operation: &'static str,
-    num_keys: i32,
+    num_keys: usize,
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<()> {
-    let expected = usize::try_from(num_keys).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "number of sort keys must be >= 0")
+    let expected = i32::try_from(num_keys).map_err(|_| {
+        Error::new(ErrorKind::InvalidOperation, "number of sort keys exceeds i32::MAX")
             .with_operation(operation)
             .with_context("num_keys", num_keys.to_string())
     })?;
 
     if let Some(orders) = column_order {
-        if orders.len() != expected {
+        if orders.len() != num_keys {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
-                format!("column_order length ({}) must equal number of keys ({})", orders.len(), expected),
+                format!("column_order length ({}) must equal number of keys ({})", orders.len(), num_keys),
             )
             .with_operation(operation)
             .with_context("num_keys", num_keys.to_string())
@@ -76,10 +76,10 @@ fn validate_sort_params(
     }
 
     if let Some(nulls) = null_precedence {
-        if nulls.len() != expected {
+        if nulls.len() != num_keys {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
-                format!("null_precedence length ({}) must equal number of keys ({})", nulls.len(), expected),
+                format!("null_precedence length ({}) must equal number of keys ({})", nulls.len(), num_keys),
             )
             .with_operation(operation)
             .with_context("num_keys", num_keys.to_string())
@@ -87,7 +87,16 @@ fn validate_sort_params(
         }
     }
 
+    let _ = expected;
     Ok(())
+}
+
+fn checked_num_keys(operation: &'static str, num_keys: usize) -> Result<i32> {
+    i32::try_from(num_keys).map_err(|_| {
+        Error::new(ErrorKind::InvalidOperation, "number of sort keys exceeds i32::MAX")
+            .with_operation(operation)
+            .with_context("num_keys", num_keys.to_string())
+    })
 }
 
 /// Helper: convert Option slices to raw pointers.
@@ -116,16 +125,17 @@ pub(crate) fn sort_table_impl(
 ) -> Result<Table> {
     let num_keys = input.num_columns()?;
     validate_sort_params(operation, num_keys, column_order, null_precedence)?;
+    let num_keys_i32 = checked_num_keys(operation, num_keys)?;
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     let status = match (stable, exec_options) {
-        (false, None) => unsafe { cudf_sys::cudf_sort(input.raw_handle(), co, np, num_keys, &mut out) },
-        (true, None) => unsafe { cudf_sys::cudf_stable_sort(input.raw_handle(), co, np, num_keys, &mut out) },
+        (false, None) => unsafe { cudf_sys::cudf_sort(input.raw_handle(), co, np, num_keys_i32, &mut out) },
+        (true, None) => unsafe { cudf_sys::cudf_stable_sort(input.raw_handle(), co, np, num_keys_i32, &mut out) },
         (false, Some(options)) => unsafe {
-            cudf_sys::cudf_sort_ex(input.raw_handle(), co, np, num_keys, &mut out, options)
+            cudf_sys::cudf_sort_ex(input.raw_handle(), co, np, num_keys_i32, &mut out, options)
         },
         (true, Some(options)) => unsafe {
-            cudf_sys::cudf_stable_sort_ex(input.raw_handle(), co, np, num_keys, &mut out, options)
+            cudf_sys::cudf_stable_sort_ex(input.raw_handle(), co, np, num_keys_i32, &mut out, options)
         },
     };
 
@@ -154,14 +164,22 @@ pub(crate) fn sort_by_key_impl(
 ) -> Result<Table> {
     let num_key_columns = keys.num_columns()?;
     validate_sort_params(operation, num_key_columns, column_order, null_precedence)?;
+    let num_key_columns_i32 = checked_num_keys(operation, num_key_columns)?;
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     let status = match (stable, exec_options) {
         (false, None) => unsafe {
-            cudf_sys::cudf_sort_by_key(values.raw_handle(), keys.raw_handle(), co, np, num_key_columns, &mut out)
+            cudf_sys::cudf_sort_by_key(values.raw_handle(), keys.raw_handle(), co, np, num_key_columns_i32, &mut out)
         },
         (true, None) => unsafe {
-            cudf_sys::cudf_stable_sort_by_key(values.raw_handle(), keys.raw_handle(), co, np, num_key_columns, &mut out)
+            cudf_sys::cudf_stable_sort_by_key(
+                values.raw_handle(),
+                keys.raw_handle(),
+                co,
+                np,
+                num_key_columns_i32,
+                &mut out,
+            )
         },
         (false, Some(options)) => unsafe {
             cudf_sys::cudf_sort_by_key_ex(
@@ -169,7 +187,7 @@ pub(crate) fn sort_by_key_impl(
                 keys.raw_handle(),
                 co,
                 np,
-                num_key_columns,
+                num_key_columns_i32,
                 &mut out,
                 options,
             )
@@ -180,7 +198,7 @@ pub(crate) fn sort_by_key_impl(
                 keys.raw_handle(),
                 co,
                 np,
-                num_key_columns,
+                num_key_columns_i32,
                 &mut out,
                 options,
             )
@@ -292,15 +310,16 @@ pub fn sorted_order(
     let exec_options = output_domain.explicit_exec_options_raw();
     let num_keys = input.num_columns()?;
     validate_sort_params("sorting::sorted_order", num_keys, column_order, null_precedence)?;
+    let num_keys_i32 = checked_num_keys("sorting::sorted_order", num_keys)?;
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     error::check_status_in_with(
         // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
         match exec_options.as_ref() {
             Some(options) => unsafe {
-                cudf_sys::cudf_sorted_order_ex(input.raw_handle(), co, np, num_keys, &mut out, options)
+                cudf_sys::cudf_sorted_order_ex(input.raw_handle(), co, np, num_keys_i32, &mut out, options)
             },
-            None => unsafe { cudf_sys::cudf_sorted_order(input.raw_handle(), co, np, num_keys, &mut out) },
+            None => unsafe { cudf_sys::cudf_sorted_order(input.raw_handle(), co, np, num_keys_i32, &mut out) },
         },
         "sorting::sorted_order",
         [
@@ -322,11 +341,12 @@ pub fn is_sorted(
 ) -> Result<bool> {
     let num_keys = input.num_columns()?;
     validate_sort_params("sorting::is_sorted", num_keys, column_order, null_precedence)?;
+    let num_keys_i32 = checked_num_keys("sorting::is_sorted", num_keys)?;
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out: i32 = 0;
     error::check_status_in_with(
         // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
-        unsafe { cudf_sys::cudf_is_sorted(input.raw_handle(), co, np, num_keys, &mut out) },
+        unsafe { cudf_sys::cudf_is_sorted(input.raw_handle(), co, np, num_keys_i32, &mut out) },
         "sorting::is_sorted",
         [
             ("num_keys", num_keys.to_string()),

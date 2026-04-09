@@ -106,7 +106,7 @@ fn test_into_columns_roundtrip() {
 
 #[test]
 fn test_into_columns_with_string_column() {
-    let c1 = Column::from_strings(&["hello", "world"]).unwrap();
+    let c1 = Column::from_strs(&["hello", "world"]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
 
     let columns = table.into_columns().unwrap();
@@ -114,7 +114,7 @@ fn test_into_columns_with_string_column() {
 
     let view = columns[0].view().unwrap();
     assert_eq!(view.data_type().unwrap().id(), TypeId::String);
-    assert_eq!(view.to_strings().unwrap(), vec!["hello", "world"]);
+    assert_eq!(view.to_strings_lossy().unwrap(), vec!["hello", "world"]);
 }
 
 #[test]

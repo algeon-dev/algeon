@@ -334,7 +334,7 @@ fn create_producer_owned_event(producer_device: DeviceId) -> Result<CudaEvent> {
 }
 
 fn map_runtime_completion_interop_error(operation: &'static str, error: InteropError) -> error::Error {
-    error::Error::new(error::ErrorKind::InvalidOperation, error.to_string()).with_operation(operation).set_source(error)
+    error::Error::from(error).with_operation(operation)
 }
 
 fn runtime_completion_result_from_shared(

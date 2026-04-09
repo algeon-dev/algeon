@@ -101,16 +101,16 @@ fn test_column_binary_op_error_operation_context() {
 
 #[test]
 fn test_column_binary_op_scalar_error_operation_context() {
-    let col = Column::from_strings(&["foo", "bar"]).unwrap();
-    let scalar = Scalar::from_string("baz").unwrap();
+    let col = Column::from_strs(&["foo", "bar"]).unwrap();
+    let scalar = Scalar::from_str("baz").unwrap();
     let err = col.binary_op_scalar(&scalar, BinaryOperator::Add).err().expect("expected error");
     assert_eq!(err.operation(), "column::binary_op_scalar");
 }
 
 #[test]
 fn test_column_add_string_error() {
-    let a = Column::from_strings(&["foo", "bar"]).unwrap();
-    let b = Column::from_strings(&["baz", "qux"]).unwrap();
+    let a = Column::from_strs(&["foo", "bar"]).unwrap();
+    let b = Column::from_strs(&["baz", "qux"]).unwrap();
     let err = a.add(&b).err().expect("expected error");
     assert_eq!(err.operation(), "column::add");
 }
@@ -204,8 +204,8 @@ fn test_column_ge_i32() {
 
 #[test]
 fn test_column_eq_string() {
-    let a = Column::from_strings(&["foo", "bar", "baz"]).unwrap();
-    let b = Column::from_strings(&["foo", "qux", "baz"]).unwrap();
+    let a = Column::from_strs(&["foo", "bar", "baz"]).unwrap();
+    let b = Column::from_strs(&["foo", "qux", "baz"]).unwrap();
     let result = a.eq(&b).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
@@ -214,8 +214,8 @@ fn test_column_eq_string() {
 
 #[test]
 fn test_column_lt_string() {
-    let a = Column::from_strings(&["apple", "cherry", "banana"]).unwrap();
-    let b = Column::from_strings(&["banana", "banana", "banana"]).unwrap();
+    let a = Column::from_strs(&["apple", "cherry", "banana"]).unwrap();
+    let b = Column::from_strs(&["banana", "banana", "banana"]).unwrap();
     let result = a.lt(&b).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
@@ -345,8 +345,8 @@ fn test_column_ge_scalar_i32() {
 
 #[test]
 fn test_column_eq_scalar_string() {
-    let col = Column::from_strings(&["active", "inactive", "active"]).unwrap();
-    let scalar = Scalar::from_string("active").unwrap();
+    let col = Column::from_strs(&["active", "inactive", "active"]).unwrap();
+    let scalar = Scalar::from_str("active").unwrap();
     let result = col.eq_scalar(&scalar).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
@@ -355,8 +355,8 @@ fn test_column_eq_scalar_string() {
 
 #[test]
 fn test_column_lt_scalar_string() {
-    let col = Column::from_strings(&["apple", "cherry", "banana"]).unwrap();
-    let scalar = Scalar::from_string("banana").unwrap();
+    let col = Column::from_strs(&["apple", "cherry", "banana"]).unwrap();
+    let scalar = Scalar::from_str("banana").unwrap();
     let result = col.lt_scalar(&scalar).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
@@ -364,8 +364,8 @@ fn test_column_lt_scalar_string() {
 
 #[test]
 fn test_column_add_scalar_string_error() {
-    let col = Column::from_strings(&["foo", "bar"]).unwrap();
-    let scalar = Scalar::from_string("baz").unwrap();
+    let col = Column::from_strs(&["foo", "bar"]).unwrap();
+    let scalar = Scalar::from_str("baz").unwrap();
     let err = col.add_scalar(&scalar).err().expect("expected error");
     assert_eq!(err.operation(), "column::add_scalar");
 }
@@ -426,6 +426,34 @@ fn test_ops_div_column_i64_scalar() {
     let result = (&col / 2i64).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.to_vec::<i64>().unwrap(), vec![5, 10, 15]);
+}
+
+#[test]
+fn test_ops_column_scalar_supports_remaining_integer_types() {
+    let u8_col = Column::from_slice(&[1u8, 2, 3]).unwrap();
+    let u16_col = Column::from_slice(&[10u16, 20, 30]).unwrap();
+    let u32_col = Column::from_slice(&[2u32, 3, 4]).unwrap();
+    let u64_col = Column::from_slice(&[20u64, 40, 60]).unwrap();
+    let i8_col = Column::from_slice(&[10i8, 20, 30]).unwrap();
+    let i16_col = Column::from_slice(&[2i16, 4, 6]).unwrap();
+
+    let add = (&u8_col + 1u8).unwrap();
+    assert_eq!(add.view().unwrap().to_vec::<u8>().unwrap(), vec![2, 3, 4]);
+
+    let sub = (&u16_col - 5u16).unwrap();
+    assert_eq!(sub.view().unwrap().to_vec::<u16>().unwrap(), vec![5, 15, 25]);
+
+    let mul = (&u32_col * 10u32).unwrap();
+    assert_eq!(mul.view().unwrap().to_vec::<u32>().unwrap(), vec![20, 30, 40]);
+
+    let div = (&u64_col / 10u64).unwrap();
+    assert_eq!(div.view().unwrap().to_vec::<u64>().unwrap(), vec![2, 4, 6]);
+
+    let signed_add = (&i8_col + 1i8).unwrap();
+    assert_eq!(signed_add.view().unwrap().to_vec::<i8>().unwrap(), vec![11, 21, 31]);
+
+    let signed_div = (&i16_col / 2i16).unwrap();
+    assert_eq!(signed_div.view().unwrap().to_vec::<i16>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]

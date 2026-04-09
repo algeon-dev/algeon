@@ -15,7 +15,7 @@ use super::manifest::Dataset;
 /// Each column in the dataset is constructed as a nullable `Series`:
 /// - Numeric types use `Series::new_nullable` with a validity mask derived
 ///   from JSON null positions.
-/// - String types use `Series::from_strings_nullable`.
+/// - String types use `Series::from_strs_nullable`.
 /// - Bool types convert JSON bools to Rust bools and use `Series::new_nullable`.
 pub fn build_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
     let frame = if !dataset.columns.is_empty() {
@@ -92,7 +92,7 @@ fn build_series(name: &str, dtype: &str, values: &[serde_json::Value]) -> cudf::
         "float32" => build_numeric_series::<f32>(name, values, |v| v.as_f64().map(|n| n as f32)),
         "float64" => build_numeric_series::<f64>(name, values, |v| v.as_f64()),
         "bool8" => build_bool_series(name, values),
-        "string" => build_string_series(name, values),
+        "string" => build_str_series(name, values),
         other => {
             Err(cudf::Error::new(cudf::ErrorKind::InvalidOperation, format!("unsupported manifest dtype: {}", other))
                 .with_operation("e2e::build_series")
@@ -139,7 +139,7 @@ fn build_bool_series(name: &str, values: &[serde_json::Value]) -> cudf::Result<S
 }
 
 /// Build a nullable string `Series` from JSON string values.
-fn build_string_series(name: &str, values: &[serde_json::Value]) -> cudf::Result<Series> {
+fn build_str_series(name: &str, values: &[serde_json::Value]) -> cudf::Result<Series> {
     let mut data = Vec::with_capacity(values.len());
     let mut validity = Vec::with_capacity(values.len());
 
@@ -150,7 +150,7 @@ fn build_string_series(name: &str, values: &[serde_json::Value]) -> cudf::Result
         } else {
             let s = v.as_str().ok_or_else(|| {
                 cudf::Error::new(cudf::ErrorKind::InvalidOperation, "expected JSON string for string column")
-                    .with_operation("e2e::build_string_series")
+                    .with_operation("e2e::build_str_series")
                     .with_context("value", v.to_string())
             })?;
             data.push(s);
@@ -159,7 +159,7 @@ fn build_string_series(name: &str, values: &[serde_json::Value]) -> cudf::Result
     }
 
     let has_nulls = validity.iter().any(|&v| !v);
-    if has_nulls { Series::from_strings_nullable(name, &data, &validity) } else { Series::from_strings(name, &data) }
+    if has_nulls { Series::from_strs_nullable(name, &data, &validity) } else { Series::from_strs(name, &data) }
 }
 
 #[cfg(test)]

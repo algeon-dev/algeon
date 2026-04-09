@@ -139,3 +139,12 @@ impl Drop for CudaStreamHandle {
         }
     }
 }
+
+impl std::fmt::Debug for CudaStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CudaStream")
+            .field("device", &self.device())
+            .field("handle", &self.__debug_raw_handle_value())
+            .finish()
+    }
+}

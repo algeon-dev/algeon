@@ -5,12 +5,12 @@
 //! - `Series::copy_into_runtime` + `fillna_with_series` — explicit placement
 //! - `DataFrame::fillna_with_series` — v2: mixed-domain default path succeeds
 //! - `Series::fillna_with_series` — v2: mixed-domain default path succeeds
-//! - `Column::empty_with_runtime` — retains explicit domain
-//! - `Column::from_device_ptr_with_runtime` — uses `_ex` FFI, retains explicit domain
+//! - `Runtime::empty_column` — retains explicit domain
+//! - `Runtime::column_from_device_ptr` — uses `_ex` FFI, retains explicit domain
 
 use std::{ffi::c_void, ptr};
 
-use cudf::{DataFrame, Series, TypeId, core::Column};
+use cudf::{DataFrame, Series, TypeId};
 use cudf_sys::{
     cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
     cudf_test_exec_reset_observation,
@@ -183,28 +183,28 @@ fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 }
 
 // ---------------------------------------------------------------------------
-// Column::empty_with_runtime
+// Runtime::empty_column
 // ---------------------------------------------------------------------------
 
-/// An empty column created via `empty_with_runtime` carries the runtime's
+/// An empty column created via `Runtime::empty_column` carries the runtime's
 /// explicit domain, not the ambient default.
 #[test]
-fn column_empty_with_runtime_retains_explicit_domain() {
+fn runtime_empty_column_retains_explicit_domain() {
     let rt = sample_runtime();
-    let col = Column::empty_with_runtime(&rt, TypeId::Int32).unwrap();
+    let col = rt.empty_column(TypeId::Int32).unwrap();
 
     assert_eq!(col.__debug_execution_domain_kind(), "explicit");
     assert_eq!(col.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
     assert_eq!(col.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
 }
 
-/// An `empty_with_runtime` column can be added to an explicit-domain
+/// A `Runtime::empty_column` result can be added to an explicit-domain
 /// DataFrame via `with_column` without mixed-domain rejection.
 #[test]
-fn empty_with_runtime_column_in_dataframe_no_mixed_domain_error() {
+fn runtime_empty_column_in_dataframe_no_mixed_domain_error() {
     let rt = sample_runtime();
     let df = DataFrame::from_series([rt.series("id", &[1i32; 0]).unwrap()]).unwrap();
-    let empty_col = Column::empty_with_runtime(&rt, TypeId::Int64).unwrap();
+    let empty_col = rt.empty_column(TypeId::Int64).unwrap();
 
     // Adding an empty column in the same domain should succeed without
     // the mixed-domain error.
@@ -213,13 +213,13 @@ fn empty_with_runtime_column_in_dataframe_no_mixed_domain_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Column::from_device_ptr_with_runtime
+// Runtime::column_from_device_ptr
 // ---------------------------------------------------------------------------
 
-/// `from_device_ptr_with_runtime` tags the result with the runtime's
+/// `Runtime::column_from_device_ptr` tags the result with the runtime's
 /// explicit domain.
 #[test]
-fn column_from_device_ptr_with_runtime_retains_explicit_domain() {
+fn runtime_column_from_device_ptr_retains_explicit_domain() {
     let rt = sample_runtime();
 
     // Allocate some device memory via a Series (easiest way to get a device ptr).
@@ -227,17 +227,17 @@ fn column_from_device_ptr_with_runtime_retains_explicit_domain() {
     let device_ptr = source.as_column_view().unwrap().device_data_ptr().unwrap();
 
     obs_reset();
-    let col = unsafe { Column::from_device_ptr_with_runtime(&rt, device_ptr, 3, TypeId::Int32).unwrap() };
+    let col = unsafe { rt.column_from_device_ptr(device_ptr, 3, TypeId::Int32).unwrap() };
 
     assert_eq!(col.__debug_execution_domain_kind(), "explicit");
     assert_eq!(col.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
     assert_eq!(col.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
 }
 
-/// `from_device_ptr_with_runtime` routes through the `_ex` FFI shim,
+/// `Runtime::column_from_device_ptr` routes through the `_ex` FFI shim,
 /// which records the explicit stream in the observation hooks.
 #[test]
-fn column_from_device_ptr_with_runtime_uses_ex_ffi() {
+fn runtime_column_from_device_ptr_uses_ex_ffi() {
     let rt = sample_runtime();
     let expected_stream = rt.stream().__debug_raw_handle_value();
     let default_mr = obs_current_device_resource() as usize;
@@ -247,7 +247,7 @@ fn column_from_device_ptr_with_runtime_uses_ex_ffi() {
     let device_ptr = source.as_column_view().unwrap().device_data_ptr().unwrap();
 
     obs_reset();
-    let col = unsafe { Column::from_device_ptr_with_runtime(&rt, device_ptr, 4, TypeId::Int64).unwrap() };
+    let col = unsafe { rt.column_from_device_ptr(device_ptr, 4, TypeId::Int64).unwrap() };
 
     // The observation hook should have recorded the runtime's stream (not default).
     assert_eq!(obs_last_stream(), expected_stream);

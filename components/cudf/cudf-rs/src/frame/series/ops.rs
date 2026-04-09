@@ -4,11 +4,14 @@
 //! and FFI calls can fail at runtime.
 //!
 //! Supported forms:
-//! - `Series op Series` (all value/ref combos): `Add`, `Sub`, `Mul`, `Div`, `Rem`
-//! - `Series op scalar` / `scalar op Series` for `f32`, `f64`, `i32`, `i64`
+//! - `Series op Series` (all value/ref combos): `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`
+//! - `Series op scalar` / `scalar op Series` for all arithmetic numeric
+//!   `CudfType`s (`u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`,
+//!   `f32`, `f64`)
 //! - `-Series` (`Neg`) and `!Series` (`Not`)
 //!
-//! Named methods (`add`, `sub`, `mul_scalar`, etc.) remain on `Series` in
+//! Named methods (`add`, `sub`, `logical_and`, `logical_or`, `mul_scalar`,
+//! etc.) remain on `Series` in
 //! `owned.rs`. Operators forward to those methods so behaviour stays aligned.
 
 use std::sync::Arc;
@@ -66,6 +69,8 @@ impl_series_series_op!(Sub, sub, sub);
 impl_series_series_op!(Mul, mul, mul);
 impl_series_series_op!(Div, div, div);
 impl_series_series_op!(Rem, rem, rem);
+impl_series_series_op!(BitAnd, bitand, logical_and);
+impl_series_series_op!(BitOr, bitor, logical_or);
 
 // ===========================================================================
 // Series op scalar — returns Result<Series>
@@ -95,11 +100,11 @@ macro_rules! impl_series_scalar_op {
     };
 }
 
-impl_series_scalar_op!(Add, add, add_scalar, f32, f64, i32, i64);
-impl_series_scalar_op!(Sub, sub, sub_scalar, f32, f64, i32, i64);
-impl_series_scalar_op!(Mul, mul, mul_scalar, f32, f64, i32, i64);
-impl_series_scalar_op!(Div, div, div_scalar, f32, f64, i32, i64);
-impl_series_scalar_op!(Rem, rem, rem_scalar, f32, f64, i32, i64);
+impl_series_scalar_op!(Add, add, add_scalar, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_series_scalar_op!(Sub, sub, sub_scalar, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_series_scalar_op!(Mul, mul, mul_scalar, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_series_scalar_op!(Div, div, div_scalar, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_series_scalar_op!(Rem, rem, rem_scalar, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 
 // ===========================================================================
 // scalar op Series — returns Result<Series>
@@ -132,11 +137,11 @@ macro_rules! impl_scalar_series_op {
     };
 }
 
-impl_scalar_series_op!(Add, add, BinaryOperator::Add, f32, f64, i32, i64);
-impl_scalar_series_op!(Sub, sub, BinaryOperator::Sub, f32, f64, i32, i64);
-impl_scalar_series_op!(Mul, mul, BinaryOperator::Mul, f32, f64, i32, i64);
-impl_scalar_series_op!(Div, div, BinaryOperator::Div, f32, f64, i32, i64);
-impl_scalar_series_op!(Rem, rem, BinaryOperator::Mod, f32, f64, i32, i64);
+impl_scalar_series_op!(Add, add, BinaryOperator::Add, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_scalar_series_op!(Sub, sub, BinaryOperator::Sub, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_scalar_series_op!(Mul, mul, BinaryOperator::Mul, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_scalar_series_op!(Div, div, BinaryOperator::Div, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_scalar_series_op!(Rem, rem, BinaryOperator::Mod, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 
 // ===========================================================================
 // Private helper: scalar-left binary operation

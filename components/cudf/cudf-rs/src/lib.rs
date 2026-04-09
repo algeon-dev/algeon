@@ -11,7 +11,7 @@
 //! use cudf::{DataFrame, Runtime};
 //!
 //! // Build an explicit runtime for this workflow.
-//! let rt = Runtime::builder().build().unwrap();
+//! let rt = Runtime::new().unwrap();
 //!
 //! // Create named Series from host data inside that runtime.
 //! let ids = rt.series("id", &[1i32, 2, 3]).unwrap();
@@ -158,17 +158,17 @@ pub use core::{
 
 pub use frame::{
     dataframe::{
-        ColumnMemoryAccounting, CsvWriteOptions, DataFrame, DataFrameColumnInfo, DataFrameInfo, DataFrameJoinResult,
-        DataFrameMemoryAccounting, DataTypeCount, DistinctOptions, DropNaOptions, InfoDetail, JsonWriteOptions,
-        MeltOptions, ParquetWriteOptions,
+        ColumnMemoryAccounting, CsvReadOptions, CsvWriteOptions, DataFrame, DataFrameColumnInfo, DataFrameInfo,
+        DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DropDuplicatesOptions, DropNaHow, DropNaOptions,
+        InfoDetail, JsonWriteOptions, MeltOptions, ParquetWriteOptions,
     },
     series::{IntoSeries, Series},
 };
-pub use io::{csv::CsvReadOptions, json::JsonReadOptions, parquet::ParquetReadOptions};
+pub use io::{json::JsonReadOptions, parquet::ParquetReadOptions};
 // — High-level operations —
 pub use ops::Expr;
 pub use ops::{
-    groupby::{Agg, AggSpec, GroupBy, GroupByOptions},
+    groupby::{AggSpec, GroupBy, GroupByAgg, GroupByOptions},
     join::{JoinType, MergeOptions},
     replace::FillPolicy,
     sorting::SortOptions,

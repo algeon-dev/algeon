@@ -25,27 +25,19 @@ use crate::{
 /// This type controls CSV parsing only. Truthful schema names, when available
 /// from a header row, are returned through [`IoTableResult`].
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct CsvReadOptions {
+pub struct CsvTableReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     #[builder(default = b',')]
     delimiter: u8,
     #[builder(default = true)]
     has_header: bool,
-    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
-    column_names: Option<Vec<String>>,
     #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
 }
 
-impl CsvReadOptions {
-    pub(crate) fn column_names(&self) -> Option<&[String]> {
-        self.column_names.as_deref()
-    }
-}
-
 /// Read a CSV file into a low-level table result.
-pub fn read_csv(options: &CsvReadOptions) -> Result<IoTableResult> {
+pub fn read_csv(options: &CsvTableReadOptions) -> Result<IoTableResult> {
     let filepath = super::path_to_cstring(&options.filepath, "io::csv::read_csv")?;
     let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
     let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
@@ -139,7 +131,7 @@ pub(crate) fn write_csv_with_exec(
         let expected = table.num_columns()? as usize;
         if names.len() != expected {
             return Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::InvalidArgument,
                 format!("column name count ({}) does not match table column count ({})", names.len(), expected),
             )
             .with_operation("io::csv::write_csv")
@@ -158,7 +150,7 @@ pub(crate) fn write_csv_with_exec(
                 .map(|s| {
                     CString::new(s.as_str()).map_err(|_| {
                         crate::core::error::Error::new(
-                            crate::core::error::ErrorKind::InvalidOperation,
+                            crate::core::error::ErrorKind::InvalidArgument,
                             "column name contains interior null byte",
                         )
                         .with_operation("io::csv::write_csv")
@@ -233,7 +225,7 @@ fn read_header_names(path: &Path, delimiter: u8) -> Result<Vec<String>> {
 fn validate_header_name_count(name_count: usize, num_columns: usize) -> Result<()> {
     if name_count != num_columns {
         return Err(Error::new(
-            ErrorKind::InvalidOperation,
+            ErrorKind::InvalidArgument,
             format!("header column count ({name_count}) does not match table column count ({num_columns})"),
         )
         .with_operation("io::csv::read_csv")

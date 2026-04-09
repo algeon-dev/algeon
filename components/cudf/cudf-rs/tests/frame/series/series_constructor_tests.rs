@@ -6,6 +6,40 @@
 use cudf::{Series, TypeId, core::Scalar};
 
 // ===========================================================================
+// Series::from_optional
+// ===========================================================================
+
+#[test]
+fn test_from_optional_i32() {
+    let s = Series::from_optional("x", &[Some(10i32), None, Some(30)]).unwrap();
+
+    assert_eq!(s.name(), Some("x"));
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.null_count(), 1);
+    assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
+    assert_eq!(s.to_vec_optional::<i32>().unwrap(), vec![Some(10), None, Some(30)]);
+}
+
+#[test]
+fn test_from_optional_bool_preserves_false() {
+    let s = Series::from_optional("flag", &[Some(false), Some(true), None, Some(false)]).unwrap();
+
+    assert_eq!(s.name(), Some("flag"));
+    assert_eq!(s.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(s.to_vec_optional::<bool>().unwrap(), vec![Some(false), Some(true), None, Some(false)]);
+}
+
+#[test]
+fn test_from_optional_empty() {
+    let s = Series::from_optional::<i32>("empty", &[]).unwrap();
+
+    assert_eq!(s.name(), Some("empty"));
+    assert!(s.is_empty());
+    assert_eq!(s.null_count(), 0);
+    assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
+}
+
+// ===========================================================================
 // Series::nulls
 // ===========================================================================
 
@@ -81,7 +115,7 @@ fn test_from_scalar_f64() {
 
 #[test]
 fn test_from_scalar_string() {
-    let scalar = Scalar::from_string("hello").unwrap();
+    let scalar = Scalar::from_str("hello").unwrap();
     let s = Series::from_scalar("greet", &scalar, 2).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::String);

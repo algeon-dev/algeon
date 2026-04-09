@@ -2,8 +2,8 @@
 //!
 //! Validates the `Result<Series>`-returning operator contract for:
 //! - `Series op Series` (all value/ref combos)
-//! - `Series op scalar` (f32, f64, i32, i64)
-//! - `scalar op Series` (f32, f64, i32, i64)
+//! - `Series op scalar` (all arithmetic numeric `CudfType`s)
+//! - `scalar op Series` (all arithmetic numeric `CudfType`s)
 //!
 //! All tests require a GPU.
 
@@ -292,7 +292,7 @@ fn test_scalar_sub_series_inherits_name() {
 #[test]
 fn test_series_op_series_type_mismatch_returns_err() {
     let nums = Series::new::<i32>("nums", &[1, 2, 3]).unwrap();
-    let strs = Series::from_strings("strs", &["a", "b", "c"]).unwrap();
+    let strs = Series::from_strs("strs", &["a", "b", "c"]).unwrap();
 
     let result: cudf::Result<Series> = &nums + &strs;
     assert!(result.is_err(), "Expected Err for type mismatch, got Ok");
@@ -342,6 +342,34 @@ fn test_series_div_all_scalar_types() {
     assert!((&f64s / 2.0_f64).is_ok());
     assert!((100_i32 / &i32s).is_ok());
     assert!((100.0_f64 / &f64s).is_ok());
+}
+
+#[test]
+fn test_series_scalar_operators_support_remaining_integer_types() {
+    let u8s = Series::new::<u8>("u8s", &[1, 2, 3]).unwrap();
+    let u16s = Series::new::<u16>("u16s", &[10, 20, 30]).unwrap();
+    let u32s = Series::new::<u32>("u32s", &[2, 3, 4]).unwrap();
+    let u64s = Series::new::<u64>("u64s", &[20, 40, 60]).unwrap();
+    let i8s = Series::new::<i8>("i8s", &[10, 20, 30]).unwrap();
+    let i16s = Series::new::<i16>("i16s", &[2, 4, 6]).unwrap();
+
+    let series_add = (&u8s + 1u8).unwrap();
+    assert_eq!(series_add.to_vec_strict::<u8>().unwrap(), vec![2, 3, 4]);
+
+    let series_sub = (&u16s - 5u16).unwrap();
+    assert_eq!(series_sub.to_vec_strict::<u16>().unwrap(), vec![5, 15, 25]);
+
+    let series_mul = (&u32s * 10u32).unwrap();
+    assert_eq!(series_mul.to_vec_strict::<u32>().unwrap(), vec![20, 30, 40]);
+
+    let series_div = (&u64s / 10u64).unwrap();
+    assert_eq!(series_div.to_vec_strict::<u64>().unwrap(), vec![2, 4, 6]);
+
+    let scalar_sub = (100i8 - &i8s).unwrap();
+    assert_eq!(scalar_sub.to_vec_strict::<i8>().unwrap(), vec![90, 80, 70]);
+
+    let scalar_mul = (3i16 * &i16s).unwrap();
+    assert_eq!(scalar_mul.to_vec_strict::<i16>().unwrap(), vec![6, 12, 18]);
 }
 
 // ===========================================================================
@@ -512,6 +540,96 @@ fn test_series_not_inherits_name() {
 
     let result = (!&s).unwrap();
     assert_eq!(result.name(), Some("flags"));
+}
+
+// ===========================================================================
+// BitAnd / BitOr operators — boolean mask composition for Bool8
+// ===========================================================================
+
+#[test]
+fn test_series_bitand_operator_bool() {
+    let a = Series::new::<bool>("lhs", &[true, true, false, false]).unwrap();
+    let b = Series::new::<bool>("rhs", &[true, false, true, false]).unwrap();
+
+    let result: cudf::Result<Series> = &a & &b;
+    let out = result.unwrap();
+
+    assert_eq!(out.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(out.name(), None);
+    assert_eq!(out.to_vec_strict::<bool>().unwrap(), vec![true, false, false, false]);
+}
+
+#[test]
+fn test_series_bitor_operator_bool() {
+    let a = Series::new::<bool>("lhs", &[true, true, false, false]).unwrap();
+    let b = Series::new::<bool>("rhs", &[true, false, true, false]).unwrap();
+
+    let result: cudf::Result<Series> = &a | &b;
+    let out = result.unwrap();
+
+    assert_eq!(out.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(out.name(), None);
+    assert_eq!(out.to_vec_strict::<bool>().unwrap(), vec![true, true, true, false]);
+}
+
+#[test]
+fn test_series_bitand_owned_owned() {
+    let a = Series::new::<bool>("lhs", &[true, false]).unwrap();
+    let b = Series::new::<bool>("rhs", &[true, true]).unwrap();
+
+    let result: cudf::Result<Series> = a & b;
+    assert_eq!(result.unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false]);
+}
+
+#[test]
+fn test_series_bitor_owned_ref() {
+    let a = Series::new::<bool>("lhs", &[true, false]).unwrap();
+    let b = Series::new::<bool>("rhs", &[false, true]).unwrap();
+
+    let result: cudf::Result<Series> = a | &b;
+    assert_eq!(result.unwrap().to_vec_strict::<bool>().unwrap(), vec![true, true]);
+}
+
+#[test]
+fn test_series_bitand_rejects_non_bool_operands() {
+    let a = Series::new::<i32>("lhs", &[1, 0, 1]).unwrap();
+    let b = Series::new::<i32>("rhs", &[1, 1, 0]).unwrap();
+
+    let err = (&a & &b).unwrap_err();
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidArgument);
+    assert_eq!(err.operation(), "series::logical_and");
+}
+
+#[test]
+fn test_series_bitor_rejects_non_bool_operands() {
+    let a = Series::new::<i32>("lhs", &[1, 0, 1]).unwrap();
+    let b = Series::new::<i32>("rhs", &[1, 1, 0]).unwrap();
+
+    let err = (&a | &b).unwrap_err();
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidArgument);
+    assert_eq!(err.operation(), "series::logical_or");
+}
+
+#[test]
+fn test_series_logical_and_method_bool() {
+    let a = Series::new::<bool>("lhs", &[true, false, true]).unwrap();
+    let b = Series::new::<bool>("rhs", &[true, true, false]).unwrap();
+
+    let result = a.logical_and(&b).unwrap();
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(result.name(), None);
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
+}
+
+#[test]
+fn test_series_logical_or_method_bool() {
+    let a = Series::new::<bool>("lhs", &[true, false, true]).unwrap();
+    let b = Series::new::<bool>("rhs", &[false, true, false]).unwrap();
+
+    let result = a.logical_or(&b).unwrap();
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(result.name(), None);
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
 }
 
 // ===========================================================================

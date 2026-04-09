@@ -4,8 +4,8 @@ use cudf::{TypeId, core::Column};
 
 #[test]
 fn test_map_string_to_int() {
-    let input = Column::from_strings(&["a", "b", "c", "a"]).unwrap();
-    let keys = Column::from_strings(&["a", "b", "c"]).unwrap();
+    let input = Column::from_strs(&["a", "b", "c", "a"]).unwrap();
+    let keys = Column::from_strs(&["a", "b", "c"]).unwrap();
     let values = Column::from_slice(&[1i32, 2, 3]).unwrap();
 
     let result = input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()).unwrap();
@@ -40,8 +40,8 @@ fn test_map_missing_keys_become_null() {
 
 #[test]
 fn test_map_empty_input() {
-    let input = Column::from_strings(&[]).unwrap();
-    let keys = Column::from_strings(&["a"]).unwrap();
+    let input = Column::from_strs(&[]).unwrap();
+    let keys = Column::from_strs(&["a"]).unwrap();
     let values = Column::from_slice(&[1i32]).unwrap();
 
     let result = input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()).unwrap();

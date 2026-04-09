@@ -1,6 +1,6 @@
 use cudf::{
     DuplicateKeepOption, NullEquality, NullPolicy, StripSide,
-    ops::{BinaryOperator, reduction::ScanType, stream_compaction::NanEquality, unary::UnaryOperator},
+    ops::{binary::BinaryOperator, reduction::ScanType, stream_compaction::NanEquality, unary::UnaryOperator},
 };
 use cudf_sys::{
     cudf_binary_operator_t::*, cudf_duplicate_keep_option_t::*, cudf_null_equality_t::*, cudf_null_policy_t::*,

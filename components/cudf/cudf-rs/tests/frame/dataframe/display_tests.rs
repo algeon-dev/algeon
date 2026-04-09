@@ -113,7 +113,7 @@ fn test_display_bool_column() {
 fn test_display_string_column_reports_dtype_without_materializing_values() {
     let df = crate::common::dataframe_from_columns(
         vec!["city".to_string()],
-        vec![Column::from_strings(&["Tokyo", "Paris", "Taipei"]).unwrap()],
+        vec![Column::from_strs(&["Tokyo", "Paris", "Taipei"]).unwrap()],
     )
     .unwrap();
 

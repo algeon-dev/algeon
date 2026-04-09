@@ -7,7 +7,7 @@
 mod common;
 
 use cudf::{
-    Agg, CsvWriteOptions, DataFrame, DeviceId, ErrorKind, ExecutionContext, JsonWriteOptions, MeltOptions,
+    CsvWriteOptions, DataFrame, DeviceId, ErrorKind, ExecutionContext, GroupByAgg, JsonWriteOptions, MeltOptions,
     MergeOptions, ParquetWriteOptions, Runtime, Series, SortOptions, TypeId,
     core::{Column, DeviceBuffer, Scalar, Table, memory::DeviceMemoryResource},
     ops::{
@@ -1296,7 +1296,7 @@ fn groupby_aggregate_without_relocation_rejects_cross_device_runtime_inputs() {
             .unwrap();
     let values = values_rt.series("value", &[10i32, 20, 30, 40]).unwrap();
     let values_view = values.as_column_view().unwrap();
-    let aggregations = [Agg::Sum];
+    let aggregations = [GroupByAgg::Sum];
     let requests = [AggregationRequest { values: &values_view, aggregations: &aggregations }];
 
     let err = match groupby::groupby_aggregate(&keys.view().unwrap(), &requests, NullPolicy::Exclude) {
@@ -1366,8 +1366,8 @@ fn strings_contains_without_relocation_rejects_cross_device_runtime_inputs() {
     let input_rt = Runtime::builder().with_device(device0).build().unwrap();
     let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let input = input_rt.string_series("input", &["alpha", "beta", "alphabet"]).unwrap();
-    let scalar = scalar_rt.string_series("seed", &["alpha"]).unwrap().min().unwrap();
+    let input = input_rt.str_series("input", &["alpha", "beta", "alphabet"]).unwrap();
+    let scalar = scalar_rt.str_series("seed", &["alpha"]).unwrap().min().unwrap();
 
     let err = match strings::str_contains(&input.as_column_view().unwrap(), &scalar) {
         Ok(_) => panic!("cross-device strings::contains should fail until inputs are explicitly relocated"),
@@ -1386,8 +1386,8 @@ fn strings_starts_with_without_relocation_rejects_cross_device_runtime_inputs() 
     let input_rt = Runtime::builder().with_device(device0).build().unwrap();
     let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let input = input_rt.string_series("input", &["alpha", "beta", "alphabet"]).unwrap();
-    let scalar = scalar_rt.string_series("seed", &["alp"]).unwrap().min().unwrap();
+    let input = input_rt.str_series("input", &["alpha", "beta", "alphabet"]).unwrap();
+    let scalar = scalar_rt.str_series("seed", &["alp"]).unwrap().min().unwrap();
 
     let err = match strings::starts_with(&input.as_column_view().unwrap(), &scalar) {
         Ok(_) => panic!("cross-device strings::starts_with should fail until inputs are explicitly relocated"),
@@ -1406,8 +1406,8 @@ fn strings_ends_with_without_relocation_rejects_cross_device_runtime_inputs() {
     let input_rt = Runtime::builder().with_device(device0).build().unwrap();
     let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let input = input_rt.string_series("input", &["alpha", "beta", "alphabet"]).unwrap();
-    let scalar = scalar_rt.string_series("seed", &["ha"]).unwrap().min().unwrap();
+    let input = input_rt.str_series("input", &["alpha", "beta", "alphabet"]).unwrap();
+    let scalar = scalar_rt.str_series("seed", &["ha"]).unwrap().min().unwrap();
 
     let err = match strings::ends_with(&input.as_column_view().unwrap(), &scalar) {
         Ok(_) => panic!("cross-device strings::ends_with should fail until inputs are explicitly relocated"),
@@ -1426,8 +1426,8 @@ fn strings_strip_without_relocation_rejects_cross_device_runtime_inputs() {
     let input_rt = Runtime::builder().with_device(device0).build().unwrap();
     let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
 
-    let input = input_rt.string_series("input", &["xxalpha", "betaxx", "xxalphabetxx"]).unwrap();
-    let scalar = scalar_rt.string_series("seed", &["x"]).unwrap().min().unwrap();
+    let input = input_rt.str_series("input", &["xxalpha", "betaxx", "xxalphabetxx"]).unwrap();
+    let scalar = scalar_rt.str_series("seed", &["x"]).unwrap().min().unwrap();
 
     let err = match strings::strip(&input.as_column_view().unwrap(), cudf::StripSide::Both, &scalar) {
         Ok(_) => panic!("cross-device strings::strip should fail until inputs are explicitly relocated"),
@@ -1525,7 +1525,7 @@ fn runtime_melt_regression() {
     common::set_current_device(device0);
 
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
-    let a = rt1.string_series("A", &["a", "b", "c"]).unwrap();
+    let a = rt1.str_series("A", &["a", "b", "c"]).unwrap();
     let b = rt1.series("B", &[1, 3, 5]).unwrap();
     let c = rt1.series("C", &[2, 4, 6]).unwrap();
     let df = DataFrame::from_series(vec![a, b, c]).unwrap();
@@ -1674,7 +1674,7 @@ fn runtime_series_from_scalar_executes_on_target_device() {
 }
 
 #[test]
-fn column_from_scalar_with_runtime_executes_on_target_device() {
+fn runtime_column_from_scalar_executes_on_target_device() {
     if !should_run_multi_gpu_test() {
         return;
     }
@@ -1687,13 +1687,13 @@ fn column_from_scalar_with_runtime_executes_on_target_device() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
 
     common::reset_exec_observation();
-    let column = Column::from_scalar_with_runtime(&rt1, &scalar, 4).unwrap();
+    let column = rt1.column_from_scalar(&scalar, 4).unwrap();
 
     assert_eq!(column.view().unwrap().to_vec::<i32>().unwrap(), vec![13, 13, 13, 13]);
     assert_eq!(
         common::last_exec_device(),
         device1.ordinal() as i32,
-        "Column::from_scalar_with_runtime() should execute on device {}, observed device {}",
+        "Runtime::column_from_scalar() should execute on device {}, observed device {}",
         device1.ordinal(),
         common::last_exec_device()
     );

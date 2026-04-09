@@ -207,7 +207,7 @@ fn test_cast_column_preserves_schema_order() {
 fn test_with_column_add_preserves_existing_string_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "a".to_string()],
-        vec![Column::from_strings(&["alice", "bob", "cara"]).unwrap(), Column::from_slice(&[1i32, 2, 3]).unwrap()],
+        vec![Column::from_strs(&["alice", "bob", "cara"]).unwrap(), Column::from_slice(&[1i32, 2, 3]).unwrap()],
     )
     .unwrap();
 
@@ -230,7 +230,7 @@ fn test_fillna_with_scalar_with_string_sibling_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "b".to_string()],
         vec![
-            Column::from_strings(&["x", "y", "z"]).unwrap(),
+            Column::from_strs(&["x", "y", "z"]).unwrap(),
             Column::from_slice_nullable(&[10i32, 0, 30], &[true, false, true]).unwrap(),
         ],
     )
@@ -250,7 +250,7 @@ fn test_fillna_with_scalar_with_string_sibling_column() {
 fn test_cast_column_with_string_sibling_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "qty".to_string()],
-        vec![Column::from_strings(&["a", "b", "c"]).unwrap(), Column::from_slice(&[1i32, 2, 3]).unwrap()],
+        vec![Column::from_strs(&["a", "b", "c"]).unwrap(), Column::from_slice(&[1i32, 2, 3]).unwrap()],
     )
     .unwrap();
 

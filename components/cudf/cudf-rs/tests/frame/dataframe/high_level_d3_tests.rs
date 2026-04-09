@@ -1,7 +1,7 @@
 //! Integration tests for high-level DataFrame methods.
 //!
 //! Methods under test: `dropna`, `fillna`, `drop_duplicates`.
-//! Option types under test: `DropNaOptions`, `DistinctOptions`, `FillNaValue`.
+//! Option types under test: `DropNaOptions`, `DropDuplicatesOptions`, `FillNaValue`.
 //!
 //! All tests require a GPU.
 
@@ -19,8 +19,7 @@ fn sample_df_with_nulls() -> DataFrame {
     let ids = Series::new::<i32>("id", &[1, 2, 3, 4, 5]).unwrap();
     let scores =
         Series::new_nullable::<f64>("score", &[10.0, 0.0, 30.0, 0.0, 50.0], &[true, false, true, false, true]).unwrap();
-    let tags =
-        Series::from_strings_nullable("tag", &["a", "b", "", "d", ""], &[true, true, false, true, false]).unwrap();
+    let tags = Series::from_strs_nullable("tag", &["a", "b", "", "d", ""], &[true, true, false, true, false]).unwrap();
     DataFrame::from_series([ids, scores, tags]).unwrap()
 }
 
@@ -58,9 +57,9 @@ fn test_dropna_default_drops_any_null_row() {
 // ===========================================================================
 
 #[test]
-fn test_dropna_how_all_keeps_partial_nulls() {
+fn test_dropna_all_mode_keeps_partial_nulls() {
     let df = sample_df_with_nulls();
-    let opts = DropNaOptions::builder().how_all(true).build();
+    let opts = DropNaOptions::builder().how(DropNaHow::All).build();
     let result = df.dropna(opts).unwrap();
 
     // "all" means drop only rows where ALL columns are null.
@@ -173,7 +172,7 @@ fn test_drop_duplicates_default() {
 #[test]
 fn test_drop_duplicates_subset() {
     let df = sample_df_with_dupes();
-    let opts = DistinctOptions::builder().subset(&["a"]).build();
+    let opts = DropDuplicatesOptions::builder().subset(&["a"]).build();
     let result = df.drop_duplicates(opts).unwrap();
 
     // 3 distinct values of "a": 1, 2, 3
@@ -190,7 +189,7 @@ fn test_drop_duplicates_keep_first() {
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([a, b]).unwrap();
 
-    let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepFirst).build();
+    let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepFirst).build();
     let result = df.drop_duplicates(opts).unwrap();
 
     assert_eq!(result.num_rows(), 2);
@@ -213,7 +212,7 @@ fn test_drop_duplicates_keep_last() {
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([a, b]).unwrap();
 
-    let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepLast).build();
+    let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepLast).build();
     let result = df.drop_duplicates(opts).unwrap();
 
     assert_eq!(result.num_rows(), 2);
@@ -235,7 +234,7 @@ fn test_drop_duplicates_keep_none() {
     let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([a, b]).unwrap();
 
-    let opts = DistinctOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepNone).build();
+    let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepNone).build();
     let result = df.drop_duplicates(opts).unwrap();
 
     // a=1 appears twice → both removed; a=2 appears once → kept.
@@ -250,7 +249,7 @@ fn test_drop_duplicates_keep_none() {
 #[test]
 fn test_drop_duplicates_invalid_column() {
     let df = sample_df_with_dupes();
-    let opts = DistinctOptions::builder().subset(&["nonexistent"]).build();
+    let opts = DropDuplicatesOptions::builder().subset(&["nonexistent"]).build();
     let err = df.drop_duplicates(opts).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
@@ -262,7 +261,7 @@ fn test_drop_duplicates_invalid_column() {
 #[test]
 fn test_drop_duplicates_preserves_schema() {
     let df = sample_df_with_dupes();
-    let opts = DistinctOptions::builder().subset(&["a"]).build();
+    let opts = DropDuplicatesOptions::builder().subset(&["a"]).build();
     let result = df.drop_duplicates(opts).unwrap();
 
     assert_eq!(result.column_names(), vec!["a", "b"]);
@@ -341,11 +340,11 @@ fn test_fillna_preserves_schema() {
 #[test]
 fn test_dropna_options_builder_chaining() {
     // Verify that builder methods can be chained.
-    let _opts = DropNaOptions::builder().subset(&["a", "b"]).how_all(true).thresh(2).build();
+    let _opts = DropNaOptions::builder().subset(&["a", "b"]).how(DropNaHow::All).thresh(2).build();
 
     // thresh takes precedence over how, so this should behave like thresh=2
     let df = sample_df_with_nulls();
-    let subset_opts = DropNaOptions::builder().subset(&["score"]).how_all(true).build();
+    let subset_opts = DropNaOptions::builder().subset(&["score"]).how(DropNaHow::All).build();
     let result = df.dropna(subset_opts).unwrap();
     // how=all on just "score": drop only when score is null.
     // score null at rows 1,3 → 3 rows survive.
@@ -353,13 +352,13 @@ fn test_dropna_options_builder_chaining() {
 }
 
 // ===========================================================================
-// DistinctOptions builder API
+// DropDuplicatesOptions builder API
 // ===========================================================================
 
 #[test]
-fn test_distinct_options_default_is_keep_any() {
+fn test_drop_duplicates_options_default_is_keep_any() {
     let df = sample_df_with_dupes();
-    let opts = DistinctOptions::new();
+    let opts = DropDuplicatesOptions::new();
     let result = df.drop_duplicates(opts).unwrap();
     // Default keep=KeepAny → 3 distinct rows
     assert_eq!(result.num_rows(), 3);
@@ -373,8 +372,9 @@ fn test_distinct_options_default_is_keep_any() {
 fn test_high_level_option_types_importable_from_crate_root() {
     // These types should be importable from the crate root.
     let _: cudf::DropNaOptions = Default::default();
-    let _: cudf::DistinctOptions = Default::default();
+    let _: cudf::DropNaHow = Default::default();
+    let _: cudf::DropDuplicatesOptions = Default::default();
 }
 
 // Bring the option types into scope for the test module.
-use cudf::{DistinctOptions, DropNaOptions};
+use cudf::{DropDuplicatesOptions, DropNaHow, DropNaOptions};

@@ -1,6 +1,6 @@
 //! Tests for DataFrame groupby aggregation.
 
-use cudf::{Agg, AggSpec, ErrorKind, core::Column};
+use cudf::{AggSpec, ErrorKind, GroupByAgg, core::Column};
 
 use crate::common::assert_missing_column_error;
 
@@ -18,7 +18,7 @@ fn test_groupby_single_key_sum() {
     let df =
         crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     // Should have 2 columns: "key" and "value_sum"
     assert_eq!(result.num_columns(), 2);
@@ -49,7 +49,10 @@ fn test_groupby_single_key_multiple_aggregations_same_column() {
     let df =
         crate::common::dataframe_from_columns(vec!["key".to_string(), "score".to_string()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("score", Agg::Min), AggSpec::new("score", Agg::Max)]).unwrap();
+    let result = df
+        .groupby(["key"])
+        .agg(&[AggSpec::new("score", GroupByAgg::Min), AggSpec::new("score", GroupByAgg::Max)])
+        .unwrap();
 
     // Should have 3 columns: "key", "score_min", "score_max"
     assert_eq!(result.num_columns(), 3);
@@ -84,7 +87,7 @@ fn test_groupby_multiple_keys() {
     )
     .unwrap();
 
-    let result = df.groupby(["a", "b"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+    let result = df.groupby(["a", "b"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     // Should have 3 columns: "a", "b", "value_sum"
     assert_eq!(result.num_columns(), 3);
@@ -106,7 +109,7 @@ fn test_groupby_nonexistent_agg_column_returns_error() {
 
     let err = df
         .groupby(["key"])
-        .agg(&[AggSpec::new("nonexistent", Agg::Sum)])
+        .agg(&[AggSpec::new("nonexistent", GroupByAgg::Sum)])
         .expect_err("expected error for nonexistent column");
 
     assert_missing_column_error(&err, "nonexistent");
@@ -122,7 +125,7 @@ fn test_groupby_nonexistent_key_column_returns_error() {
 
     let err = df
         .groupby(["missing_key"])
-        .agg(&[AggSpec::new("value", Agg::Sum)])
+        .agg(&[AggSpec::new("value", GroupByAgg::Sum)])
         .expect_err("expected error for nonexistent key column");
 
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -140,11 +143,11 @@ fn test_groupby_result_column_naming_convention() {
     let result = df
         .groupby(["id"])
         .agg(&[
-            AggSpec::new("price", Agg::Sum),
-            AggSpec::new("price", Agg::Mean),
-            AggSpec::new("price", Agg::Count { include_nulls: false }),
-            AggSpec::new("price", Agg::Min),
-            AggSpec::new("price", Agg::Max),
+            AggSpec::new("price", GroupByAgg::Sum),
+            AggSpec::new("price", GroupByAgg::Mean),
+            AggSpec::new("price", GroupByAgg::Count { include_nulls: false }),
+            AggSpec::new("price", GroupByAgg::Min),
+            AggSpec::new("price", GroupByAgg::Max),
         ])
         .unwrap();
 
@@ -174,7 +177,11 @@ fn test_groupby_interleaved_multi_column_agg_ordering() {
 
     let result = df
         .groupby(["key"])
-        .agg(&[AggSpec::new("a", Agg::Sum), AggSpec::new("b", Agg::Sum), AggSpec::new("a", Agg::Min)])
+        .agg(&[
+            AggSpec::new("a", GroupByAgg::Sum),
+            AggSpec::new("b", GroupByAgg::Sum),
+            AggSpec::new("a", GroupByAgg::Min),
+        ])
         .unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "a_sum", "b_sum", "a_min"]);

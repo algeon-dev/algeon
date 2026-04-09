@@ -5,7 +5,7 @@ use std::sync::Arc;
 use smallvec::SmallVec;
 use typed_builder::TypedBuilder;
 
-use super::agg::{Agg, AggregationRequest, NullPolicy, groupby_aggregate, groupby_aggregate_impl};
+use super::agg::{AggregationRequest, GroupByAgg, NullPolicy, groupby_aggregate, groupby_aggregate_impl};
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -22,19 +22,41 @@ const GROUPBY_OUTPUT_ORDER_INLINE_CAPACITY: usize = 8;
 const GROUPBY_AGG_SLICE_INLINE_CAPACITY: usize = 8;
 const GROUPBY_REQUEST_INLINE_CAPACITY: usize = 8;
 
-impl Agg {
+macro_rules! groupby_shortcuts {
+    ($(#[$meta:meta])* fn $method:ident($columns:ident) => $agg:expr;) => {
+        $(#[$meta])*
+        pub fn $method<I, S>(&self, $columns: I) -> Result<DataFrame>
+        where
+            I: IntoIterator<Item = S>,
+            S: AsRef<str>,
+        {
+            let specs: Vec<AggSpec> = $columns.into_iter().map(|col| AggSpec::new(col.as_ref(), $agg)).collect();
+            self.agg(&specs)
+        }
+    };
+    ($( $(#[$meta:meta])* fn $method:ident($columns:ident) => $agg:expr; )*) => {
+        $(
+            groupby_shortcuts!(
+                $(#[$meta])*
+                fn $method($columns) => $agg;
+            );
+        )*
+    };
+}
+
+impl GroupByAgg {
     /// Return the default output column suffix for this aggregation.
     fn suffix(&self) -> &'static str {
         match self {
-            Agg::Sum => "sum",
-            Agg::Min => "min",
-            Agg::Max => "max",
-            Agg::Mean => "mean",
-            Agg::Count { .. } => "count",
-            Agg::Median => "median",
-            Agg::NUnique => "nunique",
-            Agg::Std { .. } => "std",
-            Agg::Variance { .. } => "var",
+            GroupByAgg::Sum => "sum",
+            GroupByAgg::Min => "min",
+            GroupByAgg::Max => "max",
+            GroupByAgg::Mean => "mean",
+            GroupByAgg::Count { .. } => "count",
+            GroupByAgg::Median => "median",
+            GroupByAgg::NUnique => "nunique",
+            GroupByAgg::Std { .. } => "std",
+            GroupByAgg::Variance { .. } => "var",
         }
     }
 }
@@ -47,13 +69,13 @@ impl Agg {
 #[derive(Debug, Clone)]
 pub struct AggSpec {
     column: String,
-    agg: Agg,
+    agg: GroupByAgg,
     alias: Option<String>,
 }
 
 impl AggSpec {
     /// Create a new aggregation specification for `column` with `agg`.
-    pub fn new(column: impl Into<String>, agg: Agg) -> Self {
+    pub fn new(column: impl Into<String>, agg: GroupByAgg) -> Self {
         Self { column: column.into(), agg, alias: None }
     }
 
@@ -200,7 +222,8 @@ impl<'a> GroupBy<'a> {
         let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
 
         let mut value_views: SmallVec<[ColumnView<'_>; GROUPBY_VALUE_VIEW_INLINE_CAPACITY]> = SmallVec::new();
-        let mut request_meta: SmallVec<[(usize, Vec<Agg>); GROUPBY_REQUEST_META_INLINE_CAPACITY]> = SmallVec::new();
+        let mut request_meta: SmallVec<[(usize, Vec<GroupByAgg>); GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
+            SmallVec::new();
         let mut result_names: SmallVec<[String; GROUPBY_RESULT_NAME_INLINE_CAPACITY]> = SmallVec::new();
 
         let mut col_name_to_view_idx: FastHashMap<String, usize> = fast_hash_map_with_capacity(specs.len());
@@ -237,7 +260,7 @@ impl<'a> GroupBy<'a> {
             result_names.push(spec.output_name());
         }
 
-        let agg_slices: SmallVec<[Vec<Agg>; GROUPBY_AGG_SLICE_INLINE_CAPACITY]> =
+        let agg_slices: SmallVec<[Vec<GroupByAgg>; GROUPBY_AGG_SLICE_INLINE_CAPACITY]> =
             request_meta.iter().map(|(_, aggs)| aggs.clone()).collect();
 
         let requests: SmallVec<[AggregationRequest<'_>; GROUPBY_REQUEST_INLINE_CAPACITY]> = request_meta
@@ -310,80 +333,28 @@ impl<'a> GroupBy<'a> {
         DataFrame::new(schema_names, final_cols)
     }
 
-    /// Shortcut: compute the sum of each named column per group.
-    pub fn sum<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Sum)).collect();
-        self.agg(&specs)
-    }
+    groupby_shortcuts!(
+        /// Shortcut: compute the sum of each named column per group.
+        fn sum(columns) => GroupByAgg::Sum;
 
-    /// Shortcut: compute the mean of each named column per group.
-    pub fn mean<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Mean)).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: compute the mean of each named column per group.
+        fn mean(columns) => GroupByAgg::Mean;
 
-    /// Shortcut: count non-null values of each named column per group.
-    pub fn count<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> =
-            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Count { include_nulls: false })).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: count non-null values of each named column per group.
+        fn count(columns) => GroupByAgg::Count { include_nulls: false };
 
-    /// Shortcut: compute the median of each named column per group.
-    pub fn median<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Median)).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: compute the median of each named column per group.
+        fn median(columns) => GroupByAgg::Median;
 
-    /// Shortcut: count unique non-null values of each named column per group.
-    pub fn nunique<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::NUnique)).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: count unique non-null values of each named column per group.
+        fn nunique(columns) => GroupByAgg::NUnique;
 
-    /// Shortcut: compute the sample standard deviation (ddof=1) of each named
-    /// column per group.
-    pub fn std<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> =
-            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Std { ddof: 1 })).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: compute the sample standard deviation (ddof=1) of each named column per group.
+        fn std(columns) => GroupByAgg::Std { ddof: 1 };
 
-    /// Shortcut: compute the sample variance (ddof=1) of each named column
-    /// per group.
-    pub fn var<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> =
-            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Variance { ddof: 1 })).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: compute the sample variance (ddof=1) of each named column per group.
+        fn var(columns) => GroupByAgg::Variance { ddof: 1 };
+    );
 }
 
 impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
@@ -392,76 +363,26 @@ impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
         self.groupby.agg_in_context(specs, self.ctx)
     }
 
-    /// Shortcut: compute the sum of each named column per group.
-    pub fn sum<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Sum)).collect();
-        self.agg(&specs)
-    }
+    groupby_shortcuts!(
+        /// Shortcut: compute the sum of each named column per group.
+        fn sum(columns) => GroupByAgg::Sum;
 
-    /// Shortcut: compute the mean of each named column per group.
-    pub fn mean<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Mean)).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: compute the mean of each named column per group.
+        fn mean(columns) => GroupByAgg::Mean;
 
-    /// Shortcut: count non-null values of each named column per group.
-    pub fn count<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> =
-            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Count { include_nulls: false })).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: count non-null values of each named column per group.
+        fn count(columns) => GroupByAgg::Count { include_nulls: false };
 
-    /// Shortcut: compute the median of each named column per group.
-    pub fn median<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Median)).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: compute the median of each named column per group.
+        fn median(columns) => GroupByAgg::Median;
 
-    /// Shortcut: count unique non-null values of each named column per group.
-    pub fn nunique<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::NUnique)).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: count unique non-null values of each named column per group.
+        fn nunique(columns) => GroupByAgg::NUnique;
 
-    /// Shortcut: compute the sample standard deviation (ddof=1) of each named column per group.
-    pub fn std<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> =
-            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Std { ddof: 1 })).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: compute the sample standard deviation (ddof=1) of each named column per group.
+        fn std(columns) => GroupByAgg::Std { ddof: 1 };
 
-    /// Shortcut: compute the sample variance (ddof=1) of each named column per group.
-    pub fn var<I, S>(&self, columns: I) -> Result<DataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let specs: Vec<AggSpec> =
-            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Variance { ddof: 1 })).collect();
-        self.agg(&specs)
-    }
+        /// Shortcut: compute the sample variance (ddof=1) of each named column per group.
+        fn var(columns) => GroupByAgg::Variance { ddof: 1 };
+    );
 }

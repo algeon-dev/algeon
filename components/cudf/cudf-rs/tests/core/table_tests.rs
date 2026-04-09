@@ -95,15 +95,25 @@ fn test_table_from_columns_mismatched_rows_rejected() {
 }
 
 #[test]
-fn test_table_view_negative_column_index_rejected() {
+fn test_table_view_column_rejects_out_of_bounds_index() {
     let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
-    let res = view.column(-1);
-    assert!(res.is_err());
-    let err = res.err().unwrap();
+    let err = view.column(1).err().expect("expected out-of-bounds column access to fail");
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "table_view::column");
+}
+
+#[test]
+fn test_table_view_column_rejects_usize_indices_outside_i32_range() {
+    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let table = Table::from_columns(vec![c1]).unwrap();
+    let view = table.view().unwrap();
+
+    let err = view.column(usize::MAX).err().expect("expected oversized column index to fail");
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "table_view::column");
 }
 
 #[test]

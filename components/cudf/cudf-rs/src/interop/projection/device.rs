@@ -3,7 +3,7 @@ use super::*;
 fn prepared_column_projection_from_materialized_view<'a>(
     operation: &'static str,
     data_type: DataType,
-    num_children: i32,
+    num_children: usize,
     len: usize,
     offset: usize,
     data_ptr: *const std::ffi::c_void,
@@ -446,10 +446,9 @@ pub(super) fn prepared_column_projection_from_view<'a>(
         let mut semantic_columns = Vec::new();
 
         for index in 0..child_count {
-            let child_index = checked_child_index(operation, index)?;
-            let child_view = view
-                .child(child_index)
-                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+            let _ = checked_child_index(operation, index)?;
+            let child_view =
+                view.child(index).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
             let child_projection = prepared_column_projection_from_view(
                 &child_view,
                 operation,

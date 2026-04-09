@@ -241,7 +241,7 @@ fn assert_host_table_exports_equivalent(source: &Table, imported: &Table) {
 #[test]
 fn borrowed_column_view_import_copies_data_and_uses_destination_runtime() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_slice_with_runtime(&source_runtime, &[1i32, 2, 3]).unwrap();
+    let source = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let source_view = source.view().unwrap();
     let borrowed = source_view.try_borrow_column_view().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -266,7 +266,7 @@ fn borrowed_column_view_import_copies_data_and_uses_destination_runtime() {
 #[test]
 fn series_import_from_borrowed_column_view_returns_unnamed_series() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_slice_with_runtime(&source_runtime, &[1i32, 2, 3]).unwrap();
+    let source = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let source_view = source.view().unwrap();
     let borrowed = source_view.try_borrow_column_view().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -290,7 +290,7 @@ fn series_import_from_borrowed_column_view_returns_unnamed_series() {
 #[test]
 fn prepared_device_column_export_import_copies_data_and_uses_destination_runtime() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_slice_with_runtime(&source_runtime, &[1i32, 2, 3]).unwrap();
+    let source = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let export = source.try_prepare_device_column_export().unwrap();
     let destination_runtime = common::sample_runtime();
 
@@ -314,7 +314,7 @@ fn prepared_device_column_export_import_copies_data_and_uses_destination_runtime
 #[test]
 fn series_import_from_prepared_column_export_returns_unnamed_series() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_strings_with_runtime(&source_runtime, &["one", "two", "three"]).unwrap();
+    let source = source_runtime.column_from_strs(&["one", "two", "three"]).unwrap();
     let export = source.try_prepare_device_column_export().unwrap();
     let destination_runtime = common::sample_runtime();
 
@@ -337,9 +337,7 @@ fn series_import_from_prepared_column_export_returns_unnamed_series() {
 #[test]
 fn prepared_host_column_export_import_copies_data_and_uses_destination_runtime() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source =
-        Column::from_slice_nullable_with_runtime(&source_runtime, &[10i32, 20, 30, 40], &[true, false, true, true])
-            .unwrap();
+    let source = source_runtime.column_from_slice_nullable(&[10i32, 20, 30, 40], &[true, false, true, true]).unwrap();
     let sliced = source.slice_view(1, 2).unwrap();
     let export = sliced.try_prepare_host_column_export().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -359,19 +357,19 @@ fn prepared_host_column_export_import_copies_data_and_uses_destination_runtime()
     assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
     assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
 
-    let normalized = Column::from_slice_nullable_with_runtime(&source_runtime, &[20i32, 30], &[false, true]).unwrap();
+    let normalized = source_runtime.column_from_slice_nullable(&[20i32, 30], &[false, true]).unwrap();
     assert_host_column_exports_equivalent(&normalized, &imported);
 }
 
 #[test]
 fn series_import_from_owned_device_column_transfer_returns_unnamed_series() {
     let runtime = Runtime::builder().build().unwrap();
-    let column = Column::from_slice_with_runtime(&runtime, &[7i32, 8, 9]).unwrap();
+    let column = runtime.column_from_slice(&[7i32, 8, 9]).unwrap();
     let expected_ptr = column.view().unwrap().device_data_ptr().unwrap();
     let expected_stream = column.__debug_execution_domain_stream_value();
     let expected_mr = column.__debug_execution_domain_mr_value();
 
-    let transfer = column.try_into_owned_device_column_transfer().unwrap();
+    let transfer = column.try_into_owned_transfer().unwrap();
     let imported = cudf::Series::try_from_owned_device_column_transfer(transfer).unwrap();
 
     assert_eq!(imported.name(), None);
@@ -384,9 +382,7 @@ fn series_import_from_owned_device_column_transfer_returns_unnamed_series() {
 #[test]
 fn borrowed_sliced_nullable_column_import_preserves_active_range() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source =
-        Column::from_slice_nullable_with_runtime(&source_runtime, &[10i32, 20, 30, 40], &[true, false, true, true])
-            .unwrap();
+    let source = source_runtime.column_from_slice_nullable(&[10i32, 20, 30, 40], &[true, false, true, true]).unwrap();
     let sliced = source.slice_view(1, 2).unwrap();
     let borrowed = sliced.try_borrow_column_view().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -405,12 +401,8 @@ fn borrowed_sliced_nullable_column_import_preserves_active_range() {
 #[test]
 fn borrowed_sliced_string_column_import_preserves_active_range() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_strings_nullable_with_runtime(
-        &source_runtime,
-        &["zero", "one", "two", "three"],
-        &[true, false, true, true],
-    )
-    .unwrap();
+    let source =
+        source_runtime.column_from_strs_nullable(&["zero", "one", "two", "three"], &[true, false, true, true]).unwrap();
     let sliced = source.slice_view(1, 2).unwrap();
     let borrowed = sliced.try_borrow_column_view().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -430,15 +422,14 @@ fn borrowed_sliced_string_column_import_preserves_active_range() {
     assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
     assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
 
-    let normalized =
-        Column::from_strings_nullable_with_runtime(&source_runtime, &["one", "two"], &[false, true]).unwrap();
+    let normalized = source_runtime.column_from_strs_nullable(&["one", "two"], &[false, true]).unwrap();
     assert_host_column_exports_equivalent(&normalized, &imported);
 }
 
 #[test]
 fn borrowed_dictionary_column_import_round_trips_string_keys() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_strings_with_runtime(&source_runtime, &["beta", "alpha", "beta", "gamma"]).unwrap();
+    let source = source_runtime.column_from_strs(&["beta", "alpha", "beta", "gamma"]).unwrap();
     let dictionary = dictionary::encode(&source.view().unwrap(), TypeId::Int32).unwrap();
     let dictionary_view = dictionary.view().unwrap();
     let borrowed = dictionary_view.try_borrow_column_view().unwrap();
@@ -465,12 +456,8 @@ fn borrowed_dictionary_column_import_round_trips_string_keys() {
 #[test]
 fn prepared_sliced_string_column_export_import_preserves_active_range() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_strings_nullable_with_runtime(
-        &source_runtime,
-        &["zero", "one", "two", "three"],
-        &[true, false, true, true],
-    )
-    .unwrap();
+    let source =
+        source_runtime.column_from_strs_nullable(&["zero", "one", "two", "three"], &[true, false, true, true]).unwrap();
     let sliced = source.slice_view(1, 2).unwrap();
     let export = sliced.try_prepare_device_column_export().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -490,20 +477,15 @@ fn prepared_sliced_string_column_export_import_preserves_active_range() {
     assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
     assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
 
-    let normalized =
-        Column::from_strings_nullable_with_runtime(&source_runtime, &["one", "two"], &[false, true]).unwrap();
+    let normalized = source_runtime.column_from_strs_nullable(&["one", "two"], &[false, true]).unwrap();
     assert_host_column_exports_equivalent(&normalized, &imported);
 }
 
 #[test]
 fn prepared_host_sliced_string_column_export_import_preserves_active_range() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_strings_nullable_with_runtime(
-        &source_runtime,
-        &["zero", "one", "two", "three"],
-        &[true, false, true, true],
-    )
-    .unwrap();
+    let source =
+        source_runtime.column_from_strs_nullable(&["zero", "one", "two", "three"], &[true, false, true, true]).unwrap();
     let sliced = source.slice_view(1, 2).unwrap();
     let export = sliced.try_prepare_host_column_export().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -523,16 +505,15 @@ fn prepared_host_sliced_string_column_export_import_preserves_active_range() {
     assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
     assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
 
-    let normalized =
-        Column::from_strings_nullable_with_runtime(&source_runtime, &["one", "two"], &[false, true]).unwrap();
+    let normalized = source_runtime.column_from_strs_nullable(&["one", "two"], &[false, true]).unwrap();
     assert_host_column_exports_equivalent(&normalized, &imported);
 }
 
 #[test]
 fn borrowed_table_view_import_copies_all_columns_and_uses_destination_runtime() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let first = Column::from_slice_with_runtime(&source_runtime, &[1i32, 2, 3]).unwrap();
-    let second = Column::from_slice_with_runtime(&source_runtime, &[10i64, 20, 30]).unwrap();
+    let first = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let second = source_runtime.column_from_slice(&[10i64, 20, 30]).unwrap();
     let source = Table::from_columns(vec![first, second]).unwrap();
     let source_view = source.view().unwrap();
     let borrowed = source_view.try_borrow_table_view().unwrap();
@@ -562,7 +543,7 @@ fn borrowed_table_view_import_copies_all_columns_and_uses_destination_runtime() 
 #[test]
 fn borrowed_table_view_import_supports_string_and_dictionary_columns() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let strings = Column::from_strings_with_runtime(&source_runtime, &["beta", "alpha", "beta"]).unwrap();
+    let strings = source_runtime.column_from_strs(&["beta", "alpha", "beta"]).unwrap();
     let dictionary = dictionary::encode(&strings.view().unwrap(), TypeId::Int32).unwrap();
     let source = Table::from_columns(vec![strings, dictionary]).unwrap();
     let source_view = source.view().unwrap();
@@ -590,8 +571,8 @@ fn borrowed_table_view_import_supports_string_and_dictionary_columns() {
 #[test]
 fn dataframe_import_from_borrowed_table_view_with_explicit_names_uses_caller_names() {
     let source_runtime = Runtime::builder().build().unwrap();
-    let first = Column::from_slice_with_runtime(&source_runtime, &[1i32, 2, 3]).unwrap();
-    let second = Column::from_slice_with_runtime(&source_runtime, &[10i64, 20, 30]).unwrap();
+    let first = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let second = source_runtime.column_from_slice(&[10i64, 20, 30]).unwrap();
     let source = Table::from_columns(vec![first, second]).unwrap();
     let source_view = source.view().unwrap();
     let borrowed = source_view.try_borrow_table_view().unwrap();
@@ -731,8 +712,8 @@ fn prepared_host_table_export_import_round_trips_recursive_nested_columns_into_d
 #[test]
 fn dataframe_import_from_prepared_table_export_without_root_names_fails() {
     let runtime = Runtime::builder().build().unwrap();
-    let first = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
-    let second = Column::from_slice_with_runtime(&runtime, &[10i32, 20, 30]).unwrap();
+    let first = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let second = runtime.column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![first, second]).unwrap();
     let export = table.try_prepare_device_table_export().unwrap();
     let destination_runtime = common::sample_runtime();
@@ -750,11 +731,11 @@ fn dataframe_import_from_prepared_table_export_without_root_names_fails() {
 #[test]
 fn dataframe_import_from_owned_device_table_transfer_with_explicit_names_uses_caller_names() {
     let runtime = Runtime::builder().build().unwrap();
-    let first = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
-    let second = Column::from_slice_with_runtime(&runtime, &[10i64, 20, 30]).unwrap();
+    let first = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let second = runtime.column_from_slice(&[10i64, 20, 30]).unwrap();
     let table = Table::from_columns(vec![first, second]).unwrap();
 
-    let transfer = table.try_into_owned_device_table_transfer().unwrap();
+    let transfer = table.try_into_owned_transfer().unwrap();
     let imported = DataFrame::try_from_owned_device_table_transfer_and_names(
         transfer,
         vec!["left".to_string(), "right".to_string()],
@@ -775,7 +756,7 @@ fn dataframe_import_from_owned_device_table_transfer_uses_root_names_when_presen
 
     let (expected_table, expected_names) = frame.clone().try_into_table().unwrap();
     let (transfer_table, _) = frame.try_into_table().unwrap();
-    let transfer = transfer_table.try_into_owned_device_table_transfer().unwrap();
+    let transfer = transfer_table.try_into_owned_transfer().unwrap();
     let named_transfer = owned_table_transfer_with_root_names(transfer, expected_names.clone());
 
     let imported = DataFrame::try_from_owned_device_table_transfer(named_transfer).unwrap();
@@ -788,11 +769,11 @@ fn dataframe_import_from_owned_device_table_transfer_uses_root_names_when_presen
 #[test]
 fn dataframe_import_from_owned_device_table_transfer_without_root_names_fails() {
     let runtime = Runtime::builder().build().unwrap();
-    let first = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
-    let second = Column::from_slice_with_runtime(&runtime, &[10i32, 20, 30]).unwrap();
+    let first = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let second = runtime.column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![first, second]).unwrap();
 
-    let transfer = table.try_into_owned_device_table_transfer().unwrap();
+    let transfer = table.try_into_owned_transfer().unwrap();
     let err = DataFrame::try_from_owned_device_table_transfer(transfer).unwrap_err();
 
     assert_eq!(err.kind(), InteropErrorKind::InvalidView);
@@ -824,7 +805,7 @@ fn owned_table_transfer_with_root_names(transfer: OwnedTableTransfer, names: Vec
 #[test]
 fn prepared_host_column_export_constructor_rejects_device_bindings() {
     let runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_slice_with_runtime(&runtime, &[1i32, 2, 3]).unwrap();
+    let source = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let device_export = source.try_prepare_device_column_export().unwrap();
 
     let err = PreparedColumnExport::try_new_with_semantic_columns(
@@ -893,7 +874,7 @@ fn prepared_host_column_import_maps_shared_completion_sync_failures_to_readiness
     }
 
     let source_runtime = Runtime::builder().build().unwrap();
-    let source = Column::from_slice_with_runtime(&source_runtime, &[1i32, 2, 3]).unwrap();
+    let source = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let export =
         source.try_prepare_host_column_export().unwrap().with_lease_backend(LeaseBackend::new(SyncFailureBackend));
     let destination_runtime = common::sample_runtime();

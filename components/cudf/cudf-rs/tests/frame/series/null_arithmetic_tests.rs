@@ -313,7 +313,7 @@ fn test_le_scalar_preserves_nulls() {
 
 #[test]
 fn test_eq_scalar_str_preserves_nulls() {
-    let s = Series::from_strings_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
+    let s = Series::from_strs_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.eq_scalar_str("hello").unwrap();
     let vals = result.to_vec_optional::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
@@ -321,7 +321,7 @@ fn test_eq_scalar_str_preserves_nulls() {
 
 #[test]
 fn test_gt_scalar_str_preserves_nulls() {
-    let s = Series::from_strings_nullable("s", &["banana", "x", "apple"], &[true, false, true]).unwrap();
+    let s = Series::from_strs_nullable("s", &["banana", "x", "apple"], &[true, false, true]).unwrap();
     let result = s.gt_scalar_str("avocado").unwrap();
     let vals = result.to_vec_optional::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
@@ -345,6 +345,26 @@ fn test_logical_not_preserves_nulls() {
     let result = (!&a).unwrap();
     let vals = result.to_vec_optional::<bool>().unwrap();
     assert_eq!(vals, vec![Some(false), None, Some(false)]);
+}
+
+#[test]
+fn test_logical_and_preserves_nulls() {
+    let a = Series::new_nullable::<bool>("lhs", &[true, false, true], &[true, false, true]).unwrap();
+    let b = Series::new::<bool>("rhs", &[true, true, false]).unwrap();
+
+    let result = (&a & &b).unwrap();
+    let vals = result.to_vec_optional::<bool>().unwrap();
+    assert_eq!(vals, vec![Some(true), None, Some(false)]);
+}
+
+#[test]
+fn test_logical_or_preserves_nulls() {
+    let a = Series::new_nullable::<bool>("lhs", &[true, false, true], &[true, false, true]).unwrap();
+    let b = Series::new::<bool>("rhs", &[false, true, false]).unwrap();
+
+    let result = (&a | &b).unwrap();
+    let vals = result.to_vec_optional::<bool>().unwrap();
+    assert_eq!(vals, vec![Some(true), None, Some(true)]);
 }
 
 #[test]

@@ -1,4 +1,7 @@
-use cudf::{Error, ErrorKind, ErrorStatus};
+use cudf::{
+    Error, ErrorKind, ErrorStatus,
+    interop::{InteropError, InteropErrorKind},
+};
 
 #[test]
 fn new_defaults_to_permanent() {
@@ -89,6 +92,12 @@ fn default_status_logic_errors_are_permanent() {
     let type_err = Error::new(ErrorKind::TypeError, "bad type");
     assert_eq!(type_err.status(), ErrorStatus::Permanent);
 
+    let invalid_arg = Error::new(ErrorKind::InvalidArgument, "bad argument");
+    assert_eq!(invalid_arg.status(), ErrorStatus::Permanent);
+
+    let not_supported = Error::new(ErrorKind::NotSupported, "not supported");
+    assert_eq!(not_supported.status(), ErrorStatus::Permanent);
+
     let invalid_op = Error::new(ErrorKind::InvalidOperation, "bad op");
     assert_eq!(invalid_op.status(), ErrorStatus::Permanent);
 
@@ -112,4 +121,72 @@ fn display_with_source() {
     let s = err.to_string();
     assert!(s.contains("source:"));
     assert!(s.contains("no such file"));
+}
+
+#[test]
+fn interop_error_converts_with_kind_context_status_and_source() {
+    let interop = InteropError::new(InteropErrorKind::UnsupportedType, "dictionary export is not supported")
+        .with_context("operation", "interop::PreparedColumnExport::try_prepare_device_column_export")
+        .with_context("type_id", "Dictionary32");
+
+    let err = Error::from(interop);
+
+    assert_eq!(err.kind(), ErrorKind::TypeError);
+    assert_eq!(err.status(), ErrorStatus::Permanent);
+    assert_eq!(err.message(), "dictionary export is not supported");
+    assert_eq!(err.context().len(), 2);
+    assert_eq!(
+        err.context()[0],
+        ("operation", "interop::PreparedColumnExport::try_prepare_device_column_export".to_string())
+    );
+    assert_eq!(err.context()[1], ("type_id", "Dictionary32".to_string()));
+    assert_eq!(
+        std::error::Error::source(&err).map(std::string::ToString::to_string).as_deref(),
+        Some("dictionary export is not supported")
+    );
+}
+
+#[test]
+fn interop_readiness_unavailable_maps_to_temporary_cuda_error() {
+    let err = Error::from(
+        InteropError::new(
+            InteropErrorKind::ReadinessUnavailable,
+            "CUDA stream handle must carry explicit device identity",
+        )
+        .with_context("field", "cuda_stream.device"),
+    );
+
+    assert_eq!(err.kind(), ErrorKind::CudaError);
+    assert_eq!(err.status(), ErrorStatus::Temporary);
+    assert_eq!(err.context(), [("field", "cuda_stream.device".to_string())]);
+}
+
+#[test]
+fn interop_unsupported_layout_maps_to_not_supported() {
+    let err = Error::from(
+        InteropError::new(InteropErrorKind::UnsupportedLayout, "struct columns are not supported for this export path")
+            .with_context("layout", "struct"),
+    );
+
+    assert_eq!(err.kind(), ErrorKind::NotSupported);
+    assert_eq!(err.status(), ErrorStatus::Permanent);
+    assert_eq!(err.message(), "struct columns are not supported for this export path");
+    assert_eq!(err.context(), [("layout", "struct".to_string())]);
+}
+
+#[test]
+fn question_mark_propagates_interop_error_into_cudf_result() {
+    fn helper() -> cudf::Result<()> {
+        Err::<(), _>(
+            InteropError::new(InteropErrorKind::NullMaskUnsupported, "byte-granularity validity is not supported")
+                .with_context("column", "validity"),
+        )?;
+        Ok(())
+    }
+
+    let err = helper().unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::NullError);
+    assert_eq!(err.status(), ErrorStatus::Permanent);
+    assert_eq!(err.message(), "byte-granularity validity is not supported");
+    assert_eq!(err.context(), [("column", "validity".to_string())]);
 }

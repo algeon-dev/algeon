@@ -22,6 +22,8 @@ mod dataframe_column_ops_tests;
 mod dataframe_concat_tests;
 #[path = "frame/dataframe/copy_naming_tests.rs"]
 mod dataframe_copy_naming_tests;
+#[path = "frame/dataframe/debug_tests.rs"]
+mod dataframe_debug_tests;
 #[path = "frame/dataframe/display_tests.rs"]
 mod dataframe_display_tests;
 #[path = "frame/dataframe/gather_tests.rs"]
@@ -66,6 +68,8 @@ mod series_ops_tests;
 mod series_reduction_tests;
 #[path = "frame/series/series_reduction_value_tests.rs"]
 mod series_reduction_value_tests;
+#[path = "frame/series/row_ops_tests.rs"]
+mod series_row_ops_tests;
 #[path = "frame/series/series_tests.rs"]
 mod series_tests;
 

@@ -22,7 +22,7 @@ use std::{
 };
 
 use cudf::{
-    Agg, AggSpec, DataFrame, Series, SortOptions,
+    AggSpec, DataFrame, GroupByAgg, Series, SortOptions,
     core::{Column, Scalar, Table, memory::DeviceMemoryResource},
     runtime::{CudaEvent, CudaStream},
 };
@@ -333,7 +333,7 @@ async fn chained_pipeline_in_spawn_blocking() {
         assert_eq!(top.num_rows(), 4);
 
         // GroupBy sum.
-        let agg_result = top.groupby(["key"]).agg(&[AggSpec::new("value", Agg::Sum)])?;
+        let agg_result = top.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)])?;
 
         // Materialize to host.
         let key_data: Vec<i32> = agg_result.series("key").unwrap().to_vec_strict::<i32>()?;
@@ -357,7 +357,7 @@ async fn join_inside_spawn_blocking() {
     let result = tokio::task::spawn_blocking(|| -> cudf::Result<usize> {
         let left = crate::common::dataframe_from_columns(
             vec!["id".into(), "name".into()],
-            vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_strings(&["Alice", "Bob", "Carol"]).unwrap()],
+            vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_strs(&["Alice", "Bob", "Carol"]).unwrap()],
         )?;
 
         let right = crate::common::dataframe_from_columns(

@@ -61,21 +61,21 @@ fn test_to_vec_optional_non_nullable() {
 
 #[test]
 fn test_to_strings_strict_non_nullable_ok() {
-    let s = Series::from_strings("x", &["hello", "world"]).unwrap();
+    let s = Series::from_strs("x", &["hello", "world"]).unwrap();
     let vals = s.to_strings_strict().unwrap();
     assert_eq!(vals, vec!["hello".to_string(), "world".to_string()]);
 }
 
 #[test]
 fn test_to_strings_strict_rejects_nullable() {
-    let s = Series::from_strings_nullable("x", &["a", "b"], &[true, false]).unwrap();
+    let s = Series::from_strs_nullable("x", &["a", "b"], &[true, false]).unwrap();
     let err = s.to_strings_strict().unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
 #[test]
 fn test_to_strings_strict_all_valid_masked_column_ok() {
-    let s = Series::from_strings_nullable("x", &["a", "b"], &[true, true]).unwrap();
+    let s = Series::from_strs_nullable("x", &["a", "b"], &[true, true]).unwrap();
     let vals = s.to_strings_strict().unwrap();
     assert_eq!(vals, vec!["a".to_string(), "b".to_string()]);
 }
@@ -86,14 +86,14 @@ fn test_to_strings_strict_all_valid_masked_column_ok() {
 
 #[test]
 fn test_to_strings_optional_with_nulls() {
-    let s = Series::from_strings_nullable("x", &["a", "b", "c"], &[true, false, true]).unwrap();
+    let s = Series::from_strs_nullable("x", &["a", "b", "c"], &[true, false, true]).unwrap();
     let vals = s.to_strings_optional().unwrap();
     assert_eq!(vals, vec![Some("a".to_string()), None, Some("c".to_string())]);
 }
 
 #[test]
 fn test_to_strings_optional_non_nullable() {
-    let s = Series::from_strings("x", &["a", "b"]).unwrap();
+    let s = Series::from_strs("x", &["a", "b"]).unwrap();
     let vals = s.to_strings_optional().unwrap();
     assert_eq!(vals, vec![Some("a".to_string()), Some("b".to_string())]);
 }
@@ -104,14 +104,14 @@ fn test_to_strings_optional_non_nullable() {
 
 #[test]
 fn test_to_strings_lossy_maps_null_to_empty() {
-    let s = Series::from_strings_nullable("x", &["a", "b", "c"], &[true, false, true]).unwrap();
+    let s = Series::from_strs_nullable("x", &["a", "b", "c"], &[true, false, true]).unwrap();
     let vals = s.to_strings_lossy().unwrap();
     assert_eq!(vals, vec!["a".to_string(), "".to_string(), "c".to_string()]);
 }
 
 #[test]
 fn test_to_strings_lossy_non_nullable() {
-    let s = Series::from_strings("x", &["a", "b"]).unwrap();
+    let s = Series::from_strs("x", &["a", "b"]).unwrap();
     let vals = s.to_strings_lossy().unwrap();
     assert_eq!(vals, vec!["a".to_string(), "b".to_string()]);
 }

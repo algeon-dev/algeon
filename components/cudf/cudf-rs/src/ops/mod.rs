@@ -1,7 +1,10 @@
-//! `std::ops` trait implementations for ergonomic Column arithmetic.
+//! Low-level operation modules and expression DSL entry points.
 //!
-//! Enables syntax like `&col + 1.0f32` and `&col_a * &col_b`.
-//! All operations return `Result<Column>` since they involve GPU computation.
+//! `cudf::ops` is intentionally namespaced by operation domain. Most APIs live
+//! under submodules such as [`join`], [`groupby`], [`sorting`], or [`filter`].
+//! The root keeps only the high-frequency expression DSL entry points
+//! ([`Expr`], [`col`], [`lit`], and [`when`]) plus the standard arithmetic trait
+//! implementations for [`Column`](crate::core::column::Column).
 
 pub mod binary;
 pub mod concatenate;
@@ -22,27 +25,12 @@ pub mod unary;
 
 use std::ops::{Add, Div, Mul, Sub};
 
-pub use binary::*;
-pub use concatenate::*;
-pub use copying::*;
-pub use dictionary::*;
-pub use expr::*;
-pub use filter::*;
-pub use groupby::*;
-pub use hashing::*;
-pub use join::*;
-pub use reduction::*;
-pub use replace::*;
-pub use search::*;
-pub use sorting::*;
-pub use stream_compaction::*;
-pub use strings::*;
-pub use unary::*;
+pub use expr::{Expr, col, lit, when};
 
 use crate::core::{column::Column, error::Result, scalar::Scalar};
 
 // ---------------------------------------------------------------------------
-// Column op Scalar (for each supported Rust numeric type)
+// Column op Scalar (for each supported arithmetic numeric Rust type)
 // ---------------------------------------------------------------------------
 
 macro_rules! impl_column_scalar_ops {
@@ -76,7 +64,7 @@ macro_rules! impl_column_scalar_ops {
     };
 }
 
-impl_column_scalar_ops!(f32, f64, i32, i64);
+impl_column_scalar_ops!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 
 // ---------------------------------------------------------------------------
 // Column op Column

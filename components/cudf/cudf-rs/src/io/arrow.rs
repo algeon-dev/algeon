@@ -158,7 +158,7 @@ impl TryFrom<TypeId> for ArrowDataType {
             TypeId::Bool8 => Ok(ArrowDataType::Boolean),
             TypeId::String => Ok(ArrowDataType::Utf8),
             _ => Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::NotSupported,
                 format!("unsupported cudf type for Arrow conversion: {:?}", type_id),
             )
             .with_operation("arrow::TryFrom<TypeId> for ArrowDataType")
@@ -185,7 +185,7 @@ impl TryFrom<&ArrowDataType> for TypeId {
             ArrowDataType::Boolean => Ok(TypeId::Bool8),
             ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => Ok(TypeId::String),
             _ => Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::NotSupported,
                 format!("unsupported Arrow type for cudf conversion: {:?}", dt),
             )
             .with_operation("arrow::TryFrom<&ArrowDataType> for TypeId")
@@ -214,7 +214,7 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, type_id: TypeId) -> Result<Arc<dyn 
         TypeId::Bool8 => bool_to_arrow(cv),
         TypeId::String => string_to_arrow(cv),
         _ => Err(Error::new(
-            ErrorKind::InvalidOperation,
+            ErrorKind::NotSupported,
             format!("unsupported cudf type for Arrow conversion: {:?}", type_id),
         )
         .with_operation("arrow::column_view_to_arrow")
@@ -265,16 +265,15 @@ fn bool_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
 
 /// Convert a String column to an Arrow StringArray.
 fn string_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
-    let data: Vec<String> = cv.to_strings()?;
-    let validity = cv.validity()?;
+    let data = cv.to_optional_strings()?;
 
-    match validity {
-        None => Ok(Arc::new(StringArray::from(data.iter().map(|s| s.as_str()).collect::<Vec<_>>()))),
-        Some(mask) => {
-            let opt_values: Vec<Option<&str>> =
-                data.iter().zip(mask.iter()).map(|(s, &valid)| if valid { Some(s.as_str()) } else { None }).collect();
-            Ok(Arc::new(StringArray::from(opt_values)))
-        },
+    if data.iter().all(|value| value.is_some()) {
+        let values =
+            data.iter().map(|value| value.as_deref().expect("validated all values are present")).collect::<Vec<_>>();
+        Ok(Arc::new(StringArray::from(values)))
+    } else {
+        let values = data.iter().map(|value| value.as_deref()).collect::<Vec<_>>();
+        Ok(Arc::new(StringArray::from(values)))
     }
 }
 
@@ -348,10 +347,10 @@ fn string_array_to_column(arr: &dyn Array) -> Result<Column> {
     let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
 
     match str_arr.nulls() {
-        None => Column::from_strings(&values),
+        None => Column::from_strs(&values),
         Some(null_buf) => {
             let validity: Vec<bool> = null_buf.iter().collect();
-            Column::from_strings_nullable(&values, &validity)
+            Column::from_strs_nullable(&values, &validity)
         },
     }
 }
@@ -366,10 +365,10 @@ fn large_string_array_to_column(arr: &dyn Array) -> Result<Column> {
     let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
 
     match str_arr.nulls() {
-        None => Column::from_strings(&values),
+        None => Column::from_strs(&values),
         Some(null_buf) => {
             let validity: Vec<bool> = null_buf.iter().collect();
-            Column::from_strings_nullable(&values, &validity)
+            Column::from_strs_nullable(&values, &validity)
         },
     }
 }

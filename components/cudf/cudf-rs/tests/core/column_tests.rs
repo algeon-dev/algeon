@@ -61,6 +61,42 @@ fn test_nullable_column() {
 }
 
 #[test]
+fn test_to_optional_vec_all_valid() {
+    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let view = col.view().unwrap();
+
+    let host_data = view.to_optional_vec::<i32>().unwrap();
+    assert_eq!(host_data, vec![Some(1), Some(2), Some(3)]);
+}
+
+#[test]
+fn test_to_optional_vec_with_nulls() {
+    let col = Column::from_slice_nullable(&[10i32, 20, 30, 40], &[true, false, true, false]).unwrap();
+    let view = col.view().unwrap();
+
+    let host_data = view.to_optional_vec::<i32>().unwrap();
+    assert_eq!(host_data, vec![Some(10), None, Some(30), None]);
+}
+
+#[test]
+fn test_to_optional_vec_bool_with_nulls() {
+    let col = Column::from_slice_nullable(&[true, false, true], &[true, false, true]).unwrap();
+    let view = col.view().unwrap();
+
+    let host_data = view.to_optional_vec::<bool>().unwrap();
+    assert_eq!(host_data, vec![Some(true), None, Some(true)]);
+}
+
+#[test]
+fn test_to_optional_vec_type_mismatch_error() {
+    let col = Column::from_slice(&[1.0f64, 2.0]).unwrap();
+    let view = col.view().unwrap();
+
+    let err = view.to_optional_vec::<i32>().unwrap_err();
+    assert_eq!(err.kind(), cudf::ErrorKind::TypeError);
+}
+
+#[test]
 fn test_column_deep_copy() {
     let data = vec![100i64, 200, 300];
     let col = Column::from_slice(&data).unwrap();
@@ -201,6 +237,17 @@ fn test_child_rejects_out_of_bounds_index_without_segfault() {
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
     assert!(err.to_string().contains("out of bounds"), "unexpected error: {err}");
+}
+
+#[test]
+fn test_child_rejects_usize_indices_outside_i32_range() {
+    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let view = col.view().unwrap();
+
+    let err = view.child(usize::MAX).err().expect("expected oversized child index to fail");
+
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "column_view::child");
 }
 
 #[test]

@@ -29,34 +29,53 @@ impl<'a> TableView<'a> {
     }
 
     /// Returns the number of columns.
-    pub fn num_columns(&self) -> Result<i32> {
+    pub fn num_columns(&self) -> Result<usize> {
         let mut out: i32 = 0;
         // SAFETY: self.handle is valid (NonNull from construction).
         error::check_status_in(
             unsafe { cudf_sys::cudf_table_view_num_columns(self.handle.as_ptr(), &mut out) },
             "table_view::num_columns",
         )?;
-        Ok(out)
+        usize::try_from(out).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "number of table columns must be >= 0")
+                .with_operation("table_view::num_columns")
+                .with_context("num_columns", out.to_string())
+        })
     }
 
     /// Returns the number of rows.
-    pub fn num_rows(&self) -> Result<i32> {
+    pub fn num_rows(&self) -> Result<usize> {
         let mut out: i32 = 0;
         // SAFETY: self.handle is valid (NonNull from construction).
         error::check_status_in(
             unsafe { cudf_sys::cudf_table_view_num_rows(self.handle.as_ptr(), &mut out) },
             "table_view::num_rows",
         )?;
-        Ok(out)
+        usize::try_from(out).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "number of table rows must be >= 0")
+                .with_operation("table_view::num_rows")
+                .with_context("num_rows", out.to_string())
+        })
     }
 
     /// Get a column view by index.
-    pub fn column(&self, index: i32) -> Result<ColumnView<'a>> {
-        if index < 0 {
-            return Err(Error::new(ErrorKind::InvalidOperation, "table column index must be >= 0")
-                .with_operation("table_view::column")
-                .with_context("column_index", index.to_string()));
+    pub fn column(&self, index: usize) -> Result<ColumnView<'a>> {
+        let num_columns = self.num_columns()?;
+        if index >= num_columns {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("table column index {} out of bounds for {} columns", index, num_columns),
+            )
+            .with_operation("table_view::column")
+            .with_context("column_index", index.to_string())
+            .with_context("num_columns", num_columns.to_string()));
         }
+
+        let index = i32::try_from(index).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "table column index exceeds i32::MAX")
+                .with_operation("table_view::column")
+                .with_context("column_index", index.to_string())
+        })?;
 
         let mut col_handle = ptr::null_mut();
         error::check_status_in(
@@ -76,10 +95,7 @@ impl<'a> TableView<'a> {
     /// Zero-copy with respect to device data: this allocates only a new
     /// table-view handle over the selected columns.
     pub fn select_columns(&self, indices: &[usize]) -> Result<Self> {
-        let num_columns = usize::try_from(self.num_columns()?).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "number of table columns must be >= 0")
-                .with_operation("table_view::select_columns")
-        })?;
+        let num_columns = self.num_columns()?;
 
         let indices_i32: Vec<i32> = indices
             .iter()
@@ -108,7 +124,7 @@ impl<'a> TableView<'a> {
                 cudf_sys::cudf_table_view_select_columns(
                     self.handle.as_ptr(),
                     indices_i32.as_ptr(),
-                    indices_i32.len() as i32,
+                    i32::try_from(indices_i32.len()).expect("number of selected columns exceeds i32::MAX"),
                     &mut out,
                 )
             },

@@ -22,7 +22,7 @@ const GROUPBY_AGG_HANDLE_INLINE_CAPACITY: usize = 16;
 
 /// Shared aggregation vocabulary for high-level and low-level groupby APIs.
 #[derive(Debug, Clone)]
-pub enum Agg {
+pub enum GroupByAgg {
     Sum,
     Min,
     Max,
@@ -48,7 +48,7 @@ pub struct AggregationRequest<'a> {
     /// The values column to aggregate.
     pub values: &'a ColumnView<'a>,
     /// One or more aggregations to apply to this column.
-    pub aggregations: &'a [Agg],
+    pub aggregations: &'a [GroupByAgg],
 }
 
 pub use crate::core::types::NullPolicy;
@@ -102,7 +102,7 @@ pub(crate) fn groupby_aggregate_impl(
 
         for agg in req.aggregations {
             match agg {
-                Agg::Std { ddof } | Agg::Variance { ddof } if *ddof > i32::MAX as u32 => {
+                GroupByAgg::Std { ddof } | GroupByAgg::Variance { ddof } if *ddof > i32::MAX as u32 => {
                     return Err(Error::new(ErrorKind::InvalidOperation, "ddof exceeds libcudf i32 range")
                         .with_operation(operation)
                         .with_context("request_index", agg_counts.len().to_string())
@@ -221,34 +221,34 @@ fn bind_groupby_result_domain(result: GroupByResult, output_domain: std::sync::A
     }
 }
 
-/// Create a C-side aggregation handle from an [`Agg`] enum.
+/// Create a C-side aggregation handle from an [`GroupByAgg`] enum.
 ///
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_aggregation_destroy`.
-unsafe fn create_agg_handle(agg: &Agg) -> Result<*mut c_void> {
+unsafe fn create_agg_handle(agg: &GroupByAgg) -> Result<*mut c_void> {
     use cudf_sys::{cudf_aggregation_kind_t::*, cudf_null_policy_t};
 
     let mut handle = ptr::null_mut();
     match agg {
-        Agg::Sum => {
+        GroupByAgg::Sum => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(CUDF_AGG_SUM, &mut handle),
                 "groupby::create_agg_handle(sum)",
             )?;
         },
-        Agg::Min => {
+        GroupByAgg::Min => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(CUDF_AGG_MIN, &mut handle),
                 "groupby::create_agg_handle(min)",
             )?;
         },
-        Agg::Max => {
+        GroupByAgg::Max => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(CUDF_AGG_MAX, &mut handle),
                 "groupby::create_agg_handle(max)",
             )?;
         },
-        Agg::Count { include_nulls } => {
+        GroupByAgg::Count { include_nulls } => {
             let policy = if *include_nulls {
                 cudf_null_policy_t::CUDF_NULL_POLICY_INCLUDE
             } else {
@@ -259,25 +259,25 @@ unsafe fn create_agg_handle(agg: &Agg) -> Result<*mut c_void> {
                 "groupby::create_agg_handle(count)",
             )?;
         },
-        Agg::Mean => {
+        GroupByAgg::Mean => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(CUDF_AGG_MEAN, &mut handle),
                 "groupby::create_agg_handle(mean)",
             )?;
         },
-        Agg::Median => {
+        GroupByAgg::Median => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(CUDF_AGG_MEDIAN, &mut handle),
                 "groupby::create_agg_handle(median)",
             )?;
         },
-        Agg::NUnique => {
+        GroupByAgg::NUnique => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create(CUDF_AGG_NUNIQUE, &mut handle),
                 "groupby::create_agg_handle(nunique)",
             )?;
         },
-        Agg::Std { ddof } => {
+        GroupByAgg::Std { ddof } => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create_std(
                     checked_ddof_to_i32(*ddof, "groupby::create_agg_handle(std)")?,
@@ -286,7 +286,7 @@ unsafe fn create_agg_handle(agg: &Agg) -> Result<*mut c_void> {
                 "groupby::create_agg_handle(std)",
             )?;
         },
-        Agg::Variance { ddof } => {
+        GroupByAgg::Variance { ddof } => {
             error::check_status_in(
                 cudf_sys::cudf_aggregation_create_variance(
                     checked_ddof_to_i32(*ddof, "groupby::create_agg_handle(variance)")?,

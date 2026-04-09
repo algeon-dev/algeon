@@ -491,7 +491,7 @@ fn eval_reduce_has_no_implicit_name() {
 
 #[test]
 fn eval_string_op_preserves_name() {
-    let s = Series::from_strings("s", &["Hello", "WORLD"]).unwrap();
+    let s = Series::from_strs("s", &["Hello", "WORLD"]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let result = col("s").str().lower().eval(&df).unwrap();
     assert_eq!(result.name(), Some("s"));
@@ -722,7 +722,7 @@ fn with_columns_reduce_requires_alias_or_explicit_name() {
 
 #[test]
 fn str_lower_expr() {
-    let s = Series::from_strings("s", &["Hello", "WORLD", "Foo"]).unwrap();
+    let s = Series::from_strs("s", &["Hello", "WORLD", "Foo"]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let result = col("s").str().lower().alias("lo").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::String);
@@ -731,7 +731,7 @@ fn str_lower_expr() {
 
 #[test]
 fn str_upper_expr() {
-    let s = Series::from_strings("s", &["Hello", "world", "Foo"]).unwrap();
+    let s = Series::from_strs("s", &["Hello", "world", "Foo"]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let result = col("s").str().upper().alias("up").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::String);
@@ -739,7 +739,7 @@ fn str_upper_expr() {
 
 #[test]
 fn str_strip_expr() {
-    let s = Series::from_strings("s", &["  hi  ", " lo", "ok "]).unwrap();
+    let s = Series::from_strs("s", &["  hi  ", " lo", "ok "]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let stripped = col("s").str().strip().alias("st").eval(&df).unwrap();
     assert_eq!(stripped.dtype().unwrap().id(), TypeId::String);
@@ -751,7 +751,7 @@ fn str_strip_expr() {
 
 #[test]
 fn str_len_expr() {
-    let s = Series::from_strings("s", &["ab", "cde", "f"]).unwrap();
+    let s = Series::from_strs("s", &["ab", "cde", "f"]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let result = col("s").str().len().alias("n").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![2, 3, 1]);
@@ -759,7 +759,7 @@ fn str_len_expr() {
 
 #[test]
 fn str_byte_count_expr() {
-    let s = Series::from_strings("s", &["ab", "cde", "f"]).unwrap();
+    let s = Series::from_strs("s", &["ab", "cde", "f"]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let result = col("s").str().byte_count().alias("n").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![2, 3, 1]);
@@ -767,7 +767,7 @@ fn str_byte_count_expr() {
 
 #[test]
 fn str_contains_expr() {
-    let s = Series::from_strings("s", &["foobar", "baz", "foo"]).unwrap();
+    let s = Series::from_strs("s", &["foobar", "baz", "foo"]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let result = col("s").str().contains("foo").alias("has").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
@@ -776,7 +776,7 @@ fn str_contains_expr() {
 
 #[test]
 fn str_startswith_expr() {
-    let s = Series::from_strings("s", &["abc", "bca", "axy"]).unwrap();
+    let s = Series::from_strs("s", &["abc", "bca", "axy"]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let result = col("s").str().starts_with("a").alias("sw").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
@@ -784,7 +784,7 @@ fn str_startswith_expr() {
 
 #[test]
 fn str_endswith_expr() {
-    let s = Series::from_strings("s", &["abc", "bca", "xya"]).unwrap();
+    let s = Series::from_strs("s", &["abc", "bca", "xya"]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let result = col("s").str().ends_with("a").alias("ew").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
@@ -798,7 +798,7 @@ fn str_preserves_output_name() {
 
 #[test]
 fn with_columns_str_lower_no_alias() {
-    let s = Series::from_strings("s", &["Hello", "WORLD"]).unwrap();
+    let s = Series::from_strs("s", &["Hello", "WORLD"]).unwrap();
     let df = DataFrame::from_series([s]).unwrap();
     let df2 = df.with_columns([col("s").str().lower()]).unwrap();
     assert_eq!(df2.series("s").unwrap().dtype().unwrap().id(), TypeId::String);

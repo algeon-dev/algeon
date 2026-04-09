@@ -1,4 +1,8 @@
-use std::{ffi::c_void, ptr};
+use std::{
+    ffi::c_void,
+    ptr,
+    sync::{Mutex, MutexGuard, OnceLock},
+};
 
 use cudf::{
     DataFrame, DeviceId, Error, ErrorKind, Runtime, Series,
@@ -47,6 +51,15 @@ pub fn reset_exec_observation() {
 #[allow(dead_code)]
 pub fn reset_sync_observation() {
     unsafe { cudf_test_exec_reset_observation() };
+}
+
+#[allow(dead_code)]
+pub fn lock_event_observation() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    match LOCK.get_or_init(|| Mutex::new(())).lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 #[allow(dead_code)]

@@ -1,5 +1,5 @@
 use cudf::{
-    Agg, AggSpec, DataFrame,
+    AggSpec, DataFrame, GroupByAgg,
     core::{Column, TableView},
     ops::groupby::{AggregationRequest, NullPolicy, groupby_aggregate},
 };
@@ -21,7 +21,11 @@ fn groupby_agg_allocates_no_more_than_low_level_borrowed_primitive() {
     let high_level_allocations = allocation_count_delta(|| {
         let result = df
             .groupby(["key"])
-            .agg(&[AggSpec::new("a", Agg::Sum), AggSpec::new("b", Agg::Sum), AggSpec::new("a", Agg::Min)])
+            .agg(&[
+                AggSpec::new("a", GroupByAgg::Sum),
+                AggSpec::new("b", GroupByAgg::Sum),
+                AggSpec::new("a", GroupByAgg::Min),
+            ])
             .unwrap();
 
         assert_eq!(result.column_names(), vec!["key", "a_sum", "b_sum", "a_min"]);
@@ -39,8 +43,8 @@ fn groupby_agg_allocates_no_more_than_low_level_borrowed_primitive() {
         let b_series = df.series("b").unwrap();
         let a_cv = a_series.as_column_view().unwrap();
         let b_cv = b_series.as_column_view().unwrap();
-        let a_aggs = [Agg::Sum, Agg::Min];
-        let b_aggs = [Agg::Sum];
+        let a_aggs = [GroupByAgg::Sum, GroupByAgg::Min];
+        let b_aggs = [GroupByAgg::Sum];
         let requests = [
             AggregationRequest { values: &a_cv, aggregations: &a_aggs },
             AggregationRequest { values: &b_cv, aggregations: &b_aggs },

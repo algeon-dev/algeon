@@ -57,8 +57,8 @@ fn test_runtime_first_factories_cover_high_level_named_series_creation() {
 
     let ints = rt.series("ints", &[1i32, 2, 3]).unwrap();
     let nullable = rt.nullable_series("nullable", &[10i32, 0, 30], &[true, false, true]).unwrap();
-    let strings = rt.string_series("names", &["alice", "bob"]).unwrap();
-    let nullable_strings = rt.nullable_string_series("nick", &["ally", "", "zed"], &[true, false, true]).unwrap();
+    let strings = rt.str_series("names", &["alice", "bob"]).unwrap();
+    let nullable_strings = rt.nullable_str_series("nick", &["ally", "", "zed"], &[true, false, true]).unwrap();
     let nulls = rt.nulls("missing", TypeId::Int32, 2).unwrap();
     let empty = rt.empty_series("empty", TypeId::Float64).unwrap();
     let scalar = Scalar::from_value(7i32).unwrap();
@@ -78,8 +78,9 @@ fn test_runtime_first_factories_cover_high_level_named_series_creation() {
 
 #[test]
 fn test_high_level_io_option_types_reexported_at_crate_root() {
-    use cudf::{JsonReadOptions, JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions};
+    use cudf::{CsvReadOptions, JsonReadOptions, JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions};
 
+    let _ = CsvReadOptions::builder().filepath("/tmp/input.csv").build();
     let _ = JsonReadOptions::builder().filepath("/tmp/input.jsonl").build();
     let _ = JsonWriteOptions::builder().filepath("/tmp/output.jsonl").build();
     let _ = ParquetReadOptions::builder().filepath("/tmp/input.parquet").build();
@@ -88,7 +89,7 @@ fn test_high_level_io_option_types_reexported_at_crate_root() {
 
 #[test]
 fn test_low_level_io_option_types_live_under_io_modules() {
-    let _ = cudf::io::csv::CsvReadOptions::builder().filepath("/tmp/input.csv").build();
+    let _ = cudf::io::csv::CsvTableReadOptions::builder().filepath("/tmp/input.csv").build();
     let _ = cudf::io::csv::CsvTableWriteOptions::builder().filepath("/tmp/output.csv").build();
     let _ = cudf::io::json::JsonReadOptions::builder().filepath("/tmp/input.jsonl").build();
     let _ = cudf::io::json::JsonTableWriteOptions::builder().filepath("/tmp/output.jsonl").build();
@@ -98,7 +99,7 @@ fn test_low_level_io_option_types_live_under_io_modules() {
 
 #[test]
 fn test_high_level_control_plane_flows_through_runtime_and_scoped_context() {
-    use cudf::{Agg, AggSpec, DataFrame, ExecutionContext, Runtime, SortOptions, runtime::CudaStream};
+    use cudf::{AggSpec, DataFrame, ExecutionContext, GroupByAgg, Runtime, SortOptions, runtime::CudaStream};
 
     let rt = Runtime::builder().build().unwrap();
     let df = DataFrame::from_series([
@@ -111,7 +112,7 @@ fn test_high_level_control_plane_flows_through_runtime_and_scoped_context() {
     let ctx = ExecutionContext::new().with_stream(&override_stream);
 
     let sorted = df.in_context(&ctx).sort_values(["id"], SortOptions::new()).unwrap();
-    let grouped = sorted.groupby(["id"]).in_context(&ctx).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+    let grouped = sorted.groupby(["id"]).in_context(&ctx).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     assert_eq!(grouped.column_names(), vec!["id", "value_sum"]);
     assert_eq!(grouped.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2]);
@@ -134,10 +135,10 @@ fn test_lowlevel_types_available_via_core_module() {
 
 #[test]
 fn test_runtime_aware_column_constructors_remain_advanced_core_tools() {
-    use cudf::{Runtime, core::Column};
+    use cudf::Runtime;
 
     let rt = Runtime::builder().build().unwrap();
-    let col = Column::from_slice_with_runtime(&rt, &[7i32, 8, 9]).unwrap();
+    let col = rt.column_from_slice(&[7i32, 8, 9]).unwrap();
 
     assert_eq!(col.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
     assert_eq!(col.view().unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
@@ -170,10 +171,10 @@ fn test_join_types_reexported() {
 
 #[test]
 fn test_groupby_types_reexported() {
-    // Agg, AggSpec, GroupByOptions should be importable directly from the crate root.
-    use cudf::{Agg, AggSpec, GroupByOptions};
+    // GroupByAgg, AggSpec, GroupByOptions should be importable directly from the crate root.
+    use cudf::{AggSpec, GroupByAgg, GroupByOptions};
 
-    let spec = AggSpec::new("price", Agg::Sum).with_alias("total_price");
+    let spec = AggSpec::new("price", GroupByAgg::Sum).with_alias("total_price");
     // Verify it constructed without error.
     let _ = spec;
 
@@ -218,14 +219,14 @@ fn test_high_level_workflow_merge() {
 #[test]
 fn test_high_level_workflow_groupby() {
     // End-to-end: construct DataFrame, groupby+agg using crate-root imports.
-    use cudf::{Agg, AggSpec, DataFrame, GroupByOptions, Series};
+    use cudf::{AggSpec, DataFrame, GroupByAgg, GroupByOptions, Series};
 
     let keys = Series::new::<i32>("key", &[1, 2, 1, 2]).unwrap();
     let vals = Series::new::<i64>("value", &[10, 20, 30, 40]).unwrap();
     let df = DataFrame::from_series([keys, vals]).unwrap();
 
     let result =
-        df.groupby(["key"]).options(GroupByOptions::default()).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+        df.groupby(["key"]).options(GroupByOptions::default()).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.column_names(), vec!["key", "value_sum"]);
@@ -251,13 +252,13 @@ fn test_advanced_workflow_uses_table_view_and_low_level_ops() {
 #[test]
 fn test_all_high_level_types_in_single_import() {
     // Verify all high-level types can be imported in one `use` statement.
-    use cudf::{Agg, AggSpec, DataFrame, GroupBy, GroupByOptions, JoinType, MergeOptions, Series, SortOptions};
+    use cudf::{AggSpec, DataFrame, GroupBy, GroupByAgg, GroupByOptions, JoinType, MergeOptions, Series, SortOptions};
 
     // Merely asserting that this compiles is the test. Use each type to
     // avoid unused-import warnings.
     let _ = SortOptions::new();
     let _ = MergeOptions::new().how(JoinType::Inner);
-    let _ = AggSpec::new("x", Agg::Sum);
+    let _ = AggSpec::new("x", GroupByAgg::Sum);
     let _ = GroupByOptions::default();
 
     let s = Series::new::<i32>("a", &[1]).unwrap();
@@ -275,7 +276,7 @@ fn test_domain_modules_export_documented_surface() {
         ops::{
             Expr as DomainExpr,
             groupby::{
-                Agg as DomainAgg, AggSpec as DomainAggSpec, GroupBy as DomainGroupBy,
+                AggSpec as DomainAggSpec, GroupBy as DomainGroupBy, GroupByAgg as DomainAgg,
                 GroupByOptions as DomainGroupByOptions,
             },
             join::{
@@ -320,4 +321,11 @@ fn test_domain_modules_export_documented_surface() {
     assert_eq!(runtime_nulls.null_count(), 2);
 
     assert_into_series::<DomainSeries>();
+}
+
+#[test]
+fn test_ops_root_namespace_contract() {
+    let t = trybuild::TestCases::new();
+    t.pass("tests/ui/ops_root_expr_surface_pass.rs");
+    t.compile_fail("tests/ui/ops_root_forbidden_reexports_fail.rs");
 }

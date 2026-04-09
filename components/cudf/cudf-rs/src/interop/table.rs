@@ -1,29 +1,23 @@
-use super::{table_export::transfer_from_owned_table_with_runtime_release, *};
+use super::{
+    table_export::{
+        transfer_from_owned_table_with_runtime_release, transfer_from_owned_table_with_runtime_release_synchronization,
+    },
+    *,
+};
 
 fn borrow_table_view_from_table_view<'a>(
     view: &'a TableView<'_>,
     operation: &'static str,
 ) -> Result<BorrowedTableView<'a>, InteropError> {
-    let num_rows = usize::try_from(
-        view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "table row count must be >= 0")
-            .with_context("operation", operation)
-    })?;
-    let num_columns = usize::try_from(
-        view.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "table column count must be >= 0")
-            .with_context("operation", operation)
-    })?;
+    let num_rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let num_columns =
+        view.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let execution = execution_binding(operation, view.execution_domain())?;
     let mut columns = Vec::with_capacity(num_columns);
     for index in 0..num_columns {
-        let index_i32 = checked_column_index(operation, index)?;
+        let _ = checked_column_index(operation, index)?;
         let column_view =
-            view.column(index_i32).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+            view.column(index).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let borrowed = borrow_from_view_with_execution(&column_view, execution, operation)?;
         columns.push(borrowed);
     }
@@ -35,26 +29,15 @@ fn borrow_table_view_from_table<'a>(
     operation: &'static str,
 ) -> Result<BorrowedTableView<'a>, InteropError> {
     let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let num_rows = usize::try_from(
-        view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "table row count must be >= 0")
-            .with_context("operation", operation)
-    })?;
-    let num_columns = usize::try_from(
-        view.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "table column count must be >= 0")
-            .with_context("operation", operation)
-    })?;
+    let num_rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let num_columns =
+        view.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let execution = execution_binding(operation, table.execution_domain())?;
     let mut columns = Vec::with_capacity(num_columns);
     for index in 0..num_columns {
-        let index_i32 = checked_column_index(operation, index)?;
+        let _ = checked_column_index(operation, index)?;
         let column_view =
-            view.column(index_i32).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+            view.column(index).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let borrowed = borrow_from_view_with_execution(&column_view, execution, operation)?;
         columns.push(borrowed);
     }
@@ -218,7 +201,7 @@ impl Table {
 
     /// Move this owned table into the shared RAPIDS owned device transfer
     /// profile.
-    pub fn try_into_owned_device_table_transfer(self) -> Result<OwnedTableTransfer, InteropError> {
+    pub fn try_into_owned_transfer(self) -> Result<OwnedTableTransfer, InteropError> {
         <Self as TryIntoOwnedDeviceTableTransfer>::try_into_owned_device_table_transfer(self)
     }
 
@@ -228,12 +211,31 @@ impl Table {
     /// The returned releaser accepts release and schedules any required
     /// consumer-signal wait onto a background runtime job instead of blocking
     /// the caller thread.
-    pub fn try_into_owned_device_table_transfer_with_runtime_release(
+    pub fn try_into_owned_transfer_with_release(
         self,
     ) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
-        transfer_from_owned_table_with_runtime_release(
+        transfer_from_owned_table_with_runtime_release(self, "interop::Table::try_into_owned_transfer_with_release")
+    }
+
+    /// Move this owned table into the shared RAPIDS owned device transfer
+    /// profile plus a CUDA-backed releaser for signal-driven release with an
+    /// explicit release-synchronization contract.
+    ///
+    /// The returned transfer always declares
+    /// [`TransferCompletionRule::ReleaseWaitsOnConsumerSignal`]. Pass
+    /// [`ReleaseSynchronization::Asynchronous`] when release must return after
+    /// acceptance and background scheduling, or
+    /// [`ReleaseSynchronization::MaySynchronizeInternally`] when a blocking
+    /// release call is acceptable. Caller-managed synchronization remains
+    /// unsupported for this runtime-backed producer path.
+    pub fn try_into_owned_transfer_with_release_synchronization(
+        self,
+        synchronization: ReleaseSynchronization,
+    ) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+        transfer_from_owned_table_with_runtime_release_synchronization(
             self,
-            "interop::Table::try_into_owned_device_table_transfer_with_runtime_release",
+            synchronization,
+            "interop::Table::try_into_owned_transfer_with_release_synchronization",
         )
     }
 

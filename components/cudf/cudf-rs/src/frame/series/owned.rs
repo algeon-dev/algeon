@@ -7,9 +7,11 @@ use crate::{
         scalar::Scalar,
         types::{CudfType, DataType, TimestampResolution, TypeId},
     },
+    frame::dataframe::{DataFrame, DropDuplicatesOptions, DropNaOptions},
     internal::temp_table::TempTableView,
     ops::{
         binary, concatenate,
+        groupby::{AggSpec, GroupByAgg},
         replace::{self, FillPolicy},
         sorting::SortOptions,
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
@@ -17,6 +19,10 @@ use crate::{
     },
     runtime::{Runtime, execution_domain::ExecutionDomain},
 };
+
+pub(super) const SERIES_ROW_OP_FRAME_COLUMN_NAME: &str = "__cudf_series_value__";
+pub(super) const SERIES_VALUE_COUNTS_FALLBACK_NAME: &str = "value";
+pub(super) const SERIES_VALUE_COUNTS_COUNT_NAME: &str = "count";
 
 /// A named, reference-counted GPU column.
 ///
@@ -72,8 +78,25 @@ impl Series {
         Scalar::from_value_in_domain(value, self.column.execution_domain())
     }
 
-    fn scalar_from_string_in_domain(&self, value: &str) -> Result<Scalar> {
-        Scalar::from_string_in_domain(value, self.column.execution_domain())
+    fn scalar_from_str_in_domain(&self, value: &str) -> Result<Scalar> {
+        Scalar::from_str_in_domain(value, self.column.execution_domain())
+    }
+
+    pub(super) fn require_bool_binary_operands(&self, rhs: &Series, operation: &'static str) -> Result<()> {
+        let lhs_type = self.dtype()?.id();
+        let rhs_type = rhs.dtype()?.id();
+
+        if lhs_type == TypeId::Bool8 && rhs_type == TypeId::Bool8 {
+            return Ok(());
+        }
+
+        Err(Error::new(
+            ErrorKind::InvalidArgument,
+            "logical boolean operations require both operands to have dtype Bool8",
+        )
+        .with_operation(operation)
+        .with_context("lhs_type_id", format!("{:?}", lhs_type).to_lowercase())
+        .with_context("rhs_type_id", format!("{:?}", rhs_type).to_lowercase()))
     }
 
     /// Returns the data type of the underlying column.
@@ -140,6 +163,126 @@ impl Series {
         self.column.view()
     }
 
+    pub(super) fn as_single_column_dataframe(&self, operation: &'static str) -> Result<(DataFrame, String)> {
+        let column_name = SERIES_ROW_OP_FRAME_COLUMN_NAME.to_string();
+        let frame = DataFrame::from_named_pairs([(column_name.clone(), self.clone())])
+            .map_err(|e| if e.operation().is_empty() { e.with_operation(operation) } else { e })?;
+        Ok((frame, column_name))
+    }
+
+    pub(super) fn restore_single_column_result(
+        &self,
+        df: DataFrame,
+        column_name: &str,
+        operation: &'static str,
+    ) -> Result<Series> {
+        let series = df.series(column_name).map_err(|e| e.with_operation(operation))?;
+        match self.name() {
+            Some(name) => Ok(series.rename(name)),
+            None => Ok(Series::from_column_arc(series.into_inner())),
+        }
+    }
+
+    /// Return the first `n` rows of the series.
+    ///
+    /// If `n >= len`, all rows are returned. The output inherits the source
+    /// series name, including unnamed inputs.
+    pub fn head(&self, n: usize) -> Result<Series> {
+        let operation = "series::head";
+        let (df, column_name) = self.as_single_column_dataframe(operation)?;
+        let result = df.head(n).map_err(|e| e.with_operation(operation))?;
+        self.restore_single_column_result(result, &column_name, operation)
+    }
+
+    /// Return the last `n` rows of the series.
+    ///
+    /// If `n >= len`, all rows are returned. The output inherits the source
+    /// series name, including unnamed inputs.
+    pub fn tail(&self, n: usize) -> Result<Series> {
+        let operation = "series::tail";
+        let (df, column_name) = self.as_single_column_dataframe(operation)?;
+        let result = df.tail(n).map_err(|e| e.with_operation(operation))?;
+        self.restore_single_column_result(result, &column_name, operation)
+    }
+
+    /// Return `length` rows starting at `offset`.
+    ///
+    /// Both `offset` and `length` are clamped to the series length, so
+    /// out-of-range values yield fewer rows rather than an error.
+    pub fn slice(&self, offset: usize, length: usize) -> Result<Series> {
+        let operation = "series::slice";
+        let (df, column_name) = self.as_single_column_dataframe(operation)?;
+        let result = df.slice(offset, length).map_err(|e| e.with_operation(operation))?;
+        self.restore_single_column_result(result, &column_name, operation)
+    }
+
+    /// Gather rows by an index `Series`.
+    ///
+    /// The `indices` series must be `Int32`. Out-of-bounds indices produce
+    /// null rows in the result.
+    pub fn gather(&self, indices: &Series) -> Result<Series> {
+        let operation = "series::gather";
+        let (df, column_name) = self.as_single_column_dataframe(operation)?;
+        let result = df.gather(indices).map_err(|e| e.with_operation(operation))?;
+        self.restore_single_column_result(result, &column_name, operation)
+    }
+
+    /// Filter rows using a BOOL8 mask.
+    ///
+    /// Rows where `mask` is `true` are kept; `false` and null mask rows are
+    /// dropped.
+    pub fn filter(&self, mask: &Series) -> Result<Series> {
+        let operation = "series::filter";
+        let (df, column_name) = self.as_single_column_dataframe(operation)?;
+        let result = df.filter(mask).map_err(|e| e.with_operation(operation))?;
+        self.restore_single_column_result(result, &column_name, operation)
+    }
+
+    /// Drop null rows from the series.
+    ///
+    /// Equivalent to the single-column form of cuDF Python's
+    /// `Series.dropna()`.
+    pub fn dropna(&self) -> Result<Series> {
+        let operation = "series::dropna";
+        let (df, column_name) = self.as_single_column_dataframe(operation)?;
+        let result = df.dropna(DropNaOptions::default()).map_err(|e| e.with_operation(operation))?;
+        self.restore_single_column_result(result, &column_name, operation)
+    }
+
+    /// Remove duplicate values from the series.
+    ///
+    /// Equivalent to the single-column form of cuDF Python's
+    /// `Series.drop_duplicates()`.
+    pub fn drop_duplicates(&self) -> Result<Series> {
+        let operation = "series::drop_duplicates";
+        let (df, column_name) = self.as_single_column_dataframe(operation)?;
+        let result = df.drop_duplicates(DropDuplicatesOptions::default()).map_err(|e| e.with_operation(operation))?;
+        self.restore_single_column_result(result, &column_name, operation)
+    }
+
+    /// Count the frequency of each distinct non-null value.
+    ///
+    /// Returns a two-column [`DataFrame`] with one value column and one
+    /// `count` column. Null values are excluded from the result.
+    pub fn value_counts(&self) -> Result<DataFrame> {
+        let operation = "series::value_counts";
+        let (df, column_name) = self.as_single_column_dataframe(operation)?;
+        let value_name =
+            self.name().map(str::to_string).unwrap_or_else(|| SERIES_VALUE_COUNTS_FALLBACK_NAME.to_string());
+
+        let mut counts = df
+            .groupby([column_name.as_str()])
+            .agg(&[AggSpec::new(column_name.as_str(), GroupByAgg::Count { include_nulls: false })
+                .with_alias(SERIES_VALUE_COUNTS_COUNT_NAME)])
+            .map_err(|e| e.with_operation(operation))?;
+
+        if value_name != column_name {
+            counts = counts.rename_column(&column_name, &value_name).map_err(|e| e.with_operation(operation))?;
+        }
+
+        Ok(counts)
+    }
+
     /// Copy fixed-width column data to a host `Vec<T>`, rejecting nullable
     /// columns.
     ///
@@ -177,45 +320,7 @@ impl Series {
     /// # Errors
     /// Returns `TypeError` if the column dtype does not match `T`.
     pub fn to_vec_optional<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
-        let cv = self.column.view()?;
-
-        // Bool8 safety: libcudf stores booleans as int8 and makes no guarantee
-        // about the byte value of null (masked-off) slots. Rust requires bool
-        // to be exactly 0 or 1; any other value is UB. To avoid constructing
-        // an invalid bool, we materialize as u8 and only convert valid slots.
-        if T::TYPE_ID == TypeId::Bool8 {
-            return self.to_vec_optional_bool::<T>(&cv);
-        }
-
-        let vals = cv.to_vec::<T>()?;
-        match cv.validity()? {
-            None => Ok(vals.into_iter().map(Some).collect()),
-            Some(mask) => Ok(vals.into_iter().zip(mask).map(|(v, valid)| if valid { Some(v) } else { None }).collect()),
-        }
-    }
-
-    /// Bool-safe path: materialize raw bytes, convert only valid positions.
-    ///
-    /// libcudf stores Bool8 as int8 and makes no guarantee about the byte
-    /// value of null (masked-off) slots. Rust requires `bool` to be exactly
-    /// 0 or 1; any other value is UB. We materialize as `u8` via
-    /// `ColumnView::to_raw_bytes` and canonicalize before converting.
-    fn to_vec_optional_bool<T: CudfType>(&self, cv: &ColumnView<'_>) -> Result<Vec<Option<T>>> {
-        let raw = cv.to_raw_bytes()?;
-        let bool_values: Vec<Option<bool>> = match cv.validity()? {
-            None => raw.into_iter().map(|b| Some(b != 0)).collect(),
-            Some(mask) => raw.into_iter().zip(mask).map(|(b, valid)| if valid { Some(b != 0) } else { None }).collect(),
-        };
-
-        // Only `bool` implements `CudfType<TYPE_ID = Bool8>`. Downcasting the
-        // completed vector keeps this helper free of representation-level
-        // unsafe code while preserving the runtime assertion.
-        let boxed: Box<dyn std::any::Any> = Box::new(bool_values);
-        boxed.downcast::<Vec<Option<T>>>().map(|typed| *typed).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "internal bool materialization helper requires T = bool")
-                .with_operation("series::to_vec_optional_bool")
-                .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase())
-        })
+        self.column.view()?.to_optional_vec::<T>()
     }
 
     /// Copy string column data to a host `Vec<String>`, rejecting nullable
@@ -234,7 +339,7 @@ impl Series {
             return Err(Error::new(ErrorKind::InvalidOperation, "to_strings_strict rejects nullable columns")
                 .with_operation("series::to_strings_strict"));
         }
-        cv.to_strings()
+        cv.to_strings_lossy()
     }
 
     /// Copy string data to host as `Vec<Option<String>>`, distinguishing null
@@ -290,42 +395,42 @@ impl Series {
 
     /// Element-wise `self == string_scalar`. Inherits the source Series' name.
     pub fn eq_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_string_in_domain(rhs)?;
+        let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.eq_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self != string_scalar`. Inherits the source Series' name.
     pub fn ne_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_string_in_domain(rhs)?;
+        let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.ne_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self > string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn gt_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_string_in_domain(rhs)?;
+        let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.gt_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self < string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn lt_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_string_in_domain(rhs)?;
+        let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.lt_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self >= string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn ge_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_string_in_domain(rhs)?;
+        let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.ge_scalar(&s)?;
         self.with_inherited_name(col)
     }
 
     /// Element-wise `self <= string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn le_scalar_str(&self, rhs: &str) -> Result<Series> {
-        let s = self.scalar_from_string_in_domain(rhs)?;
+        let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.le_scalar(&s)?;
         self.with_inherited_name(col)
     }
@@ -389,6 +494,32 @@ impl Series {
     pub fn le(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.le(&rhs.column)?;
         Self::from_column(col)
+    }
+
+    /// Element-wise logical AND. Both operands must be `BOOL8`.
+    ///
+    /// Returns an unnamed `BOOL8` Series suitable for mask composition.
+    pub fn logical_and(&self, rhs: &Series) -> Result<Series> {
+        let operation = "series::logical_and";
+        self.require_bool_binary_operands(rhs, operation)?;
+        let col = self
+            .column
+            .binary_op(&rhs.column, binary::BinaryOperator::LogicalAnd)
+            .map_err(|e| e.with_operation(operation))?;
+        Self::from_column(col).map_err(|e| e.with_operation(operation))
+    }
+
+    /// Element-wise logical OR. Both operands must be `BOOL8`.
+    ///
+    /// Returns an unnamed `BOOL8` Series suitable for mask composition.
+    pub fn logical_or(&self, rhs: &Series) -> Result<Series> {
+        let operation = "series::logical_or";
+        self.require_bool_binary_operands(rhs, operation)?;
+        let col = self
+            .column
+            .binary_op(&rhs.column, binary::BinaryOperator::LogicalOr)
+            .map_err(|e| e.with_operation(operation))?;
+        Self::from_column(col).map_err(|e| e.with_operation(operation))
     }
 
     // -- Arithmetic ops ------------------------------------------------
@@ -587,7 +718,7 @@ impl Series {
     /// GPU-allocating: a new column is produced with the target numeric dtype.
     pub fn to_numeric(&self, target: TypeId) -> Result<Series> {
         if !target.is_numeric() && !target.is_boolean() {
-            return Err(Error::new(ErrorKind::InvalidOperation, format!("target type {target:?} is not numeric"))
+            return Err(Error::new(ErrorKind::NotSupported, format!("target type {target:?} is not numeric"))
                 .with_operation("series::to_numeric"));
         }
         self.astype(target)

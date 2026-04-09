@@ -869,7 +869,7 @@ fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
 
     obs_reset();
     let result =
-        df.groupby(["key"]).__debug_agg_in_context(&[cudf::AggSpec::new("val", cudf::Agg::Sum)], &ctx).unwrap();
+        df.groupby(["key"]).__debug_agg_in_context(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)], &ctx).unwrap();
 
     assert_eq!(obs_last_stream(), explicit_stream);
     assert_eq!(result.num_rows(), 2);
@@ -1032,7 +1032,7 @@ fn groupby_agg_default_produces_correct_results() {
     let vals = cudf::Series::new::<i64>("val", &[10, 20, 30, 40]).unwrap();
     let df = cudf::DataFrame::from_series([keys, vals]).unwrap();
 
-    let result = df.groupby(["key"]).agg(&[cudf::AggSpec::new("val", cudf::Agg::Sum)]).unwrap();
+    let result = df.groupby(["key"]).agg(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)]).unwrap();
 
     assert_eq!(result.num_rows(), 2, "groupby on 2 unique keys should yield 2 rows");
 }

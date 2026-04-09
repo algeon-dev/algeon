@@ -120,3 +120,12 @@ impl Drop for CudaEventHandle {
         }
     }
 }
+
+impl std::fmt::Debug for CudaEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CudaEvent")
+            .field("device", &self.device())
+            .field("handle", &self.__debug_raw_handle_value())
+            .finish()
+    }
+}
