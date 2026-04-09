@@ -4,9 +4,10 @@
 use std::{any::Any, sync::Arc};
 
 use rapids_interop::{
-    BorrowedColumnView, BorrowedTableView, BufferBinding, ColumnLayout, CompletionAuthority, ExportProfile,
-    InteropError, InteropErrorKind, LeaseCompletionResult, OwnedColumnTransfer, OwnedTableTransfer, PhysicalValidity,
-    Placement, PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, SemanticColumn,
+    BorrowedColumnView, BorrowedTableView, BufferBinding, ColumnLayout, CompletionAuthority, CudaStreamHandle,
+    ExportProfile, InteropError, InteropErrorKind, LeaseCompletionResult, OwnedColumnTransfer, OwnedTableTransfer,
+    PartitionedPreparedTableExport, PhysicalValidity, Placement, PreparedColumnExport, PreparedTableExport,
+    ProducerReadiness, ReadStartAuthority, SemanticColumn,
 };
 
 use super::{
@@ -279,6 +280,18 @@ fn synchronize_shared_completion_result(
             .synchronize()
             .map_err(|error| map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error)),
     }
+}
+
+fn runtime_shared_stream_authorities<'a>(
+    runtime: &'a Runtime,
+    operation: &'static str,
+) -> Result<(ReadStartAuthority<'a>, CompletionAuthority<'a>), InteropError> {
+    let stream_raw = runtime
+        .stream()
+        .interop_raw_handle()
+        .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    let stream = CudaStreamHandle::from_raw_on_device(stream_raw, runtime.device().ordinal_raw())?;
+    Ok((ReadStartAuthority::ConsumerStream { stream }, CompletionAuthority::SameDeviceStream { stream }))
 }
 
 fn borrowed_null_mask_parts(
@@ -721,6 +734,89 @@ pub(super) fn import_table_from_prepared_export(
         // before this match executes.
         ExportProfile::BorrowedDeviceCompatibility | ExportProfile::OwnedDeviceTransfer => unreachable!(),
     }
+}
+
+pub(super) fn import_partitioned_local_tables_from_prepared_export(
+    export: &PartitionedPreparedTableExport<'_>,
+    runtimes: &[&Runtime],
+    operation: &'static str,
+) -> Result<Vec<(Vec<usize>, Table)>, InteropError> {
+    if export.partitions().len() != runtimes.len() {
+        return Err(InteropError::new(
+            InteropErrorKind::ExecutionBindingMismatch,
+            "partitioned prepared table export import requires one destination runtime per partition",
+        )
+        .with_context("operation", operation)
+        .with_context("partition_count", export.partitions().len().to_string())
+        .with_context("runtime_count", runtimes.len().to_string()));
+    }
+
+    let mut imported = Vec::with_capacity(export.partitions().len());
+    for (partition_index, (partition, runtime)) in export.partitions().iter().zip(runtimes.iter().copied()).enumerate()
+    {
+        prepared_import_profile_supported(partition.export().diagnostics().profile(), operation)
+            .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
+
+        let producer_device = prepared_device_export_producer_device(partition.export().readiness(), operation)
+            .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
+        validate_runtime_device(
+            operation,
+            "producer_device",
+            "partitioned prepared device export import requires each destination runtime to use the matching partition CUDA device",
+            producer_device,
+            runtime,
+        )
+        .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
+
+        let graph = prepared_device_import_table_graph(partition.export(), operation)
+            .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
+        let exec_options = runtime
+            .execution_domain()
+            .explicit_exec_options_raw()
+            .expect("runtime always provides explicit execution options");
+        let num_semantic_columns =
+            checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)
+                .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
+        let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)
+            .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
+        let (read_start, completion) = runtime_shared_stream_authorities(runtime, operation)
+            .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
+        let lease = partition
+            .try_activate_read_lease(read_start, completion)
+            .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
+        let mut handle = std::ptr::null_mut();
+
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_table_copy_from_prepared_device_export_ex(
+                    &graph.ffi_table,
+                    graph.ffi_columns.as_ptr(),
+                    num_semantic_columns,
+                    graph.ffi_bindings.as_ptr(),
+                    num_bindings,
+                    &exec_options,
+                    &mut handle,
+                )
+            },
+            operation,
+        )
+        .map_err(|error| {
+            map_cudf_error(InteropErrorKind::InvalidView, operation, error)
+                .with_context("partition_index", partition_index.to_string())
+        })?;
+
+        let table = unsafe { Table::from_raw(handle) }.with_execution_domain(Arc::clone(runtime.execution_domain()));
+        let completion = lease.complete().map_err(|error| {
+            map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error)
+                .with_context("partition_index", partition_index.to_string())
+        })?;
+        synchronize_shared_completion_result(completion, operation)
+            .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
+
+        imported.push((partition.top_level_column_indices().to_vec(), table));
+    }
+
+    Ok(imported)
 }
 
 pub(super) fn wrap_imported_series(column: Column, operation: &'static str) -> Result<Series, InteropError> {

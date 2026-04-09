@@ -1277,6 +1277,9 @@ extern "C" {
     /// Block until work already enqueued on `handle` completes.
     pub fn cudf_stream_synchronize(handle: cudf_stream_handle) -> cudf_status_t;
 
+    /// Block until work already enqueued on one borrowed raw CUDA stream completes.
+    pub fn cudf_raw_cuda_stream_synchronize(raw_stream: *mut c_void) -> cudf_status_t;
+
     /// Report whether work already enqueued on `handle` has completed.
     pub fn cudf_stream_is_ready(handle: cudf_stream_handle, out: *mut i32) -> cudf_status_t;
 

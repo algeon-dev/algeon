@@ -5,7 +5,7 @@ use std::{
 };
 
 use cudf::{
-    Runtime,
+    DeviceId, Runtime,
     core::{Column, Table},
     interop::{
         CompletionAuthority, ExportProfile, InteropErrorKind, LeaseCompletionResult, PartitionedDataFrameExport,
@@ -16,6 +16,27 @@ use cudf::{
 };
 
 use crate::common::{assert_duplicate_name_error, lock_event_observation};
+
+const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
+
+fn should_run_multi_gpu_test() -> bool {
+    if std::env::var(SKIP_MULTI_GPU_ENV).unwrap_or_default() == "1" {
+        eprintln!("skipping multi-GPU test because {SKIP_MULTI_GPU_ENV}=1");
+        return false;
+    }
+
+    let count = DeviceId::count().expect("failed to query visible CUDA devices");
+    if count < 2 {
+        eprintln!("skipping multi-GPU test because only {count} CUDA device is visible");
+        return false;
+    }
+
+    true
+}
+
+fn first_two_test_devices() -> (DeviceId, DeviceId) {
+    (DeviceId::new(0).unwrap(), DeviceId::new(1).unwrap())
+}
 
 fn reset_event_observation() {
     unsafe { cudf_sys::cudf_test_event_reset_observation() };
@@ -104,6 +125,129 @@ fn partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_a
         .unwrap();
     assert_eq!(first.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
     assert_eq!(second.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+}
+
+#[test]
+fn partitioned_dataframe_export_partition_wrapper_activates_directly() {
+    let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7003).unwrap();
+    let middle = Column::from_slice(&[10i32, 20, 30]).unwrap().__debug_rebind_execution_domain_explicit(7004).unwrap();
+    let right =
+        Column::from_slice(&[100i32, 200, 300]).unwrap().__debug_rebind_execution_domain_explicit(7003).unwrap();
+
+    let producer = PartitionedDataFrameExport::new(
+        vec!["left".into(), "middle".into(), "right".into()],
+        vec![left, middle, right],
+    )
+    .unwrap();
+    let export = producer.try_prepare_device_partitioned_table_export().unwrap();
+
+    let first = export.partitions()[0]
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
+    let second = export.partitions()[1]
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
+
+    assert_eq!(first.top_level_column_indices(), &[0, 2]);
+    assert_eq!(second.top_level_column_indices(), &[1]);
+    assert_eq!(first.export().columns().len(), 2);
+    assert_eq!(second.export().columns().len(), 1);
+    assert_eq!(first.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+    assert_eq!(second.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+}
+
+#[test]
+fn partitioned_prepared_table_export_imports_one_local_table_per_partition_runtime() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    let left_runtime = Runtime::builder().with_device(device0).build().unwrap();
+    let right_runtime = Runtime::builder().with_device(device1).build().unwrap();
+    let left = left_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let middle = right_runtime.column_from_slice(&[10i32, 20, 30]).unwrap();
+    let right = left_runtime.column_from_slice(&[100i32, 200, 300]).unwrap();
+
+    let producer = PartitionedDataFrameExport::new(
+        vec!["left".into(), "middle".into(), "right".into()],
+        vec![left, middle, right],
+    )
+    .unwrap();
+    let export = producer.try_prepare_device_partitioned_table_export().unwrap();
+
+    let imported = Table::try_import_partitioned_local_tables_from_prepared_table_export_into_runtimes(
+        &export,
+        &[&left_runtime, &right_runtime],
+    )
+    .unwrap();
+
+    assert_eq!(imported.num_rows(), 3);
+    assert_eq!(imported.schema_names().unwrap(), &["left".to_string(), "middle".to_string(), "right".to_string()]);
+
+    let partitions = imported.into_partitions();
+    assert_eq!(partitions.len(), 2);
+
+    let first = &partitions[0];
+    assert_eq!(first.top_level_column_indices(), &[0, 2]);
+    assert_eq!(first.table().view().unwrap().num_columns().unwrap(), 2);
+    assert_eq!(first.table().__debug_execution_domain_id(), left_runtime.__debug_execution_domain_id());
+    assert_eq!(first.table().__debug_execution_domain_stream_value(), left_runtime.stream().__debug_raw_handle_value());
+
+    let first_view = first.table().view().unwrap();
+    assert_eq!(first_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(first_view.column(1).unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300]);
+
+    let second = &partitions[1];
+    assert_eq!(second.top_level_column_indices(), &[1]);
+    assert_eq!(second.table().view().unwrap().num_columns().unwrap(), 1);
+    assert_eq!(second.table().__debug_execution_domain_id(), right_runtime.__debug_execution_domain_id());
+    assert_eq!(
+        second.table().__debug_execution_domain_stream_value(),
+        right_runtime.stream().__debug_raw_handle_value()
+    );
+
+    let second_view = second.table().view().unwrap();
+    assert_eq!(second_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+}
+
+#[test]
+fn partitioned_prepared_table_export_import_rejects_runtime_on_wrong_device_for_a_partition() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    let left_runtime = Runtime::builder().with_device(device0).build().unwrap();
+    let right_runtime = Runtime::builder().with_device(device1).build().unwrap();
+    let left = left_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let middle = right_runtime.column_from_slice(&[10i32, 20, 30]).unwrap();
+    let right = left_runtime.column_from_slice(&[100i32, 200, 300]).unwrap();
+
+    let producer = PartitionedDataFrameExport::new(
+        vec!["left".into(), "middle".into(), "right".into()],
+        vec![left, middle, right],
+    )
+    .unwrap();
+    let export = producer.try_prepare_device_partitioned_table_export().unwrap();
+
+    let err = Table::try_import_partitioned_local_tables_from_prepared_table_export_into_runtimes(
+        &export,
+        &[&right_runtime, &left_runtime],
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::ExecutionBindingMismatch);
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "partition_index" && value == "0"),
+        "expected partition-local mismatch context, got {:?}",
+        err.context()
+    );
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "runtime_device" && value == "1"),
+        "expected runtime-device mismatch context, got {:?}",
+        err.context()
+    );
 }
 
 #[test]

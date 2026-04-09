@@ -5,6 +5,100 @@ use super::{
     *,
 };
 
+/// One partition-local table result consumed from a partitioned prepared table
+/// export.
+///
+/// This preserves the original top-level logical schema coverage for the
+/// partition and carries the imported local `Table` produced on the matching
+/// destination runtime.
+pub struct PartitionedLocalTableResult {
+    top_level_column_indices: Vec<usize>,
+    table: Table,
+}
+
+impl std::fmt::Debug for PartitionedLocalTableResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let num_columns = self.table.view().ok().and_then(|view| view.num_columns().ok());
+        f.debug_struct("PartitionedLocalTableResult")
+            .field("top_level_column_indices", &self.top_level_column_indices)
+            .field("num_columns", &num_columns)
+            .field("execution_domain_id", &self.table.__debug_execution_domain_id())
+            .finish()
+    }
+}
+
+impl PartitionedLocalTableResult {
+    pub(crate) fn new(top_level_column_indices: Vec<usize>, table: Table) -> Self {
+        Self { top_level_column_indices, table }
+    }
+
+    /// Return the original top-level schema indices covered by this local
+    /// partition result.
+    pub fn top_level_column_indices(&self) -> &[usize] {
+        &self.top_level_column_indices
+    }
+
+    /// Borrow the imported local table for this partition.
+    pub fn table(&self) -> &Table {
+        &self.table
+    }
+
+    /// Consume this local partition result and return the imported table.
+    pub fn into_table(self) -> Table {
+        self.table
+    }
+}
+
+/// One logical partitioned prepared-table consumption result made explicit as
+/// per-partition local tables rather than a synthetic aggregate multi-GPU
+/// table.
+pub struct PartitionedLocalTableResults {
+    schema_names: Option<Vec<String>>,
+    num_rows: usize,
+    partitions: Vec<PartitionedLocalTableResult>,
+}
+
+impl std::fmt::Debug for PartitionedLocalTableResults {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PartitionedLocalTableResults")
+            .field("schema_names", &self.schema_names)
+            .field("num_rows", &self.num_rows)
+            .field("partitions", &self.partitions)
+            .finish()
+    }
+}
+
+impl PartitionedLocalTableResults {
+    pub(crate) fn new(
+        schema_names: Option<Vec<String>>,
+        num_rows: usize,
+        partitions: Vec<PartitionedLocalTableResult>,
+    ) -> Self {
+        Self { schema_names, num_rows, partitions }
+    }
+
+    /// Borrow the logical schema names carried by the partitioned root, when
+    /// present.
+    pub fn schema_names(&self) -> Option<&[String]> {
+        self.schema_names.as_deref()
+    }
+
+    /// Return the logical row count shared by every partition result.
+    pub fn num_rows(&self) -> usize {
+        self.num_rows
+    }
+
+    /// Borrow the local per-partition table results in partition order.
+    pub fn partitions(&self) -> &[PartitionedLocalTableResult] {
+        &self.partitions
+    }
+
+    /// Consume this wrapper and return the local per-partition table results.
+    pub fn into_partitions(self) -> Vec<PartitionedLocalTableResult> {
+        self.partitions
+    }
+}
+
 fn borrow_table_view_from_table_view<'a>(
     view: &'a TableView<'_>,
     operation: &'static str,
@@ -50,8 +144,9 @@ impl TableView<'_> {
     ///
     /// This is a borrowed-only projection: it does not transfer ownership and
     /// avoids host copies on the input path. The current borrowed compatibility
-    /// profile accepts only fixed-width columns and preserves the table
-    /// execution binding.
+    /// profile accepts the current fixed-width, `STRING`, `LIST`, `STRUCT`,
+    /// and `DICTIONARY32` semantic slice and preserves the table execution
+    /// binding.
     pub fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
         <Self as TryBorrowTableView>::try_borrow_table_view(self)
     }
@@ -166,13 +261,37 @@ impl Table {
         )
     }
 
+    /// Consume one partitioned prepared-table export into one local table per
+    /// partition runtime.
+    ///
+    /// This keeps multi-device truth explicit at the boundary: each partition
+    /// activates and completes its own read lease, imports on its matching
+    /// destination runtime, and returns one local `Table` annotated with the
+    /// original top-level schema indices it covers. This method does not
+    /// synthesize one aggregate multi-GPU table.
+    pub fn try_import_partitioned_local_tables_from_prepared_table_export_into_runtimes(
+        export: &PartitionedPreparedTableExport<'_>,
+        runtimes: &[&Runtime],
+    ) -> Result<PartitionedLocalTableResults, InteropError> {
+        let operation = "interop::Table::try_import_partitioned_local_tables_from_prepared_table_export_into_runtimes";
+        let partitions = import_partitioned_local_tables_from_prepared_export(export, runtimes, operation)?
+            .into_iter()
+            .map(|(top_level_column_indices, table)| PartitionedLocalTableResult::new(top_level_column_indices, table))
+            .collect();
+        Ok(PartitionedLocalTableResults::new(
+            export.schema_names().map(|names| names.to_vec()),
+            export.num_rows(),
+            partitions,
+        ))
+    }
+
     /// Lend this owned low-level table as a shared borrowed interop table
     /// view without host copies on the input path.
     ///
     /// `Table` is a convenience adapter, not the ABI itself. The returned
     /// descriptor remains borrowed-only, does not transfer ownership, and is
     /// limited to the current borrowed compatibility profile's fixed-width,
-    /// `STRING`, and `DICTIONARY32` support.
+    /// `STRING`, `LIST`, `STRUCT`, and `DICTIONARY32` support.
     pub fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
         <Self as TryBorrowTableView>::try_borrow_table_view(self)
     }
