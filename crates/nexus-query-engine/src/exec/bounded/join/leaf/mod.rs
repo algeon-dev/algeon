@@ -388,6 +388,15 @@ pub(in crate::exec::bounded) fn materialize_bounded_join_leaf_local_parquet_sour
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let node_id = stream.node_id;
+    if stream.chunks.is_empty() {
+        // Every row group was pruned before execution; the streaming paths
+        // below would otherwise yield zero chunks and no frame to return.
+        let mut empty = empty_join_leaf_source_frame(context, &stream, reservations, metrics)?;
+        if !stream.stages.is_empty() {
+            empty = apply_join_leaf_source_stream_stages(context, &stream, empty, reservations, metrics)?;
+        }
+        return Ok(empty);
+    }
     if stream.has_stages() {
         let mut chunks = Vec::with_capacity(stream.chunk_count());
         let stream_result =
