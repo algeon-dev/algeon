@@ -1375,8 +1375,8 @@ extern "C" {
         out: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
 
-    /// Destroy a memory resource created by this shim.
-    pub fn cudf_memory_resource_destroy(handle: cudf_memory_resource_handle);
+    /// Destroy a memory resource created by this shim on its owning device.
+    pub fn cudf_memory_resource_destroy(handle: cudf_memory_resource_handle, device: i32) -> cudf_status_t;
 
     /// Borrow the underlying raw `device_memory_resource*` from `handle`.
     ///

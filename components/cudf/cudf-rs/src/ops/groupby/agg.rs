@@ -128,7 +128,11 @@ pub(crate) fn groupby_aggregate_impl(
                 all_agg_handles.as_ptr(),
                 agg_counts.as_ptr(),
                 num_requests,
-                i32::try_from(all_agg_handles.len()).expect("aggregation count exceeds i32::MAX"),
+                i32::try_from(all_agg_handles.len()).map_err(|_| {
+                    Error::new(ErrorKind::InvalidOperation, "total aggregation handle count exceeds i32::MAX")
+                        .with_operation(operation)
+                        .with_context("total_agg_handles", all_agg_handles.len().to_string())
+                })?,
                 null_policy_ffi,
                 &mut out_keys,
                 &mut out_values,
@@ -144,7 +148,11 @@ pub(crate) fn groupby_aggregate_impl(
                 all_agg_handles.as_ptr(),
                 agg_counts.as_ptr(),
                 num_requests,
-                i32::try_from(all_agg_handles.len()).expect("aggregation count exceeds i32::MAX"),
+                i32::try_from(all_agg_handles.len()).map_err(|_| {
+                    Error::new(ErrorKind::InvalidOperation, "total aggregation handle count exceeds i32::MAX")
+                        .with_operation(operation)
+                        .with_context("total_agg_handles", all_agg_handles.len().to_string())
+                })?,
                 null_policy_ffi,
                 &mut out_keys,
                 &mut out_values,
@@ -170,7 +178,11 @@ pub(crate) fn groupby_aggregate_impl(
     )?;
 
     let keys_table = unsafe { Table::from_raw(out_keys) };
-    let total = out_total_columns as usize;
+    let total = usize::try_from(out_total_columns).map_err(|_| {
+        Error::new(ErrorKind::InvalidOperation, "FFI returned negative total column count")
+            .with_operation(operation)
+            .with_context("out_total_columns", out_total_columns.to_string())
+    })?;
     let col_array = if total == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(out_values, total) } };
 
     let mut results: Vec<Vec<Column>> = Vec::with_capacity(requests.len());

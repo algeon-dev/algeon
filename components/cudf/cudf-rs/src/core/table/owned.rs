@@ -162,6 +162,7 @@ impl Table {
     /// transferred, not copied.
     pub fn into_columns(self) -> Result<Vec<Column>> {
         let this = std::mem::ManuallyDrop::new(self);
+        let Self { handle: _, domain: _, retained_owners: _ } = &*this;
         let raw_handle = this.handle.as_ptr();
         let domain = unsafe { std::ptr::read(&this.domain) };
         let retained_owners = unsafe { std::ptr::read(&this.retained_owners) };

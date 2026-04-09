@@ -14,8 +14,17 @@ pub(crate) struct LeaseRootState {
 }
 
 impl LeaseRootState {
-    pub(crate) fn try_acquire(&self, _export_kind: &'static str) -> Result<ActiveLeaseRegistration> {
-        self.active_leases.fetch_add(1, Ordering::AcqRel);
+    pub(crate) fn try_acquire(&self, export_kind: &'static str) -> Result<ActiveLeaseRegistration> {
+        let previous = self.active_leases.fetch_add(1, Ordering::AcqRel);
+        if previous == usize::MAX {
+            // Undo the wrapping increment.
+            self.active_leases.fetch_sub(1, Ordering::AcqRel);
+            return Err(crate::InteropError::new(
+                crate::InteropErrorKind::ProfileUnsupported,
+                "active lease counter overflow",
+            )
+            .with_context("export_kind", export_kind));
+        }
         Ok(ActiveLeaseRegistration { active_leases: Arc::clone(&self.active_leases) })
     }
 }

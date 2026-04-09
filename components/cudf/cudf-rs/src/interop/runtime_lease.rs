@@ -222,6 +222,12 @@ impl fmt::Debug for RuntimeLeaseCompletionResult {
     }
 }
 
+/// # Safety
+///
+/// The `raw` pointers are lifetime-erased CUDA stream/event handles.  They
+/// are valid only while the `&'export Export` reference in
+/// `RuntimeActiveLeaseState` is alive.  Do not store these bindings beyond
+/// the export's lifetime.
 #[derive(Clone, Copy, Debug)]
 enum ProducerReadinessBinding {
     Stream { raw: *mut c_void, device: DeviceId },

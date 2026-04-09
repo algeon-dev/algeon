@@ -115,8 +115,26 @@ impl CudaEvent {
 
 impl Drop for CudaEventHandle {
     fn drop(&mut self) {
+        // Switch to the device this event was created on before destroying it.
+        // In multi-GPU scenarios, destroying a CUDA event while on the wrong
+        // device is undefined behavior.
+        let mut current: i32 = 0;
+        let get_status = unsafe { cudf_sys::cudf_cuda_get_device(&mut current) };
+        if get_status == cudf_sys::CUDF_SUCCESS && current != self.device.ordinal_raw() {
+            let set_status = unsafe { cudf_sys::cudf_cuda_set_device(self.device.ordinal_raw()) };
+            if set_status != cudf_sys::CUDF_SUCCESS {
+                eprintln!(
+                    "[cudf::CudaEventHandle] warning: failed to switch to device {} for event destruction",
+                    self.device.ordinal_raw()
+                );
+            }
+        }
         unsafe {
             cudf_sys::cudf_event_destroy(self.raw.as_ptr());
+        }
+        // Restore the previous device (best-effort).
+        if get_status == cudf_sys::CUDF_SUCCESS && current != self.device.ordinal_raw() {
+            unsafe { cudf_sys::cudf_cuda_set_device(current) };
         }
     }
 }

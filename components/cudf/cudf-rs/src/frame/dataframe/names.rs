@@ -53,6 +53,14 @@ impl DataFrame {
                     .with_operation("dataframe::rename_columns")
                     .with_context("column_name", old.clone()));
             }
+            if rename_map.contains_key(old.as_str()) {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("duplicate source column '{}' in rename list", old),
+                )
+                .with_operation("dataframe::rename_columns")
+                .with_context("column_name", old.clone()));
+            }
             rename_map.insert(old.as_str(), new.as_str());
         }
 

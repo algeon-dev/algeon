@@ -72,17 +72,20 @@ pub fn read_json(options: &JsonReadOptions) -> Result<IoTableResult> {
         "io::json::read_json",
         [("lines", options.lines.to_string())],
     )?;
+
+    // SAFETY: table_handle was returned by a successful FFI call, transferring ownership.
+    // Wrap early so table is freed via RAII if collect_column_names() fails.
+    let table = match output_domain {
+        Some(domain) => unsafe { Table::from_raw(table_handle).with_execution_domain(domain) },
+        None => unsafe { Table::from_raw(table_handle) },
+    };
+
     let column_names = unsafe {
         let names = super::collect_column_names(names_ptr, num_names, "io::json::read_json");
         if !names_ptr.is_null() && num_names >= 0 {
             cudf_sys::cudf_io_free_column_names(names_ptr, num_names);
         }
         names?
-    };
-
-    let table = match output_domain {
-        Some(domain) => unsafe { Table::from_raw(table_handle).with_execution_domain(domain) },
-        None => unsafe { Table::from_raw(table_handle) },
     };
 
     Ok(IoTableResult { table, column_names: if num_names == 0 { None } else { Some(column_names) } })
@@ -133,6 +136,24 @@ pub(crate) fn write_json_with_exec(
 ) -> Result<()> {
     let operation = "io::json::write_json";
     let filepath = super::path_to_cstring(&options.filepath, operation)?;
+
+    // Validate column name count matches the table before the FFI call.
+    if !options.column_names.is_empty() {
+        let expected = table.num_columns()? as usize;
+        if options.column_names.len() != expected {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                format!(
+                    "column name count ({}) does not match table column count ({})",
+                    options.column_names.len(),
+                    expected
+                ),
+            )
+            .with_operation(operation)
+            .with_context("column_name_count", options.column_names.len().to_string())
+            .with_context("table_column_count", expected.to_string()));
+        }
+    }
 
     let c_names: Vec<CString> = options
         .column_names

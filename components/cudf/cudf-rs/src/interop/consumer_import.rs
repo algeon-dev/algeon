@@ -423,6 +423,11 @@ pub(super) fn import_column_from_owned_transfer(
                         .map_err(|error| {
                             map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error)
                         })?;
+                // SAFETY: The C++ handle produced by
+                // cudf_column_create_from_owned_device_transfer wraps a foreign
+                // view-only handle state. It never frees or reallocates the
+                // underlying GPU buffers; ownership lives exclusively in
+                // `retained_owner`.
                 let retained_owner: Arc<dyn Any + Send + Sync> = Arc::new(transfer);
                 let mut handle = std::ptr::null_mut();
                 error::check_status_in(
@@ -488,6 +493,9 @@ pub(super) fn import_table_from_owned_transfer(
                         .map_err(|error| {
                             map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error)
                         })?;
+                        // SAFETY: Same invariant as the column path. The C++
+                        // table handle is foreign and view-only, and ownership
+                        // lives exclusively in `shared_owner`.
                         let shared_owner: Arc<dyn Any + Send + Sync> = Arc::new(transfer);
                         let retained_owners = (0..owner_count).map(|_| Some(Arc::clone(&shared_owner))).collect();
                         let mut handle = std::ptr::null_mut();

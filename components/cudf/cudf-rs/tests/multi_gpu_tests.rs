@@ -174,6 +174,27 @@ fn device_guard_restores_device_across_scopes() {
 }
 
 #[test]
+fn memory_resource_drop_restores_previous_device() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let _device_guard = common::DeviceRestoreGuard::new();
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
+
+    common::set_current_device(device1);
+    let before_drop = DeviceId::current().unwrap();
+    assert_eq!(before_drop, device1);
+
+    drop(mr);
+
+    let after_drop = DeviceId::current().unwrap();
+    assert_eq!(after_drop, before_drop, "memory-resource drop did not restore the previous device");
+}
+
+#[test]
 fn columns_from_different_devices_have_different_domains() {
     if !should_run_multi_gpu_test() {
         return;

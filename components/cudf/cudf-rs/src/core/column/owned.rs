@@ -280,6 +280,7 @@ impl Column {
 
     pub(crate) fn into_raw_parts(self) -> (*mut c_void, Option<Arc<dyn Any + Send + Sync>>) {
         let this = std::mem::ManuallyDrop::new(self);
+        let Self { handle: _, domain: _, retained_owner: _ } = &*this;
         let handle = this.handle.as_ptr();
         let retained_owner = unsafe { std::ptr::read(&this.retained_owner) };
         let _domain = unsafe { std::ptr::read(&this.domain) };

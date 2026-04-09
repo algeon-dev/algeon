@@ -551,14 +551,14 @@ cudf_status_t cudf_column_view_string_chars_ptr_and_size_ex(
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
-    auto const required_prefix_bytes = static_cast<uint64_t>(last_offset);
-    if (required_prefix_bytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+    auto const active_bytes = static_cast<uint64_t>(last_offset - first_offset);
+    if (active_bytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
       set_error("string chars span exceeds size_t range");
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
     *out_ptr = scv.chars_begin(exec.stream);
-    *out_size = static_cast<size_t>(required_prefix_bytes);
+    *out_size = static_cast<size_t>(active_bytes);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -918,9 +918,10 @@ cudf_status_t cudf_column_view_strings_to_host_ex(
     }
 
     // String columns: child 0 = offsets, child 1 = chars
-    // The offsets child has n+1 elements.
+    // For the *sliced* view, we need n+1 offsets (not the unsliced child size,
+    // which may be larger when the view is a slice of a larger column).
     auto offsets_view = view->child(0);
-    auto offsets_count = offsets_view.size();  // should be n+1
+    auto offsets_count = n + 1;
 
     // Copy offsets to host
     size_t needed_offsets_bytes = static_cast<size_t>(offsets_count) * sizeof(int32_t);
