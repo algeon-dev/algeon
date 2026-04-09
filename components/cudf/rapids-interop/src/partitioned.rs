@@ -81,6 +81,10 @@ impl PartitionedOwnedTableTransferPartition {
     pub fn transfer(&self) -> &OwnedTableTransfer {
         &self.transfer
     }
+
+    pub fn into_transfer(self) -> OwnedTableTransfer {
+        self.transfer
+    }
 }
 
 /// Partitioned multi-device owned device transfer for one logical table schema
@@ -121,6 +125,10 @@ impl PartitionedOwnedTableTransfer {
 
     pub fn partitions(&self) -> &[PartitionedOwnedTableTransferPartition] {
         &self.partitions
+    }
+
+    pub fn into_partitions(self) -> Vec<PartitionedOwnedTableTransferPartition> {
+        self.partitions
     }
 }
 

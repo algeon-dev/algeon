@@ -5,9 +5,10 @@ use cudf::{
     core::{Column, column::DeviceSlice},
     interop::{
         BorrowedColumnView, BorrowedTableView, CompletionWitnessKind, OwnedColumnTransfer, OwnedTableTransfer,
-        PreparedColumnExport, PreparedTableExport, ProducerReadiness, RuntimeCompletionAuthority,
-        RuntimeLeaseCompletionResult, RuntimeOwnedColumnTransferReleaser, RuntimeOwnedTableTransferReleaser,
-        RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
+        PartitionedRuntimeOwnedTableTransferReleaser, PreparedColumnExport, PreparedTableExport, ProducerReadiness,
+        RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, RuntimeOwnedColumnTransferReleaser,
+        RuntimeOwnedTableTransferReleaser, RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease,
+        TryActivateRuntimeTableReadLease,
     },
     runtime::{CudaEvent, CudaStream},
 };
@@ -23,6 +24,7 @@ assert_impl_all!(OwnedColumnTransfer: Send, Sync);
 assert_impl_all!(OwnedTableTransfer: Send, Sync);
 assert_impl_all!(RuntimeOwnedColumnTransferReleaser: Send, Sync);
 assert_impl_all!(RuntimeOwnedTableTransferReleaser: Send, Sync);
+assert_impl_all!(PartitionedRuntimeOwnedTableTransferReleaser: Send, Sync);
 assert_impl_all!(PreparedColumnExport<'static>: Send, Sync);
 assert_impl_all!(PreparedTableExport<'static>: Send, Sync);
 

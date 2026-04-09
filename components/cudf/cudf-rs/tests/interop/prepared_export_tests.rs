@@ -900,7 +900,7 @@ fn runtime_table_read_lease_orders_consumer_stream_after_stream_ordered_producer
 }
 
 #[test]
-fn runtime_and_shared_read_leases_share_one_export_root_state() {
+fn runtime_and_shared_read_leases_can_overlap_on_one_export_root() {
     let producer_runtime = Runtime::builder().build().unwrap();
     let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
@@ -917,21 +917,25 @@ fn runtime_and_shared_read_leases_share_one_export_root_state() {
         )
         .unwrap();
 
-    let err = cloned
-        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
-        .unwrap_err();
-    assert_eq!(err.kind(), InteropErrorKind::LeaseAlreadyActive);
-
-    drop(runtime_lease);
-
     let shared_lease = cloned
         .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
         .unwrap();
+
     assert_eq!(shared_lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+    let result = runtime_lease.complete().unwrap();
+    match result {
+        RuntimeLeaseCompletionResult::Completed(witness) => {
+            assert_eq!(witness.kind(), CompletionWitnessKind::ConsumerStream);
+            witness.synchronize().unwrap();
+        },
+        RuntimeLeaseCompletionResult::FallbackSynchronized => {
+            panic!("expected runtime lease completion to keep using the runtime witness path")
+        },
+    }
 }
 
 #[test]
-fn shared_read_lease_blocks_runtime_activation_until_completion() {
+fn shared_read_lease_allows_runtime_activation_before_completion() {
     let producer_runtime = Runtime::builder().build().unwrap();
     let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
@@ -943,23 +947,32 @@ fn shared_read_lease_blocks_runtime_activation_until_completion() {
     let shared_lease = export
         .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
         .unwrap();
-    let err = export
-        .try_activate_runtime_read_lease(
-            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
-            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
-        )
-        .unwrap_err();
-    assert_eq!(err.kind(), InteropErrorKind::LeaseAlreadyActive);
-
-    assert_eq!(shared_lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
-
     let runtime_lease = export
         .try_activate_runtime_read_lease(
             RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
             RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
         )
         .unwrap();
-    let result = runtime_lease.complete().unwrap();
+
+    assert_eq!(shared_lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+
+    let reacquired_runtime_lease = export
+        .try_activate_runtime_read_lease(
+            RuntimeReadStartAuthority::consumer_stream(&consumer_stream),
+            RuntimeCompletionAuthority::same_device_stream(&consumer_stream),
+        )
+        .unwrap();
+    let first_result = runtime_lease.complete().unwrap();
+    match first_result {
+        RuntimeLeaseCompletionResult::Completed(witness) => {
+            assert_eq!(witness.kind(), CompletionWitnessKind::ConsumerStream);
+            witness.synchronize().unwrap();
+        },
+        RuntimeLeaseCompletionResult::FallbackSynchronized => {
+            panic!("expected overlapping runtime activation to stay on the runtime witness path")
+        },
+    }
+    let result = reacquired_runtime_lease.complete().unwrap();
     match result {
         RuntimeLeaseCompletionResult::Completed(witness) => {
             assert_eq!(witness.kind(), CompletionWitnessKind::ConsumerStream);

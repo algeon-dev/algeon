@@ -276,6 +276,47 @@ impl RuntimeOwnedTableTransferReleaser {
     }
 }
 
+pub struct PartitionedRuntimeOwnedTableTransferReleaserPartition {
+    top_level_column_indices: Vec<usize>,
+    releaser: RuntimeOwnedTableTransferReleaser,
+}
+
+impl PartitionedRuntimeOwnedTableTransferReleaserPartition {
+    pub fn new(top_level_column_indices: Vec<usize>, releaser: RuntimeOwnedTableTransferReleaser) -> Self {
+        Self { top_level_column_indices, releaser }
+    }
+
+    pub fn top_level_column_indices(&self) -> &[usize] {
+        &self.top_level_column_indices
+    }
+
+    pub fn release(self, completion: RuntimeCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
+        self.releaser.release(completion)
+    }
+
+    pub fn into_releaser(self) -> RuntimeOwnedTableTransferReleaser {
+        self.releaser
+    }
+}
+
+pub struct PartitionedRuntimeOwnedTableTransferReleaser {
+    partitions: Vec<PartitionedRuntimeOwnedTableTransferReleaserPartition>,
+}
+
+impl PartitionedRuntimeOwnedTableTransferReleaser {
+    pub fn new(partitions: Vec<PartitionedRuntimeOwnedTableTransferReleaserPartition>) -> Self {
+        Self { partitions }
+    }
+
+    pub fn partitions(&self) -> &[PartitionedRuntimeOwnedTableTransferReleaserPartition] {
+        &self.partitions
+    }
+
+    pub fn into_partitions(self) -> Vec<PartitionedRuntimeOwnedTableTransferReleaserPartition> {
+        self.partitions
+    }
+}
+
 pub(super) struct RuntimeOwnedColumnTransferOwner {
     state: Arc<RuntimeOwnedTransferState<Column>>,
 }

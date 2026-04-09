@@ -1676,7 +1676,7 @@ fn prepared_column_export_activates_with_synchronous_completion() {
 }
 
 #[test]
-fn prepared_column_export_rejects_overlapping_active_leases() {
+fn prepared_column_export_allows_overlapping_active_leases() {
     let export = PreparedColumnExport::try_new(
         fixed_width_column(1, 10, 3, 0),
         vec![device_binding(10, 0x6000, 12, 0)],
@@ -1685,15 +1685,15 @@ fn prepared_column_export_rejects_overlapping_active_leases() {
     )
     .unwrap();
 
-    let _lease = export
+    let first = export
         .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
         .unwrap();
-    let err = export
+    let second = export
         .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
-        .unwrap_err();
+        .unwrap();
 
-    assert_eq!(err.kind(), InteropErrorKind::LeaseAlreadyActive);
-    assert!(err.context().iter().any(|(key, value)| *key == "export_kind" && value == "column"));
+    assert_eq!(first.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+    assert_eq!(second.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
 #[test]
@@ -1715,7 +1715,7 @@ fn prepared_table_export_activates_with_same_device_stream_completion() {
 }
 
 #[test]
-fn prepared_table_export_clone_shares_active_lease_state_and_drop_releases_it() {
+fn prepared_table_export_clone_allows_overlapping_leases_and_reacquire_after_partial_drop() {
     let export = PreparedTableExport::try_new(
         SemanticTable::new(TableId::new(1), 3, vec![ColumnId::new(1)], None),
         vec![fixed_width_column(1, 10, 3, 0)],
@@ -1726,19 +1726,17 @@ fn prepared_table_export_clone_shares_active_lease_state_and_drop_releases_it() 
     .unwrap();
     let cloned = export.clone();
 
-    let lease =
+    let first =
         export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
-    let err =
-        cloned.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap_err();
-
-    assert_eq!(err.kind(), InteropErrorKind::LeaseAlreadyActive);
-    assert!(err.context().iter().any(|(key, value)| *key == "export_kind" && value == "table"));
-
-    drop(lease);
-
-    let reacquired =
+    let second =
         cloned.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
-    assert_eq!(reacquired.completion(), same_device_completion());
+
+    drop(first);
+
+    let third =
+        cloned.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
+    assert_eq!(second.completion(), same_device_completion());
+    assert_eq!(third.completion(), same_device_completion());
 }
 
 #[test]

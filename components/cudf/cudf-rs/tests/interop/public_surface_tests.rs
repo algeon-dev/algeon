@@ -12,8 +12,8 @@ use cudf::{
         },
         runtime::cuda_explicit_completion_required_lease_backend,
         transfer::{
-            OwnedColumnTransfer, OwnedTableTransfer, RuntimeOwnedColumnTransferReleaser,
-            RuntimeOwnedTableTransferReleaser,
+            OwnedColumnTransfer, OwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser,
+            RuntimeOwnedColumnTransferReleaser, RuntimeOwnedTableTransferReleaser,
         },
     },
 };
@@ -146,6 +146,15 @@ fn cudf_interop_exposes_high_level_owned_transfer_producers() {
         _f: fn(DataFrame) -> std::result::Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError>,
     ) {
     }
+    fn assert_partitioned_dataframe_runtime_release_owned_producer(
+        _f: fn(
+            PartitionedDataFrameExport,
+        ) -> std::result::Result<
+            (rapids_interop::PartitionedOwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser),
+            InteropError,
+        >,
+    ) {
+    }
 
     assert_series_owned_producer(Series::try_into_owned_device_column_transfer);
     assert_dataframe_owned_producer(DataFrame::try_into_owned_device_table_transfer);
@@ -153,9 +162,13 @@ fn cudf_interop_exposes_high_level_owned_transfer_producers() {
     assert_dataframe_runtime_release_owned_producer(
         DataFrame::try_into_owned_device_table_transfer_with_runtime_release,
     );
+    assert_partitioned_dataframe_runtime_release_owned_producer(
+        PartitionedDataFrameExport::try_into_owned_device_partitioned_table_transfer_with_runtime_release,
+    );
 }
 
 #[test]
 fn cudf_interop_exposes_grouped_frame_namespace() {
     let _: Option<PartitionedDataFrameExport> = None;
+    let _: Option<PartitionedRuntimeOwnedTableTransferReleaser> = None;
 }

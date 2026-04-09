@@ -1,40 +1,34 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicUsize, Ordering},
 };
 
 use crate::{
-    CompletionAuthority, CompletionBinding, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseActivation,
-    LeaseBackend, LeaseCompletionResult, LeaseExportContext, PreparedColumnExport, PreparedTableExport,
-    ReadStartAuthority, Result,
+    CompletionAuthority, CompletionBinding, IncompleteDropBehavior, LeaseActivation, LeaseBackend,
+    LeaseCompletionResult, LeaseExportContext, PreparedColumnExport, PreparedTableExport, ReadStartAuthority, Result,
 };
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LeaseRootState {
-    active: Arc<AtomicBool>,
+    active_leases: Arc<AtomicUsize>,
 }
 
 impl LeaseRootState {
-    pub(crate) fn try_acquire(&self, export_kind: &'static str) -> Result<ActiveLeaseRegistration> {
-        match self.active.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => Ok(ActiveLeaseRegistration { active: Arc::clone(&self.active) }),
-            Err(_) => Err(InteropError::new(
-                InteropErrorKind::LeaseAlreadyActive,
-                "prepared export root does not support overlapping active read leases",
-            )
-            .with_context("export_kind", export_kind)),
-        }
+    pub(crate) fn try_acquire(&self, _export_kind: &'static str) -> Result<ActiveLeaseRegistration> {
+        self.active_leases.fetch_add(1, Ordering::AcqRel);
+        Ok(ActiveLeaseRegistration { active_leases: Arc::clone(&self.active_leases) })
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct ActiveLeaseRegistration {
-    active: Arc<AtomicBool>,
+    active_leases: Arc<AtomicUsize>,
 }
 
 impl Drop for ActiveLeaseRegistration {
     fn drop(&mut self) {
-        self.active.store(false, Ordering::Release);
+        let previous = self.active_leases.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "active lease registration underflow");
     }
 }
 

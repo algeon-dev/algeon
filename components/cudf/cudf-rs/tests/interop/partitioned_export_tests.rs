@@ -1,12 +1,81 @@
 use cudf::{
-    core::Column,
+    Runtime,
+    core::{Column, Table},
     interop::{
-        CompletionAuthority, ExportProfile, LeaseCompletionResult, PartitionedDataFrameExport, Placement,
-        ProducerReadiness, ReadStartAuthority,
+        CompletionAuthority, ExportProfile, InteropErrorKind, LeaseCompletionResult, PartitionedDataFrameExport,
+        Placement, ProducerReadiness, ReadStartAuthority, ReleaseSynchronization, RuntimeCompletionAuthority,
+        TransferCompletionRule,
     },
+    runtime::CudaStream,
+};
+use std::{
+    sync::{Mutex, MutexGuard, OnceLock, mpsc},
+    thread,
+    time::{Duration, Instant},
 };
 
 use crate::common::assert_duplicate_name_error;
+
+fn lock_event_observation() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    match LOCK.get_or_init(|| Mutex::new(())).lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn reset_event_observation() {
+    unsafe { cudf_sys::cudf_test_event_reset_observation() };
+}
+
+fn observed_event_synchronize_call_count() -> i32 {
+    let mut out = -1;
+    let status = unsafe { cudf_sys::cudf_test_event_synchronize_call_count(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read event synchronize observation count");
+    out
+}
+
+fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
+    let mut out = -1;
+    let status = unsafe { cudf_sys::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-stream raw event-record observation count");
+    out
+}
+
+fn block_event_synchronize() {
+    unsafe { cudf_sys::cudf_test_event_block_synchronize() };
+}
+
+fn unblock_event_synchronize() {
+    unsafe { cudf_sys::cudf_test_event_unblock_synchronize() };
+}
+
+struct EventSynchronizeBlockGuard;
+
+impl EventSynchronizeBlockGuard {
+    fn new() -> Self {
+        block_event_synchronize();
+        Self
+    }
+}
+
+impl Drop for EventSynchronizeBlockGuard {
+    fn drop(&mut self) {
+        unblock_event_synchronize();
+    }
+}
+
+fn wait_for_condition(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if predicate() {
+            return;
+        }
+        thread::yield_now();
+    }
+
+    assert!(predicate(), "condition was not met within {:?}", timeout);
+}
 
 #[test]
 fn partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_appearance_order() {
@@ -88,6 +157,151 @@ fn partitioned_dataframe_export_owned_transfer_returns_one_partition_per_retaine
     assert_eq!(transfer.partitions()[0].transfer().table().num_rows(), 3);
     assert_eq!(transfer.partitions()[0].transfer().columns().len(), 2);
     assert_eq!(transfer.partitions()[1].transfer().columns().len(), 1);
+}
+
+#[test]
+fn partitioned_dataframe_export_runtime_release_owned_transfer_preserves_async_contract_per_partition() {
+    let left_runtime = Runtime::builder().build().unwrap();
+    let right_runtime = Runtime::builder().build().unwrap();
+    let left = Column::from_slice_with_runtime(&left_runtime, &[1i32, 2, 3]).unwrap();
+    let middle = Column::from_slice_with_runtime(&right_runtime, &[10i32, 20, 30]).unwrap();
+    let right = Column::from_slice_with_runtime(&left_runtime, &[100i32, 200, 300]).unwrap();
+
+    let (transfer, releaser) = PartitionedDataFrameExport::new(
+        vec!["left".into(), "middle".into(), "right".into()],
+        vec![left, middle, right],
+    )
+    .unwrap()
+    .try_into_owned_device_partitioned_table_transfer_with_runtime_release()
+    .unwrap();
+
+    assert_eq!(transfer.num_rows(), 3);
+    assert_eq!(transfer.partitions().len(), 2);
+    assert_eq!(transfer.partitions()[0].top_level_column_indices(), &[0, 2]);
+    assert_eq!(transfer.partitions()[1].top_level_column_indices(), &[1]);
+    for partition in transfer.partitions() {
+        assert_eq!(
+            partition.transfer().release_contract().completion(),
+            TransferCompletionRule::ReleaseWaitsOnConsumerSignal
+        );
+        assert_eq!(
+            partition.transfer().release_contract().synchronization(),
+            ReleaseSynchronization::Asynchronous
+        );
+    }
+
+    let releaser_partitions = releaser.into_partitions();
+    assert_eq!(releaser_partitions.len(), 2);
+    assert_eq!(releaser_partitions[0].top_level_column_indices(), &[0, 2]);
+    assert_eq!(releaser_partitions[1].top_level_column_indices(), &[1]);
+}
+
+#[test]
+fn partitioned_dataframe_export_runtime_release_accepts_per_partition_release_without_blocking_caller_threads() {
+    let _observation_lock = lock_event_observation();
+    let left_runtime = Runtime::builder().build().unwrap();
+    let right_runtime = Runtime::builder().build().unwrap();
+    let left = Column::from_slice_with_runtime(&left_runtime, &[1i32, 2, 3]).unwrap();
+    let middle = Column::from_slice_with_runtime(&right_runtime, &[10i32, 20, 30]).unwrap();
+    let right = Column::from_slice_with_runtime(&left_runtime, &[100i32, 200, 300]).unwrap();
+
+    let (transfer, releaser) = PartitionedDataFrameExport::new(
+        vec!["left".into(), "middle".into(), "right".into()],
+        vec![left, middle, right],
+    )
+    .unwrap()
+    .try_into_owned_device_partitioned_table_transfer_with_runtime_release()
+    .unwrap();
+    drop(transfer);
+
+    let first_consumer_stream = CudaStream::new().unwrap();
+    let first_consumer_stream_raw = first_consumer_stream.__debug_raw_handle_value();
+    let second_consumer_stream = CudaStream::new().unwrap();
+    let second_consumer_stream_raw = second_consumer_stream.__debug_raw_handle_value();
+
+    reset_event_observation();
+    let _sync_block = EventSynchronizeBlockGuard::new();
+    let baseline_sync = observed_event_synchronize_call_count();
+    let baseline_first_record = observed_raw_record_call_count_for_stream_raw(first_consumer_stream_raw);
+    let baseline_second_record = observed_raw_record_call_count_for_stream_raw(second_consumer_stream_raw);
+
+    let mut releaser_partitions = releaser.into_partitions().into_iter();
+    let first_partition = releaser_partitions.next().expect("missing first partition releaser");
+    let second_partition = releaser_partitions.next().expect("missing second partition releaser");
+    assert!(releaser_partitions.next().is_none());
+
+    let (tx, rx) = mpsc::channel();
+    let second_tx = tx.clone();
+    let first_release_thread = thread::spawn(move || {
+        let result = first_partition.release(RuntimeCompletionAuthority::same_device_stream(&first_consumer_stream));
+        tx.send(result).unwrap();
+    });
+    let second_release_thread = thread::spawn(move || {
+        let result = second_partition.release(RuntimeCompletionAuthority::same_device_stream(&second_consumer_stream));
+        second_tx.send(result).unwrap();
+    });
+
+    rx.recv_timeout(Duration::from_secs(2))
+        .expect("first partition runtime-backed release did not return promptly")
+        .unwrap();
+    rx.recv_timeout(Duration::from_secs(2))
+        .expect("second partition runtime-backed release did not return promptly")
+        .unwrap();
+
+    wait_for_condition(Duration::from_secs(2), || {
+        observed_raw_record_call_count_for_stream_raw(first_consumer_stream_raw) >= baseline_first_record + 1
+    });
+    wait_for_condition(Duration::from_secs(2), || {
+        observed_raw_record_call_count_for_stream_raw(second_consumer_stream_raw) >= baseline_second_record + 1
+    });
+    wait_for_condition(Duration::from_secs(2), || observed_event_synchronize_call_count() >= baseline_sync + 2);
+
+    first_release_thread.join().unwrap();
+    second_release_thread.join().unwrap();
+}
+
+#[test]
+fn partitioned_dataframe_export_runtime_release_import_and_release_remain_mutually_exclusive_per_partition() {
+    let left_runtime = Runtime::builder().build().unwrap();
+    let right_runtime = Runtime::builder().build().unwrap();
+    let left = Column::from_slice_with_runtime(&left_runtime, &[1i32, 2, 3]).unwrap();
+    let right = Column::from_slice_with_runtime(&right_runtime, &[4i32, 5, 6]).unwrap();
+    let left_expected_ptr = left.view().unwrap().device_data_ptr().unwrap();
+
+    let (transfer, releaser) = PartitionedDataFrameExport::new(vec!["left".into(), "right".into()], vec![left, right])
+        .unwrap()
+        .try_into_owned_device_partitioned_table_transfer_with_runtime_release()
+        .unwrap();
+
+    let mut transfer_partitions = transfer.into_partitions().into_iter();
+    let left_transfer = transfer_partitions.next().expect("missing left partition transfer").into_transfer();
+    let right_transfer = transfer_partitions.next().expect("missing right partition transfer").into_transfer();
+    assert!(transfer_partitions.next().is_none());
+
+    let mut releaser_partitions = releaser.into_partitions().into_iter();
+    let left_releaser = releaser_partitions.next().expect("missing left partition releaser");
+    let right_releaser = releaser_partitions.next().expect("missing right partition releaser");
+    assert!(releaser_partitions.next().is_none());
+
+    let imported_left = Table::try_from_owned_device_table_transfer(left_transfer).unwrap();
+    let imported_left_view = imported_left.view().unwrap();
+    assert_eq!(imported_left_view.num_columns().unwrap(), 1);
+    assert_eq!(imported_left_view.column(0).unwrap().device_data_ptr().unwrap(), left_expected_ptr);
+
+    let consumer_stream = CudaStream::new().unwrap();
+    let left_release_err =
+        left_releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap_err();
+    assert_eq!(left_release_err.kind(), InteropErrorKind::ProfileUnsupported);
+
+    let _sync_block = EventSynchronizeBlockGuard::new();
+    right_releaser
+        .release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream))
+        .unwrap();
+    let right_import_err = match Table::try_from_owned_device_table_transfer(right_transfer) {
+        Ok(_) => panic!("expected partition import to fail after release was accepted"),
+        Err(err) => err,
+    };
+    assert_eq!(right_import_err.kind(), InteropErrorKind::ProfileUnsupported);
 }
 
 #[test]
