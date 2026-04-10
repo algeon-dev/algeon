@@ -258,7 +258,7 @@ impl Series {
     /// `Series` is a convenience adapter, not the ABI itself. The returned
     /// descriptor remains borrowed-only, does not transfer ownership, and is
     /// limited to the current borrowed compatibility profile's fixed-width,
-    /// `STRING`, and `DICTIONARY32` support.
+    /// `STRING`, `LIST`, `STRUCT`, and `DICTIONARY32` support.
     pub fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
         <Self as TryBorrowColumnView>::try_borrow_column_view(self)
     }

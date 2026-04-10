@@ -1,17 +1,18 @@
 use rapids_interop::{
-    ActiveColumnReadLease, ActiveLeaseActivation, ActiveLeaseBackend, ActiveTableReadLease, BorrowedColumnView,
-    BorrowedTableView, BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority,
-    CompletionBinding, CompletionWitness, CompletionWitnessBackend, CompletionWitnessKind, CudaEventHandle,
-    CudaStreamHandle, DataType, DeviceMemoryResourceHandle, ExecutionBinding, ExportDiagnostics, ExportProfile,
-    IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseActivation, LeaseBackend, LeaseCompletionResult,
-    LeaseExportContext, NullMask, NullMaskKind, OwnedColumnTransfer, OwnedTableTransfer, PartitionedOwnedTableTransfer,
-    PartitionedOwnedTableTransferPartition, PartitionedPreparedTableExport, PartitionedPreparedTablePartition,
-    PhysicalValidity, Placement, PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority,
-    ReadStartBinding, ReleaseContract, ReleaseSynchronization, Result, SchemaNullability, SemanticColumn,
-    SemanticTable, TableId, TransferCompletionRule, TryBorrowColumnView, TryBorrowTableView,
-    TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDevicePartitionedTableTransfer, TryIntoOwnedDeviceTableTransfer,
-    TryPrepareDeviceColumnExport, TryPrepareDevicePartitionedTableExport, TryPrepareDeviceTableExport,
-    TryPrepareHostColumnExport, TryPrepareHostTableExport, TypeId,
+    ActiveColumnReadLease, ActiveLeaseActivation, ActiveLeaseBackend, ActivePartitionedTableReadLease,
+    ActiveTableReadLease, BorrowedColumnView, BorrowedTableView, BoundBytes, BufferBinding, BufferId, ColumnId,
+    ColumnLayout, CompletionAuthority, CompletionBinding, CompletionWitness, CompletionWitnessBackend,
+    CompletionWitnessKind, CudaEventHandle, CudaStreamHandle, DataType, DeviceMemoryResourceHandle, ExecutionBinding,
+    ExportDiagnostics, ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseActivation,
+    LeaseBackend, LeaseCompletionResult, LeaseExportContext, NullMask, NullMaskKind, OwnedColumnTransfer,
+    OwnedTableTransfer, PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition,
+    PartitionedPreparedTableExport, PartitionedPreparedTablePartition, PhysicalValidity, Placement,
+    PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, ReadStartBinding,
+    ReleaseContract, ReleaseSynchronization, Result, SchemaNullability, SemanticColumn, SemanticTable, TableId,
+    TransferCompletionRule, TryBorrowColumnView, TryBorrowTableView, TryIntoOwnedDeviceColumnTransfer,
+    TryIntoOwnedDevicePartitionedTableTransfer, TryIntoOwnedDeviceTableTransfer, TryPrepareDeviceColumnExport,
+    TryPrepareDevicePartitionedTableExport, TryPrepareDeviceTableExport, TryPrepareHostColumnExport,
+    TryPrepareHostTableExport, TypeId,
 };
 
 #[test]
@@ -64,6 +65,7 @@ fn crate_root_reexports_public_interop_surface() {
     assert_type::<BorrowedTableView<'static>>();
     assert_type::<ActiveColumnReadLease<'static, 'static, 'static>>();
     assert_type::<ActiveTableReadLease<'static, 'static, 'static>>();
+    assert_type::<ActivePartitionedTableReadLease<'static, 'static, 'static>>();
     assert_type::<OwnedColumnTransfer>();
     assert_type::<OwnedTableTransfer>();
     assert_type::<PartitionedPreparedTablePartition<'static>>();

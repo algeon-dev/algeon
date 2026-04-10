@@ -1,14 +1,24 @@
 use cudf::{
-    DataFrame, Runtime, Series, TypeId,
+    DataFrame, JsonReadOptions, Runtime, Series, TypeId,
     core::{Column, Table},
     interop::{ColumnLayout, TryBorrowColumnView, TryBorrowTableView},
     ops::dictionary,
 };
 use rapids_interop::{InteropErrorKind, NullMaskKind, TypeId as InteropTypeId};
 use static_assertions::assert_impl_all;
+use tempfile::TempDir;
 
 assert_impl_all!(Column: TryBorrowColumnView);
 assert_impl_all!(Table: TryBorrowTableView);
+
+fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join(filename);
+    std::fs::write(&path, rows).unwrap();
+    let runtime = Runtime::builder().build().unwrap();
+    DataFrame::read_json_with_options(JsonReadOptions::builder().filepath(&path).with_runtime(&runtime).build())
+        .unwrap()
+}
 
 #[test]
 fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
@@ -207,22 +217,95 @@ fn dictionary_columns_borrow_with_recursive_string_keys() {
     assert!(matches!(keys_column.layout(), ColumnLayout::BinaryLike { .. }));
 }
 
-// ---------------------------------------------------------------------------
-// Nested-type constructor guards
-//
-// These tests verify that List and Struct columns cannot be created through the
-// normal Column / Series construction APIs (the C++ layer rejects them in
-// make_empty_column).  Because no current API produces a runtime-backed nested
-// Column, we cannot directly exercise the borrowed-interop-v1 type guard
-// (borrow_from_materialized_view) for List/Struct.  That guard independently
-// rejects non-fixed-width types and child-bearing layouts; it is covered for
-// other variable-width types by the string and dictionary tests above.
-//
-// If a future API (e.g. a runtime-aware JSON reader) makes it possible to
-// produce runtime-backed nested columns, a test should be added here that
-// constructs such a column and asserts that try_borrow_column_view() returns
-// InteropErrorKind::UnsupportedType.
-// ---------------------------------------------------------------------------
+#[test]
+fn list_columns_borrow_as_recursive_list_layouts() {
+    let frame = read_json_dataframe(
+        "borrowed_lists.jsonl",
+        "{\"nested\":[[1,2],[3]]}\n\
+         {\"nested\":[[],[4,5]]}\n\
+         {\"nested\":[[6]]}\n",
+    );
+    let series = frame.series("nested").unwrap();
+
+    let borrowed = series.try_borrow_column_view().unwrap();
+
+    assert_eq!(borrowed.type_id(), InteropTypeId::List);
+    assert_eq!(borrowed.data_ptr(), std::ptr::null());
+    assert_eq!(borrowed.semantic_columns().len(), 3);
+
+    let nested_child = match borrowed.column().unwrap().layout() {
+        ColumnLayout::List { child, .. } => *child,
+        layout => panic!("expected list layout, got {layout:?}"),
+    };
+    let nested_list = borrowed
+        .semantic_columns()
+        .iter()
+        .find(|column| column.id() == nested_child)
+        .expect("nested list child should be present");
+    let leaf = match nested_list.layout() {
+        ColumnLayout::List { child, .. } => *child,
+        layout => panic!("expected nested list layout, got {layout:?}"),
+    };
+    let leaf_column =
+        borrowed.semantic_columns().iter().find(|column| column.id() == leaf).expect("nested leaf should be present");
+
+    assert_eq!(nested_list.data_type().id(), InteropTypeId::List);
+    assert_eq!(leaf_column.data_type().id(), InteropTypeId::Int64);
+}
+
+#[test]
+fn struct_columns_borrow_as_recursive_struct_layouts() {
+    let frame = read_json_dataframe(
+        "borrowed_structs.jsonl",
+        "{\"point\":{\"coords\":[1,2],\"label\":\"one\"}}\n\
+         {\"point\":{\"coords\":[],\"label\":\"two\"}}\n\
+         {\"point\":{\"coords\":[3],\"label\":\"three\"}}\n",
+    );
+    let series = frame.series("point").unwrap();
+
+    let borrowed = series.try_borrow_column_view().unwrap();
+
+    assert_eq!(borrowed.type_id(), InteropTypeId::Struct);
+    assert_eq!(borrowed.data_ptr(), std::ptr::null());
+
+    let children = match borrowed.column().unwrap().layout() {
+        ColumnLayout::Struct { children } => children.clone(),
+        layout => panic!("expected struct layout, got {layout:?}"),
+    };
+    assert_eq!(children.len(), 2);
+
+    let coords = borrowed
+        .semantic_columns()
+        .iter()
+        .find(|column| column.id() == children[0])
+        .expect("coords child should be present");
+    let label = borrowed
+        .semantic_columns()
+        .iter()
+        .find(|column| column.id() == children[1])
+        .expect("label child should be present");
+
+    assert!(matches!(coords.layout(), ColumnLayout::List { .. }));
+    assert!(matches!(label.layout(), ColumnLayout::BinaryLike { .. }));
+}
+
+#[test]
+fn dataframe_borrow_supports_list_and_struct_columns() {
+    let frame = read_json_dataframe(
+        "borrowed_nested_frame.jsonl",
+        "{\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}\n\
+         {\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}\n\
+         {\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}\n",
+    );
+
+    let borrowed = frame.try_borrow_table_view().unwrap();
+
+    assert_eq!(borrowed.num_rows(), 3);
+    assert_eq!(borrowed.num_columns(), 3);
+    assert!(matches!(borrowed.columns()[0].column().unwrap().layout(), ColumnLayout::List { .. }));
+    assert!(matches!(borrowed.columns()[1].column().unwrap().layout(), ColumnLayout::Struct { .. }));
+    assert!(matches!(borrowed.columns()[2].column().unwrap().layout(), ColumnLayout::FixedWidth { .. }));
+}
 
 #[test]
 fn nested_list_column_construction_is_rejected_before_interop() {

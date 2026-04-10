@@ -4,9 +4,9 @@ use std::{
 };
 
 use crate::{
-    ActiveColumnReadLease, ActiveTableReadLease, BufferBinding, CompletionAuthority, ExportDiagnostics, ExportProfile,
-    IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseBackend, LeaseExportContext, ProducerReadiness,
-    ReadStartAuthority, Result, SemanticColumn, SemanticTable,
+    ActiveColumnReadLease, ActiveTableReadLease, BufferBinding, BufferId, ColumnId, CompletionAuthority,
+    ExportDiagnostics, ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseBackend,
+    LeaseExportContext, ProducerReadiness, ReadStartAuthority, Result, SemanticColumn, SemanticTable,
     contract::RetainedHostBuffers,
     lease::LeaseRootState,
     validation::{
@@ -430,12 +430,38 @@ impl<'a> PreparedTableExport<'a> {
         &self.columns
     }
 
+    /// Return one top-level semantic column by its schema column id.
+    pub fn top_level_column(&self, column_id: ColumnId) -> Option<&SemanticColumn> {
+        self.columns.iter().find(|column| column.id() == column_id)
+    }
+
+    /// Return one top-level semantic column by its schema name.
+    ///
+    /// This lookup follows the table schema order and returns `None` when the
+    /// prepared table root does not carry names.
+    pub fn top_level_column_by_name(&self, name: &str) -> Option<&SemanticColumn> {
+        self.table
+            .names()
+            .and_then(|names| names.iter().position(|candidate| candidate == name))
+            .and_then(|index| self.columns.get(index))
+    }
+
+    /// Return one semantic column from the full recursive semantic graph.
+    pub fn semantic_column(&self, column_id: ColumnId) -> Option<&SemanticColumn> {
+        self.semantic_columns.iter().find(|column| column.id() == column_id)
+    }
+
     pub fn semantic_columns(&self) -> &[SemanticColumn] {
         &self.semantic_columns
     }
 
     pub fn bindings(&self) -> &[BufferBinding<'a>] {
         &self.bindings
+    }
+
+    /// Return one bound buffer by its symbolic buffer id.
+    pub fn binding(&self, buffer_id: BufferId) -> Option<&BufferBinding<'a>> {
+        self.bindings.iter().find(|binding| binding.id() == buffer_id)
     }
 
     pub fn readiness(&self) -> &ProducerReadiness<'a> {

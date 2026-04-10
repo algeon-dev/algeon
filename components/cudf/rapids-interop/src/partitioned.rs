@@ -1,4 +1,48 @@
-use crate::{ExportProfile, InteropError, InteropErrorKind, OwnedTableTransfer, PreparedTableExport, Result};
+use crate::{
+    ActiveTableReadLease, CompletionAuthority, ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind,
+    LeaseCompletionResult, OwnedTableTransfer, PreparedTableExport, ReadStartAuthority, Result,
+};
+
+/// Consumer-activated read lease over one partition inside a partitioned
+/// prepared table export.
+#[derive(Debug)]
+#[must_use = "lease should be completed explicitly via .complete(); dropping without completion follows the backend-defined incomplete-drop behavior"]
+pub struct ActivePartitionedTableReadLease<'export, 'producer, 'consumer> {
+    partition: &'export PartitionedPreparedTablePartition<'producer>,
+    inner: ActiveTableReadLease<'export, 'producer, 'consumer>,
+}
+
+impl<'export, 'producer, 'consumer> ActivePartitionedTableReadLease<'export, 'producer, 'consumer> {
+    /// Return the original top-level schema indices covered by this partition.
+    pub fn top_level_column_indices(&self) -> &[usize] {
+        self.partition.top_level_column_indices()
+    }
+
+    /// Borrow the single-device prepared export behind this partition lease.
+    pub fn export(&self) -> &'export PreparedTableExport<'producer> {
+        self.inner.export()
+    }
+
+    /// Return the read-start authority used to activate this partition lease.
+    pub fn read_start(&self) -> ReadStartAuthority<'consumer> {
+        self.inner.read_start()
+    }
+
+    /// Return the completion authority used to activate this partition lease.
+    pub fn completion(&self) -> CompletionAuthority<'consumer> {
+        self.inner.completion()
+    }
+
+    /// Return the incomplete-drop behavior for this partition lease.
+    pub fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
+        self.inner.incomplete_drop_behavior()
+    }
+
+    /// Complete this partition lease and return the shared completion result.
+    pub fn complete(self) -> Result<LeaseCompletionResult> {
+        self.inner.complete()
+    }
+}
 
 /// One partition inside a partitioned prepared table export.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +62,17 @@ impl<'a> PartitionedPreparedTablePartition<'a> {
 
     pub fn export(&self) -> &PreparedTableExport<'a> {
         &self.export
+    }
+
+    /// Activate a read lease for this partition without dropping down to the
+    /// nested prepared export first.
+    pub fn try_activate_read_lease<'export, 'consumer>(
+        &'export self,
+        read_start: ReadStartAuthority<'consumer>,
+        completion: CompletionAuthority<'consumer>,
+    ) -> Result<ActivePartitionedTableReadLease<'export, 'a, 'consumer>> {
+        let inner = self.export.try_activate_read_lease(read_start, completion)?;
+        Ok(ActivePartitionedTableReadLease { partition: self, inner })
     }
 }
 

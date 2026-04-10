@@ -454,6 +454,38 @@ fn borrowed_dictionary_column_import_round_trips_string_keys() {
 }
 
 #[test]
+fn borrowed_list_column_import_round_trips_recursive_nested_children() {
+    let frame = read_json_dataframe(
+        "borrowed_import_lists.jsonl",
+        "{\"nested\":[[1,2],[3]]}\n\
+         {\"nested\":[[],[4,5]]}\n\
+         {\"nested\":[[6]]}\n",
+    );
+    let nested = frame.series("nested").unwrap();
+    let source = nested.as_column();
+    let source_view = source.view().unwrap();
+    let borrowed = source_view.try_borrow_column_view().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = Column::try_import_from_borrowed_column_view_into_runtime(&borrowed, &destination_runtime).unwrap();
+
+    assert_eq!(
+        imported.__debug_execution_domain_stream_value(),
+        destination_runtime.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        imported.__debug_execution_domain_mr_value(),
+        destination_runtime.memory_resource().__debug_raw_handle_value()
+    );
+    assert_eq!(common::last_exec_device(), destination_runtime.device().ordinal() as i32);
+    assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
+    assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
+
+    assert_host_column_exports_equivalent(&source, &imported);
+}
+
+#[test]
 fn prepared_sliced_string_column_export_import_preserves_active_range() {
     let source_runtime = Runtime::builder().build().unwrap();
     let source =
@@ -546,6 +578,37 @@ fn borrowed_table_view_import_supports_string_and_dictionary_columns() {
     let strings = source_runtime.column_from_strs(&["beta", "alpha", "beta"]).unwrap();
     let dictionary = dictionary::encode(&strings.view().unwrap(), TypeId::Int32).unwrap();
     let source = Table::from_columns(vec![strings, dictionary]).unwrap();
+    let source_view = source.view().unwrap();
+    let borrowed = source_view.try_borrow_table_view().unwrap();
+    let destination_runtime = common::sample_runtime();
+
+    common::reset_exec_observation();
+    let imported = Table::try_import_from_borrowed_table_view_into_runtime(&borrowed, &destination_runtime).unwrap();
+
+    assert_eq!(
+        imported.__debug_execution_domain_stream_value(),
+        destination_runtime.stream().__debug_raw_handle_value()
+    );
+    assert_eq!(
+        imported.__debug_execution_domain_mr_value(),
+        destination_runtime.memory_resource().__debug_raw_handle_value()
+    );
+    assert_eq!(common::last_exec_device(), destination_runtime.device().ordinal() as i32);
+    assert_eq!(common::last_exec_stream_value(), destination_runtime.stream().__debug_raw_handle_value());
+    assert_eq!(common::last_exec_mr_value(), destination_runtime.memory_resource().__debug_raw_handle_value());
+
+    assert_host_table_exports_equivalent(&source, &imported);
+}
+
+#[test]
+fn borrowed_table_view_import_supports_recursive_list_and_struct_columns() {
+    let source = read_json_dataframe(
+        "borrowed_import_nested_table.jsonl",
+        "{\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}\n\
+         {\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}\n\
+         {\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}\n",
+    );
+    let (source, _names) = source.try_into_table().unwrap();
     let source_view = source.view().unwrap();
     let borrowed = source_view.try_borrow_table_view().unwrap();
     let destination_runtime = common::sample_runtime();

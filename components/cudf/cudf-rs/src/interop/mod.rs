@@ -14,6 +14,8 @@
 //! # Contract Summary
 //!
 //! - The shared [`rapids_interop`] names are the primary interop contract.
+//! - Prepared export plus activated access is the primary consumer-neutral
+//!   single-GPU contract.
 //! - `cudf-rs` now supports consumer-side import from the shared borrowed
 //!   compatibility descriptors back into low-level owned
 //!   [`crate::core::Column`] and [`crate::core::Table`] values via explicit
@@ -31,6 +33,9 @@
 //!   compatibility profile.
 //! - [`PreparedColumnExport`] and [`PreparedTableExport`] are producer-rooted
 //!   prepared export profiles for activated access.
+//! - Deep-copy import into an explicit destination [`crate::Runtime`] remains
+//!   the portability fallback when a consumer needs owned `cudf-rs` values
+//!   instead of borrowing or moving ownership directly.
 //! - [`PartitionedPreparedTableExport`] and [`PartitionedOwnedTableTransfer`]
 //!   are explicit multi-device wrappers around multiple already-valid
 //!   single-device table roots.
@@ -63,7 +68,7 @@
 //!   active logical range to host-visible bytes and is not zero-copy.
 //! - Owned device transfer is a separate zero-copy ownership move profile for
 //!   true owner types such as [`crate::core::Column`] and
-//!   [`crate::core::Table`].
+//!   [`crate::core::Table`], not the default consumer story.
 //! - [`PartitionedDataFrameExport`] is an interop-only heterogeneous producer
 //!   surface; it does not change the ordinary single-provenance semantics of
 //!   [`crate::DataFrame`] or [`crate::core::Table`].

@@ -7,7 +7,8 @@
 //! - a producer-rooted prepared export profile via [`PreparedColumnExport`] and
 //!   [`PreparedTableExport`]
 //! - activated read leases with explicit completion via
-//!   [`ActiveColumnReadLease`] and [`ActiveTableReadLease`]
+//!   [`ActiveColumnReadLease`], [`ActiveTableReadLease`], and
+//!   [`ActivePartitionedTableReadLease`]
 //! - an owned device transfer profile via [`OwnedColumnTransfer`] and
 //!   [`OwnedTableTransfer`]
 //! - explicit partitioned multi-device wrappers via
@@ -21,17 +22,19 @@
 //! - Borrowed compatibility covers low-level borrowed descriptors and their
 //!   explicit execution binding facts.
 //! - Prepared export plus activated lease covers read-start, completion, and
-//!   backend-defined incomplete-drop behavior at the shared contract layer.
+//!   backend-defined incomplete-drop behavior at the shared contract layer, and
+//!   is the primary consumer-neutral interop boundary.
 //! - Owned device transfer is a separate ownership-bearing contract with an
-//!   explicit release contract.
+//!   explicit release contract. It is an ownership-moving fast path, not the
+//!   default consumer story.
 //! - Partitioned multi-device export is explicit composition over multiple
 //!   single-device table roots; it does not weaken the meaning of one
 //!   [`PreparedTableExport`] or one [`OwnedTableTransfer`].
 //! - Current device-export support covers fixed-width layouts, the binary-like
 //!   string layout slice, `List`, `Struct`, and `Dictionary`.
 //! - Current borrowed-compatibility support covers fixed-width layouts plus
-//!   the current `STRING` binary-like slice and `DICTIONARY32` with supported
-//!   recursive keys projections.
+//!   the current `STRING` binary-like slice, `LIST`, `STRUCT`, and
+//!   `DICTIONARY32` recursive semantic projections.
 //! - Nested-layout support is still intentionally narrow in this slice:
 //!   current coverage is the recursive semantic-column graph that can be
 //!   expressed by the existing fixed-width, binary-like string, list, struct,
