@@ -81,6 +81,17 @@ pub(super) fn local_parquet_gpu_resident_plan(path: &std::path::Path, schema: Ar
     builder.finish_gpu_resident(source)
 }
 
+pub(super) fn local_parquet_host_sink_plan(path: &std::path::Path, schema: Arc<Schema>) -> QueryPlan {
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
+        schema,
+        vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    builder.finish_with_host_sink(source)
+}
+
 pub(super) fn gpu_resident_host_sink_plan(input_name: &str, schema: Arc<Schema>) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
