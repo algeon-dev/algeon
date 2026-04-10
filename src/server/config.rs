@@ -3,8 +3,8 @@ use std::fmt;
 use std::{collections::BTreeMap, fs, net::SocketAddr, path::PathBuf, time::Duration};
 
 use nexus_query_engine::{
-    MemoryControlPolicy, NativePipelineExecutionMode, SourceChunkPlanningMode, SourceSchedulerPolicy,
-    StatisticalAggregateExecutionMode,
+    MemoryControlPolicy, NativePipelineExecutionMode, QueryServiceConfig, SlotGuarantee, SourceChunkPlanningMode,
+    SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
 };
 use serde::Deserialize;
 
@@ -23,7 +23,9 @@ use crate::{
     TableFormatLakehouseCacheReadPolicy, TableFormatParquetReadStrategyConfig,
     TableFormatParquetReadStrategyPreference,
 };
-use crate::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig};
+use crate::{
+    CudfOptimizerConfig, GpuFallbackPolicy, GrantBand, MemoryShare, NativeCudfExecutionConfig, NexusAdmissionPolicy,
+};
 #[cfg(feature = "cugraph")]
 use crate::{CugraphAlgorithm, CugraphGraphConstructionPolicy, CugraphGraphOptions};
 
@@ -38,6 +40,14 @@ pub const NEXUS_SERVER_MAX_IN_FLIGHT_ENV: &str = "NEXUS_SERVER_MAX_IN_FLIGHT";
 /// to `2`; `NEXUS_SERVER_MAX_IN_FLIGHT` remains accepted as a compatibility
 /// alias.
 pub const NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV: &str = "NEXUS_SERVER_MAX_CONCURRENT_QUERIES";
+/// Minimum per-query admission grant. Accepts a byte integer or fractional
+/// capacity such as `0.125`. Defaults to `0.125`.
+pub const NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV: &str = "NEXUS_SERVER_ADMISSION_GRANT_MIN";
+/// Preferred per-query admission grant. Accepts a byte integer or fractional
+/// capacity such as `0.5`. Defaults to `0.5`.
+pub const NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV: &str = "NEXUS_SERVER_ADMISSION_GRANT_WANT";
+/// Empty-slot grant policy: `guaranteed_minimum` or `optimistic`.
+pub const NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV: &str = "NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE";
 /// Fraction of a GPU's total memory eligible for server native-query budgets.
 /// The fixed native headroom remains a floor, so `1.0` preserves the historical
 /// auto-sized `total - headroom` behavior.
@@ -335,6 +345,7 @@ pub struct ServerConfig {
     pub bind_addr: SocketAddr,
     pub log_filter: String,
     pub max_in_flight: usize,
+    pub admission_policy: NexusAdmissionPolicy,
     pub gpu_devices: Vec<usize>,
     pub device_budget_fraction: Option<f64>,
     /// Wall-clock time a planned Flight SQL statement ticket may hold an
@@ -366,7 +377,35 @@ pub struct ServerConfig {
 #[serde(deny_unknown_fields, default)]
 struct ServerFileOverlay {
     auth: AuthConfig,
+    admission: ServerAdmissionFileConfig,
     native: ServerNativeFileConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct ServerAdmissionFileConfig {
+    max_concurrent_queries: Option<usize>,
+    grant_min: Option<ServerMemoryShareFileValue>,
+    grant_want: Option<ServerMemoryShareFileValue>,
+    slot_guarantee: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum ServerMemoryShareFileValue {
+    Integer(u64),
+    Float(f64),
+    String(String),
+}
+
+impl ServerMemoryShareFileValue {
+    fn as_raw(&self) -> String {
+        match self {
+            Self::Integer(value) => value.to_string(),
+            Self::Float(value) => value.to_string(),
+            Self::String(value) => value.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -568,20 +607,23 @@ impl ServerConfig {
         let mut values = EnvValues::new(&mut get);
         let bind_addr = values.socket_addr(NEXUS_SERVER_BIND_ENV, DEFAULT_BIND_ADDR)?;
         let log_filter = values.string(NEXUS_SERVER_LOG_ENV).unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
-        let admission_limit_explicit =
-            values.any_present([NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV]);
-        let max_concurrent_queries = server_max_concurrent_queries(&mut values)?;
-        let mut max_in_flight = max_concurrent_queries.value;
-        let gpu_devices = server_gpu_devices(&mut values)?;
-        let device_budget_fraction = values.optional_f64(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV)?;
-        let statement_ticket_ttl = Duration::from_secs(
-            values.positive_u64(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, DEFAULT_STATEMENT_TICKET_TTL_SECS)?,
-        );
         let overlay_path = values.string(NEXUS_SERVER_CONFIG_FILE_ENV).map(PathBuf::from);
         let overlay = match overlay_path {
             Some(path) => load_overlay(&path)?,
             None => ServerFileOverlay::default(),
         };
+        let admission_limit_explicit = values
+            .any_present([NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV])
+            || overlay.admission.max_concurrent_queries.is_some();
+        let explicit_admission_memory_field = first_present_admission_memory_field(&mut values, &overlay.admission);
+        let max_concurrent_queries = server_max_concurrent_queries(&mut values, &overlay.admission)?;
+        let mut max_in_flight = max_concurrent_queries.value;
+        let mut admission_policy = server_admission_policy(&mut values, &overlay.admission, max_in_flight)?;
+        let gpu_devices = server_gpu_devices(&mut values)?;
+        let device_budget_fraction = values.optional_f64(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV)?;
+        let statement_ticket_ttl = Duration::from_secs(
+            values.positive_u64(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, DEFAULT_STATEMENT_TICKET_TTL_SECS)?,
+        );
         let native_optimizer_config =
             native_optimizer_config(&mut values, &overlay.native, &gpu_devices, device_budget_fraction)?;
         #[cfg(feature = "iceberg")]
@@ -634,12 +676,21 @@ impl ServerConfig {
                 ));
             }
             max_in_flight = 1;
+            admission_policy = admission_policy.with_max_concurrent_queries(max_in_flight);
+        }
+        if matches!(
+            native_optimizer_config.native_execution_config().memory_control_policy(),
+            MemoryControlPolicy::Unbounded
+        ) && let Some(field) = explicit_admission_memory_field
+        {
+            return Err(ServerError::invalid_config(field, "requires bounded native memory policy"));
         }
 
         Ok(Self {
             bind_addr,
             log_filter,
             max_in_flight,
+            admission_policy,
             gpu_devices,
             device_budget_fraction,
             statement_ticket_ttl,
@@ -667,7 +718,10 @@ fn load_overlay(path: &std::path::Path) -> Result<ServerFileOverlay> {
     })
 }
 
-fn server_max_concurrent_queries(values: &mut EnvValues<'_>) -> Result<NativeConfigValue<usize>> {
+fn server_max_concurrent_queries(
+    values: &mut EnvValues<'_>,
+    file: &ServerAdmissionFileConfig,
+) -> Result<NativeConfigValue<usize>> {
     let preferred = values
         .optional_usize(NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV)?
         .map(|value| NativeConfigValue::new(value, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV));
@@ -685,12 +739,100 @@ fn server_max_concurrent_queries(values: &mut EnvValues<'_>) -> Result<NativeCon
         },
         (Some(preferred), _) => preferred,
         (None, Some(legacy)) => legacy,
-        (None, None) => NativeConfigValue::new(DEFAULT_MAX_IN_FLIGHT, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV),
+        (None, None) => file
+            .max_concurrent_queries
+            .map(|value| NativeConfigValue::new(value, "admission.max_concurrent_queries"))
+            .unwrap_or(NativeConfigValue::new(DEFAULT_MAX_IN_FLIGHT, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV)),
     };
     if selected.value == 0 {
         return Err(ServerError::invalid_config(selected.field, "must be greater than zero"));
     }
     Ok(selected)
+}
+
+fn server_admission_policy(
+    values: &mut EnvValues<'_>,
+    file: &ServerAdmissionFileConfig,
+    max_in_flight: usize,
+) -> Result<NexusAdmissionPolicy> {
+    let default_grant = GrantBand::default();
+    let min = optional_admission_memory_share(
+        values,
+        NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV,
+        "admission.grant_min",
+        file.grant_min.as_ref(),
+    )?
+    .unwrap_or(NativeConfigValue::new(default_grant.min, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV));
+    let want = optional_admission_memory_share(
+        values,
+        NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV,
+        "admission.grant_want",
+        file.grant_want.as_ref(),
+    )?
+    .unwrap_or(NativeConfigValue::new(default_grant.want, NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV));
+    validate_comparable_memory_share_order(min.value, want.value, want.field)?;
+    let slot_guarantee = optional_native_string(
+        values,
+        NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV,
+        "admission.slot_guarantee",
+        file.slot_guarantee.as_deref(),
+    )
+    .map(|raw| parse_slot_guarantee(raw.field, &raw.value))
+    .transpose()?
+    .unwrap_or(SlotGuarantee::GuaranteedMinimum);
+    Ok(NexusAdmissionPolicy::default()
+        .with_max_concurrent_queries(max_in_flight)
+        .with_grant_band(GrantBand { min: min.value, want: want.value })
+        .with_slot_guarantee(slot_guarantee)
+        .with_wait_timeout(QueryServiceConfig::default().admission_wait_timeout))
+}
+
+fn optional_admission_memory_share(
+    values: &mut EnvValues<'_>,
+    env_name: &'static str,
+    file_field: &'static str,
+    file_value: Option<&ServerMemoryShareFileValue>,
+) -> Result<Option<NativeConfigValue<MemoryShare>>> {
+    optional_native_string(values, env_name, file_field, file_value.map(ServerMemoryShareFileValue::as_raw).as_deref())
+        .map(|raw| parse_memory_share(raw.field, &raw.value).map(|share| NativeConfigValue::new(share, raw.field)))
+        .transpose()
+}
+
+fn validate_comparable_memory_share_order(min: MemoryShare, want: MemoryShare, want_field: &'static str) -> Result<()> {
+    match (min, want) {
+        (MemoryShare::Bytes(min), MemoryShare::Bytes(want)) if want < min => {
+            Err(ServerError::invalid_config(want_field, "must be at least admission grant_min"))
+        },
+        (MemoryShare::Fraction(min), MemoryShare::Fraction(want)) if want < min => {
+            Err(ServerError::invalid_config(want_field, "must be at least admission grant_min"))
+        },
+        _ => Ok(()),
+    }
+}
+
+fn first_present_admission_memory_field(
+    values: &mut EnvValues<'_>,
+    file: &ServerAdmissionFileConfig,
+) -> Option<&'static str> {
+    if values.string(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV).is_some() {
+        return Some(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV);
+    }
+    if values.string(NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV).is_some() {
+        return Some(NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV);
+    }
+    if values.string(NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV).is_some() {
+        return Some(NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV);
+    }
+    if file.grant_min.is_some() {
+        return Some("admission.grant_min");
+    }
+    if file.grant_want.is_some() {
+        return Some("admission.grant_want");
+    }
+    if file.slot_guarantee.is_some() {
+        return Some("admission.slot_guarantee");
+    }
+    None
 }
 
 fn server_gpu_devices(values: &mut EnvValues<'_>) -> Result<Vec<usize>> {
@@ -1142,6 +1284,38 @@ fn parse_native_memory_policy(field: &'static str, raw: &str) -> Result<ServerNa
         "bounded" => Ok(ServerNativeMemoryPolicy::Bounded),
         "unbounded" => Ok(ServerNativeMemoryPolicy::Unbounded),
         other => Err(ServerError::invalid_config(field, format!("must be `bounded` or `unbounded`, got `{other}`"))),
+    }
+}
+
+fn parse_memory_share(field: &'static str, raw: &str) -> Result<MemoryShare> {
+    let raw = raw.trim();
+    let lower = raw.to_ascii_lowercase();
+    if raw.contains('.') || lower.contains('e') {
+        let fraction = raw.parse::<f64>().map_err(|error| {
+            ServerError::invalid_config_with_source(field, "must be a fraction or byte integer", error)
+        })?;
+        if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) || fraction == 0.0 {
+            return Err(ServerError::invalid_config(field, "fraction must be greater than 0 and at most 1"));
+        }
+        return Ok(MemoryShare::Fraction(fraction));
+    }
+    let bytes = raw
+        .parse::<u64>()
+        .map_err(|error| ServerError::invalid_config_with_source(field, "must be a fraction or byte integer", error))?;
+    if bytes == 0 {
+        return Err(ServerError::invalid_config(field, "must be greater than zero"));
+    }
+    Ok(MemoryShare::Bytes(bytes))
+}
+
+fn parse_slot_guarantee(field: &'static str, raw: &str) -> Result<SlotGuarantee> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "guaranteed_minimum" => Ok(SlotGuarantee::GuaranteedMinimum),
+        "optimistic" => Ok(SlotGuarantee::Optimistic),
+        other => Err(ServerError::invalid_config(
+            field,
+            format!("must be `guaranteed_minimum` or `optimistic`, got `{other}`"),
+        )),
     }
 }
 

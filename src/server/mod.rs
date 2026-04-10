@@ -621,6 +621,7 @@ mod tests {
             bind_addr: "127.0.0.1:0".parse().expect("test bind address"),
             log_filter: "info".to_string(),
             max_in_flight: 1,
+            admission_policy: crate::NexusAdmissionPolicy::default().with_max_concurrent_queries(1),
             gpu_devices: vec![0],
             device_budget_fraction: None,
             statement_ticket_ttl: std::time::Duration::from_secs(60),

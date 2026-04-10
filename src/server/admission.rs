@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nexus_query_engine::{QueryHandle, QueryServiceConfig, TenantId};
+use nexus_query_engine::{QueryHandle, TenantId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use super::{
@@ -213,9 +213,7 @@ fn server_backend_from_config_admission_only(config: &ServerConfig) -> Result<Op
 }
 
 fn server_admission_policy(config: &ServerConfig) -> NexusAdmissionPolicy {
-    NexusAdmissionPolicy::default()
-        .with_max_concurrent_queries(config.max_in_flight)
-        .with_wait_timeout(QueryServiceConfig::default().admission_wait_timeout)
+    config.admission_policy.clone()
 }
 
 fn format_tenant_queue_depths(depths: &[nexus_query_engine::TenantQueueDepth]) -> String {
@@ -254,11 +252,11 @@ mod tests {
         assert_eq!(service.config().source_scheduler_policy.max_source_reads_in_flight(), 2);
         assert_eq!(service.config().max_admission_queue_len, 192);
         assert_eq!(service.config().admission_wait_timeout, QueryServiceConfig::default().admission_wait_timeout);
-        assert_eq!(service.tenant_budget(backend.tenant_id()).unwrap(), 3072);
+        assert_eq!(service.tenant_budget(backend.tenant_id()).unwrap(), 1536);
 
         let permit = admission.try_acquire().unwrap().expect("first query should admit");
         let handle = permit.query_service_handle().expect("query service admission should return a handle");
-        assert_eq!(handle.device_budget_bytes(), 1024);
+        assert_eq!(handle.device_budget_bytes(), 1536);
     }
 
     #[test]

@@ -50,10 +50,10 @@ pub mod error_contracts {
 pub mod prelude {
     pub use crate::{
         CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
-        CudfSessionStateBuilderExt, DataFusionNexusSessionConfig, FallbackReason, GpuFallbackPolicy, NativeCudfExec,
-        NativeCudfExecutionConfig, NativeMemoryPolicyConfig, NexusAdmissionPolicy, NexusGpuBackend,
-        NexusGpuBackendBuilder, NexusMemoryPolicy, PhysicalOptimizerRules, PlanningReport, Priority, QueryHandle,
-        QueryQos, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+        CudfSessionStateBuilderExt, DataFusionNexusSessionConfig, FallbackReason, GpuFallbackPolicy, GrantBand,
+        MemoryShare, NativeCudfExec, NativeCudfExecutionConfig, NativeMemoryPolicyConfig, NexusAdmissionPolicy,
+        NexusGpuBackend, NexusGpuBackendBuilder, NexusMemoryPolicy, PhysicalOptimizerRules, PlanningReport, Priority,
+        QueryHandle, QueryQos, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
         cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
     };
 }
@@ -64,8 +64,8 @@ pub mod admission_contracts {
     pub use nexus_query_engine::{
         DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, Priority,
         QueryAdmissionWaiter, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryHandle, QueryQos,
-        QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, Result, TenantId,
-        TenantQueueDepth,
+        QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, Result,
+        SlotGuarantee, TenantId, TenantQueueDepth,
     };
 }
 
@@ -217,7 +217,9 @@ pub mod server_contracts {
     pub use crate::server::*;
 }
 
-pub use backend::{NexusAdmissionPolicy, NexusGpuBackend, NexusGpuBackendBuilder, NexusMemoryPolicy};
+pub use backend::{
+    GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusGpuBackendBuilder, NexusMemoryPolicy,
+};
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 #[cfg(feature = "cugraph")]
 pub use graph_sql::{
@@ -293,9 +295,10 @@ pub use nexus_query_engine::{
     MemoryControlPolicy, NativeOptimizerOptions, NativePipelineExecutionMode, NativePlanCpuPreferenceReason,
     NativePlanPreferenceOptions, NvidiaFsProbeStatus, Priority, QueryAdmissionWaiter, QueryHandle, QueryQos,
     QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, RemoteParquetReadMode,
-    S3SourceStorageCredential, S3SourceStorageProfile, SemijoinReductionOptions, SourceChunkPlanningMode,
-    SourceStorageProfile, StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract, TenantId,
-    TenantQueueDepth, TriageCode, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict,
+    S3SourceStorageCredential, S3SourceStorageProfile, SemijoinReductionOptions, SlotGuarantee,
+    SourceChunkPlanningMode, SourceStorageProfile, StatisticalAggregateExecutionMode,
+    StatisticalAggregateToleranceContract, TenantId, TenantQueueDepth, TriageCode, TriageEvidenceRef, TriageSeverity,
+    TriageSignal, TriageSummary, TriageVerdict,
 };
 pub use planner::{
     CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,

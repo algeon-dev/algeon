@@ -25,6 +25,9 @@ fn adapter_facade_modules_expose_intentional_contract_groups() {
         .fallback_policy(prelude::GpuFallbackPolicy::GpuPreferred)
         .admission(prelude::NexusAdmissionPolicy::default());
     let _memory_policy = prelude::NexusMemoryPolicy::default();
+    let _grant_band =
+        prelude::GrantBand { min: prelude::MemoryShare::Fraction(0.125), want: prelude::MemoryShare::Fraction(0.5) };
+    let _slot_guarantee = prelude::SlotGuarantee::GuaranteedMinimum;
     let _priority = prelude::Priority::Normal;
 }
 

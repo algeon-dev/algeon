@@ -5,7 +5,7 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use datafusion::execution::SessionStateBuilder;
 use nexus_query_engine::{
     DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus,
-    QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+    QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
 };
 
 use crate::{
@@ -51,17 +51,45 @@ impl Default for NexusMemoryPolicy {
     }
 }
 
-/// Backend admission policy. Grant-band and slot-guarantee controls land in Phase C.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Backend admission policy.
+#[derive(Debug, Clone, PartialEq)]
 pub struct NexusAdmissionPolicy {
     max_concurrent_queries: usize,
+    grant: GrantBand,
+    slot_guarantee: SlotGuarantee,
     max_queued: Option<usize>,
     wait_timeout: Duration,
+}
+
+/// Device-memory share used in backend admission grant bands.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MemoryShare {
+    /// Fraction of the resolved backend device capacity.
+    Fraction(f64),
+    /// Explicit byte count.
+    Bytes(u64),
+}
+
+/// Minimum and preferred device-memory grant for each admitted query.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GrantBand {
+    pub min: MemoryShare,
+    pub want: MemoryShare,
 }
 
 impl NexusAdmissionPolicy {
     pub fn with_max_concurrent_queries(mut self, max_concurrent_queries: usize) -> Self {
         self.max_concurrent_queries = max_concurrent_queries;
+        self
+    }
+
+    pub fn with_grant_band(mut self, grant: GrantBand) -> Self {
+        self.grant = grant;
+        self
+    }
+
+    pub fn with_slot_guarantee(mut self, slot_guarantee: SlotGuarantee) -> Self {
+        self.slot_guarantee = slot_guarantee;
         self
     }
 
@@ -79,6 +107,14 @@ impl NexusAdmissionPolicy {
         self.max_concurrent_queries
     }
 
+    pub fn grant(&self) -> GrantBand {
+        self.grant
+    }
+
+    pub fn slot_guarantee(&self) -> SlotGuarantee {
+        self.slot_guarantee
+    }
+
     pub fn max_queued(&self) -> usize {
         self.max_queued.unwrap_or_else(|| admission_queue_len(self.max_concurrent_queries))
     }
@@ -90,7 +126,19 @@ impl NexusAdmissionPolicy {
 
 impl Default for NexusAdmissionPolicy {
     fn default() -> Self {
-        Self { max_concurrent_queries: 2, max_queued: None, wait_timeout: Duration::from_secs(60) }
+        Self {
+            max_concurrent_queries: 2,
+            grant: GrantBand::default(),
+            slot_guarantee: SlotGuarantee::GuaranteedMinimum,
+            max_queued: None,
+            wait_timeout: Duration::from_secs(60),
+        }
+    }
+}
+
+impl Default for GrantBand {
+    fn default() -> Self {
+        Self { min: MemoryShare::Fraction(1.0 / 8.0), want: MemoryShare::Fraction(1.0 / 2.0) }
     }
 }
 
@@ -179,10 +227,15 @@ impl NexusGpuBackend {
         admission_only: bool,
     ) -> Result<Self> {
         validate_admission_policy(&admission_policy)?;
-        let min_budget = partitioned_query_budget_bytes(
+        let grant_band = resolve_grant_band(resolved.planning_device_budget_bytes, admission_policy.grant)?;
+        validate_grant_band_slot_guarantee(
             resolved.planning_device_budget_bytes,
+            resolved.device_ordinals.len(),
             admission_policy.max_concurrent_queries,
+            admission_policy.slot_guarantee,
+            grant_band,
         )?;
+        let min_budget = grant_band.min_bytes;
         let mut execution_config =
             resolved.execution_config.clone().with_memory_control_policy(MemoryControlPolicy::Bounded {
                 device_budget_bytes: min_budget,
@@ -198,11 +251,8 @@ impl NexusGpuBackend {
             &resolved,
             admission_policy.max_concurrent_queries,
         );
-        let tenant_config = QueryServiceTenantConfig::with_grant_range(
-            tenant_id.clone(),
-            min_budget,
-            resolved.planning_device_budget_bytes,
-        );
+        let tenant_config =
+            QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), min_budget, grant_band.want_bytes);
         let device_ordinals = resolved.device_ordinals.clone();
         let query_service = if admission_only {
             QueryService::new_admission_only(service_config, vec![tenant_config], nongds_deployment())
@@ -425,6 +475,7 @@ fn backend_query_service_config(
         )),
         device_capacity_bytes: Some(resolved.planning_device_budget_bytes),
         max_concurrent_queries,
+        slot_guarantee: admission_policy.slot_guarantee(),
         max_admission_queue_len: admission_policy.max_queued(),
         admission_wait_timeout: admission_policy.wait_timeout(),
         max_source_chunk_bytes: resolved.max_source_chunk_bytes,
@@ -444,18 +495,64 @@ fn admission_queue_len(max_concurrent_queries: usize) -> usize {
     max_concurrent_queries.saturating_mul(DEFAULT_ADMISSION_QUEUE_MULTIPLIER).max(DEFAULT_ADMISSION_QUEUE_MULTIPLIER)
 }
 
-fn partitioned_query_budget_bytes(capacity_bytes: u64, max_concurrent_queries: usize) -> Result<u64> {
-    capacity_bytes
-        .checked_div(u64::try_from(max_concurrent_queries).unwrap_or(u64::MAX))
-        .filter(|budget| *budget > 0)
-        .ok_or_else(|| invalid_backend_config("device_budget_bytes", "is too small for max_concurrent_queries"))
-}
-
 fn validate_admission_policy(policy: &NexusAdmissionPolicy) -> Result<()> {
     validate_positive_usize("max_concurrent_queries", policy.max_concurrent_queries)?;
     validate_positive_usize("max_queued", policy.max_queued())?;
     if policy.wait_timeout.is_zero() {
         return Err(invalid_backend_config("wait_timeout", "must be greater than zero"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolvedGrantBand {
+    min_bytes: u64,
+    want_bytes: u64,
+}
+
+fn resolve_grant_band(capacity_bytes: u64, grant: GrantBand) -> Result<ResolvedGrantBand> {
+    let min_bytes = resolve_memory_share("grant.min", grant.min, capacity_bytes)?;
+    let want_bytes = resolve_memory_share("grant.want", grant.want, capacity_bytes)?;
+    if want_bytes < min_bytes {
+        return Err(invalid_backend_config("grant.want", "must be at least grant.min"));
+    }
+    Ok(ResolvedGrantBand { min_bytes, want_bytes })
+}
+
+fn resolve_memory_share(field: &'static str, share: MemoryShare, capacity_bytes: u64) -> Result<u64> {
+    match share {
+        MemoryShare::Bytes(bytes) => {
+            validate_positive_u64(field, bytes)?;
+            Ok(bytes)
+        },
+        MemoryShare::Fraction(fraction) => {
+            if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) || fraction == 0.0 {
+                return Err(invalid_backend_config(field, "fraction must be greater than zero and at most one"));
+            }
+            let bytes = (capacity_bytes as f64 * fraction).floor() as u64;
+            validate_positive_u64(field, bytes)?;
+            Ok(bytes)
+        },
+    }
+}
+
+fn validate_grant_band_slot_guarantee(
+    capacity_bytes: u64,
+    device_count: usize,
+    max_concurrent_queries: usize,
+    slot_guarantee: SlotGuarantee,
+    grant_band: ResolvedGrantBand,
+) -> Result<()> {
+    if slot_guarantee != SlotGuarantee::GuaranteedMinimum {
+        return Ok(());
+    }
+    let slots_per_device = capacity_bytes / grant_band.min_bytes;
+    let guaranteed_min_slots = slots_per_device.saturating_mul(u64::try_from(device_count.max(1)).unwrap_or(u64::MAX));
+    if guaranteed_min_slots < u64::try_from(max_concurrent_queries).unwrap_or(u64::MAX) {
+        return Err(invalid_backend_config(
+            "grant.min",
+            "must fit max_concurrent_queries when slot_guarantee is guaranteed_minimum",
+        ));
     }
     Ok(())
 }
@@ -532,13 +629,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(backend.query_service().config().max_concurrent_queries, 2);
+        assert_eq!(backend.query_service().config().slot_guarantee, SlotGuarantee::GuaranteedMinimum);
         assert_eq!(backend.device_ordinals(), &[0, 1]);
         assert_eq!(backend.query_service().config().device_capacity_bytes, Some(4096));
-        assert_eq!(backend.query_service().tenant_budget(backend.tenant_id()).unwrap(), 4096);
+        assert_eq!(backend.query_service().tenant_budget(backend.tenant_id()).unwrap(), 2048);
         assert_eq!(
             backend.optimizer_config().native_execution_config().memory_control_policy(),
             MemoryControlPolicy::Bounded {
-                device_budget_bytes: 2048,
+                device_budget_bytes: 512,
                 max_source_chunk_bytes: 1024,
                 max_row_groups_per_chunk: 1,
                 max_retry_attempts: 3,
@@ -556,6 +654,113 @@ mod tests {
 
         assert_eq!(error.code(), ErrorCode::InvalidRequest);
         assert_eq!(error.fact_value("field"), Some("max_concurrent_queries"));
+    }
+
+    #[test]
+    fn backend_rejects_invalid_grant_band() {
+        let error = NexusGpuBackend::builder()
+            .admission(
+                NexusAdmissionPolicy::default()
+                    .with_grant_band(GrantBand { min: MemoryShare::Bytes(2048), want: MemoryShare::Bytes(1024) }),
+            )
+            .build_admission_only()
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidRequest);
+        assert_eq!(error.fact_value("field"), Some("grant.want"));
+    }
+
+    #[test]
+    fn backend_rejects_guaranteed_minimum_grant_floor_that_cannot_fill_slots() {
+        let error = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0],
+                device_budget_bytes: 100,
+                max_source_chunk_bytes: 64,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .admission(
+                NexusAdmissionPolicy::default()
+                    .with_max_concurrent_queries(2)
+                    .with_grant_band(GrantBand { min: MemoryShare::Bytes(60), want: MemoryShare::Bytes(60) }),
+            )
+            .build_admission_only()
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidRequest);
+        assert_eq!(error.fact_value("field"), Some("grant.min"));
+    }
+
+    #[test]
+    fn backend_optimistic_slot_guarantee_allows_floor_above_empty_slot_reservation() {
+        let backend = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0],
+                device_budget_bytes: 100,
+                max_source_chunk_bytes: 64,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .admission(
+                NexusAdmissionPolicy::default()
+                    .with_max_concurrent_queries(2)
+                    .with_grant_band(GrantBand { min: MemoryShare::Bytes(60), want: MemoryShare::Bytes(60) })
+                    .with_slot_guarantee(SlotGuarantee::Optimistic),
+            )
+            .build_admission_only()
+            .unwrap();
+
+        assert_eq!(backend.query_service().config().slot_guarantee, SlotGuarantee::Optimistic);
+        assert_eq!(backend.query_service().tenant_budget(backend.tenant_id()).unwrap(), 60);
+    }
+
+    #[test]
+    fn backend_guaranteed_minimum_floor_counts_selected_devices() {
+        let backend = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0, 1],
+                device_budget_bytes: 100,
+                max_source_chunk_bytes: 64,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .admission(
+                NexusAdmissionPolicy::default()
+                    .with_max_concurrent_queries(2)
+                    .with_grant_band(GrantBand { min: MemoryShare::Bytes(100), want: MemoryShare::Bytes(100) }),
+            )
+            .build_admission_only()
+            .unwrap();
+
+        assert_eq!(backend.device_ordinals(), &[0, 1]);
+        assert_eq!(backend.query_service().tenant_budget(backend.tenant_id()).unwrap(), 100);
+    }
+
+    #[test]
+    fn backend_rejects_guaranteed_minimum_floor_that_only_fits_as_aggregate_bytes() {
+        let error = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0, 1],
+                device_budget_bytes: 100,
+                max_source_chunk_bytes: 64,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .admission(
+                NexusAdmissionPolicy::default()
+                    .with_max_concurrent_queries(3)
+                    .with_grant_band(GrantBand { min: MemoryShare::Bytes(60), want: MemoryShare::Bytes(60) }),
+            )
+            .build_admission_only()
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidRequest);
+        assert_eq!(error.fact_value("field"), Some("grant.min"));
     }
 
     #[test]
