@@ -84,6 +84,18 @@ impl CudfSessionStateBuilderExt for SessionStateBuilder {
     }
 }
 
+pub(crate) fn install_cudf_native_rule_with_session_config(
+    mut builder: SessionStateBuilder,
+    rule: Arc<CudfNativePhysicalOptimizerRule>,
+    session_extension: DataFusionNexusSessionConfig,
+) -> SessionStateBuilder {
+    let session_config = builder.config().get_or_insert_with(Default::default);
+    session_config.options_mut().extensions.insert(session_extension);
+    let mut rules = take_physical_optimizer_rules(&mut builder);
+    insert_cudf_native_rules_before_final_validation(&mut rules, rule);
+    builder.with_physical_optimizer_rules(rules)
+}
+
 fn ensure_datafusion_nexus_session_config(builder: &mut SessionStateBuilder, config: &CudfOptimizerConfig) {
     let session_config = builder.config().get_or_insert_with(Default::default);
     if session_config.options().extensions.get::<DataFusionNexusSessionConfig>().is_none() {

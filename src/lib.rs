@@ -18,6 +18,7 @@
 //! runtime policy, capability admission, and cudf-rs execution live in
 //! [`nexus_query_engine`].
 
+pub mod backend;
 pub mod error;
 #[cfg(feature = "cugraph")]
 pub mod graph_sql;
@@ -50,8 +51,9 @@ pub mod prelude {
     pub use crate::{
         CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
         CudfSessionStateBuilderExt, DataFusionNexusSessionConfig, FallbackReason, GpuFallbackPolicy, NativeCudfExec,
-        NativeCudfExecutionConfig, NativeMemoryPolicyConfig, PhysicalOptimizerRules, PlanningReport, Priority,
-        QueryHandle, QueryQos, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+        NativeCudfExecutionConfig, NativeMemoryPolicyConfig, NexusAdmissionPolicy, NexusGpuBackend,
+        NexusGpuBackendBuilder, NexusMemoryPolicy, PhysicalOptimizerRules, PlanningReport, Priority, QueryHandle,
+        QueryQos, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
         cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
     };
 }
@@ -215,6 +217,7 @@ pub mod server_contracts {
     pub use crate::server::*;
 }
 
+pub use backend::{NexusAdmissionPolicy, NexusGpuBackend, NexusGpuBackendBuilder, NexusMemoryPolicy};
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 #[cfg(feature = "cugraph")]
 pub use graph_sql::{

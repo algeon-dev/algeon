@@ -21,6 +21,10 @@ fn adapter_facade_modules_expose_intentional_contract_groups() {
     let _admission_config = admission_contracts::QueryServiceConfig::default();
     let _tenant = admission_contracts::QueryServiceTenantConfig::new("tenant", 1024);
     let _admission_error_code = admission_contracts::QueryErrorCode::ServiceOverloaded;
+    let _backend_builder = prelude::NexusGpuBackend::builder()
+        .fallback_policy(prelude::GpuFallbackPolicy::GpuPreferred)
+        .admission(prelude::NexusAdmissionPolicy::default());
+    let _memory_policy = prelude::NexusMemoryPolicy::default();
     let _priority = prelude::Priority::Normal;
 }
 

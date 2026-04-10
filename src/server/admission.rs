@@ -1,21 +1,19 @@
 use std::sync::Arc;
 
-use nexus_query_engine::{
-    MemoryControlPolicy, QueryHandle, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
-};
+use nexus_query_engine::{QueryHandle, QueryServiceConfig, TenantId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use super::{
     config::ServerConfig,
     error::{Result, ServerError},
 };
+use crate::{NexusAdmissionPolicy, NexusGpuBackend};
 
 const DEFAULT_SERVER_TENANT_ID: &str = "default";
-const SERVER_ADMISSION_QUEUE_MULTIPLIER: usize = 64;
 
 #[derive(Clone, Debug)]
 enum QueryAdmissionBackend {
-    QueryService { service: QueryService, tenant_id: TenantId },
+    QueryService { backend: NexusGpuBackend },
     Semaphore { permits: Arc<Semaphore> },
 }
 
@@ -23,14 +21,6 @@ enum QueryAdmissionBackend {
 pub struct QueryAdmission {
     backend: QueryAdmissionBackend,
     max_in_flight: usize,
-}
-
-#[derive(Debug)]
-struct ServerQueryServiceAdmissionConfig {
-    service_config: QueryServiceConfig,
-    device_ordinals: Vec<usize>,
-    tenant_config: QueryServiceTenantConfig,
-    tenant_id: TenantId,
 }
 
 impl QueryAdmission {
@@ -45,20 +35,21 @@ impl QueryAdmission {
     }
 
     pub fn from_server_config(config: &ServerConfig) -> Result<Self> {
-        let Some(admission_config) = server_query_service_admission_config(config)? else {
-            return Self::new(config.max_in_flight);
+        let backend = server_backend_from_config(config)?;
+        Self::from_backend_option(config.max_in_flight, backend)
+    }
+
+    #[cfg(test)]
+    fn from_server_config_admission_only(config: &ServerConfig) -> Result<Self> {
+        let backend = server_backend_from_config_admission_only(config)?;
+        Self::from_backend_option(config.max_in_flight, backend)
+    }
+
+    fn from_backend_option(max_in_flight: usize, backend: Option<NexusGpuBackend>) -> Result<Self> {
+        let Some(backend) = backend else {
+            return Self::new(max_in_flight);
         };
-        let tenant_id = admission_config.tenant_id.clone();
-        let service = QueryService::new_with_device_ordinals(
-            admission_config.service_config,
-            admission_config.device_ordinals,
-            vec![admission_config.tenant_config],
-        )
-        .map_err(|error| ServerError::session("failed to initialize query service admission", error))?;
-        Ok(Self {
-            backend: QueryAdmissionBackend::QueryService { service, tenant_id },
-            max_in_flight: config.max_in_flight,
-        })
+        Ok(Self { backend: QueryAdmissionBackend::QueryService { backend }, max_in_flight })
     }
 
     pub fn max_in_flight(&self) -> usize {
@@ -70,8 +61,8 @@ impl QueryAdmission {
     /// drain in-flight work without admitting more.
     pub fn close(&self) {
         match &self.backend {
-            QueryAdmissionBackend::QueryService { service, .. } => {
-                if let Err(error) = service.close() {
+            QueryAdmissionBackend::QueryService { backend } => {
+                if let Err(error) = backend.query_service().close() {
                     eprintln!("[datafusion-nexus] warning: failed to close query service admission: {error}");
                 }
             },
@@ -81,9 +72,10 @@ impl QueryAdmission {
 
     pub async fn acquire(&self) -> Result<QueryAdmissionPermit> {
         match &self.backend {
-            QueryAdmissionBackend::QueryService { service, tenant_id } => {
-                let handle = service
-                    .admit_async(tenant_id.clone())
+            QueryAdmissionBackend::QueryService { backend } => {
+                let handle = backend
+                    .query_service()
+                    .admit_async(backend.tenant_id().clone())
                     .await
                     .map_err(|error| ServerError::session("query service admission failed", error))?;
                 Ok(QueryAdmissionPermit { inner: QueryAdmissionPermitInner::QueryService(Arc::new(handle)) })
@@ -101,8 +93,9 @@ impl QueryAdmission {
 
     pub fn try_acquire(&self) -> Result<Option<QueryAdmissionPermit>> {
         match &self.backend {
-            QueryAdmissionBackend::QueryService { service, tenant_id } => service
-                .try_admit_query(tenant_id.clone())
+            QueryAdmissionBackend::QueryService { backend } => backend
+                .query_service()
+                .try_admit_query(backend.tenant_id().clone())
                 .map(|handle| {
                     handle.map(|handle| QueryAdmissionPermit {
                         inner: QueryAdmissionPermitInner::QueryService(Arc::new(handle)),
@@ -122,9 +115,10 @@ impl QueryAdmission {
     }
 
     pub fn log_query_service_state(&self, query_id: Option<&str>, event: &'static str) {
-        let QueryAdmissionBackend::QueryService { service, .. } = &self.backend else {
+        let QueryAdmissionBackend::QueryService { backend } = &self.backend else {
             return;
         };
+        let service = backend.query_service();
         match service.admission_snapshot() {
             Ok(snapshot) => {
                 tracing::info!(
@@ -197,13 +191,31 @@ impl Drop for QueryAdmissionPermit {
     }
 }
 
-fn server_stream_pool_size(max_concurrent_queries: usize, max_source_reads_in_flight: usize) -> usize {
-    let per_query_streams = 1usize.saturating_add(max_source_reads_in_flight.max(1));
-    max_concurrent_queries.saturating_mul(per_query_streams).max(max_concurrent_queries)
+fn server_backend_from_config(config: &ServerConfig) -> Result<Option<NexusGpuBackend>> {
+    NexusGpuBackend::from_optimizer_config_for_admission(
+        config.native_optimizer_config.clone(),
+        config.gpu_devices.clone(),
+        server_admission_policy(config),
+        TenantId::new(DEFAULT_SERVER_TENANT_ID),
+    )
+    .map_err(|error| ServerError::session("failed to initialize query service admission", error))
 }
 
-fn server_admission_queue_len(max_concurrent_queries: usize) -> usize {
-    max_concurrent_queries.saturating_mul(SERVER_ADMISSION_QUEUE_MULTIPLIER).max(SERVER_ADMISSION_QUEUE_MULTIPLIER)
+#[cfg(test)]
+fn server_backend_from_config_admission_only(config: &ServerConfig) -> Result<Option<NexusGpuBackend>> {
+    NexusGpuBackend::from_optimizer_config_for_admission_only(
+        config.native_optimizer_config.clone(),
+        config.gpu_devices.clone(),
+        server_admission_policy(config),
+        TenantId::new(DEFAULT_SERVER_TENANT_ID),
+    )
+    .map_err(|error| ServerError::session("failed to initialize query service admission", error))
+}
+
+fn server_admission_policy(config: &ServerConfig) -> NexusAdmissionPolicy {
+    NexusAdmissionPolicy::default()
+        .with_max_concurrent_queries(config.max_in_flight)
+        .with_wait_timeout(QueryServiceConfig::default().admission_wait_timeout)
 }
 
 fn format_tenant_queue_depths(depths: &[nexus_query_engine::TenantQueueDepth]) -> String {
@@ -214,98 +226,12 @@ fn format_tenant_queue_depths(depths: &[nexus_query_engine::TenantQueueDepth]) -
         .join(",")
 }
 
-fn server_query_service_admission_config(config: &ServerConfig) -> Result<Option<ServerQueryServiceAdmissionConfig>> {
-    let native = config.native_optimizer_config.native_execution_config();
-    let MemoryControlPolicy::Bounded {
-        device_budget_bytes,
-        max_source_chunk_bytes,
-        max_row_groups_per_chunk,
-        max_retry_attempts,
-        min_retry_chunk_row_groups,
-    } = native.memory_control_policy()
-    else {
-        return Ok(None);
-    };
-    let max_in_flight = config.max_in_flight;
-    if max_in_flight == 0 {
-        return Err(ServerError::invalid_config("max_in_flight", "must be greater than zero"));
-    }
-    let tenant_min_budget_bytes = partitioned_query_budget_bytes(device_budget_bytes, max_in_flight)?;
-    let device_ordinal = *config.gpu_devices.first().unwrap_or(&0);
-    // Phase 2 keeps the deadlock-sensitive order explicit:
-    // admission permit -> root/source stream leases -> bounded memory grants.
-    // The service pool covers every admitted query's root stream plus its
-    // configured source-read fan-out, so an admitted bounded query cannot
-    // consume a memory grant while waiting on an undersized stream pool.
-    let stream_pool_size =
-        server_stream_pool_size(max_in_flight, native.source_scheduler_policy().max_source_reads_in_flight());
-    let service_config = QueryServiceConfig {
-        device_ordinal,
-        source_fetch: native.source_fetch_config().clone(),
-        source_storage_profiles: native.source_storage_profiles().to_vec(),
-        boundary_policy: native.boundary_policy(),
-        source_scheduler_policy: native.source_scheduler_policy(),
-        source_chunk_planning_mode: native.source_chunk_planning_mode(),
-        native_pipeline_execution_mode: native.native_pipeline_execution_mode(),
-        stddev_samp_execution_mode: native.stddev_samp_execution_mode(),
-        dynamic_filter_execution_options: native.dynamic_filter_execution_options(),
-        keyed_hash_join_strategy_options: native.keyed_hash_join_strategy_options(),
-        aggregate_strategy_execution_options: native.aggregate_strategy_execution_options(),
-        source_chunk_planning_options: native.source_chunk_planning_options(),
-        stream_pool_size: Some(stream_pool_size),
-        device_capacity_bytes: Some(device_budget_bytes),
-        max_concurrent_queries: max_in_flight,
-        max_admission_queue_len: server_admission_queue_len(max_in_flight),
-        max_source_chunk_bytes,
-        max_row_groups_per_chunk,
-        max_retry_attempts,
-        min_retry_chunk_row_groups,
-        ..QueryServiceConfig::default()
-    };
-    let tenant_id = TenantId::new(DEFAULT_SERVER_TENANT_ID);
-    let tenant_config =
-        QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), tenant_min_budget_bytes, device_budget_bytes);
-    Ok(Some(ServerQueryServiceAdmissionConfig {
-        service_config,
-        device_ordinals: config.gpu_devices.clone(),
-        tenant_config,
-        tenant_id,
-    }))
-}
-
-fn partitioned_query_budget_bytes(capacity_bytes: u64, max_concurrent_queries: usize) -> Result<u64> {
-    capacity_bytes
-        .checked_div(u64::try_from(max_concurrent_queries).unwrap_or(u64::MAX))
-        .filter(|budget| *budget > 0)
-        .ok_or_else(|| {
-            ServerError::invalid_config(
-                "native.device_budget_bytes",
-                "is too small to partition across max concurrent queries",
-            )
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn server_stream_pool_size_covers_root_and_source_read_streams() {
-        assert_eq!(server_stream_pool_size(1, 1), 2);
-        assert_eq!(server_stream_pool_size(4, 1), 8);
-        assert_eq!(server_stream_pool_size(4, 3), 16);
-    }
-
-    #[test]
-    fn partitioned_query_budget_never_exceeds_capacity_sum() {
-        let per_query = partitioned_query_budget_bytes(100, 3).unwrap();
-
-        assert_eq!(per_query, 33);
-        assert!(per_query * 3 <= 100);
-    }
-
-    #[test]
-    fn server_query_service_config_partitions_budget_and_sizes_stream_pool() {
+    fn server_backend_partitions_budget_and_sizes_stream_pool() {
         let env = std::collections::BTreeMap::from([
             (super::super::config::NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "3".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
@@ -315,21 +241,28 @@ mod tests {
         ]);
         let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-        let admission = server_query_service_admission_config(&config)
-            .unwrap()
-            .expect("bounded native config should use QueryService admission");
+        let admission = QueryAdmission::from_server_config_admission_only(&config).unwrap();
+        let QueryAdmissionBackend::QueryService { backend } = &admission.backend else {
+            panic!("bounded native config should use QueryService admission");
+        };
+        let service = backend.query_service();
 
-        assert_eq!(admission.service_config.max_concurrent_queries, 3);
-        assert_eq!(admission.device_ordinals, vec![0]);
-        assert_eq!(admission.service_config.device_capacity_bytes, Some(3072));
-        assert_eq!(admission.tenant_config.min_device_budget_bytes, 1024);
-        assert_eq!(admission.tenant_config.device_budget_bytes, 3072);
-        assert_eq!(admission.service_config.stream_pool_size, Some(9));
-        assert_eq!(admission.service_config.source_scheduler_policy.max_source_reads_in_flight(), 2);
+        assert_eq!(service.config().max_concurrent_queries, 3);
+        assert_eq!(service.config().device_ordinal, 0);
+        assert_eq!(service.config().device_capacity_bytes, Some(3072));
+        assert_eq!(service.config().stream_pool_size, Some(9));
+        assert_eq!(service.config().source_scheduler_policy.max_source_reads_in_flight(), 2);
+        assert_eq!(service.config().max_admission_queue_len, 192);
+        assert_eq!(service.config().admission_wait_timeout, QueryServiceConfig::default().admission_wait_timeout);
+        assert_eq!(service.tenant_budget(backend.tenant_id()).unwrap(), 3072);
+
+        let permit = admission.try_acquire().unwrap().expect("first query should admit");
+        let handle = permit.query_service_handle().expect("query service admission should return a handle");
+        assert_eq!(handle.device_budget_bytes(), 1024);
     }
 
     #[test]
-    fn server_query_service_config_preserves_multi_gpu_device_subset() {
+    fn server_backend_preserves_multi_gpu_device_subset() {
         let env = std::collections::BTreeMap::from([
             (super::super::config::NEXUS_SERVER_GPU_DEVICES_ENV, "0,1".to_string()),
             (super::super::config::NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "2".to_string()),
@@ -339,11 +272,16 @@ mod tests {
         ]);
         let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-        let admission = server_query_service_admission_config(&config)
-            .unwrap()
-            .expect("bounded native config should use QueryService admission");
+        let admission = QueryAdmission::from_server_config_admission_only(&config).unwrap();
+        let QueryAdmissionBackend::QueryService { backend } = &admission.backend else {
+            panic!("bounded native config should use QueryService admission");
+        };
 
-        assert_eq!(admission.device_ordinals, vec![0, 1]);
-        assert_eq!(admission.service_config.device_ordinal, 0);
+        assert_eq!(backend.device_ordinals(), &[0, 1]);
+        assert_eq!(backend.query_service().config().device_ordinal, 0);
+        let permit = admission.try_acquire().unwrap().expect("first query should admit");
+        let handle = permit.query_service_handle().expect("query service admission should return a handle");
+        assert_eq!(handle.device_ordinal(), 0);
+        assert_eq!(handle.device_budget_bytes(), 1024);
     }
 }

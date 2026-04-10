@@ -214,6 +214,9 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
 
         let effective_config =
             self.config.with_datafusion_config_options(config)?.with_query_id_if_absent(QueryId::mint());
+        let native_execution_config =
+            effective_config.native_execution_config().clone().with_plan_query_admission_ticket();
+        let effective_config = effective_config.with_native_execution_config(native_execution_config);
         let native_execution_config = effective_config.native_execution_config();
         let native_optimizer_options = effective_config.native_optimizer_options();
         let native_plan_preference_options = effective_config.native_plan_preference_options();

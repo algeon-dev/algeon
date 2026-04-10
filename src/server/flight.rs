@@ -63,11 +63,14 @@ use super::{
     table_format_operator_fast_fail::fast_fail_unsupported_table_format_operator_plan,
 };
 #[cfg(feature = "cugraph")]
+use crate::CudfSessionStateBuilderExt;
+#[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphSqlConfig;
 use crate::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode,
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, DataFusionNexusSessionConfig, Error, ErrorCode,
     error::ErrorSourceDiagnostics,
     native_exec::{NativeMetricsCapture, NativeMetricsCaptureSink},
+    session::install_cudf_native_rule_with_session_config,
 };
 
 mod metadata;
@@ -497,9 +500,14 @@ impl DatafusionCudfFlightSqlService {
             self.native_optimizer_config.clone().with_native_execution_config(execution_config.clone());
         // Retain the native rule so we can read its `last_report` for the
         // Milestone 4 planning-report log after physical optimization runs.
-        let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
-        let builder =
-            SessionStateBuilder::new_from_existing(self.ctx.state()).with_cudf_native_rule(Arc::clone(&native_rule));
+        let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+        let session_extension =
+            DataFusionNexusSessionConfig::from_optimizer_config(&optimizer_config).frozen_for_backend_admission();
+        let builder = install_cudf_native_rule_with_session_config(
+            SessionStateBuilder::new_from_existing(self.ctx.state()),
+            Arc::clone(&native_rule),
+            session_extension,
+        );
         #[cfg(feature = "cugraph")]
         let builder = if let Some(cugraph_sql_config) = &self.cugraph_sql_config {
             builder.with_cugraph_sql(cugraph_sql_config.clone().with_native_execution_config(execution_config))
