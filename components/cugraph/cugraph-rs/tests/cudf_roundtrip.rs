@@ -8,7 +8,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use cudf::{Column, io::parquet};
+use cudf::{core::Table, io::parquet};
 use cugraph::{
     array::DeviceArray,
     cudf_interop::{
@@ -23,11 +23,29 @@ use cugraph::{
 
 static NEXT_TEMP_FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
-fn bfs_graph_table() -> cudf::Table {
-    let src = Column::from_slice(&[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
-    let dst = Column::from_slice(&[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
-    let wgt = Column::from_slice(&[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("wgt");
-    cudf::Table::from_columns(vec![src, dst, wgt]).expect("bfs graph table")
+fn explicit_runtime() -> cudf::Runtime {
+    cudf::Runtime::builder().build().expect("runtime")
+}
+
+fn bfs_graph_table(runtime: &cudf::Runtime) -> Table {
+    let src = runtime.column_from_slice(&[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
+    let dst = runtime.column_from_slice(&[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
+    let wgt = runtime.column_from_slice(&[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("wgt");
+    Table::from_columns(vec![src, dst, wgt]).expect("bfs graph table")
+}
+
+fn write_parquet_table(view: &cudf::core::TableView<'_>, path: &Path, column_names: &[&str], runtime: &cudf::Runtime) {
+    let write_opts = parquet::ParquetTableWriteOptions::builder()
+        .filepath(path)
+        .column_names(column_names)
+        .with_runtime(runtime)
+        .build();
+    parquet::write_parquet(view, &write_opts).expect("write parquet");
+}
+
+fn read_parquet_table(path: &Path, runtime: &cudf::Runtime) -> Table {
+    let read_opts = parquet::ParquetReadOptions::builder().filepath(path).with_runtime(runtime).build();
+    parquet::read_parquet(&read_opts).expect("read parquet").table
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {
@@ -46,12 +64,10 @@ impl TempParquetFixture {
         std::fs::create_dir_all(&dir).expect("create fixture dir");
 
         let path = dir.join("bfs_graph.parquet");
-        let table = bfs_graph_table();
+        let runtime = explicit_runtime();
+        let table = bfs_graph_table(&runtime);
         let view = table.view().expect("table view");
-        let write_opts =
-            parquet::ParquetWriterOptions::new(&path).column_names(&["src", "dst", "weight"]).expect("writer opts");
-
-        parquet::write_parquet(&view, &write_opts).expect("write bfs fixture");
+        write_parquet_table(&view, &path, &["src", "dst", "weight"], &runtime);
 
         Self { dir, path }
     }
@@ -94,8 +110,8 @@ fn bfs_results_to_cudf_dataframe() {
     let df = result.to_dataframe().expect("to_dataframe");
 
     // ── Read back via DataFrame column accessors ────────────────────────
-    let vertices: Vec<i32> = df.series_view("vertex").expect("vertex column").to_vec().expect("vert to_vec");
-    let distances: Vec<i32> = df.series_view("distance").expect("distance column").to_vec().expect("dist to_vec");
+    let vertices: Vec<i32> = df.series("vertex").expect("vertex column").to_vec_strict().expect("vert to_vec");
+    let distances: Vec<i32> = df.series("distance").expect("distance column").to_vec_strict().expect("dist to_vec");
 
     assert_eq!(vertices.len(), 6, "should have 6 vertices");
     assert_eq!(distances.len(), 6, "should have 6 distances");
@@ -117,12 +133,11 @@ fn bfs_results_to_cudf_dataframe() {
 fn bfs_results_roundtrip_through_parquet() {
     // ── Load graph from Parquet ─────────────────────────────────────────
     let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
     let props = GraphProperties::directed();
     let fixture = TempParquetFixture::bfs_graph();
 
-    let reader_opts = parquet::ParquetReaderOptions::new(fixture.path());
-    let read_result = parquet::read_parquet_with_metadata(reader_opts).expect("read parquet");
-    let table = read_result.table;
+    let table = read_parquet_table(fixture.path(), &runtime);
     let view = table.view().expect("table view");
 
     let opts = TableGraphOptions::new(0, 1).properties(props).renumber();
@@ -138,8 +153,8 @@ fn bfs_results_roundtrip_through_parquet() {
     let df = result.to_dataframe().expect("to_dataframe");
 
     // Snapshot the expected values before writing to Parquet.
-    let expected_vertices: Vec<i32> = df.series_view("vertex").expect("v").to_vec().expect("v vec");
-    let expected_distances: Vec<i32> = df.series_view("distance").expect("d").to_vec().expect("d vec");
+    let expected_vertices: Vec<i32> = df.series("vertex").expect("v").to_vec_strict().expect("v vec");
+    let expected_distances: Vec<i32> = df.series("distance").expect("d").to_vec_strict().expect("d vec");
 
     // ── Write results to a temporary Parquet file ───────────────────────
     let result_table = df.to_table_copy().expect("to_table");
@@ -149,15 +164,11 @@ fn bfs_results_roundtrip_through_parquet() {
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
     let out_path = tmp_dir.join("bfs_result.parquet");
 
-    let write_opts =
-        parquet::ParquetWriterOptions::new(&out_path).column_names(&["vertex", "distance"]).expect("writer options");
-
-    parquet::write_parquet(&result_view, &write_opts).expect("write parquet");
+    write_parquet_table(&result_view, &out_path, &["vertex", "distance"], &runtime);
 
     // ── Read back and verify ────────────────────────────────────────────
-    let read_opts = parquet::ParquetReaderOptions::new(&out_path);
-    let read_result = parquet::read_parquet_with_metadata(read_opts).expect("read parquet");
-    let read_view = read_result.table.view().expect("read table view");
+    let read_table = read_parquet_table(&out_path, &runtime);
+    let read_view = read_table.view().expect("read table view");
 
     assert_eq!(read_view.num_columns().expect("ncols"), 2);
 
@@ -268,19 +279,19 @@ fn graph_from_parquet_rejects_nonexistent_file() {
 /// `graph_from_parquet` should reject nullable source columns.
 #[test]
 fn graph_from_parquet_rejects_nulls_in_src_column() {
+    let runtime = explicit_runtime();
     // Build a 3-column edge table where src contains one null.
-    let src = Column::from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
-    let dst = Column::from_slice(&[1i32, 2, 0]).expect("dst");
-    let wgt = Column::from_slice(&[1.0f32, 2.0, 3.0]).expect("wgt");
+    let src = runtime.column_from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
+    let dst = runtime.column_from_slice(&[1i32, 2, 0]).expect("dst");
+    let wgt = runtime.column_from_slice(&[1.0f32, 2.0, 3.0]).expect("wgt");
 
-    let table = cudf::Table::from_columns(vec![src, dst, wgt]).expect("table");
+    let table = Table::from_columns(vec![src, dst, wgt]).expect("table");
     let tmp_dir = unique_temp_dir("parquet_nulls");
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
     let path = tmp_dir.join("edges_with_null_src.parquet");
 
     let table_view = table.view().expect("table view");
-    let write_opts = parquet::ParquetWriterOptions::new(&path);
-    parquet::write_parquet(&table_view, &write_opts).expect("write parquet");
+    write_parquet_table(&table_view, &path, &["0", "1", "2"], &runtime);
 
     let handle = ResourceHandle::new().expect("handle");
     let props = GraphProperties::directed();
@@ -308,11 +319,10 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
 #[test]
 fn graph_from_table_view_then_bfs() {
     let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
-    let reader_opts = parquet::ParquetReaderOptions::new(fixture.path());
-    let read_result = parquet::read_parquet_with_metadata(reader_opts).expect("read parquet");
-    let table = read_result.table;
+    let table = read_parquet_table(fixture.path(), &runtime);
     let view = table.view().expect("table view");
 
     let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::directed()).renumber();
@@ -336,11 +346,10 @@ fn graph_from_table_view_then_bfs() {
 #[test]
 fn graph_from_table_view_without_weights() {
     let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
-    let reader_opts = parquet::ParquetReaderOptions::new(fixture.path());
-    let read_result = parquet::read_parquet_with_metadata(reader_opts).expect("read parquet");
-    let table = read_result.table;
+    let table = read_parquet_table(fixture.path(), &runtime);
     let view = table.view().expect("table view");
 
     let opts = TableGraphOptions::new(0, 1).properties(GraphProperties::directed()).renumber();
@@ -360,11 +369,10 @@ fn graph_from_table_view_without_weights() {
 #[test]
 fn graph_from_table_view_rejects_out_of_bounds_column() {
     let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
-    let reader_opts = parquet::ParquetReaderOptions::new(fixture.path());
-    let read_result = parquet::read_parquet_with_metadata(reader_opts).expect("read parquet");
-    let table = read_result.table;
+    let table = read_parquet_table(fixture.path(), &runtime);
     let view = table.view().expect("table view");
 
     let opts = TableGraphOptions::new(0, 99).properties(GraphProperties::directed()).renumber();
@@ -378,11 +386,12 @@ fn graph_from_table_view_rejects_out_of_bounds_column() {
 /// message containing "null".
 #[test]
 fn graph_from_table_view_rejects_nullable_column() {
-    let src = Column::from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
-    let dst = Column::from_slice(&[1i32, 2, 0]).expect("dst");
-    let wgt = Column::from_slice(&[1.0f32, 2.0, 3.0]).expect("wgt");
+    let runtime = explicit_runtime();
+    let src = runtime.column_from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
+    let dst = runtime.column_from_slice(&[1i32, 2, 0]).expect("dst");
+    let wgt = runtime.column_from_slice(&[1.0f32, 2.0, 3.0]).expect("wgt");
 
-    let table = cudf::Table::from_columns(vec![src, dst, wgt]).expect("table");
+    let table = Table::from_columns(vec![src, dst, wgt]).expect("table");
     let view = table.view().expect("table view");
 
     let handle = ResourceHandle::new().expect("handle");
@@ -401,13 +410,13 @@ fn graph_from_table_view_rejects_nullable_column() {
 #[test]
 fn graph_from_dataframe_by_name() {
     let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
 
-    let src = Column::from_slice(&[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
-    let dst = Column::from_slice(&[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
-    let wgt = Column::from_slice(&[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("wgt");
+    let src = runtime.series("src", &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
+    let dst = runtime.series("dst", &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
+    let wgt = runtime.series("weight", &[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("wgt");
 
-    let df = cudf::DataFrame::new(vec!["src".into(), "dst".into(), "weight".into()], vec![src, dst, wgt])
-        .expect("dataframe");
+    let df = cudf::DataFrame::from_series([src, dst, wgt]).expect("dataframe");
 
     let props = GraphProperties::directed();
 
@@ -430,10 +439,11 @@ fn graph_from_dataframe_by_name() {
 /// Pass src_col: "nonexistent" — should get ErrorKind::InvalidInput.
 #[test]
 fn graph_from_dataframe_rejects_unknown_column_name() {
-    let src = Column::from_slice(&[0i32, 1]).expect("src");
-    let dst = Column::from_slice(&[1i32, 0]).expect("dst");
+    let runtime = explicit_runtime();
+    let src = runtime.series("src", &[0i32, 1]).expect("src");
+    let dst = runtime.series("dst", &[1i32, 0]).expect("dst");
 
-    let df = cudf::DataFrame::new(vec!["src".into(), "dst".into()], vec![src, dst]).expect("dataframe");
+    let df = cudf::DataFrame::from_series([src, dst]).expect("dataframe");
 
     let handle = ResourceHandle::new().expect("handle");
     let props = GraphProperties::directed();
@@ -478,13 +488,13 @@ fn centrality_result_to_dataframe() {
     assert_eq!(num_rows, 3, "should have 3 vertices");
 
     // Verify all vertex ids are present
-    let vertices: Vec<i32> = df.series_view("vertex").expect("vertex column").to_vec().expect("vertex to_vec");
+    let vertices: Vec<i32> = df.series("vertex").expect("vertex column").to_vec_strict().expect("vertex to_vec");
     let mut sorted = vertices.clone();
     sorted.sort();
     assert_eq!(sorted, vec![0, 1, 2]);
 
     // Verify values are finite positive floats
-    let values: Vec<f32> = df.series_view("value").expect("value column").to_vec().expect("value to_vec");
+    let values: Vec<f32> = df.series("value").expect("value column").to_vec_strict().expect("value to_vec");
     for (i, &v) in values.iter().enumerate() {
         assert!(v.is_finite() && v > 0.0, "value[{}] = {} should be finite positive", i, v);
     }
@@ -530,8 +540,8 @@ fn layout_result_to_dataframe() {
     assert_eq!(num_rows, 3);
 
     // Verify coordinates are finite
-    let x_vals: Vec<f32> = df.series_view("x").expect("x column").to_vec().expect("x to_vec");
-    let y_vals: Vec<f32> = df.series_view("y").expect("y column").to_vec().expect("y to_vec");
+    let x_vals: Vec<f32> = df.series("x").expect("x column").to_vec_strict().expect("x to_vec");
+    let y_vals: Vec<f32> = df.series("y").expect("y column").to_vec_strict().expect("y to_vec");
     for (i, (&x, &y)) in x_vals.iter().zip(y_vals.iter()).enumerate() {
         assert!(x.is_finite(), "x[{}] = {} should be finite", i, x);
         assert!(y.is_finite(), "y[{}] = {} should be finite", i, y);
@@ -563,8 +573,8 @@ fn bfs_result_to_dataframe_with_predecessors() {
     assert_eq!(names[2], "predecessor");
 
     // Verify source vertex has distance 0
-    let vertices: Vec<i32> = df.series_view("vertex").expect("vertex column").to_vec().expect("vertex to_vec");
-    let distances: Vec<i32> = df.series_view("distance").expect("distance column").to_vec().expect("distance to_vec");
+    let vertices: Vec<i32> = df.series("vertex").expect("vertex column").to_vec_strict().expect("vertex to_vec");
+    let distances: Vec<i32> = df.series("distance").expect("distance column").to_vec_strict().expect("distance to_vec");
     let dist_map: HashMap<i32, i32> = vertices.into_iter().zip(distances).collect();
     assert_eq!(dist_map[&0], 0, "source vertex should have distance 0");
 }
@@ -617,8 +627,8 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
     let df = result.to_dataframe().expect("to_dataframe");
 
     // Snapshot expected values
-    let expected_vertices: Vec<i32> = df.series_view("vertex").expect("v").to_vec().expect("v vec");
-    let expected_values: Vec<f32> = df.series_view("value").expect("val").to_vec().expect("val vec");
+    let expected_vertices: Vec<i32> = df.series("vertex").expect("v").to_vec_strict().expect("v vec");
+    let expected_values: Vec<f32> = df.series("value").expect("val").to_vec_strict().expect("val vec");
 
     // Write to Parquet
     let tmp_dir = unique_temp_dir("centrality_df_roundtrip");
@@ -627,14 +637,11 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
 
     let table = df.to_table_copy().expect("to_table");
     let table_view = table.view().expect("table view");
-    let write_opts =
-        parquet::ParquetWriterOptions::new(&out_path).column_names(&["vertex", "value"]).expect("writer options");
-    parquet::write_parquet(&table_view, &write_opts).expect("write parquet");
+    write_parquet_table(&table_view, &out_path, &["vertex", "value"], &explicit_runtime());
 
     // Read back and verify
-    let read_opts = parquet::ParquetReaderOptions::new(&out_path);
-    let read_result = parquet::read_parquet_with_metadata(read_opts).expect("read parquet");
-    let read_view = read_result.table.view().expect("read table view");
+    let read_table = read_parquet_table(&out_path, &explicit_runtime());
+    let read_view = read_table.view().expect("read table view");
 
     assert_eq!(read_view.num_columns().expect("ncols"), 2);
 
