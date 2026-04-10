@@ -3,6 +3,11 @@ use std::{env, path::PathBuf};
 #[path = "build_support.rs"]
 mod build_support;
 
+fn emit_runtime_search_path(path: &std::path::Path) {
+    #[cfg(any(target_os = "linux"))]
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", path.display());
+}
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 
@@ -20,6 +25,8 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", library_dir.display());
     println!("cargo:rustc-link-lib=dylib=cugraph");
     println!("cargo:rustc-link-lib=dylib=cugraph_c");
+    emit_runtime_search_path(&library_dir);
+    println!("cargo:metadata=runtime-lib-dir={}", library_dir.display());
 
     println!("cargo:rerun-if-env-changed=CC");
     println!("cargo:rerun-if-env-changed=CUGRAPH_INCLUDE_DIR");

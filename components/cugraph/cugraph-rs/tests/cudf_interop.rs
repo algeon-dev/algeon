@@ -570,3 +570,27 @@ fn graph_from_prepared_columns_rejects_host_exports() {
         err.message()
     );
 }
+
+/// Host-materialized prepared table exports are a different profile and must
+/// not be accepted by the direct single-GPU prepared-table graph path.
+#[test]
+fn graph_from_prepared_table_export_rejects_host_exports() {
+    let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
+
+    let src = runtime.series("src", &[0i32, 1, 2]).expect("src");
+    let dst = runtime.series("dst", &[1i32, 2, 0]).expect("dst");
+    let df = cudf::DataFrame::from_series([src, dst]).expect("dataframe");
+
+    let export = df.try_prepare_host_table_export().expect("host table export");
+    let opts = TableGraphOptions::new(0, 1).renumber();
+    let err = graph_from_prepared_table_export::<Forward>(&handle, &export, &opts)
+        .expect_err("host prepared table export should be rejected");
+
+    assert_eq!(err.kind(), ErrorKind::UnsupportedType);
+    assert!(
+        err.message().contains("prepared device export inputs"),
+        "expected prepared-device-only error, got: {}",
+        err.message()
+    );
+}

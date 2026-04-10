@@ -21,6 +21,8 @@ fn bindings_include_critical_core_symbols() {
         // Resource handle lifecycle
         "cugraph_create_resource_handle",
         "cugraph_free_resource_handle",
+        "cugraph_resource_handle_get_rank",
+        "cugraph_resource_handle_get_comm_size",
         // Type-erased arrays
         "cugraph_type_erased_device_array_create",
         "cugraph_type_erased_device_array_free",
