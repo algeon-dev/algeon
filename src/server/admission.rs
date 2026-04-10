@@ -12,7 +12,6 @@ use super::{
 
 const DEFAULT_SERVER_TENANT_ID: &str = "default";
 const SERVER_ADMISSION_QUEUE_MULTIPLIER: usize = 64;
-const QUERY_SERVICE_ADMISSION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
 #[derive(Clone, Debug)]
 enum QueryAdmissionBackend {
@@ -83,31 +82,11 @@ impl QueryAdmission {
     pub async fn acquire(&self) -> Result<QueryAdmissionPermit> {
         match &self.backend {
             QueryAdmissionBackend::QueryService { service, tenant_id } => {
-                if let Some(handle) = service
-                    .try_admit_query(tenant_id.clone())
-                    .map_err(|error| ServerError::session("query service admission failed", error))?
-                {
-                    return Ok(QueryAdmissionPermit {
-                        inner: QueryAdmissionPermitInner::QueryService(Arc::new(handle)),
-                    });
-                }
-                let mut waiter = service
-                    .enqueue_admission(tenant_id.clone())
+                let handle = service
+                    .admit_async(tenant_id.clone())
+                    .await
                     .map_err(|error| ServerError::session("query service admission failed", error))?;
-                loop {
-                    match waiter.try_admit() {
-                        Ok(Some(handle)) => {
-                            return Ok(QueryAdmissionPermit {
-                                inner: QueryAdmissionPermitInner::QueryService(Arc::new(handle)),
-                            });
-                        },
-                        Ok(None) => {
-                            let sleep_for = waiter.remaining_wait().min(QUERY_SERVICE_ADMISSION_POLL_INTERVAL);
-                            tokio::time::sleep(sleep_for).await;
-                        },
-                        Err(error) => return Err(ServerError::session("query service admission failed", error)),
-                    }
-                }
+                Ok(QueryAdmissionPermit { inner: QueryAdmissionPermitInner::QueryService(Arc::new(handle)) })
             },
             QueryAdmissionBackend::Semaphore { permits } => {
                 let permit = permits
@@ -139,6 +118,53 @@ impl QueryAdmission {
                     Err(ServerError::session("query admission queue closed", error))
                 },
             },
+        }
+    }
+
+    pub fn log_query_service_state(&self, query_id: Option<&str>, event: &'static str) {
+        let QueryAdmissionBackend::QueryService { service, .. } = &self.backend else {
+            return;
+        };
+        match service.admission_snapshot() {
+            Ok(snapshot) => {
+                tracing::info!(
+                    query_id = query_id.unwrap_or(""),
+                    event,
+                    active_queries = snapshot.active_queries,
+                    queued_queries = snapshot.queued_queries,
+                    next_tenant_id = snapshot.next_tenant_id.as_ref().map(TenantId::as_str).unwrap_or(""),
+                    tenant_queue_depths = %format_tenant_queue_depths(&snapshot.queued_by_tenant),
+                    "query service admission snapshot"
+                );
+            },
+            Err(error) => tracing::warn!(
+                query_id = query_id.unwrap_or(""),
+                event,
+                %error,
+                "failed to read query service admission snapshot"
+            ),
+        }
+        match service.memory_governor_reports() {
+            Ok(reports) => {
+                for report in reports {
+                    tracing::info!(
+                        query_id = query_id.unwrap_or(""),
+                        event,
+                        device_ordinal = report.device_ordinal,
+                        capacity_bytes = report.capacity_bytes,
+                        outstanding_bytes = report.outstanding_bytes,
+                        available_bytes = report.available_bytes,
+                        active_grants = report.grants.len(),
+                        "query service memory governor report"
+                    );
+                }
+            },
+            Err(error) => tracing::warn!(
+                query_id = query_id.unwrap_or(""),
+                event,
+                %error,
+                "failed to read query service memory governor report"
+            ),
         }
     }
 }
@@ -178,6 +204,14 @@ fn server_stream_pool_size(max_concurrent_queries: usize, max_source_reads_in_fl
 
 fn server_admission_queue_len(max_concurrent_queries: usize) -> usize {
     max_concurrent_queries.saturating_mul(SERVER_ADMISSION_QUEUE_MULTIPLIER).max(SERVER_ADMISSION_QUEUE_MULTIPLIER)
+}
+
+fn format_tenant_queue_depths(depths: &[nexus_query_engine::TenantQueueDepth]) -> String {
+    depths
+        .iter()
+        .map(|depth| format!("{}:{}", depth.tenant_id.as_str(), depth.queued_queries))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn server_query_service_admission_config(config: &ServerConfig) -> Result<Option<ServerQueryServiceAdmissionConfig>> {

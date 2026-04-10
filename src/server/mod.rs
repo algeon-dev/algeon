@@ -118,6 +118,7 @@ async fn serve_inner(config: ServerConfig, listen: Listen) -> Result<()> {
         elapsed_ms = u64::try_from(admission_init_start.elapsed().as_millis()).unwrap_or(u64::MAX),
         "query admission controller initialized"
     );
+    admission.log_query_service_state(None, "server_startup");
     let service = flight::DatafusionCudfFlightSqlService::new(
         ctx,
         config.native_optimizer_config.clone(),

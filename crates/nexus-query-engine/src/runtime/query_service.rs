@@ -10,6 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tokio::{sync::Notify, time};
+
 use super::{
     DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, ExecutionContextParts,
     GdsConcurrencyGate, GpuInventory, GrantRequest, HostFetchBudget, LeastLoadedPlacement, MemoryControlPolicy,
@@ -391,8 +393,16 @@ struct QueryServiceInner {
     resources: Option<QueryServiceResources>,
     admission: Mutex<AdmissionState>,
     admission_available: Condvar,
+    admission_notify: Notify,
     next_query_id: AtomicU64,
     next_admission_sequence: AtomicU64,
+}
+
+impl QueryServiceInner {
+    fn notify_admission_available(&self) {
+        self.admission_available.notify_all();
+        self.admission_notify.notify_waiters();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -516,7 +526,7 @@ impl QueryHandleLifetime {
         match self.service.admission.lock() {
             Ok(mut state) => {
                 state.active_queries = state.active_queries.saturating_sub(1);
-                self.service.admission_available.notify_all();
+                self.service.notify_admission_available();
             },
             Err(_error) => {
                 eprintln!("[nexus-query-engine] warning: failed to release poisoned query service admission state");
@@ -634,14 +644,29 @@ impl QueryService {
         Self::build(config, tenants, Some(resources))
     }
 
+    /// Creates a service entry point without CUDA/runtime resources.
+    ///
+    /// This constructor is intended for admission-only embedders and tests that
+    /// need the service queue, tenant fairness, and memory-governor ledger
+    /// without touching a GPU. Admitted handles from such a service can report
+    /// their grants and release admission normally, but
+    /// [`QueryHandle::acquire_context`] returns an error because no runtime
+    /// resources were installed.
+    pub fn new_admission_only(
+        config: QueryServiceConfig,
+        tenants: Vec<QueryServiceTenantConfig>,
+        deployment_io_capability: DeploymentIoCapability,
+    ) -> Result<Self> {
+        Self::build_with_deployment(config, tenants, None, deployment_io_capability)
+    }
+
     #[cfg(test)]
     fn new_for_admission_tests(
         config: QueryServiceConfig,
         tenants: Vec<QueryServiceTenantConfig>,
         deployment_io_capability: DeploymentIoCapability,
     ) -> Result<Self> {
-        config.validate(&deployment_io_capability)?;
-        Self::build(config, tenants, None)
+        Self::new_admission_only(config, tenants, deployment_io_capability)
     }
 
     fn build(
@@ -657,6 +682,15 @@ impl QueryService {
                     super::GdsDriverProbeStatus::ProbeUnimplemented,
                 )
             });
+        Self::build_with_deployment(config, tenants, resources, deployment)
+    }
+
+    fn build_with_deployment(
+        config: QueryServiceConfig,
+        tenants: Vec<QueryServiceTenantConfig>,
+        resources: Option<QueryServiceResources>,
+        deployment: DeploymentIoCapability,
+    ) -> Result<Self> {
         config.validate(&deployment)?;
         if tenants.is_empty() {
             return Err(QueryError::new(
@@ -733,6 +767,7 @@ impl QueryService {
                 resources,
                 admission: Mutex::new(AdmissionState::default()),
                 admission_available: Condvar::new(),
+                admission_notify: Notify::new(),
                 next_query_id: AtomicU64::new(1),
                 next_admission_sequence: AtomicU64::new(1),
             }),
@@ -777,7 +812,7 @@ impl QueryService {
         loop {
             if state.closed {
                 remove_queued_request(&mut state, request_id);
-                self.inner.admission_available.notify_all();
+                self.inner.notify_admission_available();
                 return Err(service_closed_error(&tenant_id));
             }
             if self.request_is_admissible(&state, request_id)?
@@ -795,7 +830,7 @@ impl QueryService {
                     let now = Instant::now();
                     if now >= deadline {
                         remove_queued_request(&mut state, request_id);
-                        self.inner.admission_available.notify_all();
+                        self.inner.notify_admission_available();
                         return Err(service_overloaded_error(
                             "memory_grant_wait_timeout",
                             &tenant_id,
@@ -815,7 +850,7 @@ impl QueryService {
                     state = next_state;
                     if timeout.timed_out() {
                         remove_queued_request(&mut state, request_id);
-                        self.inner.admission_available.notify_all();
+                        self.inner.notify_admission_available();
                         return Err(service_overloaded_error(
                             "memory_grant_wait_timeout",
                             &tenant_id,
@@ -829,6 +864,7 @@ impl QueryService {
                 self.attach_admission_release_wakeup(&placed_query.memory_grant)?;
                 state.active_queries = state.active_queries.saturating_add(1);
                 self.rotate_after_admission(&mut state, &admitted.tenant_id);
+                self.inner.notify_admission_available();
                 let admission_sequence = self.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
                 let service = Arc::clone(&self.inner);
                 let device_budget_bytes = placed_query.memory_grant.budget_bytes();
@@ -853,7 +889,7 @@ impl QueryService {
             let now = Instant::now();
             if now >= deadline {
                 remove_queued_request(&mut state, request_id);
-                self.inner.admission_available.notify_all();
+                self.inner.notify_admission_available();
                 return Err(service_overloaded_error(
                     "admission_wait_timeout",
                     &tenant_id,
@@ -872,7 +908,7 @@ impl QueryService {
             state = next_state;
             if timeout.timed_out() {
                 remove_queued_request(&mut state, request_id);
-                self.inner.admission_available.notify_all();
+                self.inner.notify_admission_available();
                 return Err(service_overloaded_error(
                     "admission_wait_timeout",
                     &tenant_id,
@@ -889,6 +925,38 @@ impl QueryService {
     /// the waiter is dropped first, the queued request is removed.
     pub fn enqueue_admission(&self, tenant_id: impl Into<TenantId>) -> Result<QueryAdmissionWaiter> {
         self.enqueue_admission_with_qos(tenant_id, QueryQos::default())
+    }
+
+    /// Admits a query asynchronously without parking a blocking thread.
+    ///
+    /// This is the async counterpart to [`Self::admit_query`]. It uses the
+    /// same queue, tenant fairness, timeout, and overload error taxonomy, but
+    /// waits on an event-driven wakeup instead of polling
+    /// [`QueryAdmissionWaiter::try_admit`].
+    pub async fn admit_async(&self, tenant_id: impl Into<TenantId>) -> Result<QueryHandle> {
+        self.admit_async_with_qos(tenant_id, QueryQos::default()).await
+    }
+
+    /// Admits a query asynchronously with caller-supplied QoS metadata.
+    pub async fn admit_async_with_qos(&self, tenant_id: impl Into<TenantId>, qos: QueryQos) -> Result<QueryHandle> {
+        let tenant_id = tenant_id.into();
+        if let Some(handle) = self.try_admit_query_with_qos(tenant_id.clone(), qos)? {
+            return Ok(handle);
+        }
+        let mut waiter = self.enqueue_admission_with_qos(tenant_id, qos)?;
+        loop {
+            let notified = self.inner.admission_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(handle) = waiter.try_admit()? {
+                return Ok(handle);
+            }
+            let remaining_wait = waiter.remaining_wait();
+            if remaining_wait.is_zero() {
+                continue;
+            }
+            let _ = time::timeout(remaining_wait, &mut notified).await;
+        }
     }
 
     /// Enqueues a query admission request with caller-supplied QoS metadata.
@@ -915,7 +983,7 @@ impl QueryService {
             ));
         }
         state.queued.push_back(AdmissionRequest { request_id, tenant_id: tenant_id.clone(), grant_policy, qos });
-        self.inner.admission_available.notify_all();
+        self.inner.notify_admission_available();
         Ok(QueryAdmissionWaiter {
             service: self.clone(),
             tenant_id,
@@ -987,7 +1055,7 @@ impl QueryService {
     pub fn close(&self) -> Result<()> {
         let mut state = self.lock_admission()?;
         state.closed = true;
-        self.inner.admission_available.notify_all();
+        self.inner.notify_admission_available();
         Ok(())
     }
 
@@ -1158,7 +1226,7 @@ impl QueryService {
                     return;
                 },
             };
-            service.admission_available.notify_all();
+            service.notify_admission_available();
         }))
     }
 
@@ -1295,7 +1363,7 @@ impl QueryAdmissionWaiter {
         if state.closed {
             remove_queued_request(&mut state, self.request_id);
             self.queued = false;
-            self.service.inner.admission_available.notify_all();
+            self.service.inner.notify_admission_available();
             return Err(service_closed_error(&self.tenant_id));
         }
         if self.service.request_is_admissible(&state, self.request_id)?
@@ -1313,7 +1381,7 @@ impl QueryAdmissionWaiter {
                 if Instant::now() >= self.deadline {
                     remove_queued_request(&mut state, self.request_id);
                     self.queued = false;
-                    self.service.inner.admission_available.notify_all();
+                    self.service.inner.notify_admission_available();
                     return Err(service_overloaded_error(
                         "memory_grant_wait_timeout",
                         &self.tenant_id,
@@ -1328,6 +1396,7 @@ impl QueryAdmissionWaiter {
             state.active_queries = state.active_queries.saturating_add(1);
             self.service.rotate_after_admission(&mut state, &admitted.tenant_id);
             self.queued = false;
+            self.service.inner.notify_admission_available();
             let admission_sequence = self.service.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
             let service = Arc::clone(&self.service.inner);
             let device_budget_bytes = placed_query.memory_grant.budget_bytes();
@@ -1352,7 +1421,7 @@ impl QueryAdmissionWaiter {
         if Instant::now() >= self.deadline {
             remove_queued_request(&mut state, self.request_id);
             self.queued = false;
-            self.service.inner.admission_available.notify_all();
+            self.service.inner.notify_admission_available();
             return Err(service_overloaded_error(
                 "admission_wait_timeout",
                 &self.tenant_id,
@@ -1378,7 +1447,7 @@ impl Drop for QueryAdmissionWaiter {
         match self.service.inner.admission.lock() {
             Ok(mut state) => {
                 remove_queued_request(&mut state, self.request_id);
-                self.service.inner.admission_available.notify_all();
+                self.service.inner.notify_admission_available();
             },
             Err(_error) => {
                 eprintln!("[nexus-query-engine] warning: failed to remove queued query service admission request");
@@ -1687,6 +1756,21 @@ mod tests {
         }
     }
 
+    fn wait_for_exact_queued_len(service: &QueryService, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let queued = service.admission_snapshot().unwrap().queued_queries;
+            if queued == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {expected} queued admissions; last queued={queued}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn query_service_assigns_fixed_per_tenant_bounded_budget() {
         let service = test_service(2, 8);
@@ -1717,7 +1801,7 @@ mod tests {
     #[test]
     fn query_service_admission_test_config_can_record_non_default_device_without_runtime_resources() {
         let config = QueryServiceConfig { device_ordinal: 2, ..QueryServiceConfig::default() };
-        let service = QueryService::new_for_admission_tests(
+        let service = QueryService::new_admission_only(
             config,
             vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
             non_gds_deployment(),
@@ -1727,6 +1811,8 @@ mod tests {
         let handle = service.admit_query("tenant").unwrap();
 
         assert_eq!(handle.device_ordinal(), 2);
+        let error = handle.acquire_context().unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     }
 
     #[test]
@@ -2047,6 +2133,60 @@ mod tests {
         assert_eq!(snapshot.queued_queries, 0);
 
         drop(active);
+        assert!(service.try_admit_query("small").unwrap().is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn query_service_admit_async_wakes_on_release() {
+        let service = test_service(1, 8);
+        let active = service.admit_query("large").unwrap();
+        let queued_service = service.clone();
+        let queued = tokio::spawn(async move { queued_service.admit_async("small").await });
+        wait_for_queued_len(&service, 1);
+
+        drop(active);
+        let handle = time::timeout(Duration::from_millis(200), queued).await.unwrap().unwrap().unwrap();
+
+        assert_eq!(handle.tenant_id().as_str(), "small");
+        assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn query_service_admit_async_notifies_after_queue_head_admits() {
+        let service = test_service(3, 8);
+        let active_1 = service.admit_query("large").unwrap();
+        let active_2 = service.admit_query("large").unwrap();
+        let active_3 = service.admit_query("large").unwrap();
+        let first_service = service.clone();
+        let second_service = service.clone();
+        let first = tokio::spawn(async move { first_service.admit_async("small").await });
+        let second = tokio::spawn(async move { second_service.admit_async("small").await });
+        wait_for_queued_len(&service, 2);
+
+        drop(active_1);
+        drop(active_2);
+        drop(active_3);
+        let first = time::timeout(Duration::from_millis(200), first).await.unwrap().unwrap().unwrap();
+        let second = time::timeout(Duration::from_millis(200), second).await.unwrap().unwrap().unwrap();
+
+        assert_eq!(first.tenant_id().as_str(), "small");
+        assert_eq!(second.tenant_id().as_str(), "small");
+        assert_eq!(service.admission_snapshot().unwrap().active_queries, 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn query_service_cancelled_admit_async_removes_queued_request() {
+        let service = test_service(1, 8);
+        let active = service.admit_query("large").unwrap();
+        let queued_service = service.clone();
+        let queued = tokio::spawn(async move { queued_service.admit_async("small").await });
+        wait_for_queued_len(&service, 1);
+
+        queued.abort();
+        assert!(queued.await.unwrap_err().is_cancelled());
+        wait_for_exact_queued_len(&service, 0);
+        drop(active);
+
         assert!(service.try_admit_query("small").unwrap().is_some());
     }
 

@@ -640,6 +640,7 @@ impl DatafusionCudfFlightSqlService {
         match self.admission.try_acquire() {
             Ok(Some(permit)) => {
                 Self::log_query_service_admission(query_id, &permit);
+                self.admission.log_query_service_state(Some(query_id), "statement_admitted");
                 return Ok(permit);
             },
             Ok(None) => {},
@@ -669,6 +670,7 @@ impl DatafusionCudfFlightSqlService {
                             status_with_query_id_and_correlation_id(status, query_id, correlation_id)
                         })?;
                     Self::log_query_service_admission(query_id, &permit);
+                    self.admission.log_query_service_state(Some(query_id), "statement_admitted");
                     return Ok(permit);
                 },
                 _ = tokio::time::sleep(sleep_for) => {
