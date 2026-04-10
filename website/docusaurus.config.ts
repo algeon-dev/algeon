@@ -1,7 +1,7 @@
-import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import prismDark from './src/utils/prismDark';
+import prismLight from './src/utils/prismLight';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
@@ -44,10 +44,9 @@ const config: Config = {
       'classic',
       {
         docs: {
-          // Serve docs at the site root so the homepage is the Introduction.
+          // Serve content at the site root so the homepage is the Introduction.
           routeBasePath: '/',
           sidebarPath: './sidebars.ts',
-          editUrl: `${GITHUB_URL}/tree/main/website/`,
         },
         blog: {
           routeBasePath: 'blog',
@@ -74,10 +73,10 @@ const config: Config = {
       {
         hashed: true, // append a content-hash query string to the index URL for cache busting
         indexDocs: true,
-        // Match `docs.routeBasePath` above (docs are served at the site root).
+        // Match the route base path above.
         docsRouteBasePath: '/',
         indexBlog: true,
-        indexPages: false, // docs-only site; do not index standalone pages
+        indexPages: false, // content-first site; do not index standalone pages
         highlightSearchTermsOnTargetPage: true,
       },
     ],
@@ -104,7 +103,7 @@ const config: Config = {
           type: 'docSidebar',
           sidebarId: 'docsSidebar',
           position: 'right',
-          label: 'Docs',
+          label: 'Guide',
         },
         {
           to: '/blog',
@@ -123,7 +122,7 @@ const config: Config = {
       copyright: 'Copyright © 2026 DataFusion Nexus.',
     },
     prism: {
-      theme: prismThemes.github,
+      theme: prismLight,
       darkTheme: prismDark,
       additionalLanguages: ['rust', 'toml', 'bash', 'cpp', 'c'],
     },

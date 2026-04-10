@@ -1,9 +1,11 @@
 ---
 sidebar_position: 4
+title: Graph Construction Options
+sidebar_label: Graph Construction Options
 description: Shared graph construction options accepted by every cuGraph function.
 ---
 
-# Graph construction options
+# Graph Construction Options
 
 Every `cugraph_*` function accepts these shared options inside `options_json`,
 alongside any algorithm-specific options. They control how the GPU graph is
@@ -15,13 +17,11 @@ built from the edge relation.
 | `renumber` | `Boolean` | `true` | `true`, `false` | Whether construction may renumber external vertex ids internally. |
 | `construction_policy` | `Utf8` | `python_cugraph` | `python_cugraph`, `raw_libcugraph` | Edge-list construction semantics used before calling libcugraph. |
 
-:::note
 Per-algorithm option defaults can differ. `directed` defaults to `false` for
 weakly connected components, triangle count, core number, k-core, minimum
 spanning tree, spectral modularity maximization, balanced cut clustering, and
 ForceAtlas2. The default shown on each function's page and from
 `cugraph_validate_call` is authoritative for that function.
-:::
 
 ## Construction policy
 
@@ -30,10 +30,8 @@ decides whether DataFusion Nexus should first make the SQL edge relation match
 Python cuGraph edge-list construction semantics, or pass the relation directly
 to the lower-level libcugraph construction path.
 
-:::tip[Prefer Python-compatible construction]
 Use `python_cugraph` unless you have a specific reason to bypass Python-style
 edge normalization.
-:::
 
 | Policy | Best use | What happens |
 | --- | --- | --- |
@@ -56,7 +54,8 @@ construction:
   the last row in stable input order for each `(src, dst)` pair; undirected
   weighted graphs keep the minimum weight after reverse-edge expansion.
 
-:::note[Edge normalization and null handling]
+## Edge normalization and null handling
+
 The optimizer may skip the physical `EdgeNormalize` operator even when the
 selected policy is `python_cugraph`, but only when it can prove the input edge
 source is already canonical for the requested `directed` and edge-column shape.
@@ -65,7 +64,6 @@ With either construction policy, source and destination nulls are not valid
 graph edges and are dropped before libcugraph receives the edge list. Null
 weights or edge ids only drop rows when the planned algorithm actually consumes
 that column.
-:::
 
 ## How to set it
 

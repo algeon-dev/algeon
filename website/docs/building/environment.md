@@ -10,8 +10,12 @@ as `env.sh` in your checkout root (`$NEXUS_ROOT`) and source it in every
 shell you build or test from.
 
 ```bash title="$NEXUS_ROOT/env.sh"
-# Root that holds the five sibling checkouts.
-NEXUS_ROOT="${NEXUS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
+# Root that holds the three sibling checkouts.
+nexus_env_source="${BASH_SOURCE[0]:-$0}"
+nexus_env_dir=$(dirname "$nexus_env_source")
+nexus_env_dir=$(cd "$nexus_env_dir" && pwd)
+NEXUS_ROOT="${NEXUS_ROOT:-$nexus_env_dir}"
+unset nexus_env_source nexus_env_dir
 export NEXUS_ROOT
 
 # --- Rust toolchain ---------------------------------------------------------
@@ -25,6 +29,13 @@ export CUDA_PATH="$CUDA_HOME"
 export CUDAToolkit_ROOT="$CUDA_HOME"
 export CUDACXX="$CUDA_HOME/bin/nvcc"
 export PATH="$CUDA_HOME/bin:$PATH"
+
+# --- Host compiler ----------------------------------------------------------
+# RAPIDS 26.06 pins gcc 14. Ubuntu 24.04's default is gcc 13, so point the
+# native builds at gcc-14 explicitly instead of changing the system default.
+export CC=gcc-14
+export CXX=g++-14
+export CUDAHOSTCXX=g++-14
 
 # --- RAPIDS install prefix ---------------------------------------------------
 # One prefix shared by the whole stack (see below).
@@ -41,9 +52,10 @@ export LD_LIBRARY_PATH="$CUDF_INSTALL_DIR/lib:$CUDA_HOME/lib64${LD_LIBRARY_PATH:
 | --- | --- | --- |
 | `CUDA_HOME` / `CUDA_PATH` / `CUDAToolkit_ROOT` | CMake toolkit discovery | Pin which installed CUDA toolkit compiles the stack. |
 | `CUDACXX` | CMake | The CUDA compiler executable. |
+| `CC` / `CXX` / `CUDAHOSTCXX` | CMake, `nvcc` | Pin the host compiler to gcc 14 (the RAPIDS 26.06 toolchain) without changing the system default. `CUDAHOSTCXX` is the host compiler `nvcc` drives for device compilation. |
 | `PATH` (+`$CUDA_HOME/bin`) | CMake language detection | The `cudf-sys` shim declares CUDA as a project language; setting only `CUDA_HOME` is not enough — `nvcc` must be on `PATH`. |
 | `INSTALL_PREFIX` | `cudf/build.sh` | Where `./build.sh libcudf` installs the libcudf tree. The RAPIDS build script defaults to `$CONDA_PREFIX`, which is unset outside conda — this must point at `cudf-rs/cudf-install`. |
-| `CUDF_INSTALL_DIR` | `cudf-sys/build.rs`, `cugraph-rs/scripts/build_cpp.sh` | How the Rust shim discovers the prebuilt libcudf, and how the cuGraph build resolves the **shared** RMM / rapids_logger packages. |
+| `CUDF_INSTALL_DIR` | `cudf-sys/build.rs`, `cugraph-rs/scripts/build_libcugraph.sh` | How the Rust shim discovers the prebuilt libcudf, and how the cuGraph build resolves the **shared** RMM / rapids_logger packages. |
 | `LD_LIBRARY_PATH` (+`$CUDF_INSTALL_DIR/lib`, `$CUDA_HOME/lib64`) | test binaries, benchmarks, servers | Runtime resolution of `libcudf.so`, `librmm.so`, `libcugraph.so`. `cudf-sys` bakes a `DT_RUNPATH` for its own consumers, but the install prefix on `LD_LIBRARY_PATH` is the documented contract for everything else. |
 
 :::warning[Keep the three prefix views consistent]
@@ -59,16 +71,17 @@ the staleness check in `cudf-sys/build.rs` warns about exactly this.
 --features cugraph` loads libcudf and libcugraph together; if the cuGraph
 build let CPM compile its own private RMM, both copies would bind RMM symbols
 in the same process and corrupt memory-resource state.
-`cugraph-rs/scripts/build_cpp.sh` therefore resolves `rmm` and
+`cugraph-rs/scripts/build_libcugraph.sh` therefore resolves `rmm` and
 `rapids_logger` from `CUDF_INSTALL_DIR` and **aborts** if a private copy is
 still reachable — this is enforced, not advisory.
 
 ## Validated against shell-state leakage
 
 Preset variables in your `~/.bashrc`/`~/.zshrc` (an old `CUDF_INSTALL_DIR`, a
-different `CUDA_HOME`, conda hooks) can silently redirect a build. This
-guide's env file was validated by running **every build and test step** under
-`env -i` — an empty environment plus a stock system `PATH` and `env.sh`:
+different `CUDA_HOME`, a stray `CUDAHOSTCXX`, conda hooks) can silently
+redirect a build. This guide's env file was validated by running **every build
+and test step** under `env -i` — an empty environment plus a stock system
+`PATH` and `env.sh` — so that nothing outside the file influences the result:
 
 ```bash
 env -i HOME="$HOME" USER="$USER" TERM=xterm \
@@ -77,7 +90,7 @@ env -i HOME="$HOME" USER="$USER" TERM=xterm \
 ```
 
 If a step fails for you in a normal shell but works under `env -i`, an
-inherited variable is interfering; `env | grep -iE 'cuda|cudf|conda|prefix'`
+inherited variable is interfering; `env | grep -iE 'cuda|cudf|conda|prefix|hostcxx|^cc=|^cxx='`
 usually finds it.
 
 Continue with [Building from Source](./from-source.md).

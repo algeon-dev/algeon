@@ -1,0 +1,34 @@
+---
+sidebar_position: 1
+slug: /using
+description: Choose between embedding DataFusion Nexus in a Rust service or running it as a Flight SQL server.
+---
+
+# Integrating Nexus
+
+DataFusion Nexus fits behind ordinary DataFusion APIs. Choose the integration
+surface that matches the service boundary you own:
+
+| Surface | Use it when | Start here |
+| --- | --- | --- |
+| DataFusion session | You already own a Rust backend, DataFusion session lifecycle, auth, tenancy, and result formatting. | [DataFusion Session](./embedded-rust.mdx) |
+| Flight SQL server | You want a remote Arrow Flight SQL endpoint for non-Rust clients, notebooks, agents, or service-to-service calls. | [Flight SQL server](./flight-sql-server.mdx) |
+
+Both surfaces execute supported relational plans on cuDF. The `cugraph` feature
+adds SQL-visible `cugraph_*` table functions on either surface, and the
+`iceberg` feature adds Iceberg/Glue/REST/S3 source integration.
+
+## Common flow
+
+1. Build the stack with the features your deployment needs. The full source
+   build is covered in [Build & Test](../building/overview.md).
+2. Pick an integration surface: a DataFusion session or the Flight SQL server.
+3. Size GPU memory and configure table sources before running user queries. For
+   server deployments, see [Server configuration](./server-configuration.mdx).
+4. If you use graph SQL, discover and validate the available functions with
+   [`cugraph_list_algorithms`](../cugraph/discovery-and-validation.mdx) and
+   `cugraph_validate_call`.
+
+The [cuGraph SQL API](../cugraph/overview.mdx) section is the function-level
+contract: call signatures, graph options, validation metadata, demo dataset,
+and per-algorithm reference pages.

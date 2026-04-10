@@ -531,7 +531,7 @@ export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
 }
 
 // ---------------------------------------------------------------------------
-// OverviewDiagram — the static "where Nexus sits" figure on the docs homepage.
+// OverviewDiagram — the static "where Nexus sits" figure on the site homepage.
 // Top-down and non-interactive, with larger type than the Design-page
 // diagrams: it is the first figure a newcomer sees, so it optimizes for
 // glanceability over information density.
@@ -752,7 +752,7 @@ export function OverviewDiagram({caption}: {caption?: React.ReactNode}) {
         strokeWidth={1} strokeDasharray="5 4" />
       {head(ovHeadRight(catLeft, metaY))}
       {label((nexusRight + catLeft) / 2, metaY - 8, 'catalog · metadata')}
-      {/* storage -> gpu (KvikIO data path) */}
+      {/* storage -> gpu-resident frame (KvikIO reader path) */}
       <line x1={storeLeft} y1={kvikY} x2={gpuRight + 1} y2={kvikY} stroke={stroke} strokeWidth={1} />
       {head(ovHeadLeft(gpuRight, kvikY))}
       {label((gpuRight + storeLeft) / 2, kvikY - 8, 'KvikIO')}

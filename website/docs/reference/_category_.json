@@ -1,8 +1,8 @@
 {
   "label": "Reference",
-  "position": 5,
+  "position": 7,
   "link": {
     "type": "generated-index",
-    "description": "Stable public contracts: data type support, report schemas, metric names, and workload surfaces."
+    "description": "Reference material for native execution support boundaries."
   }
 }

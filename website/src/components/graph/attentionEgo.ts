@@ -1,6 +1,6 @@
 // GENERATED from live cugraph_force_atlas2 + cugraph_louvain output over the
-// citation network demo dataset (see docs/cugraph/demo-dataset.mdx).
-// Regenerate by re-running the SQL in docs/cugraph/_examples/cugraph_force_atlas2.mdx.
+// citation network demo dataset.
+// Regenerate by re-running the ForceAtlas2 SQL example.
 
 export type EgoNode = {
   id: string;

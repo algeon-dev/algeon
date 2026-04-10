@@ -1,0 +1,18 @@
+---
+sidebar_position: 1
+title: Benchmarks
+description: CPU and GPU benchmark results for DataFusion Nexus.
+---
+
+import TpchSf100Benchmark from '@site/src/components/benchmarks/TpchSf100Benchmark';
+
+# Benchmarks
+
+DataFusion Nexus benchmark evidence is reported from release builds, with CPU and
+GPU rows compared from the same harness. The fixture data is generated through
+`fixture/scripts/fixture.sh`; the TPC-H generator implementation is
+`fixture/scripts/gen_tpch.py`.
+
+## TPC-H SF100
+
+<TpchSf100Benchmark />

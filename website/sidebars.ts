@@ -3,7 +3,7 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
 /**
- * The docs sidebar is generated from the `docs/` folder structure.
+ * The sidebar is generated from the content folder structure.
  * Category ordering and labels come from each folder's `_category_.json`,
  * and per-doc ordering comes from the `sidebar_position` front matter.
  */

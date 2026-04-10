@@ -34,15 +34,14 @@ npm run serve   # preview the production build locally
 npm run typecheck
 ```
 
-## Authoring docs
+## Authoring site content
 
-All documentation lives under `website/docs/`. Docs are served at the site root
-(`docs.routeBasePath: '/'` in `docusaurus.config.ts`), so a file's URL mirrors
-its path under `docs/` unless overridden by a `slug`.
+Content pages are served at the site root, so a file's URL mirrors its source
+tree path unless overridden by a `slug`.
 
 **Adding a page.** Create a `.md` (plain Markdown) or `.mdx` (Markdown + React
-components) file under `docs/`. Use `.mdx` when you need to import components,
-e.g.:
+components) file in the content tree. Use `.mdx` when you need to import
+components, e.g.:
 
 ```mdx
 ---
@@ -61,7 +60,7 @@ import {StackDiagram} from '@site/src/components/design/Diagram';
 - `slug` — overrides the URL path (e.g. `slug: /` makes `intro.mdx` the homepage).
 - `description` — short summary for SEO and generated category index pages.
 
-**Sidebar.** The sidebar is auto-generated from the `docs/` tree
+**Sidebar.** The sidebar is auto-generated from the content tree
 (`sidebars.ts`). Folder grouping, label, and ordering are controlled by a
 `_category_.json` in each subfolder, for example:
 
@@ -76,7 +75,7 @@ import {StackDiagram} from '@site/src/components/design/Diagram';
 Use `"link": { "type": "generated-index", "description": "…" }` instead when the
 category should land on an auto-generated index rather than a specific doc.
 
-**Internal links.** Link to other docs by relative file path including the
+**Internal links.** Link to other pages by relative file path including the
 extension (e.g. `[Architecture](./architecture/index.md)`); Docusaurus resolves
 these at build time and `onBrokenLinks: 'throw'` fails the build on a bad link.
 
