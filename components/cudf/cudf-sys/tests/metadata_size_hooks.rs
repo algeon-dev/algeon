@@ -8,7 +8,7 @@ use std::{
 use support::{OwnedStream, last_exec_stream_value, lock_shim_state, reset_exec_observation, stream_value};
 
 fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
-    let mut mask = vec![0u8; validity.len().div_ceil(8)];
+    let mut mask = vec![0u8; validity.len().div_ceil(8).div_ceil(64) * 64];
     for (index, is_valid) in validity.iter().copied().enumerate() {
         if is_valid {
             mask[index / 8] |= 1 << (index % 8);

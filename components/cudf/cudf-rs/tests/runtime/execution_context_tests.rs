@@ -260,6 +260,26 @@ fn read_first_i32_table_column_raw(table: cudf_sys::cudf_table_handle, len: usiz
     host
 }
 
+fn destroy_column(handle: cudf_sys::cudf_column_handle) {
+    unsafe { cudf_sys::cudf_column_destroy(handle) };
+}
+
+fn destroy_column_view(handle: cudf_sys::cudf_column_view_handle) {
+    unsafe { cudf_sys::cudf_column_view_destroy(handle) };
+}
+
+fn destroy_table(handle: cudf_sys::cudf_table_handle) {
+    unsafe { cudf_sys::cudf_table_destroy(handle) };
+}
+
+fn destroy_table_view(handle: cudf_sys::cudf_table_view_handle) {
+    unsafe { cudf_sys::cudf_table_view_destroy(handle) };
+}
+
+fn destroy_scalar(handle: cudf_sys::cudf_scalar_handle) {
+    unsafe { cudf_sys::cudf_scalar_destroy(handle) };
+}
+
 fn create_single_column_table_raw(data: &[i32]) -> cudf_sys::cudf_table_handle {
     let col = create_i32_column_raw(data);
     let mut columns = [col];
@@ -284,6 +304,88 @@ fn explicit_i64_series(name: &str, data: &[i64], identity: u64) -> cudf::Series 
     )
     .unwrap()
     .rename(name)
+}
+
+fn explicit_bool_series(name: &str, data: &[bool], identity: u64) -> cudf::Series {
+    cudf::Series::from_column(
+        cudf::core::Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
+    )
+    .unwrap()
+    .rename(name)
+}
+
+const TEST_POOL_MR_BYTES: usize = 16 * 1024 * 1024;
+
+fn pool_mr() -> DeviceMemoryResource {
+    DeviceMemoryResource::pool(TEST_POOL_MR_BYTES, 0).expect("failed to create pool MR")
+}
+
+fn debug_ctx_with_stream<'a>(stream: &'a CudaStream) -> cudf::__DebugExecutionContext<'a> {
+    cudf::__DebugExecutionContext::new().with_stream(stream)
+}
+
+fn debug_ctx_with_mr<'a>(mr: &'a DeviceMemoryResource) -> cudf::__DebugExecutionContext<'a> {
+    cudf::__DebugExecutionContext::new().with_memory_resource(mr)
+}
+
+fn assert_observed_stream(explicit_stream: usize) {
+    assert_eq!(obs_last_stream(), explicit_stream, "observation hook should record the explicit stream");
+}
+
+fn assert_observed_sync_stream(explicit_stream: usize) {
+    assert_eq!(
+        obs_last_sync_stream(),
+        explicit_stream,
+        "host materialization should synchronize on the explicit stream"
+    );
+}
+
+fn assert_observed_non_default_mr(default_mr: *mut c_void) {
+    let observed_mr = obs_last_mr();
+    assert_ne!(observed_mr, ptr::null_mut(), "observed mr should be non-null");
+    assert_ne!(observed_mr, default_mr, "observation hook should record the explicit memory resource");
+}
+
+fn assert_dataframe_stream_override(df: &cudf::DataFrame, expected_domain: u64, expected_stream: usize) {
+    assert_eq!(df.__debug_execution_domain_id(), expected_domain);
+    assert_eq!(df.__debug_execution_domain_stream_value(), expected_stream);
+}
+
+fn assert_dataframe_mr_override(df: &cudf::DataFrame, expected_domain: u64, expected_mr: usize) {
+    assert_eq!(df.__debug_execution_domain_id(), expected_domain);
+    assert_eq!(df.__debug_execution_domain_mr_value(), expected_mr);
+}
+
+fn assert_dataframe_i32_values(df: &cudf::DataFrame, column: &str, expected: &[i32]) {
+    let values: Vec<i32> = df.series(column).unwrap().as_column_view().unwrap().to_vec().unwrap();
+    assert_eq!(values.as_slice(), expected);
+}
+
+fn assert_ambient_default_promotion_error(err: &cudf::Error) {
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "execution_context::resolve_output_domain");
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "operation_domain" && value.starts_with("ambient_default"))
+    );
+    assert!(err.context().iter().any(|(key, value)| *key == "borrowed_override_stream" && value == "true"));
+}
+
+fn assert_exec_options_copy_validation_error(
+    opts: cudf_sys::cudf_exec_options_t,
+    expected_status: i32,
+    expectation: &str,
+) {
+    let col = create_i32_column_raw(&[1, 2, 3]);
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_copy_ex(col, &opts as *const cudf_sys::cudf_exec_options_t as *const _, &mut out)
+    };
+
+    assert_eq!(status, expected_status, "{expectation}");
+    assert!(out.is_null(), "output handle should remain null on validation error");
+
+    destroy_column(col);
 }
 
 // ===========================================================================
@@ -381,10 +483,10 @@ fn column_copy_ex_uses_explicit_stream() {
     let borrowed = stream.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
 
-    let default_stream = obs_default_stream();
     let explicit_stream = stream.__debug_raw_handle_value();
     assert_ne!(
-        explicit_stream, default_stream,
+        explicit_stream,
+        obs_default_stream(),
         "explicit stream must differ from default for this test to be meaningful"
     );
 
@@ -394,14 +496,11 @@ fn column_copy_ex_uses_explicit_stream() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_copy_ex failed");
     assert!(!out_handle.is_null());
 
-    let observed = obs_last_stream();
-    assert_eq!(observed, explicit_stream, "observation hook should record the explicit stream, not the default");
+    assert_observed_stream(explicit_stream);
 
     stream.synchronize().expect("stream sync failed");
-    unsafe {
-        cudf_sys::cudf_column_destroy(out_handle);
-        cudf_sys::cudf_column_destroy(col);
-    };
+    destroy_column(out_handle);
+    destroy_column(col);
 }
 
 /// `cudf_column_view_to_host_ex` with an explicit stream records that stream
@@ -426,15 +525,12 @@ fn column_to_host_ex_uses_explicit_stream() {
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_view_to_host_ex failed");
 
-    let observed = obs_last_stream();
-    assert_eq!(observed, explicit_stream, "observation hook should record the explicit stream for to_host_ex");
+    assert_observed_stream(explicit_stream);
 
     assert_eq!(host_buf, data, "host data should match original");
 
-    unsafe {
-        cudf_sys::cudf_column_view_destroy(view);
-        cudf_sys::cudf_column_destroy(col);
-    };
+    destroy_column_view(view);
+    destroy_column(col);
 }
 
 /// `cudf_column_create_from_device_data_ex` with an explicit stream records
@@ -466,8 +562,7 @@ fn column_from_device_data_ex_uses_explicit_stream() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_create_from_device_data_ex failed");
     assert!(!out_handle.is_null());
 
-    let observed = obs_last_stream();
-    assert_eq!(observed, explicit_stream, "observation hook should record the explicit stream for from_device_data_ex");
+    assert_observed_stream(explicit_stream);
 
     // The _ex variant does NOT synchronize — the caller must keep src alive
     // until the stream completes.
@@ -486,12 +581,10 @@ fn column_from_device_data_ex_uses_explicit_stream() {
     assert_eq!(s3, cudf_sys::CUDF_SUCCESS);
     assert_eq!(host_buf, data, "round-trip data should match");
 
-    unsafe {
-        cudf_sys::cudf_column_view_destroy(out_view);
-        cudf_sys::cudf_column_view_destroy(src_view);
-        cudf_sys::cudf_column_destroy(out_handle);
-        cudf_sys::cudf_column_destroy(src_col);
-    };
+    destroy_column_view(out_view);
+    destroy_column_view(src_view);
+    destroy_column(out_handle);
+    destroy_column(src_col);
 }
 
 #[test]
@@ -512,17 +605,15 @@ fn replace_nulls_scalar_ex_uses_explicit_stream() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_replace_nulls_scalar_ex failed");
     assert!(!out_handle.is_null());
 
-    assert_eq!(obs_last_stream(), explicit_stream, "observation hook should record the explicit stream");
+    assert_observed_stream(explicit_stream);
 
     stream.synchronize().expect("stream sync failed");
     assert_eq!(read_i32_column_raw(out_handle, 3), vec![1, 99, 3]);
 
-    unsafe {
-        cudf_sys::cudf_column_destroy(out_handle);
-        cudf_sys::cudf_scalar_destroy(replacement);
-        cudf_sys::cudf_column_view_destroy(input_view);
-        cudf_sys::cudf_column_destroy(input);
-    };
+    destroy_column(out_handle);
+    destroy_scalar(replacement);
+    destroy_column_view(input_view);
+    destroy_column(input);
 }
 
 #[test]
@@ -544,18 +635,16 @@ fn replace_nulls_column_ex_uses_explicit_stream() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_replace_nulls_column_ex failed");
     assert!(!out_handle.is_null());
 
-    assert_eq!(obs_last_stream(), explicit_stream, "observation hook should record the explicit stream");
+    assert_observed_stream(explicit_stream);
 
     stream.synchronize().expect("stream sync failed");
     assert_eq!(read_i32_column_raw(out_handle, 3), vec![1, 20, 3]);
 
-    unsafe {
-        cudf_sys::cudf_column_destroy(out_handle);
-        cudf_sys::cudf_column_view_destroy(replacement_view);
-        cudf_sys::cudf_column_destroy(replacement);
-        cudf_sys::cudf_column_view_destroy(input_view);
-        cudf_sys::cudf_column_destroy(input);
-    };
+    destroy_column(out_handle);
+    destroy_column_view(replacement_view);
+    destroy_column(replacement);
+    destroy_column_view(input_view);
+    destroy_column(input);
 }
 
 #[test]
@@ -566,7 +655,7 @@ fn gather_ex_uses_explicit_stream_and_mr() {
     let gather_map_view = column_view_raw(gather_map);
 
     let stream = CudaStream::new().expect("failed to create stream");
-    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
+    let mr = pool_mr();
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = mr.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
@@ -587,19 +676,17 @@ fn gather_ex_uses_explicit_stream_and_mr() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_gather_ex failed");
     assert!(!out_table.is_null());
 
-    assert_eq!(obs_last_stream(), explicit_stream, "observation hook should record the explicit stream");
-    assert_ne!(obs_last_mr(), default_mr, "observation hook should record the explicit memory resource");
+    assert_observed_stream(explicit_stream);
+    assert_observed_non_default_mr(default_mr);
 
     stream.synchronize().expect("stream sync failed");
     assert_eq!(read_first_i32_table_column_raw(out_table, 2), vec![30, 10]);
 
-    unsafe {
-        cudf_sys::cudf_table_destroy(out_table);
-        cudf_sys::cudf_column_view_destroy(gather_map_view);
-        cudf_sys::cudf_column_destroy(gather_map);
-        cudf_sys::cudf_table_view_destroy(table_view);
-        cudf_sys::cudf_table_destroy(table);
-    };
+    destroy_table(out_table);
+    destroy_column_view(gather_map_view);
+    destroy_column(gather_map);
+    destroy_table_view(table_view);
+    destroy_table(table);
 }
 
 #[test]
@@ -610,7 +697,7 @@ fn apply_boolean_mask_ex_uses_explicit_stream_and_mr() {
     let mask_view = column_view_raw(mask);
 
     let stream = CudaStream::new().expect("failed to create stream");
-    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
+    let mr = pool_mr();
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = mr.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
@@ -623,19 +710,17 @@ fn apply_boolean_mask_ex_uses_explicit_stream_and_mr() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_apply_boolean_mask_ex failed");
     assert!(!out_table.is_null());
 
-    assert_eq!(obs_last_stream(), explicit_stream, "observation hook should record the explicit stream");
-    assert_ne!(obs_last_mr(), default_mr, "observation hook should record the explicit memory resource");
+    assert_observed_stream(explicit_stream);
+    assert_observed_non_default_mr(default_mr);
 
     stream.synchronize().expect("stream sync failed");
     assert_eq!(read_first_i32_table_column_raw(out_table, 2), vec![10, 30]);
 
-    unsafe {
-        cudf_sys::cudf_table_destroy(out_table);
-        cudf_sys::cudf_column_view_destroy(mask_view);
-        cudf_sys::cudf_column_destroy(mask);
-        cudf_sys::cudf_table_view_destroy(table_view);
-        cudf_sys::cudf_table_destroy(table);
-    };
+    destroy_table(out_table);
+    destroy_column_view(mask_view);
+    destroy_column(mask);
+    destroy_table_view(table_view);
+    destroy_table(table);
 }
 
 /// When `_ex` ops are called with null options (default context), the
@@ -652,13 +737,10 @@ fn column_copy_ex_null_options_uses_default_stream() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out_handle.is_null());
 
-    let observed = obs_last_stream();
-    assert_eq!(observed, default_stream, "null options should resolve to the default stream");
+    assert_eq!(obs_last_stream(), default_stream, "null options should resolve to the default stream");
 
-    unsafe {
-        cudf_sys::cudf_column_destroy(out_handle);
-        cudf_sys::cudf_column_destroy(col);
-    };
+    destroy_column(out_handle);
+    destroy_column(col);
 }
 
 /// When `_ex` ops are called with default ExecutionContext (null handles),
@@ -680,10 +762,8 @@ fn column_copy_ex_default_context_uses_defaults() {
     assert_eq!(obs_last_stream(), default_stream);
     assert_eq!(obs_last_mr(), default_mr);
 
-    unsafe {
-        cudf_sys::cudf_column_destroy(out_handle);
-        cudf_sys::cudf_column_destroy(col);
-    };
+    destroy_column(out_handle);
+    destroy_column(col);
 }
 
 /// Explicit memory resource is recorded by the observation hook.
@@ -703,10 +783,8 @@ fn column_copy_ex_explicit_mr_is_observed() {
     let observed_mr = obs_last_mr();
     assert!(!observed_mr.is_null(), "observed mr should be non-null");
 
-    unsafe {
-        cudf_sys::cudf_column_destroy(out_handle);
-        cudf_sys::cudf_column_destroy(col);
-    };
+    destroy_column(out_handle);
+    destroy_column(col);
 }
 
 #[test]
@@ -727,15 +805,12 @@ fn column_copy_from_view_ex_uses_explicit_stream_and_mr() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out_handle.is_null());
 
-    assert_eq!(obs_last_stream(), explicit_stream);
-    assert_ne!(obs_last_mr(), std::ptr::null_mut());
-    assert_ne!(obs_last_mr(), default_mr);
+    assert_observed_stream(explicit_stream);
+    assert_observed_non_default_mr(default_mr);
 
-    unsafe {
-        cudf_sys::cudf_column_destroy(out_handle);
-        cudf_sys::cudf_column_view_destroy(view);
-        cudf_sys::cudf_column_destroy(col);
-    };
+    destroy_column(out_handle);
+    destroy_column_view(view);
+    destroy_column(col);
 }
 
 #[test]
@@ -755,14 +830,11 @@ fn table_copy_ex_uses_explicit_stream_and_mr() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out_handle.is_null());
 
-    assert_eq!(obs_last_stream(), explicit_stream);
-    assert_ne!(obs_last_mr(), std::ptr::null_mut());
-    assert_ne!(obs_last_mr(), default_mr);
+    assert_observed_stream(explicit_stream);
+    assert_observed_non_default_mr(default_mr);
 
-    unsafe {
-        cudf_sys::cudf_table_destroy(out_handle);
-        cudf_sys::cudf_table_destroy(table);
-    };
+    destroy_table(out_handle);
+    destroy_table(table);
 }
 
 // ===========================================================================
@@ -778,19 +850,17 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retai
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.__debug_raw_handle_value();
-    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+    let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
     let sorted = df.__debug_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
 
-    assert_eq!(obs_last_stream(), explicit_stream);
-    assert_eq!(sorted.__debug_execution_domain_id(), 501);
-    assert_eq!(sorted.__debug_execution_domain_stream_value(), explicit_stream);
+    assert_observed_stream(explicit_stream);
+    assert_dataframe_stream_override(&sorted, 501, explicit_stream);
 
     obs_reset();
-    let vals: Vec<i32> = sorted.series("id").unwrap().as_column_view().unwrap().to_vec().unwrap();
-    assert_eq!(vals, vec![1, 2, 3]);
-    assert_eq!(obs_last_sync_stream(), explicit_stream);
+    assert_dataframe_i32_values(&sorted, "id", &[1, 2, 3]);
+    assert_observed_sync_stream(explicit_stream);
 }
 
 #[test]
@@ -799,34 +869,27 @@ fn sort_with_execution_context_rejects_ambient_default_promotion() {
     let df = cudf::DataFrame::from_series([ids]).unwrap();
 
     let stream = CudaStream::new().unwrap();
-    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+    let ctx = debug_ctx_with_stream(&stream);
 
     let err = df.__debug_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap_err();
 
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), "execution_context::resolve_output_domain");
-    assert!(
-        err.context().iter().any(|(key, value)| *key == "operation_domain" && value.starts_with("ambient_default"))
-    );
-    assert!(err.context().iter().any(|(key, value)| *key == "borrowed_override_stream" && value == "true"));
+    assert_ambient_default_promotion_error(&err);
 }
 
 #[test]
 fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource() {
     let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 502)]).unwrap();
 
-    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
+    let mr = pool_mr();
     let explicit_mr = mr.__debug_raw_handle_value();
-    let ctx = cudf::__DebugExecutionContext::new().with_memory_resource(&mr);
+    let ctx = debug_ctx_with_mr(&mr);
     let default_mr = obs_current_device_resource() as usize;
 
     obs_reset();
     let sorted = df.__debug_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
 
     assert_ne!(obs_last_mr() as usize, default_mr);
-    assert_eq!(sorted.__debug_execution_domain_id(), 502);
-    assert_eq!(sorted.__debug_execution_domain_mr_value(), explicit_mr);
+    assert_dataframe_mr_override(&sorted, 502, explicit_mr);
 }
 
 #[test]
@@ -844,15 +907,14 @@ fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.__debug_raw_handle_value();
-    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+    let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
     let joined = left.__debug_merge_in_context(&right, cudf::MergeOptions::new().how_inner().on(["id"]), &ctx).unwrap();
 
-    assert_eq!(obs_last_stream(), explicit_stream);
+    assert_observed_stream(explicit_stream);
     assert_eq!(joined.num_rows(), 2);
-    assert_eq!(joined.__debug_execution_domain_id(), 503);
-    assert_eq!(joined.__debug_execution_domain_stream_value(), explicit_stream);
+    assert_dataframe_stream_override(&joined, 503, explicit_stream);
 }
 
 #[test]
@@ -865,16 +927,15 @@ fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.__debug_raw_handle_value();
-    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+    let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
     let result =
         df.groupby(["key"]).__debug_agg_in_context(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)], &ctx).unwrap();
 
-    assert_eq!(obs_last_stream(), explicit_stream);
+    assert_observed_stream(explicit_stream);
     assert_eq!(result.num_rows(), 2);
-    assert_eq!(result.__debug_execution_domain_id(), 504);
-    assert_eq!(result.__debug_execution_domain_stream_value(), explicit_stream);
+    assert_dataframe_stream_override(&result, 504, explicit_stream);
 }
 
 #[test]
@@ -884,19 +945,17 @@ fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.__debug_raw_handle_value();
-    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+    let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
     let gathered = df.__debug_gather_in_context(&indices, &ctx).unwrap();
 
-    assert_eq!(obs_last_stream(), explicit_stream);
-    assert_eq!(gathered.__debug_execution_domain_id(), 505);
-    assert_eq!(gathered.__debug_execution_domain_stream_value(), explicit_stream);
+    assert_observed_stream(explicit_stream);
+    assert_dataframe_stream_override(&gathered, 505, explicit_stream);
 
     obs_reset();
-    let vals: Vec<i32> = gathered.series("id").unwrap().as_column_view().unwrap().to_vec().unwrap();
-    assert_eq!(vals, vec![2, 3]);
-    assert_eq!(obs_last_sync_stream(), explicit_stream);
+    assert_dataframe_i32_values(&gathered, "id", &[2, 3]);
+    assert_observed_sync_stream(explicit_stream);
 }
 
 #[test]
@@ -906,46 +965,31 @@ fn gather_with_execution_context_rejects_ambient_default_promotion() {
     let indices = cudf::Series::new::<i32>("gather", &[2, 0]).unwrap();
 
     let stream = CudaStream::new().unwrap();
-    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+    let ctx = debug_ctx_with_stream(&stream);
 
     let err = df.__debug_gather_in_context(&indices, &ctx).unwrap_err();
 
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), "execution_context::resolve_output_domain");
-    assert!(
-        err.context().iter().any(|(key, value)| *key == "operation_domain" && value.starts_with("ambient_default"))
-    );
-    assert!(err.context().iter().any(|(key, value)| *key == "borrowed_override_stream" && value == "true"));
+    assert_ambient_default_promotion_error(&err);
 }
 
 #[test]
 fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
     let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 506)]).unwrap();
-    let mask = cudf::Series::from_column(
-        cudf::core::Column::from_slice(&[true, false, true])
-            .unwrap()
-            .__debug_rebind_execution_domain_explicit(506)
-            .unwrap(),
-    )
-    .unwrap()
-    .rename("mask");
+    let mask = explicit_bool_series("mask", &[true, false, true], 506);
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.__debug_raw_handle_value();
-    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+    let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
     let filtered = df.__debug_filter_in_context(&mask, &ctx).unwrap();
 
-    assert_eq!(obs_last_stream(), explicit_stream);
-    assert_eq!(filtered.__debug_execution_domain_id(), 506);
-    assert_eq!(filtered.__debug_execution_domain_stream_value(), explicit_stream);
+    assert_observed_stream(explicit_stream);
+    assert_dataframe_stream_override(&filtered, 506, explicit_stream);
 
     obs_reset();
-    let vals: Vec<i32> = filtered.series("id").unwrap().as_column_view().unwrap().to_vec().unwrap();
-    assert_eq!(vals, vec![3, 2]);
-    assert_eq!(obs_last_sync_stream(), explicit_stream);
+    assert_dataframe_i32_values(&filtered, "id", &[3, 2]);
+    assert_observed_sync_stream(explicit_stream);
 }
 
 #[test]
@@ -955,17 +999,11 @@ fn filter_with_execution_context_rejects_ambient_default_promotion() {
     let mask = cudf::Series::new::<bool>("mask", &[true, false, true]).unwrap();
 
     let stream = CudaStream::new().unwrap();
-    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+    let ctx = debug_ctx_with_stream(&stream);
 
     let err = df.__debug_filter_in_context(&mask, &ctx).unwrap_err();
 
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
-    assert!(err.is_permanent());
-    assert_eq!(err.operation(), "execution_context::resolve_output_domain");
-    assert!(
-        err.context().iter().any(|(key, value)| *key == "operation_domain" && value.starts_with("ambient_default"))
-    );
-    assert!(err.context().iter().any(|(key, value)| *key == "borrowed_override_stream" && value == "true"));
+    assert_ambient_default_promotion_error(&err);
 }
 
 // ===========================================================================
@@ -1049,11 +1087,7 @@ fn groupby_agg_default_produces_correct_results() {
 fn column_copy_ex_pool_mr_is_observed() {
     let col = create_i32_column_raw(&[42, 43, 44]);
 
-    let pool_mr = DeviceMemoryResource::pool(
-        16 * 1024 * 1024, // 16 MB initial
-        0,                // unbounded max
-    )
-    .expect("failed to create pool MR");
+    let pool_mr = pool_mr();
     let borrowed_mr = pool_mr.as_borrowed_sys();
 
     let ctx = cudf_sys::ExecutionContext::new().with_memory_resource(&borrowed_mr);
@@ -1071,10 +1105,8 @@ fn column_copy_ex_pool_mr_is_observed() {
     // The pool MR's raw pointer should differ from the process-global default.
     assert_ne!(observed_mr, default_mr, "pool MR should differ from the process-global default MR");
 
-    unsafe {
-        cudf_sys::cudf_column_destroy(out_handle);
-        cudf_sys::cudf_column_destroy(col);
-    };
+    destroy_column(out_handle);
+    destroy_column(col);
 }
 
 /// Column copy with both explicit stream AND memory resource.
@@ -1083,7 +1115,7 @@ fn column_copy_ex_stream_and_mr_combined() {
     let col = create_i32_column_raw(&[7, 8, 9]);
 
     let stream = CudaStream::new().expect("failed to create stream");
-    let pool_mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
+    let pool_mr = pool_mr();
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = pool_mr.as_borrowed_sys();
 
@@ -1097,16 +1129,12 @@ fn column_copy_ex_stream_and_mr_combined() {
     let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
-    assert_eq!(obs_last_stream(), explicit_stream, "stream mismatch");
-
-    let observed_mr = obs_last_mr();
-    assert_ne!(observed_mr, default_mr, "pool MR should differ from default");
+    assert_observed_stream(explicit_stream);
+    assert_observed_non_default_mr(default_mr);
 
     stream.synchronize().expect("stream sync failed");
-    unsafe {
-        cudf_sys::cudf_column_destroy(out_handle);
-        cudf_sys::cudf_column_destroy(col);
-    };
+    destroy_column(out_handle);
+    destroy_column(col);
 }
 
 // ===========================================================================
@@ -1206,72 +1234,42 @@ fn device_memory_resource_as_borrowed_sys_preserves_handle() {
 /// is rejected with `CUDF_ERROR_INVALID_OPERATION`.
 #[test]
 fn exec_options_struct_size_too_small_returns_error() {
-    let col = create_i32_column_raw(&[1, 2, 3]);
-
     let mut opts = cudf_sys::cudf_exec_options_t::defaults();
     opts.struct_size = 8; // too small
 
-    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(col, &opts as *const cudf_sys::cudf_exec_options_t as *const _, &mut out)
-    };
-
-    assert_eq!(
-        status,
+    assert_exec_options_copy_validation_error(
+        opts,
         cudf_sys::CUDF_ERROR_INVALID_OPERATION,
-        "struct_size too small should return CUDF_ERROR_INVALID_OPERATION"
+        "struct_size too small should return CUDF_ERROR_INVALID_OPERATION",
     );
-    assert!(out.is_null(), "output handle should remain null on validation error");
-
-    unsafe { cudf_sys::cudf_column_destroy(col) };
 }
 
 /// A `cudf_exec_options_t` with unknown flag bits is rejected with
 /// `CUDF_ERROR_INVALID_OPERATION`.
 #[test]
 fn exec_options_unknown_flags_returns_error() {
-    let col = create_i32_column_raw(&[1, 2, 3]);
-
     let mut opts = cudf_sys::cudf_exec_options_t::defaults();
     opts.flags = 0x8000_0000; // unknown bit
 
-    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(col, &opts as *const cudf_sys::cudf_exec_options_t as *const _, &mut out)
-    };
-
-    assert_eq!(
-        status,
+    assert_exec_options_copy_validation_error(
+        opts,
         cudf_sys::CUDF_ERROR_INVALID_OPERATION,
-        "unknown flag bits should return CUDF_ERROR_INVALID_OPERATION"
+        "unknown flag bits should return CUDF_ERROR_INVALID_OPERATION",
     );
-    assert!(out.is_null(), "output handle should remain null on validation error");
-
-    unsafe { cudf_sys::cudf_column_destroy(col) };
 }
 
 /// A `cudf_exec_options_t` with a non-zero reserved field is rejected with
 /// `CUDF_ERROR_INVALID_OPERATION`.
 #[test]
 fn exec_options_nonzero_reserved_returns_error() {
-    let col = create_i32_column_raw(&[1, 2, 3]);
-
     let mut opts = cudf_sys::cudf_exec_options_t::defaults();
     opts.reserved[2] = 0xDEAD_BEEF;
 
-    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(col, &opts as *const cudf_sys::cudf_exec_options_t as *const _, &mut out)
-    };
-
-    assert_eq!(
-        status,
+    assert_exec_options_copy_validation_error(
+        opts,
         cudf_sys::CUDF_ERROR_INVALID_OPERATION,
-        "non-zero reserved field should return CUDF_ERROR_INVALID_OPERATION"
+        "non-zero reserved field should return CUDF_ERROR_INVALID_OPERATION",
     );
-    assert!(out.is_null(), "output handle should remain null on validation error");
-
-    unsafe { cudf_sys::cudf_column_destroy(col) };
 }
 
 /// A `cudf_exec_options_t` with an explicit device ordinal that does not exist
@@ -1296,7 +1294,7 @@ fn exec_options_invalid_explicit_device_returns_error_without_side_effects() {
     assert_eq!(obs_last_device(), -1, "failed device selection should not record execution observation");
     assert_eq!(DeviceId::current().unwrap(), before, "failed device selection should not change the ambient device");
 
-    unsafe { cudf_sys::cudf_column_destroy(col) };
+    destroy_column(col);
 }
 
 /// A `cudf_exec_options_t` constructed via `defaults()` (correct struct_size,
@@ -1315,8 +1313,6 @@ fn exec_options_valid_defaults_succeeds() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "valid defaults should succeed");
     assert!(!out.is_null(), "output handle should be non-null on success");
 
-    unsafe {
-        cudf_sys::cudf_column_destroy(out);
-        cudf_sys::cudf_column_destroy(col);
-    };
+    destroy_column(out);
+    destroy_column(col);
 }

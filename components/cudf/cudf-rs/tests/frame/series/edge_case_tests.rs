@@ -148,7 +148,7 @@ fn test_astype_f64_to_i32_truncates() {
 fn test_astype_preserves_nulls() {
     let s = Series::new_nullable::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let result = s.astype(TypeId::Float64).unwrap();
-    let vals = result.to_vec_optional::<f64>().unwrap();
+    let vals = result.to_optional_vec::<f64>().unwrap();
     assert_eq!(vals, vec![Some(10.0), None, Some(30.0)]);
 }
 
@@ -211,7 +211,7 @@ fn test_isin_with_null_in_source() {
     let s = Series::new_nullable::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let vals = Series::new::<i32>("vals", &[10, 30]).unwrap();
     let result = s.isin(&vals).unwrap();
-    let rv = result.to_vec_optional::<bool>().unwrap();
+    let rv = result.to_optional_vec::<bool>().unwrap();
     // 10 is in vals -> true, null isin anything -> null, 30 is in vals -> true
     assert_eq!(rv[0], Some(true));
     assert_eq!(rv[1], None);
@@ -225,7 +225,7 @@ fn test_fillna_with_series_both_have_nulls() {
     let s = Series::new_nullable::<i32>("x", &[10, 0, 0], &[true, false, false]).unwrap();
     let fill = Series::new_nullable::<i32>("f", &[0, 20, 0], &[true, true, false]).unwrap();
     let result = s.fillna_with_series(&fill).unwrap();
-    let vals = result.to_vec_optional::<i32>().unwrap();
+    let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(10), Some(20), None]);
 }
 
@@ -243,7 +243,7 @@ fn test_factorize_with_nulls() {
     let (codes, uniques) = s.factorize().unwrap();
     assert_eq!(codes.len(), 5);
     // The codes for valid values of 1 should be the same
-    let code_vals = codes.to_vec_optional::<i32>().unwrap();
+    let code_vals = codes.to_optional_vec::<i32>().unwrap();
     // Positions 0 and 4 both have value 1, so their codes should match
     assert_eq!(code_vals[0], code_vals[4]);
     // Positions 1 and 3 are null
@@ -316,7 +316,7 @@ fn test_dataframe_dropna_with_mixed_nulls() {
     // Only row 2 (index 2) has no nulls in either column
     assert_eq!(result.num_rows(), 1);
     let col_a = result.series("a").unwrap();
-    assert_eq!(col_a.to_vec_optional::<i32>().unwrap(), vec![Some(3)]);
+    assert_eq!(col_a.to_optional_vec::<i32>().unwrap(), vec![Some(3)]);
 }
 
 #[test]
@@ -326,6 +326,6 @@ fn test_dataframe_cast_column_preserves_nulls() {
     let df = DataFrame::from_series(vec![a]).unwrap();
     let result = df.cast_column("a", DataType::new(TypeId::Float64)).unwrap();
     let col = result.series("a").unwrap();
-    let vals = col.to_vec_optional::<f64>().unwrap();
+    let vals = col.to_optional_vec::<f64>().unwrap();
     assert_eq!(vals, vec![Some(10.0), None, Some(30.0)]);
 }

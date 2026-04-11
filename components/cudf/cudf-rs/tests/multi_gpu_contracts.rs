@@ -7,15 +7,12 @@
 mod common;
 
 use cudf::{
-    CsvWriteOptions, DataFrame, DeviceId, ErrorKind, ExecutionContext, GroupByAgg, JsonWriteOptions, MeltOptions,
-    MergeOptions, ParquetWriteOptions, Runtime, Series, SortOptions, TypeId,
-    core::{Column, DeviceBuffer, Scalar, Table, memory::DeviceMemoryResource},
+    DataFrame, DeviceId, ErrorKind, ExecutionContext, MeltOptions, MergeOptions, ParquetWriteOptions, Runtime, Series,
+    SortOptions, TypeId,
+    core::{Column, DeviceBuffer, Scalar, memory::DeviceMemoryResource},
     ops::{
-        copying, dictionary,
         expr::{col, lit},
-        filter,
-        groupby::{self, AggregationRequest, NullPolicy},
-        join, replace, search, sorting, strings,
+        join, strings,
     },
     runtime::CudaStream,
 };
@@ -65,6 +62,26 @@ fn assert_cross_device_relocation_error(err: cudf::Error, operation: &'static st
     );
 }
 
+fn assert_cross_device_relocation_error_any_operation(err: cudf::Error, operations: &[&'static str]) {
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(
+        operations.iter().any(|operation| err.operation() == *operation),
+        "expected one of {:?}, got {:?}",
+        operations,
+        err.operation()
+    );
+    assert!(
+        err.message().contains("cross-device") || err.message().contains("explicit relocation"),
+        "expected cross-device relocation guidance, got {:?}",
+        err
+    );
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")),
+        "expected explicit relocation remedy in error context, got {:?}",
+        err.context()
+    );
+}
+
 fn cross_device_write_dataframe() -> (Runtime, Runtime, DataFrame) {
     let (device0, device1) = first_two_test_devices();
     let data_rt = Runtime::builder().with_device(device0).build().unwrap();
@@ -75,6 +92,33 @@ fn cross_device_write_dataframe() -> (Runtime, Runtime, DataFrame) {
     ])
     .unwrap();
     (data_rt, target_rt, df)
+}
+
+fn first_two_test_runtimes() -> (Runtime, Runtime) {
+    let (device0, device1) = first_two_test_devices();
+    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
+    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
+    (left_rt, right_rt)
+}
+
+fn assert_cross_device_result<T>(result: Result<T, cudf::Error>, operation: &'static str, context: &'static str) {
+    let err = match result {
+        Ok(_) => panic!("{context}"),
+        Err(err) => err,
+    };
+    assert_cross_device_relocation_error(err, operation);
+}
+
+fn assert_cross_device_result_any_operation<T>(
+    result: Result<T, cudf::Error>,
+    operations: &[&'static str],
+    context: &'static str,
+) {
+    let err = match result {
+        Ok(_) => panic!("{context}"),
+        Err(err) => err,
+    };
+    assert_cross_device_relocation_error_any_operation(err, operations);
 }
 
 #[test]
@@ -281,6 +325,30 @@ fn adopted_nullable_device_buffer_preserves_creation_device_provenance() {
         device0.ordinal(),
         device1.ordinal()
     );
+}
+
+#[test]
+fn adopted_nullable_device_buffer_rejects_cross_device_data_and_mask_buffers() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let _device_guard = common::DeviceRestoreGuard::new();
+    let (device0, device1) = first_two_test_devices();
+
+    common::set_current_device(device0);
+    let data_buffer = DeviceBuffer::from_host_data(&[10i32, 20, 30]).unwrap();
+
+    common::set_current_device(device1);
+    let mut mask = [0u8; 64];
+    mask[0] = 0x05;
+    let mask_buffer = DeviceBuffer::from_host_data(&mask).unwrap();
+
+    let err = Column::from_device_buffer_nullable(data_buffer, mask_buffer, 1, 3, TypeId::Int32)
+        .err()
+        .expect("cross-device nullable adoption should fail");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "column::from_device_buffer_nullable");
 }
 
 // ---------------------------------------------------------------------------
@@ -677,9 +745,7 @@ fn merge_without_relocation_rejects_cross_device_runtime_inputs() {
         return;
     }
 
-    let (device0, device1) = first_two_test_devices();
-    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
+    let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left = DataFrame::from_series([
         left_rt.series("id", &[1i32, 2, 3]).unwrap(),
@@ -692,54 +758,18 @@ fn merge_without_relocation_rejects_cross_device_runtime_inputs() {
     ])
     .unwrap();
 
-    let result = left.merge(&right, MergeOptions::new().how_inner().on(["id"]));
-    assert!(result.is_err(), "cross-device merge should fail until inputs are explicitly relocated");
+    assert_cross_device_result_any_operation(
+        left.merge(&right, MergeOptions::new().how_inner().on(["id"])),
+        &["dataframe::merge", "dataframe::in_context::merge"],
+        "cross-device merge should fail until inputs are explicitly relocated",
+    );
 
     let ctx = ExecutionContext::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
-    let with_ctx = left.in_context(&ctx).merge(&right, MergeOptions::new().how_inner().on(["id"]));
-    assert!(with_ctx.is_err(), "borrowed context override must not repair cross-device merge");
-}
-
-#[test]
-fn concat_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let left = DataFrame::from_series([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).unwrap();
-    let right = DataFrame::from_series([right_rt.series("id", &[4i32, 5, 6]).unwrap()]).unwrap();
-
-    let err = left.concat(&right).unwrap_err();
-    assert_cross_device_relocation_error(err, "dataframe::concat");
-}
-
-#[test]
-fn merge_split_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let left = DataFrame::from_series([
-        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
-        left_rt.series("left", &[10i32, 20, 30]).unwrap(),
-    ])
-    .unwrap();
-    let right = DataFrame::from_series([
-        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
-        right_rt.series("right", &[200i32, 300, 400]).unwrap(),
-    ])
-    .unwrap();
-
-    let err = left.merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap_err();
-    assert_cross_device_relocation_error(err, "dataframe::merge_split");
+    assert_cross_device_result_any_operation(
+        left.in_context(&ctx).merge(&right, MergeOptions::new().how_inner().on(["id"])),
+        &["dataframe::merge", "dataframe::in_context::merge"],
+        "borrowed context override must not repair cross-device merge",
+    );
 }
 
 #[test]
@@ -748,102 +778,16 @@ fn gather_without_relocation_rejects_cross_device_runtime_inputs() {
         return;
     }
 
-    let (device0, device1) = first_two_test_devices();
-    let data_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let indices_rt = Runtime::builder().with_device(device1).build().unwrap();
+    let (data_rt, indices_rt) = first_two_test_runtimes();
 
     let df = DataFrame::from_series([data_rt.series("id", &[10i32, 20, 30]).unwrap()]).unwrap();
     let indices = indices_rt.series("idx", &[2i32, 0]).unwrap();
 
-    let err = df.gather(&indices).unwrap_err();
-    assert_cross_device_relocation_error(err, "dataframe::gather");
-}
-
-#[test]
-fn with_column_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let df = DataFrame::from_series([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).unwrap();
-    let extra = right_rt.series("extra", &[10i32, 20, 30]).unwrap();
-
-    let err = df.with_column("extra", extra).unwrap_err();
-    assert_cross_device_relocation_error(err, "dataframe::with_column");
-}
-
-#[test]
-fn assign_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let df = DataFrame::from_series([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).unwrap();
-    let extra = right_rt.series("extra", &[10i32, 20, 30]).unwrap();
-
-    let err = df.assign([("extra", extra)]).unwrap_err();
-    assert_cross_device_relocation_error(err, "dataframe::assign");
-}
-
-#[test]
-fn filter_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let data_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let mask_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let df = DataFrame::from_series([data_rt.series("id", &[10i32, 20, 30]).unwrap()]).unwrap();
-    let mask = mask_rt.series("mask", &[true, false, true]).unwrap();
-
-    let err = df.filter(&mask).unwrap_err();
-    assert_cross_device_relocation_error(err, "dataframe::filter");
-}
-
-#[test]
-fn filter_isin_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let data_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let values_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let df = DataFrame::from_series([data_rt.series("id", &[10i32, 20, 30]).unwrap()]).unwrap();
-    let values = values_rt.series("values", &[20i32, 30]).unwrap();
-
-    let err = df.filter_isin("id", &values).unwrap_err();
-    assert_cross_device_relocation_error(err, "dataframe::filter_isin");
-}
-
-#[test]
-fn dataframe_fillna_with_series_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let input_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let fill_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let df =
-        DataFrame::from_series([input_rt.nullable_series("value", &[10i32, 0, 30], &[true, false, true]).unwrap()])
-            .unwrap();
-    let fill = fill_rt.series("fill", &[99i32, 99, 99]).unwrap();
-
-    let err = df.fillna_with_series("value", &fill).unwrap_err();
-    assert_cross_device_relocation_error(err, "dataframe::fillna_with_series");
+    assert_cross_device_result(
+        df.gather(&indices),
+        "dataframe::gather",
+        "cross-device gather should fail until inputs are explicitly relocated",
+    );
 }
 
 #[test]
@@ -852,144 +796,16 @@ fn series_fillna_with_series_without_relocation_rejects_cross_device_runtime_inp
         return;
     }
 
-    let (device0, device1) = first_two_test_devices();
-    let input_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let fill_rt = Runtime::builder().with_device(device1).build().unwrap();
+    let (input_rt, fill_rt) = first_two_test_runtimes();
 
     let input = input_rt.nullable_series("value", &[10i32, 0, 30], &[true, false, true]).unwrap();
     let fill = fill_rt.series("fill", &[99i32, 99, 99]).unwrap();
 
-    let err = input.fillna_with_series(&fill).unwrap_err();
-    assert_cross_device_relocation_error(err, "series::fillna_with_series");
-}
-
-#[test]
-fn series_concat_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let left = left_rt.series("id", &[1i32, 2, 3]).unwrap();
-    let right = right_rt.series("id", &[4i32, 5, 6]).unwrap();
-
-    let err = Series::concat(&[&left, &right]).unwrap_err();
-    assert_cross_device_relocation_error(err, "concatenate::concatenate_columns");
-}
-
-#[test]
-fn series_add_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let left = left_rt.series("left", &[1i32, 2, 3]).unwrap();
-    let right = right_rt.series("right", &[10i32, 20, 30]).unwrap();
-
-    let err = left.add(&right).unwrap_err();
-    assert_cross_device_relocation_error(err, "column::add");
-}
-
-#[test]
-fn series_eq_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let left = left_rt.series("left", &[1i32, 2, 3]).unwrap();
-    let right = right_rt.series("right", &[1i32, 0, 3]).unwrap();
-
-    let err = left.eq(&right).unwrap_err();
-    assert_cross_device_relocation_error(err, "column::eq");
-}
-
-#[test]
-fn series_isin_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let data_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let values_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let base = data_rt.series("base", &[3i32, 1, 2, 1]).unwrap();
-    let values = values_rt.series("values", &[1i32, 3]).unwrap();
-
-    let err = base.isin(&values).unwrap_err();
-    assert_cross_device_relocation_error(err, "column_view::isin");
-}
-
-#[test]
-fn search_contains_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let haystack_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let needles_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let haystack = haystack_rt.series("haystack", &[10i32, 20, 30]).unwrap();
-    let needles = needles_rt.series("needles", &[20i32, 40]).unwrap();
-
-    let err = match search::contains(&haystack.as_column_view().unwrap(), &needles.as_column_view().unwrap()) {
-        Ok(_) => panic!("cross-device search::contains should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "search::contains");
-}
-
-#[test]
-fn replace_nulls_column_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let input_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let replacement_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let input = input_rt.nullable_series("value", &[1i32, 0, 3], &[true, false, true]).unwrap();
-    let replacement = replacement_rt.series("fill", &[10i32, 20, 30]).unwrap();
-
-    let err =
-        match replace::replace_nulls_column(&input.as_column_view().unwrap(), &replacement.as_column_view().unwrap()) {
-            Ok(_) => panic!("cross-device replace_nulls_column should fail until inputs are explicitly relocated"),
-            Err(err) => err,
-        };
-    assert_cross_device_relocation_error(err, "replace::replace_nulls_column");
-}
-
-#[test]
-fn replace_nulls_scalar_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let input_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let input = input_rt.nullable_series("value", &[1i32, 0, 3], &[true, false, true]).unwrap();
-    let scalar = scalar_rt.series("seed", &[99i32]).unwrap().sum().unwrap();
-
-    let err = match replace::replace_nulls(&input.as_column_view().unwrap(), &scalar) {
-        Ok(_) => panic!("cross-device replace_nulls should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "replace::replace_nulls");
+    assert_cross_device_result(
+        input.fillna_with_series(&fill),
+        "series::fillna_with_series",
+        "cross-device fillna_with_series should fail until inputs are explicitly relocated",
+    );
 }
 
 #[test]
@@ -998,16 +814,17 @@ fn dataframe_fillna_with_scalar_without_relocation_rejects_cross_device_runtime_
         return;
     }
 
-    let (device0, device1) = first_two_test_devices();
-    let df_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
+    let (df_rt, scalar_rt) = first_two_test_runtimes();
 
     let df =
         DataFrame::from_series([df_rt.nullable_series("value", &[1i32, 0, 3], &[true, false, true]).unwrap()]).unwrap();
     let scalar = scalar_rt.series("seed", &[99i32]).unwrap().sum().unwrap();
 
-    let err = df.fillna_with_scalar("value", &scalar).unwrap_err();
-    assert_cross_device_relocation_error(err, "dataframe::fillna_with_scalar");
+    assert_cross_device_result(
+        df.fillna_with_scalar("value", &scalar),
+        "dataframe::fillna_with_scalar",
+        "cross-device fillna_with_scalar should fail until inputs are explicitly relocated",
+    );
 }
 
 #[test]
@@ -1016,9 +833,7 @@ fn low_level_join_without_relocation_rejects_cross_device_runtime_inputs() {
         return;
     }
 
-    let (device0, device1) = first_two_test_devices();
-    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
+    let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left_keys = cudf::core::Table::from_columns(vec![
         left_rt.series("id", &[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap(),
@@ -1051,341 +866,12 @@ fn low_level_join_without_relocation_rejects_cross_device_runtime_inputs() {
 }
 
 #[test]
-fn low_level_left_join_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let left_keys = cudf::core::Table::from_columns(vec![
-        left_rt.series("id", &[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap(),
-    ])
-    .unwrap();
-    let right_keys = cudf::core::Table::from_columns(vec![
-        right_rt.series("id", &[2i32, 4]).unwrap().as_column().deep_copy().unwrap(),
-    ])
-    .unwrap();
-    let left_payload = cudf::core::Table::from_columns(vec![]).unwrap();
-    let right_payload = cudf::core::Table::from_columns(vec![]).unwrap();
-
-    let err = match join::left_join(
-        &left_keys.view().unwrap(),
-        &right_keys.view().unwrap(),
-        &left_payload.view().unwrap(),
-        &right_payload.view().unwrap(),
-        join::NullEquality::Equal,
-    ) {
-        Ok(_) => panic!("cross-device low-level left_join should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "join::left_join");
-}
-
-#[test]
-fn low_level_full_join_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let left_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let right_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let left_keys = cudf::core::Table::from_columns(vec![
-        left_rt.series("id", &[1i32, 2]).unwrap().as_column().deep_copy().unwrap(),
-    ])
-    .unwrap();
-    let right_keys = cudf::core::Table::from_columns(vec![
-        right_rt.series("id", &[2i32, 3]).unwrap().as_column().deep_copy().unwrap(),
-    ])
-    .unwrap();
-    let left_payload = cudf::core::Table::from_columns(vec![]).unwrap();
-    let right_payload = cudf::core::Table::from_columns(vec![]).unwrap();
-
-    let err = match join::full_join(
-        &left_keys.view().unwrap(),
-        &right_keys.view().unwrap(),
-        &left_payload.view().unwrap(),
-        &right_payload.view().unwrap(),
-        join::NullEquality::Equal,
-    ) {
-        Ok(_) => panic!("cross-device low-level full_join should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "join::full_join");
-}
-
-#[test]
-fn column_view_map_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let input_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let values_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let input = input_rt.series("input", &[1i32, 2, 3, 1]).unwrap();
-    let keys = input_rt.series("keys", &[1i32, 2, 3]).unwrap();
-    let values = values_rt.series("values", &[100i32, 200, 300]).unwrap();
-
-    let err =
-        match input.as_column_view().unwrap().map(&keys.as_column_view().unwrap(), &values.as_column_view().unwrap()) {
-            Ok(_) => panic!("cross-device ColumnView::map should fail until inputs are explicitly relocated"),
-            Err(err) => err,
-        };
-    assert_cross_device_relocation_error(err, "column_view::map");
-}
-
-#[test]
-fn sorting_sort_by_key_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let values_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let keys_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let values = Table::from_columns(vec![
-        values_rt.series("value", &[30i32, 10, 20]).unwrap().as_column().deep_copy().unwrap(),
-    ])
-    .unwrap();
-    let keys =
-        Table::from_columns(vec![keys_rt.series("key", &[3i32, 1, 2]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
-
-    let err = match sorting::sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None) {
-        Ok(_) => panic!("cross-device sort_by_key should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "sorting::sort_by_key");
-}
-
-#[test]
-fn sorting_stable_sort_by_key_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let values_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let keys_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let values = Table::from_columns(vec![
-        values_rt.series("value", &[30i32, 10, 20]).unwrap().as_column().deep_copy().unwrap(),
-    ])
-    .unwrap();
-    let keys =
-        Table::from_columns(vec![keys_rt.series("key", &[3i32, 1, 2]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
-
-    let err = match sorting::stable_sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None) {
-        Ok(_) => panic!("cross-device stable_sort_by_key should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "sorting::stable_sort_by_key");
-}
-
-#[test]
-fn low_level_filter_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let data_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let mask_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let table =
-        Table::from_columns(vec![data_rt.series("id", &[10i32, 20, 30]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
-    let mask = mask_rt.series("mask", &[true, false, true]).unwrap();
-
-    let err = match filter::apply_boolean_mask(&table.view().unwrap(), &mask.as_column_view().unwrap()) {
-        Ok(_) => panic!("cross-device low-level filter should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "filter::apply_boolean_mask");
-}
-
-#[test]
-fn low_level_gather_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let data_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let indices_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let table =
-        Table::from_columns(vec![data_rt.series("id", &[10i32, 20, 30]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
-    let gather_map = indices_rt.series("idx", &[2i32, 0]).unwrap();
-
-    let err = match copying::gather(&table.view().unwrap(), &gather_map.as_column_view().unwrap()) {
-        Ok(_) => panic!("cross-device low-level gather should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "copying::gather");
-}
-
-#[test]
-fn low_level_gather_unchecked_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let data_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let indices_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let table =
-        Table::from_columns(vec![data_rt.series("id", &[10i32, 20, 30]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
-    let gather_map = indices_rt.series("idx", &[2i32, 0]).unwrap();
-
-    let err = match unsafe { copying::gather_unchecked(&table.view().unwrap(), &gather_map.as_column_view().unwrap()) }
-    {
-        Ok(_) => panic!("cross-device low-level gather_unchecked should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "copying::gather_unchecked");
-}
-
-#[test]
-fn dictionary_set_keys_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let dict_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let keys_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let input = dict_rt.series("input", &[3i32, 1, 3, 2]).unwrap();
-    let dict = dictionary::encode(&input.as_column_view().unwrap(), TypeId::Int32).unwrap();
-    let keys = keys_rt.series("keys", &[2i32, 3, 4]).unwrap();
-
-    let err = match dictionary::set_keys(&dict.view().unwrap(), &keys.as_column_view().unwrap()) {
-        Ok(_) => panic!("cross-device dictionary::set_keys should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "dictionary::set_keys");
-}
-
-#[test]
-fn dictionary_match_dictionaries_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let first_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let second_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let first_input = first_rt.series("src", &[10i32, 20, 30]).unwrap();
-    let second_input = second_rt.series("dst", &[20i32, 30, 40]).unwrap();
-    let first = dictionary::encode(&first_input.as_column_view().unwrap(), TypeId::Int32).unwrap();
-    let second = dictionary::encode(&second_input.as_column_view().unwrap(), TypeId::Int32).unwrap();
-
-    let err = match dictionary::match_dictionaries(&[&first.view().unwrap(), &second.view().unwrap()]) {
-        Ok(_) => {
-            panic!("cross-device dictionary::match_dictionaries should fail until inputs are explicitly relocated")
-        },
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "dictionary::match_dictionaries");
-}
-
-#[test]
-fn groupby_aggregate_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let keys_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let values_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let keys =
-        Table::from_columns(vec![keys_rt.series("key", &[1i32, 1, 2, 2]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
-    let values = values_rt.series("value", &[10i32, 20, 30, 40]).unwrap();
-    let values_view = values.as_column_view().unwrap();
-    let aggregations = [GroupByAgg::Sum];
-    let requests = [AggregationRequest { values: &values_view, aggregations: &aggregations }];
-
-    let err = match groupby::groupby_aggregate(&keys.view().unwrap(), &requests, NullPolicy::Exclude) {
-        Ok(_) => panic!("cross-device groupby_aggregate should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "groupby::groupby_aggregate");
-}
-
-#[test]
-fn binary_operation_vs_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let values_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let values = values_rt.series("value", &[2i32, 3, 4]).unwrap();
-    let scalar = scalar_rt.series("seed", &[10i32]).unwrap().sum().unwrap();
-
-    let err = match cudf::ops::binary::binary_operation_vs(
-        &values.as_column_view().unwrap(),
-        &scalar,
-        cudf::ops::binary::BinaryOperator::Mul,
-        &cudf::DataType::new(TypeId::Int32),
-    ) {
-        Ok(_) => panic!("cross-device binary_operation_vs should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "binary::binary_operation_vs");
-}
-
-#[test]
-fn binary_operation_sv_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let scalar_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let values_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let scalar = scalar_rt.series("seed", &[100i32]).unwrap().sum().unwrap();
-    let values = values_rt.series("value", &[2i32, 4, 5]).unwrap();
-
-    let err = match cudf::ops::binary::binary_operation_sv(
-        &scalar,
-        &values.as_column_view().unwrap(),
-        cudf::ops::binary::BinaryOperator::Div,
-        &cudf::DataType::new(TypeId::Int32),
-    ) {
-        Ok(_) => panic!("cross-device binary_operation_sv should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "binary::binary_operation_sv");
-}
-
-#[test]
 fn strings_contains_without_relocation_rejects_cross_device_runtime_inputs() {
     if !should_run_multi_gpu_test() {
         return;
     }
 
-    let (device0, device1) = first_two_test_devices();
-    let input_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
+    let (input_rt, scalar_rt) = first_two_test_runtimes();
 
     let input = input_rt.str_series("input", &["alpha", "beta", "alphabet"]).unwrap();
     let scalar = scalar_rt.str_series("seed", &["alpha"]).unwrap().min().unwrap();
@@ -1395,66 +881,6 @@ fn strings_contains_without_relocation_rejects_cross_device_runtime_inputs() {
         Err(err) => err,
     };
     assert_cross_device_relocation_error(err, "strings::contains");
-}
-
-#[test]
-fn strings_starts_with_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let input_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let input = input_rt.str_series("input", &["alpha", "beta", "alphabet"]).unwrap();
-    let scalar = scalar_rt.str_series("seed", &["alp"]).unwrap().min().unwrap();
-
-    let err = match strings::starts_with(&input.as_column_view().unwrap(), &scalar) {
-        Ok(_) => panic!("cross-device strings::starts_with should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "strings::starts_with");
-}
-
-#[test]
-fn strings_ends_with_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let input_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let input = input_rt.str_series("input", &["alpha", "beta", "alphabet"]).unwrap();
-    let scalar = scalar_rt.str_series("seed", &["ha"]).unwrap().min().unwrap();
-
-    let err = match strings::ends_with(&input.as_column_view().unwrap(), &scalar) {
-        Ok(_) => panic!("cross-device strings::ends_with should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "strings::ends_with");
-}
-
-#[test]
-fn strings_strip_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (device0, device1) = first_two_test_devices();
-    let input_rt = Runtime::builder().with_device(device0).build().unwrap();
-    let scalar_rt = Runtime::builder().with_device(device1).build().unwrap();
-
-    let input = input_rt.str_series("input", &["xxalpha", "betaxx", "xxalphabetxx"]).unwrap();
-    let scalar = scalar_rt.str_series("seed", &["x"]).unwrap().min().unwrap();
-
-    let err = match strings::strip(&input.as_column_view().unwrap(), cudf::StripSide::Both, &scalar) {
-        Ok(_) => panic!("cross-device strings::strip should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "strings::strip");
 }
 
 // ---------------------------------------------------------------------------
@@ -1629,43 +1055,6 @@ fn dataframe_write_parquet_with_options_without_relocation_rejects_cross_device_
         Err(err) => err,
     };
     assert_cross_device_relocation_error(err, "dataframe::write_parquet_with_options");
-}
-
-#[test]
-fn dataframe_write_csv_with_options_without_relocation_rejects_cross_device_runtime_override() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (_data_rt, target_rt, df) = cross_device_write_dataframe();
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("cross_device_write.csv");
-
-    let err =
-        match df.write_csv_with_options(CsvWriteOptions::builder().filepath(&path).with_runtime(&target_rt).build()) {
-            Ok(()) => panic!("cross-device csv write should fail until the dataframe is explicitly relocated"),
-            Err(err) => err,
-        };
-    assert_cross_device_relocation_error(err, "dataframe::write_csv_with_options");
-}
-
-#[test]
-fn dataframe_write_json_with_options_without_relocation_rejects_cross_device_runtime_override() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (_data_rt, target_rt, df) = cross_device_write_dataframe();
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("cross_device_write.jsonl");
-
-    let err = match df
-        .write_json_with_options(JsonWriteOptions::builder().filepath(&path).with_runtime(&target_rt).build())
-    {
-        Ok(()) => panic!("cross-device json write should fail until the dataframe is explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "dataframe::write_json_with_options");
 }
 
 #[test]

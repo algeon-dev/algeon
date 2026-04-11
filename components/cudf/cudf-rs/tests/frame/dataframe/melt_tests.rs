@@ -127,7 +127,7 @@ fn test_melt_preserves_nulls_in_values() {
 
     let val_col = result.series("value").unwrap();
     assert_eq!(val_col.null_count(), 1);
-    let vals = val_col.to_vec_optional::<i32>().unwrap();
+    let vals = val_col.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(1), None]);
 }
 

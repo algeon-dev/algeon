@@ -39,10 +39,10 @@ fn test_csv_read_nonexistent_file() {
 
 #[test]
 fn test_parquet_read_nonexistent_file() {
-    let options = cudf::io::parquet::ParquetReadOptions::builder()
+    let options = cudf::io::parquet::ParquetTableReadOptions::builder()
         .filepath("/tmp/nonexistent_cudf_test_file_12345.parquet")
         .build();
-    let result = cudf::io::parquet::read_parquet(&options);
+    let result = cudf::io::parquet::read_parquet_table(&options);
     assert!(result.is_err());
 }
 

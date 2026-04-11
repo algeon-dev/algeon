@@ -353,8 +353,8 @@ fn groupby_median() {
 
     assert_eq!(result.column_names(), vec!["key", "value_median"]);
 
-    let key_data: Vec<Option<i32>> = result.series("key").unwrap().to_vec_optional::<i32>().unwrap();
-    let med_data: Vec<Option<f64>> = result.series("value_median").unwrap().to_vec_optional::<f64>().unwrap();
+    let key_data: Vec<Option<i32>> = result.series("key").unwrap().to_optional_vec::<i32>().unwrap();
+    let med_data: Vec<Option<f64>> = result.series("value_median").unwrap().to_optional_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(Option<i32>, Option<f64>)> = key_data.into_iter().zip(med_data).collect();
     pairs.sort_by_key(|&(k, _)| k);
@@ -371,8 +371,8 @@ fn groupby_median_shortcut() {
 
     assert_eq!(result.column_names(), vec!["key", "value_median"]);
 
-    let key_data: Vec<Option<i32>> = result.series("key").unwrap().to_vec_optional::<i32>().unwrap();
-    let med_data: Vec<Option<f64>> = result.series("value_median").unwrap().to_vec_optional::<f64>().unwrap();
+    let key_data: Vec<Option<i32>> = result.series("key").unwrap().to_optional_vec::<i32>().unwrap();
+    let med_data: Vec<Option<f64>> = result.series("value_median").unwrap().to_optional_vec::<f64>().unwrap();
 
     let mut pairs: Vec<(Option<i32>, Option<f64>)> = key_data.into_iter().zip(med_data).collect();
     pairs.sort_by_key(|&(k, _)| k);

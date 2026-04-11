@@ -32,11 +32,11 @@ fn right_df_asym() -> DataFrame {
 }
 
 fn i32_column(df: &DataFrame, name: &str) -> Vec<i32> {
-    df.series(name).unwrap().to_vec_optional::<i32>().unwrap().into_iter().map(|v| v.unwrap()).collect()
+    df.series(name).unwrap().to_optional_vec::<i32>().unwrap().into_iter().map(|v| v.unwrap()).collect()
 }
 
 fn nullable_i32_column(df: &DataFrame, name: &str) -> Vec<Option<i32>> {
-    df.series(name).unwrap().to_vec_optional::<i32>().unwrap()
+    df.series(name).unwrap().to_optional_vec::<i32>().unwrap()
 }
 
 #[test]

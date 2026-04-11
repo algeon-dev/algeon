@@ -11,6 +11,27 @@ use crate::{
     },
 };
 
+/// Typed-owner recovery failed because the transfer carried a different owner
+/// payload type.
+#[derive(Debug)]
+pub struct OwnerTypeMismatch<T> {
+    transfer: Box<T>,
+}
+
+impl<T> OwnerTypeMismatch<T> {
+    fn new(transfer: T) -> Self {
+        Self { transfer: Box::new(transfer) }
+    }
+
+    pub fn as_transfer(&self) -> &T {
+        &self.transfer
+    }
+
+    pub fn into_transfer(self) -> T {
+        *self.transfer
+    }
+}
+
 /// Ownership-bearing device transfer root for one semantic column.
 #[derive(Debug)]
 pub struct OwnedColumnTransfer {
@@ -156,11 +177,11 @@ impl OwnedColumnTransfer {
 
     /// Consume this transfer and attempt to recover its transport-specific
     /// owner payload by type.
-    pub fn try_into_owner<Owner>(self) -> core::result::Result<Owner, Self>
+    pub fn try_into_owner<Owner>(self) -> core::result::Result<Owner, OwnerTypeMismatch<Self>>
     where Owner: Send + Sync + 'static {
         match self._owner.try_into::<Owner>() {
             Ok(owner) => Ok(owner),
-            Err(owner) => Err(Self {
+            Err(owner) => Err(OwnerTypeMismatch::new(Self {
                 column: self.column,
                 semantic_columns: self.semantic_columns,
                 bindings: self.bindings,
@@ -168,7 +189,7 @@ impl OwnedColumnTransfer {
                 diagnostics: self.diagnostics,
                 release_contract: self.release_contract,
                 _owner: owner,
-            }),
+            })),
         }
     }
 }
@@ -378,11 +399,11 @@ impl OwnedTableTransfer {
 
     /// Consume this transfer and attempt to recover its transport-specific
     /// owner payload by type.
-    pub fn try_into_owner<Owner>(self) -> core::result::Result<Owner, Self>
+    pub fn try_into_owner<Owner>(self) -> core::result::Result<Owner, OwnerTypeMismatch<Self>>
     where Owner: Send + Sync + 'static {
         match self._owner.try_into::<Owner>() {
             Ok(owner) => Ok(owner),
-            Err(owner) => Err(Self {
+            Err(owner) => Err(OwnerTypeMismatch::new(Self {
                 table: self.table,
                 columns: self.columns,
                 semantic_columns: self.semantic_columns,
@@ -391,7 +412,7 @@ impl OwnedTableTransfer {
                 diagnostics: self.diagnostics,
                 release_contract: self.release_contract,
                 _owner: owner,
-            }),
+            })),
         }
     }
 }

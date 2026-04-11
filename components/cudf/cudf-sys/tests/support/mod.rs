@@ -1,3 +1,5 @@
+// Shared by multiple integration-test crates, each of which only uses a subset
+// of these helpers.
 #![allow(dead_code)]
 
 use std::{
@@ -139,13 +141,6 @@ impl OwnedStream {
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     }
 
-    pub fn is_ready(&self) -> bool {
-        let mut out = 0;
-        let st = unsafe { cudf_sys::cudf_stream_is_ready(self.raw, &mut out) };
-        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-        out != 0
-    }
-
     pub fn raw_cuda_stream(&self) -> *mut c_void {
         let mut out = ptr::null_mut();
         let st = unsafe { cudf_sys::cudf_stream_raw(self.raw, &mut out) };
@@ -190,18 +185,6 @@ impl OwnedEvent {
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     }
 
-    pub fn synchronize(&self) {
-        let st = unsafe { cudf_sys::cudf_event_synchronize(self.raw) };
-        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    }
-
-    pub fn is_ready(&self) -> bool {
-        let mut out = 0;
-        let st = unsafe { cudf_sys::cudf_event_is_ready(self.raw, &mut out) };
-        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-        out != 0
-    }
-
     pub fn raw_cuda_event(&self) -> *mut c_void {
         let mut out = ptr::null_mut();
         let st = unsafe { cudf_sys::cudf_event_raw(self.raw, &mut out) };
@@ -235,15 +218,6 @@ impl OwnedMemoryResource {
         Self { raw, device }
     }
 
-    pub fn new_pool(initial_pool_size: usize, maximum_pool_size: usize) -> Self {
-        let device = current_device();
-        let mut raw = ptr::null_mut();
-        let st = unsafe { cudf_sys::cudf_memory_resource_create_pool(initial_pool_size, maximum_pool_size, &mut raw) };
-        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-        assert!(!raw.is_null());
-        Self { raw, device }
-    }
-
     pub fn new_test_stats() -> Self {
         let device = current_device();
         let mut raw = ptr::null_mut();
@@ -251,10 +225,6 @@ impl OwnedMemoryResource {
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert!(!raw.is_null());
         Self { raw, device }
-    }
-
-    pub fn as_raw(&self) -> cudf_sys::cudf_memory_resource_handle {
-        self.raw
     }
 
     pub fn borrowed(&self) -> cudf_sys::BorrowedMemoryResource<'_> {

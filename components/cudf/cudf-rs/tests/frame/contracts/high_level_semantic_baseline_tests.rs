@@ -12,6 +12,8 @@ use std::sync::Arc;
 
 use cudf::{DataFrame, Series, TypeId, core::Column};
 
+use crate::common::dataframe_device_ptr as device_ptr;
+
 // ===========================================================================
 // Helpers
 // ===========================================================================
@@ -21,13 +23,6 @@ fn sample_df() -> DataFrame {
     let ids = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
     let scores = Series::new::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
     DataFrame::from_series([ids, scores]).unwrap()
-}
-
-/// Get device data pointer for a named column in a DataFrame.
-///
-/// Two columns sharing the same GPU buffer will have the same pointer.
-fn device_ptr(df: &DataFrame, name: &str) -> *const std::ffi::c_void {
-    df.series(name).unwrap().as_column_view().unwrap().device_data_ptr().unwrap()
 }
 
 // ===========================================================================
@@ -106,6 +101,22 @@ fn df_contains_check() {
     assert!(df.contains("id"));
     assert!(df.contains("score"));
     assert!(!df.contains("nonexistent"));
+}
+
+/// `iter_series()` yields named series in schema order without copying.
+#[test]
+fn df_iter_series_preserves_schema_order_and_shares_gpu_data() {
+    let df = sample_df();
+    let items: Vec<_> = df.iter_series().collect();
+
+    let names: Vec<_> = items.iter().map(|series| series.name().unwrap().to_string()).collect();
+    assert_eq!(names, vec!["id", "score"]);
+    assert_eq!(items[0].to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(items[1].to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+
+    let iter_ptr = items[0].as_column_view().unwrap().device_data_ptr().unwrap();
+    let direct_ptr = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+    assert_eq!(iter_ptr, direct_ptr);
 }
 
 // ===========================================================================

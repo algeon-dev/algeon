@@ -69,6 +69,15 @@ fn test_column_modulo_i32() {
 }
 
 #[test]
+fn test_column_rem_alias_matches_modulo() {
+    let a = Column::from_slice(&[10i32, 21, 37]).unwrap();
+    let b = Column::from_slice(&[3i32, 7, 5]).unwrap();
+    let result = a.rem(&b).unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![1, 0, 2]);
+}
+
+#[test]
 fn test_column_add_mixed_types() {
     // Int32 + Float64 → Float64
     let a = Column::from_slice(&[1i32, 2, 3]).unwrap();

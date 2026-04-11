@@ -197,7 +197,7 @@ fn test_sort_values_nulls_first() {
     // Sort by id ascending, nulls first.
     let sorted = df.sort_values(["id"], SortOptions::new().with_nulls_first(vec![true])).unwrap();
 
-    let id_vals = sorted.series("id").unwrap().to_vec_optional::<i32>().unwrap();
+    let id_vals = sorted.series("id").unwrap().to_optional_vec::<i32>().unwrap();
     // Nulls should appear first (their host value is 0, but they're null).
     // Then the non-null values in ascending order: 1, 2.
     // The null positions have undefined data values, but the validity mask marks them null.
@@ -218,7 +218,7 @@ fn test_sort_values_default_places_nulls_last() {
 
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
     let id_col = sorted.series("id").unwrap();
-    let id_vals = id_col.to_vec_optional::<i32>().unwrap();
+    let id_vals = id_col.to_optional_vec::<i32>().unwrap();
 
     assert_eq!(id_vals[0], Some(1));
     assert_eq!(id_vals[1], Some(2));

@@ -1,8 +1,8 @@
-//! Tests for high-level primary DataFrame signatures.
+//! Tests for representative high-level DataFrame entrypoint contracts.
 //!
-//! These tests cover the current high-level signatures that accept `Series`
-//! or plain Rust values. Advanced `ColumnView` / `TableView` workflows now
-//! go through `DataFrame::table_view()` plus low-level `cudf::ops::*`.
+//! These tests protect user-visible behavior for the high-level APIs that take
+//! `Series` or plain Rust values, while keeping one low-level smoke path
+//! through `table_view()` plus `cudf::ops::*`.
 
 use cudf::{
     DataFrame, Series,
@@ -27,7 +27,7 @@ fn sample_df() -> DataFrame {
 }
 
 // ===========================================================================
-// 1. gather(&Series) — primary high-level API (was gather_by_series)
+// 1. gather(&Series)
 // ===========================================================================
 
 #[test]
@@ -36,10 +36,10 @@ fn test_gather_with_series() {
     let indices = Series::new::<i32>("idx", &[0, 2, 4]).unwrap();
     let result = df.gather(&indices).unwrap();
     assert_eq!(result.num_rows(), 3);
-    // Gather produces nullable output; use to_vec_optional.
-    assert_eq!(result.series("id").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(10), Some(30), Some(50)]);
+    // Gather produces nullable output; use to_optional_vec.
+    assert_eq!(result.series("id").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(10), Some(30), Some(50)]);
     assert_eq!(
-        result.series("score").unwrap().to_vec_optional::<f64>().unwrap(),
+        result.series("score").unwrap().to_optional_vec::<f64>().unwrap(),
         vec![Some(1.0), Some(3.0), Some(5.0)]
     );
 }
@@ -68,14 +68,14 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
     assert_eq!(last_sync_stream_value(), expected_sync_stream);
 
     reset_sync_observation();
-    // Gather produces nullable output; use to_vec_optional.
-    assert_eq!(result.series("id").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(30), Some(10)]);
-    assert_eq!(result.series("score").unwrap().to_vec_optional::<f64>().unwrap(), vec![Some(3.0), Some(1.0)]);
+    // Gather produces nullable output; use to_optional_vec.
+    assert_eq!(result.series("id").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(30), Some(10)]);
+    assert_eq!(result.series("score").unwrap().to_optional_vec::<f64>().unwrap(), vec![Some(3.0), Some(1.0)]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
 // ===========================================================================
-// 2. filter_isin(&str, &Series) — primary high-level API (was filter_isin_series)
+// 2. filter_isin(&str, &Series)
 // ===========================================================================
 
 #[test]
@@ -134,11 +134,11 @@ fn test_filter_isin_with_series_rejects_missing_column() {
 }
 
 // ===========================================================================
-// 3. fillna<T: CudfType> — primary high-level API (was fillna_scalar)
+// 3. fillna<T: CudfType>
 // ===========================================================================
 
 #[test]
-fn test_fillna_scalar_plain_value() {
+fn test_fillna_with_plain_value() {
     let ids = Series::new_nullable::<i32>("id", &[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
     let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
     let df = DataFrame::from_series([ids, scores]).unwrap();
@@ -174,7 +174,7 @@ fn test_fillna_rejects_missing_column() {
 }
 
 // ===========================================================================
-// 4. factorize returns (Series, Series) — implemented (P2-E)
+// 4. factorize returns (Series, Series)
 // ===========================================================================
 
 #[test]
@@ -201,10 +201,10 @@ fn test_advanced_gather_still_works_via_table_view_and_ops() {
     let result = DataFrame::from_table(result, vec!["id".to_string(), "score".to_string()]).unwrap();
 
     assert_eq!(result.num_rows(), 3);
-    // Gather produces nullable output; use to_vec_optional.
-    assert_eq!(result.series("id").unwrap().to_vec_optional::<i32>().unwrap(), vec![Some(10), Some(30), Some(50)]);
+    // Gather produces nullable output; use to_optional_vec.
+    assert_eq!(result.series("id").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(10), Some(30), Some(50)]);
     assert_eq!(
-        result.series("score").unwrap().to_vec_optional::<f64>().unwrap(),
+        result.series("score").unwrap().to_optional_vec::<f64>().unwrap(),
         vec![Some(1.0), Some(3.0), Some(5.0)]
     );
     // Schema preserved.

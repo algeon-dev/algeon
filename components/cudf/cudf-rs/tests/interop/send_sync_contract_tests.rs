@@ -80,6 +80,7 @@ fn owned_column_transfer_round_trips_across_thread_boundary() {
 
 #[test]
 fn prepared_column_export_can_activate_and_complete_on_worker_thread() {
+    let _observation_lock = common::lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
     let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_column_export().unwrap();
@@ -121,6 +122,7 @@ fn prepared_table_export_survives_cross_thread_cross_device_completion_stress() 
         return;
     }
 
+    let _observation_lock = common::lock_event_observation();
     let _device_guard = common::DeviceRestoreGuard::new();
     let devices = available_test_devices();
     let producer_device = devices[0];

@@ -1,7 +1,8 @@
-//! Tests for Series naming authority in DataFrame construction.
+//! Tests for DataFrame construction contracts.
 //!
-//! Validates that `DataFrame::from_series` uses Series-carried names,
-//! and `DataFrame::from_named_pairs` provides explicit schema override.
+//! These cases protect how schema names are sourced during construction:
+//! `DataFrame::from_series` uses `Series` names, while
+//! `DataFrame::from_named_pairs` applies explicit schema names.
 
 use cudf::{DataFrame, ErrorKind, Series};
 

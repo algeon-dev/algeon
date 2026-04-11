@@ -39,7 +39,7 @@ fn test_str_lower_preserves_name() {
 fn test_str_upper_preserves_nulls() {
     let s = Series::from_strs_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str().upper().unwrap();
-    let vals = result.to_strings_optional().unwrap();
+    let vals = result.to_optional_strings().unwrap();
     assert_eq!(vals, vec![Some("HELLO".to_string()), None, Some("WORLD".to_string())]);
 }
 
@@ -74,7 +74,7 @@ fn test_str_contains_empty_pattern_matches_all() {
 fn test_str_contains_preserves_nulls() {
     let s = Series::from_strs_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str().contains("hello").unwrap();
-    let vals = result.to_vec_optional::<bool>().unwrap();
+    let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
@@ -109,7 +109,7 @@ fn test_str_endswith_basic() {
 fn test_str_startswith_preserves_nulls() {
     let s = Series::from_strs_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str().starts_with("hel").unwrap();
-    let vals = result.to_vec_optional::<bool>().unwrap();
+    let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
@@ -117,7 +117,7 @@ fn test_str_startswith_preserves_nulls() {
 fn test_str_endswith_preserves_nulls() {
     let s = Series::from_strs_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str().ends_with("rld").unwrap();
-    let vals = result.to_vec_optional::<bool>().unwrap();
+    let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(false), None, Some(true)]);
 }
 
@@ -161,7 +161,7 @@ fn test_str_strip_specific_chars() {
 fn test_str_strip_preserves_nulls() {
     let s = Series::from_strs_nullable("s", &["  hi  ", "x", "  there  "], &[true, false, true]).unwrap();
     let result = s.str().strip().unwrap();
-    let vals = result.to_strings_optional().unwrap();
+    let vals = result.to_optional_strings().unwrap();
     assert_eq!(vals, vec![Some("hi".to_string()), None, Some("there".to_string())]);
 }
 
@@ -205,7 +205,7 @@ fn test_str_byte_count_utf8() {
 fn test_str_len_preserves_nulls() {
     let s = Series::from_strs_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str().len().unwrap();
-    let vals = result.to_vec_optional::<i32>().unwrap();
+    let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(5), None, Some(5)]);
 }
 

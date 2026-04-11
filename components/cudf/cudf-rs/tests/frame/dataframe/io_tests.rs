@@ -121,9 +121,9 @@ fn test_read_csv_returns_dataframe_with_schema() {
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["id", "value"]);
-    // CSV read produces nullable columns; use to_vec_optional.
-    assert_eq!(df.series("id").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(1), Some(2), Some(3)]);
-    assert_eq!(df.series("value").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(10), Some(20), Some(30)]);
+    // CSV read produces nullable columns; use to_optional_vec.
+    assert_eq!(df.series("id").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(1), Some(2), Some(3)]);
+    assert_eq!(df.series("value").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(10), Some(20), Some(30)]);
 }
 
 #[test]
@@ -144,9 +144,9 @@ fn test_read_csv_with_options_supports_delimiter_and_explicit_names() {
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["left", "right"]);
-    // CSV read produces nullable columns; use to_vec_optional.
-    assert_eq!(df.series("left").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(1), Some(2), Some(3)]);
-    assert_eq!(df.series("right").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(10), Some(20), Some(30)]);
+    // CSV read produces nullable columns; use to_optional_vec.
+    assert_eq!(df.series("left").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(1), Some(2), Some(3)]);
+    assert_eq!(df.series("right").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(10), Some(20), Some(30)]);
 }
 
 #[test]
@@ -160,9 +160,9 @@ fn test_read_csv_without_header_uses_generated_names() {
     let df = DataFrame::read_csv_with_options(opts).unwrap();
 
     assert_eq!(df.column_names(), vec!["column_0", "column_1"]);
-    // CSV read produces nullable columns; use to_vec_optional.
-    assert_eq!(df.series("column_0").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(4), Some(5)]);
-    assert_eq!(df.series("column_1").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(40), Some(50)]);
+    // CSV read produces nullable columns; use to_optional_vec.
+    assert_eq!(df.series("column_0").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(4), Some(5)]);
+    assert_eq!(df.series("column_1").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(40), Some(50)]);
 }
 
 #[test]
@@ -182,9 +182,9 @@ fn test_read_csv_without_header_generates_fallback_names_only_at_dataframe_layer
         DataFrame::read_csv_with_options(CsvReadOptions::builder().filepath(&path).has_header(false).build()).unwrap();
 
     assert_eq!(df.column_names(), vec!["column_0", "column_1"]);
-    // CSV read produces nullable columns; use to_vec_optional.
-    assert_eq!(df.series("column_0").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(11), Some(12)]);
-    assert_eq!(df.series("column_1").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(110), Some(120)]);
+    // CSV read produces nullable columns; use to_optional_vec.
+    assert_eq!(df.series("column_0").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(11), Some(12)]);
+    assert_eq!(df.series("column_1").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(110), Some(120)]);
 }
 
 #[test]
@@ -198,9 +198,9 @@ fn test_read_csv_explicit_names_override_header_names() {
     let df = DataFrame::read_csv_with_options(opts).unwrap();
 
     assert_eq!(df.column_names(), vec!["new_a", "new_b"]);
-    // CSV read produces nullable columns; use to_vec_optional.
-    assert_eq!(df.series("new_a").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(7), Some(8)]);
-    assert_eq!(df.series("new_b").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(70), Some(80)]);
+    // CSV read produces nullable columns; use to_optional_vec.
+    assert_eq!(df.series("new_a").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(7), Some(8)]);
+    assert_eq!(df.series("new_b").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(70), Some(80)]);
 }
 
 #[test]
@@ -219,9 +219,9 @@ fn test_write_csv_preserves_dataframe_schema() {
 
     let df2 = DataFrame::read_csv(&path).unwrap();
     assert_eq!(df2.column_names(), vec!["x", "y"]);
-    // CSV read-back produces nullable columns; use to_vec_optional.
-    assert_eq!(df2.series("x").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(100), Some(200)]);
-    assert_eq!(df2.series("y").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(1), Some(2)]);
+    // CSV read-back produces nullable columns; use to_optional_vec.
+    assert_eq!(df2.series("x").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(100), Some(200)]);
+    assert_eq!(df2.series("y").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(1), Some(2)]);
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn test_write_csv_with_options_supports_delimiter_and_header_toggle() {
     let df2 = DataFrame::read_csv_with_options(read_opts).unwrap();
 
     assert_eq!(df2.column_names(), vec!["left", "right"]);
-    // CSV read-back produces nullable columns; use to_vec_optional.
-    assert_eq!(df2.series("left").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(9), Some(8)]);
-    assert_eq!(df2.series("right").unwrap().to_vec_optional::<i64>().unwrap(), vec![Some(90), Some(80)]);
+    // CSV read-back produces nullable columns; use to_optional_vec.
+    assert_eq!(df2.series("left").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(9), Some(8)]);
+    assert_eq!(df2.series("right").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(90), Some(80)]);
 }

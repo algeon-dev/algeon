@@ -38,11 +38,11 @@ fn right_df_asym() -> DataFrame {
 }
 
 fn nullable_i32_column(df: &DataFrame, name: &str) -> Vec<Option<i32>> {
-    df.series(name).unwrap().to_vec_optional::<i32>().unwrap()
+    df.series(name).unwrap().to_optional_vec::<i32>().unwrap()
 }
 
 fn i32_column(df: &DataFrame, name: &str) -> Vec<i32> {
-    df.series(name).unwrap().to_vec_optional::<i32>().unwrap().into_iter().map(|v| v.unwrap()).collect()
+    df.series(name).unwrap().to_optional_vec::<i32>().unwrap().into_iter().map(|v| v.unwrap()).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
 
     // Verify materialized values from the full merge result.
     reset_sync_observation();
-    let mut ids = result.series("id").unwrap().to_vec_optional::<i32>().unwrap();
+    let mut ids = result.series("id").unwrap().to_optional_vec::<i32>().unwrap();
     ids.sort();
     assert_eq!(ids, vec![Some(1), Some(2), Some(3), Some(4)]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
@@ -385,7 +385,7 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
 
     // Verify materialized values from the full merge result.
     reset_sync_observation();
-    let mut ids = result.series("id").unwrap().to_vec_optional::<i32>().unwrap();
+    let mut ids = result.series("id").unwrap().to_optional_vec::<i32>().unwrap();
     ids.sort();
     assert_eq!(ids, vec![Some(1), Some(2), Some(3), Some(4)]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
