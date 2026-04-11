@@ -21,7 +21,19 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
         let mut partials = Vec::with_capacity(chunks.len());
         for chunk in chunks {
             context.check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler")?;
-            partials.extend(execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)?);
+            let chunk_partials = match execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)
+            {
+                Ok(partials) => partials,
+                Err(error) => {
+                    release_committed_partials_reverse(reservations, partials, metrics);
+                    return Err(error);
+                },
+            };
+            partials.extend(chunk_partials);
+            if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
+                release_committed_partials_reverse(reservations, partials, metrics);
+                return Err(error);
+            }
         }
         return Ok(partials);
     }
