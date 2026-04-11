@@ -453,6 +453,7 @@ struct AdmissionState {
 #[derive(Debug, Clone)]
 struct ActiveAdaptiveGrant {
     device_ordinal: usize,
+    min_bytes: u64,
     target_bytes: u64,
     memory_grant: MemoryGrant,
 }
@@ -1339,6 +1340,7 @@ impl QueryService {
             query_id,
             ActiveAdaptiveGrant {
                 device_ordinal,
+                min_bytes: grant_policy.min_bytes,
                 target_bytes: grant_policy.want_bytes,
                 memory_grant: memory_grant.clone(),
             },
@@ -1367,7 +1369,8 @@ impl QueryService {
                 continue;
             };
             let current_bytes = active.memory_grant.budget_bytes();
-            if current_bytes >= active.target_bytes {
+            let target_bytes = active.target_bytes.max(active.min_bytes);
+            if current_bytes >= target_bytes {
                 state.active_adaptive_grants.remove(&query_id);
                 continue;
             }
@@ -1381,10 +1384,10 @@ impl QueryService {
             if available_bytes == 0 {
                 continue;
             }
-            let grow_bytes = active.target_bytes.saturating_sub(current_bytes).min(available_bytes);
+            let grow_bytes = target_bytes.saturating_sub(current_bytes).min(available_bytes);
             match active.memory_grant.try_grow(grow_bytes) {
                 Ok(true) => {
-                    if active.memory_grant.budget_bytes() >= active.target_bytes {
+                    if active.memory_grant.budget_bytes() >= target_bytes {
                         state.active_adaptive_grants.remove(&query_id);
                     }
                 },
