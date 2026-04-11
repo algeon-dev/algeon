@@ -1,7 +1,12 @@
 //! Graph construction and management.
 //!
-//! A [`Graph`] is the central data structure for cuGraph algorithms. It is
-//! constructed from an edge list via [`GraphBuilder`] and freed on drop.
+//! A [`Graph`] is the central data structure for cuGraph algorithms.
+//!
+//! Most callers should construct graphs through
+//! [`crate::cudf_interop`] from cudf
+//! [`Series`](cudf::Series)/[`DataFrame`](cudf::DataFrame) inputs. This module
+//! documents the lower-level graph object itself plus [`GraphBuilder`], which
+//! is useful when edge lists are already materialized as typed device arrays.
 //!
 //! # Type-state encoding
 //!
@@ -17,20 +22,22 @@
 //! Algorithms that work with either layout (e.g. betweenness centrality,
 //! Force Atlas 2, out_degrees) are generic over `T: Transposition`.
 //!
-//! # Example
+//! # Low-level builder example
 //!
 //! ```no_run
 //! # use cugraph::{DeviceArray, GraphBuilder, ResourceHandle, Transposed};
 //! # let handle = ResourceHandle::for_current_device().unwrap();
 //! # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
 //! # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
-//! let graph = GraphBuilder::new(&src.view(), &dst.view())
+//! let src_view = src.view().unwrap();
+//! let dst_view = dst.view().unwrap();
+//! let graph = GraphBuilder::new(&src_view, &dst_view)
 //!     .renumber()
 //!     .build::<Transposed>(&handle)
 //!     .unwrap();
 //! ```
 
-use std::ptr;
+use std::{marker::PhantomData, ptr};
 
 use cugraph_sys::{
     cugraph_error_t, cugraph_graph_create_with_times_sg, cugraph_graph_free, cugraph_graph_t,
@@ -39,8 +46,10 @@ use cugraph_sys::{
 
 use crate::{
     array::{DeviceArrayView, RawDeviceArrayView},
-    error::{Error, ErrorKind, Result, check_error},
+    cuda::DeviceGuard,
+    error::{Error, ErrorKind, Result, check_error, require_non_null},
     handle::ResourceHandle,
+    structure::{ResolvedVertexSelection, VertexSelection},
     types::{CugraphElement, DataType, GraphProperties, to_bool_t},
 };
 
@@ -63,7 +72,7 @@ pub trait Transposition: sealed::Sealed {
 
 /// Marker type indicating a graph stored in forward (non-transposed) form.
 ///
-/// Required by algorithms like [`bfs`](crate::traversal::bfs::bfs).
+/// Required by algorithms like [`Graph::bfs`].
 pub struct Forward;
 impl Transposition for Forward {
     fn store_transposed() -> bool {
@@ -73,8 +82,7 @@ impl Transposition for Forward {
 
 /// Marker type indicating a graph stored in transposed form.
 ///
-/// Required by algorithms like [`pagerank`](crate::centrality::pagerank::pagerank) and
-/// [`in_degrees`](crate::structure::degrees::in_degrees).
+/// Required by algorithms like [`Graph::pagerank`] and [`Graph::in_degrees`].
 pub struct Transposed;
 impl Transposition for Transposed {
     fn store_transposed() -> bool {
@@ -98,11 +106,12 @@ impl Transposition for Transposed {
 /// ([`weight_dtype`](Graph::weight_dtype)), enabling downstream code to
 /// interpret algorithm results without guessing.
 pub struct Graph<T = Forward> {
-    pub(crate) raw: *mut cugraph_graph_t,
+    raw: *mut cugraph_graph_t,
+    device: i32,
     vertex_dtype: DataType,
     weight_dtype: DataType,
-    _nosend_nosync: std::marker::PhantomData<*mut ()>,
-    _transposition: std::marker::PhantomData<T>,
+    _nosend_nosync: PhantomData<*mut ()>,
+    _transposition: PhantomData<T>,
 }
 
 impl<T> Graph<T> {
@@ -118,8 +127,12 @@ impl<T> Graph<T> {
         self.weight_dtype
     }
 
+    pub(crate) fn as_ptr(&self) -> *mut cugraph_graph_t {
+        self.raw
+    }
+
     fn validate_vertex_input_dtype(&self, dtype: DataType, op: &'static str, input_name: &'static str) -> Result<()> {
-        if !dtype.is_integer() {
+        if !dtype.is_supported_index_type() {
             return Err(Error::new(ErrorKind::UnsupportedType, op)
                 .with_message(format!("{input_name} must use Int32 or Int64 vertex ids, got {dtype}")));
         }
@@ -134,17 +147,38 @@ impl<T> Graph<T> {
         Ok(())
     }
 
-    /// Validate that a `DegreeVertices::Subset` is compatible with this
-    /// graph's vertex dtype. `All` always passes.
-    fn validate_degree_vertices<V: CugraphElement>(
+    fn validate_vertex_selection<V: CugraphElement>(
         &self,
-        vertices: &crate::structure::DegreeVertices<'_, V>,
+        vertices: &VertexSelection<'_, V>,
         op: &'static str,
+        input_name: &'static str,
+        allow_all: bool,
     ) -> Result<()> {
-        if let crate::structure::DegreeVertices::Subset(_) = vertices {
-            self.validate_vertex_input_dtype(V::data_type(), op, "degree vertex subset")?;
+        match vertices {
+            VertexSelection::All if allow_all => {},
+            VertexSelection::All => {
+                return Err(Error::new(ErrorKind::InvalidInput, op).with_message(format!(
+                    "{input_name} must specify an explicit vertex subset; VertexSelection::All is not supported"
+                )));
+            },
+            VertexSelection::Device(_) | VertexSelection::Host(_) => {
+                self.validate_vertex_input_dtype(V::data_type(), op, input_name)?;
+            },
         }
         Ok(())
+    }
+
+    fn resolved_vertex_view<'a, V: CugraphElement>(
+        &self,
+        resolved: &'a ResolvedVertexSelection<'_, V>,
+        op: &'static str,
+        input_name: &'static str,
+    ) -> Result<DeviceArrayView<'a, V>> {
+        resolved.view()?.ok_or_else(|| {
+            Error::new(ErrorKind::InvalidInput, op).with_message(format!(
+                "{input_name} must specify an explicit vertex subset; VertexSelection::All is not supported"
+            ))
+        })
     }
 }
 
@@ -162,6 +196,12 @@ impl<T> std::fmt::Debug for Graph<T> {
 /// Provides a fluent by-value API for setting optional arrays and
 /// configuration flags. All setters consume `self` and return `Self`.
 ///
+/// Most applications should prefer the higher-level constructors in
+/// [`crate::cudf_interop`] so the primary data model stays in cudf
+/// [`Series`](cudf::Series) or [`DataFrame`](cudf::DataFrame). Use
+/// `GraphBuilder` when you already have typed [`DeviceArrayView`] edge columns
+/// and want direct control over graph-construction options.
+///
 /// # Required parameters
 ///
 /// - `src` — source vertex ids (device array view)
@@ -178,8 +218,11 @@ impl<T> std::fmt::Debug for Graph<T> {
 /// # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
 /// # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
 /// # let wgt = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0]).unwrap();
-/// let graph = GraphBuilder::new(&src.view(), &dst.view())
-///     .weights(&wgt.view())
+/// let src_view = src.view().unwrap();
+/// let dst_view = dst.view().unwrap();
+/// let wgt_view = wgt.view().unwrap();
+/// let graph = GraphBuilder::new(&src_view, &dst_view)
+///     .weights(&wgt_view)
 ///     .renumber()
 ///     .build::<Transposed>(&handle)?;
 /// # Ok::<(), cugraph::Error>(())
@@ -205,7 +248,7 @@ pub struct GraphBuilder<'a> {
     drop_multi_edges: bool,
     symmetrize: bool,
     do_expensive_check: bool,
-    _lifetime: std::marker::PhantomData<&'a ()>,
+    _lifetime: PhantomData<&'a ()>,
 }
 
 impl<'a> Clone for GraphBuilder<'a> {
@@ -230,7 +273,9 @@ impl<'a> GraphBuilder<'a> {
     /// let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
     /// let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
     ///
-    /// let graph = GraphBuilder::new(&src.view(), &dst.view())
+    /// let src_view = src.view().unwrap();
+    /// let dst_view = dst.view().unwrap();
+    /// let graph = GraphBuilder::new(&src_view, &dst_view)
     ///     .renumber()
     ///     .build::<Forward>(&handle)
     ///     .unwrap();
@@ -255,7 +300,7 @@ impl<'a> GraphBuilder<'a> {
             drop_multi_edges: false,
             symmetrize: false,
             do_expensive_check: false,
-            _lifetime: std::marker::PhantomData,
+            _lifetime: PhantomData,
         }
     }
 
@@ -355,8 +400,8 @@ impl<'a> GraphBuilder<'a> {
     ///
     /// The type parameter `T` determines the transposition state:
     ///
-    /// - `build::<Forward>` — forward form, for [`bfs`](crate::traversal::bfs::bfs)
-    /// - `build::<Transposed>` — transposed form, for [`pagerank`](crate::centrality::pagerank::pagerank)
+    /// - `build::<Forward>` — forward form, for [`Graph::bfs`]
+    /// - `build::<Transposed>` — transposed form, for [`Graph::pagerank`]
     ///
     /// # Errors
     ///
@@ -373,9 +418,9 @@ impl<'a> GraphBuilder<'a> {
     pub(crate) fn build_inner<T>(&self, handle: &ResourceHandle, store_transposed: bool) -> Result<Graph<T>> {
         self.validate()?;
 
-        // Resolve dtypes: prefer the statically-known value (from the typed
-        // API), falling back to a runtime query of the raw view pointer (the
-        // cudf_interop path).
+        // Resolve dtypes: prefer the cached builder-state value (from either
+        // the typed API or the raw-view cudf interop path), falling back to a
+        // runtime query of the raw view pointer only when necessary.
         let vertex_dtype = match self.vertex_dtype {
             Some(dt) => dt,
             None => Self::view_dtype(self.src)?,
@@ -399,6 +444,9 @@ impl<'a> GraphBuilder<'a> {
         let mut graph: *mut cugraph_graph_t = ptr::null_mut();
         let mut error: *mut cugraph_error_t = ptr::null_mut();
 
+        // SAFETY: every optional pointer is either null or comes from a live
+        // device array view with a validated length and dtype; `graph`/`error`
+        // are valid out-pointers owned by this stack frame.
         unsafe {
             let code = cugraph_graph_create_with_times_sg(
                 handle.as_ptr(),
@@ -423,12 +471,15 @@ impl<'a> GraphBuilder<'a> {
             check_error(code, error, "GraphBuilder::build")?;
         }
 
+        let graph = require_non_null(graph, "GraphBuilder::build", "graph")?;
+
         Ok(Graph {
             raw: graph,
+            device: handle.device(),
             vertex_dtype,
             weight_dtype,
-            _nosend_nosync: std::marker::PhantomData,
-            _transposition: std::marker::PhantomData,
+            _nosend_nosync: PhantomData,
+            _transposition: PhantomData,
         })
     }
 
@@ -437,8 +488,8 @@ impl<'a> GraphBuilder<'a> {
         properties: GraphProperties,
         src: &'a RawDeviceArrayView<'a>,
         dst: &'a RawDeviceArrayView<'a>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        Ok(Self {
             properties,
             src: src.as_ptr(),
             src_len: src.len(),
@@ -450,21 +501,22 @@ impl<'a> GraphBuilder<'a> {
             vertices: None,
             edge_start_time_ids: None,
             edge_end_time_ids: None,
-            vertex_dtype: None,
+            vertex_dtype: Some(src.dtype()?),
             weight_dtype: None,
             renumber: false,
             drop_self_loops: false,
             drop_multi_edges: false,
             symmetrize: false,
             do_expensive_check: false,
-            _lifetime: std::marker::PhantomData,
-        }
+            _lifetime: PhantomData,
+        })
     }
 
     /// Set weights from a raw view. Used by cudf_interop.
-    pub(crate) fn weights_raw(mut self, raw: &'a RawDeviceArrayView<'a>) -> Self {
+    pub(crate) fn weights_raw(mut self, raw: &'a RawDeviceArrayView<'a>) -> Result<Self> {
         self.weights = Some((raw.as_ptr(), raw.len()));
-        self
+        self.weight_dtype = Some(raw.dtype()?);
+        Ok(self)
     }
 
     /// Set renumber from a bool. Used by cudf_interop where the flag comes
@@ -539,7 +591,7 @@ impl<'a> GraphBuilder<'a> {
         }
 
         // src/dst must be integer (i32 or i64)
-        if !src_dtype.is_integer() {
+        if !src_dtype.is_supported_index_type() {
             return Err(Error::new(ErrorKind::InvalidInput, "GraphBuilder::build")
                 .with_message(format!("src/dst dtype must be Int32 or Int64, got {src_dtype}")));
         }
@@ -556,7 +608,7 @@ impl<'a> GraphBuilder<'a> {
         // edge_ids must be integer (i32 or i64)
         if let Some((ptr, _)) = self.edge_ids {
             let dtype = Self::view_dtype(ptr)?;
-            if !dtype.is_integer() {
+            if !dtype.is_supported_index_type() {
                 return Err(Error::new(ErrorKind::InvalidInput, "GraphBuilder::build")
                     .with_message(format!("edge_ids dtype must be Int32 or Int64, got {dtype}")));
             }
@@ -574,14 +626,14 @@ impl<'a> GraphBuilder<'a> {
         // temporal arrays must be integer (i32 or i64)
         if let Some((ptr, _)) = self.edge_start_time_ids {
             let dtype = Self::view_dtype(ptr)?;
-            if !dtype.is_integer() {
+            if !dtype.is_supported_index_type() {
                 return Err(Error::new(ErrorKind::InvalidInput, "GraphBuilder::build")
                     .with_message(format!("edge_start_time_ids dtype must be Int32 or Int64, got {dtype}")));
             }
         }
         if let Some((ptr, _)) = self.edge_end_time_ids {
             let dtype = Self::view_dtype(ptr)?;
-            if !dtype.is_integer() {
+            if !dtype.is_supported_index_type() {
                 return Err(Error::new(ErrorKind::InvalidInput, "GraphBuilder::build")
                     .with_message(format!("edge_end_time_ids dtype must be Int32 or Int64, got {dtype}")));
             }
@@ -606,7 +658,7 @@ impl<'a> GraphBuilder<'a> {
         // mismatch here to prevent data corruption.
         if let Some((ptr, _)) = self.vertices {
             let dtype = Self::view_dtype(ptr)?;
-            if !dtype.is_integer() {
+            if !dtype.is_supported_index_type() {
                 return Err(Error::new(ErrorKind::InvalidInput, "GraphBuilder::build")
                     .with_message(format!("vertices dtype must be Int32 or Int64, got {dtype}")));
             }
@@ -628,10 +680,7 @@ impl<'a> GraphBuilder<'a> {
     /// Returns an error if the C API reports an unrecognised type id.
     fn view_dtype(ptr: *mut cugraph_type_erased_device_array_view_t) -> Result<DataType> {
         let c_type = unsafe { cugraph_type_erased_device_array_view_type(ptr) };
-        DataType::try_from(c_type).map_err(|_| {
-            Error::new(ErrorKind::UnsupportedType, "view_dtype")
-                .with_message(format!("unknown C API dtype id: {}", c_type.0))
-        })
+        DataType::try_from(c_type).map_err(|err| err.with_operation("view_dtype"))
     }
 
     /// Check that an optional array, if present, has the expected length.
@@ -657,110 +706,144 @@ impl<'a> GraphBuilder<'a> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl Graph<Transposed> {
-    /// Compute PageRank on this transposed graph with full options.
+    /// Compute PageRank on this transposed graph.
     ///
     /// Returns a [`PageRankResult`](crate::centrality::PageRankResult)
     /// containing vertex ids, scores, iteration count, and convergence status.
     ///
+    /// This convenience method does not expose any typed auxiliary arrays, so
+    /// it can be used regardless of the graph's runtime vertex-id or weight
+    /// dtype. For advanced features (precomputed weights, initial guess), use
+    /// [`pagerank_with`](Self::pagerank_with) and ensure those typed inputs
+    /// match the graph's runtime dtypes.
+    ///
     /// # Example
     ///
     /// ```no_run
-    /// # use cugraph::{DeviceArray, GraphBuilder, PageRankOptions, ResourceHandle, Transposed};
-    /// # let handle = ResourceHandle::for_current_device().unwrap();
-    /// # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
-    /// # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
-    /// # let mut graph = GraphBuilder::new(&src.view(), &dst.view())
-    /// #     .renumber()
-    /// #     .build::<Transposed>(&handle).unwrap();
-    /// let result = graph.pagerank::<i32, f32>(&handle, &PageRankOptions::default()).unwrap();
+    /// # use cugraph::{
+    /// #     ResourceHandle, Transposed,
+    /// #     centrality::PageRankOptions,
+    /// #     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
+    /// # };
+    /// # let runtime = cudf::Runtime::new().unwrap();
+    /// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+    /// # let src = runtime.series("src", &[0i32, 1, 2]).unwrap();
+    /// # let dst = runtime.series("dst", &[1i32, 2, 0]).unwrap();
+    /// # let edges = cudf::DataFrame::from_series([src, dst]).unwrap();
+    /// # let opts = DataFrameGraphOptions::new("src", "dst").renumber();
+    /// # let mut graph = graph_from_dataframe::<Transposed>(&handle, &edges, &opts).unwrap();
+    /// let result = graph
+    ///     .pagerank(&handle, &PageRankOptions::default())
+    ///     .unwrap();
     /// let scores = result.scores().unwrap();
     /// ```
-    pub fn pagerank<V: CugraphElement, W: CugraphElement>(
+    pub fn pagerank(
         &mut self,
         handle: &ResourceHandle,
-        options: &crate::centrality::PageRankOptions<'_, V, W>,
+        options: &crate::centrality::PageRankOptions,
     ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::pagerank(handle, self, options)
+        crate::centrality::pagerank::pagerank::<i32, f32>(handle, self, options, None, None)
     }
 
-    /// Compute PageRank with only basic parameters (no optional inputs).
+    /// Compute PageRank with optional precomputed weights and/or initial guess.
     ///
-    /// Convenience wrapper around [`pagerank`](Self::pagerank) for the common
-    /// case where no precomputed weights or initial guess are needed.
-    pub fn pagerank_simple(
+    /// This is the advanced variant of [`pagerank`](Self::pagerank). Use it
+    /// when you have precomputed out-weight sums or want to supply an initial
+    /// guess for iterative refinement.
+    pub fn pagerank_with<V: CugraphElement, W: CugraphElement>(
         &mut self,
         handle: &ResourceHandle,
-        params: &crate::centrality::PageRankParams,
+        options: &crate::centrality::PageRankOptions,
+        precomputed_weights: Option<&crate::centrality::PrecomputedWeights<'_, V, W>>,
+        initial_guess: Option<&crate::centrality::InitialGuess<'_, V, W>>,
     ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::pagerank_simple(handle, self, params)
+        crate::centrality::pagerank::pagerank(handle, self, options, precomputed_weights, initial_guess)
     }
 
     /// Compute both in-degrees and out-degrees for vertices in this graph.
     ///
-    /// Pass [`DegreeVertices::All`] to compute degrees for every vertex, or
-    /// [`DegreeVertices::Subset`] to restrict to a specific set.
+    /// Pass [`VertexSelection::All`] to compute degrees for every vertex,
+    /// [`VertexSelection::Device`] with a device view, or
+    /// [`VertexSelection::Host`] with a host slice (uploaded on demand).
     ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::UnsupportedType`] if `vertices` uses a vertex
     /// dtype that does not match the graph.
-    pub fn degrees<V: CugraphElement>(
+    pub fn degrees<'a, V: CugraphElement + 'a>(
         &mut self,
         handle: &ResourceHandle,
-        vertices: &crate::structure::DegreeVertices<'_, V>,
+        vertices: impl Into<VertexSelection<'a, V>>,
     ) -> Result<crate::structure::DegreesResult> {
-        self.validate_degree_vertices(vertices, "Graph::degrees")?;
-        crate::structure::degrees::degrees(handle, self, vertices, false)
+        let vertices = vertices.into();
+        self.validate_vertex_selection(&vertices, "Graph::degrees", "vertices", true)?;
+        let resolved = vertices.resolve(handle)?;
+        let view = resolved.view()?;
+        let result = crate::structure::degrees::degrees(handle, self, view.as_ref(), false);
+        result
     }
 
     /// Compute degrees with optional expensive input validation.
-    pub fn degrees_checked<V: CugraphElement>(
+    pub fn degrees_checked<'a, V: CugraphElement + 'a>(
         &mut self,
         handle: &ResourceHandle,
-        vertices: &crate::structure::DegreeVertices<'_, V>,
+        vertices: impl Into<VertexSelection<'a, V>>,
         do_expensive_check: bool,
     ) -> Result<crate::structure::DegreesResult> {
-        self.validate_degree_vertices(vertices, "Graph::degrees")?;
-        crate::structure::degrees::degrees(handle, self, vertices, do_expensive_check)
+        let vertices = vertices.into();
+        self.validate_vertex_selection(&vertices, "Graph::degrees", "vertices", true)?;
+        let resolved = vertices.resolve(handle)?;
+        let view = resolved.view()?;
+        let result = crate::structure::degrees::degrees(handle, self, view.as_ref(), do_expensive_check);
+        result
     }
 
     /// Compute degrees for every vertex in the graph.
     pub fn degrees_all(&mut self, handle: &ResourceHandle) -> Result<crate::structure::DegreesResult> {
-        self.degrees::<i32>(handle, &crate::structure::DegreeVertices::All)
+        self.degrees(handle, crate::structure::VertexSelection::<i32>::All)
     }
 
     /// Compute only in-degrees for vertices in this graph.
     ///
-    /// Pass [`DegreeVertices::All`] to compute degrees for every vertex, or
-    /// [`DegreeVertices::Subset`] to restrict to a specific set.
+    /// Pass [`VertexSelection::All`] to compute degrees for every vertex,
+    /// [`VertexSelection::Device`] with a device view, or
+    /// [`VertexSelection::Host`] with a host slice (uploaded on demand).
     ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::UnsupportedType`] if `vertices` uses a vertex
     /// dtype that does not match the graph.
-    pub fn in_degrees<V: CugraphElement>(
+    pub fn in_degrees<'a, V: CugraphElement + 'a>(
         &mut self,
         handle: &ResourceHandle,
-        vertices: &crate::structure::DegreeVertices<'_, V>,
+        vertices: impl Into<VertexSelection<'a, V>>,
     ) -> Result<crate::structure::InDegreesResult> {
-        self.validate_degree_vertices(vertices, "Graph::in_degrees")?;
-        crate::structure::degrees::in_degrees(handle, self, vertices, false)
+        let vertices = vertices.into();
+        self.validate_vertex_selection(&vertices, "Graph::in_degrees", "vertices", true)?;
+        let resolved = vertices.resolve(handle)?;
+        let view = resolved.view()?;
+        let result = crate::structure::degrees::in_degrees(handle, self, view.as_ref(), false);
+        result
     }
 
     /// Compute in-degrees with optional expensive input validation.
-    pub fn in_degrees_checked<V: CugraphElement>(
+    pub fn in_degrees_checked<'a, V: CugraphElement + 'a>(
         &mut self,
         handle: &ResourceHandle,
-        vertices: &crate::structure::DegreeVertices<'_, V>,
+        vertices: impl Into<VertexSelection<'a, V>>,
         do_expensive_check: bool,
     ) -> Result<crate::structure::InDegreesResult> {
-        self.validate_degree_vertices(vertices, "Graph::in_degrees")?;
-        crate::structure::degrees::in_degrees(handle, self, vertices, do_expensive_check)
+        let vertices = vertices.into();
+        self.validate_vertex_selection(&vertices, "Graph::in_degrees", "vertices", true)?;
+        let resolved = vertices.resolve(handle)?;
+        let view = resolved.view()?;
+        let result = crate::structure::degrees::in_degrees(handle, self, view.as_ref(), do_expensive_check);
+        result
     }
 
     /// Compute in-degrees for every vertex in the graph.
     pub fn in_degrees_all(&mut self, handle: &ResourceHandle) -> Result<crate::structure::InDegreesResult> {
-        self.in_degrees::<i32>(handle, &crate::structure::DegreeVertices::All)
+        self.in_degrees(handle, crate::structure::VertexSelection::<i32>::All)
     }
 }
 
@@ -778,48 +861,63 @@ impl Graph<Forward> {
     /// # Example
     ///
     /// ```no_run
-    /// # use cugraph::{BfsParams, DeviceArray, Forward, GraphBuilder, ResourceHandle};
-    /// # let handle = ResourceHandle::for_current_device().unwrap();
-    /// # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
-    /// # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
-    /// # let mut graph = GraphBuilder::new(&src.view(), &dst.view())
-    /// #     .renumber()
-    /// #     .build::<Forward>(&handle).unwrap();
-    /// let sources = DeviceArray::from_slice(&handle, &[0i32]).unwrap();
-    /// let result = graph.bfs(&handle, &sources.view(), &BfsParams::default()).unwrap();
+    /// # use cugraph::{
+    /// #     Forward, ResourceHandle,
+    /// #     cudf_interop::{DataFrameGraphOptions, device_array_view_from_slice, graph_from_dataframe},
+    /// #     traversal::BfsParams,
+    /// # };
+    /// # let runtime = cudf::Runtime::new().unwrap();
+    /// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+    /// # let src = runtime.series("src", &[0i32, 1, 2]).unwrap();
+    /// # let dst = runtime.series("dst", &[1i32, 2, 0]).unwrap();
+    /// # let edges = cudf::DataFrame::from_series([src, dst]).unwrap();
+    /// # let opts = DataFrameGraphOptions::new("src", "dst").renumber();
+    /// # let mut graph = graph_from_dataframe::<Forward>(&handle, &edges, &opts).unwrap();
+    /// let sources = runtime.series("source", &[0i32]).unwrap();
+    /// let source_column = sources.as_column_view().unwrap();
+    /// let source_slice = source_column.device_slice::<i32>().unwrap();
+    /// let sources_view = device_array_view_from_slice::<i32>(&source_slice).unwrap();
+    /// let result =
+    ///     graph.bfs(&handle, &sources_view, &BfsParams::default()).unwrap();
     /// let distances = result.distances().unwrap();
     /// ```
-    pub fn bfs<V: CugraphElement>(
+    pub fn bfs<'a, V: CugraphElement + 'a>(
         &mut self,
         handle: &ResourceHandle,
-        sources: &DeviceArrayView<'_, V>,
+        sources: impl Into<VertexSelection<'a, V>>,
         params: &crate::traversal::BfsParams,
     ) -> Result<crate::traversal::BfsResult> {
-        self.validate_vertex_input_dtype(V::data_type(), "Graph::bfs", "sources")?;
-        crate::traversal::bfs::bfs(handle, self, sources, params)
+        let sources = sources.into();
+        self.validate_vertex_selection(&sources, "Graph::bfs", "sources", false)?;
+        let resolved = sources.resolve(handle)?;
+        let view = self.resolved_vertex_view(&resolved, "Graph::bfs", "sources")?;
+        crate::traversal::bfs::bfs(handle, self, &view, params)
     }
 }
 
 impl<T: Transposition> Graph<T> {
     /// Compute vertex betweenness centrality on this graph.
     ///
-    /// Pass `vertex_list` as `None` for exact computation, or provide seed
-    /// vertices for approximate computation.
+    /// Pass [`VertexSelection::All`] for exact computation, or provide seed
+    /// vertices for approximate computation via [`VertexSelection::Device`] or
+    /// [`VertexSelection::Host`].
     ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::UnsupportedType`] if `vertex_list` uses a vertex
     /// dtype that does not match the graph.
-    pub fn betweenness_centrality<V: CugraphElement>(
+    pub fn betweenness_centrality<'a, V: CugraphElement + 'a>(
         &mut self,
         handle: &ResourceHandle,
-        vertex_list: Option<&DeviceArrayView<'_, V>>,
+        vertex_list: impl Into<VertexSelection<'a, V>>,
         params: &crate::centrality::BetweennessCentralityParams,
     ) -> Result<crate::centrality::BetweennessCentralityResult> {
-        if vertex_list.is_some() {
-            self.validate_vertex_input_dtype(V::data_type(), "Graph::betweenness_centrality", "vertex_list")?;
-        }
-        crate::centrality::betweenness::betweenness_centrality(handle, self, vertex_list, params)
+        let vertex_list = vertex_list.into();
+        self.validate_vertex_selection(&vertex_list, "Graph::betweenness_centrality", "vertex_list", true)?;
+        let resolved = vertex_list.resolve(handle)?;
+        let view = resolved.view()?;
+        let result = crate::centrality::betweenness::betweenness_centrality(handle, self, view.as_ref(), params);
+        result
     }
 
     /// Compute exact betweenness centrality over all vertices.
@@ -828,7 +926,7 @@ impl<T: Transposition> Graph<T> {
         handle: &ResourceHandle,
         params: &crate::centrality::BetweennessCentralityParams,
     ) -> Result<crate::centrality::BetweennessCentralityResult> {
-        crate::centrality::betweenness::betweenness_centrality::<T, i32>(handle, self, None, params)
+        self.betweenness_centrality(handle, crate::structure::VertexSelection::<i32>::All, params)
     }
 
     /// Compute a Force Atlas 2 layout for this graph.
@@ -836,67 +934,106 @@ impl<T: Transposition> Graph<T> {
     /// Returns a [`LayoutResult`](crate::layout::LayoutResult) containing
     /// vertex ids and (x, y) coordinates.
     ///
+    /// For advanced features (per-vertex mass/radius, initial positions for
+    /// refinement passes), use [`force_atlas2_with`](Self::force_atlas2_with).
+    ///
     /// # Example
     ///
     /// ```no_run
-    /// # use cugraph::*;
-    /// # let handle = ResourceHandle::for_current_device().unwrap();
+    /// # use cugraph::{
+    /// #     Forward, ResourceHandle,
+    /// #     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
+    /// #     layout::ForceAtlas2Options,
+    /// #     random::RngState,
+    /// # };
+    /// # let runtime = cudf::Runtime::new().unwrap();
+    /// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
     /// # let mut rng = RngState::new(&handle, 42).unwrap();
-    /// # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
-    /// # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
-    /// # let mut graph = GraphBuilder::new(&src.view(), &dst.view())
-    /// #     .renumber().build::<Forward>(&handle).unwrap();
-    /// let options: ForceAtlas2Options<'_> = ForceAtlas2Options::default();
+    /// # let src = runtime.series("src", &[0i32, 1, 2]).unwrap();
+    /// # let dst = runtime.series("dst", &[1i32, 2, 0]).unwrap();
+    /// # let edges = cudf::DataFrame::from_series([src, dst]).unwrap();
+    /// # let opts = DataFrameGraphOptions::new("src", "dst").renumber();
+    /// # let mut graph = graph_from_dataframe::<Forward>(&handle, &edges, &opts).unwrap();
+    /// let options = ForceAtlas2Options::default();
     /// let result = graph.force_atlas2(&handle, &mut rng, &options)?;
-    /// # Ok::<(), Error>(())
+    /// # Ok::<(), cugraph::Error>(())
     /// ```
-    pub fn force_atlas2<V: CugraphElement, W: CugraphElement>(
+    pub fn force_atlas2(
         &mut self,
         handle: &ResourceHandle,
         rng_state: &mut crate::random::RngState,
-        options: &crate::layout::ForceAtlas2Options<'_, V, W>,
+        options: &crate::layout::ForceAtlas2Options,
     ) -> Result<crate::layout::LayoutResult> {
-        crate::layout::force_atlas2::force_atlas2(handle, rng_state, self, options)
+        crate::layout::force_atlas2::force_atlas2::<T, i32, f32>(handle, rng_state, self, options, None, None)
+    }
+
+    /// Compute a Force Atlas 2 layout with optional per-vertex attributes
+    /// and/or initial positions.
+    ///
+    /// This is the advanced variant of [`force_atlas2`](Self::force_atlas2).
+    /// Use it when you need refinement passes (supplying a previous layout as
+    /// initial positions) or per-vertex radius/mobility/mass.
+    pub fn force_atlas2_with<V: CugraphElement, W: CugraphElement>(
+        &mut self,
+        handle: &ResourceHandle,
+        rng_state: &mut crate::random::RngState,
+        options: &crate::layout::ForceAtlas2Options,
+        vertex_attrs: Option<&crate::layout::ForceAtlas2VertexAttrs<'_, V, W>>,
+        initial_positions: Option<&crate::layout::InitialPositions<'_, V, W>>,
+    ) -> Result<crate::layout::LayoutResult> {
+        crate::layout::force_atlas2::force_atlas2(handle, rng_state, self, options, vertex_attrs, initial_positions)
     }
 
     /// Compute only out-degrees for vertices in this graph.
     ///
-    /// Pass [`DegreeVertices::All`] to compute degrees for every vertex, or
-    /// [`DegreeVertices::Subset`] to restrict to a specific set.
+    /// Pass [`VertexSelection::All`] to compute degrees for every vertex,
+    /// [`VertexSelection::Device`] with a device view, or
+    /// [`VertexSelection::Host`] with a host slice (uploaded on demand).
     ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::UnsupportedType`] if `vertices` uses a vertex
     /// dtype that does not match the graph.
-    pub fn out_degrees<V: CugraphElement>(
+    pub fn out_degrees<'a, V: CugraphElement + 'a>(
         &mut self,
         handle: &ResourceHandle,
-        vertices: &crate::structure::DegreeVertices<'_, V>,
+        vertices: impl Into<VertexSelection<'a, V>>,
     ) -> Result<crate::structure::OutDegreesResult> {
-        self.validate_degree_vertices(vertices, "Graph::out_degrees")?;
-        crate::structure::degrees::out_degrees(handle, self, vertices, false)
+        let vertices = vertices.into();
+        self.validate_vertex_selection(&vertices, "Graph::out_degrees", "vertices", true)?;
+        let resolved = vertices.resolve(handle)?;
+        let view = resolved.view()?;
+        let result = crate::structure::degrees::out_degrees(handle, self, view.as_ref(), false);
+        result
     }
 
     /// Compute out-degrees with optional expensive input validation.
-    pub fn out_degrees_checked<V: CugraphElement>(
+    pub fn out_degrees_checked<'a, V: CugraphElement + 'a>(
         &mut self,
         handle: &ResourceHandle,
-        vertices: &crate::structure::DegreeVertices<'_, V>,
+        vertices: impl Into<VertexSelection<'a, V>>,
         do_expensive_check: bool,
     ) -> Result<crate::structure::OutDegreesResult> {
-        self.validate_degree_vertices(vertices, "Graph::out_degrees")?;
-        crate::structure::degrees::out_degrees(handle, self, vertices, do_expensive_check)
+        let vertices = vertices.into();
+        self.validate_vertex_selection(&vertices, "Graph::out_degrees", "vertices", true)?;
+        let resolved = vertices.resolve(handle)?;
+        let view = resolved.view()?;
+        let result = crate::structure::degrees::out_degrees(handle, self, view.as_ref(), do_expensive_check);
+        result
     }
 
     /// Compute out-degrees for every vertex in the graph.
     pub fn out_degrees_all(&mut self, handle: &ResourceHandle) -> Result<crate::structure::OutDegreesResult> {
-        self.out_degrees::<i32>(handle, &crate::structure::DegreeVertices::All)
+        self.out_degrees(handle, crate::structure::VertexSelection::<i32>::All)
     }
 }
 
 impl<T> Drop for Graph<T> {
     fn drop(&mut self) {
         if !self.raw.is_null() {
+            // SAFETY: `self.raw` is owned by this Graph instance and is freed
+            // at most once here when the wrapper is dropped.
+            let _guard = DeviceGuard::switch_to(self.device, "Graph::drop").ok();
             unsafe { cugraph_graph_free(self.raw) };
         }
     }
@@ -913,8 +1050,10 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let graph = GraphBuilder::new(&src.view(), &dst.view()).build::<Forward>(&handle);
+        let graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&handle);
         assert!(graph.is_ok(), "graph creation failed: {:?}", graph.err());
     }
 
@@ -924,8 +1063,10 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2]).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let err = match GraphBuilder::new(&src.view(), &dst.view()).build::<Forward>(&handle) {
+        let err = match GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&handle) {
             Ok(_) => panic!("should reject mismatched edge-list lengths"),
             Err(err) => err,
         };
@@ -940,10 +1081,14 @@ mod tests {
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
         let edge_ids = DeviceArray::from_slice(&handle, &[100i32, 101, 102]).expect("edge_ids");
         let edge_types = DeviceArray::from_slice(&handle, &[0i32, 1, 0]).expect("edge_types");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let edge_ids_view = edge_ids.view().expect("edge_ids_view");
+        let edge_types_view = edge_types.view().expect("edge_types_view");
 
-        let graph = GraphBuilder::new(&src.view(), &dst.view())
-            .edge_ids(&edge_ids.view())
-            .edge_type_ids(&edge_types.view())
+        let graph = GraphBuilder::new(&src_view, &dst_view)
+            .edge_ids(&edge_ids_view)
+            .edge_type_ids(&edge_types_view)
             .renumber()
             .build::<Forward>(&handle);
         assert!(graph.is_ok(), "graph creation with edge_ids and edge_type_ids failed: {:?}", graph.err());
@@ -958,11 +1103,16 @@ mod tests {
         let wgt = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0, 4.0]).expect("wgt");
         let edge_ids = DeviceArray::from_slice(&handle, &[0i32, 1, 2, 3]).expect("edge_ids");
         let edge_types = DeviceArray::from_slice(&handle, &[0i32, 0, 1, 1]).expect("edge_types");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let wgt_view = wgt.view().expect("wgt_view");
+        let edge_ids_view = edge_ids.view().expect("edge_ids_view");
+        let edge_types_view = edge_types.view().expect("edge_types_view");
 
-        let graph = GraphBuilder::new(&src.view(), &dst.view())
-            .weights(&wgt.view())
-            .edge_ids(&edge_ids.view())
-            .edge_type_ids(&edge_types.view())
+        let graph = GraphBuilder::new(&src_view, &dst_view)
+            .weights(&wgt_view)
+            .edge_ids(&edge_ids_view)
+            .edge_type_ids(&edge_types_view)
             .renumber()
             .build::<Forward>(&handle);
         assert!(graph.is_ok(), "graph creation with weights + edge properties failed: {:?}", graph.err());
@@ -975,9 +1125,12 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
         let edge_ids = DeviceArray::from_slice(&handle, &[10i32, 20]).expect("edge_ids");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let edge_ids_view = edge_ids.view().expect("edge_ids_view");
 
-        let err = GraphBuilder::new(&src.view(), &dst.view())
-            .edge_ids(&edge_ids.view())
+        let err = GraphBuilder::new(&src_view, &dst_view)
+            .edge_ids(&edge_ids_view)
             .build::<Forward>(&handle)
             .expect_err("should reject mismatched edge_ids length");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -991,9 +1144,12 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
         let edge_types = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("edge_types");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let edge_types_view = edge_types.view().expect("edge_types_view");
 
-        let err = GraphBuilder::new(&src.view(), &dst.view())
-            .edge_type_ids(&edge_types.view())
+        let err = GraphBuilder::new(&src_view, &dst_view)
+            .edge_type_ids(&edge_types_view)
             .build::<Forward>(&handle)
             .expect_err("should reject mismatched edge_type_ids length");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -1007,9 +1163,12 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
         let eids = DeviceArray::from_slice(&handle, &[10i32, 20, 30]).expect("eids");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let eids_view = eids.view().expect("eids_view");
 
-        let err = GraphBuilder::new(&src.view(), &dst.view())
-            .edge_ids(&eids.view())
+        let err = GraphBuilder::new(&src_view, &dst_view)
+            .edge_ids(&eids_view)
             .symmetrize()
             .build::<Forward>(&handle)
             .expect_err("should reject symmetrize + edge_ids");
@@ -1025,9 +1184,12 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
         let etids = DeviceArray::from_slice(&handle, &[0i32, 1, 0]).expect("etids");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let etids_view = etids.view().expect("etids_view");
 
-        let err = GraphBuilder::new(&src.view(), &dst.view())
-            .edge_type_ids(&etids.view())
+        let err = GraphBuilder::new(&src_view, &dst_view)
+            .edge_type_ids(&etids_view)
             .symmetrize()
             .build::<Forward>(&handle)
             .expect_err("should reject symmetrize + edge_type_ids");
@@ -1043,9 +1205,12 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
         let start = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("start");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let start_view = start.view().expect("start_view");
 
-        let err = GraphBuilder::new(&src.view(), &dst.view())
-            .edge_start_time_ids(&start.view())
+        let err = GraphBuilder::new(&src_view, &dst_view)
+            .edge_start_time_ids(&start_view)
             .build::<Forward>(&handle)
             .expect_err("should reject start_time without end_time");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -1060,13 +1225,34 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
 
-        let src_view = src.view();
-        let dst_view = dst.view();
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
         let builder = GraphBuilder::new(&src_view, &dst_view);
         let debug = format!("{:?}", builder);
 
         // properties defaults to directed simple graph
         assert!(debug.contains("is_symmetric: false"), "should default to directed");
         assert!(debug.contains("is_multigraph: false"), "should default to simple graph");
+    }
+
+    #[test]
+    fn test_from_raw_views_preserves_known_dtypes_in_builder_state() {
+        let handle = ResourceHandle::new().expect("handle");
+
+        let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
+        let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
+        let wgt = DeviceArray::from_slice(&handle, &[1.0f64, 2.0, 3.0]).expect("wgt");
+
+        let src_raw = src.raw_view().expect("src_raw");
+        let dst_raw = dst.raw_view().expect("dst_raw");
+        let wgt_raw = wgt.raw_view().expect("wgt_raw");
+
+        let builder = GraphBuilder::from_raw_views(GraphProperties::default(), &src_raw, &dst_raw)
+            .expect("builder from raw views")
+            .weights_raw(&wgt_raw)
+            .expect("weights_raw");
+
+        assert_eq!(builder.vertex_dtype, Some(DataType::Int32));
+        assert_eq!(builder.weight_dtype, Some(DataType::Float64));
     }
 }

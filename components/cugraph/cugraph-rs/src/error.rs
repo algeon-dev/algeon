@@ -11,11 +11,12 @@ use std::{
 
 use cugraph_sys::{cugraph_error_code_t, cugraph_error_free, cugraph_error_message, cugraph_error_t};
 
-/// Categorisation of cuGraph errors.
+/// Categorisation of cuGraph and library-level errors.
 ///
 /// Each variant describes **what the caller should do**, not which dependency
-/// failed. Variants map to the corresponding `CUGRAPH_*` error codes from the
-/// C API.
+/// failed. Variants that originate in the raw C API map to the corresponding
+/// `CUGRAPH_*` error codes; library-only variants cover Rust-side interop,
+/// lifecycle, and I/O boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorKind {
@@ -27,6 +28,10 @@ pub enum ErrorKind {
     OutOfMemory,
     /// An input argument was invalid (`CUGRAPH_INVALID_INPUT`).
     InvalidInput,
+    /// An external I/O operation failed.
+    IoError,
+    /// A library-level precondition, lifecycle contract, or state transition failed.
+    InvalidState,
     /// The requested operation is not implemented (`CUGRAPH_NOT_IMPLEMENTED`).
     NotImplemented,
     /// The combination of types is not supported (`CUGRAPH_UNSUPPORTED_TYPE_COMBINATION`).
@@ -68,6 +73,8 @@ impl fmt::Display for ErrorKind {
             ErrorKind::InvalidHandle => write!(f, "InvalidHandle"),
             ErrorKind::OutOfMemory => write!(f, "OutOfMemory"),
             ErrorKind::InvalidInput => write!(f, "InvalidInput"),
+            ErrorKind::IoError => write!(f, "IoError"),
+            ErrorKind::InvalidState => write!(f, "InvalidState"),
             ErrorKind::NotImplemented => write!(f, "NotImplemented"),
             ErrorKind::UnsupportedType => write!(f, "UnsupportedType"),
         }
@@ -225,6 +232,11 @@ impl Error {
         self.status == ErrorStatus::Permanent
     }
 
+    /// Whether this error is persistent (transient, but retries are exhausted).
+    pub fn is_persistent(&self) -> bool {
+        self.status == ErrorStatus::Persistent
+    }
+
     /// The operation that was being performed when the error occurred.
     pub fn operation(&self) -> &'static str {
         self.operation
@@ -309,6 +321,16 @@ impl std::error::Error for Error {
 /// Convenience type alias.
 pub type Result<T> = std::result::Result<T, Error>;
 
+pub(crate) fn unexpected_null_pointer(operation: &'static str, pointer_name: &'static str) -> Error {
+    Error::new(ErrorKind::Unexpected, operation)
+        .with_message(format!("C API returned null pointer for {pointer_name}"))
+        .with_context("pointer", pointer_name)
+}
+
+pub(crate) fn require_non_null<T>(ptr: *mut T, operation: &'static str, pointer_name: &'static str) -> Result<*mut T> {
+    if ptr.is_null() { Err(unexpected_null_pointer(operation, pointer_name)) } else { Ok(ptr) }
+}
+
 /// Check a C API return code and convert to a Rust `Result`.
 ///
 /// On success (`CUGRAPH_SUCCESS`), returns `Ok(())`. Otherwise extracts the
@@ -362,6 +384,8 @@ mod tests {
         assert_eq!(ErrorKind::InvalidHandle.to_string(), "InvalidHandle");
         assert_eq!(ErrorKind::OutOfMemory.to_string(), "OutOfMemory");
         assert_eq!(ErrorKind::InvalidInput.to_string(), "InvalidInput");
+        assert_eq!(ErrorKind::IoError.to_string(), "IoError");
+        assert_eq!(ErrorKind::InvalidState.to_string(), "InvalidState");
         assert_eq!(ErrorKind::NotImplemented.to_string(), "NotImplemented");
         assert_eq!(ErrorKind::UnsupportedType.to_string(), "UnsupportedType");
     }
@@ -472,6 +496,7 @@ mod tests {
         assert_eq!(err.status(), ErrorStatus::Permanent);
         assert!(err.is_permanent());
         assert!(!err.is_temporary());
+        assert!(!err.is_persistent());
     }
 
     #[test]
@@ -487,6 +512,7 @@ mod tests {
         let err = Error::new(ErrorKind::OutOfMemory, "DeviceArray::new").set_persistent();
         assert!(!err.is_temporary());
         assert!(!err.is_permanent());
+        assert!(err.is_persistent());
         assert_eq!(err.status(), ErrorStatus::Persistent);
     }
 
@@ -514,6 +540,14 @@ mod tests {
             let result = check_error(cugraph_error_code_t::CUGRAPH_SUCCESS, std::ptr::null_mut(), "test");
             assert!(result.is_ok());
         }
+    }
+
+    #[test]
+    fn test_require_non_null_rejects_null_pointers() {
+        let err = require_non_null::<u8>(std::ptr::null_mut(), "test_op", "result_ptr").expect_err("null must fail");
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert_eq!(err.operation(), "test_op");
+        assert!(err.message().contains("result_ptr"));
     }
 
     #[test]

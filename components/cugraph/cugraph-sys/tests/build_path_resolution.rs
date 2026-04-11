@@ -1,10 +1,9 @@
 #[path = "../build_support.rs"]
 mod build_support;
 
-#[cfg(not(target_os = "windows"))]
-use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -37,13 +36,6 @@ impl Drop for TestDir {
 }
 
 fn create_required_library_files(dir: &Path) {
-    #[cfg(target_os = "macos")]
-    let libs = ["libcugraph.dylib", "libcugraph_c.dylib"];
-
-    #[cfg(target_os = "windows")]
-    let libs = ["cugraph.dll", "cugraph_c.dll"];
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let libs = ["libcugraph.so", "libcugraph_c.so"];
 
     for lib in libs {
@@ -163,7 +155,6 @@ fn compiler_probe_uses_cc_env_command_and_flags() {
     assert_eq!(args, vec!["--target=aarch64-linux-gnu"]);
 }
 
-#[cfg(not(target_os = "windows"))]
 #[test]
 fn detect_system_include_dir_uses_selected_compiler_output() {
     let root = TestDir::new();

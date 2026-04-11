@@ -7,7 +7,7 @@ use cugraph_sys::{cugraph_centrality_result_t, cugraph_error_t, cugraph_pagerank
 use super::PageRankResult;
 use crate::{
     array::DeviceArrayView,
-    error::{Error, ErrorKind, Result, check_error},
+    error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposed},
     handle::ResourceHandle,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64},
@@ -97,48 +97,40 @@ pub struct InitialGuess<'a, V: CugraphElement = i32, W: CugraphElement = f32> {
 
 /// Consolidated options for a PageRank computation.
 ///
-/// Bundles [`PageRankParams`] with optional precomputed weights and an
-/// initial guess. This is the single argument passed to
-/// [`Graph::pagerank`](crate::graph::Graph::pagerank).
+/// Contains only owned algorithm parameters — no lifetime annotations needed.
+/// Optional precomputed weights and initial guess are passed separately to
+/// [`Graph::pagerank_with`](crate::graph::Graph::pagerank_with).
 ///
 /// # Example
 ///
 /// ```
 /// use cugraph::centrality::pagerank::{PageRankOptions, PageRankParams};
 ///
-/// // Simple: just params, no optional inputs
-/// let options = PageRankOptions::<'_, i32, f32>::default();
+/// let options = PageRankOptions::default();
 /// assert_eq!(options.params.alpha.get(), 0.85);
 /// ```
-#[derive(Debug)]
-pub struct PageRankOptions<'a, V: CugraphElement = i32, W: CugraphElement = f32> {
+#[derive(Debug, Clone, Default)]
+pub struct PageRankOptions {
     /// Algorithm parameters (damping, tolerance, iterations, etc.).
     pub params: PageRankParams,
-    /// Optional precomputed vertex out-weight sums.
-    pub precomputed_weights: Option<PrecomputedWeights<'a, V, W>>,
-    /// Optional initial guess of PageRank values.
-    pub initial_guess: Option<InitialGuess<'a, V, W>>,
-}
-
-impl<'a, V: CugraphElement, W: CugraphElement> Default for PageRankOptions<'a, V, W> {
-    fn default() -> Self {
-        Self { params: PageRankParams::default(), precomputed_weights: None, initial_guess: None }
-    }
 }
 
 /// Compute PageRank on a graph.
 ///
-/// Prefer using [`Graph::pagerank`](crate::graph::Graph::pagerank) instead
+/// Prefer using [`Graph::pagerank`](crate::graph::Graph::pagerank) or
+/// [`Graph::pagerank_with`](crate::graph::Graph::pagerank_with) instead
 /// of calling this function directly.
 pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
     handle: &ResourceHandle,
     graph: &mut Graph<Transposed>,
-    options: &PageRankOptions<'_, V, W>,
+    options: &PageRankOptions,
+    precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
+    initial_guess: Option<&InitialGuess<'_, V, W>>,
 ) -> Result<PageRankResult> {
     let params = &options.params;
 
     // Validate precomputed weights.
-    if let Some(ref pw) = options.precomputed_weights {
+    if let Some(pw) = precomputed_weights {
         if pw.vertices.len() != pw.sums.len() {
             return Err(Error::new(ErrorKind::InvalidInput, "pagerank")
                 .with_message("precomputed weights: vertices and sums must have the same length")
@@ -150,7 +142,7 @@ pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
     }
 
     // Validate initial guess.
-    if let Some(ref ig) = options.initial_guess {
+    if let Some(ig) = initial_guess {
         if ig.vertices.len() != ig.values.len() {
             return Err(Error::new(ErrorKind::InvalidInput, "pagerank")
                 .with_message("initial guess: vertices and values must have the same length")
@@ -162,23 +154,26 @@ pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
     }
 
     // Extract raw pointers for optional arrays.
-    let (pw_verts_ptr, pw_sums_ptr) = match options.precomputed_weights {
-        Some(ref pw) => (pw.vertices.as_ptr() as *const _, pw.sums.as_ptr() as *const _),
+    let (pw_verts_ptr, pw_sums_ptr) = match precomputed_weights {
+        Some(pw) => (pw.vertices.as_ptr() as *const _, pw.sums.as_ptr() as *const _),
         None => (ptr::null(), ptr::null()),
     };
 
-    let (ig_verts_ptr, ig_vals_ptr) = match options.initial_guess {
-        Some(ref ig) => (ig.vertices.as_ptr() as *const _, ig.values.as_ptr() as *const _),
+    let (ig_verts_ptr, ig_vals_ptr) = match initial_guess {
+        Some(ig) => (ig.vertices.as_ptr() as *const _, ig.values.as_ptr() as *const _),
         None => (ptr::null(), ptr::null()),
     };
 
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
+    // SAFETY: all optional input pointers are either null or borrowed from
+    // validated device views that outlive the call, and `result`/`error` are
+    // valid out-pointers.
     unsafe {
         let code = cugraph_pagerank_allow_nonconvergence(
             handle.as_ptr(),
-            graph.raw,
+            graph.as_ptr(),
             pw_verts_ptr,
             pw_sums_ptr,
             ig_verts_ptr,
@@ -193,23 +188,15 @@ pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
         check_error(code, error, "pagerank")?;
     }
 
-    Ok(unsafe { PageRankResult::from_raw(result) })
-}
+    let result = require_non_null(result, "pagerank", "centrality_result")?;
 
-/// Convenience wrapper: run PageRank with just [`PageRankParams`] (no
-/// optional inputs).
-pub(crate) fn pagerank_simple(
-    handle: &ResourceHandle,
-    graph: &mut Graph<Transposed>,
-    params: &PageRankParams,
-) -> Result<PageRankResult> {
-    let options = PageRankOptions::<'_, i32, f32> { params: *params, ..Default::default() };
-    pagerank(handle, graph, &options)
+    // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
+    unsafe { PageRankResult::from_raw(result, handle.device()) }
 }
 
 fn validate_vertex_dtype<V: CugraphElement>(graph: &Graph<Transposed>, input_name: &str) -> Result<()> {
     let dtype = V::data_type();
-    if !dtype.is_integer() {
+    if !dtype.is_supported_index_type() {
         return Err(Error::new(ErrorKind::UnsupportedType, "pagerank")
             .with_message(format!("{input_name} require Int32 or Int64 vertex ids, got {dtype}")));
     }
@@ -252,11 +239,11 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
-        let src_view = src.view();
-        let dst_view = dst.view();
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
         let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&handle).expect("graph");
 
-        let options = PageRankOptions::<'_, i32, f32>::default();
+        let options = PageRankOptions::default();
         let result = graph.pagerank(&handle, &options).expect("pagerank");
 
         assert!(result.converged().expect("converged"), "PageRank should converge");
@@ -295,10 +282,12 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view()).build::<Transposed>(&handle).expect("graph");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&handle).expect("graph");
 
-        let params = PageRankParams::default();
-        let result = graph.pagerank_simple(&handle, &params).expect("pagerank_simple");
+        let options = PageRankOptions::default();
+        let result = graph.pagerank(&handle, &options).expect("pagerank");
 
         assert_eq!(result.vertex_ids().expect("vertex_ids").len(), 3);
         assert_eq!(result.scores().expect("scores").len(), 3);
@@ -310,17 +299,20 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view()).build::<Transposed>(&handle).expect("graph");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&handle).expect("graph");
 
         let verts = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("verts");
         let sums = DeviceArray::from_slice(&handle, &[1.0f32, 2.0]).expect("sums"); // wrong length
+        let verts_view = verts.view().expect("verts_view");
+        let sums_view = sums.view().expect("sums_view");
 
-        let options = PageRankOptions {
-            precomputed_weights: Some(PrecomputedWeights { vertices: &verts.view(), sums: &sums.view() }),
-            ..Default::default()
-        };
+        let options = PageRankOptions::default();
+        let pw = PrecomputedWeights { vertices: &verts_view, sums: &sums_view };
 
-        let err = graph.pagerank(&handle, &options).expect_err("should reject mismatched lengths");
+        let err =
+            graph.pagerank_with(&handle, &options, Some(&pw), None).expect_err("should reject mismatched lengths");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.message().contains("precomputed weights"));
     }
@@ -331,17 +323,20 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view()).build::<Transposed>(&handle).expect("graph");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&handle).expect("graph");
 
         let verts = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("verts");
         let vals = DeviceArray::from_slice(&handle, &[0.5f32]).expect("vals"); // wrong length
+        let verts_view = verts.view().expect("verts_view");
+        let vals_view = vals.view().expect("vals_view");
 
-        let options = PageRankOptions {
-            initial_guess: Some(InitialGuess { vertices: &verts.view(), values: &vals.view() }),
-            ..Default::default()
-        };
+        let options = PageRankOptions::default();
+        let ig = InitialGuess { vertices: &verts_view, values: &vals_view };
 
-        let err = graph.pagerank(&handle, &options).expect_err("should reject mismatched lengths");
+        let err =
+            graph.pagerank_with(&handle, &options, None, Some(&ig)).expect_err("should reject mismatched lengths");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.message().contains("initial guess"));
     }

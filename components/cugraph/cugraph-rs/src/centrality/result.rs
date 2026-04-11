@@ -6,6 +6,8 @@
 //! ([`PageRankResult`], [`BetweennessCentralityResult`]) that expose only the
 //! methods relevant to each algorithm.
 
+use std::marker::PhantomData;
+
 use cugraph_sys::{
     cugraph_centrality_result_converged, cugraph_centrality_result_free, cugraph_centrality_result_get_num_iterations,
     cugraph_centrality_result_get_values, cugraph_centrality_result_get_vertices, cugraph_centrality_result_t,
@@ -13,7 +15,8 @@ use cugraph_sys::{
 
 use crate::{
     array::RawDeviceArrayView,
-    error::{Error, ErrorKind, Result},
+    cuda::DeviceGuard,
+    error::{Error, ErrorKind, Result, require_non_null},
     structure::typed_results::{ScoreValues, VertexIds},
     types::try_from_bool_t,
 };
@@ -25,7 +28,8 @@ use crate::{
 /// methods.
 pub(crate) struct CentralityResult {
     raw: *mut cugraph_centrality_result_t,
-    _nosend_nosync: std::marker::PhantomData<*mut ()>,
+    device: i32,
+    _nosend_nosync: PhantomData<*mut ()>,
 }
 
 impl CentralityResult {
@@ -35,26 +39,31 @@ impl CentralityResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by a cuGraph centrality
     /// C API function. Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t) -> Self {
-        Self { raw, _nosend_nosync: std::marker::PhantomData }
+    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+        let raw = require_non_null(raw, "CentralityResult::from_raw", "centrality_result")?;
+        Ok(Self { raw, device, _nosend_nosync: PhantomData })
     }
 
     pub(crate) fn vertices_raw(&self) -> Result<RawDeviceArrayView<'_>> {
-        let view_ptr = unsafe { cugraph_centrality_result_get_vertices(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "CentralityResult::vertices_raw")
-                .with_message("C API returned null pointer for vertices"));
-        }
-        Ok(unsafe { RawDeviceArrayView::from_borrowed(view_ptr) })
+        let view_ptr = require_non_null(
+            unsafe { cugraph_centrality_result_get_vertices(self.raw) },
+            "CentralityResult::vertices_raw",
+            "vertices",
+        )?;
+        // SAFETY: `view_ptr` belongs to the live centrality result and was
+        // validated to be non-null above.
+        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, "CentralityResult::vertices_raw", "vertices") }
     }
 
     pub(crate) fn values_raw(&self) -> Result<RawDeviceArrayView<'_>> {
-        let view_ptr = unsafe { cugraph_centrality_result_get_values(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "CentralityResult::values_raw")
-                .with_message("C API returned null pointer for values"));
-        }
-        Ok(unsafe { RawDeviceArrayView::from_borrowed(view_ptr) })
+        let view_ptr = require_non_null(
+            unsafe { cugraph_centrality_result_get_values(self.raw) },
+            "CentralityResult::values_raw",
+            "values",
+        )?;
+        // SAFETY: `view_ptr` belongs to the live centrality result and was
+        // validated to be non-null above.
+        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, "CentralityResult::values_raw", "values") }
     }
 
     pub(crate) fn num_iterations(&self) -> usize {
@@ -73,6 +82,7 @@ impl CentralityResult {
 impl Drop for CentralityResult {
     fn drop(&mut self) {
         if !self.raw.is_null() {
+            let _guard = DeviceGuard::switch_to(self.device, "CentralityResult::drop").ok();
             unsafe { cugraph_centrality_result_free(self.raw) };
         }
     }
@@ -102,8 +112,10 @@ impl PageRankResult {
     /// `raw` must be a valid, non-null pointer returned by
     /// `cugraph_pagerank_allow_nonconvergence`.
     /// Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t) -> Self {
-        Self(unsafe { CentralityResult::from_raw(raw) })
+    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+        // SAFETY: the caller transfers ownership of a live cuGraph result to
+        // this wrapper on success.
+        Ok(Self(unsafe { CentralityResult::from_raw(raw, device) }?))
     }
 
     /// Get the vertex ids as a runtime-typed device array view.
@@ -173,8 +185,10 @@ impl BetweennessCentralityResult {
     /// `raw` must be a valid, non-null pointer returned by
     /// `cugraph_betweenness_centrality`. Ownership is transferred to this
     /// struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t) -> Self {
-        Self(unsafe { CentralityResult::from_raw(raw) })
+    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+        // SAFETY: the caller transfers ownership of a live cuGraph result to
+        // this wrapper on success.
+        Ok(Self(unsafe { CentralityResult::from_raw(raw, device) }?))
     }
 
     /// Get the vertex ids as a runtime-typed device array view.
@@ -207,5 +221,23 @@ impl BetweennessCentralityResult {
     pub fn to_dataframe(&self) -> Result<cudf::DataFrame> {
         cudf::DataFrame::try_from(self)
             .map_err(|e: Error| e.with_operation("BetweennessCentralityResult::to_dataframe"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ptr;
+
+    use super::*;
+
+    #[test]
+    fn centrality_result_from_raw_rejects_null() {
+        // SAFETY: this exercises the constructor's null guard only.
+        let err = match unsafe { CentralityResult::from_raw(ptr::null_mut(), 0) } {
+            Err(err) => err,
+            Ok(_) => panic!("null must be rejected"),
+        };
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert_eq!(err.operation(), "CentralityResult::from_raw");
     }
 }

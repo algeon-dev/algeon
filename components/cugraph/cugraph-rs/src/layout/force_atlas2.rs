@@ -12,29 +12,30 @@
 //!
 //! ```no_run
 //! use cugraph::{
-//!     DeviceArray, ForceAtlas2Options, ForceAtlas2Params, Forward,
-//!     GraphBuilder, IterationCount, ResourceHandle, RngState,
+//!     Forward, ResourceHandle,
+//!     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
+//!     layout::{ForceAtlas2Options, ForceAtlas2Params},
+//!     params::IterationCount,
+//!     random::RngState,
 //! };
 //!
-//! let handle = ResourceHandle::for_current_device().unwrap();
-//! let mut rng = RngState::new(&handle, 42).unwrap();
+//! let runtime = cudf::Runtime::new().unwrap();
+//! let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+//! let layout_seed = 42_u64;
+//! let mut rng = RngState::new(&handle, layout_seed).unwrap();
 //!
-//! let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
-//! let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
+//! let src = runtime.series("src", &[0i32, 1, 2]).unwrap();
+//! let dst = runtime.series("dst", &[1i32, 2, 0]).unwrap();
+//! let edges = cudf::DataFrame::from_series([src, dst]).unwrap();
+//! let opts = DataFrameGraphOptions::new("src", "dst").renumber();
+//! let mut graph =
+//!     graph_from_dataframe::<Forward>(&handle, &edges, &opts).unwrap();
 //!
-//! let src_view = src.view();
-//! let dst_view = dst.view();
-//! let mut graph = GraphBuilder::new(&src_view, &dst_view)
-//!     .renumber()
-//!     .build::<Forward>(&handle)
-//!     .unwrap();
-//!
-//! let options: ForceAtlas2Options<'_> = ForceAtlas2Options {
+//! let options = ForceAtlas2Options {
 //!     params: ForceAtlas2Params {
 //!         max_iter: IterationCount::new(100).unwrap(),
 //!         ..Default::default()
 //!     },
-//!     ..Default::default()
 //! };
 //! let result = graph.force_atlas2(&handle, &mut rng, &options).unwrap();
 //!
@@ -43,7 +44,7 @@
 //! assert_eq!(result.y().unwrap().len(), 3);
 //! ```
 
-use std::ptr;
+use std::{marker::PhantomData, ptr};
 
 use cugraph_sys::{
     cugraph_error_t, cugraph_force_atlas2, cugraph_layout_result_free, cugraph_layout_result_get_vertices,
@@ -52,7 +53,8 @@ use cugraph_sys::{
 
 use crate::{
     array::DeviceArrayView,
-    error::{Error, ErrorKind, Result, check_error},
+    cuda::DeviceGuard,
+    error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::Graph,
     handle::ResourceHandle,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
@@ -138,10 +140,6 @@ impl Default for ForceAtlas2Params {
     }
 }
 
-/// Optional per-vertex attributes for Force Atlas 2.
-///
-/// Each attribute is a pair of device arrays: one for vertex ids and one for
-/// the corresponding values. Both arrays must have the same length.
 impl<V: CugraphElement, W: CugraphElement> std::fmt::Debug for ForceAtlas2VertexAttrs<'_, V, W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ForceAtlas2VertexAttrs")
@@ -152,6 +150,10 @@ impl<V: CugraphElement, W: CugraphElement> std::fmt::Debug for ForceAtlas2Vertex
     }
 }
 
+/// Optional per-vertex attributes for Force Atlas 2.
+///
+/// Each attribute is a pair of device arrays: one for vertex ids and one for
+/// the corresponding values. Both arrays must have the same length.
 pub struct ForceAtlas2VertexAttrs<'a, V: CugraphElement = i32, W: CugraphElement = f32> {
     /// Per-vertex radius (used when `prevent_overlapping` is set).
     /// `(vertex_ids, radius_values)`.
@@ -170,16 +172,16 @@ impl<'a, V: CugraphElement, W: CugraphElement> Default for ForceAtlas2VertexAttr
     }
 }
 
-/// Optional initial positions for Force Atlas 2.
-///
-/// Used for refinement passes where a previous layout result is fed back as
-/// starting positions.
 impl<V: CugraphElement, W: CugraphElement> std::fmt::Debug for InitialPositions<'_, V, W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InitialPositions").finish_non_exhaustive()
     }
 }
 
+/// Optional initial positions for Force Atlas 2.
+///
+/// Used for refinement passes where a previous layout result is fed back as
+/// starting positions.
 pub struct InitialPositions<'a, V: CugraphElement = i32, W: CugraphElement = f32> {
     /// Vertex ids for the initial positions.
     pub vertices: &'a DeviceArrayView<'a, V>,
@@ -191,31 +193,29 @@ pub struct InitialPositions<'a, V: CugraphElement = i32, W: CugraphElement = f32
 
 /// Consolidated options for a Force Atlas 2 layout computation.
 ///
-/// Bundles [`ForceAtlas2Params`] (algorithm parameters) with optional
-/// per-vertex attributes and initial positions. This is the single
-/// argument passed to [`Graph::force_atlas2`](crate::graph::Graph::force_atlas2).
+/// Contains only owned algorithm parameters — no lifetime annotations needed.
+/// Optional per-vertex attributes and initial positions are passed separately
+/// to [`Graph::force_atlas2`](crate::graph::Graph::force_atlas2).
 ///
 /// # Example
 ///
 /// ```no_run
-/// use cugraph::{ForceAtlas2Options, ForceAtlas2Params, IterationCount};
+/// use cugraph::{
+///     layout::{ForceAtlas2Options, ForceAtlas2Params},
+///     params::IterationCount,
+/// };
 ///
-/// let options: ForceAtlas2Options<'_> = ForceAtlas2Options {
+/// let options = ForceAtlas2Options {
 ///     params: ForceAtlas2Params {
 ///         max_iter: IterationCount::new(100).unwrap(),
 ///         ..Default::default()
 ///     },
-///     ..Default::default()
 /// };
 /// ```
-#[derive(Debug, Default)]
-pub struct ForceAtlas2Options<'a, V: CugraphElement = i32, W: CugraphElement = f32> {
+#[derive(Debug, Clone, Default)]
+pub struct ForceAtlas2Options {
     /// Algorithm parameters (iterations, gravity, scaling, etc.).
     pub params: ForceAtlas2Params,
-    /// Optional per-vertex attributes (radius, mobility, mass).
-    pub vertex_attrs: Option<ForceAtlas2VertexAttrs<'a, V, W>>,
-    /// Optional initial vertex positions for refinement passes.
-    pub initial_positions: Option<InitialPositions<'a, V, W>>,
 }
 
 /// Result of a Force Atlas 2 layout computation.
@@ -224,7 +224,8 @@ pub struct ForceAtlas2Options<'a, V: CugraphElement = i32, W: CugraphElement = f
 /// owns the GPU memory and frees it on drop.
 pub struct LayoutResult {
     raw: *mut cugraph_layout_result_t,
-    _nosend_nosync: std::marker::PhantomData<*mut ()>,
+    device: i32,
+    _nosend_nosync: PhantomData<*mut ()>,
 }
 
 impl std::fmt::Debug for LayoutResult {
@@ -240,8 +241,9 @@ impl LayoutResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by the cuGraph layout
     /// C API. Ownership is transferred to this struct.
-    unsafe fn from_raw(raw: *mut cugraph_layout_result_t) -> Self {
-        Self { raw, _nosend_nosync: std::marker::PhantomData }
+    unsafe fn from_raw(raw: *mut cugraph_layout_result_t, device: i32) -> Result<Self> {
+        let raw = require_non_null(raw, "LayoutResult::from_raw", "layout_result")?;
+        Ok(Self { raw, device, _nosend_nosync: PhantomData })
     }
 
     /// Get the vertex ids as a runtime-typed device array view.
@@ -249,12 +251,16 @@ impl LayoutResult {
     /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
     /// graph's vertex type.
     pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
-        let view_ptr = unsafe { cugraph_layout_result_get_vertices(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "LayoutResult::vertex_ids")
-                .with_message("C API returned null pointer for vertices"));
-        }
-        let raw = unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr) };
+        let view_ptr = require_non_null(
+            unsafe { cugraph_layout_result_get_vertices(self.raw) },
+            "LayoutResult::vertex_ids",
+            "vertices",
+        )?;
+        // SAFETY: `view_ptr` belongs to the live layout result and was
+        // validated to be non-null above.
+        let raw = unsafe {
+            crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::vertex_ids", "vertices")
+        }?;
         VertexIds::from_raw(raw)
     }
 
@@ -264,12 +270,11 @@ impl LayoutResult {
     ///
     /// The current cuGraph ForceAtlas2 C API returns Float32 coordinates.
     pub fn x(&self) -> Result<ScoreValues<'_>> {
-        let view_ptr = unsafe { cugraph_layout_result_get_x_axis(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "LayoutResult::x")
-                .with_message("C API returned null pointer for x-axis coordinates"));
-        }
-        let raw = unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr) };
+        let view_ptr =
+            require_non_null(unsafe { cugraph_layout_result_get_x_axis(self.raw) }, "LayoutResult::x", "x_axis")?;
+        // SAFETY: `view_ptr` belongs to the live layout result and was
+        // validated to be non-null above.
+        let raw = unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::x", "x_axis") }?;
         ScoreValues::from_raw(raw)
     }
 
@@ -279,12 +284,11 @@ impl LayoutResult {
     ///
     /// The current cuGraph ForceAtlas2 C API returns Float32 coordinates.
     pub fn y(&self) -> Result<ScoreValues<'_>> {
-        let view_ptr = unsafe { cugraph_layout_result_get_y_axis(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "LayoutResult::y")
-                .with_message("C API returned null pointer for y-axis coordinates"));
-        }
-        let raw = unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr) };
+        let view_ptr =
+            require_non_null(unsafe { cugraph_layout_result_get_y_axis(self.raw) }, "LayoutResult::y", "y_axis")?;
+        // SAFETY: `view_ptr` belongs to the live layout result and was
+        // validated to be non-null above.
+        let raw = unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::y", "y_axis") }?;
         ScoreValues::from_raw(raw)
     }
 }
@@ -292,32 +296,32 @@ impl LayoutResult {
 impl LayoutResult {
     /// Get the raw vertices view (for cudf interop).
     pub(crate) fn vertices_raw(&self) -> crate::error::Result<crate::array::RawDeviceArrayView<'_>> {
-        let view_ptr = unsafe { cugraph_layout_result_get_vertices(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "LayoutResult::vertices_raw")
-                .with_message("C API returned null pointer for vertices"));
-        }
-        Ok(unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr) })
+        let view_ptr = require_non_null(
+            unsafe { cugraph_layout_result_get_vertices(self.raw) },
+            "LayoutResult::vertices_raw",
+            "vertices",
+        )?;
+        // SAFETY: `view_ptr` belongs to the live layout result and was
+        // validated to be non-null above.
+        unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::vertices_raw", "vertices") }
     }
 
     /// Get the raw x-axis view (for cudf interop).
     pub(crate) fn x_raw(&self) -> crate::error::Result<crate::array::RawDeviceArrayView<'_>> {
-        let view_ptr = unsafe { cugraph_layout_result_get_x_axis(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "LayoutResult::x_raw")
-                .with_message("C API returned null pointer for x-axis coordinates"));
-        }
-        Ok(unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr) })
+        let view_ptr =
+            require_non_null(unsafe { cugraph_layout_result_get_x_axis(self.raw) }, "LayoutResult::x_raw", "x_axis")?;
+        // SAFETY: `view_ptr` belongs to the live layout result and was
+        // validated to be non-null above.
+        unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::x_raw", "x_axis") }
     }
 
     /// Get the raw y-axis view (for cudf interop).
     pub(crate) fn y_raw(&self) -> crate::error::Result<crate::array::RawDeviceArrayView<'_>> {
-        let view_ptr = unsafe { cugraph_layout_result_get_y_axis(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "LayoutResult::y_raw")
-                .with_message("C API returned null pointer for y-axis coordinates"));
-        }
-        Ok(unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr) })
+        let view_ptr =
+            require_non_null(unsafe { cugraph_layout_result_get_y_axis(self.raw) }, "LayoutResult::y_raw", "y_axis")?;
+        // SAFETY: `view_ptr` belongs to the live layout result and was
+        // validated to be non-null above.
+        unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::y_raw", "y_axis") }
     }
 
     /// Convert this layout result to a cudf DataFrame.
@@ -337,6 +341,7 @@ impl LayoutResult {
 impl Drop for LayoutResult {
     fn drop(&mut self) {
         if !self.raw.is_null() {
+            let _guard = DeviceGuard::switch_to(self.device, "LayoutResult::drop").ok();
             unsafe { cugraph_layout_result_free(self.raw) };
         }
     }
@@ -344,17 +349,17 @@ impl Drop for LayoutResult {
 
 fn validate_force_atlas2_vertex_helper_dtype<T, V: CugraphElement>(
     graph: &Graph<T>,
-    helper_name: &'static str,
+    input_name: &'static str,
 ) -> Result<()> {
     let dtype = V::data_type();
-    if !dtype.is_integer() {
+    if !dtype.is_supported_index_type() {
         return Err(Error::new(ErrorKind::UnsupportedType, "force_atlas2")
-            .with_message(format!("{helper_name} require Int32 or Int64 vertex ids, got {dtype}")));
+            .with_message(format!("{input_name} require Int32 or Int64 vertex ids, got {dtype}")));
     }
 
     if dtype != graph.vertex_dtype() {
         return Err(Error::new(ErrorKind::UnsupportedType, "force_atlas2").with_message(format!(
-            "{helper_name} vertex dtype {dtype} does not match graph vertex dtype {}",
+            "{input_name} vertex dtype {dtype} does not match graph vertex dtype {}",
             graph.vertex_dtype()
         )));
     }
@@ -364,12 +369,12 @@ fn validate_force_atlas2_vertex_helper_dtype<T, V: CugraphElement>(
 
 fn validate_force_atlas2_value_helper_dtype<T, W: CugraphElement>(
     _graph: &Graph<T>,
-    helper_name: &'static str,
+    input_name: &'static str,
 ) -> Result<()> {
     let dtype = W::data_type();
     if dtype != DataType::Float32 {
         return Err(Error::new(ErrorKind::UnsupportedType, "force_atlas2")
-            .with_message(format!("{helper_name} require Float32 values, got {dtype}")));
+            .with_message(format!("{input_name} require Float32 values, got {dtype}")));
     }
 
     Ok(())
@@ -383,11 +388,11 @@ pub(crate) fn force_atlas2<T, V: CugraphElement, W: CugraphElement>(
     handle: &ResourceHandle,
     rng_state: &mut RngState,
     graph: &mut Graph<T>,
-    options: &ForceAtlas2Options<'_, V, W>,
+    options: &ForceAtlas2Options,
+    vertex_attrs: Option<&ForceAtlas2VertexAttrs<'_, V, W>>,
+    initial_pos: Option<&InitialPositions<'_, V, W>>,
 ) -> Result<LayoutResult> {
     let params = &options.params;
-    let vertex_attrs = options.vertex_attrs.as_ref();
-    let initial_pos = options.initial_positions.as_ref();
 
     // Validate initial position arrays have consistent lengths.
     if let Some(pos) = initial_pos {
@@ -471,11 +476,14 @@ pub(crate) fn force_atlas2<T, V: CugraphElement, W: CugraphElement>(
     let mut result: *mut cugraph_layout_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
+    // SAFETY: every optional pointer is either null or borrowed from a live
+    // device array view whose dtype/length was validated above, and
+    // `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_force_atlas2(
             handle.as_ptr(),
             rng_state.as_ptr(),
-            graph.raw,
+            graph.as_ptr(),
             i32::try_from(params.max_iter)?,
             start_verts_ptr,
             x_start_ptr,
@@ -505,7 +513,26 @@ pub(crate) fn force_atlas2<T, V: CugraphElement, W: CugraphElement>(
         check_error(code, error, "force_atlas2")?;
     }
 
-    Ok(unsafe { LayoutResult::from_raw(result) })
+    let result = require_non_null(result, "force_atlas2", "layout_result")?;
+
+    // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
+    // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
+    unsafe { LayoutResult::from_raw(result, handle.device()) }
+}
+
+#[cfg(test)]
+mod layout_result_constructor_tests {
+    use std::ptr;
+
+    use super::*;
+
+    #[test]
+    fn layout_result_from_raw_rejects_null() {
+        // SAFETY: this exercises the constructor's null guard only.
+        let err = unsafe { LayoutResult::from_raw(ptr::null_mut(), 0) }.expect_err("null must be rejected");
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert_eq!(err.operation(), "LayoutResult::from_raw");
+    }
 }
 
 #[cfg(test)]
@@ -518,27 +545,36 @@ mod tests {
         types::GraphProperties,
     };
 
+    const TEST_LAYOUT_PRIMARY_SEED: u64 = 42;
+    const TEST_LAYOUT_SECONDARY_SEED: u64 = 7;
+    const TEST_LAYOUT_SMOKE_ITERATIONS: u32 = 10;
+    const TEST_LAYOUT_SETTLE_ITERATIONS: u32 = 50;
+
     #[test]
     fn test_force_atlas2_triangle_produces_coordinates() {
         // Triangle: 0->1, 1->2, 2->0 (symmetric for layout purposes)
         let handle = ResourceHandle::new().expect("handle");
-        let mut rng = RngState::new(&handle, 42).expect("rng");
+        let mut rng = RngState::new(&handle, TEST_LAYOUT_PRIMARY_SEED).expect("rng");
 
         let src_data: Vec<i32> = vec![0, 1, 2, 1, 2, 0];
         let dst_data: Vec<i32> = vec![1, 2, 0, 0, 1, 2];
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view())
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
             .renumber()
             .build::<Forward>(&handle)
             .expect("graph");
 
-        let options: ForceAtlas2Options<'_> = ForceAtlas2Options {
-            params: ForceAtlas2Params { max_iter: IterationCount::new(50).unwrap(), ..Default::default() },
-            ..Default::default()
+        let options = ForceAtlas2Options {
+            params: ForceAtlas2Params {
+                max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
+                ..Default::default()
+            },
         };
 
         let result = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2");
@@ -570,17 +606,21 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view())
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
             .renumber()
             .build::<Forward>(&handle)
             .expect("graph");
 
         // First pass: 50 iterations, random initial positions
-        let options1: ForceAtlas2Options<'_> = ForceAtlas2Options {
-            params: ForceAtlas2Params { max_iter: IterationCount::new(50).unwrap(), ..Default::default() },
-            ..Default::default()
+        let options1 = ForceAtlas2Options {
+            params: ForceAtlas2Params {
+                max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
+                ..Default::default()
+            },
         };
         let result1 = graph.force_atlas2(&handle, &mut rng, &options1).expect("fa2 pass 1");
 
@@ -594,12 +634,13 @@ mod tests {
         let y1_scores = result1.y().expect("y");
         let y1_view = y1_scores.as_f32().expect("f32 y");
         let init_pos = InitialPositions { vertices: vids1_view, x: x1_view, y: y1_view };
-        let options2: ForceAtlas2Options<'_> = ForceAtlas2Options {
-            params: ForceAtlas2Params { max_iter: IterationCount::new(10).unwrap(), ..Default::default() },
-            initial_positions: Some(init_pos),
-            ..Default::default()
+        let options2 = ForceAtlas2Options {
+            params: ForceAtlas2Params {
+                max_iter: IterationCount::new(TEST_LAYOUT_SMOKE_ITERATIONS).unwrap(),
+                ..Default::default()
+            },
         };
-        let result2 = graph.force_atlas2(&handle, &mut rng, &options2).expect("fa2 pass 2");
+        let result2 = graph.force_atlas2_with(&handle, &mut rng, &options2, None, Some(&init_pos)).expect("fa2 pass 2");
 
         assert_eq!(result2.vertex_ids().expect("vertex_ids").len(), 4);
         assert_eq!(result2.x().expect("x").len(), 4);
@@ -627,16 +668,20 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view())
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
             .renumber()
             .build::<Forward>(&handle)
             .expect("graph");
 
-        let options: ForceAtlas2Options<'_> = ForceAtlas2Options {
-            params: ForceAtlas2Params { max_iter: IterationCount::new(10).unwrap(), ..Default::default() },
-            ..Default::default()
+        let options = ForceAtlas2Options {
+            params: ForceAtlas2Params {
+                max_iter: IterationCount::new(TEST_LAYOUT_SMOKE_ITERATIONS).unwrap(),
+                ..Default::default()
+            },
         };
 
         let result = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2");
@@ -656,7 +701,7 @@ mod tests {
     fn test_force_atlas2_with_weights() {
         // Test FA2 with edge weights.
         let handle = ResourceHandle::new().expect("handle");
-        let mut rng = RngState::new(&handle, 7).expect("rng");
+        let mut rng = RngState::new(&handle, TEST_LAYOUT_SECONDARY_SEED).expect("rng");
 
         let src_data: Vec<i32> = vec![0, 1, 2, 1, 2, 0];
         let dst_data: Vec<i32> = vec![1, 2, 0, 0, 1, 2];
@@ -665,21 +710,23 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
         let wgt = DeviceArray::from_slice(&handle, &wgt_data).expect("wgt");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let wgt_view = wgt.view().expect("wgt_view");
 
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view())
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
-            .weights(&wgt.view())
+            .weights(&wgt_view)
             .renumber()
             .build::<Forward>(&handle)
             .expect("graph");
 
-        let options: ForceAtlas2Options<'_> = ForceAtlas2Options {
+        let options = ForceAtlas2Options {
             params: ForceAtlas2Params {
-                max_iter: IterationCount::new(50).unwrap(),
+                max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
                 edge_weight_influence: NonNegativeF64::new(1.0).unwrap(),
                 ..Default::default()
             },
-            ..Default::default()
         };
 
         let result = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2");
@@ -700,21 +747,22 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view())
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
             .renumber()
             .build::<Forward>(&handle)
             .expect("graph");
 
-        let options: ForceAtlas2Options<'_> = ForceAtlas2Options {
+        let options = ForceAtlas2Options {
             params: ForceAtlas2Params {
-                max_iter: IterationCount::new(50).unwrap(),
+                max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
                 barnes_hut_optimize: true,
                 barnes_hut_theta: ClosedUnitF64::new(0.5).unwrap(),
                 ..Default::default()
             },
-            ..Default::default()
         };
 
         let result = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2 BH");
@@ -740,8 +788,10 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view())
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
             .renumber()
             .build::<Forward>(&handle)
@@ -751,11 +801,16 @@ mod tests {
         let verts = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("verts");
         let x_pos = DeviceArray::from_slice(&handle, &[1.0f32, 2.0]).expect("x");
         let y_pos = DeviceArray::from_slice(&handle, &[3.0f32]).expect("y"); // wrong length
+        let verts_view = verts.view().expect("verts_view");
+        let x_pos_view = x_pos.view().expect("x_pos_view");
+        let y_pos_view = y_pos.view().expect("y_pos_view");
 
-        let init = InitialPositions { vertices: &verts.view(), x: &x_pos.view(), y: &y_pos.view() };
-        let options = ForceAtlas2Options { initial_positions: Some(init), ..Default::default() };
+        let init = InitialPositions { vertices: &verts_view, x: &x_pos_view, y: &y_pos_view };
+        let options = ForceAtlas2Options::default();
 
-        let err = graph.force_atlas2(&handle, &mut rng, &options).expect_err("should reject mismatched y length");
+        let err = graph
+            .force_atlas2_with(&handle, &mut rng, &options, None, Some(&init))
+            .expect_err("should reject mismatched y length");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.message().contains("y length"));
     }
@@ -770,8 +825,10 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view())
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
             .renumber()
             .build::<Forward>(&handle)
@@ -780,13 +837,15 @@ mod tests {
         // Create mismatched mass arrays
         let mass_verts = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("mass_verts");
         let mass_vals = DeviceArray::from_slice(&handle, &[1.0f32]).expect("mass_vals"); // wrong length
+        let mass_verts_view = mass_verts.view().expect("mass_verts_view");
+        let mass_vals_view = mass_vals.view().expect("mass_vals_view");
 
-        let attrs =
-            ForceAtlas2VertexAttrs { mass: Some((&mass_verts.view(), &mass_vals.view())), ..Default::default() };
-        let options = ForceAtlas2Options { vertex_attrs: Some(attrs), ..Default::default() };
+        let attrs = ForceAtlas2VertexAttrs { mass: Some((&mass_verts_view, &mass_vals_view)), ..Default::default() };
+        let options = ForceAtlas2Options::default();
 
-        let err =
-            graph.force_atlas2(&handle, &mut rng, &options).expect_err("should reject mismatched mass array lengths");
+        let err = graph
+            .force_atlas2_with(&handle, &mut rng, &options, Some(&attrs), None)
+            .expect_err("should reject mismatched mass array lengths");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.message().contains("mass"));
     }
@@ -798,8 +857,10 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &[0i64, 1, 1, 0]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i64, 0, 0, 1]).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view())
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
             .renumber()
             .build::<Forward>(&handle)
@@ -808,12 +869,15 @@ mod tests {
         let verts = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("verts");
         let x_pos = DeviceArray::from_slice(&handle, &[1.0f32, 2.0]).expect("x");
         let y_pos = DeviceArray::from_slice(&handle, &[3.0f32, 4.0]).expect("y");
+        let verts_view = verts.view().expect("verts_view");
+        let x_pos_view = x_pos.view().expect("x_pos_view");
+        let y_pos_view = y_pos.view().expect("y_pos_view");
 
-        let init = InitialPositions { vertices: &verts.view(), x: &x_pos.view(), y: &y_pos.view() };
-        let options = ForceAtlas2Options { initial_positions: Some(init), ..Default::default() };
+        let init = InitialPositions { vertices: &verts_view, x: &x_pos_view, y: &y_pos_view };
+        let options = ForceAtlas2Options::default();
 
         let err = graph
-            .force_atlas2(&handle, &mut rng, &options)
+            .force_atlas2_with(&handle, &mut rng, &options, None, Some(&init))
             .expect_err("should reject i64 graphs with i32 initial position vertices");
         assert_eq!(err.kind(), ErrorKind::UnsupportedType);
         assert!(err.message().contains("initial positions vertex dtype Int32 does not match graph vertex dtype Int64"));
@@ -828,22 +892,26 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 1, 0]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 0, 0, 1]).expect("dst");
         let wgt = DeviceArray::from_slice(&handle, &[1.0f64, 1.0, 1.0, 1.0]).expect("wgt");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
+        let wgt_view = wgt.view().expect("wgt_view");
 
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view())
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
-            .weights(&wgt.view())
+            .weights(&wgt_view)
             .renumber()
             .build::<Forward>(&handle)
             .expect("graph");
 
         let mass_verts = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("mass_verts");
         let mass_vals = DeviceArray::from_slice(&handle, &[1.0f32, 2.0]).expect("mass_vals");
+        let mass_verts_view = mass_verts.view().expect("mass_verts_view");
+        let mass_vals_view = mass_vals.view().expect("mass_vals_view");
 
-        let attrs =
-            ForceAtlas2VertexAttrs { mass: Some((&mass_verts.view(), &mass_vals.view())), ..Default::default() };
-        let options = ForceAtlas2Options { vertex_attrs: Some(attrs), ..Default::default() };
+        let attrs = ForceAtlas2VertexAttrs { mass: Some((&mass_verts_view, &mass_vals_view)), ..Default::default() };
+        let options = ForceAtlas2Options::default();
 
-        let result = graph.force_atlas2(&handle, &mut rng, &options).expect("force_atlas2");
+        let result = graph.force_atlas2_with(&handle, &mut rng, &options, Some(&attrs), None).expect("force_atlas2");
         assert_eq!(result.vertex_ids().expect("vertex_ids").len(), 2);
         assert!(matches!(result.x().expect("x"), ScoreValues::F32(_)));
         assert!(matches!(result.y().expect("y"), ScoreValues::F32(_)));
@@ -860,14 +928,16 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph = GraphBuilder::new(&src.view(), &dst.view())
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
             .renumber()
             .build::<Forward>(&handle)
             .expect("graph");
 
-        let options: ForceAtlas2Options<'_> = ForceAtlas2Options {
+        let options = ForceAtlas2Options {
             params: ForceAtlas2Params {
                 max_iter: IterationCount::new(30).unwrap(),
                 lin_log_mode: true,
@@ -875,7 +945,6 @@ mod tests {
                 gravity: NonNegativeF64::new(2.0).unwrap(),
                 ..Default::default()
             },
-            ..Default::default()
         };
 
         let result = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2");

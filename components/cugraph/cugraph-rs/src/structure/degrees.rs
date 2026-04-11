@@ -3,56 +3,23 @@
 //! Computes in-degrees, out-degrees, or both for all (or a subset of) vertices
 //! in a graph.
 
-use std::ptr;
+use std::{marker::PhantomData, ptr};
 
 use cugraph_sys::{
     cugraph_degrees, cugraph_degrees_result_free, cugraph_degrees_result_get_in_degrees,
     cugraph_degrees_result_get_out_degrees, cugraph_degrees_result_get_vertices, cugraph_degrees_result_t,
-    cugraph_error_t, cugraph_in_degrees, cugraph_out_degrees,
+    cugraph_error_t, cugraph_in_degrees, cugraph_out_degrees, cugraph_type_erased_device_array_view_t,
 };
 
 use crate::{
     array::{DeviceArrayView, RawDeviceArrayView},
-    error::{Error, ErrorKind, Result, check_error},
+    cuda::DeviceGuard,
+    error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposed},
     handle::ResourceHandle,
     structure::typed_results::VertexIds,
     types::{CugraphElement, DataType, to_bool_t},
 };
-
-/// Specifies which vertices to query degrees for.
-///
-/// Used as a parameter to [`Graph::degrees`], [`Graph::in_degrees`], and
-/// [`Graph::out_degrees`] instead of a bare `Option`.
-///
-/// # Examples
-///
-/// ```no_run
-/// use cugraph::DegreeVertices;
-///
-/// // Query all vertices (the default):
-/// let all: DegreeVertices<'_> = DegreeVertices::All;
-///
-/// // Query a subset via From conversion:
-/// # use cugraph::{DeviceArray, ResourceHandle};
-/// # let handle = ResourceHandle::for_current_device().unwrap();
-/// # let arr = DeviceArray::from_slice(&handle, &[0i32, 1]).unwrap();
-/// let subset = DegreeVertices::from(&arr.view());
-/// ```
-#[derive(Debug, Default)]
-pub enum DegreeVertices<'a, V: CugraphElement = i32> {
-    /// Compute degrees for all vertices in the graph.
-    #[default]
-    All,
-    /// Compute degrees only for the specified vertex subset.
-    Subset(&'a DeviceArrayView<'a, V>),
-}
-
-impl<'a, V: CugraphElement> From<&'a DeviceArrayView<'a, V>> for DegreeVertices<'a, V> {
-    fn from(view: &'a DeviceArrayView<'a, V>) -> Self {
-        Self::Subset(view)
-    }
-}
 
 /// Compute both in-degrees and out-degrees for vertices in a graph.
 ///
@@ -61,22 +28,22 @@ impl<'a, V: CugraphElement> From<&'a DeviceArrayView<'a, V>> for DegreeVertices<
 pub(crate) fn degrees<V: CugraphElement>(
     handle: &ResourceHandle,
     graph: &mut Graph<Transposed>,
-    vertices: &DegreeVertices<'_, V>,
+    vertices: Option<&DeviceArrayView<'_, V>>,
     do_expensive_check: bool,
 ) -> Result<DegreesResult> {
     let mut result: *mut cugraph_degrees_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
-    let src_ptr = match vertices {
-        DegreeVertices::All => ptr::null(),
-        DegreeVertices::Subset(v) => v.as_ptr() as *const _,
-    };
+    let vertices_ptr = vertices.map(|v| v.as_ptr() as *const _).unwrap_or(ptr::null());
 
+    // SAFETY: `graph` and `handle` outlive the call, `vertices_ptr` is either
+    // null or borrowed from a live device view, and `result`/`error` are valid
+    // output locations.
     unsafe {
         let code = cugraph_degrees(
             handle.as_ptr(),
-            graph.raw,
-            src_ptr,
+            graph.as_ptr(),
+            vertices_ptr,
             to_bool_t(do_expensive_check),
             &mut result,
             &mut error,
@@ -84,7 +51,7 @@ pub(crate) fn degrees<V: CugraphElement>(
         check_error(code, error, "degrees")?;
     }
 
-    Ok(DegreesResult { raw: result, _nosend_nosync: std::marker::PhantomData })
+    DegreesResult::from_raw(result, handle.device())
 }
 
 /// Compute only in-degrees for vertices in a graph.
@@ -94,22 +61,22 @@ pub(crate) fn degrees<V: CugraphElement>(
 pub(crate) fn in_degrees<V: CugraphElement>(
     handle: &ResourceHandle,
     graph: &mut Graph<Transposed>,
-    vertices: &DegreeVertices<'_, V>,
+    vertices: Option<&DeviceArrayView<'_, V>>,
     do_expensive_check: bool,
 ) -> Result<InDegreesResult> {
     let mut result: *mut cugraph_degrees_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
-    let src_ptr = match vertices {
-        DegreeVertices::All => ptr::null(),
-        DegreeVertices::Subset(v) => v.as_ptr() as *const _,
-    };
+    let vertices_ptr = vertices.map(|v| v.as_ptr() as *const _).unwrap_or(ptr::null());
 
+    // SAFETY: `graph` and `handle` outlive the call, `vertices_ptr` is either
+    // null or borrowed from a live device view, and `result`/`error` are valid
+    // output locations.
     unsafe {
         let code = cugraph_in_degrees(
             handle.as_ptr(),
-            graph.raw,
-            src_ptr,
+            graph.as_ptr(),
+            vertices_ptr,
             to_bool_t(do_expensive_check),
             &mut result,
             &mut error,
@@ -117,7 +84,7 @@ pub(crate) fn in_degrees<V: CugraphElement>(
         check_error(code, error, "in_degrees")?;
     }
 
-    Ok(InDegreesResult { raw: result, _nosend_nosync: std::marker::PhantomData })
+    InDegreesResult::from_raw(result, handle.device())
 }
 
 /// Compute only out-degrees for vertices in a graph.
@@ -127,22 +94,22 @@ pub(crate) fn in_degrees<V: CugraphElement>(
 pub(crate) fn out_degrees<T, V: CugraphElement>(
     handle: &ResourceHandle,
     graph: &mut Graph<T>,
-    vertices: &DegreeVertices<'_, V>,
+    vertices: Option<&DeviceArrayView<'_, V>>,
     do_expensive_check: bool,
 ) -> Result<OutDegreesResult> {
     let mut result: *mut cugraph_degrees_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
-    let src_ptr = match vertices {
-        DegreeVertices::All => ptr::null(),
-        DegreeVertices::Subset(v) => v.as_ptr() as *const _,
-    };
+    let vertices_ptr = vertices.map(|v| v.as_ptr() as *const _).unwrap_or(ptr::null());
 
+    // SAFETY: `graph` and `handle` outlive the call, `vertices_ptr` is either
+    // null or borrowed from a live device view, and `result`/`error` are valid
+    // output locations.
     unsafe {
         let code = cugraph_out_degrees(
             handle.as_ptr(),
-            graph.raw,
-            src_ptr,
+            graph.as_ptr(),
+            vertices_ptr,
             to_bool_t(do_expensive_check),
             &mut result,
             &mut error,
@@ -150,7 +117,7 @@ pub(crate) fn out_degrees<T, V: CugraphElement>(
         check_error(code, error, "out_degrees")?;
     }
 
-    Ok(OutDegreesResult { raw: result, _nosend_nosync: std::marker::PhantomData })
+    OutDegreesResult::from_raw(result, handle.device())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -181,7 +148,7 @@ impl<'a> DegreeValues<'a> {
         match raw.dtype()? {
             DataType::Int32 => Ok(Self::I32(DeviceArrayView::from_raw_unchecked(raw))),
             DataType::Int64 => Ok(Self::I64(DeviceArrayView::from_raw_unchecked(raw))),
-            other => Err(Error::new(ErrorKind::InvalidInput, "DegreeValues::from_raw")
+            other => Err(Error::new(ErrorKind::InvalidState, "DegreeValues::from_raw")
                 .with_message(format!("unexpected degree dtype: {other}"))),
         }
     }
@@ -217,7 +184,7 @@ impl<'a> DegreeValues<'a> {
     pub fn to_vec_i32(&self, handle: &ResourceHandle) -> Result<Vec<i32>> {
         match self {
             Self::I32(v) => v.to_vec(handle),
-            Self::I64(_) => Err(Error::new(ErrorKind::InvalidInput, "DegreeValues::to_vec_i32")
+            Self::I64(_) => Err(Error::new(ErrorKind::InvalidState, "DegreeValues::to_vec_i32")
                 .with_message("degree values are i64; use to_vec_i64() to avoid data loss")),
         }
     }
@@ -227,6 +194,53 @@ impl<'a> DegreeValues<'a> {
 // Degree result types
 // ═══════════════════════════════════════════════════════════════════════════
 
+struct DegreeResultInner {
+    raw: *mut cugraph_degrees_result_t,
+    device: i32,
+    _nosend_nosync: PhantomData<*mut ()>,
+}
+
+impl DegreeResultInner {
+    fn new(raw: *mut cugraph_degrees_result_t, device: i32, operation: &'static str) -> Result<Self> {
+        let raw = require_non_null(raw, operation, "degrees_result")?;
+        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+    }
+
+    fn raw_view(
+        &self,
+        getter: unsafe extern "C" fn(*mut cugraph_degrees_result_t) -> *mut cugraph_type_erased_device_array_view_t,
+        operation: &'static str,
+        pointer_name: &'static str,
+    ) -> Result<RawDeviceArrayView<'_>> {
+        // SAFETY: `self.raw` is a live cuGraph degrees result and `getter`
+        // returns a borrowed child view tied to that result object.
+        unsafe { RawDeviceArrayView::from_borrowed(getter(self.raw), operation, pointer_name) }
+    }
+
+    fn vertex_ids(&self, operation: &'static str) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.raw_view(cugraph_degrees_result_get_vertices, operation, "vertices")?)
+    }
+
+    fn in_degrees(&self, operation: &'static str) -> Result<DegreeValues<'_>> {
+        DegreeValues::from_raw(self.raw_view(cugraph_degrees_result_get_in_degrees, operation, "in_degrees")?)
+    }
+
+    fn out_degrees(&self, operation: &'static str) -> Result<DegreeValues<'_>> {
+        DegreeValues::from_raw(self.raw_view(cugraph_degrees_result_get_out_degrees, operation, "out_degrees")?)
+    }
+}
+
+impl Drop for DegreeResultInner {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _guard = DeviceGuard::switch_to(self.device, "DegreeResultInner::drop").ok();
+            // SAFETY: `self.raw` is owned by this wrapper and freed exactly
+            // once here.
+            unsafe { cugraph_degrees_result_free(self.raw) };
+        }
+    }
+}
+
 /// Result of a degree computation returning both in-degrees and out-degrees.
 ///
 /// Both [`in_degrees()`](DegreesResult::in_degrees) and
@@ -234,10 +248,7 @@ impl<'a> DegreeValues<'a> {
 /// always populates both arrays when `cugraph_degrees` is called.
 ///
 /// Freed on drop via `cugraph_degrees_result_free`.
-pub struct DegreesResult {
-    raw: *mut cugraph_degrees_result_t,
-    _nosend_nosync: std::marker::PhantomData<*mut ()>,
-}
+pub struct DegreesResult(DegreeResultInner);
 
 impl std::fmt::Debug for DegreesResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -246,67 +257,23 @@ impl std::fmt::Debug for DegreesResult {
 }
 
 impl DegreesResult {
+    fn from_raw(raw: *mut cugraph_degrees_result_t, device: i32) -> Result<Self> {
+        Ok(Self(DegreeResultInner::new(raw, device, "degrees")?))
+    }
+
     /// Get the vertex ids as a runtime-typed device array view.
-    ///
-    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
-    /// graph's vertex type.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the C API returned a null pointer or an
-    /// unrecognised dtype.
     pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
-        let view_ptr = unsafe { cugraph_degrees_result_get_vertices(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "DegreesResult::vertex_ids")
-                .with_message("C API returned null pointer for vertices"));
-        }
-        let raw = unsafe { RawDeviceArrayView::from_borrowed(view_ptr) };
-        VertexIds::from_raw(raw)
+        self.0.vertex_ids("DegreesResult::vertex_ids")
     }
 
     /// Get the in-degrees as typed degree values.
-    ///
-    /// The C API always populates this when `cugraph_degrees` is called.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the C API returned a null pointer or an
-    /// unrecognised dtype.
     pub fn in_degrees(&self) -> Result<DegreeValues<'_>> {
-        let view_ptr = unsafe { cugraph_degrees_result_get_in_degrees(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "DegreesResult::in_degrees")
-                .with_message("C API returned null pointer for in_degrees"));
-        }
-        let raw = unsafe { RawDeviceArrayView::from_borrowed(view_ptr) };
-        DegreeValues::from_raw(raw)
+        self.0.in_degrees("DegreesResult::in_degrees")
     }
 
     /// Get the out-degrees as typed degree values.
-    ///
-    /// The C API always populates this when `cugraph_degrees` is called.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the C API returned a null pointer or an
-    /// unrecognised dtype.
     pub fn out_degrees(&self) -> Result<DegreeValues<'_>> {
-        let view_ptr = unsafe { cugraph_degrees_result_get_out_degrees(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "DegreesResult::out_degrees")
-                .with_message("C API returned null pointer for out_degrees"));
-        }
-        let raw = unsafe { RawDeviceArrayView::from_borrowed(view_ptr) };
-        DegreeValues::from_raw(raw)
-    }
-}
-
-impl Drop for DegreesResult {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { cugraph_degrees_result_free(self.raw) };
-        }
+        self.0.out_degrees("DegreesResult::out_degrees")
     }
 }
 
@@ -318,10 +285,7 @@ impl Drop for DegreesResult {
 ///
 /// The [`in_degrees()`](InDegreesResult::in_degrees) accessor is non-optional.
 /// Freed on drop via `cugraph_degrees_result_free`.
-pub struct InDegreesResult {
-    raw: *mut cugraph_degrees_result_t,
-    _nosend_nosync: std::marker::PhantomData<*mut ()>,
-}
+pub struct InDegreesResult(DegreeResultInner);
 
 impl std::fmt::Debug for InDegreesResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -330,47 +294,18 @@ impl std::fmt::Debug for InDegreesResult {
 }
 
 impl InDegreesResult {
+    fn from_raw(raw: *mut cugraph_degrees_result_t, device: i32) -> Result<Self> {
+        Ok(Self(DegreeResultInner::new(raw, device, "in_degrees")?))
+    }
+
     /// Get the vertex ids as a runtime-typed device array view.
-    ///
-    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
-    /// graph's vertex type.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the C API returned a null pointer or an
-    /// unrecognised dtype.
     pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
-        let view_ptr = unsafe { cugraph_degrees_result_get_vertices(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "InDegreesResult::vertex_ids")
-                .with_message("C API returned null pointer for vertices"));
-        }
-        let raw = unsafe { RawDeviceArrayView::from_borrowed(view_ptr) };
-        VertexIds::from_raw(raw)
+        self.0.vertex_ids("InDegreesResult::vertex_ids")
     }
 
     /// Get the in-degrees as typed degree values.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the C API returned a null pointer or an
-    /// unrecognised dtype.
     pub fn in_degrees(&self) -> Result<DegreeValues<'_>> {
-        let view_ptr = unsafe { cugraph_degrees_result_get_in_degrees(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "InDegreesResult::in_degrees")
-                .with_message("C API returned null pointer for in_degrees"));
-        }
-        let raw = unsafe { RawDeviceArrayView::from_borrowed(view_ptr) };
-        DegreeValues::from_raw(raw)
-    }
-}
-
-impl Drop for InDegreesResult {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { cugraph_degrees_result_free(self.raw) };
-        }
+        self.0.in_degrees("InDegreesResult::in_degrees")
     }
 }
 
@@ -382,10 +317,7 @@ impl Drop for InDegreesResult {
 ///
 /// The [`out_degrees()`](OutDegreesResult::out_degrees) accessor is non-optional.
 /// Freed on drop via `cugraph_degrees_result_free`.
-pub struct OutDegreesResult {
-    raw: *mut cugraph_degrees_result_t,
-    _nosend_nosync: std::marker::PhantomData<*mut ()>,
-}
+pub struct OutDegreesResult(DegreeResultInner);
 
 impl std::fmt::Debug for OutDegreesResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -394,47 +326,18 @@ impl std::fmt::Debug for OutDegreesResult {
 }
 
 impl OutDegreesResult {
+    fn from_raw(raw: *mut cugraph_degrees_result_t, device: i32) -> Result<Self> {
+        Ok(Self(DegreeResultInner::new(raw, device, "out_degrees")?))
+    }
+
     /// Get the vertex ids as a runtime-typed device array view.
-    ///
-    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
-    /// graph's vertex type.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the C API returned a null pointer or an
-    /// unrecognised dtype.
     pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
-        let view_ptr = unsafe { cugraph_degrees_result_get_vertices(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "OutDegreesResult::vertex_ids")
-                .with_message("C API returned null pointer for vertices"));
-        }
-        let raw = unsafe { RawDeviceArrayView::from_borrowed(view_ptr) };
-        VertexIds::from_raw(raw)
+        self.0.vertex_ids("OutDegreesResult::vertex_ids")
     }
 
     /// Get the out-degrees as typed degree values.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the C API returned a null pointer or an
-    /// unrecognised dtype.
     pub fn out_degrees(&self) -> Result<DegreeValues<'_>> {
-        let view_ptr = unsafe { cugraph_degrees_result_get_out_degrees(self.raw) };
-        if view_ptr.is_null() {
-            return Err(Error::new(ErrorKind::Unexpected, "OutDegreesResult::out_degrees")
-                .with_message("C API returned null pointer for out_degrees"));
-        }
-        let raw = unsafe { RawDeviceArrayView::from_borrowed(view_ptr) };
-        DegreeValues::from_raw(raw)
-    }
-}
-
-impl Drop for OutDegreesResult {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { cugraph_degrees_result_free(self.raw) };
-        }
+        self.0.out_degrees("OutDegreesResult::out_degrees")
     }
 }
 
@@ -442,9 +345,10 @@ impl Drop for OutDegreesResult {
 mod tests {
     use super::*;
     use crate::{
-        array::DeviceArray,
+        array::{DeviceArray, RawDeviceArrayView},
+        error::ErrorKind,
         graph::{GraphBuilder, Transposed},
-        types::GraphProperties,
+        types::{DataType, GraphProperties},
     };
 
     /// Helper: create a star graph where vertices 1,2,3 all point to vertex 0.
@@ -457,8 +361,8 @@ mod tests {
         let src = DeviceArray::from_slice(handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(handle, &dst_data).expect("dst");
 
-        let src_view = src.view();
-        let dst_view = dst.view();
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
         GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(handle).expect("star graph")
     }
@@ -572,8 +476,8 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
-        let src_view = src.view();
-        let dst_view = dst.view();
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
         let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&handle).expect("graph");
 
         let result = graph.degrees_all(&handle).expect("degrees");
@@ -593,8 +497,9 @@ mod tests {
 
         // Only query degrees for vertices 0 and 1
         let query = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("query");
+        let query_view = query.view().expect("query_view");
 
-        let result = graph.degrees(&handle, &DegreeVertices::from(&query.view())).expect("degrees subset");
+        let result = graph.degrees(&handle, &query_view).expect("degrees subset");
 
         let vert_view = result.vertex_ids().expect("vertex_ids");
         assert_eq!(vert_view.len(), 2, "should return degrees for 2 vertices");
@@ -618,8 +523,8 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
-        let src_view = src.view();
-        let dst_view = dst.view();
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
         let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&handle).expect("graph");
 
         let result = graph.degrees_all(&handle).expect("degrees");
@@ -646,8 +551,8 @@ mod tests {
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
-        let src_view = src.view();
-        let dst_view = dst.view();
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
         let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
             .renumber()
@@ -664,5 +569,31 @@ mod tests {
             assert_eq!(in_d, out_d, "symmetric graph vertex {} should have in_degree == out_degree", v);
             assert_eq!(in_d, 2, "vertex {} should have degree 2 in triangle", v);
         }
+    }
+
+    #[test]
+    fn degree_values_i64_to_vec_i32_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let degrees = DeviceArray::from_slice(&handle, &[1i64, 2, 3]).expect("degrees");
+        let values = DegreeValues::I64(degrees.view().expect("view"));
+
+        let err = values.to_vec_i32(&handle).expect_err("i64 degree values should reject i32 copy");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "DegreeValues::to_vec_i32");
+    }
+
+    #[test]
+    fn degree_values_from_raw_unexpected_dtype_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let degrees = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0]).expect("degrees");
+        let view = degrees.view().expect("view");
+        let raw = unsafe {
+            RawDeviceArrayView::try_from_raw(view.device_ptr(), view.len(), DataType::Float32, "test_raw")
+                .expect("raw view")
+        };
+
+        let err = DegreeValues::from_raw(raw).expect_err("unexpected degree dtype should be rejected");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "DegreeValues::from_raw");
     }
 }

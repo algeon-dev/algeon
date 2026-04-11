@@ -4,6 +4,8 @@ use std::fmt;
 
 use cugraph_sys::{bool_t, cugraph_data_type_id_t, cugraph_graph_properties_t};
 
+use crate::error::{Error, ErrorKind};
+
 /// Element data type for type-erased arrays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DataType {
@@ -52,11 +54,11 @@ impl DataType {
         }
     }
 
-    /// Whether this is a vertex-compatible integer type (Int32 or Int64).
+    /// Whether this is a cuGraph-supported graph index type (Int32 or Int64).
     ///
     /// The cuGraph C API accepts only `i32` and `i64` for vertex ids, edge ids,
     /// edge type ids, and temporal arrays. Other integer widths are not valid.
-    pub fn is_integer(&self) -> bool {
+    pub fn is_supported_index_type(&self) -> bool {
         matches!(self, DataType::Int32 | DataType::Int64)
     }
 
@@ -88,7 +90,7 @@ impl From<DataType> for cugraph_data_type_id_t {
 }
 
 impl TryFrom<cugraph_data_type_id_t> for DataType {
-    type Error = ();
+    type Error = Error;
 
     fn try_from(dt: cugraph_data_type_id_t) -> std::result::Result<Self, Self::Error> {
         match dt {
@@ -104,7 +106,8 @@ impl TryFrom<cugraph_data_type_id_t> for DataType {
             cugraph_data_type_id_t::FLOAT64 => Ok(DataType::Float64),
             cugraph_data_type_id_t::SIZE_T => Ok(DataType::SizeT),
             cugraph_data_type_id_t::BOOL => Ok(DataType::Bool),
-            _ => Err(()),
+            _ => Err(Error::new(ErrorKind::UnsupportedType, "DataType::try_from")
+                .with_message(format!("unknown cugraph_data_type_id_t value: {}", dt.0))),
         }
     }
 }
@@ -242,6 +245,14 @@ mod tests {
     }
 
     #[test]
+    fn test_data_type_try_from_unknown_value_returns_descriptive_error() {
+        let err = DataType::try_from(cugraph_data_type_id_t(255)).expect_err("unknown dtype should fail");
+        assert_eq!(err.kind(), ErrorKind::UnsupportedType);
+        assert_eq!(err.operation(), "DataType::try_from");
+        assert!(err.message().contains("255"));
+    }
+
+    #[test]
     fn test_data_type_size_of() {
         assert_eq!(DataType::Int8.size_of(), 1);
         assert_eq!(DataType::Int16.size_of(), 2);
@@ -304,19 +315,19 @@ mod tests {
     }
 
     #[test]
-    fn test_data_type_is_integer() {
-        assert!(DataType::Int32.is_integer());
-        assert!(DataType::Int64.is_integer());
-        assert!(!DataType::Int8.is_integer());
-        assert!(!DataType::Int16.is_integer());
-        assert!(!DataType::Uint8.is_integer());
-        assert!(!DataType::Uint16.is_integer());
-        assert!(!DataType::Uint32.is_integer());
-        assert!(!DataType::Uint64.is_integer());
-        assert!(!DataType::Float32.is_integer());
-        assert!(!DataType::Float64.is_integer());
-        assert!(!DataType::SizeT.is_integer());
-        assert!(!DataType::Bool.is_integer());
+    fn test_data_type_is_supported_index_type() {
+        assert!(DataType::Int32.is_supported_index_type());
+        assert!(DataType::Int64.is_supported_index_type());
+        assert!(!DataType::Int8.is_supported_index_type());
+        assert!(!DataType::Int16.is_supported_index_type());
+        assert!(!DataType::Uint8.is_supported_index_type());
+        assert!(!DataType::Uint16.is_supported_index_type());
+        assert!(!DataType::Uint32.is_supported_index_type());
+        assert!(!DataType::Uint64.is_supported_index_type());
+        assert!(!DataType::Float32.is_supported_index_type());
+        assert!(!DataType::Float64.is_supported_index_type());
+        assert!(!DataType::SizeT.is_supported_index_type());
+        assert!(!DataType::Bool.is_supported_index_type());
     }
 
     #[test]

@@ -3,15 +3,26 @@
 //! This crate wraps the cuGraph C API in safe Rust types with RAII semantics,
 //! zero-copy array views, and structured error handling.
 //!
+//! For most applications, the intended entry point is
+//! [`cudf_interop`]: build graphs from cudf
+//! [`Series`](cudf::Series)/[`DataFrame`](cudf::DataFrame), run algorithms,
+//! then convert results back to cudf tables. [`DeviceArray`] and
+//! [`GraphBuilder`] remain available for lower-level workflows that already own
+//! typed device arrays.
+//!
 //! # Key concepts
 //!
+//! - **[`cudf_interop`]** — preferred graph-ingestion path for cudf-backed
+//!   applications. Includes `graph_from_series`, `graph_from_dataframe`, and
+//!   Parquet helpers.
 //! - **[`ResourceHandle`]** — manages GPU resources (CUDA stream and cuGraph
 //!   resource handle).
 //!   Required by every cuGraph operation. Not thread-safe.
 //! - **[`DeviceArray<T>`]** — owning GPU array with compile-time element type.
 //!   Freed on drop. Create views via [`DeviceArray::view()`].
-//! - **[`GraphBuilder`]** — fluent builder for constructing a [`Graph`] from
-//!   edge lists. Validates inputs before crossing the FFI boundary.
+//! - **[`GraphBuilder`]** — low-level builder for constructing a [`Graph`] from
+//!   pre-materialized device edge lists. Validates inputs before crossing the
+//!   FFI boundary.
 //! - **[`Graph<T>`]** — the central graph data structure, parameterized by
 //!   transposition state ([`Forward`] or [`Transposed`]). Algorithms are methods
 //!   on `Graph`, constrained by the required layout.
@@ -19,23 +30,32 @@
 //! # Quick start
 //!
 //! ```no_run
+//! use cudf::Runtime;
 //! use cugraph::{
-//!     DeviceArray, GraphBuilder, PageRankParams, ResourceHandle, Transposed,
+//!     ResourceHandle, Transposed,
+//!     centrality::PageRankOptions,
+//!     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
+//!     types::GraphProperties,
 //! };
 //!
-//! # fn main() -> Result<(), cugraph::Error> {
-//! let handle = ResourceHandle::for_current_device()?;
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let runtime = Runtime::new()?;
+//! let handle = ResourceHandle::for_runtime_device(&runtime)?;
 //!
-//! let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2])?;
-//! let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0])?;
+//! let src = runtime.series("src", &[0i32, 1, 2, 1, 2, 0])?;
+//! let dst = runtime.series("dst", &[1i32, 2, 0, 0, 1, 2])?;
+//! let edges = cudf::DataFrame::from_series([src, dst])?;
 //!
-//! let mut graph = GraphBuilder::new(&src.view(), &dst.view())
-//!     .renumber()
-//!     .build::<Transposed>(&handle)?;
+//! let opts = DataFrameGraphOptions::new("src", "dst")
+//!     .properties(GraphProperties::undirected())
+//!     .renumber();
+//! let mut graph = graph_from_dataframe::<Transposed>(&handle, &edges, &opts)?;
 //!
-//! let result = graph.pagerank_simple(&handle, &PageRankParams::default())?;
-//! let vertices: Vec<i64> = result.vertex_ids()?.to_vec_i64(&handle)?;
-//! let scores: Vec<f64> = result.scores()?.to_vec_f64(&handle)?;
+//! let result = graph.pagerank(&handle, &PageRankOptions::default())?;
+//! let df = result.to_dataframe()?;
+//! let vertices: Vec<i32> = df.series("vertex")?.to_vec_strict()?;
+//! let scores: Vec<f32> = df.series("value")?.to_vec_strict()?;
+//! let _ = (vertices, scores);
 //! # Ok(())
 //! # }
 //! ```
@@ -62,6 +82,7 @@
 
 pub mod array;
 pub mod centrality;
+mod cuda;
 pub mod cudf_interop;
 pub mod error;
 pub mod graph;
@@ -74,38 +95,16 @@ pub mod traversal;
 pub mod types;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Crate-root re-exports — the recommended import path for common types
+// Crate-root re-exports — foundational cross-cutting types only
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Arrays
 pub use array::{DeviceArray, DeviceArrayView, DeviceBuffer};
-// Centrality algorithms
-pub use centrality::{
-    BetweennessCentralityParams, BetweennessCentralityResult, InitialGuess, PageRankOptions, PageRankParams,
-    PageRankResult, PrecomputedWeights,
-};
-// cudf interop — graph construction
-pub use cudf_interop::{
-    DataFrameGraphOptions, IntoSeries, LoadedGraph, ParquetGraphOptions, SeriesGraphOptions, TableGraphOptions,
-    device_array_view_from_slice, graph_from_borrowed_columns, graph_from_borrowed_table_view, graph_from_dataframe,
-    graph_from_parquet, graph_from_prepared_columns, graph_from_prepared_table_export, graph_from_series,
-    graph_from_table_view,
-};
 // Error handling
 pub use error::{Error, ErrorKind, ErrorStatus};
 // Graph construction and type-state
 pub use graph::{Forward, Graph, GraphBuilder, Transposed, Transposition};
 // Infrastructure
 pub use handle::ResourceHandle;
-// Layout algorithms
-pub use layout::{ForceAtlas2Options, ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions, LayoutResult};
-// Parameter newtypes
-pub use params::{BfsDepthLimit, ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64, UnitF64};
-pub use random::RngState;
-// Structure queries
-pub use structure::{
-    DegreeValues, DegreeVertices, DegreesResult, Distances, InDegreesResult, OutDegreesResult, ScoreValues, VertexIds,
-};
-// Traversal algorithms
-pub use traversal::{BfsParams, BfsResult};
-pub use types::{CugraphElement, DataType, GraphProperties};
+// Unified cross-module vertex input model
+pub use structure::VertexSelection;

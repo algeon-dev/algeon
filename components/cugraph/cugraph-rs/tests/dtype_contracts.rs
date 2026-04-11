@@ -1,23 +1,25 @@
-use cugraph::{DataType, DeviceArray, Forward, GraphBuilder, PageRankParams, ResourceHandle, Transposed};
-use cugraph_sys::cugraph_data_type_id_t;
+mod common;
 
-#[test]
-fn datatype_try_from_rejects_unknown_ids() {
-    for raw_id in [99, 100, 255, 1000, u32::MAX] {
-        let c_type = cugraph_data_type_id_t(raw_id);
-        assert!(DataType::try_from(c_type).is_err(), "unexpected mapping for raw dtype id {raw_id}");
-    }
-}
+use common::support::{
+    DIRECTED_STAR_DST_I64, DIRECTED_STAR_SRC_I64, DIRECTED_STAR_UNIT_WEIGHT_F64, DIRECTED_TRIANGLE_CYCLE_DST_I64,
+    DIRECTED_TRIANGLE_CYCLE_SRC_I64,
+};
+use cugraph::{
+    DeviceArray, Forward, GraphBuilder, ResourceHandle, Transposed, centrality::PageRankOptions, error::ErrorKind,
+    types::DataType,
+};
 
 #[test]
 fn graph_reports_i64_vertex_and_f64_weight_dtypes() {
     let handle = ResourceHandle::new().expect("handle");
-    let src = DeviceArray::from_slice(&handle, &[0i64, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &[1i64, 2, 0]).expect("dst");
+    let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I64).expect("src");
+    let dst = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_DST_I64).expect("dst");
     let wgt = DeviceArray::from_slice(&handle, &[1.0f64, 2.0, 3.0]).expect("wgt");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let wgt_view = wgt.view().expect("wgt_view");
 
-    let graph =
-        GraphBuilder::new(&src.view(), &dst.view()).weights(&wgt.view()).build::<Forward>(&handle).expect("graph");
+    let graph = GraphBuilder::new(&src_view, &dst_view).weights(&wgt_view).build::<Forward>(&handle).expect("graph");
 
     assert_eq!(graph.vertex_dtype(), DataType::Int64);
     assert_eq!(graph.weight_dtype(), DataType::Float64);
@@ -26,21 +28,24 @@ fn graph_reports_i64_vertex_and_f64_weight_dtypes() {
 #[test]
 fn typed_results_refuse_lossy_narrowing() {
     let handle = ResourceHandle::new().expect("handle");
-    let src = DeviceArray::from_slice(&handle, &[1i64, 2, 3, 0, 0, 0]).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &[0i64, 0, 0, 1, 2, 3]).expect("dst");
-    let wgt = DeviceArray::from_slice(&handle, &[1.0f64; 6]).expect("wgt");
+    let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I64).expect("src");
+    let dst = DeviceArray::from_slice(&handle, DIRECTED_STAR_DST_I64).expect("dst");
+    let wgt = DeviceArray::from_slice(&handle, DIRECTED_STAR_UNIT_WEIGHT_F64).expect("wgt");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let wgt_view = wgt.view().expect("wgt_view");
 
-    let mut graph = GraphBuilder::new(&src.view(), &dst.view())
-        .weights(&wgt.view())
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&wgt_view)
         .renumber()
         .build::<Transposed>(&handle)
         .expect("graph");
 
-    let result = graph.pagerank_simple(&handle, &PageRankParams::default()).expect("pagerank");
+    let result = graph.pagerank(&handle, &PageRankOptions::default()).expect("pagerank");
 
     let vertex_err = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect_err("must reject narrowing");
-    assert_eq!(vertex_err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(vertex_err.kind(), ErrorKind::InvalidState);
 
     let score_err = result.scores().expect("scores").to_vec_f32(&handle).expect_err("must reject narrowing");
-    assert_eq!(score_err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(score_err.kind(), ErrorKind::InvalidState);
 }

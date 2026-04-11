@@ -9,21 +9,20 @@
 //!
 //! ```no_run
 //! use cugraph::{
-//!     BetweennessCentralityParams, DeviceArray, Forward, GraphBuilder,
-//!     ResourceHandle,
+//!     Forward, ResourceHandle,
+//!     centrality::BetweennessCentralityParams,
+//!     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
 //! };
 //!
-//! let handle = ResourceHandle::for_current_device().unwrap();
+//! let runtime = cudf::Runtime::new().unwrap();
+//! let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
 //!
-//! let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2, 3]).unwrap();
-//! let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 3, 0]).unwrap();
-//!
-//! let src_view = src.view();
-//! let dst_view = dst.view();
-//! let mut graph = GraphBuilder::new(&src_view, &dst_view)
-//!     .renumber()
-//!     .build::<Forward>(&handle)
-//!     .unwrap();
+//! let src = runtime.series("src", &[0i32, 1, 2, 3]).unwrap();
+//! let dst = runtime.series("dst", &[1i32, 2, 3, 0]).unwrap();
+//! let edges = cudf::DataFrame::from_series([src, dst]).unwrap();
+//! let opts = DataFrameGraphOptions::new("src", "dst").renumber();
+//! let mut graph =
+//!     graph_from_dataframe::<Forward>(&handle, &edges, &opts).unwrap();
 //!
 //! let params = BetweennessCentralityParams::default();
 //! let result = graph.betweenness_centrality_all(&handle, &params).unwrap();
@@ -37,7 +36,7 @@ use cugraph_sys::{cugraph_betweenness_centrality, cugraph_centrality_result_t, c
 use super::BetweennessCentralityResult;
 use crate::{
     array::DeviceArrayView,
-    error::{Result, check_error},
+    error::{Result, check_error, require_non_null},
     graph::Graph,
     handle::ResourceHandle,
     types::{CugraphElement, to_bool_t},
@@ -79,10 +78,13 @@ pub(crate) fn betweenness_centrality<T, V: CugraphElement>(
 
     let vertex_list_ptr = vertex_list.map(|v| v.as_ptr() as *const _).unwrap_or(ptr::null());
 
+    // SAFETY: `vertex_list_ptr` is either null or borrowed from a live device
+    // view validated against the graph vertex dtype, and `result`/`error` are
+    // valid out-pointers.
     unsafe {
         let code = cugraph_betweenness_centrality(
             handle.as_ptr(),
-            graph.raw,
+            graph.as_ptr(),
             vertex_list_ptr,
             to_bool_t(params.normalized),
             to_bool_t(params.include_endpoints),
@@ -93,7 +95,10 @@ pub(crate) fn betweenness_centrality<T, V: CugraphElement>(
         check_error(code, error, "betweenness_centrality")?;
     }
 
-    Ok(unsafe { BetweennessCentralityResult::from_raw(result) })
+    let result = require_non_null(result, "betweenness_centrality", "centrality_result")?;
+
+    // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
+    unsafe { BetweennessCentralityResult::from_raw(result, handle.device()) }
 }
 
 #[cfg(test)]
@@ -129,9 +134,10 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph =
-            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph");
 
         let params = BetweennessCentralityParams::default();
         let result = graph.betweenness_centrality_all(&handle, &params).expect("betweenness");
@@ -170,9 +176,10 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph =
-            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph");
 
         let params = BetweennessCentralityParams::default();
         let result = graph.betweenness_centrality_all(&handle, &params).expect("betweenness");
@@ -203,16 +210,17 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph =
-            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph");
 
         // Use only vertices 0 and 1 as seeds
         let seeds = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("seeds");
+        let seeds_view = seeds.view().expect("seeds_view");
 
         let params = BetweennessCentralityParams::default();
-        let result =
-            graph.betweenness_centrality(&handle, Some(&seeds.view()), &params).expect("betweenness with seeds");
+        let result = graph.betweenness_centrality(&handle, &seeds_view, &params).expect("betweenness with seeds");
 
         let map = betweenness_map(&handle, &result);
 
@@ -236,9 +244,10 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph =
-            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph");
 
         let params = BetweennessCentralityParams { normalized: false, include_endpoints: false, ..Default::default() };
         let result = graph.betweenness_centrality_all(&handle, &params).expect("betweenness");
@@ -265,10 +274,12 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
         // Without endpoints
         let mut graph_a =
-            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph_a");
+            GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph_a");
 
         let params_no_ep =
             BetweennessCentralityParams { normalized: false, include_endpoints: false, ..Default::default() };
@@ -277,7 +288,7 @@ mod tests {
 
         // With endpoints
         let mut graph_b =
-            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph_b");
+            GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph_b");
 
         let params_with_ep =
             BetweennessCentralityParams { normalized: false, include_endpoints: true, ..Default::default() };
@@ -316,9 +327,10 @@ mod tests {
 
         let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
         let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src_view = src.view().expect("src_view");
+        let dst_view = dst.view().expect("dst_view");
 
-        let mut graph =
-            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph");
 
         let params = BetweennessCentralityParams::default();
         let result = graph.betweenness_centrality_all(&handle, &params).expect("betweenness");
