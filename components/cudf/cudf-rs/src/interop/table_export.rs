@@ -1,4 +1,4 @@
-use super::*;
+use super::{table_support::checked_column_index, *};
 
 fn table_dimensions(view: &TableView<'_>, operation: &'static str) -> Result<(usize, usize), InteropError> {
     let num_rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;

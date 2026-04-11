@@ -18,16 +18,16 @@ use crate::{
     runtime::Runtime,
 };
 
-/// Options for reading a JSON file.
+/// Options for reading a JSON file into a low-level [`Table`].
 ///
-/// Used by both the low-level [`read_json`] function and the high-level
-/// [`DataFrame::read_json_with_options`](crate::DataFrame::read_json_with_options).
+/// **Advanced.** Most users should prefer
+/// [`DataFrame::read_json`](crate::DataFrame::read_json).
 ///
 /// # Defaults
 ///
 /// - `lines` = `true` (JSON Lines / NDJSON format, one JSON object per line)
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct JsonReadOptions {
+pub struct JsonTableReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     /// If `true` (default), read as JSON Lines (one JSON object per line).
@@ -38,9 +38,16 @@ pub struct JsonReadOptions {
     runtime: Option<Runtime>,
 }
 
+impl JsonTableReadOptions {
+    pub(crate) fn from_parts(filepath: PathBuf, lines: bool, runtime: Option<Runtime>) -> Self {
+        Self { filepath, lines, runtime }
+    }
+}
+
 /// Read a JSON file into a low-level table result.
-pub fn read_json(options: &JsonReadOptions) -> Result<IoTableResult> {
-    let filepath = super::path_to_cstring(&options.filepath, "io::json::read_json")?;
+pub fn read_json_table(options: &JsonTableReadOptions) -> Result<IoTableResult> {
+    const OPERATION: &str = "io::json::read_json_table";
+    let filepath = super::path_to_cstring(&options.filepath, OPERATION)?;
     let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
     let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
 
@@ -69,7 +76,7 @@ pub fn read_json(options: &JsonReadOptions) -> Result<IoTableResult> {
                 )
             },
         },
-        "io::json::read_json",
+        OPERATION,
         [("lines", options.lines.to_string())],
     )?;
 
@@ -81,7 +88,7 @@ pub fn read_json(options: &JsonReadOptions) -> Result<IoTableResult> {
     };
 
     let column_names = unsafe {
-        let names = super::collect_column_names(names_ptr, num_names, "io::json::read_json");
+        let names = super::collect_column_names(names_ptr, num_names, OPERATION);
         if !names_ptr.is_null() && num_names >= 0 {
             cudf_sys::cudf_io_free_column_names(names_ptr, num_names);
         }

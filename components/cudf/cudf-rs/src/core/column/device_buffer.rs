@@ -140,6 +140,10 @@ impl DeviceBuffer {
         (this.handle.as_ptr(), this.device_snapshot)
     }
 
+    pub(crate) fn device_snapshot(&self) -> i32 {
+        self.device_snapshot
+    }
+
     /// Reconstruct a `DeviceBuffer` from raw FFI parts, taking ownership.
     ///
     /// # Safety

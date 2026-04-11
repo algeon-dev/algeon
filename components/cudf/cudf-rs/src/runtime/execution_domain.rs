@@ -346,11 +346,6 @@ impl ExecutionDomain {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn same_debug_identity(left: &Arc<Self>, right: &Arc<Self>) -> bool {
-        left.debug_id() == right.debug_id() && left.debug_kind() == right.debug_kind()
-    }
-
     pub(crate) fn require_same_device_for_mixed_inputs(
         left: &Arc<Self>,
         right: &Arc<Self>,

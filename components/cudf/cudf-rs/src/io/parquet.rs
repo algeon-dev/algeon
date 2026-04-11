@@ -19,12 +19,12 @@ use crate::{
     runtime::Runtime,
 };
 
-/// Options for reading a Parquet file.
+/// Options for reading a Parquet file into a low-level [`Table`].
 ///
-/// Used by both the low-level [`read_parquet`] function and the high-level
-/// [`DataFrame::read_parquet_with_options`](crate::DataFrame::read_parquet_with_options).
+/// **Advanced.** Most users should prefer
+/// [`DataFrame::read_parquet`](crate::DataFrame::read_parquet).
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct ParquetReadOptions {
+pub struct ParquetTableReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
     filepath: PathBuf,
     #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
@@ -37,6 +37,19 @@ pub struct ParquetReadOptions {
     row_groups: Option<Vec<i32>>,
     #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
     runtime: Option<Runtime>,
+}
+
+impl ParquetTableReadOptions {
+    pub(crate) fn from_parts(
+        filepath: PathBuf,
+        columns: Option<Vec<String>>,
+        skip_rows: usize,
+        num_rows: Option<usize>,
+        row_groups: Option<Vec<i32>>,
+        runtime: Option<Runtime>,
+    ) -> Self {
+        Self { filepath, columns, skip_rows, num_rows, row_groups, runtime }
+    }
 }
 
 fn checked_i64_from_usize(value: usize, field: &'static str, operation: &'static str) -> Result<i64> {
@@ -52,9 +65,9 @@ fn checked_i64_from_usize(value: usize, field: &'static str, operation: &'static
 /// Returns the table data and the column names stored in the Parquet file's
 /// schema. This avoids having to hardcode column indices when working with
 /// Parquet files.
-pub fn read_parquet(options: &ParquetReadOptions) -> Result<IoTableResult> {
-    const OPERATION: &str = "io::parquet::read_parquet";
-    let filepath = super::path_to_cstring(&options.filepath, "io::parquet::read_parquet")?;
+pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<IoTableResult> {
+    const OPERATION: &str = "io::parquet::read_parquet_table";
+    let filepath = super::path_to_cstring(&options.filepath, OPERATION)?;
     let num_rows_context = options.num_rows.map(|num_rows| num_rows.to_string()).unwrap_or_else(|| "all".to_string());
 
     // Validate that row_groups is not combined with skip_rows or num_rows.
@@ -86,7 +99,7 @@ pub fn read_parquet(options: &ParquetReadOptions) -> Result<IoTableResult> {
                 .map(|s| {
                     CString::new(s.as_str()).map_err(|_| {
                         Error::new(ErrorKind::InvalidArgument, "column name contains interior null byte")
-                            .with_operation("io::parquet::read_parquet")
+                            .with_operation(OPERATION)
                             .with_context("column_name", s.to_string())
                     })
                 })
@@ -139,7 +152,7 @@ pub fn read_parquet(options: &ParquetReadOptions) -> Result<IoTableResult> {
                 )
             },
         },
-        "io::parquet::read_parquet",
+        OPERATION,
         [
             ("selected_column_count", num_cols.to_string()),
             ("skip_rows", options.skip_rows.to_string()),
@@ -158,7 +171,7 @@ pub fn read_parquet(options: &ParquetReadOptions) -> Result<IoTableResult> {
     // SAFETY: names_ptr and num_names were returned by a successful FFI call.
     // cudf_io_free_column_names frees the C-allocated name strings and array.
     let column_names = unsafe {
-        let names = super::collect_column_names(names_ptr, num_names, "io::parquet::read_parquet");
+        let names = super::collect_column_names(names_ptr, num_names, OPERATION);
         cudf_sys::cudf_io_free_column_names(names_ptr, num_names);
         names?
     };

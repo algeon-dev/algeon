@@ -11,8 +11,8 @@ use crate::{
     io::{
         IoTableResult,
         csv::{self, CsvTableReadOptions, CsvTableWriteOptions},
-        json::{self, JsonReadOptions, JsonTableWriteOptions},
-        parquet::{self, ParquetReadOptions, ParquetTableWriteOptions},
+        json::{self, JsonTableReadOptions, JsonTableWriteOptions},
+        parquet::{self, ParquetTableReadOptions, ParquetTableWriteOptions},
     },
     runtime::{Runtime, execution_domain::ExecutionDomain},
 };
@@ -97,6 +97,65 @@ impl CsvWriteOptions {
     }
 }
 
+/// Options for [`DataFrame::read_parquet_with_options`].
+///
+/// This is the schema-aware Parquet reader API for `DataFrame`. It controls
+/// file-format slicing and column selection, then lifts truthful Parquet
+/// schema metadata into the resulting `DataFrame`.
+#[derive(Debug, Clone, TypedBuilder)]
+pub struct ParquetReadOptions {
+    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
+    filepath: PathBuf,
+    #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
+    columns: Option<Vec<String>>,
+    #[builder(default)]
+    skip_rows: usize,
+    #[builder(default, setter(transform = |num_rows: usize| Some(num_rows)))]
+    num_rows: Option<usize>,
+    #[builder(default, setter(transform = |groups: &[i32]| if groups.is_empty() { None } else { Some(groups.to_vec()) }))]
+    row_groups: Option<Vec<i32>>,
+    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
+    runtime: Option<Runtime>,
+}
+
+impl ParquetReadOptions {
+    fn to_table_options(&self) -> ParquetTableReadOptions {
+        ParquetTableReadOptions::from_parts(
+            self.filepath.clone(),
+            self.columns.clone(),
+            self.skip_rows,
+            self.num_rows,
+            self.row_groups.clone(),
+            self.runtime.clone(),
+        )
+    }
+}
+
+/// Options for [`DataFrame::read_json_with_options`].
+///
+/// This is the schema-aware JSON reader API for `DataFrame`. It controls the
+/// file-format interpretation while keeping JSON object keys as DataFrame
+/// schema names when the reader can recover them truthfully.
+///
+/// # Defaults
+///
+/// - `lines` = `true` (JSON Lines / NDJSON format, one JSON object per line)
+#[derive(Debug, Clone, TypedBuilder)]
+pub struct JsonReadOptions {
+    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
+    filepath: PathBuf,
+    #[builder(default = true)]
+    lines: bool,
+    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
+    runtime: Option<Runtime>,
+}
+
+impl JsonReadOptions {
+    fn to_table_options(&self) -> JsonTableReadOptions {
+        JsonTableReadOptions::from_parts(self.filepath.clone(), self.lines, self.runtime.clone())
+    }
+}
+
 fn resolve_csv_column_names(options: &CsvReadOptions, result: &IoTableResult) -> Result<Vec<String>> {
     let operation = "dataframe::read_csv_with_options";
     let num_columns = {
@@ -159,6 +218,11 @@ impl DataFrame {
     /// [`CsvReadOptions::column_names`], names come from the header
     /// row when `has_header == true`, or fall back to generated names such as
     /// `"column_0"` when reading headerless CSV.
+    ///
+    /// # Cost
+    /// Same as [`read_csv_with_options`](Self::read_csv_with_options):
+    /// host file I/O, GPU allocation for the decoded columns, and host-to-
+    /// device transfer of parsed field data.
     pub fn read_csv(path: impl AsRef<Path>) -> Result<Self> {
         Self::read_csv_with_options(CsvReadOptions::builder().filepath(path).build())
     }
@@ -168,6 +232,12 @@ impl DataFrame {
     /// When the low-level CSV reader returns truthful header metadata, those
     /// names are used unless the caller provides an explicit override.
     /// Generated fallback names are used only for headerless CSV results.
+    ///
+    /// # Cost
+    /// Performs host file I/O, allocates new GPU-backed columns for the
+    /// decoded result, and copies parsed field data into device memory. When
+    /// `has_header` is `true`, this high-level API also parses the CSV header
+    /// on the host to recover truthful column names.
     pub fn read_csv_with_options(options: CsvReadOptions) -> Result<Self> {
         let table_options = options.to_table_options();
         let result = csv::read_csv(&table_options)?;
@@ -177,6 +247,11 @@ impl DataFrame {
 
     /// Write this `DataFrame` to a CSV file, preserving the DataFrame schema
     /// as the output header row.
+    ///
+    /// # Cost
+    /// Same as [`write_csv_with_options`](Self::write_csv_with_options):
+    /// serializes device-backed columns to a host file sink and synchronizes
+    /// the retained write execution domain before returning.
     pub fn write_csv(&self, path: impl AsRef<Path>) -> Result<()> {
         self.write_csv_with_options(CsvWriteOptions::builder().filepath(path).build())
     }
@@ -185,6 +260,13 @@ impl DataFrame {
     ///
     /// The DataFrame's schema names are always used as the output column
     /// names so the high-level round-trip path remains truthful.
+    ///
+    /// # Cost
+    /// Serializes device-backed columns to a host file sink. This may fence
+    /// the DataFrame's retained execution domain before launching the write
+    /// when the caller supplies a different write runtime on the same device,
+    /// and it synchronizes the retained write execution domain before
+    /// returning so the output file is host-visible on success.
     pub fn write_csv_with_options(&self, options: CsvWriteOptions) -> Result<()> {
         let names: Vec<&str> = self.column_names();
         let opts = options.to_table_options(&names);
@@ -205,6 +287,11 @@ impl DataFrame {
     ///
     /// This is a convenience wrapper around
     /// [`read_parquet_with_options`](Self::read_parquet_with_options).
+    ///
+    /// # Cost
+    /// Same as [`read_parquet_with_options`](Self::read_parquet_with_options):
+    /// host file I/O, GPU allocation for the decoded columns, and host-to-
+    /// device transfer of decoded column data.
     pub fn read_parquet(path: impl AsRef<Path>) -> Result<Self> {
         Self::read_parquet_with_options(ParquetReadOptions::builder().filepath(path).build())
     }
@@ -213,8 +300,15 @@ impl DataFrame {
     /// [`ParquetReadOptions`].
     ///
     /// Column names are taken from the Parquet file's schema metadata.
+    ///
+    /// # Cost
+    /// Performs host file I/O, allocates new GPU-backed columns for the
+    /// decoded result, and copies decoded column data into device memory.
+    /// Column names are recovered from Parquet schema metadata rather than
+    /// synthesized heuristically.
     pub fn read_parquet_with_options(options: ParquetReadOptions) -> Result<Self> {
-        let result = parquet::read_parquet(&options)?;
+        let table_options = options.to_table_options();
+        let result = parquet::read_parquet_table(&table_options)?;
         let names = result.column_names.ok_or_else(|| {
             Error::new(
                 ErrorKind::InvalidOperation,
@@ -227,11 +321,24 @@ impl DataFrame {
 
     /// Write this `DataFrame` to a Parquet file, embedding column names in
     /// the file's schema metadata.
+    ///
+    /// # Cost
+    /// Same as
+    /// [`write_parquet_with_options`](Self::write_parquet_with_options):
+    /// serializes device-backed columns to a host file sink and synchronizes
+    /// the retained write execution domain before returning.
     pub fn write_parquet(&self, path: impl AsRef<Path>) -> Result<()> {
         self.write_parquet_with_options(ParquetWriteOptions::builder().filepath(path).build())
     }
 
     /// Write this `DataFrame` to a Parquet file using caller-provided options.
+    ///
+    /// # Cost
+    /// Serializes device-backed columns to a host file sink. This may fence
+    /// the DataFrame's retained execution domain before launching the write
+    /// when the caller supplies a different write runtime on the same device,
+    /// and it synchronizes the retained write execution domain before
+    /// returning so the output file is host-visible on success.
     pub fn write_parquet_with_options(&self, options: ParquetWriteOptions) -> Result<()> {
         let names: Vec<&str> = self.column_names();
         let table_options = options.to_table_options(&names);
@@ -253,6 +360,11 @@ impl DataFrame {
 
     /// Read a JSON Lines (NDJSON) file into a `DataFrame`, using key names
     /// from the JSON objects as column names.
+    ///
+    /// # Cost
+    /// Same as [`read_json_with_options`](Self::read_json_with_options):
+    /// host file I/O, GPU allocation for the decoded columns, and host-to-
+    /// device transfer of decoded field data.
     pub fn read_json(path: impl AsRef<Path>) -> Result<Self> {
         Self::read_json_with_options(JsonReadOptions::builder().filepath(path).build())
     }
@@ -262,13 +374,23 @@ impl DataFrame {
     ///
     /// Column names are extracted from JSON key names when the low-level
     /// reader can recover them truthfully from the file.
+    ///
+    /// # Cost
+    /// Performs host file I/O, allocates new GPU-backed columns for the
+    /// decoded result, and copies decoded field data into device memory.
     pub fn read_json_with_options(options: JsonReadOptions) -> Result<Self> {
-        let result = json::read_json(&options)?;
+        let table_options = options.to_table_options();
+        let result = json::read_json_table(&table_options)?;
         Self::from_table(result.table, result.column_names.unwrap_or_default())
     }
 
     /// Write this `DataFrame` to a JSON Lines (NDJSON) file, using column
     /// names from the DataFrame schema as JSON keys.
+    ///
+    /// # Cost
+    /// Same as [`write_json_with_options`](Self::write_json_with_options):
+    /// serializes device-backed columns to a host file sink and synchronizes
+    /// the retained write execution domain before returning.
     pub fn write_json(&self, path: impl AsRef<Path>) -> Result<()> {
         self.write_json_with_options(JsonWriteOptions::builder().filepath(path).build())
     }
@@ -277,6 +399,13 @@ impl DataFrame {
     ///
     /// The DataFrame's schema names are always used as the output JSON key
     /// names so the high-level round-trip path remains truthful.
+    ///
+    /// # Cost
+    /// Serializes device-backed columns to a host file sink. This may fence
+    /// the DataFrame's retained execution domain before launching the write
+    /// when the caller supplies a different write runtime on the same device,
+    /// and it synchronizes the retained write execution domain before
+    /// returning so the output file is host-visible on success.
     pub fn write_json_with_options(&self, options: JsonWriteOptions) -> Result<()> {
         let names: Vec<&str> = self.column_names();
         let opts = options.to_table_options(&names);

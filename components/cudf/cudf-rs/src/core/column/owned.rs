@@ -7,7 +7,9 @@ use crate::{
     core::{
         error::{self, Error, ErrorKind, Result},
         scalar::Scalar,
-        types::{CudfType, DataType, TypeId, count_nulls, validity_to_bitmask},
+        types::{
+            CudfType, DataType, TypeId, count_nulls, cudf_null_mask_allocation_size_bytes, validity_to_ffi_bitmask,
+        },
     },
     ops::binary,
     runtime::{Runtime, execution_domain::ExecutionDomain},
@@ -143,7 +145,7 @@ impl Column {
 
         let mut handle = ptr::null_mut();
         let size = usize_to_i32_len(data.len(), "data", operation)?;
-        let null_mask = validity.map(validity_to_bitmask);
+        let null_mask = validity.map(validity_to_ffi_bitmask);
         let null_count = validity.map(count_nulls).unwrap_or(0);
         let exec_options = domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
         // SAFETY: data and optional null_mask are valid for the reported sizes.
@@ -469,7 +471,7 @@ impl Column {
         let ptrs: Vec<*const c_char> = data.iter().map(|s| s.as_ptr() as *const c_char).collect();
         let lengths: Vec<i32> =
             data.iter().map(|s| usize_to_i32_len(s.len(), "string_element", operation)).collect::<Result<Vec<_>>>()?;
-        let null_mask = validity.map(validity_to_bitmask);
+        let null_mask = validity.map(validity_to_ffi_bitmask);
         let null_count = validity.map(count_nulls).unwrap_or(0);
         let exec_options = domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
 
@@ -550,7 +552,7 @@ impl Column {
 
                 let data = vec![0u8; data_len_bytes];
                 let validity = vec![false; len];
-                let null_mask = validity_to_bitmask(&validity);
+                let null_mask = validity_to_ffi_bitmask(&validity);
                 let null_count = size;
                 let exec_options = domain.explicit_exec_options_raw();
 
@@ -842,7 +844,7 @@ impl Column {
 
         // Mask buffer must satisfy cudf's bitmask allocation size: 64-byte aligned.
         // cudf::bitmask_allocation_size_bytes(n) = ceil(n / 8) rounded up to 64 bytes.
-        let min_mask_bytes = row_count.div_ceil(8).div_ceil(64) * 64;
+        let min_mask_bytes = cudf_null_mask_allocation_size_bytes(row_count);
         let actual_mask_bytes = null_mask_buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
         if actual_mask_bytes < min_mask_bytes {
             return Err(Error::new(ErrorKind::InvalidOperation, "null mask buffer too small")
@@ -850,6 +852,18 @@ impl Column {
                 .with_context("mask_bytes", actual_mask_bytes.to_string())
                 .with_context("min_required_bytes", min_mask_bytes.to_string())
                 .with_context("row_count", row_count.to_string()));
+        }
+
+        let data_device_snapshot = data_buffer.device_snapshot();
+        let mask_device_snapshot = null_mask_buffer.device_snapshot();
+        if data_device_snapshot != mask_device_snapshot {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "data buffer and null mask buffer must belong to the same CUDA device",
+            )
+            .with_operation(operation)
+            .with_context("data_device", data_device_snapshot.to_string())
+            .with_context("mask_device", mask_device_snapshot.to_string()));
         }
 
         // Extract raw handles. The resulting column retains the data buffer's
@@ -888,6 +902,10 @@ impl Column {
 
 impl Column {
     /// Generic binary operation with inferred output type.
+    ///
+    /// # Cost
+    /// GPU-allocating: performs device-side compute and produces a new output
+    /// column. No host materialization occurs.
     pub fn binary_op(&self, rhs: &Column, op: binary::BinaryOperator) -> Result<Column> {
         (|| {
             let lv = self.view()?;
@@ -899,6 +917,10 @@ impl Column {
     }
 
     /// Generic binary operation with explicit output type (escape hatch).
+    ///
+    /// # Cost
+    /// GPU-allocating: performs device-side compute and produces a new output
+    /// column of the requested type. No host materialization occurs.
     pub fn binary_op_with_type(
         &self,
         rhs: &Column,
@@ -933,26 +955,42 @@ impl Column {
     ///
     /// // Also available via std::ops: &a + &b
     /// ```
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new output column on the device.
     pub fn add(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::Add).map_err(|e| e.with_operation("column::add"))
     }
 
     /// Element-wise subtraction: `self - rhs`. Output type inferred.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new output column on the device.
     pub fn sub(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::Sub).map_err(|e| e.with_operation("column::sub"))
     }
 
     /// Element-wise multiplication: `self * rhs`. Output type inferred.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new output column on the device.
     pub fn mul(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::Mul).map_err(|e| e.with_operation("column::mul"))
     }
 
     /// Element-wise division: `self / rhs`. Output type inferred.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new output column on the device.
     pub fn div(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::Div).map_err(|e| e.with_operation("column::div"))
     }
 
     /// Element-wise true division (always float output).
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new floating-point output column on the
+    /// device.
     pub fn true_div(&self, rhs: &Column) -> Result<Column> {
         (|| {
             let lv = self.view()?;
@@ -964,11 +1002,28 @@ impl Column {
     }
 
     /// Element-wise floor division.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new output column on the device.
     pub fn floor_div(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::FloorDiv).map_err(|e| e.with_operation("column::floor_div"))
     }
 
+    /// Element-wise remainder: `self % rhs`.
+    ///
+    /// This is the preferred alias for [`Column::modulo`] to match the
+    /// higher-level `Series::rem` naming.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new output column on the device.
+    pub fn rem(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, binary::BinaryOperator::Mod).map_err(|e| e.with_operation("column::rem"))
+    }
+
     /// Element-wise modulo: `self % rhs`.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new output column on the device.
     pub fn modulo(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::Mod).map_err(|e| e.with_operation("column::modulo"))
     }
@@ -976,31 +1031,49 @@ impl Column {
     // -- Comparison methods ---------------------------------------------------
 
     /// Element-wise equal: `self == rhs`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn eq(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::Equal).map_err(|e| e.with_operation("column::eq"))
     }
 
     /// Element-wise not-equal: `self != rhs`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn ne(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::NotEqual).map_err(|e| e.with_operation("column::ne"))
     }
 
     /// Element-wise less-than: `self < rhs`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn lt(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::Less).map_err(|e| e.with_operation("column::lt"))
     }
 
     /// Element-wise greater-than: `self > rhs`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn gt(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::Greater).map_err(|e| e.with_operation("column::gt"))
     }
 
     /// Element-wise less-or-equal: `self <= rhs`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn le(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::LessEqual).map_err(|e| e.with_operation("column::le"))
     }
 
     /// Element-wise greater-or-equal: `self >= rhs`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn ge(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, binary::BinaryOperator::GreaterEqual).map_err(|e| e.with_operation("column::ge"))
     }
@@ -1008,6 +1081,10 @@ impl Column {
     // -- Scalar operations ----------------------------------------------------
 
     /// Element-wise: `self op scalar`. Output type inferred.
+    ///
+    /// # Cost
+    /// GPU-allocating: performs device-side compute and produces a new output
+    /// column. No host materialization occurs.
     pub fn binary_op_scalar(&self, rhs: &Scalar, op: binary::BinaryOperator) -> Result<Column> {
         (|| {
             let lv = self.view()?;
@@ -1021,6 +1098,10 @@ impl Column {
     }
 
     /// Element-wise: `self op scalar` with explicit output type.
+    ///
+    /// # Cost
+    /// GPU-allocating: performs device-side compute and produces a new output
+    /// column of the requested type. No host materialization occurs.
     pub fn binary_op_scalar_with_type(
         &self,
         rhs: &Scalar,
@@ -1053,51 +1134,81 @@ impl Column {
     ///
     /// // Also available via std::ops: &col + 100i32
     /// ```
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new output column on the device.
     pub fn add_scalar(&self, rhs: &Scalar) -> Result<Column> {
         self.binary_op_scalar(rhs, binary::BinaryOperator::Add).map_err(|e| e.with_operation("column::add_scalar"))
     }
 
     /// Element-wise: `self - scalar`.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new output column on the device.
     pub fn sub_scalar(&self, rhs: &Scalar) -> Result<Column> {
         self.binary_op_scalar(rhs, binary::BinaryOperator::Sub).map_err(|e| e.with_operation("column::sub_scalar"))
     }
 
     /// Element-wise: `self * scalar`.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new output column on the device.
     pub fn mul_scalar(&self, rhs: &Scalar) -> Result<Column> {
         self.binary_op_scalar(rhs, binary::BinaryOperator::Mul).map_err(|e| e.with_operation("column::mul_scalar"))
     }
 
     /// Element-wise: `self / scalar`.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new output column on the device.
     pub fn div_scalar(&self, rhs: &Scalar) -> Result<Column> {
         self.binary_op_scalar(rhs, binary::BinaryOperator::Div).map_err(|e| e.with_operation("column::div_scalar"))
     }
 
     /// Element-wise: `self == scalar`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn eq_scalar(&self, rhs: &Scalar) -> Result<Column> {
         self.binary_op_scalar(rhs, binary::BinaryOperator::Equal).map_err(|e| e.with_operation("column::eq_scalar"))
     }
 
     /// Element-wise: `self != scalar`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn ne_scalar(&self, rhs: &Scalar) -> Result<Column> {
         self.binary_op_scalar(rhs, binary::BinaryOperator::NotEqual).map_err(|e| e.with_operation("column::ne_scalar"))
     }
 
     /// Element-wise: `self < scalar`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn lt_scalar(&self, rhs: &Scalar) -> Result<Column> {
         self.binary_op_scalar(rhs, binary::BinaryOperator::Less).map_err(|e| e.with_operation("column::lt_scalar"))
     }
 
     /// Element-wise: `self > scalar`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn gt_scalar(&self, rhs: &Scalar) -> Result<Column> {
         self.binary_op_scalar(rhs, binary::BinaryOperator::Greater).map_err(|e| e.with_operation("column::gt_scalar"))
     }
 
     /// Element-wise: `self <= scalar`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn le_scalar(&self, rhs: &Scalar) -> Result<Column> {
         self.binary_op_scalar(rhs, binary::BinaryOperator::LessEqual).map_err(|e| e.with_operation("column::le_scalar"))
     }
 
     /// Element-wise: `self >= scalar`. Returns Bool8 column.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn ge_scalar(&self, rhs: &Scalar) -> Result<Column> {
         self.binary_op_scalar(rhs, binary::BinaryOperator::GreaterEqual)
             .map_err(|e| e.with_operation("column::ge_scalar"))

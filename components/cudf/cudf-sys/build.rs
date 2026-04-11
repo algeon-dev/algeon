@@ -5,6 +5,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+fn emit_runtime_search_path(path: &Path) {
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", path.display());
+}
+
+fn link_search_path(directive: &str) -> Option<&Path> {
+    directive.strip_prefix("cargo:rustc-link-search=native=").map(Path::new)
+}
+
 /// Recursively emit `cargo:rerun-if-changed` for every file under `dir`.
 fn rerun_if_changed_recursive(dir: &Path) {
     for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("failed to read {}: {e}", dir.display())) {
@@ -19,6 +27,10 @@ fn rerun_if_changed_recursive(dir: &Path) {
 }
 
 fn main() {
+    let target_os =
+        env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|error| panic!("failed to read CARGO_CFG_TARGET_OS: {error}"));
+    build_support::ensure_supported_target_os(&target_os).unwrap_or_else(|error| panic!("{error}"));
+
     let native_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("native");
     let mut config = cmake::Config::new(&native_dir);
 
@@ -30,8 +42,13 @@ fn main() {
 
     // Build the C++ shim library using CMake, then replay the link directives it emitted.
     let dst = config.build();
-    for directive in build_support::read_cargo_link_directives(&dst).unwrap_or_else(|error| panic!("{error}")) {
+    let directives = build_support::read_cargo_link_directives(&dst).unwrap_or_else(|error| panic!("{error}"));
+    for directive in &directives {
         println!("{directive}");
+    }
+    for path in directives.iter().filter_map(|directive| link_search_path(directive)) {
+        emit_runtime_search_path(path);
+        println!("cargo:metadata=runtime-lib-dir={}", path.display());
     }
 
     // Re-run if native sources or build inputs change.

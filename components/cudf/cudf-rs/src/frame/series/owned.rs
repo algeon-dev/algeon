@@ -287,7 +287,7 @@ impl Series {
     /// columns.
     ///
     /// Returns an error if the column is nullable — use
-    /// [`to_vec_optional`](Self::to_vec_optional) instead when nulls are
+    /// [`to_optional_vec`](Self::to_optional_vec) instead when nulls are
     /// expected.
     ///
     /// # Cost
@@ -320,7 +320,7 @@ impl Series {
     ///
     /// # Errors
     /// Returns `TypeError` if the column dtype does not match `T`.
-    pub fn to_vec_optional<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
+    pub fn to_optional_vec<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
         self.column.view()?.to_optional_vec::<T>()
     }
 
@@ -328,7 +328,7 @@ impl Series {
     /// columns.
     ///
     /// Returns an error if the column is nullable — use
-    /// [`to_strings_optional`](Self::to_strings_optional) or
+    /// [`to_optional_strings`](Self::to_optional_strings) or
     /// [`to_strings_lossy`](Self::to_strings_lossy) instead.
     ///
     /// # Errors
@@ -352,7 +352,7 @@ impl Series {
     ///
     /// # Errors
     /// Returns `TypeError` if the underlying column type is not `STRING`.
-    pub fn to_strings_optional(&self) -> Result<Vec<Option<String>>> {
+    pub fn to_optional_strings(&self) -> Result<Vec<Option<String>>> {
         self.column.view()?.to_optional_strings()
     }
 
@@ -361,18 +361,22 @@ impl Series {
     ///
     /// This is a lossy conversion: null and genuinely empty strings become
     /// indistinguishable. When null fidelity matters, use
-    /// [`to_strings_optional`](Self::to_strings_optional).
+    /// [`to_optional_strings`](Self::to_optional_strings).
     ///
     /// # Errors
     /// Returns `TypeError` if the underlying column type is not `STRING`.
     pub fn to_strings_lossy(&self) -> Result<Vec<String>> {
-        let opt = self.column.view()?.to_optional_strings()?;
+        let opt = self.to_optional_strings()?;
         Ok(opt.into_iter().map(|o| o.unwrap_or_default()).collect())
     }
 
     // -- Scalar comparison ops -----------------------------------------
 
     /// Element-wise `self > scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device and
+    /// wraps it in a new `Series`.
     pub fn gt_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.gt_scalar(&s)?;
@@ -380,6 +384,10 @@ impl Series {
     }
 
     /// Element-wise `self < scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device and
+    /// wraps it in a new `Series`.
     pub fn lt_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.lt_scalar(&s)?;
@@ -387,6 +395,10 @@ impl Series {
     }
 
     /// Element-wise `self == scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device and
+    /// wraps it in a new `Series`.
     pub fn eq_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.eq_scalar(&s)?;
@@ -396,6 +408,10 @@ impl Series {
     // -- String scalar comparison ops ----------------------------------------
 
     /// Element-wise `self == string_scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: creates a device scalar from the host string, then
+    /// produces a new `BOOL8` output column on the device.
     pub fn eq_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.eq_scalar(&s)?;
@@ -403,6 +419,10 @@ impl Series {
     }
 
     /// Element-wise `self != string_scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: creates a device scalar from the host string, then
+    /// produces a new `BOOL8` output column on the device.
     pub fn ne_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.ne_scalar(&s)?;
@@ -410,6 +430,10 @@ impl Series {
     }
 
     /// Element-wise `self > string_scalar` (lexicographic). Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: creates a device scalar from the host string, then
+    /// produces a new `BOOL8` output column on the device.
     pub fn gt_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.gt_scalar(&s)?;
@@ -417,6 +441,10 @@ impl Series {
     }
 
     /// Element-wise `self < string_scalar` (lexicographic). Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: creates a device scalar from the host string, then
+    /// produces a new `BOOL8` output column on the device.
     pub fn lt_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.lt_scalar(&s)?;
@@ -424,6 +452,10 @@ impl Series {
     }
 
     /// Element-wise `self >= string_scalar` (lexicographic). Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: creates a device scalar from the host string, then
+    /// produces a new `BOOL8` output column on the device.
     pub fn ge_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.ge_scalar(&s)?;
@@ -431,6 +463,10 @@ impl Series {
     }
 
     /// Element-wise `self <= string_scalar` (lexicographic). Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: creates a device scalar from the host string, then
+    /// produces a new `BOOL8` output column on the device.
     pub fn le_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = self.scalar_from_str_in_domain(rhs)?;
         let col = self.column.le_scalar(&s)?;
@@ -440,6 +476,10 @@ impl Series {
     // -- Extended scalar comparison ops --------------------------------
 
     /// Element-wise `self != scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device and
+    /// wraps it in a new `Series`.
     pub fn ne_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.ne_scalar(&s)?;
@@ -447,6 +487,10 @@ impl Series {
     }
 
     /// Element-wise `self >= scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device and
+    /// wraps it in a new `Series`.
     pub fn ge_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.ge_scalar(&s)?;
@@ -454,6 +498,10 @@ impl Series {
     }
 
     /// Element-wise `self <= scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new `BOOL8` output column on the device and
+    /// wraps it in a new `Series`.
     pub fn le_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.le_scalar(&s)?;
@@ -463,36 +511,60 @@ impl Series {
     // -- Column-vs-column comparison ops -------------------------------
 
     /// Element-wise `self == rhs`. Returns an unnamed `BOOL8` Series.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
+    /// device and wraps it in a new `Series`.
     pub fn eq(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.eq(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self != rhs`. Returns an unnamed `BOOL8` Series.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
+    /// device and wraps it in a new `Series`.
     pub fn ne(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.ne(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self > rhs`. Returns an unnamed `BOOL8` Series.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
+    /// device and wraps it in a new `Series`.
     pub fn gt(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.gt(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self < rhs`. Returns an unnamed `BOOL8` Series.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
+    /// device and wraps it in a new `Series`.
     pub fn lt(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.lt(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self >= rhs`. Returns an unnamed `BOOL8` Series.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
+    /// device and wraps it in a new `Series`.
     pub fn ge(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.ge(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self <= rhs`. Returns an unnamed `BOOL8` Series.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
+    /// device and wraps it in a new `Series`.
     pub fn le(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.le(&rhs.column)?;
         Self::from_column(col)
@@ -527,24 +599,40 @@ impl Series {
     // -- Arithmetic ops ------------------------------------------------
 
     /// Element-wise `self + rhs`. Output type inferred. Returns an unnamed Series.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new unnamed output column on the device and
+    /// wraps it in a new `Series`.
     pub fn add(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.add(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self - rhs`. Output type inferred. Returns an unnamed Series.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new unnamed output column on the device and
+    /// wraps it in a new `Series`.
     pub fn sub(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.sub(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self * rhs`. Output type inferred. Returns an unnamed Series.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new unnamed output column on the device and
+    /// wraps it in a new `Series`.
     pub fn mul(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.mul(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self / rhs`. Output type inferred. Returns an unnamed Series.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new unnamed output column on the device and
+    /// wraps it in a new `Series`.
     pub fn div(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.div(&rhs.column)?;
         Self::from_column(col)
@@ -553,6 +641,10 @@ impl Series {
     // -- Scalar arithmetic ops -----------------------------------------
 
     /// Element-wise `self + scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: creates a device scalar from the host value, then
+    /// produces a new output column on the device.
     pub fn add_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.add_scalar(&s)?;
@@ -560,6 +652,10 @@ impl Series {
     }
 
     /// Element-wise `self - scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: creates a device scalar from the host value, then
+    /// produces a new output column on the device.
     pub fn sub_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.sub_scalar(&s)?;
@@ -567,6 +663,10 @@ impl Series {
     }
 
     /// Element-wise `self * scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: creates a device scalar from the host value, then
+    /// produces a new output column on the device.
     pub fn mul_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.mul_scalar(&s)?;
@@ -574,6 +674,10 @@ impl Series {
     }
 
     /// Element-wise `self / scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: creates a device scalar from the host value, then
+    /// produces a new output column on the device.
     pub fn div_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.div_scalar(&s)?;
@@ -582,12 +686,20 @@ impl Series {
 
     /// Element-wise `self % rhs` (modulo). Output type inferred. Returns an
     /// unnamed Series.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new unnamed output column on the device and
+    /// wraps it in a new `Series`.
     pub fn rem(&self, rhs: &Series) -> Result<Series> {
         let col = self.column.modulo(&rhs.column)?;
         Self::from_column(col)
     }
 
     /// Element-wise `self % scalar`. Inherits the source Series' name.
+    ///
+    /// # Cost
+    /// GPU-allocating: creates a device scalar from the host value, then
+    /// produces a new output column on the device.
     pub fn rem_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = self.scalar_from_value_in_domain(rhs)?;
         let col = self.column.binary_op_scalar(&s, binary::BinaryOperator::Mod)?;

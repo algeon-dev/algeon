@@ -268,6 +268,10 @@ impl<'a> ColumnView<'a> {
     /// Copy the column data to a host `Vec<T>`.
     ///
     /// The column's type must match `T::TYPE_ID`. Only valid for fixed-width types.
+    ///
+    /// # Synchronization
+    /// This materializes device data into host memory and may synchronize the
+    /// bound execution domain before returning.
     pub fn to_vec<T: CudfType>(&self) -> Result<Vec<T>> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
@@ -278,7 +282,8 @@ impl<'a> ColumnView<'a> {
         }
 
         let size = self.len()?;
-        // SAFETY: All CudfType implementors have valid all-zero bit patterns.
+        // SAFETY: `CudfType` is sealed to built-in primitives with valid
+        // all-zero bit patterns.
         let mut buf = vec![unsafe { std::mem::zeroed::<T>() }; size];
         let buf_size = size * std::mem::size_of::<T>();
 
@@ -321,6 +326,10 @@ impl<'a> ColumnView<'a> {
     /// canonical value for null slots. This method materializes Bool8 through a
     /// byte buffer and only converts valid positions, avoiding invalid `bool`
     /// construction.
+    ///
+    /// # Synchronization
+    /// This materializes device data and null-mask state into host memory and
+    /// may synchronize the bound execution domain before returning.
     pub fn to_optional_vec<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
         if T::TYPE_ID == TypeId::Bool8 {
             return self.to_optional_vec_bool::<T>();
@@ -452,6 +461,10 @@ impl<'a> ColumnView<'a> {
     /// Copy the null mask to a host `Vec<bool>`.
     ///
     /// Returns `None` if the column has no null mask (all elements valid).
+    ///
+    /// # Synchronization
+    /// This materializes null-mask bits into host memory and may synchronize
+    /// the bound execution domain before returning.
     pub fn validity(&self) -> Result<Option<Vec<bool>>> {
         if !self.nullable()? {
             return Ok(None);
@@ -503,6 +516,10 @@ impl<'a> ColumnView<'a> {
     /// This is a lossy conversion: nulls and genuinely empty strings become
     /// indistinguishable. Use [`to_optional_strings`](Self::to_optional_strings)
     /// when null fidelity matters.
+    ///
+    /// # Synchronization
+    /// This materializes string offsets and character data into host memory and
+    /// may synchronize the bound execution domain before returning.
     pub fn to_strings_lossy(&self) -> Result<Vec<String>> {
         let strings = self.to_strings_host_raw("column_view::to_strings_lossy")?;
         match self.validity()? {
@@ -640,6 +657,11 @@ impl<'a> ColumnView<'a> {
     ///
     /// Null positions return `None`; valid positions return `Some(s)`.
     /// Non-nullable columns return all `Some`.
+    ///
+    /// # Synchronization
+    /// This materializes string offsets, character data, and null-state into
+    /// host memory and may synchronize the bound execution domain before
+    /// returning.
     ///
     /// # Errors
     ///

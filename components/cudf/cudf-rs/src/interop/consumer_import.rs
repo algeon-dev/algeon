@@ -4,17 +4,21 @@
 use std::{any::Any, sync::Arc};
 
 use rapids_interop::{
-    BorrowedColumnView, BorrowedTableView, BufferBinding, ColumnLayout, CompletionAuthority, CudaStreamHandle,
-    ExportProfile, InteropError, InteropErrorKind, LeaseCompletionResult, OwnedColumnTransfer, OwnedTableTransfer,
-    PartitionedPreparedTableExport, PhysicalValidity, Placement, PreparedColumnExport, PreparedTableExport,
-    ProducerReadiness, ReadStartAuthority, SemanticColumn,
+    BorrowedColumnView, BorrowedTableView, CompletionAuthority, CudaStreamHandle, ExportProfile, InteropError,
+    InteropErrorKind, LeaseCompletionResult, OwnedColumnTransfer, OwnedTableTransfer, PartitionedPreparedTableExport,
+    PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority,
 };
 
 use super::{
-    OwnedColumnTransferState, OwnedTableTransferState, PreparedDeviceImportColumnGraph, PreparedDeviceImportTableGraph,
-    RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, RuntimeOwnedColumnTransferOwner,
-    RuntimeOwnedTableTransferOwner, RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease,
-    TryActivateRuntimeTableReadLease, checked_i32_from_usize, map_cudf_error, map_interop_error, map_interop_type_id,
+    OwnedColumnTransferState, OwnedTableTransferState, RuntimeCompletionAuthority, RuntimeLeaseCompletionResult,
+    RuntimeOwnedColumnTransferOwner, RuntimeOwnedTableTransferOwner, RuntimeReadStartAuthority,
+    TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
+    import_graph::{
+        checked_i32_from_usize, map_interop_type_id, owned_device_import_table_graph,
+        prepared_device_import_column_graph, prepared_device_import_column_graph_from_parts,
+        prepared_device_import_table_graph,
+    },
+    map_cudf_error, map_interop_error,
 };
 use crate::{
     core::{column::Column, error, table::Table},
@@ -93,169 +97,8 @@ fn validate_runtime_device(
     Ok(())
 }
 
-fn interop_binding_from_prepared_binding(binding: &BufferBinding<'_>) -> cudf_sys::cudf_interop_buffer_binding_t {
-    let (placement_kind, device) = match binding.placement() {
-        Placement::Host => (cudf_sys::cudf_interop_placement_kind_t::CUDF_INTEROP_PLACEMENT_HOST, -1),
-        Placement::CudaDevice { device } => {
-            (cudf_sys::cudf_interop_placement_kind_t::CUDF_INTEROP_PLACEMENT_CUDA_DEVICE, *device)
-        },
-    };
-
-    cudf_sys::cudf_interop_buffer_binding_t {
-        buffer_id: binding.id().get(),
-        data: binding.bytes().base_ptr() as *const _,
-        byte_len: binding.bytes().byte_len(),
-        placement_kind,
-        device,
-    }
-}
-
-fn interop_semantic_column_from_prepared_column(
-    column: &SemanticColumn,
-    operation: &'static str,
-    child_id_buffers: &mut Vec<Box<[u32]>>,
-) -> Result<cudf_sys::cudf_interop_semantic_column_t, InteropError> {
-    let (validity_kind, validity_buffer_id, null_count) = match column.validity() {
-        PhysicalValidity::NoValidityBuffer => {
-            (cudf_sys::cudf_interop_validity_kind_t::CUDF_INTEROP_VALIDITY_NONE, 0, 0)
-        },
-        PhysicalValidity::ValidityMask { mask, null_count } => (
-            cudf_sys::cudf_interop_validity_kind_t::CUDF_INTEROP_VALIDITY_MASK,
-            mask.get(),
-            match null_count {
-                Some(count) => checked_i32_from_usize("null_count", *count, operation)?,
-                None => -1,
-            },
-        ),
-    };
-
-    let mut ffi = cudf_sys::cudf_interop_semantic_column_t {
-        column_id: column.id().get(),
-        type_id: map_interop_type_id(column.data_type().id()).to_raw(),
-        scale: column.data_type().scale(),
-        len: checked_i32_from_usize("len", column.len(), operation)?,
-        offset: checked_i32_from_usize("offset", column.offset(), operation)?,
-        validity_kind,
-        validity_buffer_id,
-        null_count,
-        layout_kind: cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_FIXED_WIDTH,
-        values_buffer_id: 0,
-        offsets_buffer_id: 0,
-        data_buffer_id: 0,
-        indices_buffer_id: 0,
-        child_column_id: 0,
-        child_column_ids: std::ptr::null(),
-        num_child_column_ids: 0,
-        keys_column_id: 0,
-    };
-
-    match column.layout() {
-        ColumnLayout::FixedWidth { values } => {
-            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_FIXED_WIDTH;
-            ffi.values_buffer_id = values.get();
-        },
-        ColumnLayout::BinaryLike { offsets, data } => {
-            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_BINARY_LIKE;
-            ffi.offsets_buffer_id = offsets.get();
-            ffi.data_buffer_id = data.get();
-        },
-        ColumnLayout::List { offsets, child } => {
-            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_LIST;
-            ffi.offsets_buffer_id = offsets.get();
-            ffi.child_column_id = child.get();
-        },
-        ColumnLayout::Struct { children } => {
-            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_STRUCT;
-            let child_ids: Box<[u32]> = children.iter().map(|child| child.get()).collect::<Vec<_>>().into_boxed_slice();
-            ffi.num_child_column_ids = checked_i32_from_usize("num_child_column_ids", child_ids.len(), operation)?;
-            ffi.child_column_ids = child_ids.as_ptr();
-            child_id_buffers.push(child_ids);
-        },
-        ColumnLayout::Dictionary { indices, keys } => {
-            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_DICTIONARY;
-            ffi.indices_buffer_id = indices.get();
-            ffi.keys_column_id = keys.get();
-        },
-    }
-
-    Ok(ffi)
-}
-
-fn prepared_device_import_column_graph_from_parts(
-    semantic_columns: &[SemanticColumn],
-    bindings: &[BufferBinding<'_>],
-    operation: &'static str,
-) -> Result<PreparedDeviceImportColumnGraph, InteropError> {
-    let mut child_id_buffers = Vec::new();
-    let ffi_columns = semantic_columns
-        .iter()
-        .map(|column| interop_semantic_column_from_prepared_column(column, operation, &mut child_id_buffers))
-        .collect::<Result<Vec<_>, _>>()?;
-    let ffi_bindings = bindings.iter().map(interop_binding_from_prepared_binding).collect();
-    Ok(PreparedDeviceImportColumnGraph { ffi_columns, ffi_bindings, _child_id_buffers: child_id_buffers })
-}
-
-fn prepared_device_import_column_graph(
-    export: &PreparedColumnExport<'_>,
-    operation: &'static str,
-) -> Result<PreparedDeviceImportColumnGraph, InteropError> {
-    prepared_device_import_column_graph_from_parts(export.semantic_columns(), export.bindings(), operation)
-}
-
-fn prepared_device_import_table_graph(
-    export: &PreparedTableExport<'_>,
-    operation: &'static str,
-) -> Result<PreparedDeviceImportTableGraph, InteropError> {
-    let mut child_id_buffers = Vec::new();
-    let ffi_columns = export
-        .semantic_columns()
-        .iter()
-        .map(|column| interop_semantic_column_from_prepared_column(column, operation, &mut child_id_buffers))
-        .collect::<Result<Vec<_>, _>>()?;
-    let ffi_bindings = export.bindings().iter().map(interop_binding_from_prepared_binding).collect::<Vec<_>>();
-    let table_column_ids: Box<[u32]> =
-        export.table().columns().iter().map(|column| column.get()).collect::<Vec<_>>().into();
-    let ffi_table = cudf_sys::cudf_interop_semantic_table_t {
-        num_rows: checked_i32_from_usize("num_rows", export.table().num_rows(), operation)?,
-        column_ids: table_column_ids.as_ptr(),
-        num_columns: checked_i32_from_usize("num_columns", table_column_ids.len(), operation)?,
-    };
-
-    Ok(PreparedDeviceImportTableGraph {
-        ffi_table,
-        ffi_columns,
-        ffi_bindings,
-        _child_id_buffers: child_id_buffers,
-        _table_column_ids: table_column_ids,
-    })
-}
-
-fn owned_device_import_table_graph(
-    transfer: &OwnedTableTransfer,
-    operation: &'static str,
-) -> Result<PreparedDeviceImportTableGraph, InteropError> {
-    let mut child_id_buffers = Vec::new();
-    let ffi_columns = transfer
-        .semantic_columns()
-        .iter()
-        .map(|column| interop_semantic_column_from_prepared_column(column, operation, &mut child_id_buffers))
-        .collect::<Result<Vec<_>, _>>()?;
-    let ffi_bindings = transfer.bindings().iter().map(interop_binding_from_prepared_binding).collect::<Vec<_>>();
-    let table_column_ids: Box<[u32]> =
-        transfer.table().columns().iter().map(|column| column.get()).collect::<Vec<_>>().into();
-    let ffi_table = cudf_sys::cudf_interop_semantic_table_t {
-        num_rows: checked_i32_from_usize("num_rows", transfer.table().num_rows(), operation)?,
-        column_ids: table_column_ids.as_ptr(),
-        num_columns: checked_i32_from_usize("num_columns", table_column_ids.len(), operation)?,
-    };
-
-    Ok(PreparedDeviceImportTableGraph {
-        ffi_table,
-        ffi_columns,
-        ffi_bindings,
-        _child_id_buffers: child_id_buffers,
-        _table_column_ids: table_column_ids,
-    })
+fn runtime_exec_options(runtime: &Runtime) -> cudf_sys::cudf_exec_options_t {
+    runtime.execution_domain().explicit_exec_options_raw().expect("runtime always provides explicit execution options")
 }
 
 fn synchronize_runtime_completion_result(
@@ -318,10 +161,7 @@ pub(super) fn import_column_from_borrowed_view(
         borrowed.execution().device(),
         runtime,
     )?;
-    let exec_options = runtime
-        .execution_domain()
-        .explicit_exec_options_raw()
-        .expect("runtime always provides explicit execution options");
+    let exec_options = runtime_exec_options(runtime);
     let mut handle = std::ptr::null_mut();
 
     match borrowed.column() {
@@ -418,9 +258,10 @@ pub(super) fn import_column_from_owned_transfer(
 ) -> Result<Column, InteropError> {
     match transfer.try_into_owner::<OwnedColumnTransferState>() {
         Ok(state) => Ok(state.into_column()),
-        Err(transfer) => match transfer.try_into_owner::<RuntimeOwnedColumnTransferOwner>() {
+        Err(mismatch) => match mismatch.into_transfer().try_into_owner::<RuntimeOwnedColumnTransferOwner>() {
             Ok(owner) => owner.into_column(operation),
-            Err(transfer) => {
+            Err(mismatch) => {
+                let transfer = mismatch.into_transfer();
                 let graph = prepared_device_import_column_graph_from_parts(
                     transfer.semantic_columns(),
                     transfer.bindings(),
@@ -475,9 +316,9 @@ pub(super) fn import_table_from_owned_transfer(
     loop {
         match current.try_into_owner::<OwnedTableTransferState>() {
             Ok(state) => return Ok(state.into_table()),
-            Err(transfer) => match transfer.try_into_owner::<RuntimeOwnedTableTransferOwner>() {
+            Err(mismatch) => match mismatch.into_transfer().try_into_owner::<RuntimeOwnedTableTransferOwner>() {
                 Ok(owner) => return owner.into_table(operation),
-                Err(transfer) => match transfer.try_into_owner::<OwnedTableTransfer>() {
+                Err(mismatch) => match mismatch.into_transfer().try_into_owner::<OwnedTableTransfer>() {
                     Ok(inner_transfer) => {
                         nesting += 1;
                         if nesting > MAX_OWNED_TABLE_TRANSFER_NESTING {
@@ -493,7 +334,8 @@ pub(super) fn import_table_from_owned_transfer(
                         }
                         current = inner_transfer;
                     },
-                    Err(transfer) => {
+                    Err(mismatch) => {
+                        let transfer = mismatch.into_transfer();
                         let graph = owned_device_import_table_graph(&transfer, operation)?;
                         let num_semantic_columns =
                             checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
@@ -541,10 +383,7 @@ pub(super) fn import_column_from_prepared_export(
 ) -> Result<Column, InteropError> {
     prepared_import_profile_supported(export.diagnostics().profile(), operation)?;
     let graph = prepared_device_import_column_graph(export, operation)?;
-    let exec_options = runtime
-        .execution_domain()
-        .explicit_exec_options_raw()
-        .expect("runtime always provides explicit execution options");
+    let exec_options = runtime_exec_options(runtime);
     let num_semantic_columns = checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
     let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
 
@@ -641,10 +480,7 @@ pub(super) fn import_table_from_prepared_export(
 ) -> Result<Table, InteropError> {
     prepared_import_profile_supported(export.diagnostics().profile(), operation)?;
     let graph = prepared_device_import_table_graph(export, operation)?;
-    let exec_options = runtime
-        .execution_domain()
-        .explicit_exec_options_raw()
-        .expect("runtime always provides explicit execution options");
+    let exec_options = runtime_exec_options(runtime);
     let num_semantic_columns = checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
     let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
 
@@ -770,10 +606,7 @@ pub(super) fn import_partitioned_local_tables_from_prepared_export(
 
         let graph = prepared_device_import_table_graph(partition.export(), operation)
             .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
-        let exec_options = runtime
-            .execution_domain()
-            .explicit_exec_options_raw()
-            .expect("runtime always provides explicit execution options");
+        let exec_options = runtime_exec_options(runtime);
         let num_semantic_columns =
             checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)
                 .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;

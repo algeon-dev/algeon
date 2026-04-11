@@ -16,32 +16,32 @@ use crate::runtime::{CudaEvent, CudaStream};
 pub(super) struct OwnedColumnTransferState {
     // Retain the owning column so owned-transfer buffer bindings continue to
     // point at live device memory for the full transfer lifetime.
-    _column: Column,
+    retained_column: Column,
 }
 
 impl OwnedColumnTransferState {
     pub(super) fn new(column: Column) -> Self {
-        Self { _column: column }
+        Self { retained_column: column }
     }
 
     pub(super) fn into_column(self) -> Column {
-        self._column
+        self.retained_column
     }
 }
 
 pub(super) struct OwnedTableTransferState {
     // Retain the owning table so owned-transfer buffer bindings continue to
     // point at live device memory for the full transfer lifetime.
-    _table: Table,
+    retained_table: Table,
 }
 
 impl OwnedTableTransferState {
     pub(super) fn new(table: Table) -> Self {
-        Self { _table: table }
+        Self { retained_table: table }
     }
 
     pub(super) fn into_table(self) -> Table {
-        self._table
+        self.retained_table
     }
 }
 
@@ -173,6 +173,12 @@ impl<T> RuntimeOwnedTransferState<T> {
         }
     }
 
+    fn restore_pending_owner(&self, owner: ManuallyDrop<T>) {
+        let mut inner = self.lock_inner();
+        inner.owner = Some(owner);
+        inner.status = RuntimeOwnedTransferStatus::Pending;
+    }
+
     fn take_for_import(
         &self,
         operation: &'static str,
@@ -195,14 +201,28 @@ impl<T> RuntimeOwnedTransferState<T> {
         }
     }
 
+    fn wait_for_release_contract(
+        &self,
+        completion: &RuntimeOwnedReleaseCompletion,
+        operation: &'static str,
+    ) -> std::result::Result<(), InteropError> {
+        match completion.wait_for_release(self.release_device, operation) {
+            Ok(()) => Ok(()),
+            Err(wait_error) => match completion.synchronize_fallback(operation) {
+                Ok(()) => Ok(()),
+                Err(fallback_error) => Err(wait_error.with_context("fallback_error", fallback_error.to_string())),
+            },
+        }
+    }
+
     fn finish_release_job(
         self: Arc<Self>,
         mut owner: ManuallyDrop<T>,
         completion: RuntimeOwnedReleaseCompletion,
         operation: &'static str,
-    ) {
-        if completion.wait_for_release(self.release_device, operation).is_err() {
-            let _ = completion.synchronize_fallback(operation);
+    ) -> std::result::Result<(), (ManuallyDrop<T>, InteropError)> {
+        if let Err(error) = self.wait_for_release_contract(&completion, operation) {
+            return Err((owner, error));
         }
 
         // Switch to the release device before dropping GPU-owning types.
@@ -235,6 +255,8 @@ impl<T> RuntimeOwnedTransferState<T> {
         if let Err(payload) = drop_result {
             std::panic::resume_unwind(payload);
         }
+
+        Ok(())
     }
 
     fn release(
@@ -279,22 +301,35 @@ impl<T> RuntimeOwnedTransferState<T> {
             ReleaseSynchronization::Asynchronous => {
                 let release_state = Arc::clone(state);
                 thread::spawn(move || {
-                    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        release_state.finish_release_job(owner, completion, operation);
+                    let job_state = Arc::clone(&release_state);
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        job_state.finish_release_job(owner, completion, operation)
                     })) {
-                        let msg = payload
-                            .downcast_ref::<&str>()
-                            .copied()
-                            .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
-                            .unwrap_or("unknown panic");
-                        eprintln!("[cudf::interop] async release thread panicked: {msg}");
+                        Ok(Ok(())) => {},
+                        Ok(Err((owner, error))) => {
+                            release_state.restore_pending_owner(owner);
+                            eprintln!("[cudf::interop] async release failed: {error}");
+                        },
+                        Err(payload) => {
+                            let msg = payload
+                                .downcast_ref::<&str>()
+                                .copied()
+                                .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                                .unwrap_or("unknown panic");
+                            eprintln!("[cudf::interop] async release thread panicked: {msg}");
+                        },
                     }
                 });
                 Ok(())
             },
             ReleaseSynchronization::MaySynchronizeInternally => {
-                Arc::clone(state).finish_release_job(owner, completion, operation);
-                Ok(())
+                match Arc::clone(state).finish_release_job(owner, completion, operation) {
+                    Ok(()) => Ok(()),
+                    Err((owner, error)) => {
+                        state.restore_pending_owner(owner);
+                        Err(error)
+                    },
+                }
             },
             ReleaseSynchronization::RequiresCallerSynchronization => {
                 let mut inner = state.lock_inner();

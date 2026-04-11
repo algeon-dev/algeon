@@ -160,11 +160,10 @@ pub use frame::{
     dataframe::{
         ColumnMemoryAccounting, CsvReadOptions, CsvWriteOptions, DataFrame, DataFrameColumnInfo, DataFrameInfo,
         DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DropDuplicatesOptions, DropNaHow, DropNaOptions,
-        InfoDetail, JsonWriteOptions, MeltOptions, ParquetWriteOptions,
+        InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions, ParquetReadOptions, ParquetWriteOptions,
     },
     series::{IntoSeries, Series},
 };
-pub use io::{json::JsonReadOptions, parquet::ParquetReadOptions};
 // — High-level operations —
 pub use ops::Expr;
 pub use ops::{
@@ -178,3 +177,8 @@ pub use ops::{
 #[doc(hidden)]
 pub use runtime::__DebugExecutionContext;
 pub use runtime::{DeviceId, ExecutionContext, Runtime, RuntimeBuilder};
+
+#[doc(hidden)]
+pub fn __debug_validity_to_host_null_mask_bytes(validity: &[bool]) -> Vec<u8> {
+    crate::core::types::validity_to_ffi_bitmask(validity)
+}

@@ -48,6 +48,7 @@ std::atomic<int32_t> g_event_synchronize_call_count{0};
 std::mutex g_synchronize_block_mutex;
 std::condition_variable g_synchronize_block_cv;
 bool g_block_event_synchronize = false;
+bool g_fail_event_synchronize = false;
 std::mutex g_observation_mutex;
 std::unordered_map<std::uintptr_t, int32_t> g_stream_wait_counts_by_stream_raw;
 std::unordered_map<std::uintptr_t, int32_t> g_stream_wait_counts_by_event_raw;
@@ -98,6 +99,13 @@ cudf_status_t cudf_event_synchronize(cudf_event_handle event)
   CUDF_RUST_NULL_CHECK(event, "event is null");
   CUDF_RUST_TRY {
     g_event_synchronize_call_count.fetch_add(1, std::memory_order_relaxed);
+    {
+      std::lock_guard<std::mutex> lock(g_synchronize_block_mutex);
+      if (g_fail_event_synchronize) {
+        set_error("forced cudaEventSynchronize failure for tests");
+        return CUDF_ERROR_CUDA;
+      }
+    }
     {
       std::unique_lock<std::mutex> lock(g_synchronize_block_mutex);
       g_synchronize_block_cv.wait(lock, [] { return !g_block_event_synchronize; });
@@ -213,6 +221,7 @@ void cudf_test_event_reset_observation()
   {
     std::lock_guard<std::mutex> lock(g_synchronize_block_mutex);
     g_block_event_synchronize = false;
+    g_fail_event_synchronize = false;
   }
   g_synchronize_block_cv.notify_all();
   std::lock_guard<std::mutex> lock(g_observation_mutex);
@@ -234,6 +243,18 @@ void cudf_test_event_unblock_synchronize()
     g_block_event_synchronize = false;
   }
   g_synchronize_block_cv.notify_all();
+}
+
+void cudf_test_event_fail_synchronize()
+{
+  std::lock_guard<std::mutex> lock(g_synchronize_block_mutex);
+  g_fail_event_synchronize = true;
+}
+
+void cudf_test_event_allow_synchronize()
+{
+  std::lock_guard<std::mutex> lock(g_synchronize_block_mutex);
+  g_fail_event_synchronize = false;
 }
 
 cudf_status_t cudf_test_event_synchronize_call_count(int32_t* out)

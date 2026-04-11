@@ -2,6 +2,9 @@ use super::*;
 
 mod device;
 mod host;
+mod support;
+
+use support::*;
 
 fn schema_nullability(nullable: bool) -> SchemaNullability {
     if nullable { SchemaNullability::Nullable } else { SchemaNullability::NonNullable }
