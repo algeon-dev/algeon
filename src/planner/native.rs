@@ -10,7 +10,9 @@ use nexus_query_engine::QueryId;
 use super::CudfOptimizerConfig;
 use crate::{
     Error, ErrorCode,
-    native_exec::{NativeCudfComposedExec, NativeCudfExec},
+    native_exec::{
+        NativeCudfComposedExec, NativeCudfExec, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket,
+    },
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
     physical_plan::physical_plan_shape,
     report::PlanningReport,
@@ -198,6 +200,9 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if plan_is_query_admission_wrapped(plan.as_ref()) {
+            return Ok(plan);
+        }
         if plan.downcast_ref::<NativeCudfExec>().is_some() || plan.downcast_ref::<NativeCudfComposedExec>().is_some() {
             return Ok(plan);
         }
@@ -235,7 +240,12 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
                 native_plan_preference_options,
             )?,
         };
-        let optimized = apply_native_fallback_policy(Arc::clone(&plan), optimized, &effective_config)?;
+        let mut optimized = apply_native_fallback_policy(Arc::clone(&plan), optimized, &effective_config)?;
+        if optimized.rewritten
+            && let Some(ticket) = native_execution_config.query_admission_ticket()
+        {
+            optimized.plan = wrap_plan_with_query_admission_ticket(optimized.plan, ticket);
+        }
         *self.state.last_report.lock().map_err(|_| {
             datafusion::common::DataFusionError::from(Error::new(
                 ErrorCode::Internal,
