@@ -150,6 +150,15 @@ impl CugraphAlgoExec {
         )
     }
 
+    pub(crate) fn coverage_algorithm_name(&self) -> &'static str {
+        self.spec.algorithm.function_name()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coverage_gpu_result_input_name(&self) -> &str {
+        &self.gpu_result_input_name
+    }
+
     fn validate_standalone_bounded_sources(&self) -> Result<()> {
         validate_standalone_bounded_cugraph_sources(
             &self.native_execution_config,

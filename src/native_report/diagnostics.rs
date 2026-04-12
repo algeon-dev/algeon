@@ -17,7 +17,7 @@ pub(super) use shape_family::candidate_shape_family;
 
 pub(super) use crate::physical_plan::physical_plan_shape;
 
-pub(super) fn post_native_plan_coverage(plan: &dyn ExecutionPlan) -> NativeDataFusionPlanCoverage {
+pub(crate) fn post_native_plan_coverage(plan: &dyn ExecutionPlan) -> NativeDataFusionPlanCoverage {
     let native_fragment_count = count_native_fragments(plan);
     let host_datafusion_boundary_count = count_host_datafusion_boundaries(plan);
     let execution_path = if native_plan_root_is_whole_native(plan) {

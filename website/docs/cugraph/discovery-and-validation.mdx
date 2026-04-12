@@ -87,3 +87,8 @@ and compute the concrete output schema.
 
 **Does Not:** scan edge rows, materialize Parquet, build the graph, launch
 CUDA, or prove the source vertex or target row actually exists.
+
+`would_execute_gpu` is scoped to this one call being well-formed — it says
+nothing about the rest of your query. To check whether a whole query's planned
+path stays on the GPU (including how the cuGraph node's inputs are fed), use
+[GPU coverage validation](../integration/gpu-coverage-validation.mdx).

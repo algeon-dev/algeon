@@ -20,6 +20,8 @@
 
 pub mod backend;
 pub mod error;
+pub mod gpu_coverage;
+pub mod gpu_coverage_sql;
 #[cfg(feature = "cugraph")]
 pub mod graph_sql;
 #[cfg(feature = "iceberg")]
@@ -53,10 +55,12 @@ pub mod prelude {
     pub use crate::{
         CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
         CudfSessionStateBuilderExt, DataFusionNexusSessionConfig, FallbackReason, GpuFallbackPolicy, GrantBand,
-        MemoryShare, NativeCudfExec, NativeCudfExecutionConfig, NativeMemoryPolicyConfig, NexusAdmissionPolicy,
-        NexusGpuBackend, NexusGpuBackendBuilder, NexusMemoryPolicy, PhysicalOptimizerRules, PlanningReport, Priority,
-        QueryGrantRequest, QueryHandle, QueryQos, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
-        SlotGuarantee, TenantId, cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
+        MemoryShare, NEXUS_EXPLAIN_COVERAGE_FUNCTION, NativeCudfExec, NativeCudfExecutionConfig,
+        NativeMemoryPolicyConfig, NexusAdmissionPolicy, NexusGpuBackend, NexusGpuBackendBuilder, NexusMemoryPolicy,
+        PhysicalOptimizerRules, PlanningReport, Priority, QueryGpuCoverage, QueryGpuCoverageOverall, QueryGrantRequest,
+        QueryHandle, QueryQos, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
+        cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
+        register_gpu_coverage_udtf, validate_query,
     };
 }
 
@@ -101,6 +105,20 @@ pub mod report_contracts {
             sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
         },
         report::{CandidateOutcome, GpuCandidate, PlanningReport},
+    };
+}
+
+/// Query-level GPU coverage validation contracts.
+pub mod coverage_contracts {
+    pub use crate::{
+        gpu_coverage::{
+            NEXUS_EXPLAIN_COVERAGE_FUNCTION, NEXUS_EXPLAIN_COVERAGE_SCHEMA_VERSION, QUERY_GPU_COVERAGE_JSON_SCHEMA,
+            QUERY_GPU_COVERAGE_SCHEMA_VERSION, QueryGpuCoverage, QueryGpuCoverageConfidence, QueryGpuCoverageDomains,
+            QueryGpuCoverageOverall, QueryGpuCudfNativeCoverage, QueryGpuCugraphCall, QueryGpuCugraphOperatorDomain,
+            QueryGpuFallbackReason, QueryGpuFallbackReasonKind, QueryGpuPresence, QueryGpuRejectionPhase,
+            QueryGpuRuntimeCaveat, QueryGpuValidatedUnder, validate_query,
+        },
+        gpu_coverage_sql::register_gpu_coverage_udtf,
     };
 }
 
@@ -223,6 +241,14 @@ pub use backend::{
     GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusGpuBackendBuilder, NexusMemoryPolicy,
 };
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
+pub use gpu_coverage::{
+    NEXUS_EXPLAIN_COVERAGE_FUNCTION, NEXUS_EXPLAIN_COVERAGE_SCHEMA_VERSION, QUERY_GPU_COVERAGE_JSON_SCHEMA,
+    QUERY_GPU_COVERAGE_SCHEMA_VERSION, QueryGpuCoverage, QueryGpuCoverageConfidence, QueryGpuCoverageDomains,
+    QueryGpuCoverageOverall, QueryGpuCudfNativeCoverage, QueryGpuCugraphCall, QueryGpuCugraphOperatorDomain,
+    QueryGpuFallbackReason, QueryGpuFallbackReasonKind, QueryGpuPresence, QueryGpuRejectionPhase,
+    QueryGpuRuntimeCaveat, QueryGpuValidatedUnder, validate_query,
+};
+pub use gpu_coverage_sql::register_gpu_coverage_udtf;
 #[cfg(feature = "cugraph")]
 pub use graph_sql::{
     CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION, CUGRAPH_BFS_FUNCTION, CUGRAPH_CORE_NUMBER_FUNCTION,

@@ -75,6 +75,13 @@ impl CudfOptimizerConfig {
         self.fallback_policy
     }
 
+    /// Replace the planning fallback policy while preserving all other native
+    /// optimizer settings.
+    pub fn with_fallback_policy(mut self, fallback_policy: GpuFallbackPolicy) -> Self {
+        self.fallback_policy = fallback_policy;
+        self
+    }
+
     /// Native execution settings copied into rewritten execution nodes.
     pub fn native_execution_config(&self) -> &NativeCudfExecutionConfig {
         &self.native_execution_config
