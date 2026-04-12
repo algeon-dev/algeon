@@ -132,12 +132,4 @@ and link without it — so install it only if you intend to run the full
 python3 -m pip install --user pyarrow
 ```
 
-## Network access
-
-The CMake builds fetch pinned third-party sources at configure time via CPM
-(rapids-cmake, kvikio, nvcomp, CCCL, spdlog, …), and Cargo fetches crates.io
-dependencies (including Apache DataFusion, which is a published crate, not a
-source checkout). The first build of each layer needs outbound access to GitHub
-and crates.io.
-
 Continue with [Environment](./environment.md).

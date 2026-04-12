@@ -1,9 +1,10 @@
 ---
 sidebar_position: 5
+sidebar_label: Tests
 description: The verified test surface — nextest lanes, GPU serialization, check_all.sh, feature flags, and formatting/lints.
 ---
 
-# Testing
+# Tests
 
 ## The canonical check
 

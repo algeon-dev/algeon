@@ -1,5 +1,6 @@
 ---
 sidebar_position: 1
+slug: /build
 description: What you are building, how the repositories fit together, and the upstream-defined requirements the guide targets.
 ---
 

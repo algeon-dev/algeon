@@ -94,11 +94,14 @@ Two runtime behaviors to plan for in your service layer:
   grant; a full queue or an expired wait surfaces as a structured
   `service_overloaded` (`resource_exhausted`) error — treat it as retryable
   backpressure, not a query bug.
-- **Build exactly one backend per process per device set.** A second backend
-  on the same device either silently shares the first one's device byte ledger
-  (same resolved budget) or fails loudly at build time (different budget), and
-  in neither case are the two admission queues or slot guarantees merged;
-  share the one backend across every `SessionStateBuilder` instead.
+- **Build exactly one backend per process per device set.** With the default
+  `GuaranteedMinimum` guarantee, a second backend on the same device is
+  rejected loudly at build time
+  (`shared_governor_guaranteed_minimum_conflict`), and the claim frees only
+  after the first backend's last query handle drains. Two `Optimistic`
+  backends may coexist but share only the byte ledger, not admission queues or
+  slot guarantees. Share the one backend across every `SessionStateBuilder`
+  instead.
 
 Admission evidence for dashboards and debugging comes from the backend handle,
 alongside the per-query `admission_*` / `query_grant_bytes` DataFusion
@@ -112,7 +115,7 @@ let device_failures = backend.query_service().device_memory_failure_reports();
 
 The model behind these knobs — plan-scoped tickets, grant bands, slot
 guarantees, and the layered memory stack — is specified in
-[Admission & memory governance](../design/admission.mdx).
+[Admission & Memory Governance](../design/admission.mdx).
 
 ## cuGraph SQL functions
 
@@ -144,8 +147,11 @@ let state = SessionStateBuilder::new()
 
 That direct path does not create a shared admission owner. If multiple
 `SessionContext`s or concurrent queries use independent bounded configs on the
-same GPU, each config has its own device budget. Use `NexusGpuBackend` whenever
-the embedding process can run more than one GPU query at a time.
+same GPU, each config has its own device budget. On such a session, graph SQL
+also refuses to execute natively rewritten fragments inside a `cugraph_*` call
+(a structured error at execute time) rather than stack a second full-budget
+ledger. Use `NexusGpuBackend` whenever the embedding process can run more than
+one GPU query at a time or mixes cuGraph with native execution.
 
 The same [discovery and validation functions](../cugraph/discovery-and-validation.mdx)
 work in-process: run `SELECT * FROM cugraph_list_algorithms()` or

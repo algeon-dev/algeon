@@ -1,13 +1,15 @@
 ---
 sidebar_position: 4
-description: Environment-variable contract for the DataFusion Nexus Flight SQL server, including cuGraph defaults, GPU memory budget, DataFusion session keys, Iceberg sources, and workspace overlays.
+description: "Environment-variable contract for DataFusion Nexus: server core, admission, cuGraph defaults, GPU memory budget, DataFusion session keys, Iceberg sources, and workspace overlays."
 ---
 
-# Server Configuration
+# Configuration
 
-The Flight SQL server is configured entirely through environment variables.
-This page groups the variables that matter most for a local graph SQL server
-and for production-style Iceberg deployments.
+This page is the environment-variable contract for a running Nexus deployment:
+the Flight SQL server's `NEXUS_SERVER_*` variables, the DataFusion session keys
+read through `SessionConfig::from_env()`, and the `NEXUS_ICEBERG_*` source and
+workspace settings. It groups the variables that matter most for a local graph
+SQL server and for production-style Iceberg deployments.
 
 ## Server core
 
