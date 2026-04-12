@@ -57,6 +57,9 @@ pub enum FallbackReason {
     /// Native GPU execution is supported, but conservative plan-preference
     /// facts predict CPU will be better for a small selective full-sort shape.
     NativeSmallSelectiveFullSortCpuPreferred,
+    /// The replaced subtree declares an output ordering the lowered native plan
+    /// cannot reproduce.
+    NativeOrderedOutputUnsupported,
     /// Source uses a non-local object store unsupported by native local reads.
     NativeSourceNonLocalObjectStore,
     /// Source partition columns cannot be mapped to native source columns.
@@ -132,6 +135,7 @@ impl FallbackReason {
             Self::NativeSmallSelectiveTopkCpuPreferred => "native_small_selective_topk_cpu_preferred",
             Self::NativeSmallSelectiveResidualJoinCpuPreferred => "native_small_selective_residual_join_cpu_preferred",
             Self::NativeSmallSelectiveFullSortCpuPreferred => "native_small_selective_full_sort_cpu_preferred",
+            Self::NativeOrderedOutputUnsupported => "native_ordered_output_unsupported",
             Self::NativeSourceNonLocalObjectStore => "native_source_non_local_object_store",
             Self::NativeSourcePartitionColumns => "native_source_partition_columns",
             Self::NativeSourceExprAdapter => "native_source_expr_adapter",
@@ -203,7 +207,26 @@ impl FallbackReason {
             Self::NativeSortPreservingMergeUnsupported
             | Self::NativeDistributedAggregateUnsupported
             | Self::NativePartitionPreservingSortUnsupported
+            | Self::NativeOrderedOutputUnsupported
             | Self::TableFormatGpuOnlyLeafNotRewritten => TriageCode::UnsupportedPlanShape,
         }
+    }
+
+    /// Returns the data-layout property an operator can change to avoid this
+    /// native-planning rejection, when the rejection is layout-fixable.
+    pub const fn data_layout_fixable_property(self) -> Option<&'static str> {
+        match self {
+            Self::NativeOrderedOutputUnsupported
+            | Self::NativeSourceOutputOrdering
+            | Self::NativeSourcePreserveOrder
+            | Self::NativeSourceFileOrdering => Some("declared_output_ordering"),
+            _ => None,
+        }
+    }
+
+    /// Whether this rejection is caused by table layout metadata rather than
+    /// unsupported query semantics.
+    pub const fn is_data_layout_fixable(self) -> bool {
+        self.data_layout_fixable_property().is_some()
     }
 }

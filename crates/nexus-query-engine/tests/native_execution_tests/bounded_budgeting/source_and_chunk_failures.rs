@@ -585,3 +585,62 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn bounded_native_source_only_retry_preserves_row_group_order() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-source-only-retry-order");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_row_grouped_input_parquet(&path);
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![4096, 4096, 4096])
+                .with_projected_row_group_bytes(vec![4096, 4096, 4096], vec![4096, 4096, 4096])
+                .with_row_group_rows(vec![2, 2, 2]),
+        ],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let one_chunk_plan =
+        plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 3)).unwrap();
+    assert_eq!(one_chunk_plan.chunk_count(), 1);
+    let initial_chunk_bytes = one_chunk_plan.chunks[0].known_row_group_bytes.unwrap();
+    let initial_source_read_bytes = one_chunk_plan.chunks[0].estimated_source_read_bytes.unwrap_or(initial_chunk_bytes);
+    let plan = builder.finish_with_host_sink(source_id);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: initial_source_read_bytes.saturating_sub(1),
+            max_source_chunk_bytes: initial_chunk_bytes,
+            max_row_groups_per_chunk: 3,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 1);
+    assert_eq!(metrics.source_chunks_retried, 1);
+    assert_eq!(metrics.retry_count, 1);
+    assert_eq!(metrics.retry_reservation_failure_count, 1);
+    assert_eq!(metrics.source_chunks_attempted, 3);
+    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.row_groups_committed, 3);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 6);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1, 3, 2, 3]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 10, 20, 20, 30, 5]);
+
+    fs::remove_dir_all(dir).unwrap();
+}

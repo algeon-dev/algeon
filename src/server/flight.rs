@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     pin::Pin,
     sync::{
         Arc, Mutex,
@@ -54,7 +55,7 @@ use super::{
     cancel::QueryCancellation,
     config::ServerSessionProfile,
     datafusion_error::find_adapter_error,
-    diagnostics::{log_leaf_guard_rejection, log_native_planning_report},
+    diagnostics::{log_leaf_guard_rejection, log_native_planning_report_for_tables},
     error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
     observability::{CapturedError, QueryObservability},
     table_format_operator_fast_fail::fast_fail_unsupported_table_format_operator_plan,
@@ -896,6 +897,7 @@ impl DatafusionCudfFlightSqlService {
         }
         let schema = df.schema().as_arrow().clone();
         let task_ctx = Arc::new(df.task_ctx());
+        let logical_plan_tables = referenced_table_names(df.logical_plan());
         // Physical planning runs the retained native optimizer rule. Capture
         // the post-optimizer plan and retained diagnostics before execution so
         // query_stats can report both native rewrites and complete CPU fallback.
@@ -910,7 +912,11 @@ impl DatafusionCudfFlightSqlService {
                 Ok(plan) => plan,
                 Err(error) => {
                     let diagnostics = planning.native_rule.last_planning_diagnostics();
-                    log_native_planning_report(&query_id, diagnostics.as_ref().map(|diagnostics| &diagnostics.report));
+                    log_native_planning_report_for_tables(
+                        &query_id,
+                        diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
+                        &logical_plan_tables,
+                    );
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
                     self.observability.capture_planning_failure(
                         &query_id,
@@ -947,7 +953,11 @@ impl DatafusionCudfFlightSqlService {
             },
         };
         let diagnostics = planning.native_rule.last_planning_diagnostics();
-        log_native_planning_report(&query_id, diagnostics.as_ref().map(|diagnostics| &diagnostics.report));
+        log_native_planning_report_for_tables(
+            &query_id,
+            diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
+            &logical_plan_tables,
+        );
         self.observability.capture_planning(&query_id, diagnostics, Arc::clone(&plan));
         let native_execution_span =
             Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "native_execution");
@@ -1452,6 +1462,21 @@ fn datafusion_error_contains_message(error: &DataFusionError, needle: &str) -> b
             errors.iter().any(|error| datafusion_error_contains_message(error, needle))
         },
         _ => false,
+    }
+}
+
+fn referenced_table_names(plan: &LogicalPlan) -> String {
+    let mut tables = BTreeSet::new();
+    collect_referenced_table_names(plan, &mut tables);
+    tables.into_iter().collect::<Vec<_>>().join(",")
+}
+
+fn collect_referenced_table_names(plan: &LogicalPlan, tables: &mut BTreeSet<String>) {
+    if let LogicalPlan::TableScan(scan) = plan {
+        tables.insert(scan.table_name.to_string());
+    }
+    for input in plan.inputs() {
+        collect_referenced_table_names(input, tables);
     }
 }
 

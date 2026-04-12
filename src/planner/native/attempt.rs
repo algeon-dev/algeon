@@ -8,7 +8,7 @@ use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     datasource::source::DataSourceExec,
     logical_expr::JoinType,
-    physical_expr::{PhysicalExpr, ScalarFunctionExpr, expressions::BinaryExpr},
+    physical_expr::{EquivalenceProperties, PhysicalExpr, ScalarFunctionExpr, expressions::BinaryExpr},
     physical_plan::{
         ExecutionPlan,
         aggregates::AggregateExec,
@@ -155,6 +155,7 @@ pub(super) fn optimize_count_only_native_plan(
     let lowering = crate::native::lower_count_only_physical_plan_to_native(lowering_input);
     replace_lowered_root_or_keep_plan(
         plan,
+        None,
         lowering,
         native_execution_config,
         native_optimizer_options,
@@ -188,6 +189,7 @@ fn optimize_final_native_plan_with_composition(
     if lowering.plans.len() == 1 && lowering.rewritten_count() == 1 {
         let attempt = replace_lowered_root_or_keep_plan(
             Arc::clone(&plan),
+            None,
             lowering,
             native_execution_config,
             native_optimizer_options,
@@ -339,11 +341,13 @@ fn optimize_final_native_plan_with_composition(
 
 fn replace_lowered_root_or_keep_plan(
     plan: Arc<dyn ExecutionPlan>,
+    properties_plan: Option<Arc<dyn ExecutionPlan>>,
     lowering: crate::native::NativeLoweringResult,
     native_execution_config: &NativeCudfExecutionConfig,
     native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
+    let properties_plan = properties_plan.unwrap_or_else(|| Arc::clone(&plan));
     let mut lowering = lowering;
     stamp_planning_report_correlation(&mut lowering.report, native_execution_config);
     if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
@@ -368,6 +372,23 @@ fn replace_lowered_root_or_keep_plan(
     let optimizer_result = nexus_query_engine::optimize_query_plan(lowering.plans[0].clone(), &optimizer_options);
     let native_optimizer = optimizer_result.diagnostics;
     let native_plan = optimizer_result.plan;
+    if properties_plan.properties().output_ordering().is_some()
+        && !crate::native::native_plan_reproduces_declared_output_ordering(&native_plan)
+    {
+        return Ok(NativeOptimizationAttempt {
+            plan,
+            report: native_execution_rejection_report_for_candidate(
+                candidate.clone(),
+                FallbackReason::NativeOrderedOutputUnsupported,
+                &lowering.report,
+            ),
+            native_optimizer,
+            source_diagnostics: lowering.source_diagnostics,
+            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+            rewritten: false,
+        });
+    }
     if let nexus_query_engine::NativePlanPreferenceDecision::CpuPreferred { reason, .. } =
         nexus_query_engine::native_plan_preference_decision(&native_plan, native_plan_preference_options)
     {
@@ -404,8 +425,13 @@ fn replace_lowered_root_or_keep_plan(
             });
         }
 
-        let plan =
-            native_datafusion_exec_for_plan(Arc::clone(&plan), native_plan, native_execution_config, &candidate.shape)?;
+        let plan = native_datafusion_exec_for_plan(
+            Arc::clone(&plan),
+            native_plan,
+            native_execution_config,
+            &candidate.shape,
+            properties_plan.properties().equivalence_properties().clone(),
+        )?;
         return Ok(NativeOptimizationAttempt {
             plan,
             report: lowering.report,
@@ -440,8 +466,13 @@ fn replace_lowered_root_or_keep_plan(
 
     let datafusion_shape = candidate.shape.clone();
     let strict_bounded_contract = accepted_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?;
-    let plan =
-        native_datafusion_exec_for_plan(Arc::clone(&plan), native_plan, native_execution_config, &datafusion_shape)?;
+    let plan = native_datafusion_exec_for_plan(
+        Arc::clone(&plan),
+        native_plan,
+        native_execution_config,
+        &datafusion_shape,
+        properties_plan.properties().equivalence_properties().clone(),
+    )?;
     Ok(NativeOptimizationAttempt {
         plan,
         report: lowering.report,
@@ -484,20 +515,30 @@ fn native_datafusion_exec_for_plan(
     native_plan: nexus_query_engine::QueryPlan,
     native_execution_config: &NativeCudfExecutionConfig,
     datafusion_shape: &str,
+    eq_properties: EquivalenceProperties,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     let native_execution_config =
         native_execution_config.clone().with_plan_task_mapping_datafusion_shape(datafusion_shape);
     let gpu_input_names = native_plan_gpu_resident_source_names(&native_plan);
     if gpu_input_names.is_empty() {
-        return NativeCudfExec::try_new(native_plan, native_execution_config)
-            .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-            .map_err(DataFusionError::from);
+        return NativeCudfExec::try_new_with_equivalence_properties(
+            native_plan,
+            native_execution_config,
+            eq_properties,
+        )
+        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+        .map_err(DataFusionError::from);
     }
 
     let gpu_inputs = gpu_resident_producer_children(&original_plan, &gpu_input_names)?;
-    NativeCudfComposedExec::try_new(native_plan, gpu_inputs, native_execution_config)
-        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-        .map_err(DataFusionError::from)
+    NativeCudfComposedExec::try_new_with_equivalence_properties(
+        native_plan,
+        gpu_inputs,
+        native_execution_config,
+        eq_properties,
+    )
+    .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+    .map_err(DataFusionError::from)
 }
 
 fn native_plan_gpu_resident_source_names(plan: &nexus_query_engine::QueryPlan) -> BTreeSet<String> {
@@ -606,6 +647,7 @@ fn try_compose_host_remainder_over_native_fragments(
     let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&producerized_plan));
     let attempt = replace_lowered_root_or_keep_plan(
         producerized_plan,
+        Some(Arc::clone(&rewritten_plan)),
         lowering,
         native_execution_config,
         native_optimizer_options,

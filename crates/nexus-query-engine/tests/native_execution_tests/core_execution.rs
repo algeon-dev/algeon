@@ -910,6 +910,35 @@ fn native_query_executes_literal_batch_source_with_offset_only_limit() {
 }
 
 #[test]
+fn native_literal_batch_source_preserves_batch_order() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let first_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![10, 11]))]).unwrap();
+    let second_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![20, 21, 22]))]).unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(
+        Arc::clone(&schema),
+        vec![first_batch, second_batch],
+    )));
+    let plan = builder.finish_with_host_sink(source);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.input_batches, 2);
+    assert_eq!(metrics.input_rows, 5);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 5);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[10, 11, 20, 21, 22]);
+}
+
+#[test]
 fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column_type() {
     let dir = unique_temp_dir("nexus-query-engine-native-reader-float-integer-predicate");
     let path = dir.join("input.parquet");
@@ -1956,6 +1985,44 @@ fn native_query_executes_group_only_aggregate_when_output_key_name_already_exist
     assert_eq!(string_array(batch, 0).iter().collect::<Vec<_>>(), vec![Some("item_1"), Some("item_2")]);
     assert_eq!(string_array(batch, 1).iter().collect::<Vec<_>>(), vec![Some("desc_1"), Some("desc_2")]);
     assert_eq!(int32_array(batch, 2).values().as_ref(), &[10, 20]);
+}
+
+#[test]
+fn native_query_executes_multi_file_direct_parquet_source_in_file_order() {
+    let dir = unique_temp_dir("nexus-query-engine-native-execution-multi-file-order");
+    let first_path = dir.join("part-000.parquet");
+    let second_path = dir.join("part-001.parquet");
+    let third_path = dir.join("part-002.parquet");
+    let schema = write_i32_parquet_with_row_group_rows(&first_path, &[10, 11], 2);
+    write_i32_parquet_with_row_group_rows(&second_path, &[20, 21], 2);
+    write_i32_parquet_with_row_group_rows(&third_path, &[30], 1);
+
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&second_path).with_file_size_bytes(fs::metadata(&second_path).unwrap().len()),
+            LocalParquetFile::new(&first_path).with_file_size_bytes(fs::metadata(&first_path).unwrap().len()),
+            LocalParquetFile::new(&third_path).with_file_size_bytes(fs::metadata(&third_path).unwrap().len()),
+        ],
+        Arc::clone(&schema),
+        vec!["id".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().unwrap())).unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.parquet_files, 3);
+    assert_eq!(metrics.input_rows, 5);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 5);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[20, 21, 10, 11, 30]);
+
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

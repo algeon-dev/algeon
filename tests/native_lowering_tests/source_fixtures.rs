@@ -55,6 +55,41 @@ pub(super) fn parquet_scan_with_order_sensitive_limit_one_file_per_group(
     DataSourceExec::from_data_source(file_scan)
 }
 
+pub(super) fn parquet_scan_with_declared_output_ordering(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let ordering = declared_key_ordering(&scan.schema());
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_output_ordering(vec![ordering]).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
+pub(super) fn parquet_scan_with_declared_output_ordering_one_file_per_group(
+    path: &std::path::Path,
+) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let ordering = declared_key_ordering(&scan.schema());
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_groups = file_scan
+        .file_groups
+        .iter()
+        .flat_map(|group| group.files().iter().cloned().map(|file| FileGroup::new(vec![file])))
+        .collect();
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone())
+        .with_file_groups(file_groups)
+        .with_output_ordering(vec![ordering])
+        .build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
+fn declared_key_ordering(schema: &SchemaRef) -> LexOrdering {
+    LexOrdering::new([PhysicalSortExpr::new(col("key", schema).unwrap(), ArrowSortOptions::new(false, false))])
+        .expect("declared key ordering should be non-empty")
+}
+
 pub(super) fn parquet_scan_with_missing_nullable_column(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
     let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");

@@ -444,6 +444,32 @@ async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
 }
 
 #[tokio::test]
+async fn native_runtime_parquet_sorting_columns_scan_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-parquet-sorting-columns");
+    let path = dir.join("input.parquet");
+    write_sorting_columns_parquet_file(&path);
+
+    let cpu_plan = sql_plan(&path, SessionConfig::new(), "SELECT key, payload FROM bench LIMIT 3").await;
+    assert!(
+        cpu_plan.properties().output_ordering().is_some(),
+        "Parquet sorting_columns metadata should infer scan output ordering"
+    );
+    let cpu_batches =
+        collect(Arc::clone(&cpu_plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+    let native_plan =
+        native_datafusion_sql_plan(&path, "SELECT key, payload FROM bench LIMIT 3", native_datafusion_config()).await;
+    assert_native_cudf_exec(&native_plan, "sorting_columns scan should optimize to native exec");
+    assert_eq!(native_plan.properties().output_ordering(), cpu_plan.properties().output_ordering());
+
+    let native_batches =
+        collect(native_plan, Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+
+    assert_batches_equal(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_global_decimal_avg_matches_cpu() {
     let dir = unique_temp_dir("datafusion-nexus-native-runtime-global-decimal-avg");
     let path = dir.join("lineitem.parquet");

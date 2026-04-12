@@ -63,6 +63,16 @@ pub struct PlanningReport {
     outcomes: Vec<CandidateOutcome>,
 }
 
+/// Headline rejection caused by table layout metadata rather than unsupported
+/// query semantics.
+#[derive(Debug, Clone, Copy)]
+pub struct DataLayoutFixableRejection<'a> {
+    pub outcome_index: usize,
+    pub candidate: &'a GpuCandidate,
+    pub reason: FallbackReason,
+    pub property: &'static str,
+}
+
 impl PlanningReport {
     pub fn new() -> Self {
         Self::default()
@@ -154,6 +164,21 @@ impl PlanningReport {
         self.outcomes.iter().filter(|outcome| matches!(outcome, CandidateOutcome::Rejected { .. })).count()
     }
 
+    /// Returns the first data-layout-fixable rejection in discovery order.
+    pub fn data_layout_fixable_rejection(&self) -> Option<DataLayoutFixableRejection<'_>> {
+        self.outcomes.iter().enumerate().find_map(|(outcome_index, outcome)| {
+            let CandidateOutcome::Rejected { candidate, reason } = outcome else {
+                return None;
+            };
+            reason.data_layout_fixable_property().map(|property| DataLayoutFixableRejection {
+                outcome_index,
+                candidate,
+                reason: *reason,
+                property,
+            })
+        })
+    }
+
     /// Serializes this planning report as structured candidate-outcome JSON.
     pub fn to_json(&self) -> Value {
         json!({
@@ -161,10 +186,26 @@ impl PlanningReport {
             "query_id": self.query_id.as_ref().map(QueryId::as_str),
             "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
             "triage": self.triage_summary().to_json(),
+            "headline_facts": self.headline_facts_to_json(),
             "rewritten_count": self.rewritten_count(),
             "rejected_count": self.rejected_count(),
             "outcomes": self.outcomes.iter().map(CandidateOutcome::to_json).collect::<Vec<_>>(),
         })
+    }
+
+    fn headline_facts_to_json(&self) -> Value {
+        match self.data_layout_fixable_rejection() {
+            Some(rejection) => json!({
+                "data_layout_fixable_rejection": true,
+                "data_layout_fixable_reason_code": rejection.reason.code(),
+                "data_layout_fixable_property": rejection.property,
+                "data_layout_fixable_candidate_shape": rejection.candidate.shape.as_str(),
+                "data_layout_fixable_outcome_index": rejection.outcome_index,
+            }),
+            None => json!({
+                "data_layout_fixable_rejection": false,
+            }),
+        }
     }
 
     /// Builds a compact triage summary for native planning outcomes.

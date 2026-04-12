@@ -13,8 +13,9 @@ use nexus_query_engine::{
 };
 
 use super::{
-    NativeParquetColumnRequirements, native_parquet_file_reader_factory_is_supported,
-    native_preserve_order_scan_is_supported, partition_column_disposition, required_parquet_column_requirements,
+    NativeParquetColumnRequirements, native_declared_output_ordering_scan_is_supported,
+    native_parquet_file_reader_factory_is_supported, native_preserve_order_scan_is_supported,
+    partition_column_disposition, required_parquet_column_requirements,
 };
 use crate::native::{
     normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeSource},
@@ -206,14 +207,14 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     if !native_parquet_file_reader_factory_is_supported(parquet_source) {
         rejected_features.push(NativeRejectedSourceFeature::ParquetFileReaderFactory);
     }
-    let scan_limit_disposition = scan_limit_disposition(file_scan, &files);
+    let scan_limit_disposition = scan_limit_disposition(file_scan);
     if scan_limit_disposition == NativeScanLimitDisposition::Rejected {
         rejected_features.push(NativeRejectedSourceFeature::ScanLimit);
     }
     if !native_preserve_order_scan_is_supported(file_scan) {
         rejected_features.push(NativeRejectedSourceFeature::PreserveOrder);
     }
-    if !file_scan.output_ordering.is_empty() {
+    if !native_declared_output_ordering_scan_is_supported(file_scan) {
         rejected_features.push(NativeRejectedSourceFeature::OutputOrdering);
     }
     let predicate_disposition = parquet_predicate_disposition(parquet_source, filter, &source_schema, reader_pushdown);
@@ -235,7 +236,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
         && file_scan.expr_adapter_factory.is_none()
         && scan_limit_disposition != NativeScanLimitDisposition::Rejected
         && native_preserve_order_scan_is_supported(file_scan)
-        && file_scan.output_ordering.is_empty()
+        && native_declared_output_ordering_scan_is_supported(file_scan)
         && coalesced_files.is_ok();
     for file in &files {
         if partition_column_disposition == NativePartitionColumnDisposition::Rejected
@@ -245,9 +246,6 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
         }
         if file.range.is_some() && !ranges_are_safely_coalesced {
             rejected_features.push(NativeRejectedSourceFeature::ByteRange);
-        }
-        if file.ordering.is_some() {
-            rejected_features.push(NativeRejectedSourceFeature::FileOrdering);
         }
         if has_row_level_selection(file) {
             rejected_features.push(NativeRejectedSourceFeature::RowSelection);
@@ -284,16 +282,12 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     }
 }
 
-fn scan_limit_disposition(
-    file_scan: &FileScanConfig,
-    files: &[&datafusion::datasource::listing::PartitionedFile],
-) -> NativeScanLimitDisposition {
+fn scan_limit_disposition(file_scan: &FileScanConfig) -> NativeScanLimitDisposition {
     if file_scan.limit.is_none() {
         return NativeScanLimitDisposition::Absent;
     }
     if !native_preserve_order_scan_is_supported(file_scan)
-        || !file_scan.output_ordering.is_empty()
-        || files.iter().any(|file| file.ordering.is_some())
+        || !native_declared_output_ordering_scan_is_supported(file_scan)
     {
         NativeScanLimitDisposition::Rejected
     } else {
