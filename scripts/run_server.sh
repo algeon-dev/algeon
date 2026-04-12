@@ -37,7 +37,9 @@ fi
 # Server core
 # NEXUS_SERVER_BIND              host:port to listen on (default: 0.0.0.0:50051)
 # NEXUS_SERVER_LOG               tracing filter — "info", "debug", "warn,datafusion=info"
-# NEXUS_SERVER_MAX_IN_FLIGHT     max concurrent in-flight Flight SQL requests (default: 1)
+# NEXUS_SERVER_MAX_CONCURRENT_QUERIES
+#                                  max admitted statements (default: 2)
+# NEXUS_SERVER_MAX_IN_FLIGHT     compatibility alias for max admitted statements
 # NEXUS_SERVER_SESSION_PROFILE   "native" or "cpu_fallback" (default: native when
 #                                          Iceberg is configured, cpu_fallback otherwise).
 #                                          The native profile pins
@@ -57,7 +59,7 @@ fi
 # ---------------------------------------------------------------------------
 export NEXUS_SERVER_BIND="${NEXUS_SERVER_BIND:-0.0.0.0:50051}"
 export NEXUS_SERVER_LOG="${NEXUS_SERVER_LOG:-info}"
-export NEXUS_SERVER_MAX_IN_FLIGHT="${NEXUS_SERVER_MAX_IN_FLIGHT:-1}"
+export NEXUS_SERVER_MAX_CONCURRENT_QUERIES="${NEXUS_SERVER_MAX_CONCURRENT_QUERIES:-${NEXUS_SERVER_MAX_IN_FLIGHT:-2}}"
 # Iceberg presence already selects the native profile by default; leaving this
 # unset lets the server pick the right profile from the catalog wiring.
 # export NEXUS_SERVER_SESSION_PROFILE="native"

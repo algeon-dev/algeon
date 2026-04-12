@@ -19,21 +19,26 @@ datafusion = "54"
 datafusion-nexus = { version = "0.2", features = ["cugraph", "iceberg"] }
 ```
 
-Build a DataFusion `SessionContext` with the native cuDF optimizer rule and,
-when graph SQL is needed, the cuGraph table functions:
+For production-style embedded use, build one process-scoped `NexusGpuBackend`
+and install it on every `SessionStateBuilder` that should share GPU admission.
+The backend owns the native QueryService queue, device-memory governor, stream
+pools, and plan-scoped admission tickets.
 
 ```rust
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_nexus::{
-    CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphSqlConfig, GpuFallbackPolicy,
-};
+use datafusion_nexus::{CudfSessionStateBuilderExt, CugraphSqlConfig, GpuFallbackPolicy, NexusGpuBackend};
 
-async fn run() -> datafusion::error::Result<()> {
-    let state = SessionStateBuilder::new()
-        .with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
+async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let backend = NexusGpuBackend::builder()
+        .fallback_policy(GpuFallbackPolicy::GpuPreferred)
+        .build()?;
+    let cugraph = CugraphSqlConfig::default()
+        .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
+
+    let state = backend
+        .install_on(SessionStateBuilder::new().with_default_features())?
+        .with_cugraph_sql(cugraph)
         .build();
     let ctx = SessionContext::new_with_state(state);
 
@@ -52,9 +57,36 @@ async fn run() -> datafusion::error::Result<()> {
 unsupported CPU-readable fragments on stock DataFusion. Use `GpuOnly` when an
 unsupported native fragment should fail planning instead.
 
+`NexusGpuBackend::builder().build()` uses bounded device memory, two admitted
+queries, `grant_min = 1/8`, `grant_want = 1/2`, and
+`SlotGuarantee::GuaranteedMinimum` by default. Sessions installed from the same
+backend share one admission ledger, so concurrent embedded requests cannot each
+claim the full GPU budget independently.
+
 `CugraphSqlConfig::default()` registers every supported `cugraph_*` function.
 Use `CugraphSqlConfig::default().with_allowed_algorithms([...])` to narrow the
-SQL-visible graph surface for a service.
+SQL-visible graph surface for a service. When cuGraph is installed on a
+backend-managed session, attach
+`backend.optimizer_config().native_execution_config().clone()` to
+`CugraphSqlConfig` as shown above so graph execution shares the backend
+admission owner.
+
+For local single-query experiments, you can still install the raw optimizer rule
+directly:
+
+```rust
+use datafusion_nexus::{CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy};
+
+let state = SessionStateBuilder::new()
+    .with_default_features()
+    .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+    .build();
+```
+
+That direct path does not create a shared admission owner. If multiple
+`SessionContext`s or concurrent queries use independent bounded configs on the
+same GPU, each config has its own device budget. Use `NexusGpuBackend` whenever
+the embedding process can run more than one GPU query at a time.
 
 The same [discovery and validation functions](../cugraph/discovery-and-validation.mdx)
 work in-process: run `SELECT * FROM cugraph_list_algorithms()` or

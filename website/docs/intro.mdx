@@ -19,10 +19,10 @@ Parquet data.
 
 You can use it in two ways:
 
-- **As a DataFusion session** — embed it in your own backend service. Two builder
-  calls on a DataFusion `SessionStateBuilder` (`with_cudf_native` and, with the
-  `cugraph` feature, `with_cugraph_sql`) turn on GPU execution and graph SQL
-  for a session you already control.
+- **As a DataFusion session** — embed it in your own backend service.
+  `NexusGpuBackend` installs GPU execution on DataFusion sessions while sharing
+  one admission queue and GPU memory governor across concurrent requests. With
+  the `cugraph` feature, add `with_cugraph_sql` for graph algorithms.
 - **As a server** — run the built-in Arrow Flight SQL server and connect from
   your backend with the Apache Arrow ADBC Flight SQL driver. See
   [Integrating Nexus](./using/overview.mdx) to pick an integration surface or
