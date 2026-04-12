@@ -112,6 +112,7 @@ fn retry_after_chunk_error(
         && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
     {
         metrics.record_source_chunk_retry();
+        crate::exec::retry::backoff_before_retry(context, "nexus_query_engine.exec.bounded.source_chunk_split_retry")?;
         let mut partials = execute_bounded_chunk_retry_attempt(
             context,
             bounded,
@@ -261,6 +262,10 @@ fn execute_bounded_source_adjacent_chunk_batch_or_split(
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
+            crate::exec::retry::backoff_before_retry(
+                context,
+                "nexus_query_engine.exec.bounded.source_adjacent_chunk_batch_split_retry",
+            )?;
             let mut partials =
                 execute_bounded_source_adjacent_chunk_batch_or_split(context, bounded, left, reservations, metrics)?;
             match execute_bounded_source_adjacent_chunk_batch_or_split(context, bounded, right, reservations, metrics) {
@@ -1332,6 +1337,7 @@ fn try_read_local_parquet_chunk_with_corrected_budget_after_error(
     };
     record_chunk_retry_error(error, metrics);
     metrics.record_source_chunk_retry();
+    crate::exec::retry::backoff_before_retry(context, "nexus_query_engine.exec.bounded.source_chunk_budget_retry")?;
     let request = chunk_reservation_request(
         ReservationKind::SourceRead,
         memory_boundary,

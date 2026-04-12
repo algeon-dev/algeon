@@ -25,7 +25,9 @@ that stack, load the citation network, then run the server bound to localhost:
 
 ```bash
 docker compose -f fixture/iceberg-local/docker-compose.yml up -d
-fixture/scripts/fixture.sh iceberg rest load --workload citation_network
+fixture/scripts/fixture.sh iceberg rest load \
+  --workload citation_network \
+  --load-mode add-files
 
 NEXUS_SERVER_CUGRAPH_ENABLED=true \
 NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded \
@@ -57,6 +59,11 @@ non-zero `cugraph_allowed_algorithm_count`, and a workspace overlay backed by
 For the meaning of each server variable, see
 [Configuration](./configuration.mdx). For the tables used by the
 graph examples, see the [demo dataset](../cugraph/demo-dataset.mdx).
+
+Flight SQL accepts ordinary DataFusion `SET` statements through the update
+endpoint, but it rejects `SET datafusion_nexus.*`. DataFusion Nexus request
+policy for Flight workloads comes from server or tenant defaults rather than
+session-scoped SQL keys.
 
 ## Connect from application code with ADBC
 

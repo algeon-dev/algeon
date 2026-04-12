@@ -25,6 +25,7 @@ use nexus_query_engine::{
 use super::{
     admission::{QueryAdmissionFacts, QueryAdmissionSource, QueryAdmissionTicket, TicketTenantQueryContext},
     metrics::NativeMetricsCapture,
+    unbounded_native::UnboundedNativeExecutionLimiter,
 };
 use crate::error::Error;
 
@@ -62,6 +63,8 @@ pub struct NativeCudfExecutionConfig {
     query_admission_facts_recorded: Option<Arc<AtomicBool>>,
     query_admission_source: Option<QueryAdmissionSource>,
     query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
+    requested_grant_bytes: Option<u64>,
+    unbounded_native_execution_limiter: Option<UnboundedNativeExecutionLimiter>,
     query_id: Option<QueryId>,
     trace_id: Option<TraceId>,
     plan_task_mapping_datafusion_shape: Option<String>,
@@ -277,6 +280,8 @@ impl NativeCudfExecutionConfig {
             query_admission_facts_recorded: None,
             query_admission_source: None,
             query_admission_ticket: None,
+            requested_grant_bytes: None,
+            unbounded_native_execution_limiter: None,
             query_id: None,
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
@@ -384,6 +389,8 @@ impl NativeCudfExecutionConfig {
             query_admission_facts_recorded: None,
             query_admission_source: None,
             query_admission_ticket: None,
+            requested_grant_bytes: None,
+            unbounded_native_execution_limiter: None,
             query_id: None,
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
@@ -674,6 +681,28 @@ impl NativeCudfExecutionConfig {
         self.query_admission_facts_recorded = Some(Arc::new(AtomicBool::new(false)));
         self.query_admission_source = None;
         self.query_admission_ticket = None;
+        self.requested_grant_bytes = None;
+        self.unbounded_native_execution_limiter = None;
+        self
+    }
+
+    /// Set a request-scoped preferred query-service grant override.
+    ///
+    /// The value is validated by query-service admission when a plan ticket is
+    /// executed. It must be within the backend tenant grant band and device
+    /// capacity. `None` uses the backend default want.
+    pub fn with_requested_grant_bytes(mut self, requested_grant_bytes: Option<u64>) -> Self {
+        self.requested_grant_bytes = requested_grant_bytes;
+        self
+    }
+
+    /// Request-scoped preferred query-service grant override in bytes.
+    pub fn requested_grant_bytes(&self) -> Option<u64> {
+        self.requested_grant_bytes
+    }
+
+    pub(crate) fn with_unbounded_native_execution_limiter(mut self, limiter: UnboundedNativeExecutionLimiter) -> Self {
+        self.unbounded_native_execution_limiter = Some(limiter);
         self
     }
 
@@ -691,11 +720,12 @@ impl NativeCudfExecutionConfig {
             && self.query_admission_ticket.is_none()
             && let Some(source) = self.query_admission_source.clone()
         {
-            self.query_admission_ticket = Some(QueryAdmissionTicket::new(source));
+            self.query_admission_ticket = Some(QueryAdmissionTicket::new(source, self.requested_grant_bytes));
         }
         self
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn with_existing_query_admission_ticket(mut self, ticket: Arc<QueryAdmissionTicket>) -> Self {
         if self.query_service_handle.is_none() {
             self.query_admission_ticket = Some(ticket);
@@ -712,6 +742,15 @@ impl NativeCudfExecutionConfig {
         self.query_admission_ticket.as_ref().map(Arc::clone)
     }
 
+    pub(crate) fn unbounded_native_execution_limiter(&self) -> Option<UnboundedNativeExecutionLimiter> {
+        self.unbounded_native_execution_limiter.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unbounded_native_max_concurrent_queries(&self) -> Option<std::num::NonZeroUsize> {
+        self.unbounded_native_execution_limiter.as_ref().map(UnboundedNativeExecutionLimiter::max_concurrent_queries)
+    }
+
     /// Returns whether execution is bound to a QueryService admission handle.
     pub(crate) fn has_query_service_handle(&self) -> bool {
         self.query_service_handle.is_some()
@@ -721,6 +760,17 @@ impl NativeCudfExecutionConfig {
         self.query_service_handle.is_some()
             || self.query_admission_source.is_some()
             || self.query_admission_ticket.is_some()
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn query_admission_source_matches(
+        &self,
+        service: &nexus_query_engine::QueryService,
+        tenant_id: &nexus_query_engine::TenantId,
+    ) -> bool {
+        self.query_admission_source
+            .as_ref()
+            .is_some_and(|source| source.service_matches(service) && source.tenant_id() == tenant_id)
     }
 
     #[cfg(feature = "cugraph")]
@@ -1188,6 +1238,40 @@ mod tests {
 
         assert_eq!(config.query_admission_ticket_id(), cloned.query_admission_ticket_id());
         assert_ne!(config.query_admission_ticket_id(), separate_plan.query_admission_ticket_id());
+    }
+
+    #[test]
+    fn query_service_handle_clears_plan_admission_source_to_prevent_double_admission() {
+        let tenant_id = TenantId::new("tenant");
+        let deployment = DeploymentIoCapability::from_probe_inputs(
+            NvidiaFsProbeStatus::DriverMissing,
+            KvikioCompatModeStatus::Unset,
+            GdsDriverProbeStatus::ProbeUnimplemented,
+        );
+        let service = QueryService::new_admission_only(
+            QueryServiceConfig { max_concurrent_queries: 1, ..QueryServiceConfig::default() },
+            vec![QueryServiceTenantConfig::new(tenant_id.clone(), 1024 * 1024)],
+            deployment,
+        )
+        .unwrap();
+        let source = QueryAdmissionSource::new(service.clone(), tenant_id.clone());
+        let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+            .with_query_admission_source(source)
+            .with_plan_query_admission_ticket();
+        let handle = Arc::new(service.try_admit_query(tenant_id.clone()).unwrap().expect("query should admit"));
+
+        let snapshot = service.admission_snapshot().unwrap();
+        assert_eq!(snapshot.active_queries, 1);
+        assert_eq!(snapshot.queued_queries, 0);
+        let config = base.with_query_service_handle(handle);
+
+        assert!(config.has_query_service_handle());
+        assert!(config.query_admission_source.is_none());
+        assert!(config.query_admission_ticket().is_none());
+        let snapshot = service.admission_snapshot().unwrap();
+        assert_eq!(snapshot.active_queries, 1);
+        assert_eq!(snapshot.queued_queries, 0);
+        assert!(service.try_admit_query(tenant_id).unwrap().is_none());
     }
 
     #[test]

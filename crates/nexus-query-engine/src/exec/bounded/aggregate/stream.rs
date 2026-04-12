@@ -709,6 +709,10 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
     };
     if should_split_compiled_aggregate_stream_frame(&input, upper_bound_bytes, retry_budget, reservations) {
         metrics.record_retry_reservation_failure();
+        crate::exec::retry::backoff_before_retry(
+            context,
+            "nexus_query_engine.exec.bounded.compiled_aggregate_stream_frame_retry",
+        )?;
         let (left, right) = split_compiled_aggregate_stream_frame(context, node_id, input, reservations, metrics)?;
         let mut partials = match execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
             context,

@@ -3,7 +3,9 @@
 //! The Flight SQL server owns durable process config, but embedded DataFusion
 //! sessions need a DataFusion-native way to discover and override native query
 //! policy. This module provides the `datafusion_nexus.native.*` namespace used
-//! by `SessionConfig::set_str` and SQL `SET`.
+//! by `SessionConfig::set_str` and SQL `SET`, plus the request-scoped
+//! `datafusion_nexus.request.*` namespace read by the optimizer when it mints a
+//! plan ticket.
 
 use std::{any::Any, fmt};
 
@@ -16,7 +18,7 @@ use nexus_query_engine::{
     StatisticalAggregateExecutionMode,
 };
 
-use crate::{CudfOptimizerConfig, NativeCudfExecutionConfig};
+use crate::{CudfOptimizerConfig, Error, ErrorCode, NativeCudfExecutionConfig};
 
 /// DataFusion config-extension namespace prefix for datafusion-nexus options.
 pub const DATAFUSION_NEXUS_CONFIG_PREFIX: &str = "datafusion_nexus";
@@ -30,6 +32,7 @@ const NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY: &str = "native.max_source_reads_in_
 const NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY: &str = "native.source_chunk_planning_mode";
 const NATIVE_PIPELINE_EXECUTION_MODE_KEY: &str = "native.pipeline_execution_mode";
 const NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY: &str = "native.statistical_aggregate_execution_mode";
+const REQUEST_REQUESTED_GRANT_BYTES_KEY: &str = "request.requested_grant_bytes";
 
 /// Discoverable metadata for one `datafusion_nexus.native.*` session option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +122,12 @@ pub const DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS: &[DataFusionNexusSessionConfi
         bounded_only: false,
         description: "Floating statistical aggregate execution contract.",
     },
+    DataFusionNexusSessionConfigOption {
+        key: REQUEST_REQUESTED_GRANT_BYTES_KEY,
+        value_type: "positive integer bytes or none",
+        bounded_only: false,
+        description: "Request-scoped preferred query-service grant override for the next optimized native plan.",
+    },
 ];
 
 /// Native memory-control policy label used by the DataFusion config extension.
@@ -175,6 +184,8 @@ pub struct DataFusionNexusSessionConfig {
     pub native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Floating statistical aggregate execution contract.
     pub native_statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    /// Request-scoped preferred query-service grant override in bytes.
+    pub request_requested_grant_bytes: Option<u64>,
     authority: DataFusionNexusSessionConfigAuthority,
 }
 
@@ -238,6 +249,7 @@ impl DataFusionNexusSessionConfig {
             native_source_chunk_planning_mode: execution.source_chunk_planning_mode(),
             native_pipeline_execution_mode: execution.native_pipeline_execution_mode(),
             native_statistical_aggregate_execution_mode: execution.statistical_aggregate_execution_mode(),
+            request_requested_grant_bytes: execution.requested_grant_bytes(),
             authority: DataFusionNexusSessionConfigAuthority::SessionMutable,
         }
     }
@@ -332,6 +344,7 @@ impl DataFusionNexusSessionConfig {
         };
         execution =
             execution.with_statistical_aggregate_execution_mode(self.native_statistical_aggregate_execution_mode);
+        execution = execution.with_requested_grant_bytes(self.request_requested_grant_bytes);
         Ok(base.with_native_execution_config(execution))
     }
 
@@ -375,6 +388,9 @@ impl DataFusionNexusSessionConfig {
             NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY => {
                 self.native_statistical_aggregate_execution_mode.to_string()
             },
+            REQUEST_REQUESTED_GRANT_BYTES_KEY => {
+                self.request_requested_grant_bytes.map_or_else(|| "none".to_string(), |value| value.to_string())
+            },
             _ => unreachable!("unknown datafusion-nexus session config key: {key}"),
         }
     }
@@ -404,43 +420,57 @@ impl ExtensionOptions for DataFusionNexusSessionConfig {
     }
 
     fn set(&mut self, key: &str, value: &str) -> DataFusionResult<()> {
-        self.reject_backend_admission_key(key)?;
         match key {
-            NATIVE_MEMORY_POLICY_KEY => self.native_memory_policy = parse_native_memory_policy(value)?,
+            NATIVE_MEMORY_POLICY_KEY => {
+                self.reject_backend_admission_key(key)?;
+                self.native_memory_policy = parse_native_memory_policy(value)?;
+            },
             NATIVE_DEVICE_BUDGET_BYTES_KEY => {
+                self.reject_backend_admission_key(key)?;
                 self.reject_bounded_key_when_unbounded(key)?;
                 self.native_device_budget_bytes = parse_positive_u64(key, value)?;
             },
             NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY => {
+                self.reject_backend_admission_key(key)?;
                 self.reject_bounded_key_when_unbounded(key)?;
                 self.native_max_source_chunk_bytes = parse_positive_u64(key, value)?;
             },
             NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY => {
+                self.reject_backend_admission_key(key)?;
                 self.reject_bounded_key_when_unbounded(key)?;
                 self.native_max_row_groups_per_chunk = parse_positive_usize(key, value)?;
             },
             NATIVE_MAX_RETRY_ATTEMPTS_KEY => {
+                self.reject_backend_admission_key(key)?;
                 self.reject_bounded_key_when_unbounded(key)?;
                 self.native_max_retry_attempts = parse_positive_usize(key, value)?;
             },
             NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY => {
+                self.reject_backend_admission_key(key)?;
                 self.reject_bounded_key_when_unbounded(key)?;
                 self.native_min_retry_chunk_row_groups = parse_positive_usize(key, value)?;
             },
             NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY => {
+                self.reject_backend_admission_key(key)?;
                 self.reject_bounded_key_when_unbounded(key)?;
                 self.native_max_source_reads_in_flight = parse_positive_usize(key, value)?;
             },
             NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY => {
+                self.reject_backend_admission_key(key)?;
                 self.reject_bounded_key_when_unbounded(key)?;
                 self.native_source_chunk_planning_mode = parse_source_chunk_planning_mode(value)?;
             },
             NATIVE_PIPELINE_EXECUTION_MODE_KEY => {
+                self.reject_backend_admission_key(key)?;
                 self.reject_bounded_key_when_unbounded(key)?;
                 self.native_pipeline_execution_mode = parse_native_pipeline_execution_mode(value)?;
             },
             NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY => {
+                self.reject_backend_admission_key(key)?;
                 self.native_statistical_aggregate_execution_mode = parse_statistical_aggregate_execution_mode(value)?
+            },
+            REQUEST_REQUESTED_GRANT_BYTES_KEY => {
+                self.request_requested_grant_bytes = parse_optional_positive_u64(key, value)?;
             },
             _ => return Err(config_error(format!("Config value \"{key}\" not found on DataFusionNexusSessionConfig"))),
         }
@@ -469,13 +499,14 @@ pub fn optimizer_config_with_datafusion_options(
         // QueryService admission is the authority for bounded server/query execution.
         if let Some(session_config) = options.extensions.get::<DataFusionNexusSessionConfig>() {
             session_config.validate_matches_optimizer_config(config)?;
+            reject_request_grant_for_pre_admitted_query_handle(session_config)?;
         }
         return Ok(config.clone());
     }
     match options.extensions.get::<DataFusionNexusSessionConfig>() {
         Some(session_config) if session_config.is_backend_admission_frozen() => {
             session_config.validate_backend_admission_matches(config)?;
-            Ok(config.clone())
+            Ok(apply_request_options(config.clone(), session_config))
         },
         Some(session_config) => {
             if config.native_execution_config().has_query_admission_authority() {
@@ -483,13 +514,24 @@ pub fn optimizer_config_with_datafusion_options(
                     return Err(backend_admission_session_config_not_frozen_error());
                 }
                 session_config.validate_backend_admission_matches(config)?;
-                Ok(config.clone())
+                Ok(apply_request_options(config.clone(), session_config))
             } else {
                 session_config.apply_to_optimizer_config(config.clone())
             }
         },
         None => Ok(config.clone()),
     }
+}
+
+fn apply_request_options(
+    config: CudfOptimizerConfig,
+    session_config: &DataFusionNexusSessionConfig,
+) -> CudfOptimizerConfig {
+    let execution_config = config
+        .native_execution_config()
+        .clone()
+        .with_requested_grant_bytes(session_config.request_requested_grant_bytes);
+    config.with_native_execution_config(execution_config)
 }
 
 fn parse_native_memory_policy(value: &str) -> DataFusionResult<NativeMemoryPolicyConfig> {
@@ -533,6 +575,13 @@ fn parse_positive_u64(key: &str, value: &str) -> DataFusionResult<u64> {
     Ok(parsed)
 }
 
+fn parse_optional_positive_u64(key: &str, value: &str) -> DataFusionResult<Option<u64>> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "none" | "null" | "default" => Ok(None),
+        _ => parse_positive_u64(key, value).map(Some),
+    }
+}
+
 fn parse_positive_usize(key: &str, value: &str) -> DataFusionResult<usize> {
     let parsed =
         value.trim().parse::<usize>().map_err(|error| config_error(format!("{key} must be an integer: {error}")))?;
@@ -566,4 +615,95 @@ fn frozen_backend_config_error(key: &str) -> DataFusionError {
 
 fn backend_admission_session_config_not_frozen_error() -> DataFusionError {
     config_error("datafusion_nexus native session config must be frozen when query-service admission is authoritative")
+}
+
+fn reject_request_grant_for_pre_admitted_query_handle(
+    session_config: &DataFusionNexusSessionConfig,
+) -> DataFusionResult<()> {
+    let Some(requested_grant_bytes) = session_config.request_requested_grant_bytes else {
+        return Ok(());
+    };
+    Err(Error::new(
+        ErrorCode::InvalidRequest,
+        "datafusion_nexus.session_config.request_grant",
+        "datafusion_nexus.request.requested_grant_bytes cannot apply to a pre-admitted query-service handle whose grant was fixed at admission",
+    )
+    .with_fact("reason", "request_grant_pre_admitted_query_handle")
+    .with_fact("config_key", format!("{DATAFUSION_NEXUS_CONFIG_PREFIX}.{REQUEST_REQUESTED_GRANT_BYTES_KEY}"))
+    .with_fact("requested_grant_bytes", requested_grant_bytes)
+    .into())
+}
+
+#[cfg(test)]
+mod tests {
+    use nexus_query_engine::{
+        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
+        QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+    };
+
+    use super::*;
+    use crate::{GpuFallbackPolicy, native_exec::QueryAdmissionSource};
+
+    fn nongds_deployment() -> DeploymentIoCapability {
+        DeploymentIoCapability::from_probe_inputs(
+            NvidiaFsProbeStatus::DriverMissing,
+            KvikioCompatModeStatus::Unset,
+            GdsDriverProbeStatus::ProbeUnimplemented,
+        )
+    }
+
+    #[test]
+    fn request_key_is_mutable_when_backend_admission_config_is_frozen() {
+        let base = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+        let mut session_config =
+            DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
+
+        let native_error = session_config.set(NATIVE_DEVICE_BUDGET_BYTES_KEY, "2048").unwrap_err();
+        assert!(native_error.to_string().contains("native.device_budget_bytes"));
+
+        session_config.set(REQUEST_REQUESTED_GRANT_BYTES_KEY, "1536").unwrap();
+        assert_eq!(session_config.request_requested_grant_bytes, Some(1536));
+
+        session_config.set(REQUEST_REQUESTED_GRANT_BYTES_KEY, "default").unwrap();
+        assert_eq!(session_config.request_requested_grant_bytes, None);
+    }
+
+    #[test]
+    fn request_key_applies_to_backend_frozen_optimizer_config() {
+        let tenant_id = TenantId::new("tenant");
+        let service = QueryService::new_admission_only(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(2048),
+                max_concurrent_queries: 1,
+                max_admission_queue_len: 1,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), 512, 2048)],
+            nongds_deployment(),
+        )
+        .unwrap();
+        let execution_config = NativeCudfExecutionConfig::bounded(512, 512, 1, 3, 1)
+            .with_query_admission_source(QueryAdmissionSource::new(service, tenant_id));
+        let base =
+            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(execution_config);
+        let mut session_config =
+            DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
+        session_config.set(REQUEST_REQUESTED_GRANT_BYTES_KEY, "1024").unwrap();
+        let mut options = ConfigOptions::default();
+        options.extensions.insert(session_config);
+
+        let effective = optimizer_config_with_datafusion_options(&base, &options).unwrap();
+
+        assert_eq!(effective.native_execution_config().requested_grant_bytes(), Some(1024));
+        assert_eq!(
+            effective.native_execution_config().memory_control_policy(),
+            MemoryControlPolicy::Bounded {
+                device_budget_bytes: 512,
+                max_source_chunk_bytes: 512,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            }
+        );
+    }
 }

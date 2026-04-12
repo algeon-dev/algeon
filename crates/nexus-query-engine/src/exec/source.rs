@@ -492,7 +492,6 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
         .with_row_group_facts(chunk)
     })?;
     let token = context
-        .runtime()
         .execution_budget_token(ExecutionBudgetRequest::new(budget_bytes).with_boundary(budget_boundary))
         .map_err(|error| {
             cudf_error_for_chunk_with_budget_details(
@@ -702,7 +701,6 @@ pub(super) fn read_local_parquet_chunk_batch(
         .with_fact("budget_bytes", budget_bytes)
     })?;
     let token = context
-        .runtime()
         .execution_budget_token(ExecutionBudgetRequest::new(budget_bytes).with_boundary(budget_boundary))
         .map_err(|error| {
             QueryError::from_cudf_with_budget_details(

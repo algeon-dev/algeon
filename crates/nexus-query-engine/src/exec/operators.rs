@@ -19,21 +19,20 @@ pub(super) fn execution_budget_token_for_boundary(
             .with_fact("budget_boundary", budget_boundary)
             .with_fact("budget_bytes", budget_bytes)
     })?;
-    context
-        .runtime()
-        .execution_budget_token(ExecutionBudgetRequest::new(budget).with_boundary(budget_boundary))
-        .map_err(|error| {
+    context.execution_budget_token(ExecutionBudgetRequest::new(budget).with_boundary(budget_boundary)).map_err(
+        |error| {
             QueryError::from_cudf_with_budget_details(operation, message, error)
                 .with_fact_if_absent("budget_boundary", budget_boundary)
                 .with_fact_if_absent("budget_bytes", budget_bytes)
-        })
+        },
+    )
 }
 
 pub(super) fn attach_budget_token_failure_facts(error: QueryError, token: &ExecutionBudgetToken) -> QueryError {
     error
         .with_fact_if_absent("budget_boundary", token.request().boundary())
         .with_fact_if_absent("budget_bytes", token.request().budget_bytes())
-        .with_fact_if_absent("budget_enforcement", ExecutionBudgetEnforcement::StreamBoundReservation.as_str())
+        .with_fact_if_absent("budget_enforcement", token.enforcement().as_str())
         .with_fact_if_absent("budget_status", "exceeded_or_lower_layer_rejected")
 }
 

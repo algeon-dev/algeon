@@ -78,8 +78,9 @@ impl UpdateStatementKind {
 /// Flight SQL splits statement execution across RPCs: `GetFlightInfo` plans
 /// enough to return schema and ticket bytes, while `DoGet` later consumes the
 /// ticket and runs the query. This record keeps the per-execution state that
-/// must survive that gap: admission ownership, cancellation handle,
-/// correlation id, and prepared-statement dedup context.
+/// must survive that gap: cancellation handle, correlation id, and
+/// prepared-statement dedup context. GPU admission is plan-scoped and lazy; it
+/// is not owned by the Flight SQL statement ticket.
 #[derive(Debug)]
 pub(super) struct StatementTicket {
     pub(super) query_id: String,
@@ -94,7 +95,6 @@ pub(super) struct StatementTicket {
     pub(super) native_cancellation: ExecutionCancellation,
     pub(super) started_at: Instant,
     pub(super) issued_at: Instant,
-    pub(super) _permit: QueryAdmissionPermit,
 }
 
 /// Owns the resources that must live exactly as long as a lazy DoGet stream.
@@ -112,7 +112,6 @@ pub(super) struct QueryExecutionGuard {
     pub(super) native_cancellation: ExecutionCancellation,
     pub(super) native_cancel_bridge: tokio::task::JoinHandle<()>,
     pub(super) shutdown_token: CancellationToken,
-    pub(super) _permit: QueryAdmissionPermit,
     pub(super) lifecycle: Arc<QueryLifecycle>,
 }
 

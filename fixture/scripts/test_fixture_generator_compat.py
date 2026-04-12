@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Compatibility tests for the public TPC-H/TPC-DS fixture entrypoints.
+"""Compatibility tests for the public fixture entrypoints.
 
 The tests use /bin/true and /bin/false as generator backends so they validate
-argument routing, legacy defaults, and verification behavior without generating
-large benchmark datasets.
+argument routing, defaults, and verification behavior without generating large
+benchmark datasets.
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_SH = REPO_ROOT / "fixture" / "scripts" / "fixture.sh"
 GEN_TPCH = REPO_ROOT / "fixture" / "scripts" / "gen_tpch.py"
 GEN_TPCDS = REPO_ROOT / "fixture" / "scripts" / "gen_tpcds.py"
-LEGACY_TPCH = REPO_ROOT / "fixture" / "scripts" / "workloads" / "tpch" / "generate.sh"
-LEGACY_TPCDS = REPO_ROOT / "fixture" / "scripts" / "workloads" / "tpcds" / "generate.sh"
+SPARK_WRITE_ICEBERG = REPO_ROOT / "fixture" / "iceberg-local" / "spark_write_iceberg.py"
+TPC_PARQUET_LAYOUT = REPO_ROOT / "fixture" / "scripts" / "tpc_parquet_layout.py"
 
 
 def run_cmd(args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -45,89 +45,125 @@ def load_script_module(name: str, path: Path) -> ModuleType:
     if spec is None or spec.loader is None:
         raise AssertionError(f"unable to load module from {path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
+def fake_tpcgen_root(root: Path, backend: str) -> Path:
+    tpcgen_root = root / f"fake_tpcgen_{Path(backend).name}"
+    bin_dir = tpcgen_root / "target" / "release"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "tpcgen-cli").symlink_to(backend)
+    return tpcgen_root
+
+
+class FakeRow:
+    def __init__(self, **values: object) -> None:
+        self._values = values
+        for key, value in values.items():
+            setattr(self, key, value)
+
+    def __getitem__(self, index: int) -> object:
+        return list(self._values.values())[index]
+
+    def __repr__(self) -> str:
+        return f"FakeRow({self._values!r})"
+
+
+class FakeResult:
+    def __init__(self, rows: list[FakeRow] | None = None) -> None:
+        self._rows = rows or []
+
+    def collect(self) -> list[FakeRow]:
+        return self._rows
+
+
+class FakeSpark:
+    def __init__(self, *, existing: bool = False, file_count: int = 0, fail_on_add_files: bool = False) -> None:
+        self.existing = existing
+        self.file_count = file_count
+        self.fail_on_add_files = fail_on_add_files
+        self.sql_calls: list[str] = []
+
+    def sql(self, query: str) -> FakeResult:
+        self.sql_calls.append(query)
+        if query.startswith("SHOW TABLES"):
+            rows = [FakeRow(tableName="papers")] if self.existing else []
+            return FakeResult(rows)
+        if ".files" in query and "COUNT(*)" in query:
+            return FakeResult([FakeRow(file_count=self.file_count)])
+        if "CALL lake.system.add_files" in query:
+            if self.fail_on_add_files:
+                raise RuntimeError("add_files failed")
+            return FakeResult([FakeRow(added_files_count=1)])
+        if "COUNT(*) AS row_count" in query:
+            return FakeResult([FakeRow(row_count=4894081)])
+        return FakeResult()
+
+
 class FixtureGeneratorCompatibilityTests(unittest.TestCase):
     def test_generators_default_to_repo_sf1_roots(self) -> None:
-        tpch = load_script_module("gen_tpch_under_test", GEN_TPCH)
-        tpcds = load_script_module("gen_tpcds_under_test", GEN_TPCDS)
+        layout = load_script_module("tpc_parquet_layout_under_test", TPC_PARQUET_LAYOUT)
 
-        tpch_args = tpch.parse_args([])
-        tpcds_args = tpcds.parse_args([])
+        scales = layout.parse_scales(None)
 
-        self.assertEqual(tpch_args.out_root, REPO_ROOT / "fixture" / "data" / "tpch")
-        self.assertEqual(tpcds_args.out_root, REPO_ROOT / "fixture" / "data" / "tpcds")
-        self.assertEqual(tpch_args.scale or tpch_args.positional_scale or ["1"], ["1"])
-        self.assertEqual(tpcds_args.scale or tpcds_args.positional_scale or ["1"], ["1"])
+        self.assertEqual(scales, [1.0])
+        self.assertEqual(
+            layout.resolve_output_dir(workload="tpch", scale=scales[0], out=None, out_root=None),
+            REPO_ROOT / "fixture" / "data" / "tpch" / "sf1" / "parquet",
+        )
+        self.assertEqual(
+            layout.resolve_output_dir(workload="tpcds", scale=scales[0], out=None, out_root=None),
+            REPO_ROOT / "fixture" / "data" / "tpcds" / "sf1" / "parquet",
+        )
 
-    def test_legacy_workload_wrappers_generate_raw_without_verification_dependency(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="nexus_fixture_compat.") as tmp:
-            root = Path(tmp)
-
-            tpch = run_cmd(
-                [
-                    str(LEGACY_TPCH),
-                    "--scale",
-                    "sf1",
-                    "--out",
-                    str(root / "tpch_out"),
-                    "--tpchgen-bin",
-                    "/bin/true",
-                ]
-            )
-            self.assertEqual(tpch.returncode, 0, tpch.stderr)
-            self.assertIn("generating raw sf1", tpch.stdout)
-
-            tpcds = run_cmd(
-                [
-                    str(LEGACY_TPCDS),
-                    "sf1",
-                    "--out",
-                    str(root / "tpcds_out"),
-                    "--duckdb",
-                    "/bin/true",
-                ]
-            )
-            self.assertEqual(tpcds.returncode, 0, tpcds.stderr)
-            self.assertIn("generating sf1 (raw)", tpcds.stdout)
-
-    def test_fixture_router_legacy_calls_generate_raw_without_verification_dependency(self) -> None:
+    def test_fixture_router_calls_generate_raw_without_verification_dependency(self) -> None:
         with tempfile.TemporaryDirectory(prefix="nexus_fixture_router.") as tmp:
             root = Path(tmp)
+            true_root = fake_tpcgen_root(root, "/bin/true")
             tpch = run_cmd(
                 [
                     str(FIXTURE_SH),
                     "tpch",
                     "generate",
+                    "--scale",
                     "sf1",
                     "--out",
                     str(root / "router_tpch"),
-                    "--tpchgen-bin",
-                    "/bin/true",
+                    "--variant",
+                    "raw",
+                    "--tpchgen-root",
+                    str(true_root),
+                    "--no-verify",
                 ]
             )
             self.assertEqual(tpch.returncode, 0, tpch.stderr)
-            self.assertIn("generating raw sf1", tpch.stdout)
+            self.assertIn("tpch parquet", tpch.stderr)
 
             tpcds = run_cmd(
                 [
                     str(FIXTURE_SH),
                     "tpcds",
                     "generate",
+                    "--scale",
                     "sf1",
                     "--out",
                     str(root / "router_tpcds"),
-                    "--duckdb",
-                    "/bin/true",
+                    "--variant",
+                    "raw",
+                    "--tpchgen-root",
+                    str(true_root),
+                    "--no-verify",
                 ]
             )
             self.assertEqual(tpcds.returncode, 0, tpcds.stderr)
-            self.assertIn("generating sf1 (raw)", tpcds.stdout)
+            self.assertIn("tpcds parquet", tpcds.stderr)
 
-    def test_force_env_preserves_legacy_overwrite_behavior(self) -> None:
+    def test_force_flag_preserves_overwrite_behavior(self) -> None:
         with tempfile.TemporaryDirectory(prefix="nexus_fixture_force.") as tmp:
+            root = Path(tmp)
+            true_root = fake_tpcgen_root(root, "/bin/true")
             out_dir = Path(tmp) / "tpch_force"
             out_dir.mkdir()
             stale = out_dir / "stale.parquet"
@@ -135,13 +171,18 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
 
             result = run_cmd(
                 [
-                    str(LEGACY_TPCH),
+                    str(FIXTURE_SH),
+                    "tpch",
+                    "generate",
                     "--out",
                     str(out_dir),
-                    "--tpchgen-bin",
-                    "/bin/true",
-                ],
-                env={"FORCE": "1"},
+                    "--variant",
+                    "raw",
+                    "--tpchgen-root",
+                    str(true_root),
+                    "--no-verify",
+                    "--force",
+                ]
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(stale.exists())
@@ -149,6 +190,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
     def test_new_generator_entrypoints_remain_strict_by_default(self) -> None:
         with tempfile.TemporaryDirectory(prefix="nexus_fixture_strict.") as tmp:
             root = Path(tmp)
+            true_root = fake_tpcgen_root(root, "/bin/true")
 
             tpch = run_cmd(
                 [
@@ -160,8 +202,8 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
                     "raw",
                     "--out-root",
                     str(root / "tpch"),
-                    "--tpchgen-bin",
-                    "/bin/true",
+                    "--tpchgen-root",
+                    str(true_root),
                 ]
             )
             self.assertNotEqual(tpch.returncode, 0)
@@ -176,8 +218,8 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
                     "raw",
                     "--out-root",
                     str(root / "tpcds"),
-                    "--duckdb",
-                    "/bin/true",
+                    "--tpchgen-root",
+                    str(true_root),
                 ]
             )
             self.assertNotEqual(tpcds.returncode, 0)
@@ -185,6 +227,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
     def test_new_optimized_variant_reaches_backend_with_out_root(self) -> None:
         with tempfile.TemporaryDirectory(prefix="nexus_fixture_optimized.") as tmp:
             root = Path(tmp)
+            false_root = fake_tpcgen_root(root, "/bin/false")
 
             tpch = run_cmd(
                 [
@@ -196,13 +239,13 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
                     "optimized",
                     "--out-root",
                     str(root / "tpch"),
-                    "--tpchgen-bin",
-                    "/bin/false",
+                    "--tpchgen-root",
+                    str(false_root),
                     "--no-verify",
                 ]
             )
             self.assertNotEqual(tpch.returncode, 0)
-            self.assertIn("generating optimized sf1", tpch.stdout)
+            self.assertIn("tpch parquet", tpch.stderr)
 
             tpcds = run_cmd(
                 [
@@ -214,17 +257,18 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
                     "optimized",
                     "--out-root",
                     str(root / "tpcds"),
-                    "--duckdb",
-                    "/bin/false",
+                    "--tpchgen-root",
+                    str(false_root),
                     "--no-verify",
                 ]
             )
             self.assertNotEqual(tpcds.returncode, 0)
-            self.assertIn("generating sf1 (optimized)", tpcds.stdout)
+            self.assertIn("tpcds parquet", tpcds.stderr)
 
     def test_fixture_router_new_optimized_variant_reaches_backend_with_out_root(self) -> None:
         with tempfile.TemporaryDirectory(prefix="nexus_fixture_router_optimized.") as tmp:
             root = Path(tmp)
+            false_root = fake_tpcgen_root(root, "/bin/false")
 
             tpch = run_cmd(
                 [
@@ -237,13 +281,13 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
                     "optimized",
                     "--out-root",
                     str(root / "tpch"),
-                    "--tpchgen-bin",
-                    "/bin/false",
+                    "--tpchgen-root",
+                    str(false_root),
                     "--no-verify",
                 ]
             )
             self.assertNotEqual(tpch.returncode, 0)
-            self.assertIn("generating optimized sf1", tpch.stdout)
+            self.assertIn("tpch parquet", tpch.stderr)
 
             tpcds = run_cmd(
                 [
@@ -256,13 +300,171 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
                     "optimized",
                     "--out-root",
                     str(root / "tpcds"),
-                    "--duckdb",
-                    "/bin/false",
+                    "--tpchgen-root",
+                    str(false_root),
                     "--no-verify",
                 ]
             )
             self.assertNotEqual(tpcds.returncode, 0)
-            self.assertIn("generating sf1 (optimized)", tpcds.stdout)
+            self.assertIn("tpcds parquet", tpcds.stderr)
+
+    def test_iceberg_rest_loader_help_includes_add_files_mode(self) -> None:
+        result = run_cmd([str(FIXTURE_SH), "iceberg", "rest", "load", "--help"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--load-mode create|add-files", result.stdout)
+        self.assertIn("--reload", result.stdout)
+
+    def test_citation_network_loader_fails_fast_with_acquisition_instructions(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nexus_fixture_citation_missing.") as tmp:
+            root = Path(tmp)
+            result = run_cmd(
+                [
+                    str(FIXTURE_SH),
+                    "iceberg",
+                    "rest",
+                    "load",
+                    "--workload",
+                    "citation_network",
+                    "--load-mode",
+                    "add-files",
+                ],
+                env={
+                    "CITATION_NETWORK_DATA_DIR": str(root / "missing"),
+                    "DATA_ROOT": str(root / "data"),
+                    "IVY_CACHE": str(root / "ivy"),
+                },
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("missing citation network parquet", result.stderr)
+        self.assertIn("dblp.v12.json", result.stderr)
+        self.assertIn("dblp_ingest.py", result.stderr)
+
+    def test_citation_network_loader_rejects_partial_parquet_before_staging(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nexus_fixture_citation_partial.") as tmp:
+            root = Path(tmp)
+            parquet = root / "partial"
+            parquet.mkdir()
+            (parquet / "edges_by_src.parquet").write_bytes(b"not real parquet")
+            result = run_cmd(
+                [
+                    str(FIXTURE_SH),
+                    "iceberg",
+                    "rest",
+                    "load",
+                    "--workload",
+                    "citation_network",
+                    "--load-mode",
+                    "add-files",
+                ],
+                env={
+                    "CITATION_NETWORK_DATA_DIR": str(parquet),
+                    "DATA_ROOT": str(root / "data"),
+                    "IVY_CACHE": str(root / "ivy"),
+                    "DOCKER": "/bin/false",
+                },
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("missing parquet inputs for citation_network", result.stderr)
+        self.assertIn("papers: expected", result.stderr)
+        self.assertIn("dblp_ingest.py", result.stderr)
+
+    def test_spark_iceberg_writer_parses_add_files_s3_sources_without_pyspark(self) -> None:
+        writer = load_script_module("spark_write_iceberg_under_test", SPARK_WRITE_ICEBERG)
+
+        args = writer.parse_args(
+            [
+                "--mode",
+                "add-files",
+                "--reload",
+                "citation_network",
+                "/data",
+                "papers=s3://lakehouse/staging/citation_network/v1/papers.parquet",
+            ]
+        )
+        self.assertEqual(args.mode, "add-files")
+        self.assertTrue(args.reload)
+
+        specs = writer.parse_table_specs(args.tables)
+        self.assertEqual(specs, [("papers", "s3://lakehouse/staging/citation_network/v1/papers.parquet")])
+        self.assertEqual(
+            writer.resolve_source("/data", specs[0][1]),
+            "s3://lakehouse/staging/citation_network/v1/papers.parquet",
+        )
+        self.assertEqual(
+            writer.parquet_relation_for_select(specs[0][1]),
+            "parquet.`s3://lakehouse/staging/citation_network/v1/papers.parquet`",
+        )
+        self.assertEqual(
+            writer.parquet_relation_for_add_files(specs[0][1]),
+            "`parquet`.`s3://lakehouse/staging/citation_network/v1/papers.parquet`",
+        )
+
+    def test_spark_iceberg_writer_add_files_mode_creates_and_registers_staged_parquet(self) -> None:
+        writer = load_script_module("spark_write_iceberg_add_files_under_test", SPARK_WRITE_ICEBERG)
+        spark = FakeSpark()
+
+        writer.add_files_mode(
+            spark,
+            "citation_network",
+            [("papers", "s3://lakehouse/staging/citation_network/v1/papers.parquet")],
+            "/data",
+            reload=False,
+        )
+
+        self.assertIn(
+            "CREATE TABLE `lake`.`citation_network`.`papers` USING iceberg AS "
+            "SELECT * FROM parquet.`s3://lakehouse/staging/citation_network/v1/papers.parquet` LIMIT 0",
+            spark.sql_calls,
+        )
+        self.assertTrue(
+            any(
+                "CALL lake.system.add_files(" in call
+                and "table => '`citation_network`.`papers`'" in call
+                and "source_table => '`parquet`.`s3://lakehouse/staging/citation_network/v1/papers.parquet`'" in call
+                for call in spark.sql_calls
+            )
+        )
+
+    def test_spark_iceberg_writer_quotes_procedure_table_identifier_parts(self) -> None:
+        writer = load_script_module("spark_write_iceberg_procedure_identifier_under_test", SPARK_WRITE_ICEBERG)
+
+        self.assertEqual(
+            writer.procedure_table_identifier("tpch_sf0.01", "customer"),
+            "`tpch_sf0.01`.`customer`",
+        )
+
+    def test_spark_iceberg_writer_add_files_mode_skips_existing_tables_with_data_files(self) -> None:
+        writer = load_script_module("spark_write_iceberg_skip_existing_under_test", SPARK_WRITE_ICEBERG)
+        spark = FakeSpark(existing=True, file_count=1)
+
+        writer.add_files_mode(
+            spark,
+            "citation_network",
+            [("papers", "s3://lakehouse/staging/citation_network/v1/papers.parquet")],
+            "/data",
+            reload=False,
+        )
+
+        self.assertFalse(any(call.startswith("CREATE TABLE") for call in spark.sql_calls))
+        self.assertFalse(any("CALL lake.system.add_files" in call for call in spark.sql_calls))
+
+    def test_spark_iceberg_writer_add_files_mode_drops_created_table_after_failure(self) -> None:
+        writer = load_script_module("spark_write_iceberg_failure_cleanup_under_test", SPARK_WRITE_ICEBERG)
+        spark = FakeSpark(fail_on_add_files=True)
+
+        with self.assertRaises(RuntimeError):
+            writer.add_files_mode(
+                spark,
+                "citation_network",
+                [("papers", "s3://lakehouse/staging/citation_network/v1/papers.parquet")],
+                "/data",
+                reload=False,
+            )
+
+        self.assertIn("DROP TABLE IF EXISTS `lake`.`citation_network`.`papers`", spark.sql_calls)
 
 
 if __name__ == "__main__":

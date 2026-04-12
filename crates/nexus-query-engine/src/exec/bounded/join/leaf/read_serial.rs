@@ -152,6 +152,10 @@ pub(super) fn read_join_leaf_source_batch_or_split(
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
+            crate::exec::retry::backoff_before_retry(
+                context,
+                "nexus_query_engine.exec.bounded.join_leaf_source_batch_split_retry",
+            )?;
             let mut outputs = read_join_leaf_source_batch_or_split(
                 context,
                 source,
@@ -318,6 +322,10 @@ pub(super) fn retry_join_leaf_source_chunk_after_error(
         && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
     {
         metrics.record_source_chunk_retry();
+        crate::exec::retry::backoff_before_retry(
+            context,
+            "nexus_query_engine.exec.bounded.join_leaf_source_split_retry",
+        )?;
         let mut outputs = read_join_leaf_source_chunk_with_retry(
             context,
             source,
@@ -519,6 +527,7 @@ pub(super) fn try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
     };
     record_chunk_retry_error(error, metrics);
     metrics.record_source_chunk_retry();
+    crate::exec::retry::backoff_before_retry(context, "nexus_query_engine.exec.bounded.join_leaf_source_budget_retry")?;
     let request = join_source_read_reservation_request_for_boundary(
         context.memory_control_policy(),
         0,

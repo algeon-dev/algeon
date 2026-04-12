@@ -8,13 +8,13 @@
 //! error. Once a native execution node starts running, CPU fallback is no
 //! longer attempted.
 
-use std::fmt;
+use std::{fmt, num::NonZeroUsize, time::Duration};
 
 use datafusion::common::{Result as DataFusionResult, config::ConfigOptions};
 
 use crate::{
     error::{Error, ErrorCode},
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::{CpuFallbackStatementLimiter, NativeCudfExecutionConfig},
     policy::{FallbackReason, GpuFallbackPolicy},
     report::GpuCandidate,
     session_config::optimizer_config_with_datafusion_options,
@@ -47,6 +47,8 @@ pub struct CudfOptimizerConfig {
     native_execution_config: NativeCudfExecutionConfig,
     native_optimizer_options: nexus_query_engine::NativeOptimizerOptions,
     native_plan_preference_options: nexus_query_engine::NativePlanPreferenceOptions,
+    cpu_fallback_statement_limiter: Option<CpuFallbackStatementLimiter>,
+    cpu_fallback_wait_timeout: Option<Duration>,
 }
 
 impl Default for CudfOptimizerConfig {
@@ -56,6 +58,8 @@ impl Default for CudfOptimizerConfig {
             native_execution_config: NativeCudfExecutionConfig::bounded_auto_sized(),
             native_optimizer_options: nexus_query_engine::NativeOptimizerOptions::default(),
             native_plan_preference_options: nexus_query_engine::NativePlanPreferenceOptions::disabled(),
+            cpu_fallback_statement_limiter: None,
+            cpu_fallback_wait_timeout: None,
         }
     }
 }
@@ -88,6 +92,19 @@ impl CudfOptimizerConfig {
     /// shows native fixed overhead dominates small selective shapes.
     pub fn native_plan_preference_options(&self) -> &nexus_query_engine::NativePlanPreferenceOptions {
         &self.native_plan_preference_options
+    }
+
+    /// Host-side concurrency limiter for physical plans that remain on DataFusion CPU fallback.
+    pub fn cpu_fallback_max_concurrent_statements(&self) -> Option<NonZeroUsize> {
+        self.cpu_fallback_statement_limiter.as_ref().map(CpuFallbackStatementLimiter::max_concurrent_statements)
+    }
+
+    /// Maximum time a CPU fallback statement waits for the fallback limiter.
+    ///
+    /// `None` means wait indefinitely. Library configs default to `None`;
+    /// server configs install their own default unless disabled.
+    pub fn cpu_fallback_wait_timeout(&self) -> Option<Duration> {
+        self.cpu_fallback_wait_timeout
     }
 
     /// Strict bounded or adaptive pipeline mode used by native execution.
@@ -124,6 +141,52 @@ impl CudfOptimizerConfig {
         options: nexus_query_engine::NativePlanPreferenceOptions,
     ) -> Self {
         self.native_plan_preference_options = options;
+        self
+    }
+
+    /// Bound concurrent CPU fallback statements that were not rewritten to native execution.
+    ///
+    /// This limiter is independent of GPU query-service admission. It exists
+    /// to bound DataFusion CPU fallback work without consuming native GPU
+    /// admission slots. Library users opt in explicitly; the Flight SQL server
+    /// installs its own default unless disabled by server configuration.
+    pub fn with_cpu_fallback_max_concurrent_statements(mut self, max_concurrent_statements: NonZeroUsize) -> Self {
+        self.cpu_fallback_statement_limiter = Some(CpuFallbackStatementLimiter::new_with_wait_timeout(
+            max_concurrent_statements,
+            self.cpu_fallback_wait_timeout,
+        ));
+        self
+    }
+
+    /// Set the maximum time a CPU fallback statement waits for the fallback limiter.
+    ///
+    /// Passing a zero duration restores indefinite waiting. The setting is
+    /// independent of GPU query-service admission timeouts.
+    pub fn with_cpu_fallback_wait_timeout(mut self, wait_timeout: Duration) -> Self {
+        self.cpu_fallback_wait_timeout = (!wait_timeout.is_zero()).then_some(wait_timeout);
+        if let Some(limit) = self.cpu_fallback_max_concurrent_statements() {
+            self.cpu_fallback_statement_limiter =
+                Some(CpuFallbackStatementLimiter::new_with_wait_timeout(limit, self.cpu_fallback_wait_timeout));
+        }
+        self
+    }
+
+    /// Disable the host-side CPU fallback statement limiter.
+    pub fn without_cpu_fallback_max_concurrent_statements(mut self) -> Self {
+        self.cpu_fallback_statement_limiter = None;
+        self
+    }
+
+    pub(crate) fn cpu_fallback_statement_limiter(&self) -> Option<CpuFallbackStatementLimiter> {
+        self.cpu_fallback_statement_limiter.clone()
+    }
+
+    pub(crate) fn with_unbounded_native_execution_limiter(
+        mut self,
+        limiter: crate::native_exec::UnboundedNativeExecutionLimiter,
+    ) -> Self {
+        self.native_execution_config =
+            self.native_execution_config.clone().with_unbounded_native_execution_limiter(limiter);
         self
     }
 

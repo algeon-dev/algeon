@@ -1,10 +1,10 @@
 #[cfg(feature = "iceberg")]
 use std::fmt;
-use std::{collections::BTreeMap, fs, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, fs, net::SocketAddr, num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use nexus_query_engine::{
-    MemoryControlPolicy, NativePipelineExecutionMode, QueryServiceConfig, SlotGuarantee, SourceChunkPlanningMode,
-    SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
+    MemoryControlPolicy, NativePipelineExecutionMode, SlotGuarantee, SourceChunkPlanningMode, SourceSchedulerPolicy,
+    StatisticalAggregateExecutionMode,
 };
 use serde::Deserialize;
 
@@ -23,9 +23,7 @@ use crate::{
     TableFormatLakehouseCacheReadPolicy, TableFormatParquetReadStrategyConfig,
     TableFormatParquetReadStrategyPreference,
 };
-use crate::{
-    CudfOptimizerConfig, GpuFallbackPolicy, GrantBand, MemoryShare, NativeCudfExecutionConfig, NexusAdmissionPolicy,
-};
+use crate::{CudfOptimizerConfig, GpuFallbackPolicy, MemoryShare, NativeCudfExecutionConfig, NexusAdmissionPolicy};
 #[cfg(feature = "cugraph")]
 use crate::{CugraphAlgorithm, CugraphGraphConstructionPolicy, CugraphGraphOptions};
 
@@ -33,21 +31,30 @@ use crate::{CugraphAlgorithm, CugraphGraphConstructionPolicy, CugraphGraphOption
 pub const NEXUS_SERVER_BIND_ENV: &str = "NEXUS_SERVER_BIND";
 /// Tracing log filter for the server process. Defaults to `info`.
 pub const NEXUS_SERVER_LOG_ENV: &str = "NEXUS_SERVER_LOG";
-/// Maximum number of Flight SQL statements admitted at once. Defaults to `2`;
-/// set a larger value only when the GPU has enough memory for concurrent work.
+/// Maximum number of GPU-native queries admitted at once. Defaults to `2`; set
+/// a larger value only when the GPU has enough memory for concurrent work.
 pub const NEXUS_SERVER_MAX_IN_FLIGHT_ENV: &str = "NEXUS_SERVER_MAX_IN_FLIGHT";
-/// Preferred maximum number of Flight SQL statements admitted at once. Defaults
-/// to `2`; `NEXUS_SERVER_MAX_IN_FLIGHT` remains accepted as a compatibility
-/// alias.
+/// Preferred maximum number of GPU-native queries admitted at once. Defaults to
+/// `2`; `NEXUS_SERVER_MAX_IN_FLIGHT` remains accepted as a compatibility alias.
 pub const NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV: &str = "NEXUS_SERVER_MAX_CONCURRENT_QUERIES";
 /// Minimum per-query admission grant. Accepts a byte integer or fractional
 /// capacity such as `0.125`. Defaults to `0.125`.
 pub const NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV: &str = "NEXUS_SERVER_ADMISSION_GRANT_MIN";
 /// Preferred per-query admission grant. Accepts a byte integer or fractional
-/// capacity such as `0.5`. Defaults to `0.5`.
+/// capacity such as `0.5`. Defaults are derived by backend admission policy.
 pub const NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV: &str = "NEXUS_SERVER_ADMISSION_GRANT_WANT";
 /// Empty-slot grant policy: `guaranteed_minimum` or `optimistic`.
 pub const NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV: &str = "NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE";
+/// Maximum time a GPU-native query waits in query-service admission before a
+/// structured overload error. Defaults to `60000`.
+pub const NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS";
+/// Maximum concurrent CPU fallback statements. Defaults to `2`; set `0` to
+/// disable the host-side fallback bound.
+pub const NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV: &str =
+    "NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS";
+/// Maximum time a CPU fallback statement waits for the host-side fallback
+/// bound. Defaults to `30000`; set `0` to wait indefinitely.
+pub const NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV: &str = "NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS";
 /// Fraction of a GPU's total memory eligible for server native-query budgets.
 /// The fixed native headroom remains a floor, so `1.0` preserves the historical
 /// auto-sized `total - headroom` behavior.
@@ -55,8 +62,8 @@ pub const NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV: &str = "NEXUS_SERVER_DEVICE_B
 /// Comma-separated CUDA device ordinals available to the Flight SQL server.
 /// Independent queries are placed across this set by the native query service.
 pub const NEXUS_SERVER_GPU_DEVICES_ENV: &str = "NEXUS_SERVER_GPU_DEVICES";
-/// Seconds an unconsumed Flight SQL statement ticket may hold admission before
-/// it expires and releases its slot. Defaults to `300`.
+/// Seconds an unconsumed Flight SQL statement ticket may wait for `DoGet`
+/// before it expires. Defaults to `300`.
 pub const NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str = "NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS";
 /// DataFusion physical-plan profile for Flight SQL sessions. Use `native` for
 /// GPU-native plan shapes or `cpu_fallback` to keep DataFusion's CPU-oriented
@@ -332,6 +339,8 @@ pub const NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV: &str = "NEXUS_ICEBERG_SC
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:50051";
 const DEFAULT_LOG_FILTER: &str = "info";
 const DEFAULT_MAX_IN_FLIGHT: usize = 2;
+const DEFAULT_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS: usize = 2;
+const DEFAULT_CPU_FALLBACK_WAIT_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_STATEMENT_TICKET_TTL_SECS: u64 = 300;
 #[cfg(feature = "iceberg")]
 const DEFAULT_GLUE_CATALOG_NAME: &str = "glue";
@@ -346,11 +355,13 @@ pub struct ServerConfig {
     pub log_filter: String,
     pub max_in_flight: usize,
     pub admission_policy: NexusAdmissionPolicy,
+    pub cpu_fallback_max_concurrent_statements: Option<NonZeroUsize>,
+    pub cpu_fallback_wait_timeout: Option<Duration>,
     pub gpu_devices: Vec<usize>,
     pub device_budget_fraction: Option<f64>,
-    /// Wall-clock time a planned Flight SQL statement ticket may hold an
-    /// admission permit while waiting for `DoGet`. Expired tickets are dropped
-    /// and their permits are released; the default is 300 seconds.
+    /// Wall-clock time a planned Flight SQL statement ticket may wait for
+    /// `DoGet`. Expired tickets are dropped; GPU admission is acquired later
+    /// by native plan execution.
     pub statement_ticket_ttl: Duration,
     pub native_optimizer_config: CudfOptimizerConfig,
     /// DataFusion physical-plan profile applied to the Flight SQL session.
@@ -378,6 +389,7 @@ pub struct ServerConfig {
 struct ServerFileOverlay {
     auth: AuthConfig,
     admission: ServerAdmissionFileConfig,
+    fallback: ServerFallbackFileConfig,
     native: ServerNativeFileConfig,
 }
 
@@ -388,6 +400,14 @@ struct ServerAdmissionFileConfig {
     grant_min: Option<ServerMemoryShareFileValue>,
     grant_want: Option<ServerMemoryShareFileValue>,
     slot_guarantee: Option<String>,
+    wait_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct ServerFallbackFileConfig {
+    max_concurrent_statements: Option<usize>,
+    wait_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -434,6 +454,12 @@ impl<T> NativeConfigValue<T> {
     const fn new(value: T, field: &'static str) -> Self {
         Self { value, field }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DurationZeroPolicy {
+    Reject,
+    Indefinite,
 }
 
 /// DataFusion physical-plan profile applied to the Flight SQL session.
@@ -619,13 +645,21 @@ impl ServerConfig {
         let max_concurrent_queries = server_max_concurrent_queries(&mut values, &overlay.admission)?;
         let mut max_in_flight = max_concurrent_queries.value;
         let mut admission_policy = server_admission_policy(&mut values, &overlay.admission, max_in_flight)?;
+        let cpu_fallback_max_concurrent_statements =
+            server_cpu_fallback_max_concurrent_statements(&mut values, &overlay.fallback)?;
+        let cpu_fallback_wait_timeout = server_cpu_fallback_wait_timeout(&mut values, &overlay.fallback)?;
         let gpu_devices = server_gpu_devices(&mut values)?;
         let device_budget_fraction = values.optional_f64(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV)?;
         let statement_ticket_ttl = Duration::from_secs(
             values.positive_u64(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, DEFAULT_STATEMENT_TICKET_TTL_SECS)?,
         );
-        let native_optimizer_config =
+        let mut native_optimizer_config =
             native_optimizer_config(&mut values, &overlay.native, &gpu_devices, device_budget_fraction)?;
+        if let Some(limit) = cpu_fallback_max_concurrent_statements {
+            native_optimizer_config = native_optimizer_config
+                .with_cpu_fallback_wait_timeout(cpu_fallback_wait_timeout.unwrap_or(Duration::ZERO))
+                .with_cpu_fallback_max_concurrent_statements(limit);
+        }
         #[cfg(feature = "iceberg")]
         let mut native_optimizer_config = native_optimizer_config;
 
@@ -691,6 +725,8 @@ impl ServerConfig {
             log_filter,
             max_in_flight,
             admission_policy,
+            cpu_fallback_max_concurrent_statements,
+            cpu_fallback_wait_timeout,
             gpu_devices,
             device_budget_fraction,
             statement_ticket_ttl,
@@ -755,22 +791,21 @@ fn server_admission_policy(
     file: &ServerAdmissionFileConfig,
     max_in_flight: usize,
 ) -> Result<NexusAdmissionPolicy> {
-    let default_grant = GrantBand::default();
     let min = optional_admission_memory_share(
         values,
         NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV,
         "admission.grant_min",
         file.grant_min.as_ref(),
-    )?
-    .unwrap_or(NativeConfigValue::new(default_grant.min, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV));
+    )?;
     let want = optional_admission_memory_share(
         values,
         NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV,
         "admission.grant_want",
         file.grant_want.as_ref(),
-    )?
-    .unwrap_or(NativeConfigValue::new(default_grant.want, NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV));
-    validate_comparable_memory_share_order(min.value, want.value, want.field)?;
+    )?;
+    if let (Some(min), Some(want)) = (&min, &want) {
+        validate_comparable_memory_share_order(min.value, want.value, want.field)?;
+    }
     let slot_guarantee = optional_native_string(
         values,
         NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV,
@@ -780,11 +815,59 @@ fn server_admission_policy(
     .map(|raw| parse_slot_guarantee(raw.field, &raw.value))
     .transpose()?
     .unwrap_or(SlotGuarantee::GuaranteedMinimum);
-    Ok(NexusAdmissionPolicy::default()
+    let wait_timeout = optional_duration_millis(
+        values,
+        NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV,
+        "admission.wait_timeout_ms",
+        file.wait_timeout_ms,
+        DurationZeroPolicy::Reject,
+    )?
+    .unwrap_or_else(|| NexusAdmissionPolicy::default().wait_timeout());
+    let mut policy = NexusAdmissionPolicy::default()
         .with_max_concurrent_queries(max_in_flight)
-        .with_grant_band(GrantBand { min: min.value, want: want.value })
         .with_slot_guarantee(slot_guarantee)
-        .with_wait_timeout(QueryServiceConfig::default().admission_wait_timeout))
+        .with_wait_timeout(wait_timeout);
+    if let Some(min) = min {
+        policy = policy.with_grant_min(min.value);
+    }
+    if let Some(want) = want {
+        policy = policy.with_grant_want(want.value);
+    }
+    Ok(policy)
+}
+
+fn server_cpu_fallback_max_concurrent_statements(
+    values: &mut EnvValues<'_>,
+    file: &ServerFallbackFileConfig,
+) -> Result<Option<NonZeroUsize>> {
+    let selected = match values.optional_usize(NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV)? {
+        Some(value) => NativeConfigValue::new(value, NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV),
+        None => file
+            .max_concurrent_statements
+            .map(|value| NativeConfigValue::new(value, "fallback.max_concurrent_statements"))
+            .unwrap_or(NativeConfigValue::new(
+                DEFAULT_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS,
+                NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV,
+            )),
+    };
+    Ok(NonZeroUsize::new(selected.value))
+}
+
+fn server_cpu_fallback_wait_timeout(
+    values: &mut EnvValues<'_>,
+    file: &ServerFallbackFileConfig,
+) -> Result<Option<Duration>> {
+    let selected = optional_duration_millis_value(
+        values,
+        NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV,
+        "fallback.wait_timeout_ms",
+        file.wait_timeout_ms,
+    )?
+    .unwrap_or(NativeConfigValue::new(
+        DEFAULT_CPU_FALLBACK_WAIT_TIMEOUT_MS,
+        NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV,
+    ));
+    duration_millis_from_value(selected, DurationZeroPolicy::Indefinite)
 }
 
 fn optional_admission_memory_share(
@@ -1220,6 +1303,41 @@ fn optional_native_usize(
         Some(value) => Some(NativeConfigValue::new(value, env_name)),
         None => file_value.map(|value| NativeConfigValue::new(value, file_field)),
     })
+}
+
+fn optional_duration_millis(
+    values: &mut EnvValues<'_>,
+    env_name: &'static str,
+    file_field: &'static str,
+    file_value: Option<u64>,
+    zero_policy: DurationZeroPolicy,
+) -> Result<Option<Duration>> {
+    optional_duration_millis_value(values, env_name, file_field, file_value)?
+        .map(|selected| duration_millis_from_value(selected, zero_policy))
+        .transpose()
+        .map(Option::flatten)
+}
+
+fn optional_duration_millis_value(
+    values: &mut EnvValues<'_>,
+    env_name: &'static str,
+    file_field: &'static str,
+    file_value: Option<u64>,
+) -> Result<Option<NativeConfigValue<u64>>> {
+    optional_native_u64(values, env_name, file_field, file_value)
+}
+
+fn duration_millis_from_value(
+    selected: NativeConfigValue<u64>,
+    zero_policy: DurationZeroPolicy,
+) -> Result<Option<Duration>> {
+    if selected.value == 0 {
+        return match zero_policy {
+            DurationZeroPolicy::Reject => Err(ServerError::invalid_config(selected.field, "must be greater than zero")),
+            DurationZeroPolicy::Indefinite => Ok(None),
+        };
+    }
+    Ok(Some(Duration::from_millis(selected.value)))
 }
 
 fn first_present_bounded_budget_field(

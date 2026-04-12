@@ -143,28 +143,38 @@ pub(super) fn source_row_group_metadata(
     file: &LocalParquetFile,
     footer_metadata: Option<RowGroupMetadata>,
 ) -> Option<RowGroupMetadata> {
-    let row_group_bytes = file
-        .row_group_bytes
-        .clone()
-        .or_else(|| footer_metadata.as_ref().and_then(RowGroupMetadata::row_group_bytes_vec));
-    let projected_compressed_bytes = file
-        .projected_row_group_compressed_bytes
-        .clone()
-        .or_else(|| footer_metadata.as_ref().and_then(RowGroupMetadata::projected_compressed_bytes_vec));
-    let projected_uncompressed_bytes = file
-        .projected_row_group_uncompressed_bytes
-        .clone()
-        .or_else(|| footer_metadata.as_ref().and_then(RowGroupMetadata::projected_uncompressed_bytes_vec));
-    let pure_filter_compressed_bytes = file
-        .pure_filter_row_group_compressed_bytes
-        .clone()
-        .or_else(|| footer_metadata.as_ref().and_then(RowGroupMetadata::pure_filter_compressed_bytes_vec));
-    let pure_filter_uncompressed_bytes = file
-        .pure_filter_row_group_uncompressed_bytes
-        .clone()
-        .or_else(|| footer_metadata.as_ref().and_then(RowGroupMetadata::pure_filter_uncompressed_bytes_vec));
-    let row_group_rows =
-        file.row_group_rows.clone().or_else(|| footer_metadata.as_ref().and_then(RowGroupMetadata::row_group_rows_vec));
+    let footer_row_group_count =
+        footer_metadata.as_ref().map(RowGroupMetadata::row_group_count).filter(|count| *count > 0);
+    let row_group_bytes = merge_row_group_values(
+        file.row_group_bytes.clone(),
+        footer_metadata.as_ref().and_then(RowGroupMetadata::row_group_bytes_vec),
+        footer_row_group_count,
+    );
+    let projected_compressed_bytes = merge_row_group_values(
+        file.projected_row_group_compressed_bytes.clone(),
+        footer_metadata.as_ref().and_then(RowGroupMetadata::projected_compressed_bytes_vec),
+        footer_row_group_count,
+    );
+    let projected_uncompressed_bytes = merge_row_group_values(
+        file.projected_row_group_uncompressed_bytes.clone(),
+        footer_metadata.as_ref().and_then(RowGroupMetadata::projected_uncompressed_bytes_vec),
+        footer_row_group_count,
+    );
+    let pure_filter_compressed_bytes = merge_row_group_values(
+        file.pure_filter_row_group_compressed_bytes.clone(),
+        footer_metadata.as_ref().and_then(RowGroupMetadata::pure_filter_compressed_bytes_vec),
+        footer_row_group_count,
+    );
+    let pure_filter_uncompressed_bytes = merge_row_group_values(
+        file.pure_filter_row_group_uncompressed_bytes.clone(),
+        footer_metadata.as_ref().and_then(RowGroupMetadata::pure_filter_uncompressed_bytes_vec),
+        footer_row_group_count,
+    );
+    let row_group_rows = merge_row_group_values(
+        file.row_group_rows.clone(),
+        footer_metadata.as_ref().and_then(RowGroupMetadata::row_group_rows_vec),
+        footer_row_group_count,
+    );
 
     if row_group_bytes.is_some()
         || projected_compressed_bytes.is_some()
@@ -183,5 +193,63 @@ pub(super) fn source_row_group_metadata(
         })
     } else {
         None
+    }
+}
+
+fn merge_row_group_values(
+    file_values: Option<Vec<u64>>,
+    footer_values: Option<Vec<u64>>,
+    footer_row_group_count: Option<usize>,
+) -> Option<Vec<u64>> {
+    match footer_row_group_count {
+        Some(count) => match file_values {
+            Some(values) if values.len() == count => Some(values),
+            Some(_) => footer_values,
+            None => footer_values,
+        },
+        None => file_values.or(footer_values),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::LocalParquetFile;
+
+    fn footer_metadata_with_row_groups(rows: Vec<u64>) -> RowGroupMetadata {
+        let bytes = vec![0; rows.len()];
+        RowGroupMetadata {
+            row_group_bytes: Some(bytes.clone()),
+            projected_compressed_bytes: Some(bytes.clone()),
+            projected_uncompressed_bytes: Some(bytes.clone()),
+            pure_filter_compressed_bytes: Some(bytes.clone()),
+            pure_filter_uncompressed_bytes: Some(bytes),
+            row_group_rows: Some(rows),
+        }
+    }
+
+    #[test]
+    fn source_row_group_metadata_prefers_footer_rows_when_file_count_is_whole_file() {
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part.parquet")
+            .expect("valid object-store URI")
+            .with_row_group_rows(vec![35]);
+        let footer = footer_metadata_with_row_groups(vec![10, 20, 5]);
+
+        let metadata = source_row_group_metadata(&file, Some(footer)).expect("merged metadata");
+
+        assert_eq!(metadata.row_group_count(), 3);
+        assert_eq!(metadata.row_group_rows_vec().as_deref(), Some(&[10, 20, 5][..]));
+    }
+
+    #[test]
+    fn source_row_group_metadata_keeps_file_rows_without_footer_layout() {
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part.parquet")
+            .expect("valid object-store URI")
+            .with_row_group_rows(vec![35]);
+
+        let metadata = source_row_group_metadata(&file, None).expect("synthetic metadata");
+
+        assert_eq!(metadata.row_group_count(), 1);
+        assert_eq!(metadata.row_group_rows_vec().as_deref(), Some(&[35][..]));
     }
 }

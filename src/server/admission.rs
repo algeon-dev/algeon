@@ -1,13 +1,17 @@
-use std::{fmt::Write, sync::Arc};
+use std::{fmt::Write, num::NonZeroUsize, sync::Arc};
 
-use nexus_query_engine::{QueryHandle, TenantId};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
+#[cfg(test)]
+use nexus_query_engine::QueryHandle;
+use nexus_query_engine::TenantId;
+use tokio::sync::Semaphore;
+#[cfg(test)]
+use tokio::sync::{OwnedSemaphorePermit, TryAcquireError};
 
 use super::{
     config::ServerConfig,
     error::{Result, ServerError},
 };
-use crate::{NexusAdmissionPolicy, NexusGpuBackend};
+use crate::{NexusAdmissionPolicy, NexusGpuBackend, native_exec::UnboundedNativeExecutionLimiter};
 
 const DEFAULT_SERVER_TENANT_ID: &str = "default";
 
@@ -34,15 +38,14 @@ impl QueryAdmission {
         })
     }
 
-    pub fn from_server_config(config: &ServerConfig) -> Result<Self> {
-        let backend = server_backend_from_config(config)?;
-        Self::from_backend_option(config.max_in_flight, backend)
-    }
-
     #[cfg(test)]
     fn from_server_config_admission_only(config: &ServerConfig) -> Result<Self> {
         let backend = server_backend_from_config_admission_only(config)?;
         Self::from_backend_option(config.max_in_flight, backend)
+    }
+
+    pub(crate) fn from_backend(backend: Option<&NexusGpuBackend>, config: &ServerConfig) -> Result<Self> {
+        Self::from_backend_option(config.max_in_flight, backend.cloned())
     }
 
     fn from_backend_option(max_in_flight: usize, backend: Option<NexusGpuBackend>) -> Result<Self> {
@@ -54,6 +57,15 @@ impl QueryAdmission {
 
     pub fn max_in_flight(&self) -> usize {
         self.max_in_flight
+    }
+
+    pub(crate) fn unbounded_native_execution_limiter(&self) -> Option<UnboundedNativeExecutionLimiter> {
+        let QueryAdmissionBackend::Semaphore { permits } = &self.backend else {
+            return None;
+        };
+        let max_concurrent_queries =
+            NonZeroUsize::new(self.max_in_flight).expect("QueryAdmission max_in_flight is validated nonzero");
+        Some(UnboundedNativeExecutionLimiter::from_shared_semaphore(Arc::clone(permits), max_concurrent_queries))
     }
 
     /// Close the admission gate. After close, any pending or future
@@ -70,27 +82,7 @@ impl QueryAdmission {
         }
     }
 
-    pub async fn acquire(&self) -> Result<QueryAdmissionPermit> {
-        match &self.backend {
-            QueryAdmissionBackend::QueryService { backend } => {
-                let handle = backend
-                    .query_service()
-                    .admit_async(backend.tenant_id().clone())
-                    .await
-                    .map_err(|error| ServerError::session("query service admission failed", error))?;
-                Ok(QueryAdmissionPermit { inner: QueryAdmissionPermitInner::QueryService(Arc::new(handle)) })
-            },
-            QueryAdmissionBackend::Semaphore { permits } => {
-                let permit = permits
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|error| ServerError::session("query admission queue closed", error))?;
-                Ok(QueryAdmissionPermit { inner: QueryAdmissionPermitInner::Semaphore { _permit: permit } })
-            },
-        }
-    }
-
+    #[cfg(test)]
     pub fn try_acquire(&self) -> Result<Option<QueryAdmissionPermit>> {
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => backend
@@ -170,6 +162,11 @@ impl QueryAdmission {
                 allocation_failure_count = report.allocation_failure_count,
                 total_failed_allocation_bytes = report.total_failed_allocation_bytes,
                 largest_failed_allocation_bytes = report.largest_failed_allocation_bytes,
+                trim_retry_count = report.trim_retry_count,
+                pool_usage_observation_count = report.pool_usage_observation_count,
+                last_failed_allocation_bytes = report.last_failed_allocation_bytes,
+                last_pool_reserved_current_bytes = report.last_pool_reserved_current_bytes,
+                last_pool_used_current_bytes = report.last_pool_used_current_bytes,
                 "query service device memory failure report"
             );
         }
@@ -245,18 +242,23 @@ impl QueryAdmission {
 
                 output.push_str("\n[device_memory_failure_reports]\n");
                 output.push_str(
-                    "device_ordinal\tcallback_installed\tcallback_install_unavailable\tallocation_failure_count\ttotal_failed_allocation_bytes\tlargest_failed_allocation_bytes\n",
+                    "device_ordinal\tcallback_installed\tcallback_install_unavailable\tallocation_failure_count\ttotal_failed_allocation_bytes\tlargest_failed_allocation_bytes\ttrim_retry_count\tpool_usage_observation_count\tlast_failed_allocation_bytes\tlast_pool_reserved_current_bytes\tlast_pool_used_current_bytes\n",
                 );
                 for report in service.device_memory_failure_reports() {
                     let _ = writeln!(
                         output,
-                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                         report.device_ordinal,
                         report.callback_installed,
                         report.callback_install_unavailable,
                         report.allocation_failure_count,
                         report.total_failed_allocation_bytes,
-                        report.largest_failed_allocation_bytes
+                        report.largest_failed_allocation_bytes,
+                        report.trim_retry_count,
+                        report.pool_usage_observation_count,
+                        report.last_failed_allocation_bytes,
+                        report.last_pool_reserved_current_bytes,
+                        report.last_pool_used_current_bytes
                     );
                 }
             },
@@ -277,17 +279,20 @@ impl QueryAdmission {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 pub struct QueryAdmissionPermit {
     inner: QueryAdmissionPermitInner,
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 enum QueryAdmissionPermitInner {
     QueryService(Arc<QueryHandle>),
     Semaphore { _permit: OwnedSemaphorePermit },
 }
 
+#[cfg(test)]
 impl QueryAdmissionPermit {
     pub fn query_service_handle(&self) -> Option<Arc<QueryHandle>> {
         match &self.inner {
@@ -297,6 +302,7 @@ impl QueryAdmissionPermit {
     }
 }
 
+#[cfg(test)]
 impl Drop for QueryAdmissionPermit {
     fn drop(&mut self) {
         if let QueryAdmissionPermitInner::QueryService(handle) = &self.inner {
@@ -305,14 +311,20 @@ impl Drop for QueryAdmissionPermit {
     }
 }
 
-fn server_backend_from_config(config: &ServerConfig) -> Result<Option<NexusGpuBackend>> {
-    NexusGpuBackend::from_optimizer_config_for_admission(
-        config.native_optimizer_config.clone(),
-        config.gpu_devices.clone(),
-        server_admission_policy(config),
-        TenantId::new(DEFAULT_SERVER_TENANT_ID),
-    )
-    .map_err(|error| ServerError::session("failed to initialize query service admission", error))
+impl NexusGpuBackend {
+    /// Build the server's query-service backend from a validated server config.
+    ///
+    /// Returns `None` for unbounded native memory policy; the Flight SQL server
+    /// then falls back to its legacy semaphore admission path.
+    pub fn from_server_config(config: &ServerConfig) -> Result<Option<Self>> {
+        Self::from_optimizer_config_for_admission(
+            config.native_optimizer_config.clone(),
+            config.gpu_devices.clone(),
+            server_admission_policy(config),
+            TenantId::new(DEFAULT_SERVER_TENANT_ID),
+        )
+        .map_err(|error| ServerError::session("failed to initialize query service admission", error))
+    }
 }
 
 #[cfg(test)]
@@ -326,7 +338,7 @@ fn server_backend_from_config_admission_only(config: &ServerConfig) -> Result<Op
     .map_err(|error| ServerError::session("failed to initialize query service admission", error))
 }
 
-fn server_admission_policy(config: &ServerConfig) -> NexusAdmissionPolicy {
+pub(crate) fn server_admission_policy(config: &ServerConfig) -> NexusAdmissionPolicy {
     // `ServerConfig` keeps the legacy public `max_in_flight` field beside the
     // richer admission policy. Normalize here so direct test/operator config
     // mutation still controls the QueryService concurrency gate.
@@ -358,8 +370,6 @@ fn payload_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use nexus_query_engine::QueryServiceConfig;
-
     use super::*;
 
     #[test]
@@ -385,12 +395,30 @@ mod tests {
         assert_eq!(service.config().stream_pool_size, Some(9));
         assert_eq!(service.config().source_scheduler_policy.max_source_reads_in_flight(), 2);
         assert_eq!(service.config().max_admission_queue_len, 192);
-        assert_eq!(service.config().admission_wait_timeout, QueryServiceConfig::default().admission_wait_timeout);
-        assert_eq!(service.tenant_budget(backend.tenant_id()).unwrap(), 1536);
+        assert_eq!(service.config().admission_wait_timeout, std::time::Duration::from_secs(60));
+        assert_eq!(service.tenant_budget(backend.tenant_id()).unwrap(), 3072);
 
         let permit = admission.try_acquire().unwrap().expect("first query should admit");
         let handle = permit.query_service_handle().expect("query service admission should return a handle");
-        assert_eq!(handle.device_budget_bytes(), 1536);
+        assert_eq!(handle.device_budget_bytes(), 2304);
+    }
+
+    #[test]
+    fn server_backend_honors_admission_wait_timeout_env() {
+        let env = std::collections::BTreeMap::from([
+            (super::super::config::NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, "250".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+        ]);
+        let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+        let admission = QueryAdmission::from_server_config_admission_only(&config).unwrap();
+        let QueryAdmissionBackend::QueryService { backend } = &admission.backend else {
+            panic!("bounded native config should use QueryService admission");
+        };
+
+        assert_eq!(backend.query_service().config().admission_wait_timeout, std::time::Duration::from_millis(250));
     }
 
     #[test]
@@ -414,7 +442,7 @@ mod tests {
         let permit = admission.try_acquire().unwrap().expect("first query should admit");
         let handle = permit.query_service_handle().expect("query service admission should return a handle");
         assert_eq!(handle.device_ordinal(), 0);
-        assert_eq!(handle.device_budget_bytes(), 1024);
+        assert_eq!(handle.device_budget_bytes(), 1792);
     }
 
     #[test]
@@ -453,7 +481,7 @@ mod tests {
         assert!(payload.contains("\t1\tnormal\t512\n"), "{payload}");
         assert!(
             payload.contains(
-                "[device_memory_failure_reports]\ndevice_ordinal\tcallback_installed\tcallback_install_unavailable\tallocation_failure_count\ttotal_failed_allocation_bytes\tlargest_failed_allocation_bytes\n"
+                "[device_memory_failure_reports]\ndevice_ordinal\tcallback_installed\tcallback_install_unavailable\tallocation_failure_count\ttotal_failed_allocation_bytes\tlargest_failed_allocation_bytes\ttrim_retry_count\tpool_usage_observation_count\tlast_failed_allocation_bytes\tlast_pool_reserved_current_bytes\tlast_pool_used_current_bytes\n"
             ),
             "{payload}"
         );

@@ -100,6 +100,73 @@ fn wait_for_requested_shrink(grant: &MemoryGrant, expected: Option<u64>) {
 }
 
 #[test]
+fn requested_grant_bytes_override_tenant_want_for_one_admission() {
+    let service = QueryService::new_for_admission_tests(
+        QueryServiceConfig {
+            device_capacity_bytes: Some(4096),
+            max_concurrent_queries: 1,
+            max_admission_queue_len: 4,
+            ..QueryServiceConfig::default()
+        },
+        vec![QueryServiceTenantConfig::with_grant_range("tenant", 1024, 3072)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let handle = service
+        .try_admit_query_with_qos_and_requested_grant_bytes("tenant", QueryQos::default(), Some(1536))
+        .unwrap()
+        .expect("request within tenant band should admit");
+
+    assert_eq!(handle.device_budget_bytes(), 1536);
+    assert_eq!(
+        handle.memory_control_policy(),
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1536,
+            max_source_chunk_bytes: 64 * 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        }
+    );
+    drop(handle);
+
+    let default_handle = service.admit_query("tenant").unwrap();
+    assert_eq!(default_handle.device_budget_bytes(), 3072);
+}
+
+#[test]
+fn requested_grant_bytes_rejects_outside_tenant_band_and_capacity() {
+    let service = QueryService::new_for_admission_tests(
+        QueryServiceConfig {
+            device_capacity_bytes: Some(2048),
+            max_concurrent_queries: 1,
+            max_admission_queue_len: 4,
+            ..QueryServiceConfig::default()
+        },
+        vec![QueryServiceTenantConfig::with_grant_range("tenant", 512, 4096)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let below_min = service
+        .tenant_requested_budget(&TenantId::new("tenant"), Some(256))
+        .expect_err("requested grant below tenant min should reject");
+    assert_eq!(below_min.fact_value("reason"), Some("requested_grant_below_minimum"));
+
+    let above_want = service
+        .tenant_requested_budget(&TenantId::new("tenant"), Some(8192))
+        .expect_err("requested grant above tenant want should reject");
+    assert_eq!(above_want.fact_value("reason"), Some("requested_grant_above_tenant_want"));
+
+    let above_capacity = service
+        .tenant_requested_budget(&TenantId::new("tenant"), Some(3072))
+        .expect_err("requested grant above device capacity should reject");
+    assert_eq!(above_capacity.fact_value("reason"), Some("requested_grant_above_device_capacity"));
+    assert_eq!(above_capacity.fact_value("max_device_capacity_bytes"), Some("2048"));
+}
+
+#[test]
 fn query_service_assigns_fixed_per_tenant_bounded_budget() {
     let service = test_service(2, 8);
 

@@ -67,7 +67,7 @@ fn query_service_places_concurrent_runtime_handles_on_distinct_devices_when_avai
 }
 
 #[test]
-fn query_service_memory_failure_callback_counts_budget_failures() {
+fn query_service_memory_failure_callback_ignores_budget_failures() {
     if cudf::DeviceId::count().unwrap_or(0) < 1 {
         return;
     }
@@ -107,9 +107,11 @@ fn query_service_memory_failure_callback_counts_budget_failures() {
 
     let report = service.device_memory_failure_reports().into_iter().next().unwrap();
     assert!(report.callback_installed);
-    assert!(report.allocation_failure_count > initial_report.allocation_failure_count);
-    assert!(report.total_failed_allocation_bytes >= initial_report.total_failed_allocation_bytes);
-    assert!(report.largest_failed_allocation_bytes > 0);
+    assert_eq!(report.allocation_failure_count, initial_report.allocation_failure_count);
+    assert_eq!(report.total_failed_allocation_bytes, initial_report.total_failed_allocation_bytes);
+    assert_eq!(report.largest_failed_allocation_bytes, initial_report.largest_failed_allocation_bytes);
+    assert_eq!(report.last_failed_allocation_bytes, initial_report.last_failed_allocation_bytes);
+    assert!(report.pool_usage_observation_count >= initial_report.pool_usage_observation_count);
 }
 
 #[test]

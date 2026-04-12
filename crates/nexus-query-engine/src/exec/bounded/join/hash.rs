@@ -1452,6 +1452,7 @@ fn materialize_bounded_root_hash_join_index_slice(
         Ok(output) => Ok(vec![output]),
         Err(error) if len > 1 && is_retryable_join_stream_slice_error(&error) => {
             record_join_stream_slice_retry_error(&error, metrics);
+            crate::exec::retry::backoff_before_retry(context, "nexus_query_engine.exec.bounded.hash_join_slice_retry")?;
             let left_len = len / 2;
             let right_len = len - left_len;
             let mut outputs = materialize_bounded_root_hash_join_index_slice(

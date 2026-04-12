@@ -122,6 +122,10 @@ impl FinalSortExecutor<'_> {
                         {
                             merge_fan_in = reduced_fan_in;
                             attempt += 1;
+                            crate::exec::retry::backoff_before_retry(
+                                self.context,
+                                "nexus_query_engine.exec.bounded.hierarchical_topk_merge_retry",
+                            )?;
                             continue;
                         }
 
@@ -289,6 +293,10 @@ impl FinalSortExecutor<'_> {
                         {
                             merge_fan_in = reduced_fan_in;
                             attempt += 1;
+                            crate::exec::retry::backoff_before_retry(
+                                self.context,
+                                "nexus_query_engine.exec.bounded.hierarchical_topk_stream_merge_retry",
+                            )?;
                             continue;
                         }
 

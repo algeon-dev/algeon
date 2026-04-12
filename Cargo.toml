@@ -7,7 +7,13 @@ rust-version = { workspace = true }
 build = "build.rs"
 
 [workspace]
-members = [".", "crates/nexus-query-engine", "crates/datafusion-nexus-bench", "crates/datafusion-nexus-tools"]
+members = [
+  ".",
+  "crates/nexus-query-engine",
+  "crates/datafusion-nexus-bench",
+  "crates/datafusion-nexus-tools",
+  "crates/datafusion-nexus-examples",
+]
 default-members = [
   ".",
   "crates/nexus-query-engine",
@@ -33,10 +39,13 @@ cudf = { path = "../cudf-rs/cudf-rs" }
 cudf-sys = { path = "../cudf-rs/cudf-sys" }
 cugraph = { path = "../cugraph-rs/cugraph-rs" }
 cugraph-sys = { path = "../cugraph-rs/cugraph-sys" }
+anyhow = "1"
 arrow = { version = "58.3.0", default-features = false, features = ["ipc"] }
 arrow-flight = { version = "58.3", features = ["flight-sql-experimental"] }
+arrow-json = "58.3.0"
 aws-config = "1.8"
 aws-credential-types = "1.2"
+axum = "0.8"
 datafusion = "54"
 futures = "0.3"
 iceberg = { path = "../iceberg-rust/crates/iceberg" }
@@ -46,10 +55,14 @@ iceberg-datafusion = { path = "../iceberg-rust/crates/integrations/datafusion" }
 iceberg-storage-opendal = { path = "../iceberg-rust/crates/storage/opendal" }
 object_store = { version = "0.13", default-features = false, features = ["aws"] }
 parquet = { version = "58.3", features = ["async", "object_store"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3.27"
 tokio = { version = "1.52" }
+tokio-util = "0.7"
 tonic = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [features]
 default = []

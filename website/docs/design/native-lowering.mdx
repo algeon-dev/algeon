@@ -66,9 +66,11 @@ planner inside the adapter.
       kind: 'fallback', name: 'original operators', note: 'structured rejection', tone: 'reject',
       sub: 'stock DataFusion execution',
       detail: <>A rejected CPU-readable candidate keeps its original DataFusion
-        operators. GPU-only table-format leaves cannot execute through a CPU
-        Arrow reader, so the leaf guard converts leftovers into a structured
-        planning error. Either way, rejection is reportable: the
+        operators. Server deployments bound concurrent CPU fallback statements
+        with a host-side semaphore that is separate from GPU admission.
+        GPU-only table-format leaves cannot execute through a CPU Arrow reader,
+        so the leaf guard converts leftovers into a structured planning error.
+        Either way, rejection is reportable: the
         <code>FallbackReason</code> says which operator, expression, type,
         source contract, reservation contract, or policy blocked the native
         path.</>,
@@ -111,6 +113,13 @@ path. GPU-only table-format scan leaves are different: they are metadata-only
 planning leaves with no CPU Arrow reader, so the leaf guard turns a surviving
 leaf into a structured planning error. `GpuOnly` turns the first native rejection
 into a planning error.
+
+CPU fallback is not priced as GPU work. A fallback statement does not acquire a
+`QueryService` slot or device-memory grant, so it does not appear in the GPU
+admission ledger. Server mode still bounds this host-side work with
+`NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS` (default `2`, `0` to
+disable); library mode leaves it unbounded unless the caller installs a
+`CudfOptimizerConfig` fallback limit.
 
 ## Session wiring
 

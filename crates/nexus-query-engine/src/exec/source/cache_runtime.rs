@@ -72,7 +72,6 @@ pub(super) fn read_optimized_local_cache_chunk_batch(
         .with_fact("path", optimized_cache_path_fact(entry))
     })?;
     let token = context
-        .runtime()
         .execution_budget_token(ExecutionBudgetRequest::new(budget_bytes).with_boundary(budget_boundary))
         .map_err(|error| {
             QueryError::from_cudf_with_budget_details(

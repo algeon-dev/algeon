@@ -476,12 +476,20 @@ fn execute_bounded_generic_graph_algorithm(
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
+        let graph_reservable_remaining_bytes = match reservations.reservable_remaining_bytes() {
+            Ok(remaining) => remaining,
+            Err(error) => {
+                drop(filtered_input);
+                reservations.release(input_reservation, metrics);
+                return Err(error.with_fact_if_absent("node_id", node_id));
+            },
+        };
         let report = match graph_memory_reservation_report(
             node_id,
             &graph.spec,
             filtered_input.frame(),
             sanitized_input_rows,
-            Some(reservations.remaining_bytes()),
+            Some(graph_reservable_remaining_bytes),
             device_total_memory_bytes,
             false,
             vertex_estimate,
@@ -503,16 +511,17 @@ fn execute_bounded_generic_graph_algorithm(
         .with_stage("graph_memory_admission");
         metrics.record_graph_reservation(report.clone());
         if report.outcome == crate::graph_memory::GraphReservationOutcome::Denied {
-            let remaining = reservations.remaining_bytes();
             metrics.record_reservation_denied_timeline_event(
                 &request,
                 crate::metrics::MemoryReservationEventAction::Reserve,
-                remaining,
+                graph_reservable_remaining_bytes,
                 reservations.reserved_bytes(),
             );
             drop(filtered_input);
             reservations.release(input_reservation, metrics);
-            return Err(report.denied_error(&request, remaining).with_fact_if_absent("node_id", node_id));
+            return Err(report
+                .denied_error(&request, graph_reservable_remaining_bytes)
+                .with_fact_if_absent("node_id", node_id));
         }
 
         match reservations.try_reserve_work(request, metrics) {
@@ -640,7 +649,7 @@ fn graph_memory_vertex_estimate_with_reservation(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<Option<crate::graph_memory::GraphVertexEstimate>> {
-    let remaining = reservations.remaining_bytes();
+    let remaining = reservations.reservable_remaining_bytes()?;
     if remaining == 0 {
         return Ok(None);
     }

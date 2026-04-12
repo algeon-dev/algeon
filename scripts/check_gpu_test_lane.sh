@@ -66,7 +66,9 @@ datafusion-nexus-bench::native_clickbench_execution_report_tests
 datafusion-nexus-bench::tpcds_workload_tests
 datafusion-nexus-bench::tpch_workload_tests
 datafusion-nexus-bench::bin/cpu_tpch_profile_sweep
+datafusion-nexus-bench::bin/c1_mixed_fallback_experiment
 datafusion-nexus-bench::bin/cugraph_sql_construction_report
+datafusion-nexus-bench::bin/empty_input_agg_probe
 datafusion-nexus-bench::bin/native_clickbench_benchmark
 datafusion-nexus-bench::bin/native_clickbench_execution_report
 datafusion-nexus-bench::bin/native_datafusion_planning_report
@@ -80,6 +82,7 @@ datafusion-nexus-bench::bin/native_tpch_execution_report
 datafusion-nexus-bench::bin/query_service_iceberg_stress
 datafusion-nexus-bench::bin/query_service_tpcds_stress
 datafusion-nexus-bench::bin/query_service_tpch_stress
+datafusion-nexus-bench::bin/substrait_ingress_experiment
 datafusion-nexus-bench::bin/tpcds_outlier_triage
 datafusion-nexus-bench::bin/tpcds_three_way_bench
 "

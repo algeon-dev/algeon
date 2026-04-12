@@ -2180,4 +2180,39 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].row_group_rows.as_deref(), Some(&[123][..]));
     }
+
+    #[test]
+    fn table_format_zero_column_file_row_count_creates_synthetic_row_group_metadata() {
+        let mut scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg);
+        scan_plan.data_files.push(
+            TableFormatDataFile::new(
+                "file-0",
+                "s3://bucket/table/part-0.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            )
+            .with_size_bytes(1024)
+            .with_row_count(123)
+            .with_resolved_parquet_source(ResolvedParquetSource::remote_host_buffer(
+                "s3://bucket/table/part-0.parquet",
+                "s3://bucket/table/part-0.parquet",
+                CredentialMode::SharedProcessEnv,
+            )),
+        );
+        let mut requirements = test_column_requirements();
+        requirements.read_columns.clear();
+        requirements.read_column_file_indices.clear();
+        requirements.projected_output_columns.clear();
+        requirements.projected_output_column_source_refs.clear();
+        requirements.pure_filter_columns.clear();
+        requirements.pure_filter_column_source_refs.clear();
+        requirements.partition_columns.clear();
+        requirements.partition_column_indices.clear();
+        requirements.scan_output_columns.clear();
+
+        let files = table_format_local_parquet_files(&scan_plan, &requirements).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].row_group_rows.as_deref(), Some(&[123][..]));
+    }
 }

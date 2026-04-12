@@ -8,7 +8,7 @@ SF="${SF:-1}"
 REUSE_PARQUET=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIXTURE_SCRIPT="$(cd "${SCRIPT_DIR}/../.." && pwd)/fixture.sh"
+FIXTURE_SCRIPT="${SCRIPT_DIR}/fixture.sh"
 REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
 LOCAL_ICEBERG_DIR="${REPO_ROOT}/fixture/iceberg-local"
 
@@ -31,7 +31,7 @@ TPCDS_TABLES="call_center,catalog_page,catalog_returns,catalog_sales,customer,cu
 
 usage() {
   cat <<'USAGE'
-Usage: glue_moto_load.sh [options]
+Usage: iceberg_glue_moto_load.sh [options]
 
 Options:
   --workload tpch|tpcds  Workload to load (default: tpch)

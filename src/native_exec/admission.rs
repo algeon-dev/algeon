@@ -39,6 +39,16 @@ impl QueryAdmissionSource {
     pub(crate) fn new(service: QueryService, tenant_id: TenantId) -> Self {
         Self { service, tenant_id, qos: QueryQos::default() }
     }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn service_matches(&self, service: &QueryService) -> bool {
+        self.service.same_service(service)
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn tenant_id(&self) -> &TenantId {
+        &self.tenant_id
+    }
 }
 
 /// Immutable facts assigned when query-service admission succeeds.
@@ -67,6 +77,7 @@ pub(crate) struct QueryAdmissionTicket {
     #[cfg(test)]
     id: u64,
     source: QueryAdmissionSource,
+    requested_grant_bytes: Option<u64>,
     state: Mutex<TicketState>,
     notify: Arc<Notify>,
 }
@@ -177,13 +188,14 @@ struct TicketAdmitResetGuard {
 }
 
 impl QueryAdmissionTicket {
-    pub(crate) fn new(source: QueryAdmissionSource) -> Arc<Self> {
+    pub(crate) fn new(source: QueryAdmissionSource, requested_grant_bytes: Option<u64>) -> Arc<Self> {
         #[cfg(test)]
         static NEXT_TICKET_ID: AtomicU64 = AtomicU64::new(1);
         Arc::new(Self {
             #[cfg(test)]
             id: NEXT_TICKET_ID.fetch_add(1, Ordering::Relaxed),
             source,
+            requested_grant_bytes,
             state: Mutex::new(TicketState::default()),
             notify: Arc::new(Notify::new()),
         })
@@ -192,6 +204,11 @@ impl QueryAdmissionTicket {
     #[cfg(test)]
     pub(crate) fn id(&self) -> u64 {
         self.id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn requested_grant_bytes(&self) -> Option<u64> {
+        self.requested_grant_bytes
     }
 
     pub(crate) fn begin_execution_round(
@@ -279,14 +296,22 @@ impl QueryAdmissionTicket {
         cancellation: ExecutionCancellation,
     ) -> nexus_query_engine::Result<TicketTenantQueryContext> {
         let mut reset_guard = TicketAdmitResetGuard { ticket: Arc::clone(self), task_key, disarmed: false };
-        let handle =
-            match self.source.service.admit_async_with_qos(self.source.tenant_id.clone(), self.source.qos).await {
-                Ok(handle) => Arc::new(handle),
-                Err(error) => {
-                    reset_guard.reset();
-                    return Err(error);
-                },
-            };
+        let handle = match self
+            .source
+            .service
+            .admit_async_with_qos_and_requested_grant_bytes(
+                self.source.tenant_id.clone(),
+                self.source.qos,
+                self.requested_grant_bytes,
+            )
+            .await
+        {
+            Ok(handle) => Arc::new(handle),
+            Err(error) => {
+                reset_guard.reset();
+                return Err(error);
+            },
+        };
 
         let epoch = {
             let mut state = self.lock_state()?;
@@ -676,7 +701,7 @@ mod tests {
     fn admission_only_ticket() -> (Arc<QueryAdmissionTicket>, QueryService, TenantId) {
         let tenant_id = TenantId::new("tenant");
         let service = admission_only_service(&tenant_id);
-        let ticket = QueryAdmissionTicket::new(QueryAdmissionSource::new(service.clone(), tenant_id.clone()));
+        let ticket = QueryAdmissionTicket::new(QueryAdmissionSource::new(service.clone(), tenant_id.clone()), None);
         (ticket, service, tenant_id)
     }
 
@@ -697,6 +722,29 @@ mod tests {
                 epoch,
                 admission_facts_recorded: false,
             },
+        );
+    }
+
+    #[test]
+    fn admission_ticket_carries_requested_grant_bytes_for_admission() {
+        let tenant_id = TenantId::new("tenant");
+        let service = QueryService::new_admission_only(
+            QueryServiceConfig {
+                max_concurrent_queries: 1,
+                device_capacity_bytes: Some(1024),
+                max_admission_queue_len: 1,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), 256, 1024)],
+            nongds_deployment(),
+        )
+        .unwrap();
+        let ticket = QueryAdmissionTicket::new(QueryAdmissionSource::new(service.clone(), tenant_id), Some(512));
+
+        assert_eq!(ticket.requested_grant_bytes(), Some(512));
+        assert_eq!(
+            service.tenant_requested_budget(&ticket.source.tenant_id, ticket.requested_grant_bytes()).unwrap(),
+            512
         );
     }
 

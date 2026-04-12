@@ -1,4 +1,4 @@
-use super::*;
+use super::{super::create_grant_reservation_arena, *};
 
 #[derive(Debug)]
 pub(super) struct QueryHandleLifetime {
@@ -286,13 +286,16 @@ impl QueryHandle {
         validate_service_stream_pool_device(device.stream_pool(), stream_lease.runtime().device())?;
         let stream_lease_guard = Arc::new(stream_lease);
         let memory_grant = self.lifetime.memory_grant()?;
+        let runtime = stream_lease_guard.shared_runtime();
+        let grant_reservation_arena = create_grant_reservation_arena(runtime.as_ref(), Some(&memory_grant))?;
         let context = ExecutionContext::from_parts(ExecutionContextParts {
             query_id: Some(QueryId::new(format!("service-{}", self.query_id))),
             trace_id: None,
-            runtime: stream_lease_guard.shared_runtime(),
+            runtime,
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy(),
             memory_grant: Some(memory_grant),
+            grant_reservation_arena,
             boundary_policy: self.service.config.boundary_policy,
             source_scheduler_policy: self.service.config.source_scheduler_policy,
             source_chunk_planning_mode: self.service.config.source_chunk_planning_mode,

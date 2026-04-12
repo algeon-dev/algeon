@@ -1338,7 +1338,12 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::{
+        array::Int64Array,
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
     use super::*;
     use crate::{
@@ -1445,6 +1450,17 @@ mod tests {
 
     fn missing_metadata_source() -> LocalParquetSource {
         source_from_file(LocalParquetFile::new("/tmp/missing-metadata.parquet").with_row_groups((0..2048).collect()))
+    }
+
+    fn write_i64_parquet(path: &PathBuf, values: &[i64], max_row_group_rows: usize) {
+        let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int64, false)]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(values.to_vec()))]).unwrap();
+        let props = WriterProperties::builder().set_max_row_group_row_count(Some(max_row_group_rows)).build();
+        let file = fs::File::create(path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
     }
 
     #[test]
@@ -1834,6 +1850,59 @@ mod tests {
         assert!(plan.chunks[0].reads_all_row_groups);
         assert!(plan.chunks[0].row_group_indexes.is_empty());
         assert_eq!(plan.chunks[0].source_file_row_group_rows, None);
+    }
+
+    #[test]
+    fn object_store_zero_column_count_uses_synthetic_row_count_metadata() {
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
+            .expect("valid s3 object URI")
+            .with_file_size_bytes(1024)
+            .with_row_group_rows(vec![123]);
+        let source = LocalParquetSource::zero_column_count(vec![file]);
+        let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+            &source,
+            bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
+            SourceChunkPlanningMode::Conservative,
+        );
+
+        let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_internal_use(3), &source, policy).unwrap();
+
+        assert_eq!(plan.chunk_count(), 1);
+        assert_eq!(plan.chunks[0].row_group_indexes, vec![0]);
+        assert!(!plan.chunks[0].reads_all_row_groups);
+        assert_eq!(plan.chunks[0].known_row_count, Some(123));
+        assert_eq!(plan.chunks[0].source_file_row_group_rows.as_deref(), Some(&[123][..]));
+    }
+
+    #[test]
+    fn chunk_planning_prefers_footer_row_counts_over_whole_file_synthetic_count() {
+        let path = std::env::temp_dir().join(format!(
+            "nexus-query-engine-zero-column-count-footer-{}-{}.parquet",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        write_i64_parquet(&path, &[1, 2, 3, 4, 5], 2);
+        let file_size = fs::metadata(&path).unwrap().len();
+        let file = LocalParquetFile::new(path.clone()).with_file_size_bytes(file_size).with_row_group_rows(vec![5]);
+        let source = LocalParquetSource::zero_column_count(vec![file]);
+        let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+            &source,
+            bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
+            SourceChunkPlanningMode::Conservative,
+        );
+
+        let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_internal_use(3), &source, policy).unwrap();
+
+        assert_eq!(plan.chunk_count(), 3);
+        assert_eq!(plan.chunks[0].row_group_indexes, vec![0]);
+        assert_eq!(plan.chunks[1].row_group_indexes, vec![1]);
+        assert_eq!(plan.chunks[2].row_group_indexes, vec![2]);
+        assert_eq!(
+            plan.chunks.iter().map(|chunk| chunk.known_row_count).collect::<Vec<_>>(),
+            vec![Some(2), Some(2), Some(1)]
+        );
+        assert!(plan.chunks.iter().all(|chunk| chunk.source_file_row_group_rows.as_deref() == Some(&[2, 2, 1][..])));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -71,6 +71,29 @@ impl ServerError {
         Self::new(ErrorCode::Internal, "datafusion_nexus.server.startup", message)
     }
 
+    pub(crate) fn builder_validation(reason: &'static str, message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InvalidRequest, "datafusion_nexus.server.builder", message).with_fact("reason", reason)
+    }
+
+    pub(crate) fn builder_conflict(
+        reason: &'static str,
+        field: &'static str,
+        config_value: impl ToString,
+        backend_value: impl ToString,
+    ) -> Self {
+        Self::builder_validation(
+            reason,
+            format!(
+                "server config field `{field}` conflicts with injected backend: config={} backend={}",
+                config_value.to_string(),
+                backend_value.to_string()
+            ),
+        )
+        .with_fact("config_field", field)
+        .with_fact("config_value", config_value)
+        .with_fact("backend_value", backend_value)
+    }
+
     pub fn session(message: impl Into<String>, source: impl StdError + Send + Sync + 'static) -> Self {
         let message = message.into();
         let source: Box<dyn StdError + Send + Sync> = Box::new(source);

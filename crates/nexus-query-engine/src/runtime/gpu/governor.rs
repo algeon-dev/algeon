@@ -15,7 +15,15 @@ use crate::{
 };
 
 type ReleaseObserver = Arc<dyn Fn() + Send + Sync + 'static>;
+pub(crate) type BudgetChangeObserver = Arc<dyn Fn(BudgetChange) + Send + Sync + 'static>;
 const NO_SHRINK_REQUEST: u64 = 0;
+
+/// Ordered memory-grant budget update delivered to observers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BudgetChange {
+    pub(crate) budget_bytes: u64,
+    pub(crate) sequence: u64,
+}
 
 /// Request for a variable per-query GPU memory grant.
 #[derive(Debug, Clone, Copy)]
@@ -110,8 +118,10 @@ struct MemoryGrantInner {
     min_bytes: u64,
     budget_bytes: AtomicU64,
     live_reserved_bytes: AtomicU64,
+    budget_change_sequence: AtomicU64,
     release_observers: Mutex<Vec<ReleaseObserver>>,
     budget_decrease_observers: Mutex<Vec<ReleaseObserver>>,
+    budget_change_observers: Mutex<Vec<BudgetChangeObserver>>,
 }
 
 /// Point-in-time governor report. This is intentionally separate from strict
@@ -295,8 +305,10 @@ impl MemoryGovernor {
                 min_bytes: request.min_bytes,
                 budget_bytes: AtomicU64::new(budget_bytes),
                 live_reserved_bytes: AtomicU64::new(0),
+                budget_change_sequence: AtomicU64::new(0),
                 release_observers: Mutex::new(Vec::new()),
                 budget_decrease_observers: Mutex::new(Vec::new()),
+                budget_change_observers: Mutex::new(Vec::new()),
             }),
         })
     }
@@ -325,6 +337,10 @@ impl MemoryGrant {
     /// Query id that owns this grant.
     pub fn query_id(&self) -> u64 {
         self.inner.query_id
+    }
+
+    pub(crate) fn identity_key(&self) -> usize {
+        Arc::as_ptr(&self.inner) as usize
     }
 
     /// QoS metadata attached to the grant request.
@@ -539,6 +555,9 @@ impl MemoryGrant {
         let budget_bytes = active.budget_bytes;
         state.outstanding_bytes = state.outstanding_bytes.saturating_add(additional_bytes);
         self.inner.budget_bytes.store(budget_bytes, Ordering::Release);
+        let change = self.next_budget_change(budget_bytes);
+        drop(state);
+        self.notify_budget_change_observers(change);
         Ok(true)
     }
 
@@ -568,6 +587,9 @@ impl MemoryGrant {
         active.budget_bytes = target_bytes;
         state.outstanding_bytes = state.outstanding_bytes.saturating_add(additional_bytes);
         self.inner.budget_bytes.store(target_bytes, Ordering::Release);
+        let change = self.next_budget_change(target_bytes);
+        drop(state);
+        self.notify_budget_change_observers(change);
         Ok(true)
     }
 
@@ -602,8 +624,10 @@ impl MemoryGrant {
         }
         state.outstanding_bytes = state.outstanding_bytes.saturating_sub(refunded_bytes);
         self.inner.budget_bytes.store(target_bytes, Ordering::Release);
+        let change = self.next_budget_change(target_bytes);
         self.inner.governor.available.notify_all();
         drop(state);
+        self.notify_budget_change_observers(change);
         self.notify_budget_decrease_observers();
         Ok(true)
     }
@@ -649,8 +673,10 @@ impl MemoryGrant {
         let request_satisfied = active.requested_shrink_target_bytes == NO_SHRINK_REQUEST;
         state.outstanding_bytes = state.outstanding_bytes.saturating_sub(refunded_bytes);
         self.inner.budget_bytes.store(safe_target, Ordering::Release);
+        let change = self.next_budget_change(safe_target);
         self.inner.governor.available.notify_all();
         drop(state);
+        self.notify_budget_change_observers(change);
         self.notify_budget_decrease_observers();
         Ok(request_satisfied)
     }
@@ -687,6 +713,42 @@ impl MemoryGrant {
         Ok(())
     }
 
+    /// Adds a callback invoked after this grant's budget changes and returns
+    /// the current sequenced budget state for observer initialization.
+    pub(crate) fn notify_on_budget_change(&self, observer: BudgetChangeObserver) -> Result<BudgetChange> {
+        let mut observers = self.inner.budget_change_observers.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.gpu.memory_grant.notify_on_budget_change",
+                "memory grant budget-change observer mutex was poisoned",
+            )
+        })?;
+        observers.push(observer);
+        self.current_budget_change()
+    }
+
+    fn current_budget_change(&self) -> Result<BudgetChange> {
+        let state = self.inner.governor.state.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.gpu.memory_grant.current_budget_change",
+                "memory governor mutex was poisoned",
+            )
+        })?;
+        let budget_bytes = state
+            .grants
+            .get(&self.inner.grant_id)
+            .map(|active| active.budget_bytes)
+            .unwrap_or_else(|| self.inner.budget_bytes.load(Ordering::Acquire));
+        let sequence = self.inner.budget_change_sequence.load(Ordering::Acquire);
+        Ok(BudgetChange { budget_bytes, sequence })
+    }
+
+    fn next_budget_change(&self, budget_bytes: u64) -> BudgetChange {
+        let sequence = self.inner.budget_change_sequence.fetch_add(1, Ordering::AcqRel) + 1;
+        BudgetChange { budget_bytes, sequence }
+    }
+
     fn notify_budget_decrease_observers(&self) {
         let observers = match self.inner.budget_decrease_observers.lock() {
             Ok(observers) => observers.clone(),
@@ -697,6 +759,19 @@ impl MemoryGrant {
         };
         for observer in observers {
             observer();
+        }
+    }
+
+    fn notify_budget_change_observers(&self, change: BudgetChange) {
+        let observers = match self.inner.budget_change_observers.lock() {
+            Ok(observers) => observers.clone(),
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to notify memory grant budget-change observers");
+                Vec::new()
+            },
+        };
+        for observer in observers {
+            observer(change);
         }
     }
 }
@@ -792,7 +867,7 @@ fn invalid_request(field: &'static str, reason: &'static str, request: &GrantReq
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::mpsc, thread, time::Duration};
+    use std::{collections::HashSet, sync::mpsc, thread, time::Duration};
 
     use super::*;
 
@@ -1023,6 +1098,74 @@ mod tests {
 
         assert!(grant.try_shrink_to(50).unwrap());
         assert_eq!(receiver.recv_timeout(Duration::from_secs(1)).unwrap(), 50);
+    }
+
+    #[test]
+    fn budget_change_observer_runs_on_grow_and_shrink() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 40)).unwrap().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let initial =
+            grant.notify_on_budget_change(Arc::new(move |change| sender.send(change.budget_bytes).unwrap())).unwrap();
+        assert_eq!(initial.budget_bytes, 40);
+        assert_eq!(initial.sequence, 0);
+
+        assert!(grant.try_grow_to(70).unwrap());
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(1)).unwrap(), 70);
+
+        assert!(grant.try_shrink_to(50).unwrap());
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(1)).unwrap(), 50);
+
+        assert!(grant.try_grow(0).unwrap());
+        assert!(grant.try_shrink_to(90).unwrap());
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn current_budget_change_snapshots_match_published_pairs_under_concurrency() -> Result<()> {
+        fn locked_pair(grant: &MemoryGrant) -> (u64, u64) {
+            let state = grant.inner.governor.state.lock().unwrap();
+            let budget = state.grants.get(&grant.inner.grant_id).unwrap().budget_bytes;
+            let sequence = grant.inner.budget_change_sequence.load(Ordering::Acquire);
+            (budget, sequence)
+        }
+
+        let governor = MemoryGovernor::new(0, 200)?;
+        let grant = governor.try_request(GrantRequest::new(1, 50, 100))?.unwrap();
+        let published = Arc::new(Mutex::new(vec![locked_pair(&grant)]));
+        let writer_grant = grant.clone();
+        let writer_published = Arc::clone(&published);
+        let writer = thread::spawn(move || -> Result<()> {
+            for iteration in 0..10_000 {
+                if iteration % 2 == 0 {
+                    assert!(writer_grant.try_grow_to(150)?);
+                } else {
+                    assert!(writer_grant.try_shrink_to(100)?);
+                }
+                writer_published.lock().unwrap().push(locked_pair(&writer_grant));
+                thread::yield_now();
+            }
+            Ok(())
+        });
+
+        let mut observed = Vec::new();
+        while !writer.is_finished() {
+            let change = grant.current_budget_change()?;
+            observed.push((change.budget_bytes, change.sequence));
+            thread::yield_now();
+        }
+        writer.join().unwrap()?;
+        for _ in 0..100 {
+            let change = grant.current_budget_change()?;
+            observed.push((change.budget_bytes, change.sequence));
+        }
+
+        let published = published.lock().unwrap().iter().copied().collect::<HashSet<_>>();
+        assert!(!observed.is_empty());
+        for pair in observed {
+            assert!(published.contains(&pair), "observed torn budget snapshot {pair:?}");
+        }
+        Ok(())
     }
 
     #[test]

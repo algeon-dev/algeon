@@ -10,22 +10,58 @@ use super::{
     config::{ServerConfig, ServerSessionProfile},
     error::ServerError,
 };
-use crate::CudfSessionStateBuilderExt;
 #[cfg(feature = "cugraph")]
 use crate::CugraphSqlConfig;
+use crate::{CudfSessionStateBuilderExt, NexusGpuBackend};
 
 pub async fn build_session_context(config: &ServerConfig) -> super::error::Result<SessionContext> {
+    build_session_context_with_backend(config, None).await
+}
+
+pub async fn build_session_context_with_backend(
+    config: &ServerConfig,
+    backend: Option<&NexusGpuBackend>,
+) -> super::error::Result<SessionContext> {
     let session_config = build_session_config(config)?;
-    let builder = SessionStateBuilder::new_with_default_features()
-        .with_config(session_config)
-        .with_cudf_native(config.native_optimizer_config.clone());
-    #[cfg(feature = "cugraph")]
-    let builder = match &config.cugraph {
-        Some(cugraph) => builder.with_cugraph_sql(cugraph_sql_config(
-            cugraph,
-            config.native_optimizer_config.native_execution_config().clone(),
-        )),
-        None => builder,
+    let builder = SessionStateBuilder::new_with_default_features().with_config(session_config);
+    let builder = match backend {
+        Some(backend) => {
+            #[cfg(feature = "cugraph")]
+            {
+                match &config.cugraph {
+                    Some(cugraph) => backend
+                        .install_on_with_cugraph_sql(
+                            builder,
+                            cugraph_sql_config(
+                                cugraph,
+                                config.native_optimizer_config.native_execution_config().clone(),
+                            ),
+                        )
+                        .map_err(|error| ServerError::session("failed to install backend native session", error))?,
+                    None => backend
+                        .install_on(builder)
+                        .map_err(|error| ServerError::session("failed to install backend native session", error))?,
+                }
+            }
+            #[cfg(not(feature = "cugraph"))]
+            {
+                backend
+                    .install_on(builder)
+                    .map_err(|error| ServerError::session("failed to install backend native session", error))?
+            }
+        },
+        None => {
+            let builder = builder.with_cudf_native(config.native_optimizer_config.clone());
+            #[cfg(feature = "cugraph")]
+            let builder = match &config.cugraph {
+                Some(cugraph) => builder.with_cugraph_sql(cugraph_sql_config(
+                    cugraph,
+                    config.native_optimizer_config.native_execution_config().clone(),
+                )),
+                None => builder,
+            };
+            builder
+        },
     };
     let state = builder.build();
     let ctx = SessionContext::new_with_state(state);

@@ -227,7 +227,7 @@ impl ActiveReservation {
             source_cache_key: Some(source_cache_key),
             event_context: ActiveReservationEventContext::from_request(request),
             semantics: ActiveReservationSemantics::Alias,
-            lineage: None,
+            lineage: Some(Rc::new(ActiveReservationLineage::new())),
             release_action: MemoryReservationEventAction::AliasRelease,
             bytes,
             charged_bytes: 0,
@@ -250,7 +250,7 @@ impl ActiveReservation {
             source_cache_key: None,
             event_context: ActiveReservationEventContext::from_request(request),
             semantics: ActiveReservationSemantics::Alias,
-            lineage: None,
+            lineage: Some(Rc::new(ActiveReservationLineage::new())),
             release_action: MemoryReservationEventAction::AliasRelease,
             bytes,
             charged_bytes: 0,
@@ -488,6 +488,7 @@ pub(in crate::exec) struct ReservationTracker {
 #[derive(Debug, Clone)]
 enum ReservationBudget {
     Static(u64),
+    GrantBackedStatic { budget_bytes: u64, grant: MemoryGrant },
     AdaptiveGrant(MemoryGrant),
 }
 
@@ -495,6 +496,7 @@ impl ReservationBudget {
     fn bytes(&self) -> u64 {
         match self {
             Self::Static(bytes) => *bytes,
+            Self::GrantBackedStatic { budget_bytes, .. } => *budget_bytes,
             Self::AdaptiveGrant(grant) => grant.budget_bytes(),
         }
     }
@@ -502,6 +504,7 @@ impl ReservationBudget {
     fn live_accounting(&self) -> Option<MemoryGrant> {
         match self {
             Self::Static(_) => None,
+            Self::GrantBackedStatic { grant, .. } => Some(grant.clone()),
             Self::AdaptiveGrant(grant) => Some(grant.clone()),
         }
     }
@@ -509,6 +512,7 @@ impl ReservationBudget {
     fn live_reserved_bytes(&self, tracker_reserved_bytes: u64) -> u64 {
         match self {
             Self::Static(_) => tracker_reserved_bytes,
+            Self::GrantBackedStatic { grant, .. } => grant.live_reserved_bytes(),
             Self::AdaptiveGrant(grant) => grant.live_reserved_bytes(),
         }
     }
@@ -516,6 +520,9 @@ impl ReservationBudget {
     fn remaining_live_reservation_bytes(&self, tracker_remaining_bytes: u64) -> Result<u64> {
         match self {
             Self::Static(_) => Ok(tracker_remaining_bytes),
+            Self::GrantBackedStatic { grant, .. } => {
+                Ok(tracker_remaining_bytes.min(grant.remaining_live_reservation_bytes()?))
+            },
             Self::AdaptiveGrant(grant) => Ok(tracker_remaining_bytes.min(grant.remaining_live_reservation_bytes()?)),
         }
     }
@@ -523,13 +530,17 @@ impl ReservationBudget {
     fn try_reserve_live_bytes(&self, bytes: u64) -> Result<bool> {
         match self {
             Self::Static(_) => Ok(true),
+            Self::GrantBackedStatic { grant, .. } => grant.try_reserve_live_bytes(bytes),
             Self::AdaptiveGrant(grant) => grant.try_reserve_live_bytes(bytes),
         }
     }
 
     fn release_live_bytes(&self, bytes: u64) {
-        if let Self::AdaptiveGrant(grant) = self {
-            grant.release_live_bytes(bytes);
+        match self {
+            Self::Static(_) => {},
+            Self::GrantBackedStatic { grant, .. } | Self::AdaptiveGrant(grant) => {
+                grant.release_live_bytes(bytes);
+            },
         }
     }
 }
@@ -565,13 +576,10 @@ impl ReservationTracker {
         budget_bytes: u64,
         metrics: &mut QueryMetrics,
     ) -> Result<Self> {
-        let budget = if context.native_pipeline_execution_mode() == NativePipelineExecutionMode::Adaptive {
-            context
-                .memory_grant()
-                .cloned()
-                .map_or(ReservationBudget::Static(budget_bytes), ReservationBudget::AdaptiveGrant)
-        } else {
-            ReservationBudget::Static(budget_bytes)
+        let budget = match (context.native_pipeline_execution_mode(), context.memory_grant().cloned()) {
+            (NativePipelineExecutionMode::Adaptive, Some(grant)) => ReservationBudget::AdaptiveGrant(grant),
+            (_, Some(grant)) => ReservationBudget::GrantBackedStatic { budget_bytes, grant },
+            (_, None) => ReservationBudget::Static(budget_bytes),
         };
         let mut tracker = Self::new_with_budget(context.device_memory_space(), budget);
         tracker.query_id = context.query_id().cloned();
@@ -623,7 +631,7 @@ impl ReservationTracker {
 
     pub(in crate::exec) fn acknowledge_requested_grant_shrink(&self) -> Result<bool> {
         match &self.budget {
-            ReservationBudget::Static(_) => Ok(true),
+            ReservationBudget::Static(_) | ReservationBudget::GrantBackedStatic { .. } => Ok(true),
             ReservationBudget::AdaptiveGrant(grant) => {
                 grant.try_apply_requested_shrink(self.budget.live_reserved_bytes(self.raw_reserved_bytes()))
             },
@@ -1187,7 +1195,7 @@ impl ReservationTracker {
         self.reserved_bytes.get()
     }
 
-    fn reservable_remaining_bytes(&self) -> Result<u64> {
+    pub(in crate::exec) fn reservable_remaining_bytes(&self) -> Result<u64> {
         self.budget.remaining_live_reservation_bytes(self.remaining_bytes())
     }
 
@@ -1349,6 +1357,36 @@ mod tests {
     }
 
     #[test]
+    fn grant_backed_static_tracker_retains_live_output_bytes() -> Result<()> {
+        let governor = MemoryGovernor::new(0, 100)?;
+        let grant = governor.try_request(GrantRequest::new(7, 10, 40))?.expect("initial grant should fit");
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::GrantBackedStatic { budget_bytes: 40, grant: grant.clone() },
+        );
+
+        let active = reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "strict_output", 30, reservations.budget()),
+            &mut metrics,
+        )?;
+        assert_eq!(grant.live_reserved_bytes(), 30);
+
+        let retained = active.retain_grant_live_reservation().expect("strict grant should retain live output bytes");
+        drop(active);
+
+        assert_eq!(grant.live_reserved_bytes(), 30);
+        assert!(grant.try_shrink_to(0)?);
+        assert_eq!(grant.budget_bytes(), 30);
+
+        drop(retained);
+        assert_eq!(grant.live_reserved_bytes(), 0);
+        assert!(grant.try_shrink_to(0)?);
+        assert_eq!(grant.budget_bytes(), 10);
+        Ok(())
+    }
+
+    #[test]
     fn adaptive_reservation_tracker_acknowledges_shrink_without_underflowing_live_reservations() -> Result<()> {
         let governor = MemoryGovernor::new(0, 100)?;
         let grant = governor.try_request(GrantRequest::new(7, 30, 80))?.expect("initial grant should fit");
@@ -1484,6 +1522,39 @@ mod tests {
         drop(retained_input);
         assert_eq!(grant.live_reserved_bytes(), 0);
         Ok(())
+    }
+
+    #[test]
+    fn alias_reservation_over_borrowed_resident_releases_without_charging() {
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+
+        let borrowed = reservations.borrow_resident(
+            test_request(ReservationKind::SourceRead, "gpu_resident_source", 40, reservations.budget()),
+            &mut metrics,
+        );
+        let lineage = Rc::clone(borrowed.lineage.as_ref().expect("borrowed resident should carry lineage"));
+        let alias = reservations.alias_reservation(
+            &borrowed,
+            test_request(ReservationKind::OperatorOutput, "borrowed_alias", 40, reservations.budget()),
+            &mut metrics,
+        );
+
+        assert!(alias.is_alias());
+        assert_eq!(alias.charged_bytes(), 0);
+        assert_eq!(reservations.reserved_bytes(), 0);
+        assert_eq!(reservations.raw_reserved_bytes(), 0);
+        assert_eq!(lineage.alias_count.get(), 1);
+
+        reservations.release(alias, &mut metrics);
+        assert_eq!(lineage.alias_count.get(), 0);
+        assert_eq!(lineage.deferred_charged_release_bytes.get(), 0);
+        assert_eq!(reservations.reserved_bytes(), 0);
+
+        reservations.release(borrowed, &mut metrics);
+        assert_eq!(lineage.deferred_charged_release_bytes.get(), 0);
+        assert_eq!(reservations.reserved_bytes(), 0);
+        assert_eq!(reservations.raw_reserved_bytes(), 0);
     }
 
     #[test]
