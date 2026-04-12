@@ -10,15 +10,17 @@ use rapids_interop::{
 };
 
 use super::{
-    OwnedColumnTransferState, OwnedTableTransferState, RuntimeCompletionAuthority, RuntimeLeaseCompletionResult,
-    RuntimeOwnedColumnTransferOwner, RuntimeOwnedTableTransferOwner, RuntimeReadStartAuthority,
-    TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
+    OwnedColumnTransferState, OwnedTableTransferState, RuntimeOwnedColumnTransferOwner, RuntimeOwnedTableTransferOwner,
     import_graph::{
         checked_i32_from_usize, map_interop_type_id, owned_device_import_table_graph,
         prepared_device_import_column_graph, prepared_device_import_column_graph_from_parts,
         prepared_device_import_table_graph,
     },
     map_cudf_error, map_interop_error,
+    runtime_lease::{
+        RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, RuntimeReadStartAuthority,
+        TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
+    },
 };
 use crate::{
     core::{column::Column, error, table::Table},

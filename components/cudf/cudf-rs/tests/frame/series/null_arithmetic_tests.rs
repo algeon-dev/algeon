@@ -313,7 +313,7 @@ fn test_le_scalar_preserves_nulls() {
 
 #[test]
 fn test_eq_scalar_str_preserves_nulls() {
-    let s = Series::from_strs_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
+    let s = Series::new_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.eq_scalar_str("hello").unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
@@ -321,7 +321,7 @@ fn test_eq_scalar_str_preserves_nulls() {
 
 #[test]
 fn test_gt_scalar_str_preserves_nulls() {
-    let s = Series::from_strs_nullable("s", &["banana", "x", "apple"], &[true, false, true]).unwrap();
+    let s = Series::new_nullable("s", &["banana", "x", "apple"], &[true, false, true]).unwrap();
     let result = s.gt_scalar_str("avocado").unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);

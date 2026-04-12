@@ -3,6 +3,7 @@
 //! All tests require a GPU.
 
 use cudf::{
+    ErrorKind,
     core::{Column, Table},
     io::json::{self, JsonTableReadOptions, JsonTableWriteOptions},
 };
@@ -117,6 +118,10 @@ fn test_json_write_rejects_column_name_with_nul_byte() {
 #[test]
 fn test_json_read_nonexistent_file() {
     let read_opts = JsonTableReadOptions::builder().filepath("/nonexistent/file.jsonl").build();
-    let result = json::read_json_table(&read_opts);
-    assert!(result.is_err());
+    let err = match json::read_json_table(&read_opts) {
+        Ok(_) => panic!("missing JSON file should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::NotFound);
 }

@@ -38,7 +38,9 @@ pub struct CsvTableReadOptions {
 
 /// Read a CSV file into a low-level table result.
 pub fn read_csv(options: &CsvTableReadOptions) -> Result<IoTableResult> {
-    let filepath = super::path_to_cstring(&options.filepath, "io::csv::read_csv")?;
+    let operation = "io::csv::read_csv";
+    let filepath = super::path_to_cstring(&options.filepath, operation)?;
+    super::validate_input_path(&options.filepath, operation)?;
     let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
     let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
 
@@ -64,7 +66,7 @@ pub fn read_csv(options: &CsvTableReadOptions) -> Result<IoTableResult> {
                 )
             },
         },
-        "io::csv::read_csv",
+        operation,
         [("delimiter_char", (options.delimiter as char).to_string()), ("has_header", options.has_header.to_string())],
     )?;
     // SAFETY: table_handle was returned by a successful FFI call, transferring ownership.
@@ -206,18 +208,12 @@ fn read_header_names(path: &Path, delimiter: u8) -> Result<Vec<String>> {
     let operation = "io::csv::read_csv";
     let mut reader =
         ::csv::ReaderBuilder::new().has_headers(true).delimiter(delimiter).from_path(path).map_err(|source| {
-            Error::new(ErrorKind::IoError, "failed to open CSV file for header parsing")
-                .with_operation(operation)
-                .with_context("path", path.display().to_string())
-                .set_source(source)
+            super::map_csv_error(source, path, operation, "failed to open CSV file for header parsing")
         })?;
 
-    let headers = reader.headers().map_err(|source| {
-        Error::new(ErrorKind::IoError, "failed to read CSV header")
-            .with_operation(operation)
-            .with_context("path", path.display().to_string())
-            .set_source(source)
-    })?;
+    let headers = reader
+        .headers()
+        .map_err(|source| super::map_csv_error(source, path, operation, "failed to read CSV header"))?;
 
     Ok(headers.iter().map(str::to_owned).collect())
 }

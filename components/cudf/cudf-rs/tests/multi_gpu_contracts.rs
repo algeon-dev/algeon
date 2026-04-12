@@ -873,8 +873,8 @@ fn strings_contains_without_relocation_rejects_cross_device_runtime_inputs() {
 
     let (input_rt, scalar_rt) = first_two_test_runtimes();
 
-    let input = input_rt.str_series("input", &["alpha", "beta", "alphabet"]).unwrap();
-    let scalar = scalar_rt.str_series("seed", &["alpha"]).unwrap().min().unwrap();
+    let input = input_rt.series("input", &["alpha", "beta", "alphabet"]).unwrap();
+    let scalar = scalar_rt.series("seed", &["alpha"]).unwrap().min().unwrap();
 
     let err = match strings::str_contains(&input.as_column_view().unwrap(), &scalar) {
         Ok(_) => panic!("cross-device strings::contains should fail until inputs are explicitly relocated"),
@@ -972,7 +972,7 @@ fn runtime_melt_regression() {
     common::set_current_device(device0);
 
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
-    let a = rt1.str_series("A", &["a", "b", "c"]).unwrap();
+    let a = rt1.series("A", &["a", "b", "c"]).unwrap();
     let b = rt1.series("B", &[1, 3, 5]).unwrap();
     let c = rt1.series("C", &[2, 4, 6]).unwrap();
     let df = DataFrame::from_series(vec![a, b, c]).unwrap();

@@ -4,7 +4,10 @@ use super::owned::DataFrame;
 use crate::{
     core::error::{Error, ErrorKind, Result},
     frame::series::Series,
-    internal::hash::{FastHashSet, fast_hash_set_with_capacity, fast_index_map_with_capacity},
+    internal::{
+        hash::{FastHashSet, fast_hash_set_with_capacity, fast_index_map_with_capacity},
+        resolve::missing_column_error,
+    },
 };
 
 impl DataFrame {
@@ -24,11 +27,7 @@ impl DataFrame {
     ///
     /// Returns an error if `name` is not in the schema.
     pub fn series(&self, name: &str) -> Result<Series> {
-        let col = self.columns.get(name).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                .with_operation("dataframe::series")
-                .with_context("column_name", name.to_string())
-        })?;
+        let col = self.columns.get(name).ok_or_else(|| missing_column_error("dataframe::series", name))?;
 
         Ok(Series::from_column_arc(Arc::clone(col)).rename(name))
     }
@@ -76,11 +75,7 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema.
     pub fn factorize(&self, column: &str) -> Result<(Series, Series)> {
-        let col = self.columns.get(column).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
-                .with_operation("dataframe::factorize")
-                .with_context("column_name", column.to_string())
-        })?;
+        let col = self.columns.get(column).ok_or_else(|| missing_column_error("dataframe::factorize", column))?;
         let cv = col.view()?;
         let (codes_col, uniques_col) = cv.factorize().map_err(|e| {
             let err = if e.operation().is_empty() { e.with_operation("dataframe::factorize") } else { e };
@@ -121,11 +116,7 @@ impl DataFrame {
 
         let mut new_columns = fast_index_map_with_capacity(columns.len());
         for name in &columns {
-            let col = self.columns.get(name.as_str()).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                    .with_operation("dataframe::select")
-                    .with_context("column_name", name.clone())
-            })?;
+            let col = self.columns.get(name.as_str()).ok_or_else(|| missing_column_error("dataframe::select", name))?;
             new_columns.insert(name.clone(), Arc::clone(col));
         }
 
@@ -166,9 +157,7 @@ impl DataFrame {
 
         for name in &to_drop {
             if !self.columns.contains_key(name.as_str()) {
-                return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
-                    .with_operation("dataframe::without_columns")
-                    .with_context("column_name", name.clone()));
+                return Err(missing_column_error("dataframe::without_columns", name));
             }
         }
 

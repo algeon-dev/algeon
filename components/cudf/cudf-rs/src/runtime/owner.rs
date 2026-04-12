@@ -11,7 +11,7 @@ use crate::{
         scalar::Scalar,
         types::{CudfType, TypeId},
     },
-    frame::series::Series,
+    frame::series::{HostColumnData, Series},
 };
 
 /// Owns one explicit retained provenance bundle for a `cudf-rs` pipeline.
@@ -145,19 +145,19 @@ impl Runtime {
         Column::from_device_ptr_with_runtime(self, device_ptr, len, type_id)
     }
 
-    /// Create a fixed-width `Series` inside this runtime.
-    pub fn series<T: CudfType>(&self, name: impl Into<String>, data: &[T]) -> Result<Series> {
-        Series::from_named_column(name, self.column_from_slice(data)?)
+    /// Create a `Series` from a host slice inside this runtime.
+    pub fn series<T: HostColumnData>(&self, name: impl Into<String>, data: &[T]) -> Result<Series> {
+        Series::from_named_column(name, T::create_column_in_runtime(self, data)?)
     }
 
-    /// Create a nullable fixed-width `Series` inside this runtime.
-    pub fn nullable_series<T: CudfType>(
+    /// Create a nullable `Series` from a host slice plus validity mask inside this runtime.
+    pub fn nullable_series<T: HostColumnData>(
         &self,
         name: impl Into<String>,
         data: &[T],
         validity: &[bool],
     ) -> Result<Series> {
-        Series::from_named_column(name, self.column_from_slice_nullable(data, validity)?)
+        Series::from_named_column(name, T::create_column_nullable_in_runtime(self, data, validity)?)
     }
 
     /// Create a fixed-width `Series` from optional host values inside this runtime.
@@ -172,16 +172,6 @@ impl Runtime {
         } else {
             Series::from_named_column(name, self.column_from_slice(&values)?)
         }
-    }
-
-    /// Create a UTF-8 string `Series` inside this runtime.
-    pub fn str_series(&self, name: impl Into<String>, data: &[&str]) -> Result<Series> {
-        Series::from_named_column(name, self.column_from_strs(data)?)
-    }
-
-    /// Create a nullable UTF-8 string `Series` inside this runtime.
-    pub fn nullable_str_series(&self, name: impl Into<String>, data: &[&str], validity: &[bool]) -> Result<Series> {
-        Series::from_named_column(name, self.column_from_strs_nullable(data, validity)?)
     }
 
     /// Create an all-null `Series` inside this runtime.

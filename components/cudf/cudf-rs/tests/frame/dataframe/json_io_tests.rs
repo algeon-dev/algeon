@@ -2,7 +2,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataFrame, JsonReadOptions, JsonWriteOptions, Series};
+use cudf::{DataFrame, ErrorKind, JsonReadOptions, JsonWriteOptions, Series};
 use tempfile::TempDir;
 
 // ===========================================================================
@@ -119,6 +119,7 @@ fn test_dataframe_json_empty_roundtrip() {
 
 #[test]
 fn test_dataframe_json_read_nonexistent_file() {
-    let result = DataFrame::read_json("/nonexistent/file.jsonl");
-    assert!(result.is_err());
+    let err = DataFrame::read_json("/nonexistent/file.jsonl").expect_err("missing JSON file should fail");
+
+    assert_eq!(err.kind(), ErrorKind::NotFound);
 }

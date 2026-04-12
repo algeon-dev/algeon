@@ -162,7 +162,7 @@ fn test_to_optional_strings_distinguishes_null_from_empty() {
 
 #[test]
 fn test_series_to_optional_strings_distinguishes_null_from_empty() {
-    let series = Series::from_strs_nullable("names", &["", "placeholder", ""], &[true, false, true]).unwrap();
+    let series = Series::new_nullable("names", &["", "placeholder", ""], &[true, false, true]).unwrap();
 
     let result = series.to_optional_strings().unwrap();
     assert_eq!(result, vec![Some(String::new()), None, Some(String::new())]);

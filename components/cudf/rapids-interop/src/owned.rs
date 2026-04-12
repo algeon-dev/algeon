@@ -85,7 +85,7 @@ impl OwnedColumnTransfer {
         let column_map = semantic_column_map(&semantic_columns, "column_id")?;
         let mapped_root = column_map.get(&column.id()).copied().ok_or_else(|| {
             InteropError::new(
-                InteropErrorKind::InvalidView,
+                InteropErrorKind::NotFound,
                 "owned column transfer root must be present in the semantic column graph",
             )
             .with_context("column_id", column.id().get().to_string())
@@ -269,7 +269,7 @@ impl OwnedTableTransfer {
         for column_id in table.columns() {
             let column = top_level_map.get(column_id).copied().ok_or_else(|| {
                 InteropError::new(
-                    InteropErrorKind::InvalidView,
+                    InteropErrorKind::NotFound,
                     "owned table transfer referenced a missing top-level semantic column",
                 )
                 .with_context("column_id", column_id.get().to_string())

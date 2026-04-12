@@ -8,9 +8,14 @@ use cudf::{
     DeviceId, Runtime,
     core::{Column, Table},
     interop::{
-        CompletionAuthority, ExportProfile, InteropErrorKind, LeaseCompletionResult, PartitionedDataFrameExport,
-        Placement, ProducerReadiness, ReadStartAuthority, ReleaseSynchronization, RuntimeCompletionAuthority,
-        TransferCompletionRule,
+        PartitionedDataFrameExport,
+        borrowed::Placement,
+        prepared::{
+            CompletionAuthority, ExportProfile, InteropErrorKind, LeaseCompletionResult, ProducerReadiness,
+            ReadStartAuthority,
+        },
+        runtime::RuntimeCompletionAuthority,
+        transfer::{ReleaseSynchronization, TransferCompletionRule},
     },
     runtime::CudaStream,
 };

@@ -295,7 +295,7 @@ where
 
     if let Some((missing_index, _)) = seen.iter().enumerate().find(|(_, covered)| !**covered) {
         return Err(InteropError::new(
-            InteropErrorKind::InvalidView,
+            InteropErrorKind::NotFound,
             format!("{kind} must cover every original top-level column exactly once"),
         )
         .with_context("missing_top_level_column_index", missing_index.to_string()));

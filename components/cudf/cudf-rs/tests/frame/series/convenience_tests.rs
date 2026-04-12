@@ -229,8 +229,8 @@ fn test_isin_all_match() {
 
 #[test]
 fn test_isin_strings() {
-    let s = Series::from_strs("x", &["apple", "banana", "cherry"]).unwrap();
-    let values = Series::from_strs("vals", &["banana", "date"]).unwrap();
+    let s = Series::new("x", &["apple", "banana", "cherry"]).unwrap();
+    let values = Series::new("vals", &["banana", "date"]).unwrap();
     let mask = s.isin(&values).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
@@ -298,7 +298,7 @@ fn test_unique_empty() {
 
 #[test]
 fn test_unique_strings() {
-    let s = Series::from_strs("x", &["a", "b", "a", "c", "b"]).unwrap();
+    let s = Series::new("x", &["a", "b", "a", "c", "b"]).unwrap();
     let uniq = s.unique().unwrap();
 
     assert_eq!(uniq.dtype().unwrap().id(), TypeId::String);
@@ -369,7 +369,7 @@ fn test_factorize_basic() {
 
 #[test]
 fn test_factorize_strings() {
-    let s = Series::from_strs("x", &["a", "b", "a", "c"]).unwrap();
+    let s = Series::new("x", &["a", "b", "a", "c"]).unwrap();
     let (codes, uniques) = s.factorize().unwrap();
 
     assert_eq!(codes.dtype().unwrap().id(), TypeId::Int32);

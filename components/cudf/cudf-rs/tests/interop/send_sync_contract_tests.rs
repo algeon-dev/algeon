@@ -4,11 +4,16 @@ use cudf::{
     DataFrame, DeviceId, Runtime,
     core::{Column, column::DeviceSlice},
     interop::{
-        BorrowedColumnView, BorrowedTableView, CompletionWitnessKind, OwnedColumnTransfer, OwnedTableTransfer,
-        PartitionedRuntimeOwnedTableTransferReleaser, PreparedColumnExport, PreparedTableExport, ProducerReadiness,
-        RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, RuntimeOwnedColumnTransferReleaser,
-        RuntimeOwnedTableTransferReleaser, RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease,
-        TryActivateRuntimeTableReadLease,
+        borrowed::{BorrowedColumnView, BorrowedTableView},
+        prepared::{CompletionWitnessKind, PreparedColumnExport, PreparedTableExport, ProducerReadiness},
+        runtime::{
+            RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, RuntimeReadStartAuthority,
+            TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
+        },
+        transfer::{
+            OwnedColumnTransfer, OwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser,
+            RuntimeOwnedColumnTransferReleaser, RuntimeOwnedTableTransferReleaser,
+        },
     },
     runtime::{CudaEvent, CudaStream},
 };

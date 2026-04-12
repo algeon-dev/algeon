@@ -68,6 +68,7 @@ fn checked_i64_from_usize(value: usize, field: &'static str, operation: &'static
 pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<IoTableResult> {
     const OPERATION: &str = "io::parquet::read_parquet_table";
     let filepath = super::path_to_cstring(&options.filepath, OPERATION)?;
+    super::validate_input_path(&options.filepath, OPERATION)?;
     let num_rows_context = options.num_rows.map(|num_rows| num_rows.to_string()).unwrap_or_else(|| "all".to_string());
 
     // Validate that row_groups is not combined with skip_rows or num_rows.

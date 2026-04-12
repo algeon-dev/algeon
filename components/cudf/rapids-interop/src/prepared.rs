@@ -71,7 +71,7 @@ impl<'a> PreparedColumnExport<'a> {
         let column_map = semantic_column_map(&semantic_columns, "column_id")?;
         let mapped_root = column_map.get(&column.id()).copied().ok_or_else(|| {
             InteropError::new(
-                InteropErrorKind::InvalidView,
+                InteropErrorKind::NotFound,
                 "prepared column export root must be present in the semantic column graph",
             )
             .with_context("column_id", column.id().get().to_string())
@@ -298,7 +298,7 @@ impl<'a> PreparedTableExport<'a> {
             }
             let column = top_level_map.get(column_id).copied().ok_or_else(|| {
                 InteropError::new(
-                    InteropErrorKind::InvalidView,
+                    InteropErrorKind::NotFound,
                     "prepared table schema referenced a missing top-level semantic column",
                 )
                 .with_context("column_id", column_id.get().to_string())

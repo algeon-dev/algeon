@@ -400,6 +400,29 @@ fn test_parquet_read_options_can_be_reused_across_calls() {
 }
 
 #[test]
+fn test_csv_read_nonexistent_file_reports_not_found() {
+    let read_opts = csv::CsvTableReadOptions::builder().filepath("/tmp/nonexistent_cudf_test_file_12345.csv").build();
+    let err = match csv::read_csv(&read_opts) {
+        Ok(_) => panic!("missing CSV file should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::NotFound);
+}
+
+#[test]
+fn test_parquet_read_nonexistent_file_reports_not_found() {
+    let read_opts =
+        parquet::ParquetTableReadOptions::builder().filepath("/tmp/nonexistent_cudf_test_file_12345.parquet").build();
+    let err = match parquet::read_parquet_table(&read_opts) {
+        Ok(_) => panic!("missing Parquet file should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::NotFound);
+}
+
+#[test]
 fn test_csv_custom_delimiter() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_tab.csv");

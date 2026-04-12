@@ -33,6 +33,7 @@ pub const CUDF_ERROR_NULL: i32 = 6;
 pub const CUDF_ERROR_INDEX: i32 = 7;
 pub const CUDF_ERROR_UNKNOWN: i32 = 8;
 pub const CUDF_ERROR_FATAL_CUDA: i32 = 9;
+pub const CUDF_ERROR_INVALID_ARGUMENT: i32 = 10;
 
 pub type cudf_status_t = i32;
 
@@ -2462,4 +2463,8 @@ extern "C" {
     /// Throw `std::bad_alloc` from the native shim for OOM classification
     /// tests.
     pub fn cudf_test_throw_bad_alloc() -> cudf_status_t;
+
+    /// Throw `std::invalid_argument` from the native shim for invalid-argument
+    /// classification tests.
+    pub fn cudf_test_throw_invalid_argument() -> cudf_status_t;
 }

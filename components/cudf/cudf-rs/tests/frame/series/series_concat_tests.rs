@@ -35,8 +35,8 @@ fn test_concat_three_f64_series() {
 
 #[test]
 fn test_concat_strings() {
-    let a = Series::from_strs("a", &["hello"]).unwrap();
-    let b = Series::from_strs("b", &["world"]).unwrap();
+    let a = Series::new("a", &["hello"]).unwrap();
+    let b = Series::new("b", &["world"]).unwrap();
 
     let result = Series::concat(&[&a, &b]).unwrap();
 
@@ -94,7 +94,7 @@ fn test_concat_empty_slice_returns_error() {
 #[test]
 fn test_concat_type_mismatch_returns_error() {
     let a = Series::new::<i32>("a", &[1, 2]).unwrap();
-    let b = Series::from_strs("b", &["hello"]).unwrap();
+    let b = Series::new("b", &["hello"]).unwrap();
 
     let result = Series::concat(&[&a, &b]);
     assert!(result.is_err(), "concat of mismatched types should fail");

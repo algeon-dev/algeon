@@ -12,6 +12,7 @@ use crate::{
         error::{Error, ErrorKind, Result},
     },
     frame::dataframe::DataFrame,
+    internal::resolve::missing_column_error,
     runtime::{execution_context::ExecutionContext, execution_domain::ExecutionDomain},
 };
 
@@ -210,12 +211,7 @@ impl<'a> GroupBy<'a> {
 
         for spec in specs {
             if !columns.contains_key(spec.column.as_str()) {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("column '{}' not found in schema", spec.column),
-                )
-                .with_operation(operation)
-                .with_context("column_name", spec.column.clone()));
+                return Err(missing_column_error(operation, &spec.column));
             }
         }
 
@@ -234,10 +230,8 @@ impl<'a> GroupBy<'a> {
             let view_idx = if let Some(&idx) = col_name_to_view_idx.get(spec.column.as_str()) {
                 idx
             } else {
-                let arc_col = columns.get(spec.column.as_str()).ok_or_else(|| {
-                    Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in DataFrame", spec.column))
-                        .with_operation(operation)
-                })?;
+                let arc_col =
+                    columns.get(spec.column.as_str()).ok_or_else(|| missing_column_error(operation, &spec.column))?;
                 let idx = value_views.len();
                 value_views.push(arc_col.view()?);
                 col_name_to_view_idx.insert(spec.column.clone(), idx);

@@ -180,7 +180,7 @@ fn groupby_missing_key_column() {
         .agg(&[AggSpec::new("value", GroupByAgg::Sum)])
         .expect_err("expected error for nonexistent key column");
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "missing_key");
 }
 
 #[test]

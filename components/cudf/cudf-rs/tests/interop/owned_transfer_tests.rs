@@ -13,11 +13,17 @@ use cudf::{
     DataFrame, DeviceId, JsonReadOptions, Runtime, Series, TypeId,
     core::{Column, Table},
     interop::{
-        BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, ExportDiagnostics, ExportProfile,
-        InteropErrorKind, OwnedColumnTransfer, OwnedTableTransfer, PhysicalValidity, Placement, ProducerReadiness,
-        ReleaseContract, ReleaseSynchronization, RuntimeCompletionAuthority, RuntimeOwnedColumnTransferReleaser,
-        RuntimeOwnedTableTransferReleaser, SchemaNullability, SemanticColumn, SemanticTable, TableId,
-        TransferCompletionRule, TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDeviceTableTransfer,
+        borrowed::{
+            BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, CudaStreamHandle, PhysicalValidity, Placement,
+            SchemaNullability, SemanticColumn, SemanticTable, TableId,
+        },
+        prepared::{ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind, ProducerReadiness},
+        runtime::RuntimeCompletionAuthority,
+        transfer::{
+            OwnedColumnTransfer, OwnedTableTransfer, ReleaseContract, ReleaseSynchronization,
+            RuntimeOwnedColumnTransferReleaser, RuntimeOwnedTableTransferReleaser, TransferCompletionRule,
+            TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDeviceTableTransfer,
+        },
     },
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
@@ -73,7 +79,7 @@ fn manual_release_contract(device: i32) -> ReleaseContract {
 
 fn manual_readiness(device: i32) -> ProducerReadiness<'static> {
     ProducerReadiness::DeviceStreamOrdered {
-        stream: cudf::interop::CudaStreamHandle::from_raw_on_device(fake_ptr(0x5000) as *mut _, device).unwrap(),
+        stream: CudaStreamHandle::from_raw_on_device(fake_ptr(0x5000) as *mut _, device).unwrap(),
     }
 }
 
@@ -695,7 +701,7 @@ fn assert_foreign_column_snapshot_round_trip(
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
 
-fn assert_ambient_default_owned_transfer_rejected(err: cudf::interop::InteropError) {
+fn assert_ambient_default_owned_transfer_rejected(err: InteropError) {
     assert_eq!(err.kind(), InteropErrorKind::AmbientInteropUnsupported);
 }
 

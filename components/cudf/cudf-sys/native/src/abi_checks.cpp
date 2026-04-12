@@ -82,6 +82,7 @@ static_assert(CUDF_ERROR_NULL == 6);
 static_assert(CUDF_ERROR_INDEX == 7);
 static_assert(CUDF_ERROR_UNKNOWN == 8);
 static_assert(CUDF_ERROR_FATAL_CUDA == 9);
+static_assert(CUDF_ERROR_INVALID_ARGUMENT == 10);
 
 static_assert(CUDF_TYPE_EMPTY == static_cast<int>(cudf::type_id::EMPTY));
 static_assert(CUDF_TYPE_INT8 == static_cast<int>(cudf::type_id::INT8));

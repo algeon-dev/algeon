@@ -142,7 +142,7 @@ use crate::{
     frame::series::{IntoSeries, Series},
     internal::{
         hash::{FastHashSet, fast_index_map_with_capacity},
-        resolve::resolve_column_names,
+        resolve::{missing_column_error, resolve_column_names},
     },
     ops::{
         self, copying, filter, replace,
@@ -384,11 +384,7 @@ impl DataFrame {
     pub fn filter_isin(&self, column: &str, values: &Series) -> Result<Self> {
         let operation = "dataframe::filter_isin";
         let cv = values.as_column_view()?;
-        let col = self.columns.get(column).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
-                .with_operation(operation)
-                .with_context("column_name", column.to_string())
-        })?;
+        let col = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
         let col_view = col.view()?;
         let output_domain = Arc::clone(&self.domain);
         ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, cv.execution_domain(), operation)?;
@@ -930,11 +926,7 @@ impl DataFrame {
     /// Returns an error if `column` is not in the schema.
     pub(crate) fn replace_nulls(&self, column: &str, value: &Scalar) -> Result<Self> {
         let operation = "dataframe::replace_nulls";
-        let col = self.columns.get(column).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
-                .with_operation(operation)
-                .with_context("column_name", column.to_string())
-        })?;
+        let col = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
 
         ExecutionDomain::require_same_device_and_fence_secondary(
             col.execution_domain(),
@@ -963,11 +955,7 @@ impl DataFrame {
     /// is unsupported.
     pub fn cast_column(&self, column: &str, target_type: impl Into<DataType>) -> Result<Self> {
         let target_type = target_type.into();
-        let col = self.columns.get(column).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
-                .with_operation("dataframe::cast_column")
-                .with_context("column_name", column.to_string())
-        })?;
+        let col = self.columns.get(column).ok_or_else(|| missing_column_error("dataframe::cast_column", column))?;
 
         let cv = col.view()?;
         let new_col = unary::cast(&cv, &target_type)?.with_execution_domain(Arc::clone(col.execution_domain()));
@@ -1150,11 +1138,7 @@ impl DataFrame {
     /// or lengths are incompatible.
     pub fn fillna_with_series(&self, column: &str, fill_series: &Series) -> Result<Self> {
         let operation = "dataframe::fillna_with_series";
-        let col = self.columns.get(column).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
-                .with_operation(operation)
-                .with_context("column_name", column.to_string())
-        })?;
+        let col = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
 
         let output_domain = Arc::clone(col.execution_domain());
         let cv = col.view()?;
@@ -1405,15 +1389,13 @@ impl DataFrame {
         // Validate: id_vars must exist
         for name in id_vars {
             if !self.columns.contains_key(name) {
-                return Err(Error::new(ErrorKind::InvalidOperation, format!("id_var column '{name}' not found"))
-                    .with_operation("dataframe::melt"));
+                return Err(missing_column_error("dataframe::melt", name));
             }
         }
         // Validate: value_vars must exist
         for name in &value_vars {
             if !self.columns.contains_key(name) {
-                return Err(Error::new(ErrorKind::InvalidOperation, format!("value_var column '{name}' not found"))
-                    .with_operation("dataframe::melt"));
+                return Err(missing_column_error("dataframe::melt", name));
             }
         }
         // Validate: id_vars and value_vars must not overlap (L5)

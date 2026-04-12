@@ -10,7 +10,10 @@ use std::collections::HashMap;
 use cudf::{
     JsonReadOptions, Runtime, Series,
     core::{DataType, Scalar, TypeId},
-    interop::{BufferBinding, ColumnLayout, ExportProfile, InteropTypeId, PhysicalValidity, SemanticColumn},
+    interop::{
+        borrowed::{BufferBinding, ColumnLayout, InteropTypeId, PhysicalValidity, SchemaNullability, SemanticColumn},
+        prepared::ExportProfile,
+    },
 };
 use tempfile::TempDir;
 
@@ -134,11 +137,11 @@ fn assert_validity_equivalent(
 
 fn schema_nullability_is_elidable(source: &SemanticColumn, copied: &SemanticColumn) -> bool {
     match (source.schema_nullability(), copied.schema_nullability()) {
-        (cudf::interop::SchemaNullability::Nullable, cudf::interop::SchemaNullability::NonNullable) => {
+        (SchemaNullability::Nullable, SchemaNullability::NonNullable) => {
             validity_mask_is_elidable(source.validity())
                 && matches!(copied.validity(), PhysicalValidity::NoValidityBuffer)
         },
-        (cudf::interop::SchemaNullability::NonNullable, cudf::interop::SchemaNullability::Nullable) => {
+        (SchemaNullability::NonNullable, SchemaNullability::Nullable) => {
             matches!(source.validity(), PhysicalValidity::NoValidityBuffer)
                 && validity_mask_is_elidable(copied.validity())
         },

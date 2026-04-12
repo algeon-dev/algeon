@@ -144,7 +144,9 @@ use contracts::*;
 use errors::*;
 use execution::*;
 pub use frame::PartitionedDataFrameExport;
+use prepared::*;
 use projection::{prepared_column_projection_from_view, prepared_host_column_projection_from_view};
+use runtime_lease::*;
 pub use table::{PartitionedLocalTableResult, PartitionedLocalTableResults};
 pub mod prepared {
     pub use rapids_interop::{
@@ -152,36 +154,12 @@ pub mod prepared {
         ActiveTableReadLease, CompletionAuthority, CompletionBinding, CompletionWitness, CompletionWitnessBackend,
         CompletionWitnessKind, ExportDiagnostics, ExportProfile, IncompleteDropBehavior, InteropError,
         InteropErrorKind, LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext, LeaseReadiness,
-        PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, ReadStartBinding,
-        ReleaseContract, ReleaseSynchronization, TryPrepareDeviceColumnExport, TryPrepareDevicePartitionedTableExport,
-        TryPrepareDeviceTableExport, TryPrepareHostColumnExport, TryPrepareHostTableExport,
+        PartitionedPreparedTableExport, PartitionedPreparedTablePartition, PreparedColumnExport, PreparedTableExport,
+        ProducerReadiness, ReadStartAuthority, ReadStartBinding, TryPrepareDeviceColumnExport,
+        TryPrepareDevicePartitionedTableExport, TryPrepareDeviceTableExport, TryPrepareHostColumnExport,
+        TryPrepareHostTableExport,
     };
 }
-pub use rapids_interop::{
-    ActiveColumnReadLease, ActiveLeaseActivation, ActiveLeaseBackend, ActivePartitionedTableReadLease,
-    ActiveTableReadLease, BorrowedColumnView, BorrowedTableView, BoundBytes, BufferBinding, BufferId, ColumnId,
-    ColumnLayout, CompletionAuthority, CompletionBinding, CompletionWitness, CompletionWitnessBackend,
-    CompletionWitnessKind, CudaEventHandle, CudaStreamHandle, DataType as InteropDataType, DeviceMemoryResourceHandle,
-    ExecutionBinding, ExportDiagnostics, ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind,
-    LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext, LeaseReadiness, NullMask, NullMaskKind,
-    OwnedColumnTransfer, OwnedTableTransfer, PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition,
-    PartitionedPreparedTableExport, PartitionedPreparedTablePartition, PhysicalValidity, Placement,
-    PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, ReadStartBinding,
-    ReleaseContract, ReleaseSynchronization, SchemaNullability, SemanticColumn, SemanticTable, TableId,
-    TransferCompletionRule, TryBorrowColumnView, TryBorrowTableView, TryIntoOwnedDeviceColumnTransfer,
-    TryIntoOwnedDevicePartitionedTableTransfer, TryIntoOwnedDeviceTableTransfer, TryPrepareDeviceColumnExport,
-    TryPrepareDevicePartitionedTableExport, TryPrepareDeviceTableExport, TryPrepareHostColumnExport,
-    TryPrepareHostTableExport, TypeId as InteropTypeId,
-};
-pub use runtime_lease::{
-    RuntimeActiveColumnReadLease, RuntimeActiveTableReadLease, RuntimeCompletionAuthority, RuntimeCompletionWitness,
-    RuntimeLeaseCompletionResult, RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease,
-    TryActivateRuntimeTableReadLease, cuda_explicit_completion_required_lease_backend,
-};
-pub use transfer::{
-    PartitionedRuntimeOwnedTableTransferReleaser, PartitionedRuntimeOwnedTableTransferReleaserPartition,
-    RuntimeOwnedColumnTransferReleaser, RuntimeOwnedTableTransferReleaser,
-};
 pub mod runtime {
     pub use super::runtime_lease::{
         RuntimeActiveColumnReadLease, RuntimeActiveTableReadLease, RuntimeCompletionAuthority,

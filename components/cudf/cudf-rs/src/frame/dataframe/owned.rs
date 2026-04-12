@@ -205,8 +205,8 @@ impl DataFrame {
 
     /// Create a `DataFrame` from an iterator of named [`Series`](crate::Series).
     ///
-    /// Each `Series` must carry a name (constructed via `Series::new`,
-    /// `Series::from_strs`, etc.). The Series name becomes the DataFrame
+    /// Each `Series` must carry a name (constructed via `Series::new`, etc.).
+    /// The Series name becomes the DataFrame
     /// column name. GPU data is shared via `Arc` — no device copy.
     ///
     /// For explicit schema override (external names), use

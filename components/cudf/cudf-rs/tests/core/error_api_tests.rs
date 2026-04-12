@@ -1,6 +1,6 @@
 use cudf::{
     Error, ErrorKind, ErrorStatus,
-    interop::{InteropError, InteropErrorKind},
+    interop::prepared::{InteropError, InteropErrorKind},
 };
 
 #[test]
@@ -53,6 +53,16 @@ fn set_source_attaches_cause() {
 }
 
 #[test]
+fn set_source_accepts_boxed_std_error_and_preserves_chain() {
+    let cause: Box<dyn std::error::Error + Send + Sync + 'static> =
+        Box::new(std::io::Error::other("boxed child cause"));
+    let err = Error::new(ErrorKind::IoError, "read failed").set_source(cause);
+
+    let src = std::error::Error::source(&err).expect("expected boxed source");
+    assert_eq!(src.to_string(), "boxed child cause");
+}
+
+#[test]
 fn display_minimal() {
     let err = Error::new(ErrorKind::TypeError, "cannot cast");
     let s = err.to_string();
@@ -95,6 +105,9 @@ fn default_status_logic_errors_are_permanent() {
     let invalid_arg = Error::new(ErrorKind::InvalidArgument, "bad argument");
     assert_eq!(invalid_arg.status(), ErrorStatus::Permanent);
 
+    let not_found = Error::new(ErrorKind::NotFound, "missing column");
+    assert_eq!(not_found.status(), ErrorStatus::Permanent);
+
     let not_supported = Error::new(ErrorKind::NotSupported, "not supported");
     assert_eq!(not_supported.status(), ErrorStatus::Permanent);
 
@@ -124,6 +137,27 @@ fn display_with_source() {
 }
 
 #[test]
+fn with_operation_preserves_prior_failure_site_in_called_context() {
+    let err = Error::new(ErrorKind::InvalidOperation, "inner failure")
+        .with_operation("inner::op")
+        .with_operation("outer::op");
+
+    assert_eq!(err.operation(), "outer::op");
+    assert_eq!(err.context(), [("called", "inner::op".to_string())]);
+}
+
+#[test]
+fn with_operation_stacks_multiple_called_context_entries() {
+    let err = Error::new(ErrorKind::InvalidOperation, "inner failure")
+        .with_operation("inner::op")
+        .with_operation("middle::op")
+        .with_operation("outer::op");
+
+    assert_eq!(err.operation(), "outer::op");
+    assert_eq!(err.context(), [("called", "inner::op".to_string()), ("called", "middle::op".to_string()),]);
+}
+
+#[test]
 fn interop_error_converts_with_kind_context_status_and_source() {
     let interop = InteropError::new(InteropErrorKind::UnsupportedType, "dictionary export is not supported")
         .with_context("operation", "interop::PreparedColumnExport::try_prepare_device_column_export")
@@ -134,12 +168,8 @@ fn interop_error_converts_with_kind_context_status_and_source() {
     assert_eq!(err.kind(), ErrorKind::TypeError);
     assert_eq!(err.status(), ErrorStatus::Permanent);
     assert_eq!(err.message(), "dictionary export is not supported");
-    assert_eq!(err.context().len(), 2);
-    assert_eq!(
-        err.context()[0],
-        ("operation", "interop::PreparedColumnExport::try_prepare_device_column_export".to_string())
-    );
-    assert_eq!(err.context()[1], ("type_id", "Dictionary32".to_string()));
+    assert_eq!(err.operation(), "interop::PreparedColumnExport::try_prepare_device_column_export");
+    assert_eq!(err.context(), [("type_id", "Dictionary32".to_string())]);
     assert_eq!(
         std::error::Error::source(&err).map(std::string::ToString::to_string).as_deref(),
         Some("dictionary export is not supported")
@@ -147,7 +177,33 @@ fn interop_error_converts_with_kind_context_status_and_source() {
 }
 
 #[test]
-fn interop_readiness_unavailable_maps_to_temporary_cuda_error() {
+fn interop_error_nested_source_chain_is_preserved_when_mapping_into_cudf_error() {
+    let interop = InteropError::new(InteropErrorKind::InvalidView, "borrowed view rejected")
+        .with_context("column_id", "7")
+        .set_source(std::io::Error::other("child cause"));
+
+    let err = Error::from(interop);
+    let source = std::error::Error::source(&err).expect("expected interop source");
+
+    assert_eq!(source.to_string(), "borrowed view rejected");
+    assert_eq!(source.source().map(std::string::ToString::to_string).as_deref(), Some("child cause"));
+}
+
+#[test]
+fn interop_not_found_maps_to_not_found() {
+    let err = Error::from(
+        InteropError::new(InteropErrorKind::NotFound, "prepared export referenced a missing buffer binding")
+            .with_context("buffer_id", "10"),
+    );
+
+    assert_eq!(err.kind(), ErrorKind::NotFound);
+    assert_eq!(err.status(), ErrorStatus::Permanent);
+    assert_eq!(err.message(), "prepared export referenced a missing buffer binding");
+    assert_eq!(err.context(), [("buffer_id", "10".to_string())]);
+}
+
+#[test]
+fn interop_readiness_unavailable_without_cudf_source_maps_to_permanent_invalid_operation() {
     let err = Error::from(
         InteropError::new(
             InteropErrorKind::ReadinessUnavailable,
@@ -156,8 +212,8 @@ fn interop_readiness_unavailable_maps_to_temporary_cuda_error() {
         .with_context("field", "cuda_stream.device"),
     );
 
-    assert_eq!(err.kind(), ErrorKind::CudaError);
-    assert_eq!(err.status(), ErrorStatus::Temporary);
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.status(), ErrorStatus::Permanent);
     assert_eq!(err.context(), [("field", "cuda_stream.device".to_string())]);
 }
 
@@ -172,6 +228,40 @@ fn interop_unsupported_layout_maps_to_not_supported() {
     assert_eq!(err.status(), ErrorStatus::Permanent);
     assert_eq!(err.message(), "struct columns are not supported for this export path");
     assert_eq!(err.context(), [("layout", "struct".to_string())]);
+}
+
+#[test]
+fn interop_error_promotes_nested_operation_context_into_operation_and_called() {
+    let interop = InteropError::new(InteropErrorKind::InvalidView, "borrowed view rejected")
+        .with_context("operation", "interop::ActiveReadLease::complete")
+        .with_context("operation", "runtime::completion::wait")
+        .with_context("column_id", "7");
+
+    let err = Error::from(interop);
+
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "interop::ActiveReadLease::complete");
+    assert_eq!(err.context(), [("called", "runtime::completion::wait".to_string()), ("column_id", "7".to_string())]);
+}
+
+#[test]
+fn interop_error_with_cudf_source_preserves_cudf_kind_and_status() {
+    let cudf_error =
+        Error::new(ErrorKind::CudaError, "CUDA runtime busy").with_operation("runtime::synchronize").set_temporary();
+    let interop = InteropError::new(InteropErrorKind::ExecutionBindingUnavailable, "CUDA runtime busy")
+        .with_context("operation", "interop::ActiveReadLease::complete")
+        .set_source(cudf_error);
+
+    let err = Error::from(interop);
+
+    assert_eq!(err.kind(), ErrorKind::CudaError);
+    assert_eq!(err.status(), ErrorStatus::Temporary);
+    assert_eq!(err.operation(), "interop::ActiveReadLease::complete");
+    assert_eq!(err.context(), [("called", "runtime::synchronize".to_string())]);
+    assert_eq!(
+        std::error::Error::source(&err).map(std::string::ToString::to_string).as_deref(),
+        Some("CUDA runtime busy")
+    );
 }
 
 #[test]

@@ -292,7 +292,7 @@ fn test_scalar_sub_series_inherits_name() {
 #[test]
 fn test_series_op_series_type_mismatch_returns_err() {
     let nums = Series::new::<i32>("nums", &[1, 2, 3]).unwrap();
-    let strs = Series::from_strs("strs", &["a", "b", "c"]).unwrap();
+    let strs = Series::new("strs", &["a", "b", "c"]).unwrap();
 
     let result: cudf::Result<Series> = &nums + &strs;
     assert!(result.is_err(), "Expected Err for type mismatch, got Ok");

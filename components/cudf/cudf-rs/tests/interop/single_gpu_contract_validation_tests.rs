@@ -16,8 +16,11 @@ use std::{collections::HashMap, ffi::c_void};
 use cudf::{
     AggSpec, DataFrame, GroupByAgg, Runtime,
     interop::{
-        BufferBinding, ColumnLayout, CompletionAuthority, ExportProfile, LeaseCompletionResult, PreparedTableExport,
-        ProducerReadiness, ReadStartAuthority, SemanticColumn,
+        borrowed::{BufferBinding, ColumnLayout, SemanticColumn},
+        prepared::{
+            CompletionAuthority, ExportProfile, LeaseCompletionResult, PreparedTableExport, ProducerReadiness,
+            ReadStartAuthority,
+        },
     },
 };
 

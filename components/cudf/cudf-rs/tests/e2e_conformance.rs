@@ -15,6 +15,7 @@ use std::{
 
 use rust_runner::{
     ExecutionError, Fixture, Mismatch, NormalizedResult, build_dataframe, compare_results, execute_operation,
+    manifest::{Dataset, DatasetColumn, Operation},
     normalize_manifest_error,
 };
 
@@ -152,7 +153,7 @@ fn e2e_opt_in_defaults_to_disabled() {
 
 #[test]
 fn rust_error_normalization_uses_manifest_taxonomy_for_missing_columns_without_message_matching() {
-    let err = cudf::Error::new(cudf::ErrorKind::InvalidOperation, "schema lookup failed")
+    let err = cudf::Error::new(cudf::ErrorKind::NotFound, "schema lookup failed")
         .with_operation("dataframe::select")
         .with_context("column_name", "missing");
 
@@ -160,6 +161,89 @@ fn rust_error_normalization_uses_manifest_taxonomy_for_missing_columns_without_m
 
     assert_eq!(normalized.kind, "column_not_found");
     assert_eq!(normalized.operation, "select");
+}
+
+#[test]
+fn rust_error_normalization_no_longer_infers_missing_columns_from_invalid_operation() {
+    let err = cudf::Error::new(cudf::ErrorKind::InvalidOperation, "legacy schema lookup failure")
+        .with_operation("dataframe::select")
+        .with_context("column_name", "missing");
+
+    let normalized = normalize_manifest_error(&err, "select");
+
+    assert_eq!(normalized.kind, "invalid_argument");
+    assert_eq!(normalized.operation, "select");
+}
+
+fn simple_fixture_dataframe() -> cudf::DataFrame {
+    let dataset = Dataset {
+        id: "basic".into(),
+        columns: vec![
+            DatasetColumn { name: "id".into(), dtype: "int32".into(), values: vec![1.into(), 2.into(), 3.into()] },
+            DatasetColumn {
+                name: "name".into(),
+                dtype: "string".into(),
+                values: vec!["alice".into(), "bob".into(), "cara".into()],
+            },
+            DatasetColumn {
+                name: "score".into(),
+                dtype: "float64".into(),
+                values: vec![1.5.into(), 2.5.into(), 3.5.into()],
+            },
+        ],
+        json_lines: vec![],
+        dictionary_columns: vec![],
+    };
+
+    build_dataframe(&dataset).expect("build test dataframe")
+}
+
+fn expect_normalized_missing_column_error(operation: Operation) {
+    let df = simple_fixture_dataframe();
+    let result = execute_operation(&df, &operation).expect("execute negative fixture operation");
+
+    match result {
+        NormalizedResult::Error(err) => {
+            assert_eq!(err.kind, "column_not_found");
+            assert!(err.context.iter().any(|(key, value)| key == "column_name" && value == "missing"));
+        },
+        other => panic!("expected normalized error result, got {:?}", other),
+    }
+}
+
+#[test]
+fn execute_select_missing_column_normalizes_from_direct_not_found() {
+    expect_normalized_missing_column_error(Operation::Select { columns: vec!["missing".into()] });
+}
+
+#[test]
+fn execute_rename_missing_column_normalizes_from_direct_not_found() {
+    let mut mapping = indexmap::IndexMap::new();
+    mapping.insert("missing".into(), "renamed".into());
+    expect_normalized_missing_column_error(Operation::Rename { mapping });
+}
+
+#[test]
+fn execute_sort_values_missing_column_normalizes_from_direct_not_found() {
+    expect_normalized_missing_column_error(Operation::SortValues {
+        by: vec!["missing".into()],
+        ascending: vec![true],
+        null_position: "last".into(),
+    });
+}
+
+#[test]
+fn execute_filter_eq_missing_column_normalizes_from_direct_not_found() {
+    expect_normalized_missing_column_error(Operation::FilterEq {
+        column: "missing".into(),
+        value: 1.into(),
+        value_dtype: "int32".into(),
+    });
+}
+
+#[test]
+fn execute_drop_nulls_missing_column_normalizes_from_direct_not_found() {
+    expect_normalized_missing_column_error(Operation::DropNulls { subset: Some(vec!["missing".into()]) });
 }
 
 #[test]

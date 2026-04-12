@@ -1,7 +1,7 @@
 //! Tests for DataFrame I/O integration.
 
 use cudf::{
-    CsvReadOptions, CsvWriteOptions, DataFrame, ParquetReadOptions, Series,
+    CsvReadOptions, CsvWriteOptions, DataFrame, ErrorKind, ParquetReadOptions, Series,
     core::{Column, Table},
 };
 use tempfile::TempDir;
@@ -251,4 +251,20 @@ fn test_write_csv_with_options_supports_delimiter_and_header_toggle() {
     // CSV read-back produces nullable columns; use to_optional_vec.
     assert_eq!(df2.series("left").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(9), Some(8)]);
     assert_eq!(df2.series("right").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(90), Some(80)]);
+}
+
+#[test]
+fn test_dataframe_read_csv_nonexistent_file_reports_not_found() {
+    let err =
+        DataFrame::read_csv("/tmp/nonexistent_cudf_test_file_12345.csv").expect_err("missing CSV file should fail");
+
+    assert_eq!(err.kind(), ErrorKind::NotFound);
+}
+
+#[test]
+fn test_dataframe_read_parquet_nonexistent_file_reports_not_found() {
+    let err = DataFrame::read_parquet("/tmp/nonexistent_cudf_test_file_12345.parquet")
+        .expect_err("missing Parquet file should fail");
+
+    assert_eq!(err.kind(), ErrorKind::NotFound);
 }

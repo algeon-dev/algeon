@@ -1,4 +1,5 @@
 use core::{ffi::c_void, fmt, marker::PhantomData, ptr::NonNull};
+use std::sync::Arc;
 
 pub type Result<T> = core::result::Result<T, InteropError>;
 
@@ -96,6 +97,7 @@ impl DataType {
 /// activation failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteropErrorKind {
+    NotFound,
     UnsupportedType,
     UnsupportedLayout,
     ExecutionBindingUnavailable,
@@ -113,16 +115,17 @@ pub enum InteropErrorKind {
 
 /// Semantic error returned by borrowed interop validation and producer
 /// adapters.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct InteropError {
     kind: InteropErrorKind,
     message: String,
     context: Vec<(&'static str, String)>,
+    source: Option<Arc<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
 impl InteropError {
     pub fn new(kind: InteropErrorKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into(), context: Vec::new() }
+        Self { kind, message: message.into(), context: Vec::new(), source: None }
     }
 
     pub fn with_context(mut self, key: &'static str, value: impl Into<String>) -> Self {
@@ -130,8 +133,18 @@ impl InteropError {
         self
     }
 
+    pub fn set_source<E>(mut self, source: E) -> Self
+    where E: std::error::Error + Send + Sync + 'static {
+        self.source = Some(Arc::new(source));
+        self
+    }
+
     pub fn kind(&self) -> InteropErrorKind {
         self.kind
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
     }
 
     pub fn context(&self) -> &[(&'static str, String)] {
@@ -139,13 +152,25 @@ impl InteropError {
     }
 }
 
+impl PartialEq for InteropError {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.message == other.message && self.context == other.context
+    }
+}
+
+impl Eq for InteropError {}
+
 impl fmt::Display for InteropError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.message)
     }
 }
 
-impl std::error::Error for InteropError {}
+impl std::error::Error for InteropError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_deref().map(|source| source as &(dyn std::error::Error + 'static))
+    }
+}
 
 /// Borrowed opaque handle to a CUDA stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

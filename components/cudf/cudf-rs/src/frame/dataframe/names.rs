@@ -3,9 +3,12 @@ use std::sync::Arc;
 use super::owned::DataFrame;
 use crate::{
     core::error::{Error, ErrorKind, Result},
-    internal::hash::{
-        FastHashMap, FastHashSet, fast_hash_map_with_capacity, fast_hash_set_with_capacity,
-        fast_index_map_with_capacity,
+    internal::{
+        hash::{
+            FastHashMap, FastHashSet, fast_hash_map_with_capacity, fast_hash_set_with_capacity,
+            fast_index_map_with_capacity,
+        },
+        resolve::missing_column_error,
     },
 };
 
@@ -49,9 +52,7 @@ impl DataFrame {
         let mut rename_map: FastHashMap<&str, &str> = fast_hash_map_with_capacity(pairs.len());
         for (old, new) in &pairs {
             if !self.columns.contains_key(old.as_str()) {
-                return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
-                    .with_operation("dataframe::rename_columns")
-                    .with_context("column_name", old.clone()));
+                return Err(missing_column_error("dataframe::rename_columns", old));
             }
             if rename_map.contains_key(old.as_str()) {
                 return Err(Error::new(

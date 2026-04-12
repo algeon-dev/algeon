@@ -62,7 +62,7 @@ cudf_status_t translate_exception_impl(cudf_status_t runtime_error_status) {
     return CUDF_ERROR_INDEX;
   } catch (std::invalid_argument const& e) {
     set_error(e.what());
-    return CUDF_ERROR_INVALID_OPERATION;
+    return CUDF_ERROR_INVALID_ARGUMENT;
   } catch (std::ios_base::failure const& e) {
     set_error(e.what());
     return CUDF_ERROR_IO;
@@ -106,6 +106,16 @@ cudf_status_t cudf_test_throw_bad_alloc() {
   cudf_clear_error();
   try {
     throw std::bad_alloc();
+  }
+  catch (...) {
+    return translate_exception();
+  }
+}
+
+cudf_status_t cudf_test_throw_invalid_argument() {
+  cudf_clear_error();
+  try {
+    throw std::invalid_argument("invalid argument from test shim");
   }
   catch (...) {
     return translate_exception();

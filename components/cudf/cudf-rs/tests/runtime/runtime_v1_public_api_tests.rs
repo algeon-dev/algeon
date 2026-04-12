@@ -80,7 +80,7 @@ fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
     assert_eq!(ints.to_vec_strict::<i32>().unwrap(), vec![3, 1, 2]);
 
     reset_exec_observation();
-    let strings = rt.str_series("name", &["alice", "bob"]).unwrap();
+    let strings = rt.series("name", &["alice", "bob"]).unwrap();
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
     assert_series_residency(&strings, expected_id, expected_stream, expected_mr);
@@ -170,8 +170,7 @@ fn series_in_context_routes_representative_operation_families_through_context_ex
     let numeric = data_rt.nullable_series("score", &[30i32, 0, 10, 0], &[true, false, true, false]).unwrap();
     let fill = other_rt.series("fill", &[9i32, 8, 7, 6]).unwrap();
     let rhs = other_rt.series("rhs", &[1i32, 2, 3, 4]).unwrap();
-    let strings =
-        data_rt.nullable_str_series("name", &["Alice", "bob", "", "CARA"], &[true, true, false, true]).unwrap();
+    let strings = data_rt.nullable_series("name", &["Alice", "bob", "", "CARA"], &[true, true, false, true]).unwrap();
 
     let ctx_stream = ctx_rt.stream().__debug_raw_handle_value();
     let ctx_mr = ctx_rt.memory_resource().__debug_raw_handle_value();

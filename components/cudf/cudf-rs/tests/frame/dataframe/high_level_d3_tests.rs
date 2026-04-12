@@ -5,7 +5,9 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataFrame, DuplicateKeepOption, ErrorKind, Series, core::Scalar};
+use cudf::{DataFrame, DuplicateKeepOption, Series, core::Scalar};
+
+use crate::common::assert_missing_column_error;
 
 // ===========================================================================
 // Helpers
@@ -19,7 +21,7 @@ fn sample_df_with_nulls() -> DataFrame {
     let ids = Series::new::<i32>("id", &[1, 2, 3, 4, 5]).unwrap();
     let scores =
         Series::new_nullable::<f64>("score", &[10.0, 0.0, 30.0, 0.0, 50.0], &[true, false, true, false, true]).unwrap();
-    let tags = Series::from_strs_nullable("tag", &["a", "b", "", "d", ""], &[true, true, false, true, false]).unwrap();
+    let tags = Series::new_nullable("tag", &["a", "b", "", "d", ""], &[true, true, false, true, false]).unwrap();
     DataFrame::from_series([ids, scores, tags]).unwrap()
 }
 
@@ -133,7 +135,7 @@ fn test_dropna_invalid_column_name() {
     let df = sample_df_with_nulls();
     let opts = DropNaOptions::builder().subset(&["nonexistent"]).build();
     let err = df.dropna(opts).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 // ===========================================================================
@@ -251,7 +253,7 @@ fn test_drop_duplicates_invalid_column() {
     let df = sample_df_with_dupes();
     let opts = DropDuplicatesOptions::builder().subset(&["nonexistent"]).build();
     let err = df.drop_duplicates(opts).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 // ===========================================================================
@@ -308,7 +310,7 @@ fn test_fillna_invalid_column() {
     let df = sample_df_with_nulls();
     let fill = Scalar::from_value(0i32).unwrap();
     let err = df.fillna_with_scalar("nonexistent", &fill).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 #[test]
@@ -316,7 +318,7 @@ fn test_fillna_with_series_invalid_column() {
     let df = sample_df_with_nulls();
     let fill_series = Series::new::<f64>("fill", &[0.0; 5]).unwrap();
     let err = df.fillna_with_series("nonexistent", &fill_series).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 // ===========================================================================

@@ -162,7 +162,7 @@ pub use frame::{
         DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DropDuplicatesOptions, DropNaHow, DropNaOptions,
         InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions, ParquetReadOptions, ParquetWriteOptions,
     },
-    series::{IntoSeries, Series},
+    series::{HostColumnData, IntoSeries, Series},
 };
 // — High-level operations —
 pub use ops::Expr;

@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
 use super::owned::Series;
-use crate::core::{
-    column::Column,
-    error::Result,
-    scalar::Scalar,
-    types::{CudfType, TypeId},
+use crate::{
+    core::{
+        column::Column,
+        error::Result,
+        scalar::Scalar,
+        types::{CudfType, TypeId},
+    },
+    frame::series::HostColumnData,
 };
 
 impl Series {
@@ -39,16 +42,18 @@ impl Series {
         Ok(s)
     }
 
-    /// Create a `Series` from a host slice of fixed-width elements.
+    /// Create a `Series` from a host slice.
     ///
     /// This allocates a new GPU-backed column and copies `data` from host
     /// memory into device memory.
     ///
     /// # Cost
-    /// Host-to-device copy: one device allocation plus one transfer of
-    /// `len * size_of::<T>()` bytes.
-    pub fn new<T: CudfType>(name: impl Into<String>, data: &[T]) -> Result<Self> {
-        let column = Column::from_slice(data)?;
+    /// - Fixed-width inputs: one device allocation plus one host-to-device
+    ///   transfer of `len * size_of::<T>()` bytes.
+    /// - UTF-8 string inputs: string-specific host marshaling plus device-side
+    ///   STRING column construction.
+    pub fn new<T: HostColumnData>(name: impl Into<String>, data: &[T]) -> Result<Self> {
+        let column = T::create_column(data)?;
         Self::from_named_column(name, column)
     }
 
@@ -56,11 +61,11 @@ impl Series {
     ///
     /// `validity[i]` is `true` if element `i` is valid (non-null).
     ///
-    /// This allocates a new GPU-backed column and copies both the fixed-width
-    /// values and nullable validity information from host memory into device
-    /// memory.
-    pub fn new_nullable<T: CudfType>(name: impl Into<String>, data: &[T], validity: &[bool]) -> Result<Self> {
-        let column = Column::from_slice_nullable(data, validity)?;
+    /// This allocates a new GPU-backed column and copies host values plus
+    /// nullable validity information into device memory. Fixed-width and
+    /// string inputs use their respective low-level construction paths.
+    pub fn new_nullable<T: HostColumnData>(name: impl Into<String>, data: &[T], validity: &[bool]) -> Result<Self> {
+        let column = T::create_column_nullable(data, validity)?;
         Self::from_named_column(name, column)
     }
 
@@ -76,25 +81,6 @@ impl Series {
     pub fn from_optional<T: CudfType>(name: impl Into<String>, data: &[Option<T>]) -> Result<Self> {
         let (values, validity, has_nulls) = Self::split_optional_host_values(data);
         if has_nulls { Self::new_nullable(name, &values, &validity) } else { Self::new(name, &values) }
-    }
-
-    /// Create a `Series` of UTF-8 strings from host data.
-    ///
-    /// This allocates a new GPU-backed STRING column and copies each input
-    /// string's UTF-8 bytes from host memory into device memory.
-    pub fn from_strs(name: impl Into<String>, data: &[&str]) -> Result<Self> {
-        let column = Column::from_strs(data)?;
-        Self::from_named_column(name, column)
-    }
-
-    /// Create a nullable `Series` of UTF-8 strings from host data and a validity mask.
-    ///
-    /// This allocates a new GPU-backed STRING column and copies both the input
-    /// strings and nullable validity information from host memory into device
-    /// memory.
-    pub fn from_strs_nullable(name: impl Into<String>, data: &[&str], validity: &[bool]) -> Result<Self> {
-        let column = Column::from_strs_nullable(data, validity)?;
-        Self::from_named_column(name, column)
     }
 
     /// Wrap an owned `Column` as an unnamed `Series`.

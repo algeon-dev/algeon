@@ -14,13 +14,20 @@ use cudf::{
     DataFrame, DeviceId, JsonReadOptions, Runtime, TypeId,
     core::Column,
     interop::{
-        ActiveLeaseBackend, BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority, CompletionBinding,
-        CompletionWitness, CompletionWitnessKind, CudaEventHandle, CudaStreamHandle, ExportProfile,
-        IncompleteDropBehavior, InteropError, InteropErrorKind, InteropTypeId, LeaseBackend, LeaseCompletionResult,
-        LeaseExportContext, PhysicalValidity, Placement, PreparedColumnExport, PreparedTableExport, ProducerReadiness,
-        ReadStartAuthority, RuntimeCompletionAuthority, RuntimeCompletionWitness, RuntimeLeaseCompletionResult,
-        RuntimeReadStartAuthority, SchemaNullability, SemanticColumn, TryActivateRuntimeColumnReadLease,
-        TryActivateRuntimeTableReadLease, cuda_explicit_completion_required_lease_backend,
+        borrowed::{
+            BufferBinding, BufferId, ColumnId, ColumnLayout, CudaEventHandle, CudaStreamHandle, InteropTypeId,
+            PhysicalValidity, Placement, SchemaNullability, SemanticColumn,
+        },
+        prepared::{
+            ActiveLeaseBackend, CompletionAuthority, CompletionBinding, CompletionWitness, CompletionWitnessKind,
+            ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseBackend, LeaseCompletionResult,
+            LeaseExportContext, PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority,
+        },
+        runtime::{
+            RuntimeCompletionAuthority, RuntimeCompletionWitness, RuntimeLeaseCompletionResult,
+            RuntimeReadStartAuthority, TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
+            cuda_explicit_completion_required_lease_backend,
+        },
     },
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
@@ -249,6 +256,50 @@ mod lease_contracts {
             .unwrap();
 
         assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+    }
+
+    #[test]
+    fn shared_cross_device_completion_invalid_device_keeps_flat_cudf_summary() {
+        let _observation_lock = lock_event_observation();
+        reset_event_observation();
+        let producer_runtime = Runtime::builder().build().unwrap();
+        let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+        let export = series.try_prepare_device_column_export().unwrap();
+        let producer_event = CudaEvent::new().unwrap();
+        let device_count = DeviceId::count().unwrap();
+        let invalid_device = (device_count + 7) as i32;
+        let completion = CompletionAuthority::CrossDeviceEvent {
+            event: CudaEventHandle::from_raw_on_device(
+                producer_event.__debug_interop_raw_handle_value() as *mut std::ffi::c_void,
+                invalid_device,
+            )
+            .unwrap(),
+        };
+
+        assert_ne!(invalid_device, producer_runtime.device().ordinal() as i32);
+
+        let lease = export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, completion).unwrap();
+        let err = lease
+            .complete()
+            .expect_err("cross-device completion with an out-of-range CUDA device should fail before event use");
+
+        let message = err.to_string();
+        assert!(message.contains("device ordinal"));
+        assert!(message.contains(&invalid_device.to_string()));
+        assert!(!message.contains("InvalidOperation"));
+        assert!(!message.contains("at DeviceId::new"));
+        assert!(!message.contains("context:"));
+        assert!(!message.contains("called"));
+        let source =
+            std::error::Error::source(&err).expect("expected preserved cudf source when remapped into InteropError");
+        assert!(source.to_string().contains("device ordinal"));
+        assert!(
+            err.context()
+                .iter()
+                .any(|(key, value)| *key == "operation" && value == "interop::ActiveReadLease::complete")
+        );
+        assert!(err.context().iter().any(|(key, value)| *key == "ordinal" && value == &invalid_device.to_string()));
+        assert!(err.context().iter().any(|(key, value)| *key == "device_count" && value == &device_count.to_string()));
     }
 
     #[test]
@@ -1041,7 +1092,7 @@ mod host_export_contracts {
         assert_host_binding_bytes(sliced_export.bindings(), data, b"onetwo".to_vec());
 
         let nullable = runtime
-            .nullable_str_series("name", &["alice", "placeholder", "bob", "unused"], &[true, false, true, false])
+            .nullable_series("name", &["alice", "placeholder", "bob", "unused"], &[true, false, true, false])
             .unwrap();
         let nullable_export = nullable.try_prepare_host_column_export().unwrap();
         let mask = match nullable_export.column().validity() {

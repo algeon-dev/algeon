@@ -2,7 +2,7 @@
 
 use cudf::{DataFrame, ErrorKind, Series, SortOptions, core::Column};
 
-use crate::common::sample_df;
+use crate::common::{assert_missing_column_error, sample_df};
 
 // ---------------------------------------------------------------------------
 // SortOptions defaults
@@ -159,7 +159,7 @@ fn test_sort_values_nonexistent_column() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "missing");
 }
 
 // ---------------------------------------------------------------------------

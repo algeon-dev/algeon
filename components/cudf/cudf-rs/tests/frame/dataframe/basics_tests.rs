@@ -5,6 +5,8 @@ use cudf::{
     core::{Column, Table},
 };
 
+use crate::common::assert_missing_column_error;
+
 // ---------------------------------------------------------------------------
 // Construction and column-by-name access
 // ---------------------------------------------------------------------------
@@ -67,7 +69,7 @@ fn test_column_nonexistent_name_returns_error() {
     let result = df.series("nonexistent");
     assert!(result.is_err());
     let err = result.err().unwrap();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_missing_column_error(&err, "nonexistent");
 }
 
 #[test]

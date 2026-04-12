@@ -6,6 +6,6 @@ pub mod series;
 pub use dataframe::{
     ColumnMemoryAccounting, CsvReadOptions, CsvWriteOptions, DataFrame, DataFrameColumnInfo, DataFrameInfo,
     DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DropDuplicatesOptions, DropNaHow, DropNaOptions,
-    InfoDetail, JsonWriteOptions, ParquetWriteOptions,
+    InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions, ParquetReadOptions, ParquetWriteOptions,
 };
 pub use series::{IntoSeries, Series};

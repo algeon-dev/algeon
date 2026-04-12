@@ -19,6 +19,7 @@ typedef enum {
   CUDF_ERROR_INDEX = 7,
   CUDF_ERROR_UNKNOWN = 8,
   CUDF_ERROR_FATAL_CUDA = 9,
+  CUDF_ERROR_INVALID_ARGUMENT = 10,
 } cudf_status_t;
 
 /// Retrieve the thread-local error message from the last failed call.

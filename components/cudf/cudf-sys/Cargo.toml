@@ -9,6 +9,9 @@ repository.workspace = true
 build = "build.rs"
 links = "cudf_rust"
 
+[lints]
+workspace = true
+
 [build-dependencies]
 cmake = "0.1"
 
