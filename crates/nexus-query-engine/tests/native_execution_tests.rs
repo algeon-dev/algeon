@@ -24,9 +24,10 @@ use nexus_query_engine::{
     GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams,
     GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphMemoryCalibrationOverride, GraphMemoryModel,
     GraphMemoryModelInput, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphSeedMode,
-    GraphTopologyFamily, GraphVertexEstimate, GraphVertexEstimateSource, NativePipelineExecutionMode,
+    GraphTriangleCountAllParams, GraphVertexEstimate, GraphVertexEstimateSource, NativePipelineExecutionMode,
     force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
-    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test, graph_vertex_estimate_probe_bytes,
+    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
+    force_next_graph_statistics_optional_resource_exhausted_for_test, graph_vertex_estimate_probe_bytes,
     stable_graph_result_schema,
 };
 use nexus_query_engine::{

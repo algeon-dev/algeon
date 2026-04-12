@@ -35,10 +35,9 @@ use datafusion_nexus::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, CugraphSqlConfig, MemoryShare,
     NativeDataFusionExecutionMetrics, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy, SlotGuarantee,
 };
-use nexus_query_engine::GraphTopologyFamily;
 use tokio::sync::Barrier;
 
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 7;
 
 const ENV_EDGES: &str = "CUDF_CUGRAPH_ADMISSION_EDGES_PARQUET";
 const ENV_PAPERS: &str = "CUDF_CUGRAPH_ADMISSION_PAPERS_PARQUET";
@@ -56,7 +55,6 @@ const ENV_DEVICE_BUDGET_BYTES: &str = "CUDF_CUGRAPH_ADMISSION_DEVICE_BUDGET_BYTE
 const ENV_REQUESTED_GRANT_MIN_BYTES: &str = "CUDF_CUGRAPH_ADMISSION_REQUESTED_GRANT_MIN_BYTES";
 const ENV_REQUESTED_GRANT_BYTES: &str = "CUDF_CUGRAPH_ADMISSION_REQUESTED_GRANT_BYTES";
 const ENV_RAW_INPUT_EDGES: &str = "CUDF_CUGRAPH_ADMISSION_RAW_INPUT_EDGES";
-const ENV_TOPOLOGY_FAMILY: &str = "CUDF_CUGRAPH_ADMISSION_TOPOLOGY_FAMILY";
 const ENV_SAMPLE_INTERVAL_MS: &str = "CUDF_CUGRAPH_ADMISSION_SAMPLE_INTERVAL_MS";
 const ENV_QUERY_TIMEOUT_MS: &str = "CUDF_CUGRAPH_ADMISSION_QUERY_TIMEOUT_MS";
 const ENV_OUT_DIR: &str = "CUDF_CUGRAPH_ADMISSION_OUT_DIR";
@@ -100,7 +98,6 @@ const QUERY_COLUMNS: &[&str] = &[
     "graph_renumber",
     "graph_construction_policy",
     "graph_edge_normalize_inserted",
-    "graph_topology_family",
     "graph_calibration_source",
     "graph_seed_count",
     "graph_seed_mode",
@@ -108,6 +105,13 @@ const QUERY_COLUMNS: &[&str] = &[
     "graph_requested_bytes",
     "graph_budget_bytes",
     "graph_model_error_ratio",
+    "graph_statistics_exact_vertices",
+    "graph_statistics_degree_max",
+    "graph_statistics_degree_p99",
+    "graph_statistics_sum_min_degree_oriented",
+    "graph_statistics_oriented_edge_count",
+    "graph_statistics_peak_chunk_min_degree_sum",
+    "graph_statistics_sum_out_degree",
     "graph_peak_bytes",
     "graph_reason",
     "graph_elapsed_ms",
@@ -151,7 +155,6 @@ struct HarnessConfig {
     requested_grant_min_bytes: Option<u64>,
     requested_grant_bytes: Option<u64>,
     raw_input_edges: Option<u64>,
-    topology_family: GraphTopologyFamily,
     sample_interval_ms: u64,
     query_timeout_ms: u64,
     out_dir: PathBuf,
@@ -185,7 +188,6 @@ impl HarnessConfig {
             requested_grant_min_bytes: parse_optional_u64(ENV_REQUESTED_GRANT_MIN_BYTES)?,
             requested_grant_bytes: parse_optional_u64(ENV_REQUESTED_GRANT_BYTES)?,
             raw_input_edges: parse_optional_u64(ENV_RAW_INPUT_EDGES)?,
-            topology_family: parse_topology_family_env(ENV_TOPOLOGY_FAMILY)?,
             sample_interval_ms: env_parse(ENV_SAMPLE_INTERVAL_MS, 100)?,
             query_timeout_ms: env_parse(ENV_QUERY_TIMEOUT_MS, 600_000)?,
             out_dir,
@@ -453,12 +455,6 @@ async fn build_session(
             .collect()
             .await?;
     }
-    if config.topology_family != GraphTopologyFamily::Unknown {
-        ctx.sql(&format!("SET datafusion_nexus.request.graph_topology_family = '{}'", config.topology_family.as_str()))
-            .await?
-            .collect()
-            .await?;
-    }
     Ok(ctx)
 }
 
@@ -615,7 +611,6 @@ struct QueryRow {
     graph_renumber: Option<bool>,
     graph_construction_policy: Option<String>,
     graph_edge_normalize_inserted: Option<bool>,
-    graph_topology_family: Option<String>,
     graph_calibration_source: Option<String>,
     graph_seed_count: Option<usize>,
     graph_seed_mode: Option<String>,
@@ -623,6 +618,13 @@ struct QueryRow {
     graph_requested_bytes: Option<usize>,
     graph_budget_bytes: Option<usize>,
     graph_model_error_ratio: Option<String>,
+    graph_statistics_exact_vertices: Option<usize>,
+    graph_statistics_degree_max: Option<usize>,
+    graph_statistics_degree_p99: Option<usize>,
+    graph_statistics_sum_min_degree_oriented: Option<usize>,
+    graph_statistics_oriented_edge_count: Option<usize>,
+    graph_statistics_peak_chunk_min_degree_sum: Option<usize>,
+    graph_statistics_sum_out_degree: Option<usize>,
     graph_peak_bytes: Option<usize>,
     graph_reason: Option<String>,
     graph_elapsed_ms: Option<f64>,
@@ -667,7 +669,6 @@ impl QueryRow {
             graph_renumber: None,
             graph_construction_policy: None,
             graph_edge_normalize_inserted: None,
-            graph_topology_family: None,
             graph_calibration_source: None,
             graph_seed_count: None,
             graph_seed_mode: None,
@@ -675,6 +676,13 @@ impl QueryRow {
             graph_requested_bytes: None,
             graph_budget_bytes: None,
             graph_model_error_ratio: None,
+            graph_statistics_exact_vertices: None,
+            graph_statistics_degree_max: None,
+            graph_statistics_degree_p99: None,
+            graph_statistics_sum_min_degree_oriented: None,
+            graph_statistics_oriented_edge_count: None,
+            graph_statistics_peak_chunk_min_degree_sum: None,
+            graph_statistics_sum_out_degree: None,
             graph_peak_bytes: None,
             graph_reason: None,
             graph_elapsed_ms: None,
@@ -711,7 +719,6 @@ impl QueryRow {
             self.graph_renumber = Some(reservation.renumber);
             self.graph_construction_policy = Some(reservation.construction_policy.clone());
             self.graph_edge_normalize_inserted = Some(reservation.edge_normalize_inserted);
-            self.graph_topology_family = Some(reservation.topology_family.clone());
             self.graph_calibration_source = Some(reservation.calibration_source.clone());
             self.graph_seed_count = reservation.seed_count;
             self.graph_seed_mode = Some(reservation.seed_mode.clone());
@@ -719,6 +726,13 @@ impl QueryRow {
             self.graph_requested_bytes = Some(reservation.requested_bytes);
             self.graph_budget_bytes = reservation.budget_bytes;
             self.graph_model_error_ratio = reservation.graph_model_error_ratio.clone();
+            self.graph_statistics_exact_vertices = reservation.graph_statistics_exact_vertices;
+            self.graph_statistics_degree_max = reservation.graph_statistics_degree_max;
+            self.graph_statistics_degree_p99 = reservation.graph_statistics_degree_p99;
+            self.graph_statistics_sum_min_degree_oriented = reservation.graph_statistics_sum_min_degree_oriented;
+            self.graph_statistics_oriented_edge_count = reservation.graph_statistics_oriented_edge_count;
+            self.graph_statistics_peak_chunk_min_degree_sum = reservation.graph_statistics_peak_chunk_min_degree_sum;
+            self.graph_statistics_sum_out_degree = reservation.graph_statistics_sum_out_degree;
             self.graph_reason = Some(reservation.reason.clone());
         }
         if let Some(runtime) = metrics.graph_runtime_rows.first() {
@@ -780,7 +794,6 @@ impl QueryRow {
             self.graph_renumber.map_or_else(|| "none".to_string(), |value| value.to_string()),
             fmt_opt_str(&self.graph_construction_policy),
             self.graph_edge_normalize_inserted.map_or_else(|| "none".to_string(), |value| value.to_string()),
-            fmt_opt_str(&self.graph_topology_family),
             fmt_opt_str(&self.graph_calibration_source),
             fmt_opt(self.graph_seed_count),
             fmt_opt_str(&self.graph_seed_mode),
@@ -788,6 +801,13 @@ impl QueryRow {
             fmt_opt(self.graph_requested_bytes),
             fmt_opt(self.graph_budget_bytes),
             fmt_opt_str(&self.graph_model_error_ratio),
+            fmt_opt(self.graph_statistics_exact_vertices),
+            fmt_opt(self.graph_statistics_degree_max),
+            fmt_opt(self.graph_statistics_degree_p99),
+            fmt_opt(self.graph_statistics_sum_min_degree_oriented),
+            fmt_opt(self.graph_statistics_oriented_edge_count),
+            fmt_opt(self.graph_statistics_peak_chunk_min_degree_sum),
+            fmt_opt(self.graph_statistics_sum_out_degree),
             fmt_opt(self.graph_peak_bytes),
             fmt_opt_str(&self.graph_reason),
             self.graph_elapsed_ms.map_or_else(|| "none".to_string(), |value| format!("{value:.3}")),
@@ -952,7 +972,6 @@ fn write_outputs(
             "requested_grant_min_bytes": config.requested_grant_min_bytes,
             "requested_grant_bytes": config.requested_grant_bytes,
             "raw_input_edges": config.raw_input_edges,
-            "topology_family": config.topology_family.as_str(),
             "query_timeout_ms": config.query_timeout_ms,
             "edges_parquet": config.edges_parquet,
         },
@@ -1051,22 +1070,6 @@ fn parse_optional_i64(name: &str) -> Result<Option<i64>, Box<dyn Error>> {
     std::env::var(name).ok().map(|raw| raw.trim().parse::<i64>().map_err(Into::into)).transpose()
 }
 
-fn parse_topology_family_env(name: &str) -> Result<GraphTopologyFamily, Box<dyn Error>> {
-    let Ok(raw) = std::env::var(name) else {
-        return Ok(GraphTopologyFamily::Unknown);
-    };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "" | "none" | "null" | "default" | "unknown" => Ok(GraphTopologyFamily::Unknown),
-        "citation_like_sparse" => Ok(GraphTopologyFamily::CitationLikeSparse),
-        "dense_remapped_sparse" => Ok(GraphTopologyFamily::DenseRemappedSparse),
-        "rmat_graph500_like" => Ok(GraphTopologyFamily::RMatGraph500Like),
-        other => Err(format!(
-            "{name} must be unknown, citation_like_sparse, dense_remapped_sparse, or rmat_graph500_like; got `{other}`"
-        )
-        .into()),
-    }
-}
-
 fn fmt_opt<T: ToString>(value: Option<T>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
@@ -1112,7 +1115,6 @@ mod tests {
             requested_grant_min_bytes: None,
             requested_grant_bytes: None,
             raw_input_edges: None,
-            topology_family: GraphTopologyFamily::Unknown,
             sample_interval_ms: 100,
             query_timeout_ms: 1000,
             out_dir: PathBuf::from("."),
@@ -1148,7 +1150,6 @@ mod tests {
             requested_grant_min_bytes: None,
             requested_grant_bytes: None,
             raw_input_edges: None,
-            topology_family: GraphTopologyFamily::Unknown,
             sample_interval_ms: 100,
             query_timeout_ms: 1000,
             out_dir: PathBuf::from("."),
@@ -1178,8 +1179,7 @@ mod tests {
                 renumber: true,
                 construction_policy: "raw_libcugraph".into(),
                 edge_normalize_inserted: true,
-                topology_family: "citation_like_sparse".into(),
-                calibration_source: "raw_input_edges_and_topology_family".into(),
+                calibration_source: "raw_input_edges".into(),
                 seed_count: None,
                 seed_mode: "none".into(),
                 data_dependent: true,
@@ -1187,6 +1187,13 @@ mod tests {
                 requested_bytes: 4096,
                 budget_bytes: Some(8192),
                 graph_model_error_ratio: Some("2.000".into()),
+                graph_statistics_exact_vertices: Some(12),
+                graph_statistics_degree_max: Some(8),
+                graph_statistics_degree_p99: Some(8),
+                graph_statistics_sum_min_degree_oriented: Some(123),
+                graph_statistics_oriented_edge_count: Some(45),
+                graph_statistics_peak_chunk_min_degree_sum: Some(45),
+                graph_statistics_sum_out_degree: Some(90),
                 reason: "none".into(),
             }],
             graph_runtime_rows: vec![NativeGraphRuntimeMetricRow {
@@ -1206,11 +1213,17 @@ mod tests {
         assert_eq!(field("graph_weight_width_bytes"), "8");
         assert_eq!(field("graph_directed"), "false");
         assert_eq!(field("graph_edge_normalize_inserted"), "true");
-        assert_eq!(field("graph_topology_family"), "citation_like_sparse");
-        assert_eq!(field("graph_calibration_source"), "raw_input_edges_and_topology_family");
+        assert_eq!(field("graph_calibration_source"), "raw_input_edges");
         assert_eq!(field("graph_seed_mode"), "none");
         assert_eq!(field("graph_model_requested_bytes"), "2048");
         assert_eq!(field("graph_model_error_ratio"), "2.000");
+        assert_eq!(field("graph_statistics_exact_vertices"), "12");
+        assert_eq!(field("graph_statistics_degree_max"), "8");
+        assert_eq!(field("graph_statistics_degree_p99"), "8");
+        assert_eq!(field("graph_statistics_sum_min_degree_oriented"), "123");
+        assert_eq!(field("graph_statistics_oriented_edge_count"), "45");
+        assert_eq!(field("graph_statistics_peak_chunk_min_degree_sum"), "45");
+        assert_eq!(field("graph_statistics_sum_out_degree"), "90");
         assert_eq!(field("graph_peak_bytes"), "1024");
     }
 

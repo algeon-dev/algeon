@@ -11,9 +11,8 @@ use datafusion_nexus::{
     NativeMemoryPolicyConfig,
 };
 use nexus_query_engine::{
-    GraphTopologyFamily, MemoryControlPolicy, NativePipelineExecutionMode, QueryService, QueryServiceConfig,
-    QueryServiceTenantConfig, SlotGuarantee, SourceChunkPlanningMode, SourceSchedulerPolicy,
-    StatisticalAggregateExecutionMode,
+    MemoryControlPolicy, NativePipelineExecutionMode, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
+    SlotGuarantee, SourceChunkPlanningMode, SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
 };
 
 #[test]
@@ -48,7 +47,6 @@ fn datafusion_nexus_session_config_applies_native_bounded_options() {
     options.set("datafusion_nexus.request.requested_grant_min_bytes", "1024").unwrap();
     options.set("datafusion_nexus.request.requested_grant_bytes", "1536").unwrap();
     options.set("datafusion_nexus.request.graph_raw_input_edges", "45564149").unwrap();
-    options.set("datafusion_nexus.request.graph_topology_family", "citation_like_sparse").unwrap();
 
     let effective = base.with_datafusion_config_options(&options).unwrap();
     let native = effective.native_execution_config();
@@ -71,7 +69,6 @@ fn datafusion_nexus_session_config_applies_native_bounded_options() {
     assert_eq!(native.requested_grant_bytes(), Some(1536));
     let graph_calibration = native.graph_memory_calibration_override();
     assert_eq!(graph_calibration.raw_input_edges, Some(45_564_149));
-    assert_eq!(graph_calibration.topology_family, GraphTopologyFamily::CitationLikeSparse);
 }
 
 #[test]
@@ -119,8 +116,10 @@ fn datafusion_nexus_session_config_rejects_invalid_values() {
     let error = options.set("datafusion_nexus.request.graph_raw_input_edges", "0").unwrap_err();
     assert!(error.to_string().contains("request.graph_raw_input_edges"));
 
-    let error = options.set("datafusion_nexus.request.graph_topology_family", "dense-ish").unwrap_err();
-    assert!(error.to_string().contains("citation_like_sparse"));
+    let removed_key = ["datafusion_nexus.request.graph_topology_", "family"].concat();
+    let error = options.set(&removed_key, "citation_like_sparse").unwrap_err();
+    assert!(error.to_string().contains(&removed_key["datafusion_nexus.".len()..]));
+    assert!(error.to_string().contains("not found"));
 }
 
 #[test]
@@ -295,8 +294,7 @@ fn datafusion_nexus_session_config_option_descriptors_document_scope_and_types()
     assert!(
         DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS
             .iter()
-            .any(|option| option.full_key() == "datafusion_nexus.request.graph_topology_family"
-                && option.value_type.contains("citation_like_sparse"))
+            .all(|option| option.full_key() != ["datafusion_nexus.request.graph_topology_", "family"].concat())
     );
 }
 
@@ -326,12 +324,6 @@ async fn datafusion_nexus_request_config_can_be_set_and_reset_through_sql() {
     ctx.sql("SET datafusion_nexus.request.requested_grant_min_bytes = '1024'").await.unwrap().collect().await.unwrap();
     ctx.sql("SET datafusion_nexus.request.requested_grant_bytes = '1536'").await.unwrap().collect().await.unwrap();
     ctx.sql("SET datafusion_nexus.request.graph_raw_input_edges = '45564149'").await.unwrap().collect().await.unwrap();
-    ctx.sql("SET datafusion_nexus.request.graph_topology_family = 'citation_like_sparse'")
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
     let state = ctx.state();
     let extension = state
         .config_options()
@@ -341,12 +333,10 @@ async fn datafusion_nexus_request_config_can_be_set_and_reset_through_sql() {
     assert_eq!(extension.request_requested_grant_min_bytes, Some(1024));
     assert_eq!(extension.request_requested_grant_bytes, Some(1536));
     assert_eq!(extension.request_graph_raw_input_edges(), Some(45_564_149));
-    assert_eq!(extension.request_graph_topology_family(), GraphTopologyFamily::CitationLikeSparse);
 
     ctx.sql("SET datafusion_nexus.request.requested_grant_min_bytes = 'none'").await.unwrap().collect().await.unwrap();
     ctx.sql("SET datafusion_nexus.request.requested_grant_bytes = 'none'").await.unwrap().collect().await.unwrap();
     ctx.sql("SET datafusion_nexus.request.graph_raw_input_edges = 'none'").await.unwrap().collect().await.unwrap();
-    ctx.sql("SET datafusion_nexus.request.graph_topology_family = 'unknown'").await.unwrap().collect().await.unwrap();
     let state = ctx.state();
     let extension = state
         .config_options()
@@ -356,7 +346,19 @@ async fn datafusion_nexus_request_config_can_be_set_and_reset_through_sql() {
     assert_eq!(extension.request_requested_grant_min_bytes, None);
     assert_eq!(extension.request_requested_grant_bytes, None);
     assert_eq!(extension.request_graph_raw_input_edges(), None);
-    assert_eq!(extension.request_graph_topology_family(), GraphTopologyFamily::Unknown);
+}
+
+#[tokio::test]
+async fn datafusion_nexus_removed_graph_topology_config_key_is_rejected_through_sql() {
+    let state =
+        SessionStateBuilder::new().with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)).build();
+    let ctx = SessionContext::new_with_state(state);
+    let removed_key = ["datafusion_nexus.request.graph_topology_", "family"].concat();
+
+    let error = ctx.sql(&format!("SET {removed_key} = 'citation_like_sparse'")).await.unwrap_err();
+
+    assert!(error.to_string().contains(&removed_key["datafusion_nexus.".len()..]));
+    assert!(error.to_string().contains("not found"));
 }
 
 fn options_with_nexus_extension(config: &CudfOptimizerConfig) -> ConfigOptions {

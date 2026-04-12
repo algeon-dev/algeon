@@ -214,15 +214,16 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.graph_reservation_rows[0].outcome, "admitted");
     assert_eq!(row.metrics.graph_reservation_rows[0].raw_input_edges, None);
     assert!(!row.metrics.graph_reservation_rows[0].edge_normalize_inserted);
-    assert_eq!(row.metrics.graph_reservation_rows[0].topology_family, "unknown");
+    assert_eq!(row.metrics.graph_reservation_rows[0].calibration_source, "none");
     assert_eq!(row.metrics.graph_reservation_rows[0].seed_mode, "none");
     assert_eq!(row.metrics.graph_reservation_rows[0].model_requested_bytes, 4096);
     assert_eq!(row.metrics.graph_reservation_rows[0].requested_bytes, 4096);
     assert_eq!(row.metrics.graph_reservation_rows[0].budget_bytes, Some(1048576));
     assert_eq!(row.metrics.graph_reservation_rows[0].graph_model_error_ratio.as_deref(), Some("2.000"));
+    assert_eq!(row.metrics.graph_reservation_rows[0].graph_statistics_exact_vertices, None);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 52);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 55);
     assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 136);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\trejected_before_execution\tadmission_sequence\tadmission_wait_ms\tdevice_ordinal\tquery_grant_bytes\tnative_runtime_started\t"
@@ -270,10 +271,11 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert!(text.contains("algorithm=pagerank,runtime_outcome=succeeded"));
     assert!(text.contains("graph_peak_bytes=2048"));
     assert!(text.contains("raw_input_edges=none"));
-    assert!(text.contains("topology_family=unknown"));
+    assert!(text.contains("calibration_source=none"));
     assert!(text.contains("seed_mode=none"));
     assert!(text.contains("model_requested_bytes=4096"));
     assert!(text.contains("graph_model_error_ratio=2.000"));
+    assert!(text.contains("graph_statistics_exact_vertices=none"));
     assert!(
         text.contains(
             "construction_policy=python_cugraph,source_column=src,destination_column=dst,weight_column=weight"

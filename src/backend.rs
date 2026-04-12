@@ -1074,11 +1074,7 @@ mod tests {
         for option in DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS {
             let mut extension = extension.clone();
             if option.key.starts_with("request.") {
-                let request_value = match option.key {
-                    "request.graph_topology_family" => "citation_like_sparse",
-                    _ => "1",
-                };
-                extension.set(option.key, request_value).unwrap();
+                extension.set(option.key, "1").unwrap();
                 continue;
             }
             let error = extension.set(option.key, "1").unwrap_err();

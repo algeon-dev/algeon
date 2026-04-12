@@ -66,12 +66,6 @@ async fn cugraph_sql_gpu_betweenness_reservation_reports_request_calibration_and
     let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
     ctx.sql("SET datafusion_nexus.request.graph_raw_input_edges = '45564149'").await.unwrap().collect().await.unwrap();
-    ctx.sql("SET datafusion_nexus.request.graph_topology_family = 'citation_like_sparse'")
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
 
     let df = ctx
         .sql(
@@ -92,7 +86,6 @@ async fn cugraph_sql_gpu_betweenness_reservation_reports_request_calibration_and
     assert_eq!(row.algorithm, "betweenness_centrality");
     assert_eq!(row.outcome, "admitted");
     assert_eq!(row.raw_input_edges, Some(45_564_149));
-    assert_eq!(row.topology_family, "citation_like_sparse");
     assert_eq!(row.seed_count, Some(2));
     assert_eq!(row.seed_mode, "runtime_k_selection");
 }

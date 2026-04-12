@@ -44,11 +44,8 @@ pub struct GraphAlgorithmRuntimeMetrics {
     pub output_columns: u64,
     /// Output device bytes when known.
     pub output_device_bytes: Option<u64>,
-    /// Graph-stage CUDA async-pool high-water bytes above pre-stage current use, when observed.
-    ///
-    /// If physical pool usage is unavailable, execution falls back to the
-    /// graph-boundary budget-tracking high-water. Successful graph rows that do
-    /// no graph allocation report zero instead of null.
+    /// Graph-stage reservation high-water bytes, or CUDA async-pool high-water bytes when reservation evidence is absent.
+    /// Successful graph rows that do no graph allocation report zero instead of null.
     pub graph_peak_bytes: Option<u64>,
     /// Runtime elapsed nanoseconds.
     pub elapsed_ns: u64,
@@ -90,26 +87,6 @@ impl QueryMetrics {
         }
     }
 
-    /// Records a graph execution bounded by a budget-tracking RMM resource.
-    pub fn record_graph_budget_tracking(
-        &mut self,
-        operation: impl Into<String>,
-        budget_bytes: u64,
-        allocator_high_water_bytes: Option<u64>,
-        status: impl Into<String>,
-        context_facts: BTreeMap<String, String>,
-    ) {
-        self.record_graph_budget_tracking_with_boundary(
-            operation,
-            crate::graph_memory::GRAPH_MEMORY_BOUNDARY,
-            Some("cugraph_workspace_preflight".to_string()),
-            budget_bytes,
-            allocator_high_water_bytes,
-            status,
-            context_facts,
-        );
-    }
-
     /// Records a graph-related budget-tracking RMM resource with an explicit boundary.
     pub fn record_graph_budget_tracking_with_boundary(
         &mut self,
@@ -117,6 +94,31 @@ impl QueryMetrics {
         boundary: impl Into<String>,
         unresolved_contract: Option<String>,
         budget_bytes: u64,
+        allocator_high_water_bytes: Option<u64>,
+        status: impl Into<String>,
+        context_facts: BTreeMap<String, String>,
+    ) {
+        self.record_graph_budget_tracking_with_boundary_and_enforcement(
+            operation,
+            boundary,
+            unresolved_contract,
+            budget_bytes,
+            "budget_tracking_memory_resource",
+            allocator_high_water_bytes,
+            status,
+            context_facts,
+        );
+    }
+
+    /// Records a graph-related budget event with caller-supplied enforcement evidence.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_graph_budget_tracking_with_boundary_and_enforcement(
+        &mut self,
+        operation: impl Into<String>,
+        boundary: impl Into<String>,
+        unresolved_contract: Option<String>,
+        budget_bytes: u64,
+        enforcement: impl Into<String>,
         allocator_high_water_bytes: Option<u64>,
         status: impl Into<String>,
         context_facts: BTreeMap<String, String>,
@@ -130,7 +132,7 @@ impl QueryMetrics {
             operation: operation.into(),
             boundary: boundary.into(),
             budget_bytes,
-            enforcement: "budget_tracking_memory_resource".to_string(),
+            enforcement: enforcement.into(),
             status: status.into(),
             allocator_high_water_bytes,
             retained_bytes: None,

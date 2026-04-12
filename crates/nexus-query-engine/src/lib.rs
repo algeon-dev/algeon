@@ -163,10 +163,11 @@ pub mod runtime_contracts {
             GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON, GRAPH_VERTEX_ESTIMATE_BOUNDARY,
             GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, GraphCalibrationSource, GraphMemoryCalibrationOverride,
             GraphMemoryClass, GraphMemoryEstimate, GraphMemoryModel, GraphMemoryModelInput, GraphModelErrorRatio,
-            GraphPlanMemoryEstimate, GraphReservationOutcome, GraphReservationReport, GraphSeedMode,
-            GraphTopologyFamily, GraphVertexEstimate, GraphVertexEstimateSource, graph_edge_list_output_rows_for_plan,
-            graph_memory_class, graph_memory_estimate_for_edge_list, graph_memory_estimates_for_plan,
-            graph_memory_model_input, graph_memory_reservation_required, graph_vertex_estimate_probe_bytes,
+            GraphPlanMemoryEstimate, GraphReservationOutcome, GraphReservationReport, GraphSeedMode, GraphStatistics,
+            GraphVertexEstimate, GraphVertexEstimateSource, graph_edge_list_output_rows_for_plan, graph_memory_class,
+            graph_memory_estimate_for_edge_list, graph_memory_estimates_for_plan, graph_memory_model_input,
+            graph_memory_reservation_required, graph_runtime_statistics_probe_bytes, graph_vertex_estimate_probe_bytes,
+            triangle_count_peak_chunk_min_degree_pricing_term,
         },
         runtime::{
             BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
@@ -319,6 +320,7 @@ pub use exec::{
 pub use exec::{
     force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
     force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
+    force_next_graph_statistics_optional_resource_exhausted_for_test,
 };
 pub use expr::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart, Expr,
@@ -326,13 +328,13 @@ pub use expr::{
 };
 pub use graph_memory::{
     GRAPH_MEMORY_BOUNDARY, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON,
-    GRAPH_VERTEX_ESTIMATE_BOUNDARY, GRAPH_VERTEX_ESTIMATE_PROBE_EDGE_MULTIPLIER, GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES,
-    GraphCalibrationSource, GraphMemoryCalibrationOverride, GraphMemoryClass, GraphMemoryEstimate, GraphMemoryModel,
-    GraphMemoryModelInput, GraphModelErrorRatio, GraphPlanMemoryEstimate, GraphReservationOutcome,
-    GraphReservationReport, GraphSeedMode, GraphTopologyFamily, GraphVertexEstimate, GraphVertexEstimateSource,
-    graph_edge_list_output_rows_for_plan, graph_memory_class, graph_memory_estimate_for_edge_list,
-    graph_memory_estimates_for_plan, graph_memory_model_input, graph_memory_reservation_required,
-    graph_vertex_estimate_probe_bytes,
+    GRAPH_VERTEX_ESTIMATE_BOUNDARY, GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, GraphCalibrationSource,
+    GraphMemoryCalibrationOverride, GraphMemoryClass, GraphMemoryEstimate, GraphMemoryModel, GraphMemoryModelInput,
+    GraphModelErrorRatio, GraphPlanMemoryEstimate, GraphReservationOutcome, GraphReservationReport, GraphSeedMode,
+    GraphStatistics, GraphVertexEstimate, GraphVertexEstimateSource, graph_edge_list_output_rows_for_plan,
+    graph_memory_class, graph_memory_estimate_for_edge_list, graph_memory_estimates_for_plan, graph_memory_model_input,
+    graph_memory_reservation_required, graph_runtime_statistics_probe_bytes, graph_vertex_estimate_probe_bytes,
+    triangle_count_peak_chunk_min_degree_pricing_term,
 };
 pub use metrics::{
     AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, CompiledTaskId,

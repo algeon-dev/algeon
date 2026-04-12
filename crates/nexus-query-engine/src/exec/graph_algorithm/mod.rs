@@ -38,12 +38,20 @@ use traversal::{execute_bfs, execute_sssp};
 static FORCE_NEXT_GRAPH_ADAPTIVE_FULL_ATTEMPT_RESOURCE_EXHAUSTED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "cugraph")]
 static FORCE_NEXT_GRAPH_ADAPTIVE_CHUNK_ATTEMPT_RESOURCE_EXHAUSTED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "cugraph")]
+static FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) enum RuntimeGraphSpecResolution {
     Unresolved,
     CheckedNoRewrite,
     Rewritten(crate::plan::GraphAlgorithmSpec),
+}
+
+#[cfg(feature = "cugraph")]
+pub(in crate::exec) struct RuntimeGraphStatisticsProbe {
+    pub(in crate::exec) vertex_estimate: crate::graph_memory::GraphVertexEstimate,
+    pub(in crate::exec) statistics: crate::graph_memory::GraphStatistics,
 }
 
 #[cfg(feature = "cugraph")]
@@ -73,6 +81,12 @@ pub fn force_next_graph_adaptive_full_attempt_resource_exhausted_for_test() {
 #[doc(hidden)]
 pub fn force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test() {
     FORCE_NEXT_GRAPH_ADAPTIVE_CHUNK_ATTEMPT_RESOURCE_EXHAUSTED.store(true, Ordering::SeqCst);
+}
+
+#[cfg(feature = "cugraph")]
+#[doc(hidden)]
+pub fn force_next_graph_statistics_optional_resource_exhausted_for_test() {
+    FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED.store(true, Ordering::SeqCst);
 }
 
 #[cfg(not(feature = "cugraph"))]
@@ -128,9 +142,10 @@ pub(super) fn execute_graph_algorithm(
     let sanitized_input_rows = input.num_rows() as u64;
     let null_edge_rows_dropped =
         prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
-    let runtime_spec =
-        RuntimeGraphSpecResolution::from_optional(graph_spec_with_runtime_betweenness_seeds(&input, &node.spec)?);
-    admit_graph_memory(context, node_id, &node.spec, &input, sanitized_input_rows, metrics)?;
+    validate_betweenness_static_seed_policy(&node.spec)?;
+    let graph_memory_limit_bytes =
+        admit_graph_memory(context, node_id, &node.spec, &input, sanitized_input_rows, metrics)?;
+    let runtime_spec = runtime_graph_spec_resolution_after_bounded_seed_validation(&node.spec, false);
     execute_graph_algorithm_sanitized(
         context,
         node_id,
@@ -138,7 +153,7 @@ pub(super) fn execute_graph_algorithm(
         runtime_spec,
         GpuDataFrame::new(input),
         side_inputs,
-        None,
+        graph_memory_limit_bytes,
         input_rows,
         input_columns,
         null_edge_rows_dropped,
@@ -161,10 +176,17 @@ pub(super) fn execute_graph_algorithm_sanitized(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let boundary_before = metrics.boundary.clone();
+    let graph_budget_event_start = metrics.budgeted_execution_events.len();
+    let pool_usage_before = graph_pool_usage_snapshot(context);
+    let timer = Instant::now();
     let runtime_spec = match runtime_spec {
-        RuntimeGraphSpecResolution::Unresolved => {
-            resolve_runtime_graph_spec_for_execution(context, input.frame(), &node.spec, graph_memory_limit_bytes)?
-        },
+        RuntimeGraphSpecResolution::Unresolved => resolve_runtime_graph_spec_for_execution(
+            context,
+            input.frame(),
+            &node.spec,
+            graph_memory_limit_bytes,
+            metrics,
+        )?,
         runtime_spec => runtime_spec,
     };
     let spec = runtime_spec.spec_or(&node.spec);
@@ -180,9 +202,6 @@ pub(super) fn execute_graph_algorithm_sanitized(
         )
     });
     let inputs = GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes };
-    let timer = Instant::now();
-    let graph_budget_event_start = metrics.budgeted_execution_events.len();
-    let pool_usage_before = graph_pool_usage_snapshot(context);
     let result = match execute_graph_algorithm_attempt(context, spec, inputs, executor) {
         Ok(result) => result,
         Err(error) if should_retry_graph_resource_exhausted(context, &error, adaptive_retry_inputs.as_ref()) => {
@@ -218,8 +237,13 @@ pub(super) fn execute_graph_algorithm_sanitized(
         .filter_map(|event| event.allocator_high_water_bytes)
         .max();
     let pool_graph_peak_bytes = graph_pool_high_water_delta(pool_usage_before, pool_usage_after);
-    let graph_peak_bytes = pool_graph_peak_bytes.or(budget_graph_peak_bytes).or(Some(0));
-    metrics.record_graph_model_error_ratio(&node_id.to_string(), node.spec.algorithm.as_str(), pool_graph_peak_bytes);
+    let measured_graph_peak_bytes = budget_graph_peak_bytes.or(pool_graph_peak_bytes);
+    let graph_peak_bytes = measured_graph_peak_bytes.or(Some(0));
+    metrics.record_graph_model_error_ratio(
+        &node_id.to_string(),
+        node.spec.algorithm.as_str(),
+        measured_graph_peak_bytes,
+    );
     let boundary_delta = boundary_delta(&boundary_before, &metrics.boundary);
     metrics.record_graph_algorithm_runtime(crate::metrics::GraphAlgorithmRuntimeMetrics {
         query_id: None,
@@ -290,7 +314,7 @@ fn execute_graph_algorithm_attempt(
             error = error
                 .with_fact("graph_budget_limit_bytes", limit)
                 .with_fact("graph_budget_peak_bytes", limit)
-                .with_fact("graph_budget_status", "budget_tracking_resource_exhausted");
+                .with_fact("graph_budget_status", "reservation_resource_exhausted");
         }
         return Err(error);
     }
@@ -318,6 +342,7 @@ fn resolve_runtime_graph_spec_for_execution(
     input: &DataFrame,
     spec: &crate::plan::GraphAlgorithmSpec,
     graph_memory_limit_bytes: Option<u64>,
+    metrics: &mut QueryMetrics,
 ) -> Result<RuntimeGraphSpecResolution> {
     let Some(operation) = betweenness_seed_policy_operation(spec) else {
         return Ok(RuntimeGraphSpecResolution::CheckedNoRewrite);
@@ -325,11 +350,29 @@ fn resolve_runtime_graph_spec_for_execution(
     let Some(limit_bytes) = graph_memory_limit_bytes else {
         return graph_spec_with_runtime_betweenness_seeds(input, spec).map(RuntimeGraphSpecResolution::from_optional);
     };
-    let runtime = graph_execution_runtime(context, Some(limit_bytes), operation)?;
-    let result = graph_spec_with_runtime_betweenness_seeds_in_runtime(input, spec, Some(runtime.as_ref()));
-    result
-        .map(RuntimeGraphSpecResolution::from_optional)
-        .map_err(|error| attach_graph_budget_error_facts(error, runtime.as_ref(), operation))
+    let budget =
+        graph_execution_budget(context, Some(limit_bytes), crate::graph_memory::GRAPH_MEMORY_BOUNDARY, operation)?;
+    let result = graph_spec_with_runtime_betweenness_seeds_in_runtime(
+        input,
+        spec,
+        Some(budget.runtime.as_ref()),
+        budget.token.as_ref(),
+    );
+    match result {
+        Ok(spec) => {
+            if let Some(observation) =
+                graph_budget_observation(budget.token.as_ref(), operation, "reservation_enforced")
+            {
+                observation.record(metrics);
+            }
+            Ok(RuntimeGraphSpecResolution::from_optional(spec))
+        },
+        Err(error) => {
+            let error = attach_graph_budget_error_facts(error, budget.token.as_ref(), operation);
+            record_graph_budget_observation_from_error(metrics, &error);
+            Err(error)
+        },
+    }
 }
 
 #[cfg(feature = "cugraph")]
@@ -350,7 +393,7 @@ fn graph_spec_with_runtime_betweenness_seeds(
     input: &DataFrame,
     spec: &crate::plan::GraphAlgorithmSpec,
 ) -> Result<Option<crate::plan::GraphAlgorithmSpec>> {
-    graph_spec_with_runtime_betweenness_seeds_in_runtime(input, spec, None)
+    graph_spec_with_runtime_betweenness_seeds_in_runtime(input, spec, None, None)
 }
 
 #[cfg(feature = "cugraph")]
@@ -358,6 +401,7 @@ fn graph_spec_with_runtime_betweenness_seeds_in_runtime(
     input: &DataFrame,
     spec: &crate::plan::GraphAlgorithmSpec,
     runtime: Option<&cudf::Runtime>,
+    token: Option<&cudf::ExecutionBudgetToken>,
 ) -> Result<Option<crate::plan::GraphAlgorithmSpec>> {
     let (seeds, k, operation) = match &spec.params {
         crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => {
@@ -374,7 +418,7 @@ fn graph_spec_with_runtime_betweenness_seeds_in_runtime(
         return Ok(None);
     }
 
-    let vertices = sorted_graph_vertices_i64(input, spec, operation, runtime)?;
+    let vertices = sorted_graph_vertices_i64(input, spec, operation, runtime, token)?;
     let vertex_count = vertices.len() as u64;
     validate_betweenness_seed_policy_for_vertex_count(spec, vertex_count)?;
     if let Some(k) = k {
@@ -536,6 +580,7 @@ fn sorted_graph_vertices_i64(
     spec: &crate::plan::GraphAlgorithmSpec,
     operation: &'static str,
     runtime: Option<&cudf::Runtime>,
+    token: Option<&cudf::ExecutionBudgetToken>,
 ) -> Result<Vec<i64>> {
     let mut source = input
         .series(&spec.edge_columns.source)
@@ -568,10 +613,17 @@ fn sorted_graph_vertices_i64(
             QueryError::from_cudf(operation, "failed to place graph destination column in budgeted runtime", error)
         })?;
     }
-    let vertices = cudf::Series::concat(&[&source, &destination])
-        .and_then(|series| series.unique())
-        .and_then(|series| series.sort_values(CudfSortOptions::new()))
-        .map_err(|error| QueryError::from_cudf(operation, "failed to collect graph vertices", error))?;
+    let vertices = if let Some(token) = token {
+        let ctx = token.execution_overrides();
+        cudf::Series::concat_in(&[&source, &destination], &ctx)
+            .and_then(|series| series.unique_in(&ctx))
+            .and_then(|series| series.sort_values_in(CudfSortOptions::new(), &ctx))
+    } else {
+        cudf::Series::concat(&[&source, &destination])
+            .and_then(|series| series.unique())
+            .and_then(|series| series.sort_values(CudfSortOptions::new()))
+    }
+    .map_err(|error| QueryError::from_cudf(operation, "failed to collect graph vertices", error))?;
     match source_dtype.id() {
         cudf::TypeId::Int32 => vertices
             .to_vec_strict::<i32>()
@@ -620,7 +672,7 @@ fn execute_chunked_betweenness_retry(
                 error = error
                     .with_fact("graph_budget_limit_bytes", limit)
                     .with_fact("graph_budget_peak_bytes", limit)
-                    .with_fact("graph_budget_status", "budget_tracking_resource_exhausted");
+                    .with_fact("graph_budget_status", "reservation_resource_exhausted");
             }
             return Err(error);
         }
@@ -1032,9 +1084,9 @@ fn admit_graph_memory(
     input: &DataFrame,
     input_edges: u64,
     metrics: &mut QueryMetrics,
-) -> Result<()> {
+) -> Result<Option<u64>> {
     if !crate::graph_memory::graph_memory_reservation_required(spec.algorithm) {
-        return Ok(());
+        return Ok(None);
     }
     let report = graph_memory_reservation_report(
         context,
@@ -1046,13 +1098,14 @@ fn admit_graph_memory(
         graph_device_total_memory_bytes(context)?,
         false,
         None,
+        None,
     )?;
     let model = crate::graph_memory::GraphMemoryModel;
     let request = model.reservation_request(node_id, &report, context.device_memory_space());
     metrics.record_graph_reservation(report.clone());
 
     let Some(mut request) = request else {
-        return Ok(());
+        return Ok(None);
     };
     if request.query_id.is_none() && metrics.query_id().is_assigned() {
         request.query_id = Some(metrics.query_id().clone());
@@ -1072,7 +1125,7 @@ fn admit_graph_memory(
         -i128::from(request.requested_bytes),
         0,
     ));
-    Ok(())
+    Ok(None)
 }
 
 #[cfg(feature = "cugraph")]
@@ -1086,6 +1139,7 @@ pub(super) fn graph_memory_reservation_report(
     device_total_memory_bytes: Option<u64>,
     allow_nulls: bool,
     vertex_estimate: Option<crate::graph_memory::GraphVertexEstimate>,
+    statistics: Option<crate::graph_memory::GraphStatistics>,
 ) -> Result<crate::graph_memory::GraphReservationReport> {
     let mut model_input = graph_memory_model_input_for_frame(input, spec, input_edges, allow_nulls)?;
     model_input = context.graph_memory_calibration_override().apply_to_input(model_input);
@@ -1096,9 +1150,16 @@ pub(super) fn graph_memory_reservation_report(
     if let Some(vertex_estimate) = vertex_estimate {
         model_input = model_input.with_vertex_estimate(vertex_estimate);
     }
+    if let Some(statistics) = statistics {
+        model_input = model_input.with_statistics(statistics);
+    }
     let model = crate::graph_memory::GraphMemoryModel;
     let estimate = model.estimate(spec, model_input)?;
-    Ok(crate::graph_memory::GraphReservationReport::from_estimate(node_id, estimate, budget_bytes))
+    let report = crate::graph_memory::GraphReservationReport::from_estimate(node_id, estimate, budget_bytes);
+    Ok(match statistics {
+        Some(statistics) => report.with_statistics(statistics),
+        None => report,
+    })
 }
 
 #[cfg(feature = "cugraph")]
@@ -1121,9 +1182,16 @@ pub(super) struct GraphAlgorithmExecutionResult {
 }
 
 #[cfg(feature = "cugraph")]
+struct GraphExecutionBudget {
+    runtime: std::sync::Arc<cudf::Runtime>,
+    token: Option<cudf::ExecutionBudgetToken>,
+}
+
+#[cfg(feature = "cugraph")]
 #[derive(Debug, Clone)]
 pub(super) struct GraphBudgetObservation {
     operation: &'static str,
+    enforcement: &'static str,
     budget_bytes: u64,
     allocator_high_water_bytes: Option<u64>,
     status: &'static str,
@@ -1132,12 +1200,16 @@ pub(super) struct GraphBudgetObservation {
 
 #[cfg(feature = "cugraph")]
 impl GraphBudgetObservation {
-    fn from_usage(
+    fn from_reservation_usage(
         operation: &'static str,
-        usage: cudf::core::memory::DeviceMemoryResourceUsage,
+        token: &cudf::ExecutionBudgetToken,
+        usage: cudf::ReservationUsage,
+        arena_usage: Option<cudf::ReservationArenaUsage>,
         status: &'static str,
     ) -> Self {
         let mut context_facts = BTreeMap::new();
+        context_facts.insert("reservation_id".to_string(), usage.reservation_id.to_string());
+        context_facts.insert("reservation_attached".to_string(), usage.attached.to_string());
         context_facts.insert("allocator_current_bytes".to_string(), usage.current_bytes.to_string());
         context_facts.insert("allocator_peak_aligned_bytes".to_string(), usage.peak_aligned_bytes.to_string());
         context_facts.insert("allocator_current_aligned_bytes".to_string(), usage.current_aligned_bytes.to_string());
@@ -1151,9 +1223,24 @@ impl GraphBudgetObservation {
             "allocator_largest_failed_allocation_bytes".to_string(),
             usage.largest_failed_allocation_bytes.to_string(),
         );
+        if let Some(arena_usage) = arena_usage {
+            context_facts.insert("arena_id".to_string(), arena_usage.arena_id.to_string());
+            context_facts.insert("arena_active".to_string(), arena_usage.active.to_string());
+            context_facts.insert("arena_active_members".to_string(), arena_usage.active_members.to_string());
+            context_facts.insert("arena_limit_bytes".to_string(), arena_usage.allocation_limit_bytes.to_string());
+            context_facts.insert("arena_current_bytes".to_string(), arena_usage.current_bytes.to_string());
+            context_facts.insert("arena_peak_bytes".to_string(), arena_usage.peak_bytes.to_string());
+            context_facts
+                .insert("arena_failed_allocation_count".to_string(), arena_usage.failed_allocation_count.to_string());
+            context_facts.insert(
+                "arena_largest_failed_allocation_bytes".to_string(),
+                arena_usage.largest_failed_allocation_bytes.to_string(),
+            );
+        }
         Self {
             operation,
-            budget_bytes: usage.allocation_limit_bytes,
+            enforcement: token.enforcement().as_str(),
+            budget_bytes: token.request().budget_bytes() as u64,
             allocator_high_water_bytes: Some(usage.peak_bytes),
             status,
             context_facts,
@@ -1161,11 +1248,7 @@ impl GraphBudgetObservation {
     }
 
     fn record(&self, metrics: &mut QueryMetrics) {
-        self.record_with_boundary(
-            metrics,
-            crate::graph_memory::GRAPH_MEMORY_BOUNDARY,
-            Some("cugraph_workspace_preflight"),
-        );
+        self.record_with_boundary(metrics, crate::graph_memory::GRAPH_MEMORY_BOUNDARY, None);
     }
 
     fn record_with_boundary(
@@ -1174,11 +1257,12 @@ impl GraphBudgetObservation {
         boundary: &'static str,
         unresolved_contract: Option<&'static str>,
     ) {
-        metrics.record_graph_budget_tracking_with_boundary(
+        metrics.record_graph_budget_tracking_with_boundary_and_enforcement(
             self.operation,
             boundary,
             unresolved_contract.map(str::to_string),
             self.budget_bytes,
+            self.enforcement,
             self.allocator_high_water_bytes,
             self.status,
             self.context_facts.clone(),
@@ -1402,11 +1486,17 @@ where
         )
         .with_source(error)
     })?;
-    let runtime = graph_execution_runtime(context, graph_memory_limit_bytes, operation)?;
-    let handle = cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).map_err(map_cugraph_error(
-        "nexus_query_engine.graph_algorithm.resource_handle",
-        "failed to bind cuGraph resource handle to the native cudf runtime",
-    ))?;
+    let budget = graph_execution_budget(
+        context,
+        graph_memory_limit_bytes,
+        crate::graph_memory::GRAPH_MEMORY_BOUNDARY,
+        operation,
+    )?;
+    let handle =
+        cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&budget.runtime)).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.resource_handle",
+            "failed to bind cuGraph resource handle to the native cudf runtime",
+        ))?;
     let entered = handle.enter(operation).map_err(map_cugraph_error(
         "nexus_query_engine.graph_algorithm.enter",
         "failed to enter cuGraph execution context",
@@ -1418,11 +1508,11 @@ where
                     "nexus_query_engine.graph_algorithm.build_graph",
                     "failed to build cuGraph graph from edge-list table",
                 )(error),
-                runtime.as_ref(),
+                budget.token.as_ref(),
                 operation,
             )
         })?;
-    attach_graph_budget_observation(f(runtime.as_ref(), &entered, &mut graph), runtime.as_ref(), operation)
+    attach_graph_budget_observation(f(budget.runtime.as_ref(), &entered, &mut graph), budget.token.as_ref(), operation)
 }
 
 /// Build a cuGraph graph through `GraphBuilder` when the native edge list
@@ -1446,131 +1536,165 @@ where
         &mut cugraph::Graph<T>,
     ) -> Result<GraphAlgorithmExecutionResult>,
 {
-    let runtime = graph_execution_runtime(context, graph_memory_limit_bytes, operation)?;
-    let handle = cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).map_err(map_cugraph_error(
-        "nexus_query_engine.graph_algorithm.resource_handle",
-        "failed to bind cuGraph resource handle to the native cudf runtime",
-    ))?;
+    let budget = graph_execution_budget(
+        context,
+        graph_memory_limit_bytes,
+        crate::graph_memory::GRAPH_MEMORY_BOUNDARY,
+        operation,
+    )?;
+    let handle =
+        cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&budget.runtime)).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.resource_handle",
+            "failed to bind cuGraph resource handle to the native cudf runtime",
+        ))?;
     let entered = handle.enter(operation).map_err(map_cugraph_error(
         "nexus_query_engine.graph_algorithm.enter",
         "failed to enter cuGraph execution context",
     ))?;
     let mut graph = build_graph_from_edge_id_columns::<T>(&entered, edges, spec).map_err(|error| {
         if error.code() == QueryErrorCode::CudfResourceExhausted {
-            attach_graph_budget_error_facts(error, runtime.as_ref(), operation)
+            attach_graph_budget_error_facts(error, budget.token.as_ref(), operation)
         } else {
             error
         }
     })?;
-    attach_graph_budget_observation(f(runtime.as_ref(), &entered, &mut graph), runtime.as_ref(), operation)
+    attach_graph_budget_observation(f(budget.runtime.as_ref(), &entered, &mut graph), budget.token.as_ref(), operation)
 }
 
 #[cfg(feature = "cugraph")]
-fn graph_execution_runtime(
+fn graph_execution_budget(
     context: &ExecutionContext,
     graph_memory_limit_bytes: Option<u64>,
+    budget_boundary: &'static str,
     operation: &'static str,
-) -> Result<std::sync::Arc<cudf::Runtime>> {
-    let (limit_bytes, limit) = match graph_memory_limit_bytes {
-        Some(limit_bytes) => {
-            let limit = usize::try_from(limit_bytes).map_err(|_| {
-                QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "nexus_query_engine.graph_algorithm.budget_tracking_runtime",
-                    "graph memory reservation does not fit this platform's usize budget limit",
-                )
-                .with_fact("operation", operation)
-                .with_fact("graph_memory_limit_bytes", limit_bytes)
-            })?;
-            (limit_bytes, limit)
-        },
-        None => (usize::MAX as u64, usize::MAX),
-    };
-    let budget_mr = context.runtime().memory_resource().budget_tracking_limit(limit).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.graph_algorithm.budget_tracking_runtime",
-            "failed to create budget-tracking memory resource for cuGraph execution",
-            error,
+) -> Result<GraphExecutionBudget> {
+    let limit_bytes = graph_memory_limit_bytes.unwrap_or(usize::MAX as u64);
+
+    let limit = usize::try_from(limit_bytes).map_err(|_| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.execution_budget",
+            "graph memory reservation does not fit this platform's usize budget limit",
         )
         .with_fact("operation", operation)
+        .with_fact("budget_boundary", budget_boundary)
         .with_fact("graph_memory_limit_bytes", limit_bytes)
     })?;
-    let runtime = cudf::Runtime::builder()
-        .with_device(context.runtime().device())
-        .with_stream(context.runtime().stream().clone())
-        .with_memory_resource(budget_mr)
-        .build()
+    let token = context
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(limit).with_boundary(budget_boundary))
         .map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.graph_algorithm.budget_tracking_runtime",
-                "failed to build budget-tracking cudf runtime for cuGraph execution",
+            QueryError::from_cudf_with_budget_details(
+                "nexus_query_engine.graph_algorithm.execution_budget",
+                "failed to attach graph execution memory reservation",
                 error,
             )
             .with_fact("operation", operation)
+            .with_fact("budget_boundary", budget_boundary)
             .with_fact("graph_memory_limit_bytes", limit_bytes)
         })?;
-    Ok(std::sync::Arc::new(runtime))
+    let runtime = cudf::Runtime::builder()
+        .with_device(context.runtime().device())
+        .with_stream(context.runtime().stream().clone())
+        .with_memory_resource(token.memory_resource().clone())
+        .build()
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.graph_algorithm.execution_budget",
+                "failed to build reservation-backed cudf runtime for cuGraph execution",
+                error,
+            )
+            .with_fact("operation", operation)
+            .with_fact("budget_boundary", budget_boundary)
+            .with_fact("graph_memory_limit_bytes", limit_bytes)
+        })?;
+    Ok(GraphExecutionBudget { runtime: std::sync::Arc::new(runtime), token: Some(token) })
 }
 
 #[cfg(feature = "cugraph")]
 fn attach_graph_budget_observation(
     result: Result<GraphAlgorithmExecutionResult>,
-    runtime: &cudf::Runtime,
+    token: Option<&cudf::ExecutionBudgetToken>,
     operation: &'static str,
 ) -> Result<GraphAlgorithmExecutionResult> {
     match result {
         Ok(mut result) => {
-            if let Some(observation) = graph_budget_observation(runtime, operation, "budget_tracking_enforced") {
+            if let Some(observation) = graph_budget_observation(token, operation, "reservation_enforced") {
                 result.budget_observations.push(observation);
             }
             Ok(result)
         },
-        Err(error) => Err(attach_graph_budget_error_facts(error, runtime, operation)),
+        Err(error) => Err(attach_graph_budget_error_facts(error, token, operation)),
     }
 }
 
 #[cfg(feature = "cugraph")]
 fn graph_budget_observation(
-    runtime: &cudf::Runtime,
+    token: Option<&cudf::ExecutionBudgetToken>,
     operation: &'static str,
     status: &'static str,
 ) -> Option<GraphBudgetObservation> {
-    runtime
-        .memory_resource()
-        .budget_tracking_usage()
-        .ok()
-        .map(|usage| GraphBudgetObservation::from_usage(operation, usage, status))
+    let token = token?;
+    let usage = token.reservation_usage().ok()?;
+    let arena_usage = token.reservation_arena_usage().ok().flatten();
+    Some(GraphBudgetObservation::from_reservation_usage(operation, token, usage, arena_usage, status))
+}
+
+#[cfg(feature = "cugraph")]
+const GRAPH_BUDGET_CONTEXT_FACT_ERROR_KEYS: &[(&str, &str)] = &[
+    ("reservation_id", "graph_budget_reservation_id"),
+    ("reservation_attached", "graph_budget_reservation_attached"),
+    ("allocator_current_bytes", "graph_budget_allocator_current_bytes"),
+    ("allocator_peak_aligned_bytes", "graph_budget_allocator_peak_aligned_bytes"),
+    ("allocator_current_aligned_bytes", "graph_budget_allocator_current_aligned_bytes"),
+    ("allocator_total_bytes", "graph_budget_allocator_total_bytes"),
+    ("allocator_total_allocations", "graph_budget_allocator_total_allocations"),
+    ("allocator_current_allocations", "graph_budget_allocator_current_allocations"),
+    ("allocator_peak_allocations", "graph_budget_allocator_peak_allocations"),
+    ("allocator_failed_allocation_count", "graph_budget_failed_allocation_count"),
+    ("allocator_largest_failed_allocation_bytes", "graph_budget_largest_failed_allocation_bytes"),
+    ("arena_id", "graph_budget_arena_id"),
+    ("arena_active", "graph_budget_arena_active"),
+    ("arena_active_members", "graph_budget_arena_active_members"),
+    ("arena_limit_bytes", "graph_budget_arena_limit_bytes"),
+    ("arena_current_bytes", "graph_budget_arena_current_bytes"),
+    ("arena_peak_bytes", "graph_budget_arena_peak_bytes"),
+    ("arena_failed_allocation_count", "graph_budget_arena_failed_allocation_count"),
+    ("arena_largest_failed_allocation_bytes", "graph_budget_arena_largest_failed_allocation_bytes"),
+];
+
+#[cfg(feature = "cugraph")]
+fn graph_budget_error_fact_key(context_key: &str) -> Option<&'static str> {
+    GRAPH_BUDGET_CONTEXT_FACT_ERROR_KEYS
+        .iter()
+        .find_map(|(candidate, fact_key)| (*candidate == context_key).then_some(*fact_key))
 }
 
 #[cfg(feature = "cugraph")]
 fn attach_graph_budget_error_facts(
     mut error: QueryError,
-    runtime: &cudf::Runtime,
+    token: Option<&cudf::ExecutionBudgetToken>,
     operation: &'static str,
 ) -> QueryError {
     let status = if error.code() == QueryErrorCode::CudfResourceExhausted {
-        "budget_tracking_resource_exhausted"
+        "reservation_resource_exhausted"
     } else {
-        "budget_tracking_failed"
+        "reservation_failed"
     };
-    let Some(observation) = graph_budget_observation(runtime, operation, status) else {
+    let Some(observation) = graph_budget_observation(token, operation, status) else {
         return error;
     };
     error = error
         .with_fact("graph_budget_operation", observation.operation)
+        .with_fact("graph_budget_enforcement", observation.enforcement)
         .with_fact("graph_budget_limit_bytes", observation.budget_bytes)
         .with_fact("graph_budget_status", observation.status);
     if let Some(peak) = observation.allocator_high_water_bytes {
         error = error.with_fact("graph_budget_peak_bytes", peak);
     }
     for (key, value) in observation.context_facts {
-        error = match key.as_str() {
-            "allocator_failed_allocation_count" => error.with_fact("graph_budget_failed_allocation_count", value),
-            "allocator_largest_failed_allocation_bytes" => {
-                error.with_fact("graph_budget_largest_failed_allocation_bytes", value)
-            },
-            _ => error,
-        };
+        if let Some(fact_key) = graph_budget_error_fact_key(&key) {
+            error = error.with_fact(fact_key, value);
+        }
     }
     error
 }
@@ -1581,7 +1705,7 @@ fn record_graph_budget_observation_from_error(metrics: &mut QueryMetrics, error:
         metrics,
         error,
         crate::graph_memory::GRAPH_MEMORY_BOUNDARY,
-        Some("cugraph_workspace_preflight"),
+        None,
     );
 }
 
@@ -1600,18 +1724,20 @@ fn record_graph_budget_observation_from_error_with_boundary(
         return;
     };
     let peak_bytes = error.fact_value("graph_budget_peak_bytes").and_then(|value| value.parse::<u64>().ok());
-    let status = error.fact_value("graph_budget_status").unwrap_or("budget_tracking_failed");
+    let status = error.fact_value("graph_budget_status").unwrap_or("reservation_failed");
+    let enforcement = error.fact_value("graph_budget_enforcement").unwrap_or("stream_bound_reservation");
     let mut context_facts = BTreeMap::new();
-    for key in ["graph_budget_failed_allocation_count", "graph_budget_largest_failed_allocation_bytes"] {
-        if let Some(value) = error.fact_value(key) {
-            context_facts.insert(key.to_string(), value.to_string());
+    for (context_key, fact_key) in GRAPH_BUDGET_CONTEXT_FACT_ERROR_KEYS {
+        if let Some(value) = error.fact_value(fact_key) {
+            context_facts.insert((*context_key).to_string(), value.to_string());
         }
     }
-    metrics.record_graph_budget_tracking_with_boundary(
+    metrics.record_graph_budget_tracking_with_boundary_and_enforcement(
         operation.to_string(),
         boundary,
         unresolved_contract.map(str::to_string),
         budget_bytes,
+        enforcement.to_string(),
         peak_bytes,
         status.to_string(),
         context_facts,
@@ -1946,19 +2072,25 @@ pub(in crate::exec) fn graph_memory_model_input_for_frame(
 }
 
 #[cfg(feature = "cugraph")]
-pub(in crate::exec) fn runtime_exact_vertex_estimate_with_budget(
+pub(in crate::exec) fn runtime_graph_statistics_probe_with_budget(
     context: &ExecutionContext,
     frame: &DataFrame,
     spec: &crate::plan::GraphAlgorithmSpec,
     budget_limit_bytes: u64,
     metrics: &mut QueryMetrics,
-) -> Result<crate::graph_memory::GraphVertexEstimate> {
+) -> Result<RuntimeGraphStatisticsProbe> {
     let operation = "nexus_query_engine.graph_algorithm.graph_memory_vertex_estimate";
-    let runtime = graph_execution_runtime(context, Some(budget_limit_bytes), operation)?;
-    let estimate = runtime_exact_vertex_estimate_in_runtime(runtime.as_ref(), frame, spec);
-    match estimate {
-        Ok(estimate) => {
-            if let Some(observation) = graph_budget_observation(runtime.as_ref(), operation, "budget_tracking_enforced")
+    let budget = graph_execution_budget(
+        context,
+        Some(budget_limit_bytes),
+        crate::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY,
+        operation,
+    )?;
+    let probe = runtime_graph_statistics_probe_in_runtime(budget.runtime.as_ref(), frame, spec);
+    match probe {
+        Ok(probe) => {
+            if let Some(observation) =
+                graph_budget_observation(budget.token.as_ref(), operation, "reservation_enforced")
             {
                 observation.record_with_boundary(
                     metrics,
@@ -1966,10 +2098,10 @@ pub(in crate::exec) fn runtime_exact_vertex_estimate_with_budget(
                     Some("graph_vertex_estimate_probe"),
                 );
             }
-            Ok(estimate)
+            Ok(probe)
         },
         Err(error) => {
-            let error = attach_graph_budget_error_facts(error, runtime.as_ref(), operation);
+            let error = attach_graph_budget_error_facts(error, budget.token.as_ref(), operation);
             record_graph_budget_observation_from_error_with_boundary(
                 metrics,
                 &error,
@@ -1982,12 +2114,12 @@ pub(in crate::exec) fn runtime_exact_vertex_estimate_with_budget(
 }
 
 #[cfg(feature = "cugraph")]
-fn runtime_exact_vertex_estimate_in_runtime(
+fn runtime_graph_statistics_probe_in_runtime(
     runtime: &cudf::Runtime,
     frame: &DataFrame,
     spec: &crate::plan::GraphAlgorithmSpec,
-) -> Result<crate::graph_memory::GraphVertexEstimate> {
-    let operation = "nexus_query_engine.graph_algorithm.graph_memory_vertex_estimate";
+) -> Result<RuntimeGraphStatisticsProbe> {
+    let operation = GRAPH_STATISTICS_OPERATION;
     let source = frame
         .series(&spec.edge_columns.source)
         .map_err(|error| QueryError::from_cudf(operation, "failed to read graph source column", error))?;
@@ -2011,20 +2143,644 @@ fn runtime_exact_vertex_estimate_in_runtime(
         .with_fact("src_cudf_dtype", format!("{source_dtype:?}"))
         .with_fact("dst_cudf_dtype", format!("{destination_dtype:?}")));
     }
+    let vertex_width_bytes = dtype_width_bytes(source_dtype)?;
+    let device_total_memory_bytes = runtime.device().available_memory().ok().map(|memory| memory.total_bytes);
+    let device_multiprocessor_count = runtime.device().multiprocessor_count().ok().filter(|count| *count > 0);
     let source = source.copy_into_runtime(runtime).map_err(|error| {
         QueryError::from_cudf(operation, "failed to place graph source column in budgeted runtime", error)
     })?;
     let destination = destination.copy_into_runtime(runtime).map_err(|error| {
         QueryError::from_cudf(operation, "failed to place graph destination column in budgeted runtime", error)
     })?;
-    let count = cudf::Series::concat(&[&source, &destination])
-        .and_then(|series| series.nunique())
+    let ctx = graph_statistics_execution_overrides(runtime);
+    let count = cudf::Series::concat_in(&[&source, &destination], &ctx)
+        .and_then(|series| series.nunique_in(&ctx))
         .map_err(|error| QueryError::from_cudf(operation, "failed to count distinct graph endpoints", error))?;
     let count = u64::try_from(count).map_err(|error| {
         QueryError::new(QueryErrorCode::InvalidPlan, operation, "runtime graph vertex estimate does not fit u64")
             .with_source(error)
     })?;
-    Ok(crate::graph_memory::GraphVertexEstimate::runtime_exact_distinct(count))
+    let vertex_estimate = crate::graph_memory::GraphVertexEstimate::runtime_exact_distinct(count);
+    let statistics = crate::graph_memory::GraphStatistics::runtime_exact_vertices(count);
+
+    let statistics = match graph_statistics_optional_algorithm_evidence(
+        &ctx,
+        source,
+        destination,
+        spec,
+        vertex_width_bytes,
+        device_total_memory_bytes,
+        device_multiprocessor_count,
+        statistics,
+    ) {
+        Ok(statistics) => statistics,
+        Err(error) if error.code() == QueryErrorCode::CudfResourceExhausted => statistics,
+        Err(error) => return Err(error),
+    };
+
+    Ok(RuntimeGraphStatisticsProbe { vertex_estimate, statistics })
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_optional_algorithm_evidence(
+    ctx: &ExecutionOverrides<'_>,
+    source: cudf::Series,
+    destination: cudf::Series,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    vertex_width_bytes: u64,
+    device_total_memory_bytes: Option<u64>,
+    device_multiprocessor_count: Option<u32>,
+    mut statistics: crate::graph_memory::GraphStatistics,
+) -> Result<crate::graph_memory::GraphStatistics> {
+    let needs_sum_out_degree = graph_statistics_needs_sum_out_degree(spec.algorithm);
+    let needs_triangle_degree = graph_statistics_needs_triangle_degree(spec.algorithm);
+    if !needs_sum_out_degree && !needs_triangle_degree {
+        return Ok(statistics);
+    }
+    if FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED.swap(false, Ordering::SeqCst) {
+        return Err(QueryError::new(
+            QueryErrorCode::CudfResourceExhausted,
+            GRAPH_STATISTICS_OPERATION,
+            "forced graph optional statistics resource exhaustion for test",
+        ));
+    }
+
+    let edge_frame =
+        DataFrame::from_series([(GRAPH_STATS_SRC, source), (GRAPH_STATS_DST, destination)]).map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to build graph statistics edge frame", error)
+        })?;
+    if edge_frame.num_rows() == 0 {
+        if needs_sum_out_degree {
+            statistics = statistics.with_sum_out_degree(0);
+        }
+        if needs_triangle_degree {
+            statistics = statistics.with_degree_distribution(0, 0).with_triangle_min_degree(0, 0, 0);
+        }
+        return Ok(statistics);
+    }
+
+    if needs_sum_out_degree {
+        let out_degrees = graph_statistics_out_degrees(&edge_frame, ctx)?;
+        let sum_out_degree = graph_statistics_betweenness_resident_out_degree_sum(
+            &out_degrees,
+            spec,
+            statistics.exact_vertices,
+            vertex_width_bytes,
+            device_total_memory_bytes,
+            ctx,
+        )?;
+        statistics = statistics.with_sum_out_degree(sum_out_degree);
+    }
+    if needs_triangle_degree {
+        let triangle_edges = graph_statistics_triangle_undirected_edges(&edge_frame, ctx)?;
+        drop(edge_frame);
+        if triangle_edges.num_rows() == 0 {
+            statistics = statistics.with_degree_distribution(0, 0).with_triangle_min_degree(0, 0, 0);
+            return Ok(statistics);
+        }
+        let undirected_degrees = graph_statistics_undirected_degrees(&triangle_edges, ctx)?;
+        let degree = undirected_degrees.series(GRAPH_STATS_OUT_DEGREE).map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to read graph undirected-degree column", error)
+        })?;
+        let degree_max = graph_statistics_series_max_u64(&degree, ctx, GRAPH_STATS_OUT_DEGREE)?.unwrap_or(0);
+        let degree_p99 = graph_statistics_series_p99_u64(&degree, ctx, GRAPH_STATS_OUT_DEGREE)?;
+        let (sum_min_degree_oriented, oriented_edge_count, peak_chunk_min_degree_sum) =
+            graph_statistics_triangle_min_degree(
+                &triangle_edges,
+                &undirected_degrees,
+                ctx,
+                device_multiprocessor_count,
+            )?;
+        statistics = statistics.with_degree_distribution(degree_max, degree_p99).with_triangle_min_degree(
+            sum_min_degree_oriented,
+            oriented_edge_count,
+            peak_chunk_min_degree_sum,
+        );
+    }
+
+    Ok(statistics)
+}
+
+#[cfg(feature = "cugraph")]
+const GRAPH_STATISTICS_OPERATION: &str = "nexus_query_engine.graph_algorithm.graph_memory_vertex_estimate";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_SRC: &str = "__graph_stats_src";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_DST: &str = "__graph_stats_dst";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_CANONICAL_SRC: &str = "__graph_stats_canonical_src";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_CANONICAL_DST: &str = "__graph_stats_canonical_dst";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_VERTEX: &str = "__graph_stats_vertex";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_ENDPOINT: &str = "__graph_stats_endpoint";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_OUT_DEGREE: &str = "__graph_stats_out_degree";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_SRC_DEGREE: &str = "__graph_stats_src_degree";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_DST_DEGREE: &str = "__graph_stats_dst_degree";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_ORIENTED_SRC: &str = "__graph_stats_oriented_src";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_ORIENTED_DST: &str = "__graph_stats_oriented_dst";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_ORIENTED_DEGREE: &str = "__graph_stats_oriented_degree";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_ORIENTED_SRC_DEGREE: &str = "__graph_stats_oriented_src_degree";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_ORIENTED_DST_DEGREE: &str = "__graph_stats_oriented_dst_degree";
+#[cfg(feature = "cugraph")]
+const GRAPH_STATS_EDGE_MIN_DEGREE: &str = "__graph_stats_edge_min_degree";
+#[cfg(feature = "cugraph")]
+fn graph_statistics_execution_overrides(runtime: &cudf::Runtime) -> ExecutionOverrides<'_> {
+    ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource())
+}
+
+#[cfg(feature = "cugraph")]
+const fn graph_statistics_needs_sum_out_degree(algorithm: crate::plan::GraphAlgorithm) -> bool {
+    matches!(
+        algorithm,
+        crate::plan::GraphAlgorithm::BetweennessCentrality | crate::plan::GraphAlgorithm::EdgeBetweennessCentrality
+    )
+}
+
+#[cfg(feature = "cugraph")]
+const fn graph_statistics_needs_triangle_degree(algorithm: crate::plan::GraphAlgorithm) -> bool {
+    matches!(algorithm, crate::plan::GraphAlgorithm::TriangleCountAll)
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_out_degrees(edge_frame: &DataFrame, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
+    let out_degrees = edge_frame
+        .groupby([GRAPH_STATS_SRC])
+        .with_execution(ctx)
+        .agg(&[CudfAggSpec::new(GRAPH_STATS_DST, GroupByAgg::Count { include_nulls: false })
+            .with_alias(GRAPH_STATS_OUT_DEGREE)])
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to compute graph out-degrees", error)
+        })?;
+    graph_statistics_cast_column_to_u64(&out_degrees, GRAPH_STATS_OUT_DEGREE, ctx)
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_betweenness_resident_out_degree_sum(
+    out_degrees: &DataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    exact_vertices: u64,
+    vertex_width_bytes: u64,
+    device_total_memory_bytes: Option<u64>,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<u64> {
+    let resident_sources = graph_statistics_betweenness_resident_sources(
+        spec,
+        exact_vertices,
+        vertex_width_bytes,
+        device_total_memory_bytes,
+    );
+    if resident_sources == 0 || out_degrees.num_rows() == 0 {
+        return Ok(0);
+    }
+    let out_degree = out_degrees.series(GRAPH_STATS_OUT_DEGREE).map_err(|error| {
+        QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to read graph out-degree column", error)
+    })?;
+    if resident_sources >= out_degrees.num_rows() as u64 {
+        return graph_statistics_series_sum_u64(&out_degree, ctx, GRAPH_STATS_OUT_DEGREE);
+    }
+    let take = usize::try_from(resident_sources).map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            GRAPH_STATISTICS_OPERATION,
+            "betweenness resident source count does not fit usize",
+        )
+        .with_fact("resident_sources", resident_sources)
+        .with_source(error)
+    })?;
+    let top_out_degrees = out_degrees
+        .with_execution(ctx)
+        .sort_values([GRAPH_STATS_OUT_DEGREE], CudfSortOptions::new().with_descending(vec![true]))
+        .and_then(|frame| frame.with_execution(ctx).head(take))
+        .map_err(|error| {
+            QueryError::from_cudf(
+                GRAPH_STATISTICS_OPERATION,
+                "failed to compute top betweenness source out-degrees",
+                error,
+            )
+        })?;
+    let top_out_degree = top_out_degrees.series(GRAPH_STATS_OUT_DEGREE).map_err(|error| {
+        QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to read top graph out-degree column", error)
+    })?;
+    graph_statistics_series_sum_u64(&top_out_degree, ctx, GRAPH_STATS_OUT_DEGREE)
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_betweenness_resident_sources(
+    spec: &crate::plan::GraphAlgorithmSpec,
+    exact_vertices: u64,
+    vertex_width_bytes: u64,
+    device_total_memory_bytes: Option<u64>,
+) -> u64 {
+    let requested_sources = match &spec.params {
+        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => {
+            params.seeds.as_ref().map_or_else(|| params.k.unwrap_or(exact_vertices), |seeds| seeds.len() as u64)
+        },
+        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(_) => return 1,
+        _ => return 0,
+    };
+    let mut resident_sources = requested_sources.clamp(1, u16::MAX as u64);
+    let Some(total_memory_bytes) = device_total_memory_bytes else {
+        return resident_sources;
+    };
+    if resident_sources <= 1 || exact_vertices == 0 {
+        return resident_sources;
+    }
+    let bfs_result_bytes_per_source = exact_vertices.saturating_mul(vertex_width_bytes.saturating_mul(2));
+    if bfs_result_bytes_per_source == 0 {
+        return resident_sources;
+    }
+    resident_sources = resident_sources.min(total_memory_bytes / 4 / bfs_result_bytes_per_source).max(1);
+    resident_sources
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_triangle_undirected_edges(
+    edge_frame: &DataFrame,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<DataFrame> {
+    let non_loop_edges =
+        edge_frame.with_execution(ctx).filter_expr(col(GRAPH_STATS_SRC).ne(col(GRAPH_STATS_DST))).map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to remove graph self-loops", error)
+        })?;
+    let canonical = non_loop_edges
+        .with_execution(ctx)
+        .with_columns([
+            when(col(GRAPH_STATS_SRC).le(col(GRAPH_STATS_DST)))
+                .then(col(GRAPH_STATS_SRC))
+                .otherwise(col(GRAPH_STATS_DST))
+                .alias(GRAPH_STATS_CANONICAL_SRC),
+            when(col(GRAPH_STATS_SRC).le(col(GRAPH_STATS_DST)))
+                .then(col(GRAPH_STATS_DST))
+                .otherwise(col(GRAPH_STATS_SRC))
+                .alias(GRAPH_STATS_CANONICAL_DST),
+        ])
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to canonicalize undirected graph edges", error)
+        })?;
+    let canonical = canonical
+        .select([GRAPH_STATS_CANONICAL_SRC, GRAPH_STATS_CANONICAL_DST])
+        .and_then(|frame| {
+            frame.rename_columns([
+                (GRAPH_STATS_CANONICAL_SRC, GRAPH_STATS_SRC),
+                (GRAPH_STATS_CANONICAL_DST, GRAPH_STATS_DST),
+            ])
+        })
+        .map_err(|error| {
+            QueryError::from_cudf(
+                GRAPH_STATISTICS_OPERATION,
+                "failed to project canonical undirected graph edges",
+                error,
+            )
+        })?;
+    canonical
+        .with_execution(ctx)
+        .drop_duplicates(DropDuplicatesOptions::builder().subset(&[GRAPH_STATS_SRC, GRAPH_STATS_DST]).build())
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to deduplicate undirected graph edges", error)
+        })
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_undirected_degrees(edge_frame: &DataFrame, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
+    let source = edge_frame.series(GRAPH_STATS_SRC).map_err(|error| {
+        QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to read graph source column", error)
+    })?;
+    let destination = edge_frame.series(GRAPH_STATS_DST).map_err(|error| {
+        QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to read graph destination column", error)
+    })?;
+    let endpoints = cudf::Series::concat_in(&[&source, &destination], ctx).map_err(|error| {
+        QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to concat graph endpoints", error)
+    })?;
+    let endpoint_values = endpoints.clone();
+    let endpoint_frame =
+        DataFrame::from_series([(GRAPH_STATS_VERTEX, endpoints), (GRAPH_STATS_ENDPOINT, endpoint_values)]).map_err(
+            |error| {
+                QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to build graph endpoint degree frame", error)
+            },
+        )?;
+    let degrees = endpoint_frame
+        .groupby([GRAPH_STATS_VERTEX])
+        .with_execution(ctx)
+        .agg(&[CudfAggSpec::new(GRAPH_STATS_ENDPOINT, GroupByAgg::Count { include_nulls: false })
+            .with_alias(GRAPH_STATS_OUT_DEGREE)])
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to compute graph undirected degrees", error)
+        })?;
+    graph_statistics_cast_column_to_u64(&degrees, GRAPH_STATS_OUT_DEGREE, ctx)
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_triangle_min_degree(
+    edge_frame: &DataFrame,
+    vertex_degrees: &DataFrame,
+    ctx: &ExecutionOverrides<'_>,
+    device_multiprocessor_count: Option<u32>,
+) -> Result<(u64, u64, u64)> {
+    let source_degrees = vertex_degrees
+        .rename_columns([(GRAPH_STATS_VERTEX, GRAPH_STATS_SRC), (GRAPH_STATS_OUT_DEGREE, GRAPH_STATS_SRC_DEGREE)])
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to prepare source graph degree frame", error)
+        })?;
+    let destination_degrees = vertex_degrees
+        .rename_columns([(GRAPH_STATS_VERTEX, GRAPH_STATS_DST), (GRAPH_STATS_OUT_DEGREE, GRAPH_STATS_DST_DEGREE)])
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to prepare destination graph degree frame", error)
+        })?;
+    let edge_degrees = edge_frame
+        .with_execution(ctx)
+        .merge(&source_degrees, cudf::MergeOptions::new().how_left().on([GRAPH_STATS_SRC]))
+        .and_then(|frame| {
+            frame
+                .with_execution(ctx)
+                .merge(&destination_degrees, cudf::MergeOptions::new().how_left().on([GRAPH_STATS_DST]))
+        })
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to join graph endpoint degrees", error)
+        })?;
+    let edge_degrees = edge_degrees
+        .with_execution(ctx)
+        .with_columns([
+            when(col(GRAPH_STATS_SRC_DEGREE).is_null())
+                .then(lit(0u64))
+                .otherwise(col(GRAPH_STATS_SRC_DEGREE))
+                .alias(GRAPH_STATS_SRC_DEGREE),
+            when(col(GRAPH_STATS_DST_DEGREE).is_null())
+                .then(lit(0u64))
+                .otherwise(col(GRAPH_STATS_DST_DEGREE))
+                .alias(GRAPH_STATS_DST_DEGREE),
+        ])
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to normalize graph endpoint degrees", error)
+        })?;
+    let source_first = col(GRAPH_STATS_SRC_DEGREE).lt(col(GRAPH_STATS_DST_DEGREE))
+        | (col(GRAPH_STATS_SRC_DEGREE).eq(col(GRAPH_STATS_DST_DEGREE)) & col(GRAPH_STATS_SRC).lt(col(GRAPH_STATS_DST)));
+    let oriented_edges = edge_degrees
+        .with_execution(ctx)
+        .with_columns([
+            when(source_first.clone())
+                .then(col(GRAPH_STATS_SRC))
+                .otherwise(col(GRAPH_STATS_DST))
+                .alias(GRAPH_STATS_ORIENTED_SRC),
+            when(source_first.clone())
+                .then(col(GRAPH_STATS_DST))
+                .otherwise(col(GRAPH_STATS_SRC))
+                .alias(GRAPH_STATS_ORIENTED_DST),
+        ])
+        .map_err(|error| QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to orient graph edges", error))?;
+    let oriented_edges = oriented_edges
+        .select([GRAPH_STATS_ORIENTED_SRC, GRAPH_STATS_ORIENTED_DST])
+        .and_then(|frame| {
+            frame.with_execution(ctx).drop_duplicates(
+                DropDuplicatesOptions::builder().subset(&[GRAPH_STATS_ORIENTED_SRC, GRAPH_STATS_ORIENTED_DST]).build(),
+            )
+        })
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to deduplicate oriented graph edges", error)
+        })?;
+    let oriented_edge_count = oriented_edges.num_rows() as u64;
+    let oriented_out_degrees = oriented_edges
+        .groupby([GRAPH_STATS_ORIENTED_SRC])
+        .with_execution(ctx)
+        .agg(&[CudfAggSpec::new(GRAPH_STATS_ORIENTED_DST, GroupByAgg::Count { include_nulls: false })
+            .with_alias(GRAPH_STATS_ORIENTED_DEGREE)])
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to compute oriented graph degrees", error)
+        })?;
+    let oriented_out_degrees =
+        graph_statistics_cast_column_to_u64(&oriented_out_degrees, GRAPH_STATS_ORIENTED_DEGREE, ctx)?;
+    let oriented_source_degrees = oriented_out_degrees
+        .rename_column(GRAPH_STATS_ORIENTED_DEGREE, GRAPH_STATS_ORIENTED_SRC_DEGREE)
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to prepare oriented source degree frame", error)
+        })?;
+    let oriented_destination_degrees = oriented_out_degrees
+        .rename_columns([
+            (GRAPH_STATS_ORIENTED_SRC, GRAPH_STATS_ORIENTED_DST),
+            (GRAPH_STATS_ORIENTED_DEGREE, GRAPH_STATS_ORIENTED_DST_DEGREE),
+        ])
+        .map_err(|error| {
+            QueryError::from_cudf(
+                GRAPH_STATISTICS_OPERATION,
+                "failed to prepare oriented destination degree frame",
+                error,
+            )
+        })?;
+    let oriented_edge_degrees = oriented_edges
+        .with_execution(ctx)
+        .merge(&oriented_source_degrees, cudf::MergeOptions::new().how_left().on([GRAPH_STATS_ORIENTED_SRC]))
+        .and_then(|frame| {
+            frame.with_execution(ctx).merge(
+                &oriented_destination_degrees,
+                cudf::MergeOptions::new().how_left().on([GRAPH_STATS_ORIENTED_DST]),
+            )
+        })
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to join oriented graph degrees", error)
+        })?;
+    let oriented_edge_degrees = oriented_edge_degrees
+        .with_execution(ctx)
+        .with_columns([
+            when(col(GRAPH_STATS_ORIENTED_SRC_DEGREE).is_null())
+                .then(lit(0u64))
+                .otherwise(col(GRAPH_STATS_ORIENTED_SRC_DEGREE))
+                .alias(GRAPH_STATS_ORIENTED_SRC_DEGREE),
+            when(col(GRAPH_STATS_ORIENTED_DST_DEGREE).is_null())
+                .then(lit(0u64))
+                .otherwise(col(GRAPH_STATS_ORIENTED_DST_DEGREE))
+                .alias(GRAPH_STATS_ORIENTED_DST_DEGREE),
+        ])
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to normalize oriented graph degrees", error)
+        })?;
+    let edge_terms = oriented_edge_degrees
+        .with_execution(ctx)
+        .with_columns([when(col(GRAPH_STATS_ORIENTED_SRC_DEGREE).le(col(GRAPH_STATS_ORIENTED_DST_DEGREE)))
+            .then(col(GRAPH_STATS_ORIENTED_SRC_DEGREE))
+            .otherwise(col(GRAPH_STATS_ORIENTED_DST_DEGREE))
+            .alias(GRAPH_STATS_EDGE_MIN_DEGREE)])
+        .and_then(|frame| frame.select([GRAPH_STATS_ORIENTED_DST, GRAPH_STATS_EDGE_MIN_DEGREE]))
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to compute graph edge min-degree terms", error)
+        })?;
+    let edge_min_degree = edge_terms.series(GRAPH_STATS_EDGE_MIN_DEGREE).map_err(|error| {
+        QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to read graph edge min-degree column", error)
+    })?;
+    let sum_min_degree_oriented = graph_statistics_series_sum_u64(&edge_min_degree, ctx, GRAPH_STATS_EDGE_MIN_DEGREE)?;
+    let peak_chunk_min_degree_sum = crate::graph_memory::triangle_count_peak_chunk_min_degree_pricing_term(
+        sum_min_degree_oriented,
+        oriented_edge_count,
+        device_multiprocessor_count,
+    );
+    Ok((sum_min_degree_oriented, oriented_edge_count, peak_chunk_min_degree_sum))
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_cast_column_to_u64(
+    frame: &DataFrame,
+    column: &'static str,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<DataFrame> {
+    frame
+        .with_execution(ctx)
+        .with_columns([col(column).cast(cudf::DataType::new(cudf::TypeId::UInt64)).alias(column)])
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to cast graph statistics column to uint64", error)
+                .with_fact("column", column)
+        })
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_nonnegative_i64(value: i64, column: &'static str) -> Result<u64> {
+    u64::try_from(value).map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            GRAPH_STATISTICS_OPERATION,
+            "graph statistics value does not fit u64",
+        )
+        .with_fact("column", column)
+        .with_fact("value", value)
+        .with_source(error)
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_series_sum_u64(
+    series: &cudf::Series,
+    ctx: &ExecutionOverrides<'_>,
+    column: &'static str,
+) -> Result<u64> {
+    let value = series.sum_value_in::<i64>(ctx).map_err(|error| {
+        QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to reduce graph statistics sum", error)
+            .with_fact("column", column)
+    })?;
+    graph_statistics_nonnegative_i64(value, column)
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_series_max_u64(
+    series: &cudf::Series,
+    ctx: &ExecutionOverrides<'_>,
+    column: &'static str,
+) -> Result<Option<u64>> {
+    let dtype = series.dtype().map_err(|error| {
+        QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to inspect graph statistics column dtype", error)
+            .with_fact("column", column)
+    })?;
+    let value = match dtype.id() {
+        cudf::TypeId::UInt64 => graph_statistics_series_max_value::<u64>(series, ctx, column)?,
+        cudf::TypeId::UInt32 => graph_statistics_series_max_value::<u32>(series, ctx, column)?.map(u64::from),
+        cudf::TypeId::UInt16 => graph_statistics_series_max_value::<u16>(series, ctx, column)?.map(u64::from),
+        cudf::TypeId::UInt8 => graph_statistics_series_max_value::<u8>(series, ctx, column)?.map(u64::from),
+        cudf::TypeId::Int64 => graph_statistics_series_max_value::<i64>(series, ctx, column)?
+            .map(|value| graph_statistics_nonnegative_i64(value, column))
+            .transpose()?,
+        cudf::TypeId::Int32 => graph_statistics_series_max_value::<i32>(series, ctx, column)?
+            .map(|value| graph_statistics_nonnegative_i64(i64::from(value), column))
+            .transpose()?,
+        cudf::TypeId::Int16 => graph_statistics_series_max_value::<i16>(series, ctx, column)?
+            .map(|value| graph_statistics_nonnegative_i64(i64::from(value), column))
+            .transpose()?,
+        cudf::TypeId::Int8 => graph_statistics_series_max_value::<i8>(series, ctx, column)?
+            .map(|value| graph_statistics_nonnegative_i64(i64::from(value), column))
+            .transpose()?,
+        dtype => {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                GRAPH_STATISTICS_OPERATION,
+                "graph statistics max requires an integer column",
+            )
+            .with_fact("column", column)
+            .with_fact("cudf_dtype", dtype.name()));
+        },
+    };
+    Ok(value)
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_series_max_value<T: cudf::CudfType>(
+    series: &cudf::Series,
+    ctx: &ExecutionOverrides<'_>,
+    column: &'static str,
+) -> Result<Option<T>> {
+    series.max_value_in::<T>(ctx).map_err(|error| {
+        QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to reduce graph statistics max", error)
+            .with_fact("column", column)
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_series_p99_u64(
+    series: &cudf::Series,
+    ctx: &ExecutionOverrides<'_>,
+    column: &'static str,
+) -> Result<u64> {
+    if series.is_empty() {
+        return Ok(0);
+    }
+    let rank = series.len().saturating_mul(99).div_ceil(100).saturating_sub(1);
+    let dtype = series.dtype().map_err(|error| {
+        QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to inspect graph statistics column dtype", error)
+            .with_fact("column", column)
+    })?;
+    let value = match dtype.id() {
+        cudf::TypeId::UInt64 => graph_statistics_sorted_rank_value::<u64>(series, ctx, rank, column),
+        cudf::TypeId::UInt32 => graph_statistics_sorted_rank_value::<u32>(series, ctx, rank, column).map(u64::from),
+        cudf::TypeId::UInt16 => graph_statistics_sorted_rank_value::<u16>(series, ctx, rank, column).map(u64::from),
+        cudf::TypeId::UInt8 => graph_statistics_sorted_rank_value::<u8>(series, ctx, rank, column).map(u64::from),
+        cudf::TypeId::Int64 => graph_statistics_sorted_rank_value::<i64>(series, ctx, rank, column)
+            .and_then(|value| graph_statistics_nonnegative_i64(value, column)),
+        cudf::TypeId::Int32 => graph_statistics_sorted_rank_value::<i32>(series, ctx, rank, column)
+            .and_then(|value| graph_statistics_nonnegative_i64(i64::from(value), column)),
+        cudf::TypeId::Int16 => graph_statistics_sorted_rank_value::<i16>(series, ctx, rank, column)
+            .and_then(|value| graph_statistics_nonnegative_i64(i64::from(value), column)),
+        cudf::TypeId::Int8 => graph_statistics_sorted_rank_value::<i8>(series, ctx, rank, column)
+            .and_then(|value| graph_statistics_nonnegative_i64(i64::from(value), column)),
+        dtype => Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            GRAPH_STATISTICS_OPERATION,
+            "graph degree p99 requires an integer column",
+        )
+        .with_fact("column", column)
+        .with_fact("cudf_dtype", dtype.name())),
+    }?;
+    Ok(value)
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_statistics_sorted_rank_value<T: cudf::CudfType>(
+    series: &cudf::Series,
+    ctx: &ExecutionOverrides<'_>,
+    rank: usize,
+    column: &'static str,
+) -> Result<T> {
+    let value = series
+        .sort_values_in(CudfSortOptions::new(), ctx)
+        .and_then(|series| series.slice_in(rank, 1, ctx))
+        .and_then(|series| series.to_vec_strict::<T>())
+        .map_err(|error| {
+            QueryError::from_cudf(GRAPH_STATISTICS_OPERATION, "failed to read graph degree p99 statistic", error)
+                .with_fact("column", column)
+                .with_fact("rank", rank)
+        })?;
+    value.into_iter().next().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            GRAPH_STATISTICS_OPERATION,
+            "graph degree p99 statistic slice unexpectedly returned no rows",
+        )
+        .with_fact("column", column)
+        .with_fact("rank", rank)
+    })
 }
 
 #[cfg(feature = "cugraph")]

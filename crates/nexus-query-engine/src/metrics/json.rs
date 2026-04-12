@@ -348,7 +348,6 @@ impl GraphReservationReport {
             "renumber": self.renumber,
             "construction_policy": self.construction_policy.as_str(),
             "edge_normalize_inserted": self.edge_normalize_inserted,
-            "topology_family": self.topology_family.as_str(),
             "calibration_source": self.calibration_source.as_str(),
             "seed_count": self.seed_count,
             "seed_mode": self.seed_mode.map(|mode| mode.as_str()),
@@ -357,6 +356,17 @@ impl GraphReservationReport {
             "requested_bytes": self.requested_bytes,
             "budget_bytes": self.budget_bytes,
             "graph_model_error_ratio": self.graph_model_error_ratio.map(|ratio| ratio.as_decimal_string()),
+            "statistics": self.statistics.map(|statistics| {
+                json!({
+                    "exact_vertices": statistics.exact_vertices,
+                    "degree_max": statistics.degree_max,
+                    "degree_p99": statistics.degree_p99,
+                    "sum_min_degree_oriented": statistics.sum_min_degree_oriented,
+                    "oriented_edge_count": statistics.oriented_edge_count,
+                    "peak_chunk_min_degree_sum": statistics.peak_chunk_min_degree_sum,
+                    "sum_out_degree": statistics.sum_out_degree,
+                })
+            }),
             "reason": self.reason,
         })
     }

@@ -510,9 +510,8 @@ mod tests {
     use nexus_query_engine::{
         DeploymentIoCapability, GdsDriverProbeStatus, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
         GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings,
-        GraphMemoryCalibrationOverride, GraphTopologyFamily, GraphTriangleCountAllParams, KvikioCompatModeStatus,
-        LocalParquetFile, LocalParquetSource, NvidiaFsProbeStatus, QueryPlan, QueryPlanBuilder, QueryService,
-        QueryServiceConfig, QueryServiceTenantConfig, SourceNode, TenantId,
+        GraphTriangleCountAllParams, KvikioCompatModeStatus, LocalParquetFile, LocalParquetSource, NvidiaFsProbeStatus,
+        QueryPlan, QueryPlanBuilder, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SourceNode, TenantId,
     };
 
     use super::*;
@@ -709,9 +708,7 @@ mod tests {
         let min = 64 * 1024 * 1024;
         let want = 2 * 1024 * 1024 * 1024;
         let capacity = 4 * 1024 * 1024 * 1024;
-        let config = backend_admission_config(min, want, capacity).with_graph_memory_calibration_override(
-            GraphMemoryCalibrationOverride::none().with_topology_family(GraphTopologyFamily::CitationLikeSparse),
-        );
+        let config = backend_admission_config(min, want, capacity);
         let exec = graph_exec(Some(vec![100, 200]), &config);
         let model_ask =
             complete_graph_dominated_model_ask_bytes(&exec, config.graph_memory_calibration_override(), Some(capacity))
@@ -783,9 +780,7 @@ mod tests {
         let min = 64 * 1024 * 1024;
         let want = 2 * 1024 * 1024 * 1024;
         let capacity = 4 * 1024 * 1024 * 1024;
-        let config = backend_admission_config(min, want, capacity).with_graph_memory_calibration_override(
-            GraphMemoryCalibrationOverride::none().with_topology_family(GraphTopologyFamily::CitationLikeSparse),
-        );
+        let config = backend_admission_config(min, want, capacity);
         let cugraph = Arc::new(
             CugraphAlgoExec::try_new(
                 cugraph_triangle_spec(),

@@ -52,7 +52,7 @@ pub(crate) const NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS: &[&str] = &[
 pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution";
 
 /// Execution-report TSV schema version.
-pub const NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION: u32 = 52;
+pub const NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION: u32 = 55;
 /// Execution-report TSV column names in wire/report order.
 pub(crate) const NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS: &[&str] = &[
     "query_id",

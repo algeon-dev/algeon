@@ -45,8 +45,6 @@ pub struct NativeGraphReservationMetricRow {
     pub construction_policy: String,
     /// Whether an explicit edge-normalize operator fed this graph stage.
     pub edge_normalize_inserted: bool,
-    /// Topology family used by calibrated graph memory pricing.
-    pub topology_family: String,
     /// Provenance for non-default graph calibration inputs.
     pub calibration_source: String,
     /// Seed count for seed-dependent algorithms, when applicable.
@@ -63,6 +61,20 @@ pub struct NativeGraphReservationMetricRow {
     pub budget_bytes: Option<usize>,
     /// Model ask divided by measured graph-stage peak, when observed.
     pub graph_model_error_ratio: Option<String>,
+    /// Exact runtime distinct endpoint count, when graph statistics were probed.
+    pub graph_statistics_exact_vertices: Option<usize>,
+    /// Maximum source out-degree, when graph degree statistics were probed.
+    pub graph_statistics_degree_max: Option<usize>,
+    /// 99th percentile source out-degree, when graph degree statistics were probed.
+    pub graph_statistics_degree_p99: Option<usize>,
+    /// Sum of oriented min-degree terms, when triangle-count statistics were probed.
+    pub graph_statistics_sum_min_degree_oriented: Option<usize>,
+    /// Edge count in cuGraph's low-degree-to-high-degree triangle DFG.
+    pub graph_statistics_oriented_edge_count: Option<usize>,
+    /// Runtime-derived triangle min-degree pricing term for peak intersection chunks.
+    pub graph_statistics_peak_chunk_min_degree_sum: Option<usize>,
+    /// Sum of resident betweenness source out-degrees, when probed.
+    pub graph_statistics_sum_out_degree: Option<usize>,
     /// Stable denial reason or `none`.
     pub reason: String,
 }
@@ -71,7 +83,7 @@ impl NativeGraphReservationMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "node_id={},algorithm={},class={},outcome={},raw_input_edges={},input_edges={},vertex_upper_bound={},vertex_estimate={},vertex_estimate_source={},vertex_width_bytes={},weight_width_bytes={},has_edge_id={},directed={},renumber={},construction_policy={},edge_normalize_inserted={},topology_family={},calibration_source={},seed_count={},seed_mode={},data_dependent={},model_requested_bytes={},requested_bytes={},budget_bytes={},graph_model_error_ratio={},reason={}",
+            "node_id={},algorithm={},class={},outcome={},raw_input_edges={},input_edges={},vertex_upper_bound={},vertex_estimate={},vertex_estimate_source={},vertex_width_bytes={},weight_width_bytes={},has_edge_id={},directed={},renumber={},construction_policy={},edge_normalize_inserted={},calibration_source={},seed_count={},seed_mode={},data_dependent={},model_requested_bytes={},requested_bytes={},budget_bytes={},graph_model_error_ratio={},graph_statistics_exact_vertices={},graph_statistics_degree_max={},graph_statistics_degree_p99={},graph_statistics_sum_min_degree_oriented={},graph_statistics_oriented_edge_count={},graph_statistics_peak_chunk_min_degree_sum={},graph_statistics_sum_out_degree={},reason={}",
             self.node_id,
             self.algorithm,
             self.class,
@@ -88,7 +100,6 @@ impl NativeGraphReservationMetricRow {
             self.renumber,
             self.construction_policy,
             self.edge_normalize_inserted,
-            self.topology_family,
             self.calibration_source,
             optional_usize(self.seed_count),
             self.seed_mode,
@@ -97,6 +108,13 @@ impl NativeGraphReservationMetricRow {
             self.requested_bytes,
             optional_usize(self.budget_bytes),
             optional_str(self.graph_model_error_ratio.as_deref()),
+            optional_usize(self.graph_statistics_exact_vertices),
+            optional_usize(self.graph_statistics_degree_max),
+            optional_usize(self.graph_statistics_degree_p99),
+            optional_usize(self.graph_statistics_sum_min_degree_oriented),
+            optional_usize(self.graph_statistics_oriented_edge_count),
+            optional_usize(self.graph_statistics_peak_chunk_min_degree_sum),
+            optional_usize(self.graph_statistics_sum_out_degree),
             self.reason,
         )
     }
@@ -264,7 +282,6 @@ fn labels_to_graph_reservation_row(labels: BTreeMap<&str, &str>) -> NativeGraphR
         renumber: bool_label(&labels, "renumber"),
         construction_policy: string_label(&labels, "construction_policy"),
         edge_normalize_inserted: bool_label(&labels, "edge_normalize_inserted"),
-        topology_family: string_label(&labels, "topology_family"),
         calibration_source: string_label(&labels, "calibration_source"),
         seed_count: optional_usize_label(&labels, "seed_count"),
         seed_mode: string_label(&labels, "seed_mode"),
@@ -273,6 +290,19 @@ fn labels_to_graph_reservation_row(labels: BTreeMap<&str, &str>) -> NativeGraphR
         requested_bytes: usize_label(&labels, "requested_bytes"),
         budget_bytes: optional_usize_label(&labels, "budget_bytes"),
         graph_model_error_ratio: optional_string_label(&labels, "graph_model_error_ratio"),
+        graph_statistics_exact_vertices: optional_usize_label(&labels, "graph_statistics_exact_vertices"),
+        graph_statistics_degree_max: optional_usize_label(&labels, "graph_statistics_degree_max"),
+        graph_statistics_degree_p99: optional_usize_label(&labels, "graph_statistics_degree_p99"),
+        graph_statistics_sum_min_degree_oriented: optional_usize_label(
+            &labels,
+            "graph_statistics_sum_min_degree_oriented",
+        ),
+        graph_statistics_oriented_edge_count: optional_usize_label(&labels, "graph_statistics_oriented_edge_count"),
+        graph_statistics_peak_chunk_min_degree_sum: optional_usize_label(
+            &labels,
+            "graph_statistics_peak_chunk_min_degree_sum",
+        ),
+        graph_statistics_sum_out_degree: optional_usize_label(&labels, "graph_statistics_sum_out_degree"),
         reason: string_label(&labels, "reason"),
     }
 }
