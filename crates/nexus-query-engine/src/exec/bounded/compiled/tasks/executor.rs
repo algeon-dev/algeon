@@ -166,6 +166,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             },
         };
         self.reservations.release(reservation, self.metrics);
+        self.reservations.acknowledge_requested_grant_shrink()?;
         Ok(handle)
     }
 
@@ -1153,7 +1154,18 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 self.metrics,
             );
             self.reservations.release(input_reservation, self.metrics);
-            result
+            match result {
+                Ok(output) => {
+                    if let Err(error) = self.reservations.acknowledge_requested_grant_shrink() {
+                        let ResidentGpuFrame { frame, reservation } = output;
+                        drop(frame);
+                        self.reservations.release(reservation, self.metrics);
+                        return Err(error);
+                    }
+                    Ok(output)
+                },
+                Err(error) => Err(error),
+            }
         } else {
             let input_payload = state.resource_payload(input)?;
             if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
@@ -1923,6 +1935,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
                 self.reservations.clear_diagnostic_context();
             },
         }
+        self.reservations.acknowledge_requested_grant_shrink()?;
         Ok(())
     }
 

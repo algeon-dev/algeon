@@ -42,6 +42,7 @@ where
                 metrics,
                 consume,
             )?;
+            reservations.acknowledge_requested_grant_shrink()?;
             continue;
         }
         match stream_join_leaf_source_batch_or_split_with_consumer(
@@ -52,7 +53,9 @@ where
             metrics,
             consume,
         ) {
-            Ok(()) => {},
+            Ok(()) => {
+                reservations.acknowledge_requested_grant_shrink()?;
+            },
             Err(error) => return Err(error),
         }
     }
@@ -232,6 +235,7 @@ where
             metrics,
             consume,
         )?;
+        reservations.acknowledge_requested_grant_shrink()?;
         stream_join_leaf_source_chunk_with_consumer_retry(
             context,
             stream,
@@ -241,6 +245,7 @@ where
             metrics,
             consume,
         )?;
+        reservations.acknowledge_requested_grant_shrink()?;
         return Ok(());
     }
 
@@ -397,6 +402,10 @@ where
                     consume,
                 );
             }
+            return Err(error);
+        }
+        if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
+            abandon_join_leaf_reads(pending, reservations, metrics);
             return Err(error);
         }
 

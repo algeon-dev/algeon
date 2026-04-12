@@ -330,6 +330,7 @@ pub(super) struct MockExecutor {
     pub(super) omit_outputs: Vec<PipelineTaskId>,
     pub(super) duplicate_outputs: Vec<PipelineTaskId>,
     pub(super) consume_inputs: Vec<PipelineTaskId>,
+    pub(super) fail_release_resources: Vec<ResidentResourceId>,
     pub(super) task_local_reservations: Vec<(PipelineTaskId, &'static str)>,
     pub(super) simulate_scheduler_memory_pressure: bool,
     pub(super) simulated_live_reserved_bytes: u64,
@@ -351,6 +352,7 @@ impl MockExecutor {
             omit_outputs: Vec::new(),
             duplicate_outputs: Vec::new(),
             consume_inputs: Vec::new(),
+            fail_release_resources: Vec::new(),
             task_local_reservations: Vec::new(),
             simulate_scheduler_memory_pressure: false,
             simulated_live_reserved_bytes: 0,
@@ -377,6 +379,11 @@ impl MockExecutor {
 
     pub(super) fn consume_inputs_for(mut self, task: PipelineTaskId) -> Self {
         self.consume_inputs.push(task);
+        self
+    }
+
+    pub(super) fn fail_release_for(mut self, resource: ResidentResourceId) -> Self {
+        self.fail_release_resources.push(resource);
         self
     }
 
@@ -474,6 +481,14 @@ impl CompiledTaskExecutor for MockExecutor {
         self.released.push(resource);
         if self.simulate_scheduler_memory_pressure {
             self.simulated_live_reserved_bytes = self.simulated_live_reserved_bytes.saturating_sub(1);
+        }
+        if self.fail_release_resources.contains(&resource) {
+            return Err(nexus_query_engine::QueryError::new(
+                nexus_query_engine::QueryErrorCode::Internal,
+                "nexus_query_engine.tests.mock_executor",
+                "mock compiled release failure",
+            )
+            .with_fact("resident_resource_id", resource));
         }
         Ok(())
     }

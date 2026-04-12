@@ -237,6 +237,20 @@ fn compiled_scheduler_allows_executor_to_consume_single_consumer_input() {
 }
 
 #[test]
+fn compiled_scheduler_releases_entire_completion_batch_when_release_errors() {
+    let pipeline = two_input_release_batch_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new().fail_release_for(ResidentResourceId::new(0));
+
+    let error = scheduler.run(&mut executor).expect_err("release failure should fail the pipeline");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::Internal);
+    assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0), ResidentResourceId::new(1)]);
+    assert_eq!(executor.cleanup_calls, 1);
+}
+
+#[test]
 fn compiled_scheduler_errors_when_task_omits_declared_output_resource() {
     let pipeline = simple_unary_pipeline();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
@@ -321,6 +335,51 @@ fn compiled_scheduler_errors_when_task_reports_duplicate_produced_resource() {
     assert_eq!(error.facts().get("compiled_task_id"), Some("t0"));
     assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
     assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+}
+
+fn two_input_release_batch_pipeline() -> CompiledPipeline {
+    let first_source = PipelineTaskId::new(0);
+    let second_source = PipelineTaskId::new(1);
+    let consumer = PipelineTaskId::new(2);
+    let first_frame = ResidentResourceId::new(0);
+    let second_frame = ResidentResourceId::new(1);
+
+    CompiledPipeline::new(
+        vec![
+            PipelineTask::new(first_source, PipelineTaskKind::SourceRead).with_output_resources(vec![first_frame]),
+            PipelineTask::new(second_source, PipelineTaskKind::SourceRead).with_output_resources(vec![second_frame]),
+            PipelineTask::new(consumer, PipelineTaskKind::Unary).with_input_resources(vec![first_frame, second_frame]),
+        ],
+        vec![
+            PipelineEdge::new(PipelineEdgeId::new(0), first_source, consumer, PipelineEdgeKind::ResidentFrame)
+                .with_resources(vec![first_frame]),
+            PipelineEdge::new(PipelineEdgeId::new(1), second_source, consumer, PipelineEdgeKind::ResidentFrame)
+                .with_resources(vec![second_frame]),
+        ],
+        vec![
+            PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::SourceChunkBoundary)
+                .with_upstream_tasks(vec![first_source, second_source])
+                .with_downstream_tasks(vec![consumer]),
+            PipelineBarrier::new(PipelineBarrierId::new(1), PipelineBarrierKind::SinkBoundary)
+                .with_upstream_tasks(vec![consumer]),
+        ],
+        vec![
+            ResidentResource::new(
+                first_frame,
+                first_source,
+                vec![consumer],
+                ResidentLifetime::BetweenTasks { producer: first_source },
+            ),
+            ResidentResource::new(
+                second_frame,
+                second_source,
+                vec![consumer],
+                ResidentLifetime::BetweenTasks { producer: second_source },
+            ),
+        ],
+        vec![],
+        SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, consumer),
+    )
 }
 
 fn independent_operator_class_pressure_pipeline() -> CompiledPipeline {
