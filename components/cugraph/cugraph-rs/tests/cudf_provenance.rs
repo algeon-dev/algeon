@@ -5,41 +5,26 @@ mod common;
 use common::{
     cudf::explicit_runtime,
     support::{
-        BFS_SOURCE_VERTEX_I32, DIRECTED_TRIANGLE_CYCLE_DST_I32, DIRECTED_TRIANGLE_CYCLE_SRC_I32, SIMPLE_CHAIN_DST_I64,
-        SIMPLE_CHAIN_SRC_I64, TRIANGLE_TAIL_DST_I32, TRIANGLE_TAIL_SRC_I32, TRIANGLE_TAIL_WEIGHT_F32,
-        bfs_distance_map_i32_result, bfs_distance_map_i64_result,
+        BFS_SOURCE_VERTEX_I32, SIMPLE_CHAIN_DST_I64, SIMPLE_CHAIN_SRC_I64, TRIANGLE_TAIL_DST_I32,
+        TRIANGLE_TAIL_SRC_I32, TRIANGLE_TAIL_WEIGHT_F32, bfs_distance_map_i32_result, bfs_distance_map_i64_result,
     },
 };
 use cugraph::{
     array::DeviceArray,
     cudf_interop::{SeriesGraphOptions, graph_from_borrowed_columns, graph_from_series},
-    error::ErrorKind,
     graph::Forward,
     handle::ResourceHandle,
     traversal::BfsParams,
 };
 
-#[test]
-fn graph_from_series_rejects_ambient_default_producers() {
-    let handle = ResourceHandle::new().expect("handle");
-    let src = cudf::Series::new("src", DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
-    let dst = cudf::Series::new("dst", DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
-
-    let opts = SeriesGraphOptions::default().renumber();
-    let err = graph_from_series::<Forward>(&handle, &src, &dst, None, &opts)
-        .expect_err("ambient/default-only producers should be rejected");
-
-    assert_eq!(err.kind(), ErrorKind::InvalidState);
-    assert!(
-        err.message().contains("explicit") || err.message().contains("ambient"),
-        "error message should mention explicit provenance, got: {}",
-        err.message()
-    );
+fn test_handle() -> ResourceHandle {
+    let runtime = explicit_runtime();
+    ResourceHandle::for_runtime_device(&runtime).expect("handle")
 }
 
 #[test]
 fn graph_from_series_allows_mixed_explicit_runtimes_on_same_device() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let rt_a = explicit_runtime();
     let rt_b = explicit_runtime();
 
@@ -60,7 +45,7 @@ fn graph_from_series_allows_mixed_explicit_runtimes_on_same_device() {
 
 #[test]
 fn graph_from_borrowed_columns_allows_mixed_explicit_runtimes_on_same_device() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let rt_a = explicit_runtime();
     let rt_b = explicit_runtime();
     let rt_c = explicit_runtime();

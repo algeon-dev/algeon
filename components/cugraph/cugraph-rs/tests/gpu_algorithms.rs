@@ -2,12 +2,15 @@ mod common;
 
 use std::collections::HashMap;
 
-use common::support::{
-    DEGREE_QUERY_I64, DEGREE_SUBSET_DST_I64, DEGREE_SUBSET_SRC_I64, DIRECTED_STAR_DST_I64, DIRECTED_STAR_SRC_I64,
-    DISCONNECTED_TWO_CYCLES_DST_I32, DISCONNECTED_TWO_CYCLES_SRC_I32, FOUR_VERTEX_CHAIN_DST_I32,
-    FOUR_VERTEX_CHAIN_DST_I64, FOUR_VERTEX_CHAIN_SRC_I32, FOUR_VERTEX_CHAIN_SRC_I64, TEST_LAYOUT_SECONDARY_SEED,
-    TEST_LAYOUT_SMOKE_ITERATIONS, TRIANGLE_VERTEX_IDS_I64, UNDIRECTED_TRIANGLE_DST_I64, UNDIRECTED_TRIANGLE_SRC_I64,
-    UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64, bfs_distance_map_i64_result,
+use common::{
+    cudf::explicit_runtime,
+    support::{
+        DEGREE_QUERY_I64, DEGREE_SUBSET_DST_I64, DEGREE_SUBSET_SRC_I64, DIRECTED_STAR_DST_I64, DIRECTED_STAR_SRC_I64,
+        DISCONNECTED_TWO_CYCLES_DST_I32, DISCONNECTED_TWO_CYCLES_SRC_I32, FOUR_VERTEX_CHAIN_DST_I32,
+        FOUR_VERTEX_CHAIN_DST_I64, FOUR_VERTEX_CHAIN_SRC_I32, FOUR_VERTEX_CHAIN_SRC_I64, TEST_LAYOUT_SECONDARY_SEED,
+        TEST_LAYOUT_SMOKE_ITERATIONS, TRIANGLE_VERTEX_IDS_I64, UNDIRECTED_TRIANGLE_DST_I64,
+        UNDIRECTED_TRIANGLE_SRC_I64, UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64, bfs_distance_map_i64_result,
+    },
 };
 use cugraph::{
     DeviceArray, Forward, GraphBuilder, ResourceHandle, Transposed, VertexSelection,
@@ -20,9 +23,14 @@ use cugraph::{
     types::GraphProperties,
 };
 
+fn test_handle() -> ResourceHandle {
+    let runtime = explicit_runtime();
+    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+}
+
 #[test]
 fn bfs_accepts_i64_sources_for_i64_graphs() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_SRC_I64).expect("src");
     let dst = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_DST_I64).expect("dst");
     let src_view = src.view().expect("src_view");
@@ -51,7 +59,7 @@ fn bfs_accepts_i64_sources_for_i64_graphs() {
 
 #[test]
 fn betweenness_accepts_i64_seed_vertices() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I64).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_STAR_DST_I64).expect("dst");
     let src_view = src.view().expect("src_view");
@@ -77,7 +85,7 @@ fn betweenness_accepts_i64_seed_vertices() {
 
 #[test]
 fn degrees_accept_i64_vertex_subsets() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, DEGREE_SUBSET_SRC_I64).expect("src");
     let dst = DeviceArray::from_slice(&handle, DEGREE_SUBSET_DST_I64).expect("dst");
     let src_view = src.view().expect("src_view");
@@ -103,7 +111,7 @@ fn degrees_accept_i64_vertex_subsets() {
 
 #[test]
 fn in_degrees_checked_accepts_all_vertices() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I64).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_STAR_DST_I64).expect("dst");
     let src_view = src.view().expect("src_view");
@@ -125,7 +133,7 @@ fn in_degrees_checked_accepts_all_vertices() {
 
 #[test]
 fn out_degrees_checked_accepts_all_vertices() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I64).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_STAR_DST_I64).expect("dst");
     let src_view = src.view().expect("src_view");
@@ -147,7 +155,7 @@ fn out_degrees_checked_accepts_all_vertices() {
 
 #[test]
 fn bfs_rejects_vertex_selection_all() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_DST_I32).expect("dst");
     let src_view = src.view().expect("src_view");
@@ -163,7 +171,7 @@ fn bfs_rejects_vertex_selection_all() {
 
 #[test]
 fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let mut rng = RngState::new(&handle, TEST_LAYOUT_SECONDARY_SEED).expect("rng");
 
     let src = DeviceArray::from_slice(&handle, UNDIRECTED_TRIANGLE_SRC_I64).expect("src");
@@ -217,7 +225,7 @@ fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
 
 #[test]
 fn pagerank_on_single_vertex_graph_returns_score_one() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let empty: [i32; 0] = [];
     let src = DeviceArray::from_slice(&handle, &empty).expect("src");
     let dst = DeviceArray::from_slice(&handle, &empty).expect("dst");
@@ -241,7 +249,7 @@ fn pagerank_on_single_vertex_graph_returns_score_one() {
 
 #[test]
 fn pagerank_on_disconnected_graph_returns_normalized_positive_scores() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, DISCONNECTED_TWO_CYCLES_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, DISCONNECTED_TWO_CYCLES_DST_I32).expect("dst");
     let src_view = src.view().expect("src_view");
@@ -265,7 +273,7 @@ fn pagerank_on_disconnected_graph_returns_normalized_positive_scores() {
 
 #[test]
 fn degrees_all_on_empty_graph_returns_empty_results() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let empty: [i32; 0] = [];
     let src = DeviceArray::from_slice(&handle, &empty).expect("src");
     let dst = DeviceArray::from_slice(&handle, &empty).expect("dst");

@@ -232,7 +232,12 @@ impl LayoutResult {
         // SAFETY: `view_ptr` belongs to the live layout result and was
         // validated to be non-null above.
         let raw = unsafe {
-            crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::vertex_ids", "vertices")
+            crate::array::RawDeviceArrayView::from_borrowed(
+                view_ptr,
+                Some(self.device),
+                "LayoutResult::vertex_ids",
+                "vertices",
+            )
         }?;
         VertexIds::from_raw(raw)
     }
@@ -249,7 +254,9 @@ impl LayoutResult {
             require_non_null(unsafe { cugraph_layout_result_get_x_axis(self.raw) }, "LayoutResult::x", "x_axis")?;
         // SAFETY: `view_ptr` belongs to the live layout result and was
         // validated to be non-null above.
-        let raw = unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::x", "x_axis") }?;
+        let raw = unsafe {
+            crate::array::RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "LayoutResult::x", "x_axis")
+        }?;
         ScoreValues::from_raw(raw)
     }
 
@@ -265,7 +272,9 @@ impl LayoutResult {
             require_non_null(unsafe { cugraph_layout_result_get_y_axis(self.raw) }, "LayoutResult::y", "y_axis")?;
         // SAFETY: `view_ptr` belongs to the live layout result and was
         // validated to be non-null above.
-        let raw = unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::y", "y_axis") }?;
+        let raw = unsafe {
+            crate::array::RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "LayoutResult::y", "y_axis")
+        }?;
         ScoreValues::from_raw(raw)
     }
 }
@@ -282,7 +291,14 @@ impl LayoutResult {
         )?;
         // SAFETY: `view_ptr` belongs to the live layout result and was
         // validated to be non-null above.
-        unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::vertices_raw", "vertices") }
+        unsafe {
+            crate::array::RawDeviceArrayView::from_borrowed(
+                view_ptr,
+                Some(self.device),
+                "LayoutResult::vertices_raw",
+                "vertices",
+            )
+        }
     }
 
     /// Get the raw x-axis view (for cudf interop).
@@ -293,7 +309,14 @@ impl LayoutResult {
             require_non_null(unsafe { cugraph_layout_result_get_x_axis(self.raw) }, "LayoutResult::x_raw", "x_axis")?;
         // SAFETY: `view_ptr` belongs to the live layout result and was
         // validated to be non-null above.
-        unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::x_raw", "x_axis") }
+        unsafe {
+            crate::array::RawDeviceArrayView::from_borrowed(
+                view_ptr,
+                Some(self.device),
+                "LayoutResult::x_raw",
+                "x_axis",
+            )
+        }
     }
 
     /// Get the raw y-axis view (for cudf interop).
@@ -304,7 +327,14 @@ impl LayoutResult {
             require_non_null(unsafe { cugraph_layout_result_get_y_axis(self.raw) }, "LayoutResult::y_raw", "y_axis")?;
         // SAFETY: `view_ptr` belongs to the live layout result and was
         // validated to be non-null above.
-        unsafe { crate::array::RawDeviceArrayView::from_borrowed(view_ptr, "LayoutResult::y_raw", "y_axis") }
+        unsafe {
+            crate::array::RawDeviceArrayView::from_borrowed(
+                view_ptr,
+                Some(self.device),
+                "LayoutResult::y_raw",
+                "y_axis",
+            )
+        }
     }
 
     /// Convert this layout result to a cudf DataFrame.
@@ -316,8 +346,9 @@ impl LayoutResult {
     ///
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
-    pub fn to_dataframe(&self) -> crate::error::Result<cudf::DataFrame> {
-        cudf::DataFrame::try_from(self).map_err(|e: crate::error::Error| e.with_operation("LayoutResult::to_dataframe"))
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> crate::error::Result<cudf::DataFrame> {
+        crate::cudf_interop::layout_result_to_dataframe(self, runtime)
+            .map_err(|e: crate::error::Error| e.with_operation("LayoutResult::to_dataframe"))
     }
 }
 

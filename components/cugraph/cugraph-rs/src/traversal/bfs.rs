@@ -151,7 +151,12 @@ impl BfsResult {
         // SAFETY: `view_ptr` comes from the live cuGraph result object owned by
         // `self`; null has already been handled above.
         let raw = unsafe {
-            RawDeviceArrayView::from_borrowed(view_ptr, "BfsResult::normalized_predecessors_raw", "predecessors")
+            RawDeviceArrayView::from_borrowed(
+                view_ptr,
+                Some(self.device),
+                "BfsResult::normalized_predecessors_raw",
+                "predecessors",
+            )
         }
         .expect("predecessor view pointer was checked for null");
         if raw.is_empty() { None } else { Some(raw) }
@@ -201,7 +206,7 @@ impl BfsResult {
         )?;
         // SAFETY: `view_ptr` belongs to the live result object and was
         // validated to be non-null above.
-        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, "BfsResult::vertices_raw", "vertices") }
+        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "BfsResult::vertices_raw", "vertices") }
     }
 
     /// Get the raw distances view.
@@ -215,7 +220,9 @@ impl BfsResult {
         )?;
         // SAFETY: `view_ptr` belongs to the live result object and was
         // validated to be non-null above.
-        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, "BfsResult::distances_raw", "distances") }
+        unsafe {
+            RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "BfsResult::distances_raw", "distances")
+        }
     }
 
     /// Get the raw predecessors view.
@@ -235,8 +242,9 @@ impl BfsResult {
     ///
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
-    pub fn to_dataframe(&self) -> Result<cudf::DataFrame> {
-        cudf::DataFrame::try_from(self).map_err(|e: Error| e.with_operation("BfsResult::to_dataframe"))
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        crate::cudf_interop::bfs_result_to_dataframe(self, runtime)
+            .map_err(|e: Error| e.with_operation("BfsResult::to_dataframe"))
     }
 }
 

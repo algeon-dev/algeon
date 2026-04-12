@@ -54,7 +54,9 @@ impl CentralityResult {
         )?;
         // SAFETY: `view_ptr` belongs to the live centrality result and was
         // validated to be non-null above.
-        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, "CentralityResult::vertices_raw", "vertices") }
+        unsafe {
+            RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "CentralityResult::vertices_raw", "vertices")
+        }
     }
 
     pub(crate) fn values_raw(&self) -> Result<RawDeviceArrayView<'_>> {
@@ -67,7 +69,9 @@ impl CentralityResult {
         )?;
         // SAFETY: `view_ptr` belongs to the live centrality result and was
         // validated to be non-null above.
-        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, "CentralityResult::values_raw", "values") }
+        unsafe {
+            RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "CentralityResult::values_raw", "values")
+        }
     }
 
     pub(crate) fn num_iterations(&self) -> usize {
@@ -164,8 +168,9 @@ impl PageRankResult {
     ///
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
-    pub fn to_dataframe(&self) -> Result<cudf::DataFrame> {
-        cudf::DataFrame::try_from(self).map_err(|e: Error| e.with_operation("PageRankResult::to_dataframe"))
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        crate::cudf_interop::page_rank_result_to_dataframe(self, runtime)
+            .map_err(|e: Error| e.with_operation("PageRankResult::to_dataframe"))
     }
 }
 
@@ -228,8 +233,8 @@ impl BetweennessCentralityResult {
     ///
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
-    pub fn to_dataframe(&self) -> Result<cudf::DataFrame> {
-        cudf::DataFrame::try_from(self)
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        crate::cudf_interop::betweenness_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("BetweennessCentralityResult::to_dataframe"))
     }
 }

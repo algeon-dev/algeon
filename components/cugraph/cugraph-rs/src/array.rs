@@ -85,7 +85,13 @@ impl RawDeviceArray {
 
     pub(crate) fn raw_view(&self) -> Result<RawDeviceArrayView<'_>> {
         let raw = require_non_null(self.raw_view, "RawDeviceArray::raw_view", "device_array_view")?;
-        Ok(RawDeviceArrayView { raw, owned: false, _lifetime: PhantomData, _nosend_nosync: PhantomData })
+        Ok(RawDeviceArrayView {
+            raw,
+            owned: false,
+            device: Some(self.device),
+            _lifetime: PhantomData,
+            _nosend_nosync: PhantomData,
+        })
     }
 
     fn copy_from_host(&mut self, handle: &ResourceHandle, data: &[u8]) -> Result<()> {
@@ -134,6 +140,7 @@ impl Drop for RawDeviceArray {
 pub(crate) struct RawDeviceArrayView<'a> {
     pub(crate) raw: *mut cugraph_type_erased_device_array_view_t,
     owned: bool,
+    device: Option<i32>,
     _lifetime: PhantomData<&'a ()>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
@@ -160,15 +167,19 @@ impl<'a> RawDeviceArrayView<'a> {
     ///   C view and its backing storage
     pub(crate) unsafe fn from_borrowed(
         raw: *mut cugraph_type_erased_device_array_view_t,
+        device: Option<i32>,
         operation: &'static str,
         pointer_name: &'static str,
     ) -> Result<Self> {
         let raw = require_non_null(raw, operation, pointer_name)?;
-        Ok(Self::from_borrowed_unchecked(raw))
+        Ok(Self::from_borrowed_unchecked(raw, device))
     }
 
-    pub(crate) unsafe fn from_borrowed_unchecked(raw: *mut cugraph_type_erased_device_array_view_t) -> Self {
-        RawDeviceArrayView { raw, owned: false, _lifetime: PhantomData, _nosend_nosync: PhantomData }
+    pub(crate) unsafe fn from_borrowed_unchecked(
+        raw: *mut cugraph_type_erased_device_array_view_t,
+        device: Option<i32>,
+    ) -> Self {
+        RawDeviceArrayView { raw, owned: false, device, _lifetime: PhantomData, _nosend_nosync: PhantomData }
     }
 
     /// Create a view from an existing raw device pointer.
@@ -191,7 +202,7 @@ impl<'a> RawDeviceArrayView<'a> {
                 .with_message("failed to allocate device array view metadata")
                 .set_temporary());
         }
-        Ok(RawDeviceArrayView { raw, owned: true, _lifetime: PhantomData, _nosend_nosync: PhantomData })
+        Ok(RawDeviceArrayView { raw, owned: true, device: None, _lifetime: PhantomData, _nosend_nosync: PhantomData })
     }
 
     /// Device pointer to the first element of this view.
@@ -223,11 +234,15 @@ impl<'a> RawDeviceArrayView<'a> {
         self.raw
     }
 
+    pub(crate) fn device(&self) -> Option<i32> {
+        self.device
+    }
+
     /// Borrow this raw view without transferring ownership.
     pub(crate) fn raw_view(&self) -> RawDeviceArrayView<'_> {
         // SAFETY: the returned view borrows the same underlying C view pointer
         // for no longer than `&self`, and does not take ownership.
-        unsafe { RawDeviceArrayView::from_borrowed_unchecked(self.raw) }
+        unsafe { RawDeviceArrayView::from_borrowed_unchecked(self.raw, self.device) }
     }
 
     /// Copy device array data to a raw host byte vector.
@@ -279,8 +294,10 @@ impl<'a> Drop for RawDeviceArrayView<'a> {
 /// # Example
 ///
 /// ```no_run
+/// # use cudf::Runtime;
 /// # use cugraph::{DeviceArray, ResourceHandle};
-/// let handle = ResourceHandle::for_current_device().unwrap();
+/// let runtime = Runtime::new().unwrap();
+/// let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
 /// let arr = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
 /// let ids: Vec<i32> = arr.view().unwrap().to_vec(&handle).unwrap();
 /// assert_eq!(ids, vec![0, 1, 2]);
@@ -320,8 +337,10 @@ impl<T: CugraphElement> DeviceArray<T> {
     /// # Example
     ///
     /// ```no_run
+    /// # use cudf::Runtime;
     /// # use cugraph::{DeviceArray, ResourceHandle};
-    /// let handle = ResourceHandle::for_current_device().unwrap();
+    /// let runtime = Runtime::new().unwrap();
+    /// let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
     /// let arr = DeviceArray::from_slice(&handle, &[1i32, 2, 3]).unwrap();
     /// assert_eq!(arr.view().unwrap().len(), 3);
     /// ```
@@ -402,7 +421,7 @@ impl<'a, T: CugraphElement> DeviceArrayView<'a, T> {
     /// - the memory must outlive `'a`
     #[allow(dead_code)] // kept for potential direct use in typed algorithm paths
     pub(crate) unsafe fn from_borrowed(raw: *mut cugraph_type_erased_device_array_view_t) -> Self {
-        DeviceArrayView { inner: RawDeviceArrayView::from_borrowed_unchecked(raw), _element: PhantomData }
+        DeviceArrayView { inner: RawDeviceArrayView::from_borrowed_unchecked(raw, None), _element: PhantomData }
     }
 
     /// Create a view from an existing raw device pointer.
@@ -487,8 +506,10 @@ impl<'a, T: CugraphElement> DeviceArrayView<'a, T> {
     /// # Example
     ///
     /// ```no_run
+    /// # use cudf::Runtime;
     /// # use cugraph::{DeviceArray, ResourceHandle};
-    /// # let handle = ResourceHandle::for_current_device().unwrap();
+    /// # let runtime = Runtime::new().unwrap();
+    /// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
     /// let arr = DeviceArray::from_slice(&handle, &[10i32, 20, 30]).unwrap();
     /// let values: Vec<i32> = arr.view().unwrap().to_vec(&handle).unwrap();
     /// assert_eq!(values, vec![10, 20, 30]);
@@ -789,7 +810,7 @@ mod tests {
     fn test_raw_device_array_view_from_borrowed_rejects_null() {
         // SAFETY: this validates the constructor's null guard and does not
         // dereference the pointer.
-        let err = unsafe { RawDeviceArrayView::from_borrowed(std::ptr::null_mut(), "test_op", "view") }
+        let err = unsafe { RawDeviceArrayView::from_borrowed(std::ptr::null_mut(), None, "test_op", "view") }
             .expect_err("null borrowed view should be rejected");
         assert_eq!(err.kind(), crate::error::ErrorKind::Unexpected);
         assert_eq!(err.operation(), "test_op");

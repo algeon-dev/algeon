@@ -1,11 +1,19 @@
 mod common;
 
-use common::support::{FOUR_VERTEX_CHAIN_DST_I32, FOUR_VERTEX_CHAIN_SRC_I32};
+use common::{
+    cudf::explicit_runtime,
+    support::{FOUR_VERTEX_CHAIN_DST_I32, FOUR_VERTEX_CHAIN_SRC_I32},
+};
 use cugraph::{DeviceArray, Forward, GraphBuilder, ResourceHandle, traversal::BfsParams};
+
+fn test_handle() -> ResourceHandle {
+    let runtime = explicit_runtime();
+    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+}
 
 #[test]
 fn bfs_predecessors_are_none_when_not_requested() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_DST_I32).expect("dst");
     let src_view = src.view().expect("src_view");

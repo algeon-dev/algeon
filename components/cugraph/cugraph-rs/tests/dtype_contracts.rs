@@ -1,17 +1,25 @@
 mod common;
 
-use common::support::{
-    DIRECTED_STAR_DST_I64, DIRECTED_STAR_SRC_I64, DIRECTED_STAR_UNIT_WEIGHT_F64, DIRECTED_TRIANGLE_CYCLE_DST_I64,
-    DIRECTED_TRIANGLE_CYCLE_SRC_I64,
+use common::{
+    cudf::explicit_runtime,
+    support::{
+        DIRECTED_STAR_DST_I64, DIRECTED_STAR_SRC_I64, DIRECTED_STAR_UNIT_WEIGHT_F64, DIRECTED_TRIANGLE_CYCLE_DST_I64,
+        DIRECTED_TRIANGLE_CYCLE_SRC_I64,
+    },
 };
 use cugraph::{
     DeviceArray, Forward, GraphBuilder, ResourceHandle, Transposed, centrality::PageRankParams, error::ErrorKind,
     types::DataType,
 };
 
+fn test_handle() -> ResourceHandle {
+    let runtime = explicit_runtime();
+    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+}
+
 #[test]
 fn graph_reports_i64_vertex_and_f64_weight_dtypes() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I64).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_DST_I64).expect("dst");
     let wgt = DeviceArray::from_slice(&handle, &[1.0f64, 2.0, 3.0]).expect("wgt");
@@ -27,7 +35,7 @@ fn graph_reports_i64_vertex_and_f64_weight_dtypes() {
 
 #[test]
 fn typed_results_refuse_lossy_narrowing() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I64).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_STAR_DST_I64).expect("dst");
     let wgt = DeviceArray::from_slice(&handle, DIRECTED_STAR_UNIT_WEIGHT_F64).expect("wgt");

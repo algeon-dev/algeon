@@ -54,7 +54,7 @@
 //! let mut graph = graph_from_dataframe::<Transposed>(&handle, &edges, &opts)?;
 //!
 //! let result = graph.pagerank(&handle, &PageRankParams::default())?;
-//! let df = result.to_dataframe()?;
+//! let df = result.to_dataframe(&runtime)?;
 //! let vertices: Vec<i32> = df.series("vertex")?.to_vec_strict()?;
 //! let scores: Vec<f32> = df.series("value")?.to_vec_strict()?;
 //! let _ = (vertices, scores);

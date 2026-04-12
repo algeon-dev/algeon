@@ -31,6 +31,11 @@ use rapids_interop::{
     LeaseBackend, LeaseCompletionResult, LeaseExportContext, ReadStartBinding,
 };
 
+fn test_handle() -> ResourceHandle {
+    let runtime = explicit_runtime();
+    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+}
+
 #[derive(Clone)]
 struct CountingLeaseBackend {
     complete_calls: Arc<AtomicUsize>,
@@ -98,7 +103,7 @@ impl ActiveLeaseBackend for FailingActivationBackend {
 
 #[test]
 fn graph_from_prepared_columns_i32_bfs() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let runtime = explicit_runtime();
 
     let src = runtime.series("src", TRIANGLE_TAIL_SRC_I32).expect("src");
@@ -124,7 +129,7 @@ fn graph_from_prepared_columns_i32_bfs() {
 
 #[test]
 fn graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fails() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let runtime = explicit_runtime();
 
     let src = runtime.series("src", DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
@@ -160,7 +165,7 @@ fn graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fa
 
 #[test]
 fn graph_from_prepared_table_export_bfs() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let runtime = explicit_runtime();
 
     let src = runtime.series("src", TRIANGLE_TAIL_SRC_I32).expect("src");
@@ -182,7 +187,7 @@ fn graph_from_prepared_table_export_bfs() {
 
 #[test]
 fn graph_from_prepared_columns_rejects_host_exports() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let runtime = explicit_runtime();
 
     let src = runtime.series("src", DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
@@ -205,7 +210,7 @@ fn graph_from_prepared_columns_rejects_host_exports() {
 
 #[test]
 fn graph_from_prepared_table_export_rejects_host_exports() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let runtime = explicit_runtime();
 
     let src = runtime.series("src", DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
@@ -227,7 +232,7 @@ fn graph_from_prepared_table_export_rejects_host_exports() {
 
 #[test]
 fn prepared_export_vs_deep_copy_import_pagerank_equivalence() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let producer_runtime = explicit_runtime();
     let consumer_runtime = explicit_runtime();
 
@@ -258,7 +263,7 @@ fn prepared_export_vs_deep_copy_import_pagerank_equivalence() {
 
 #[test]
 fn prepared_host_export_import_pagerank_matches_prepared_device_path() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let producer_runtime = explicit_runtime();
     let consumer_runtime = explicit_runtime();
 
