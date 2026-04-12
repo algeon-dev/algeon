@@ -89,19 +89,31 @@ function noteLines(node: DiagramNode): string[] {
   return Array.isArray(node.note) ? node.note : [node.note];
 }
 
-function measureNode(node: DiagramNode): {w: number; h: number} {
+/** Font/padding bundle so the same Box renders at compact (Design DAG) or
+ * glanceable (Overview/Flow) scale. */
+interface BoxFonts {
+  kind: {size: number; lh: number; track: number};
+  name: {size: number; lh: number};
+  note: {size: number; lh: number};
+  padX: number;
+  padY: number;
+}
+
+const COMPACT_FONTS: BoxFonts = {kind: KIND, name: NAME, note: NOTE, padX: PAD_X, padY: PAD_Y};
+
+function measureNode(node: DiagramNode, fonts: BoxFonts = COMPACT_FONTS): {w: number; h: number} {
   const notes = noteLines(node);
   const w = Math.max(
-    node.kind ? textWidth(node.kind.toUpperCase(), KIND) : 0,
-    textWidth(node.name, NAME),
-    ...notes.map((line) => textWidth(line, NOTE)),
+    node.kind ? textWidth(node.kind.toUpperCase(), fonts.kind) : 0,
+    textWidth(node.name, fonts.name),
+    ...notes.map((line) => textWidth(line, fonts.note)),
   );
-  const h = (node.kind ? KIND.lh : 0) + NAME.lh + notes.length * NOTE.lh;
-  return {w: Math.ceil(w) + 2 * PAD_X, h: h + 2 * PAD_Y};
+  const h = (node.kind ? fonts.kind.lh : 0) + fonts.name.lh + notes.length * fonts.note.lh;
+  return {w: Math.ceil(w) + 2 * fonts.padX, h: h + 2 * fonts.padY};
 }
 
 /** One node box: hairline rect, tone accent bar, mono text block, optional interactivity. */
-function Box({node, x, y, w, h, selected, onSelect}: {
+function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS}: {
   node: DiagramNode;
   x: number;
   y: number;
@@ -109,37 +121,38 @@ function Box({node, x, y, w, h, selected, onSelect}: {
   h: number;
   selected?: boolean;
   onSelect?: () => void;
+  fonts?: BoxFonts;
 }) {
   const notes = noteLines(node);
   const tone = node.tone ?? 'plain';
   const toneColor = TONE[tone];
   const clickable = Boolean(onSelect);
-  const contentH = (node.kind ? KIND.lh : 0) + NAME.lh + notes.length * NOTE.lh;
+  const contentH = (node.kind ? fonts.kind.lh : 0) + fonts.name.lh + notes.length * fonts.note.lh;
   let lineY = y + (h - contentH) / 2;
-  const tx = x + PAD_X;
+  const tx = x + fonts.padX;
   const lines: React.ReactNode[] = [];
   if (node.kind) {
     lines.push(
-      <text key="kind" x={tx} y={lineY + KIND.lh * 0.74} fontSize={KIND.size}
-        letterSpacing={`${KIND.track}em`} fill={tone === 'plain' ? COLOR.subtle : toneColor}>
+      <text key="kind" x={tx} y={lineY + fonts.kind.lh * 0.74} fontSize={fonts.kind.size}
+        letterSpacing={`${fonts.kind.track}em`} fill={tone === 'plain' ? COLOR.subtle : toneColor}>
         {node.kind.toUpperCase()}
       </text>,
     );
-    lineY += KIND.lh;
+    lineY += fonts.kind.lh;
   }
   lines.push(
-    <text key="name" x={tx} y={lineY + NAME.lh * 0.72} fontSize={NAME.size} fontWeight={600} fill={COLOR.fg}>
+    <text key="name" x={tx} y={lineY + fonts.name.lh * 0.72} fontSize={fonts.name.size} fontWeight={600} fill={COLOR.fg}>
       {node.name}
     </text>,
   );
-  lineY += NAME.lh;
+  lineY += fonts.name.lh;
   notes.forEach((line, i) => {
     lines.push(
-      <text key={`note-${i}`} x={tx} y={lineY + NOTE.lh * 0.72} fontSize={NOTE.size} fill={COLOR.muted}>
+      <text key={`note-${i}`} x={tx} y={lineY + fonts.note.lh * 0.72} fontSize={fonts.note.size} fill={COLOR.muted}>
         {line}
       </text>,
     );
-    lineY += NOTE.lh;
+    lineY += fonts.note.lh;
   });
   return (
     <g
@@ -486,7 +499,7 @@ export interface StackDiagramProps {
 export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
   const interactive = nodes.some((n) => n.detail);
   const [selectedIdx, setSelectedIdx] = useState<number>(nodes.findIndex((n) => n.detail));
-  const sizes = nodes.map(measureNode);
+  const sizes = nodes.map((n) => measureNode(n));
   const boxW = Math.max(380, ...sizes.map((s) => s.w));
   const svgW = boxW + 2 * EDGE;
   const GAP = 12;
@@ -756,6 +769,210 @@ export function OverviewDiagram({caption}: {caption?: React.ReactNode}) {
       <line x1={storeLeft} y1={kvikY} x2={gpuRight + 1} y2={kvikY} stroke={stroke} strokeWidth={1} />
       {head(ovHeadLeft(gpuRight, kvikY))}
       {label((gpuRight + storeLeft) / 2, kvikY - 8, 'KvikIO')}
+    </Figure>
+  );
+}
+
+/* ======================= FlowDiagram ======================= */
+
+// Flow boxes sit between the compact Design-DAG type and the homepage's
+// Overview type: a notch larger than StackDiagram, without its density.
+const FLOW_KIND = {size: 10.5, lh: 16, track: 0.07};
+const FLOW_NAME = {size: 14.5, lh: 21};
+const FLOW_NOTE = {size: 12, lh: 17};
+const FLOW_FONTS: BoxFonts = {kind: FLOW_KIND, name: FLOW_NAME, note: FLOW_NOTE, padX: 16, padY: 12};
+const FL_LABEL = {size: 11, lh: 16, track: 0.03};
+const FL_GROUP_PAD_X = 16;
+const FL_GROUP_HEAD = 30; // headroom inside a group for its corner label
+const FL_GROUP_FOOT = 14;
+
+export interface FlowNode extends DiagramNode {
+  id: string;
+  /** Label line(s) drawn beside the arrow leading into this node. */
+  edgeLabel?: string | string[];
+}
+
+export interface FlowGroup {
+  /** Corner label, rendered as given (no case transform). */
+  label: string;
+  /** Contiguous node ids the group encloses. */
+  nodes: string[];
+}
+
+export interface FlowReturn {
+  from: string;
+  to: string;
+  /** Label line(s) beside the return rail. */
+  label?: string | string[];
+}
+
+export interface FlowDiagramProps {
+  ariaLabel?: string;
+  nodes: FlowNode[];
+  groups?: FlowGroup[];
+  returns?: FlowReturn[];
+  caption?: React.ReactNode;
+}
+
+/**
+ * A top-down flow at OverviewDiagram scale: one centered column of large-type
+ * boxes, arrow labels beside the spine, dashed ownership containers, and an
+ * optional dashed return rail on the right for the backflow. Nodes with
+ * `detail` are clickable and drive the panel below the SVG — a blend of the
+ * homepage figure's glanceability and the Design diagrams' interactivity.
+ */
+export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], caption}: FlowDiagramProps) {
+  const [selectedId, setSelectedId] = useState<string | null>(
+    nodes.find((n) => n.detail)?.id ?? null,
+  );
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const groupOf = new Map<string, FlowGroup>();
+  groups.forEach((g) => g.nodes.forEach((id) => groupOf.set(id, g)));
+  const edgeLines = (n: FlowNode): string[] =>
+    !n.edgeLabel ? [] : Array.isArray(n.edgeLabel) ? n.edgeLabel : [n.edgeLabel];
+  const returnLines = (r: FlowReturn): string[] =>
+    !r.label ? [] : Array.isArray(r.label) ? r.label : [r.label];
+
+  const sizes = new Map(nodes.map((n) => [n.id, measureNode(n, FLOW_FONTS)]));
+  const boxW = Math.max(380, ...nodes.map((n) => sizes.get(n.id)!.w));
+  const groupX = EDGE + 2;
+  const boxX = groupX + FL_GROUP_PAD_X;
+  const boxRight = boxX + boxW;
+  const groupW = boxW + 2 * FL_GROUP_PAD_X;
+  const cx = boxX + boxW / 2;
+
+  // Vertical layout: arrow gaps sized so their labels always fit; entering or
+  // leaving a dashed group adds that group's label headroom / footroom.
+  const rect = new Map<string, {y: number; h: number; cy: number}>();
+  const groupRect = new Map<FlowGroup, {top: number; bottom: number}>();
+  let y = EDGE + 2;
+  nodes.forEach((n, i) => {
+    const g = groupOf.get(n.id);
+    const prevG = i > 0 ? groupOf.get(nodes[i - 1].id) : undefined;
+    if (i === 0) {
+      if (g) y += FL_GROUP_HEAD;
+    } else {
+      const lines = edgeLines(n).length;
+      let gap = lines > 0 ? Math.max(54, lines * FL_LABEL.lh + 30) : 46;
+      if (prevG && prevG !== g) gap += FL_GROUP_FOOT;
+      if (g && g !== prevG) gap += FL_GROUP_HEAD;
+      y += gap;
+    }
+    if (g && g !== prevG) groupRect.set(g, {top: y - FL_GROUP_HEAD, bottom: 0});
+    const h = sizes.get(n.id)!.h;
+    rect.set(n.id, {y, h, cy: y + h / 2});
+    y += h;
+    if (g) groupRect.get(g)!.bottom = y + FL_GROUP_FOOT;
+  });
+  const svgH = Math.max(y, ...[...groupRect.values()].map((r) => r.bottom)) + EDGE + 2;
+
+  // Width: spine labels sit to the right of the arrows; the return rail sits
+  // clear of both the boxes and the widest spine label.
+  const maxEdgeLabelW = Math.max(
+    0, ...nodes.flatMap((n) => edgeLines(n).map((line) => textWidth(line, FL_LABEL))),
+  );
+  const maxReturnLabelW = Math.max(
+    0, ...returns.flatMap((r) => returnLines(r).map((line) => textWidth(line, FL_LABEL))),
+  );
+  const railX = Math.max(boxRight + FL_GROUP_PAD_X, cx + 12 + maxEdgeLabelW) + 34;
+  const svgW = Math.max(
+    groupX + groupW + EDGE + 4,
+    cx + 12 + maxEdgeLabelW + EDGE + 4,
+    returns.length ? railX + 12 + maxReturnLabelW + EDGE + 4 : 0,
+  );
+
+  const selected = selectedId ? byId.get(selectedId) : undefined;
+
+  return (
+    <Figure caption={caption} svgW={svgW} svgH={svgH} minW={560} interactive
+      ariaLabel={ariaLabel ?? 'Interactive flow diagram'}
+      panel={selected?.detail ? <DetailPanel node={selected} /> : null}>
+      {/* dashed ownership containers */}
+      {groups.map((g, i) => {
+        const r = groupRect.get(g);
+        if (!r) return null;
+        return (
+          <g key={`group-${i}`}>
+            <rect x={groupX} y={r.top} width={groupW} height={r.bottom - r.top} rx={9}
+              fill="none" stroke={COLOR.border} strokeWidth={1} strokeDasharray="5 4" />
+            <text x={groupX + 14} y={r.top + 18} fontSize={FLOW_KIND.size}
+              letterSpacing={`${FLOW_KIND.track}em`} fill={COLOR.subtle}>
+              {g.label}
+            </text>
+          </g>
+        );
+      })}
+      {/* spine arrows + labels */}
+      {nodes.map((n, i) => {
+        if (i === 0) return null;
+        const prev = rect.get(nodes[i - 1].id)!;
+        const cur = rect.get(n.id)!;
+        const top = prev.y + prev.h;
+        const bottom = cur.y;
+        const lines = edgeLines(n);
+        // Center labels in the visible clear gap: when the arrow crosses a
+        // group border, exclude the group's foot/head bands from the segment.
+        const g = groupOf.get(n.id);
+        const prevG = groupOf.get(nodes[i - 1].id);
+        const segTop = top + (prevG && prevG !== g ? FL_GROUP_FOOT : 0);
+        const segBottom = bottom - (g && g !== prevG ? FL_GROUP_HEAD : 0);
+        const mid = (segTop + segBottom) / 2;
+        return (
+          <g key={`spine-${i}`}>
+            <line x1={cx} y1={top} x2={cx} y2={bottom - 1} stroke={COLOR.border} strokeWidth={1} />
+            <path d={ovHeadDown(cx, bottom)} fill="none" stroke={COLOR.border}
+              strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" />
+            {lines.map((line, j) => (
+              <text key={`l-${j}`} x={cx + 12}
+                y={mid - ((lines.length - 1) * FL_LABEL.lh) / 2 + j * FL_LABEL.lh + FL_LABEL.size * 0.36}
+                fontSize={FL_LABEL.size} letterSpacing={`${FL_LABEL.track}em`} fill={COLOR.subtle}>
+                {line}
+              </text>
+            ))}
+          </g>
+        );
+      })}
+      {/* return rails */}
+      {returns.map((r, i) => {
+        const from = rect.get(r.from)!;
+        const to = rect.get(r.to)!;
+        const R = 10;
+        const dir = to.cy < from.cy ? -1 : 1;
+        const d = [
+          `M ${boxRight} ${from.cy}`,
+          `L ${railX - R} ${from.cy}`,
+          `Q ${railX} ${from.cy} ${railX} ${from.cy + R * dir}`,
+          `L ${railX} ${to.cy - R * dir}`,
+          `Q ${railX} ${to.cy} ${railX - R} ${to.cy}`,
+          `L ${boxRight + 1} ${to.cy}`,
+        ].join(' ');
+        const lines = returnLines(r);
+        const mid = (from.cy + to.cy) / 2;
+        return (
+          <g key={`return-${i}`}>
+            <path d={d} fill="none" stroke={COLOR.border} strokeWidth={1}
+              strokeDasharray="5 4" strokeLinejoin="round" />
+            <path d={ovHeadLeft(boxRight, to.cy)} fill="none" stroke={COLOR.border}
+              strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" />
+            {lines.map((line, j) => (
+              <text key={`l-${j}`} x={railX + 12}
+                y={mid - ((lines.length - 1) * FL_LABEL.lh) / 2 + j * FL_LABEL.lh + FL_LABEL.size * 0.36}
+                fontSize={FL_LABEL.size} letterSpacing={`${FL_LABEL.track}em`} fill={COLOR.subtle}>
+                {line}
+              </text>
+            ))}
+          </g>
+        );
+      })}
+      {/* nodes */}
+      {nodes.map((n) => {
+        const r = rect.get(n.id)!;
+        return (
+          <Box key={n.id} node={n} x={boxX} y={r.y} w={boxW} h={r.h} fonts={FLOW_FONTS}
+            selected={selectedId === n.id}
+            onSelect={n.detail ? () => setSelectedId(n.id) : undefined} />
+        );
+      })}
     </Figure>
   );
 }

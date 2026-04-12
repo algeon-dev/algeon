@@ -21,7 +21,13 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
 
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
-            let handle = match GpuResultHandle::new(context, committed.frame, Arc::clone(plan.output_schema())) {
+            let live_reservation = committed.reservation.retain_grant_live_reservation();
+            let handle = match GpuResultHandle::new_with_live_reservation(
+                context,
+                committed.frame,
+                Arc::clone(plan.output_schema()),
+                live_reservation,
+            ) {
                 Ok(handle) => handle,
                 Err(error) => {
                     reservations.release(committed.reservation, metrics);

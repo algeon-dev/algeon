@@ -35,8 +35,8 @@ use nexus_query_engine::{
     contract_report::{StrictBoundedContractReport, StrictBoundedExecutionMode},
     exec::{
         CompiledBoundedPipelineSupport, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
-        CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, compiled_bounded_pipeline_support,
-        compiled_bounded_query_plan_support,
+        CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput,
+        compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
     },
     execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, optimize_query_plan,
     strict_bounded_pipeline_admission, strict_bounded_pipeline_admission_with_statistical_aggregate_mode,

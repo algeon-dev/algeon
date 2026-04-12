@@ -10,7 +10,7 @@ use arrow::record_batch::RecordBatch;
 use super::{
     join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection},
     reservations::validate_task_runtime_gates,
-    scheduler::{CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput},
+    scheduler::{CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput},
     state::CompiledPipelineState,
 };
 use crate::{

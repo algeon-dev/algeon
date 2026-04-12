@@ -13,7 +13,7 @@ const DEFAULT_SERVER_TENANT_ID: &str = "default";
 
 #[derive(Clone, Debug)]
 enum QueryAdmissionBackend {
-    QueryService { backend: NexusGpuBackend },
+    QueryService { backend: Box<NexusGpuBackend> },
     Semaphore { permits: Arc<Semaphore> },
 }
 
@@ -49,7 +49,7 @@ impl QueryAdmission {
         let Some(backend) = backend else {
             return Self::new(max_in_flight);
         };
-        Ok(Self { backend: QueryAdmissionBackend::QueryService { backend }, max_in_flight })
+        Ok(Self { backend: QueryAdmissionBackend::QueryService { backend: Box::new(backend) }, max_in_flight })
     }
 
     pub fn max_in_flight(&self) -> usize {

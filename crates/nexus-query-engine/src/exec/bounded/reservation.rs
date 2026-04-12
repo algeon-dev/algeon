@@ -15,7 +15,7 @@ use crate::{
     mode::NativePipelineExecutionMode,
     pipeline::CompiledPipeline,
     plan::QueryPlan,
-    runtime::{ExecutionContext, MemoryGrant, MemorySpaceId},
+    runtime::{ExecutionContext, MemoryGrant, MemorySpaceId, gpu::governor::MemoryGrantLiveReservation},
 };
 
 #[derive(Debug, Clone)]
@@ -130,6 +130,7 @@ impl ActiveReservationLineage {
 pub(in crate::exec) struct ActiveReservation {
     memory_space: MemorySpaceId,
     reserved_bytes: Rc<Cell<u64>>,
+    live_accounting: Option<MemoryGrant>,
     protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
     source_cache_key: Option<GpuLocalParquetSourceCacheKey>,
     event_context: ActiveReservationEventContext,
@@ -145,6 +146,7 @@ impl ActiveReservation {
     pub(in crate::exec) fn owned_resident(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
+        live_accounting: Option<MemoryGrant>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
@@ -152,6 +154,7 @@ impl ActiveReservation {
         Self::charged(
             memory_space,
             reserved_bytes,
+            live_accounting,
             protected_source_cache_keys,
             bytes,
             request,
@@ -162,6 +165,7 @@ impl ActiveReservation {
     pub(in crate::exec) fn work(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
+        live_accounting: Option<MemoryGrant>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
@@ -169,6 +173,7 @@ impl ActiveReservation {
         Self::charged(
             memory_space,
             reserved_bytes,
+            live_accounting,
             protected_source_cache_keys,
             bytes,
             request,
@@ -179,6 +184,7 @@ impl ActiveReservation {
     fn charged(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
+        live_accounting: Option<MemoryGrant>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
@@ -187,6 +193,7 @@ impl ActiveReservation {
         Self {
             memory_space,
             reserved_bytes,
+            live_accounting,
             protected_source_cache_keys,
             source_cache_key: None,
             event_context: ActiveReservationEventContext::from_request(request),
@@ -215,6 +222,7 @@ impl ActiveReservation {
         Self {
             memory_space,
             reserved_bytes,
+            live_accounting: None,
             protected_source_cache_keys,
             source_cache_key: Some(source_cache_key),
             event_context: ActiveReservationEventContext::from_request(request),
@@ -230,6 +238,7 @@ impl ActiveReservation {
     fn alias(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
+        live_accounting: Option<MemoryGrant>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         lineage: Rc<ActiveReservationLineage>,
         bytes: u64,
@@ -239,6 +248,7 @@ impl ActiveReservation {
         Self {
             memory_space,
             reserved_bytes,
+            live_accounting,
             protected_source_cache_keys,
             source_cache_key: None,
             event_context: ActiveReservationEventContext::from_request(request),
@@ -263,6 +273,10 @@ impl ActiveReservation {
         self.charged_bytes
     }
 
+    pub(in crate::exec) fn retain_grant_live_reservation(&self) -> Option<MemoryGrantLiveReservation> {
+        self.live_accounting.as_ref().and_then(|grant| grant.retain_live_reservation(self.charged_bytes))
+    }
+
     pub(in crate::exec) fn is_alias(&self) -> bool {
         matches!(self.semantics, ActiveReservationSemantics::Alias)
     }
@@ -277,6 +291,7 @@ impl ActiveReservation {
         Self {
             memory_space: self.memory_space,
             reserved_bytes: Rc::clone(&self.reserved_bytes),
+            live_accounting: self.live_accounting.clone(),
             protected_source_cache_keys: Rc::clone(&self.protected_source_cache_keys),
             source_cache_key: None,
             event_context: ActiveReservationEventContext::from_request(request),
@@ -298,6 +313,7 @@ impl ActiveReservation {
         Self {
             memory_space: self.memory_space,
             reserved_bytes: Rc::clone(&self.reserved_bytes),
+            live_accounting: self.live_accounting.clone(),
             protected_source_cache_keys: Rc::clone(&self.protected_source_cache_keys),
             source_cache_key,
             event_context: ActiveReservationEventContext::from_request(request),
@@ -336,6 +352,7 @@ impl ActiveReservation {
                     };
                     if deferred_release > 0 {
                         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(deferred_release));
+                        self.record_live_delta(-i128::from(deferred_release));
                         self.released = true;
                         return Some(self.event_context.event(
                             self.release_action,
@@ -358,6 +375,7 @@ impl ActiveReservation {
         }
         let charged_delta_bytes = -i128::from(self.charged_bytes);
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(self.charged_bytes));
+        self.record_live_delta(charged_delta_bytes);
         self.released = true;
         Some(self.event_context.event(self.release_action, self.bytes, charged_delta_bytes, self.reserved_bytes.get()))
     }
@@ -367,7 +385,6 @@ impl ActiveReservation {
             return 0;
         }
         assert!(!self.released, "cannot grow a released reservation");
-        self.reserved_bytes.set(self.reserved_bytes.get().saturating_add(bytes));
         self.bytes = self.bytes.saturating_add(bytes);
         self.charged_bytes = self.charged_bytes.saturating_add(bytes);
         bytes
@@ -380,6 +397,7 @@ impl ActiveReservation {
         assert!(!self.released, "cannot shrink a released reservation");
         let refunded = (self.bytes - bytes).min(self.charged_bytes);
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(refunded));
+        self.record_live_delta(-i128::from(refunded));
         self.bytes = bytes;
         self.charged_bytes = self.charged_bytes.saturating_sub(refunded);
         refunded
@@ -392,6 +410,12 @@ impl ActiveReservation {
         assert!(!self.released, "cannot promote a released reservation");
         let promoted_charged_bytes = promoted_bytes.min(self.charged_bytes);
         self.charged_bytes = self.charged_bytes.saturating_sub(promoted_charged_bytes);
+    }
+
+    fn record_live_delta(&self, delta_bytes: i128) {
+        if let Some(grant) = &self.live_accounting {
+            grant.record_live_reservation_delta(delta_bytes);
+        }
     }
 }
 
@@ -449,6 +473,40 @@ impl ReservationBudget {
         match self {
             Self::Static(bytes) => *bytes,
             Self::AdaptiveGrant(grant) => grant.budget_bytes(),
+        }
+    }
+
+    fn live_accounting(&self) -> Option<MemoryGrant> {
+        match self {
+            Self::Static(_) => None,
+            Self::AdaptiveGrant(grant) => Some(grant.clone()),
+        }
+    }
+
+    fn live_reserved_bytes(&self, tracker_reserved_bytes: u64) -> u64 {
+        match self {
+            Self::Static(_) => tracker_reserved_bytes,
+            Self::AdaptiveGrant(grant) => grant.live_reserved_bytes(),
+        }
+    }
+
+    fn remaining_live_reservation_bytes(&self, tracker_remaining_bytes: u64) -> Result<u64> {
+        match self {
+            Self::Static(_) => Ok(tracker_remaining_bytes),
+            Self::AdaptiveGrant(grant) => Ok(tracker_remaining_bytes.min(grant.remaining_live_reservation_bytes()?)),
+        }
+    }
+
+    fn try_reserve_live_bytes(&self, bytes: u64) -> Result<bool> {
+        match self {
+            Self::Static(_) => Ok(true),
+            Self::AdaptiveGrant(grant) => grant.try_reserve_live_bytes(bytes),
+        }
+    }
+
+    fn release_live_bytes(&self, bytes: u64) {
+        if let Self::AdaptiveGrant(grant) = self {
+            grant.release_live_bytes(bytes);
         }
     }
 }
@@ -543,12 +601,14 @@ impl ReservationTracker {
     pub(in crate::exec) fn acknowledge_requested_grant_shrink(&self) -> Result<bool> {
         match &self.budget {
             ReservationBudget::Static(_) => Ok(true),
-            ReservationBudget::AdaptiveGrant(grant) => grant.try_apply_requested_shrink(self.raw_reserved_bytes()),
+            ReservationBudget::AdaptiveGrant(grant) => {
+                grant.try_apply_requested_shrink(self.budget.live_reserved_bytes(self.raw_reserved_bytes()))
+            },
         }
     }
 
     pub(in crate::exec) fn can_reserve(&self, requested_bytes: u64) -> bool {
-        requested_bytes <= self.remaining_bytes()
+        self.reservable_remaining_bytes().is_ok_and(|remaining| requested_bytes <= remaining)
     }
 
     pub(in crate::exec) fn set_diagnostic_context(
@@ -567,7 +627,7 @@ impl ReservationTracker {
 
     pub(in crate::exec) fn available_bytes_including(&self, reservation: &ActiveReservation) -> u64 {
         self.assert_reservation_belongs_to_tracker(reservation, "available_bytes_including");
-        reservation.charged_bytes().saturating_add(self.remaining_bytes())
+        reservation.charged_bytes().saturating_add(self.reservable_remaining_bytes().unwrap_or(0))
     }
 
     pub(in crate::exec) fn try_reserve(
@@ -601,11 +661,11 @@ impl ReservationTracker {
         metrics: &mut QueryMetrics,
     ) -> Result<ActiveReservation> {
         let request = self.refine_adaptive_task_reservation_request(self.stamp_request(request, metrics));
-        let remaining = self.remaining_bytes();
+        let remaining = self.reservable_remaining_bytes()?;
         if request.requested_bytes > remaining {
             self.reclaim_source_cache_for_request(request.requested_bytes, None, metrics)?;
         }
-        let remaining = self.remaining_bytes();
+        let remaining = self.reservable_remaining_bytes()?;
         if request.requested_bytes > remaining {
             metrics.record_reservation_denied_timeline_event(
                 &request,
@@ -616,7 +676,16 @@ impl ReservationTracker {
             return Err(request.denied_error(remaining));
         }
 
-        self.reserved_bytes.set(self.raw_reserved_bytes().saturating_add(request.requested_bytes));
+        if !self.reserve_live_bytes(request.requested_bytes)? {
+            let remaining = self.reservable_remaining_bytes()?;
+            metrics.record_reservation_denied_timeline_event(
+                &request,
+                MemoryReservationEventAction::Reserve,
+                remaining,
+                self.raw_reserved_bytes(),
+            );
+            return Err(request.denied_error(remaining));
+        }
         metrics.record_reservation_granted_timeline_event(
             &request,
             MemoryReservationEventAction::Reserve,
@@ -628,6 +697,7 @@ impl ReservationTracker {
             ActiveReservationSemantics::OwnedResident => ActiveReservation::owned_resident(
                 self.memory_space,
                 Rc::clone(&self.reserved_bytes),
+                self.budget.live_accounting(),
                 Rc::clone(&self.protected_source_cache_keys),
                 request.requested_bytes,
                 &request,
@@ -635,6 +705,7 @@ impl ReservationTracker {
             ActiveReservationSemantics::Work => ActiveReservation::work(
                 self.memory_space,
                 Rc::clone(&self.reserved_bytes),
+                self.budget.live_accounting(),
                 Rc::clone(&self.protected_source_cache_keys),
                 request.requested_bytes,
                 &request,
@@ -687,6 +758,7 @@ impl ReservationTracker {
         ActiveReservation::alias(
             self.memory_space,
             Rc::clone(&self.reserved_bytes),
+            source.live_accounting.clone(),
             Rc::clone(&self.protected_source_cache_keys),
             Rc::clone(source.lineage.as_ref().expect("generic alias requires a reservation lineage")),
             request.requested_bytes,
@@ -799,11 +871,11 @@ impl ReservationTracker {
     ) -> Result<()> {
         self.validate_reservation_belongs_to_tracker(reservation, "try_grow")?;
         let request = self.stamp_request(request, metrics);
-        let remaining = self.remaining_bytes();
+        let remaining = self.reservable_remaining_bytes()?;
         if request.requested_bytes > remaining {
             self.reclaim_source_cache_for_request(request.requested_bytes, None, metrics)?;
         }
-        let remaining = self.remaining_bytes();
+        let remaining = self.reservable_remaining_bytes()?;
         if request.requested_bytes > remaining {
             metrics.record_reservation_denied_timeline_event(
                 &request,
@@ -814,6 +886,16 @@ impl ReservationTracker {
             return Err(request.denied_error(remaining));
         }
 
+        if !self.reserve_live_bytes(request.requested_bytes)? {
+            let remaining = self.reservable_remaining_bytes()?;
+            metrics.record_reservation_denied_timeline_event(
+                &request,
+                MemoryReservationEventAction::Grow,
+                remaining,
+                self.raw_reserved_bytes(),
+            );
+            return Err(request.denied_error(remaining));
+        }
         let charged_delta = reservation.grow(request.requested_bytes);
         metrics.record_reservation_granted_timeline_event(
             &request,
@@ -880,11 +962,11 @@ impl ReservationTracker {
 
         let request = self.stamp_request(request, metrics);
         let additional_bytes = retained_bytes.saturating_sub(reservation.charged_bytes());
-        let remaining = self.remaining_bytes();
+        let remaining = self.reservable_remaining_bytes()?;
         if additional_bytes > remaining {
             self.reclaim_source_cache_for_request(additional_bytes, Some(protected_key), metrics)?;
         }
-        let remaining = self.remaining_bytes();
+        let remaining = self.reservable_remaining_bytes()?;
         if additional_bytes > remaining {
             metrics.record_reservation_denied_timeline_event(
                 &request,
@@ -895,8 +977,15 @@ impl ReservationTracker {
             return Err(request.denied_error(remaining));
         }
 
-        if additional_bytes > 0 {
-            self.reserved_bytes.set(self.raw_reserved_bytes().saturating_add(additional_bytes));
+        if additional_bytes > 0 && !self.reserve_live_bytes(additional_bytes)? {
+            let remaining = self.reservable_remaining_bytes()?;
+            metrics.record_reservation_denied_timeline_event(
+                &request,
+                MemoryReservationEventAction::Reserve,
+                remaining,
+                self.raw_reserved_bytes(),
+            );
+            return Err(request.denied_error(remaining));
         }
         reservation.promote_charged_bytes_to_baseline(retained_bytes);
         self.source_cache_baseline_bytes = self.source_cache_baseline_bytes.saturating_add(retained_bytes);
@@ -916,7 +1005,7 @@ impl ReservationTracker {
             return;
         }
         self.source_cache_baseline_bytes = self.source_cache_baseline_bytes.saturating_sub(released);
-        self.reserved_bytes.set(self.raw_reserved_bytes().saturating_sub(released));
+        self.release_live_bytes(released);
         let request = self.stamp_request(
             MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, released, self.budget())
                 .with_memory_boundary("source_cache_retained")
@@ -969,7 +1058,7 @@ impl ReservationTracker {
                 .with_memory_boundary("source_cache_retained")
                 .with_stage("source_cache_retained");
         let request = self.stamp_request(request, metrics);
-        let remaining = self.remaining_bytes();
+        let remaining = self.reservable_remaining_bytes()?;
         if request.requested_bytes > remaining {
             metrics.record_reservation_denied_timeline_event(
                 &request,
@@ -979,7 +1068,16 @@ impl ReservationTracker {
             );
             return Err(request.denied_error(remaining));
         }
-        self.reserved_bytes.set(self.raw_reserved_bytes().saturating_add(request.requested_bytes));
+        if !self.reserve_live_bytes(request.requested_bytes)? {
+            let remaining = self.reservable_remaining_bytes()?;
+            metrics.record_reservation_denied_timeline_event(
+                &request,
+                MemoryReservationEventAction::Reserve,
+                remaining,
+                self.raw_reserved_bytes(),
+            );
+            return Err(request.denied_error(remaining));
+        }
         self.source_cache_baseline_bytes = self.source_cache_baseline_bytes.saturating_add(request.requested_bytes);
         metrics.record_reservation_granted_timeline_event(
             &request,
@@ -1000,7 +1098,7 @@ impl ReservationTracker {
         let Some(cache) = self.local_parquet_source_cache.as_ref().map(Arc::clone) else {
             return Ok(());
         };
-        let remaining = self.remaining_bytes();
+        let remaining = self.reservable_remaining_bytes()?;
         if requested_bytes <= remaining {
             return Ok(());
         }
@@ -1043,6 +1141,23 @@ impl ReservationTracker {
         self.reserved_bytes.get()
     }
 
+    fn reservable_remaining_bytes(&self) -> Result<u64> {
+        self.budget.remaining_live_reservation_bytes(self.remaining_bytes())
+    }
+
+    fn reserve_live_bytes(&self, bytes: u64) -> Result<bool> {
+        if !self.budget.try_reserve_live_bytes(bytes)? {
+            return Ok(false);
+        }
+        self.reserved_bytes.set(self.raw_reserved_bytes().saturating_add(bytes));
+        Ok(true)
+    }
+
+    fn release_live_bytes(&self, bytes: u64) {
+        self.reserved_bytes.set(self.raw_reserved_bytes().saturating_sub(bytes));
+        self.budget.release_live_bytes(bytes);
+    }
+
     fn reservation_belongs_to_tracker(&self, reservation: &ActiveReservation) -> bool {
         reservation.memory_space() == self.memory_space && Rc::ptr_eq(&reservation.reserved_bytes, &self.reserved_bytes)
     }
@@ -1073,6 +1188,15 @@ impl ReservationTracker {
         .with_fact("operation", operation)
         .with_fact("reservation_memory_space", reservation.memory_space())
         .with_fact("tracker_memory_space", self.memory_space))
+    }
+}
+
+impl Drop for ReservationTracker {
+    fn drop(&mut self) {
+        if self.source_cache_baseline_bytes > 0 {
+            self.release_live_bytes(self.source_cache_baseline_bytes);
+            self.source_cache_baseline_bytes = 0;
+        }
     }
 }
 
@@ -1201,6 +1325,82 @@ mod tests {
         assert_eq!(governor.available_bytes()?, 45);
 
         reservations.release(live, &mut metrics);
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_shrink_ack_uses_grant_scoped_live_bytes_across_trackers() -> Result<()> {
+        let governor = MemoryGovernor::new(0, 100)?;
+        let grant = governor.try_request(GrantRequest::new(7, 30, 90))?.expect("initial grant should fit");
+        let mut metrics = QueryMetrics::default();
+        let mut first_tracker = ReservationTracker::new_with_budget(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::AdaptiveGrant(grant.clone()),
+        );
+        let mut second_tracker = ReservationTracker::new_with_budget(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::AdaptiveGrant(grant.clone()),
+        );
+        let first_live = first_tracker.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "first_live", 60, first_tracker.budget()),
+            &mut metrics,
+        )?;
+        let second_live = second_tracker.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "second_live", 20, second_tracker.budget()),
+            &mut metrics,
+        )?;
+
+        assert_eq!(grant.live_reserved_bytes(), 80);
+        assert_eq!(grant.request_shrink_to(40)?, Some(40));
+        assert!(!second_tracker.acknowledge_requested_grant_shrink()?);
+
+        assert_eq!(second_tracker.raw_reserved_bytes(), 20);
+        assert_eq!(grant.budget_bytes(), 80);
+        assert_eq!(grant.requested_shrink_target_bytes()?, Some(40));
+        assert_eq!(governor.available_bytes()?, 20);
+
+        first_tracker.release(first_live, &mut metrics);
+        assert!(second_tracker.acknowledge_requested_grant_shrink()?);
+        assert_eq!(grant.budget_bytes(), 40);
+        assert_eq!(grant.requested_shrink_target_bytes()?, None);
+        assert_eq!(governor.available_bytes()?, 60);
+
+        second_tracker.release(second_live, &mut metrics);
+        assert_eq!(grant.live_reserved_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_reservation_tracker_denies_when_shared_grant_live_budget_is_exhausted() -> Result<()> {
+        let governor = MemoryGovernor::new(0, 100)?;
+        let grant = governor.try_request(GrantRequest::new(7, 30, 70))?.expect("initial grant should fit");
+        let mut metrics = QueryMetrics::default();
+        let mut first_tracker = ReservationTracker::new_with_budget(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::AdaptiveGrant(grant.clone()),
+        );
+        let mut second_tracker = ReservationTracker::new_with_budget(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::AdaptiveGrant(grant.clone()),
+        );
+        let first_live = first_tracker.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "first_live", 50, first_tracker.budget()),
+            &mut metrics,
+        )?;
+
+        let denied = match second_tracker.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "second_live", 30, second_tracker.budget()),
+            &mut metrics,
+        ) {
+            Ok(_) => panic!("second tracker must be capped by the shared grant live footprint"),
+            Err(error) => error,
+        };
+
+        assert_eq!(denied.fact_value("granted_bytes"), Some("20"));
+        assert_eq!(grant.live_reserved_bytes(), 50);
+
+        first_tracker.release(first_live, &mut metrics);
+        assert_eq!(grant.live_reserved_bytes(), 0);
         Ok(())
     }
 

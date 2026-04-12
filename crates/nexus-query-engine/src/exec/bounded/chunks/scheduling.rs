@@ -40,7 +40,7 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
 
     let mut partials = Vec::with_capacity(chunks.len());
     context.check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler")?;
-    let mut queue = OrderedSourceReadQueue::start(
+    let mut queue = match OrderedSourceReadQueue::start(
         context,
         bounded.source,
         chunks,
@@ -48,7 +48,31 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
         metrics,
         max_attempts,
         context.source_scheduler_policy().max_source_reads_in_flight(),
-    )?;
+    ) {
+        Ok(queue) => queue,
+        Err(error) if is_retryable_chunk_error(&error) => {
+            if let Err(error) = execute_remaining_chunks_serial_after_scheduler_error(
+                context,
+                bounded,
+                chunks,
+                0,
+                error,
+                reservations,
+                metrics,
+                &mut partials,
+                max_attempts,
+                min_retry_chunk_row_groups,
+            ) {
+                release_committed_partials_reverse(reservations, partials, metrics);
+                return Err(error);
+            }
+            return Ok(partials);
+        },
+        Err(error) => {
+            release_committed_partials_reverse(reservations, partials, metrics);
+            return Err(error);
+        },
+    };
 
     for (index, chunk) in chunks.iter().enumerate() {
         if let Err(error) = context.check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler") {
@@ -84,6 +108,25 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                 if let Err(error) =
                     queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
                 {
+                    queue.abandon_all(index + 1, reservations, metrics);
+                    if is_retryable_chunk_error(&error) {
+                        if let Err(error) = execute_remaining_chunks_serial_after_scheduler_error(
+                            context,
+                            bounded,
+                            chunks,
+                            index + 1,
+                            error,
+                            reservations,
+                            metrics,
+                            &mut partials,
+                            max_attempts,
+                            min_retry_chunk_row_groups,
+                        ) {
+                            release_committed_partials_reverse(reservations, partials, metrics);
+                            return Err(error);
+                        }
+                        return Ok(partials);
+                    }
                     release_committed_partials_reverse(reservations, partials, metrics);
                     return Err(error);
                 }
@@ -113,6 +156,25 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                 if let Err(error) =
                     queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
                 {
+                    queue.abandon_all(index + 1, reservations, metrics);
+                    if is_retryable_chunk_error(&error) {
+                        if let Err(error) = execute_remaining_chunks_serial_after_scheduler_error(
+                            context,
+                            bounded,
+                            chunks,
+                            index + 1,
+                            error,
+                            reservations,
+                            metrics,
+                            &mut partials,
+                            max_attempts,
+                            min_retry_chunk_row_groups,
+                        ) {
+                            release_committed_partials_reverse(reservations, partials, metrics);
+                            return Err(error);
+                        }
+                        return Ok(partials);
+                    }
                     release_committed_partials_reverse(reservations, partials, metrics);
                     return Err(error);
                 }
@@ -169,6 +231,25 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                 if let Err(error) =
                     queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
                 {
+                    queue.abandon_all(index + 1, reservations, metrics);
+                    if is_retryable_chunk_error(&error) {
+                        if let Err(error) = execute_remaining_chunks_serial_after_scheduler_error(
+                            context,
+                            bounded,
+                            chunks,
+                            index + 1,
+                            error,
+                            reservations,
+                            metrics,
+                            &mut partials,
+                            max_attempts,
+                            min_retry_chunk_row_groups,
+                        ) {
+                            release_committed_partials_reverse(reservations, partials, metrics);
+                            return Err(error);
+                        }
+                        return Ok(partials);
+                    }
                     release_committed_partials_reverse(reservations, partials, metrics);
                     return Err(error);
                 }
@@ -184,6 +265,25 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
         if let Err(error) =
             queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
         {
+            queue.abandon_all(index + 1, reservations, metrics);
+            if is_retryable_chunk_error(&error) {
+                if let Err(error) = execute_remaining_chunks_serial_after_scheduler_error(
+                    context,
+                    bounded,
+                    chunks,
+                    index + 1,
+                    error,
+                    reservations,
+                    metrics,
+                    &mut partials,
+                    max_attempts,
+                    min_retry_chunk_row_groups,
+                ) {
+                    release_committed_partials_reverse(reservations, partials, metrics);
+                    return Err(error);
+                }
+                return Ok(partials);
+            }
             release_committed_partials_reverse(reservations, partials, metrics);
             return Err(error);
         }
@@ -203,6 +303,42 @@ fn acknowledge_chunk_boundary_or_release(
         queue.abandon_all(next_chunk_index, reservations, metrics);
         release_committed_partials_reverse(reservations, std::mem::take(partials), metrics);
         return Err(error);
+    }
+    Ok(())
+}
+
+fn execute_remaining_chunks_serial_after_scheduler_error(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    chunks: &[SourceChunk],
+    next_chunk_index: usize,
+    error: QueryError,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    partials: &mut Vec<CommittedPartial>,
+    max_attempts: usize,
+    min_retry_chunk_row_groups: usize,
+) -> Result<()> {
+    let Some(first_chunk) = chunks.get(next_chunk_index) else {
+        return Err(error);
+    };
+    partials.extend(retry_after_chunk_error(
+        context,
+        bounded,
+        first_chunk.clone(),
+        error,
+        reservations,
+        metrics,
+        1,
+        max_attempts,
+        min_retry_chunk_row_groups,
+    )?);
+    reservations.acknowledge_requested_grant_shrink()?;
+
+    for chunk in &chunks[next_chunk_index + 1..] {
+        context.check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler")?;
+        partials.extend(execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)?);
+        reservations.acknowledge_requested_grant_shrink()?;
     }
     Ok(())
 }

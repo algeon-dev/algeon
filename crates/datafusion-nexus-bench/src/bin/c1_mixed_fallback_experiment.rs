@@ -124,7 +124,11 @@ impl std::fmt::Display for CaseOutcome {
     }
 }
 
-async fn run_case(case: &Case, bench: &std::path::Path, bench2: &std::path::Path) -> Result<CaseOutcome, Box<dyn Error>> {
+async fn run_case(
+    case: &Case,
+    bench: &std::path::Path,
+    bench2: &std::path::Path,
+) -> Result<CaseOutcome, Box<dyn Error>> {
     let mut detail = String::new();
 
     // GPU-preferred session with a retained rule for report capture.
@@ -158,7 +162,10 @@ async fn run_case(case: &Case, bench: &std::path::Path, bench2: &std::path::Path
     writeln!(
         detail,
         "planning: outcome={:?} path={:?} fragments={} host_boundaries={} reason_code={:?}",
-        row.outcome, row.post_native_execution_path, row.native_plan_fragment_count, row.host_datafusion_boundary_count,
+        row.outcome,
+        row.post_native_execution_path,
+        row.native_plan_fragment_count,
+        row.host_datafusion_boundary_count,
         row.reason_code
     )?;
     writeln!(detail, "candidates: rewritten={rewritten} rejected_reasons={rejected_reasons:?}")?;
@@ -193,7 +200,11 @@ async fn run_case(case: &Case, bench: &std::path::Path, bench2: &std::path::Path
         _ => true,
     };
     if !path_ok {
-        writeln!(detail, "EXPECTATION FAILED: path {:?} != expected {:?}", row.post_native_execution_path, case.expected_path)?;
+        writeln!(
+            detail,
+            "EXPECTATION FAILED: path {:?} != expected {:?}",
+            row.post_native_execution_path, case.expected_path
+        )?;
     }
     if !fragments_ok {
         writeln!(
@@ -203,7 +214,10 @@ async fn run_case(case: &Case, bench: &std::path::Path, bench2: &std::path::Path
         )?;
     }
     if !mixed_ok {
-        writeln!(detail, "EXPECTATION FAILED: mixed-candidate evidence missing (rewritten={rewritten}, rejected={rejected_reasons:?})")?;
+        writeln!(
+            detail,
+            "EXPECTATION FAILED: mixed-candidate evidence missing (rewritten={rewritten}, rejected={rejected_reasons:?})"
+        )?;
     }
 
     Ok(CaseOutcome { id: case.id, passed: parity && path_ok && fragments_ok && mixed_ok, detail })

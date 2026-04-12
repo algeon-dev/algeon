@@ -241,13 +241,15 @@ impl ExecutionPlan for NativeCudfComposedExec {
                     metrics.record_admission_facts(admission_facts);
                 }
                 let context = context_lease.context();
+                let execution_task_context =
+                    context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
                 let mut input_map = GpuResidentInputMap::new();
                 for child in gpu_inputs {
                     let (input_name, handle) = execute_gpu_resident_producer_with_context(
                         child.as_ref(),
                         context,
                         partition,
-                        Arc::clone(&task_context),
+                        Arc::clone(&execution_task_context),
                     )
                     .await?;
                     input_map.insert(input_name, handle);

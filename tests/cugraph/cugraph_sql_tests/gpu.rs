@@ -13,7 +13,10 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
     let path = dir.join("tiny_directed_edges.parquet");
     write_tiny_directed_edges(&path);
 
-    let backend = NexusGpuBackend::builder().build().unwrap();
+    let backend = NexusGpuBackend::builder()
+        .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic))
+        .build()
+        .unwrap();
     let cugraph = CugraphSqlConfig::default()
         .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
     let mut config = SessionConfig::new()
@@ -76,12 +79,7 @@ async fn cugraph_sql_gpu_pagerank_filter_sort_limit_stays_gpu_resident_until_col
         .with_repartition_aggregations(false)
         .with_repartition_sorts(false);
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = backend_cugraph_sql_state(SessionStateBuilder::new().with_config(config).with_default_features());
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("tiny_directed_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     ctx.sql(
@@ -154,10 +152,7 @@ async fn cugraph_sql_gpu_pagerank_filter_sort_limit_stays_gpu_resident_until_col
 
 #[tokio::test]
 async fn cugraph_sql_gpu_personalized_pagerank_executes_with_side_input() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
@@ -216,10 +211,7 @@ async fn cugraph_sql_gpu_personalized_pagerank_executes_with_side_input() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_force_atlas2_executes_weighted_layout() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
@@ -264,10 +256,7 @@ async fn cugraph_sql_gpu_force_atlas2_executes_weighted_layout() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_allowed_bfs_edges(&ctx, "allowed_edges");
@@ -295,10 +284,7 @@ async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_numeric_source_list_executes_multi_source() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_disconnected_bfs_edges(&ctx, "raw_edges");
 
@@ -324,10 +310,7 @@ async fn cugraph_sql_gpu_bfs_numeric_source_list_executes_multi_source() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_disconnected_string_bfs_edges(&ctx, "raw_edges");
 
@@ -355,10 +338,7 @@ async fn cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_source_table_combines_with_target_path() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_disconnected_bfs_edges(&ctx, "raw_edges");
     register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![0, 10]);
@@ -391,10 +371,7 @@ async fn cugraph_sql_gpu_bfs_source_table_combines_with_target_path() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_absent_source_returns_empty_batch() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![99]);
@@ -422,10 +399,7 @@ async fn cugraph_sql_gpu_bfs_path_absent_source_returns_empty_batch() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_empty_source_table_returns_empty_batch() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", Vec::new());
@@ -453,10 +427,7 @@ async fn cugraph_sql_gpu_bfs_path_empty_source_table_returns_empty_batch() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_empty_source_with_bad_include_vertices_is_rejected() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", Vec::new());
@@ -490,10 +461,7 @@ async fn cugraph_sql_gpu_bfs_path_empty_source_with_bad_include_vertices_is_reje
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_absent_source_with_bad_include_vertices_is_rejected() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![99]);
@@ -527,10 +495,7 @@ async fn cugraph_sql_gpu_bfs_path_absent_source_with_bad_include_vertices_is_rej
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_partial_absent_sources_are_rejected() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![0, 99]);
@@ -560,10 +525,7 @@ async fn cugraph_sql_gpu_bfs_path_partial_absent_sources_are_rejected() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![0]);
@@ -591,10 +553,7 @@ async fn cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_empty_edge_source_returns_empty_batch() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_empty_directed_bfs_edges(&ctx, "raw_edges");
     register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![0]);
@@ -622,10 +581,7 @@ async fn cugraph_sql_gpu_bfs_path_empty_edge_source_returns_empty_batch() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_empty_edge_source_with_bad_include_vertices_is_rejected() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_empty_directed_bfs_edges(&ctx, "raw_edges");
     register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![0]);
@@ -659,10 +615,7 @@ async fn cugraph_sql_gpu_bfs_path_empty_edge_source_with_bad_include_vertices_is
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_string_bfs_edges(&ctx, "raw_edges");
     register_string_vertex_memtable(&ctx, "bfs_sources", "vertex_id", &["a"]);
@@ -691,10 +644,7 @@ async fn cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_string_bfs_edges(&ctx, "raw_edges");
     register_string_allowed_bfs_edges(&ctx, "allowed_edges");
@@ -724,10 +674,7 @@ async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_nullable_string_bfs_edges_with_nulls(&ctx, "raw_edges");
 
@@ -754,10 +701,7 @@ async fn cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_string_bfs_edges(&ctx, "raw_edges");
     register_string_allowed_bfs_edges(&ctx, "allowed_edges");
@@ -792,10 +736,7 @@ async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_nullable_allowed_bfs_edges_with_nulls(&ctx, "allowed_edges");
@@ -826,10 +767,7 @@ async fn cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_nullable_vertex_memtable_with_nulls(&ctx, "targets", "vertex_id");
@@ -857,10 +795,7 @@ async fn cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
+    let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_all_null_allowed_bfs_edges(&ctx, "allowed_edges");

@@ -58,8 +58,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (root, _metadata) = prepare_tpch_report_dataset(&dir)?;
 
     let mut rows = Vec::new();
-    let mut cases: Vec<(String, String)> =
-        TPCH_QUERIES.iter().map(|q| (q.id.to_string(), q.sql.to_string())).collect();
+    let mut cases: Vec<(String, String)> = TPCH_QUERIES.iter().map(|q| (q.id.to_string(), q.sql.to_string())).collect();
     cases.push((MIXED_QUERY_ID.to_string(), MIXED_QUERY_SQL.to_string()));
     if let Ok(filter) = std::env::var("SUBSTRAIT_EXPERIMENT_QUERY_IDS") {
         let wanted: Vec<&str> = filter.split(',').map(str::trim).collect();
@@ -80,7 +79,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let parity_ok = rows.iter().filter(|r| r.parity == "match").count();
     let same_path = rows.iter().filter(|r| r.roundtrip == "ok" && r.sql_path == r.substrait_path).count();
     println!("\nSUMMARY: {total} cases; substrait roundtrip ok {roundtrip_ok}/{total}; ");
-    println!("identical planning path (sql vs substrait) {same_path}/{roundtrip_ok} of surviving; result parity {parity_ok}/{roundtrip_ok}");
+    println!(
+        "identical planning path (sql vs substrait) {same_path}/{roundtrip_ok} of surviving; result parity {parity_ok}/{roundtrip_ok}"
+    );
 
     fs::remove_dir_all(&dir).ok();
     Ok(())
@@ -136,7 +137,7 @@ async fn run_case(id: &str, sql: &str, root: &std::path::Path) -> RowResult {
         },
     };
     let (substrait_path, substrait_batches) =
-        match plan_and_run(&ctx_b, &rule_b, id, sql, SqlEntry::Logical(consumed)).await {
+        match plan_and_run(&ctx_b, &rule_b, id, sql, SqlEntry::Logical(Box::new(consumed))).await {
             Ok(v) => v,
             Err(e) => {
                 return RowResult {
@@ -153,19 +154,12 @@ async fn run_case(id: &str, sql: &str, root: &std::path::Path) -> RowResult {
     let sql_text = pretty_format_batches(&sql_batches).map(|t| t.to_string()).unwrap_or_default();
     let substrait_text = pretty_format_batches(&substrait_batches).map(|t| t.to_string()).unwrap_or_default();
     let parity = if sql_text == substrait_text { "match" } else { "MISMATCH" };
-    RowResult {
-        id: id.to_string(),
-        roundtrip: "ok",
-        sql_path,
-        substrait_path,
-        parity,
-        note: String::new(),
-    }
+    RowResult { id: id.to_string(), roundtrip: "ok", sql_path, substrait_path, parity, note: String::new() }
 }
 
 enum SqlEntry {
     Sql,
-    Logical(datafusion::logical_expr::LogicalPlan),
+    Logical(Box<datafusion::logical_expr::LogicalPlan>),
 }
 
 async fn plan_and_run(
@@ -177,7 +171,7 @@ async fn plan_and_run(
 ) -> Result<(String, Vec<arrow::record_batch::RecordBatch>), Box<dyn Error>> {
     let df = match entry {
         SqlEntry::Sql => ctx.sql(sql).await?,
-        SqlEntry::Logical(plan) => ctx.execute_logical_plan(plan).await?,
+        SqlEntry::Logical(plan) => ctx.execute_logical_plan(*plan).await?,
     };
     if std::env::var("SUBSTRAIT_EXPERIMENT_SINGLE_PLAN").is_ok() {
         // Minimal-repro mode: one planning pass only (plain user-facing flow).
@@ -198,7 +192,9 @@ async fn plan_and_run(
     Ok((path, batches))
 }
 
-async fn session(root: &std::path::Path) -> Result<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>), Box<dyn Error>> {
+async fn session(
+    root: &std::path::Path,
+) -> Result<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>), Box<dyn Error>> {
     let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(tpch_native_optimizer_config()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())

@@ -71,6 +71,42 @@ pub(crate) struct QueryAdmissionTicket {
     notify: Arc<Notify>,
 }
 
+#[derive(Debug)]
+struct ActiveQueryAdmissionTicket {
+    ticket: Arc<QueryAdmissionTicket>,
+}
+
+pub(crate) fn query_admission_ticket_from_task_context(
+    task_context: &TaskContext,
+) -> Option<Arc<QueryAdmissionTicket>> {
+    task_context
+        .session_config()
+        .get_extension::<ActiveQueryAdmissionTicket>()
+        .map(|extension| Arc::clone(&extension.ticket))
+}
+
+pub(crate) fn task_context_with_query_admission_ticket(
+    task_context: Arc<TaskContext>,
+    ticket: Arc<QueryAdmissionTicket>,
+) -> Arc<TaskContext> {
+    if query_admission_ticket_from_task_context(&task_context).is_some() {
+        return task_context;
+    }
+
+    let mut session_config = task_context.session_config().clone();
+    session_config.set_extension(Arc::new(ActiveQueryAdmissionTicket { ticket }));
+    Arc::new(TaskContext::new(
+        task_context.task_id(),
+        task_context.session_id(),
+        session_config,
+        task_context.scalar_functions().clone(),
+        task_context.higher_order_functions().clone(),
+        task_context.aggregate_functions().clone(),
+        task_context.window_functions().clone(),
+        task_context.runtime_env(),
+    ))
+}
+
 #[derive(Debug, Default)]
 struct TicketState {
     rounds: HashMap<usize, TicketRound>,
@@ -80,6 +116,7 @@ struct TicketState {
 
 #[derive(Debug)]
 struct TicketRound {
+    _task_context: Arc<TaskContext>,
     handle: Option<Arc<QueryHandle>>,
     active_contexts: usize,
     active_streams: usize,
@@ -91,6 +128,7 @@ struct TicketRound {
 #[derive(Debug)]
 pub(crate) struct TicketTenantQueryContext {
     tenant_context: TenantQueryContext,
+    task_context: Arc<TaskContext>,
     admission_facts: QueryAdmissionFacts,
     record_admission_facts: bool,
     _guard: QueryAdmissionTicketContextGuard,
@@ -99,6 +137,10 @@ pub(crate) struct TicketTenantQueryContext {
 impl TicketTenantQueryContext {
     pub(crate) fn context(&self) -> &TenantQueryContext {
         &self.tenant_context
+    }
+
+    pub(crate) fn task_context(&self) -> &Arc<TaskContext> {
+        &self.task_context
     }
 
     pub(crate) fn admission_facts(&self) -> QueryAdmissionFacts {
@@ -166,6 +208,7 @@ impl QueryAdmissionTicket {
             state.rounds.insert(
                 task_key,
                 TicketRound {
+                    _task_context: Arc::clone(&task_context),
                     handle: None,
                     active_contexts: 0,
                     active_streams: 1,
@@ -211,14 +254,16 @@ impl QueryAdmissionTicket {
 
             match action {
                 TicketAcquireAction::Reuse { handle, epoch } => {
-                    return self.acquire_from_handle(handle, task_key, epoch, cancellation);
+                    return self.acquire_from_handle(handle, task_key, epoch, Arc::clone(&task_context), cancellation);
                 },
                 TicketAcquireAction::Wait => {
                     notified.await;
                     continue;
                 },
                 TicketAcquireAction::Admit { epoch } => {
-                    return self.admit_and_acquire_context(task_key, epoch, cancellation).await;
+                    return self
+                        .admit_and_acquire_context(task_key, Arc::clone(&task_context), epoch, cancellation)
+                        .await;
                 },
             }
         }
@@ -227,6 +272,7 @@ impl QueryAdmissionTicket {
     async fn admit_and_acquire_context(
         self: &Arc<Self>,
         task_key: usize,
+        task_context: Arc<TaskContext>,
         epoch: Option<u64>,
         cancellation: ExecutionCancellation,
     ) -> nexus_query_engine::Result<TicketTenantQueryContext> {
@@ -251,6 +297,7 @@ impl QueryAdmissionTicket {
                 state.rounds.insert(
                     task_key,
                     TicketRound {
+                        _task_context: Arc::clone(&task_context),
                         handle: None,
                         active_contexts: 0,
                         active_streams: 0,
@@ -288,7 +335,7 @@ impl QueryAdmissionTicket {
             self.notify.notify_waiters();
             epoch
         };
-        self.acquire_from_handle(handle, task_key, epoch, cancellation)
+        self.acquire_from_handle(handle, task_key, epoch, task_context, cancellation)
     }
 
     fn acquire_from_handle(
@@ -296,11 +343,13 @@ impl QueryAdmissionTicket {
         handle: Arc<QueryHandle>,
         task_key: usize,
         epoch: u64,
+        task_context: Arc<TaskContext>,
         cancellation: ExecutionCancellation,
     ) -> nexus_query_engine::Result<TicketTenantQueryContext> {
         match handle.acquire_context_with_cancellation(cancellation) {
             Ok(tenant_context) => Ok(TicketTenantQueryContext {
                 tenant_context,
+                task_context,
                 admission_facts: QueryAdmissionFacts::from_handle(handle.as_ref()),
                 record_admission_facts: self.mark_admission_facts_recorded(task_key, epoch),
                 _guard: QueryAdmissionTicketContextGuard { ticket: Arc::clone(self), task_key, epoch, released: false },
@@ -519,7 +568,9 @@ impl ExecutionPlan for NativeAdmissionExec {
     }
 
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
-        let round_guard = self.ticket.begin_execution_round(Arc::clone(&context)).map_err(|error| {
+        let ticket = query_admission_ticket_from_task_context(&context).unwrap_or_else(|| Arc::clone(&self.ticket));
+        let context = task_context_with_query_admission_ticket(context, Arc::clone(&ticket));
+        let round_guard = ticket.begin_execution_round(Arc::clone(&context)).map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "datafusion_nexus.native_exec.admission_round",
                 "failed to begin backend query-service admission execution round",
@@ -582,7 +633,10 @@ mod tests {
     use std::time::Duration;
 
     use arrow::datatypes::Schema;
-    use datafusion::{execution::context::TaskContext, physical_plan::empty::EmptyExec};
+    use datafusion::{
+        execution::context::TaskContext,
+        physical_plan::{ExecutionPlan, empty::EmptyExec},
+    };
     use futures::StreamExt;
     use nexus_query_engine::{
         DeploymentIoCapability, ExecutionCancellation, GdsDriverProbeStatus, KvikioCompatModeStatus,
@@ -629,7 +683,14 @@ mod tests {
         let task_key = QueryAdmissionTicket::task_key(task_context);
         ticket.state.lock().unwrap().rounds.insert(
             task_key,
-            TicketRound { handle: None, active_contexts, active_streams: 0, epoch, admission_facts_recorded: false },
+            TicketRound {
+                _task_context: Arc::clone(task_context),
+                handle: None,
+                active_contexts,
+                active_streams: 0,
+                epoch,
+                admission_facts_recorded: false,
+            },
         );
     }
 
@@ -679,6 +740,49 @@ mod tests {
 
         drop(round);
         assert!(!ticket.state.lock().unwrap().rounds.contains_key(&task_key));
+    }
+
+    #[test]
+    fn active_execution_round_retains_task_context_until_release() {
+        let (ticket, _service, _tenant_id) = admission_only_ticket();
+        let task_context = Arc::new(TaskContext::default());
+        let task_key = QueryAdmissionTicket::task_key(&task_context);
+        let weak_task_context = Arc::downgrade(&task_context);
+        let round = ticket.begin_execution_round(Arc::clone(&task_context)).unwrap();
+
+        drop(task_context);
+
+        assert!(
+            weak_task_context.upgrade().is_some(),
+            "active ticket rounds must retain the TaskContext whose pointer keys the round"
+        );
+        assert!(ticket.state.lock().unwrap().rounds.contains_key(&task_key));
+
+        drop(round);
+
+        assert!(weak_task_context.upgrade().is_none(), "finished ticket rounds should release their TaskContext");
+    }
+
+    #[test]
+    fn admission_wrapper_prefers_existing_ambient_ticket() {
+        let (root_ticket, _root_service, _root_tenant_id) = admission_only_ticket();
+        let (child_ticket, _child_service, _child_tenant_id) = admission_only_ticket();
+        let task_context =
+            task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&root_ticket));
+        let task_key = QueryAdmissionTicket::task_key(&task_context);
+        let child = Arc::new(EmptyExec::new(Arc::new(Schema::empty()))) as Arc<dyn ExecutionPlan>;
+        let wrapped = NativeAdmissionExec::new(child, Arc::clone(&child_ticket));
+
+        let stream = wrapped.execute(0, Arc::clone(&task_context)).unwrap();
+
+        assert!(root_ticket.state.lock().unwrap().rounds.contains_key(&task_key));
+        assert!(
+            child_ticket.state.lock().unwrap().rounds.is_empty(),
+            "nested admission wrapper must not mint a second execution round when an ambient root ticket exists"
+        );
+
+        drop(stream);
+        assert!(!root_ticket.state.lock().unwrap().rounds.contains_key(&task_key));
     }
 
     #[test]
@@ -756,6 +860,7 @@ mod tests {
         ticket.state.lock().unwrap().rounds.insert(
             task_key,
             TicketRound {
+                _task_context: Arc::clone(&task_context),
                 handle: Some(Arc::new(handle)),
                 active_contexts: 1,
                 active_streams: 0,

@@ -337,6 +337,7 @@ pub(super) struct MockExecutor {
     pub(super) simulated_remaining_bytes: Option<u64>,
     pub(super) task_admission_required_bytes: Vec<(PipelineTaskId, u64)>,
     pub(super) remaining_bytes_after_tasks: Vec<(PipelineTaskId, u64)>,
+    pub(super) cooperative_shrink_cycles_remaining: usize,
 }
 
 impl MockExecutor {
@@ -359,6 +360,7 @@ impl MockExecutor {
             simulated_remaining_bytes: None,
             task_admission_required_bytes: Vec::new(),
             remaining_bytes_after_tasks: Vec::new(),
+            cooperative_shrink_cycles_remaining: 0,
         }
     }
 
@@ -409,6 +411,11 @@ impl MockExecutor {
 
     pub(super) fn with_remaining_bytes_after_task(mut self, task: PipelineTaskId, remaining_bytes: u64) -> Self {
         self.remaining_bytes_after_tasks.push((task, remaining_bytes));
+        self
+    }
+
+    pub(super) fn with_cooperative_shrink_applied_cycles(mut self, cycles: usize) -> Self {
+        self.cooperative_shrink_cycles_remaining = cycles;
         self
     }
 
@@ -497,6 +504,14 @@ impl CompiledTaskExecutor for MockExecutor {
         self.cleanup_calls = self.cleanup_calls.saturating_add(1);
         self.task_local_released.extend(self.task_local_live.drain(..).rev());
         Ok(())
+    }
+
+    fn before_scheduling_cycle(&mut self) -> nexus_query_engine::Result<CompiledSchedulingCycle> {
+        if self.cooperative_shrink_cycles_remaining == 0 {
+            return Ok(CompiledSchedulingCycle::default());
+        }
+        self.cooperative_shrink_cycles_remaining -= 1;
+        Ok(CompiledSchedulingCycle::after_cooperative_shrink_applied())
     }
 
     fn live_reserved_bytes(&self) -> Option<u64> {

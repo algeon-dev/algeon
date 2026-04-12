@@ -57,6 +57,19 @@ pub(super) fn plan_metric_usize(plan: &dyn datafusion::physical_plan::ExecutionP
     own + plan.children().into_iter().map(|child| plan_metric_usize(child.as_ref(), name)).sum::<usize>()
 }
 
+pub(super) fn backend_cugraph_sql_state(builder: SessionStateBuilder) -> datafusion::execution::SessionState {
+    let backend = NexusGpuBackend::builder()
+        .fallback_policy(GpuFallbackPolicy::GpuPreferred)
+        .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic))
+        .build()
+        .unwrap();
+    backend.install_on_with_cugraph_sql(builder, CugraphSqlConfig::default()).unwrap().build()
+}
+
+pub(super) fn default_backend_cugraph_sql_state() -> datafusion::execution::SessionState {
+    backend_cugraph_sql_state(SessionStateBuilder::new_with_default_features())
+}
+
 pub(super) async fn drop_session_context_on_blocking_thread(ctx: SessionContext) {
     tokio::task::spawn_blocking(move || drop(ctx)).await.unwrap();
 }

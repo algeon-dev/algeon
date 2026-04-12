@@ -75,7 +75,7 @@ pub(crate) struct NativeCudfExecutionContext {
     admission_facts: Option<QueryAdmissionFacts>,
     record_admission_facts: bool,
     _tenant_context: Option<TenantQueryContext>,
-    _ticket_context: Option<TicketTenantQueryContext>,
+    ticket_context: Option<TicketTenantQueryContext>,
     #[cfg(debug_assertions)]
     _standalone_bounded_context_guard: Option<StandaloneBoundedContextDebugGuard>,
 }
@@ -91,7 +91,7 @@ impl NativeCudfExecutionContext {
             admission_facts: None,
             record_admission_facts: false,
             _tenant_context: None,
-            _ticket_context: None,
+            ticket_context: None,
             #[cfg(debug_assertions)]
             _standalone_bounded_context_guard: standalone_bounded_context_guard,
         }
@@ -108,7 +108,7 @@ impl NativeCudfExecutionContext {
             admission_facts: Some(admission_facts),
             record_admission_facts,
             _tenant_context: Some(tenant_context),
-            _ticket_context: None,
+            ticket_context: None,
             #[cfg(debug_assertions)]
             _standalone_bounded_context_guard: None,
         }
@@ -122,7 +122,7 @@ impl NativeCudfExecutionContext {
             admission_facts: Some(admission_facts),
             record_admission_facts: ticket_context.should_record_admission_facts(),
             _tenant_context: None,
-            _ticket_context: Some(ticket_context),
+            ticket_context: Some(ticket_context),
             #[cfg(debug_assertions)]
             _standalone_bounded_context_guard: None,
         }
@@ -142,6 +142,10 @@ impl NativeCudfExecutionContext {
         &self.context
     }
 
+    pub(crate) fn task_context(&self) -> Option<&Arc<TaskContext>> {
+        self.ticket_context.as_ref().map(|ticket_context| ticket_context.task_context())
+    }
+
     pub(crate) fn admission_facts(&self) -> Option<QueryAdmissionFacts> {
         self.record_admission_facts.then_some(())?;
         self.admission_facts
@@ -156,11 +160,12 @@ struct StandaloneBoundedContextDebugGuard {
 }
 
 #[cfg(debug_assertions)]
-fn standalone_bounded_context_counts()
--> &'static std::sync::Mutex<std::collections::BTreeMap<usize, std::collections::BTreeMap<Option<usize>, usize>>> {
-    static COUNTS: OnceLock<
-        std::sync::Mutex<std::collections::BTreeMap<usize, std::collections::BTreeMap<Option<usize>, usize>>>,
-    > = OnceLock::new();
+type StandaloneBoundedContextCounts =
+    std::sync::Mutex<std::collections::BTreeMap<usize, std::collections::BTreeMap<Option<usize>, usize>>>;
+
+#[cfg(debug_assertions)]
+fn standalone_bounded_context_counts() -> &'static StandaloneBoundedContextCounts {
+    static COUNTS: OnceLock<StandaloneBoundedContextCounts> = OnceLock::new();
     COUNTS.get_or_init(Default::default)
 }
 
@@ -193,12 +198,7 @@ impl StandaloneBoundedContextDebugGuard {
                 .lock()
                 .expect("standalone bounded native context debug registry poisoned");
             let device_counts = counts.entry(device_ordinal).or_default();
-            // cuGraph table functions build a graph context and then execute
-            // native child fragments under the same DataFusion task context.
-            // Keep flagging independent task owners, but allow that nested
-            // same-task composition path to share one standalone admission.
-            let has_conflicting_owner =
-                device_counts.keys().any(|active_owner| *active_owner != task_context_owner || active_owner.is_none());
+            let has_conflicting_owner = !device_counts.is_empty();
             *device_counts.entry(task_context_owner).or_default() += 1;
             has_conflicting_owner
         };
@@ -696,6 +696,13 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    pub(crate) fn with_existing_query_admission_ticket(mut self, ticket: Arc<QueryAdmissionTicket>) -> Self {
+        if self.query_service_handle.is_none() {
+            self.query_admission_ticket = Some(ticket);
+        }
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn query_admission_ticket_id(&self) -> Option<u64> {
         self.query_admission_ticket.as_ref().map(|ticket| ticket.id())
@@ -714,6 +721,12 @@ impl NativeCudfExecutionConfig {
         self.query_service_handle.is_some()
             || self.query_admission_source.is_some()
             || self.query_admission_ticket.is_some()
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn is_standalone_bounded(&self) -> bool {
+        matches!(self.memory_control_policy, MemoryControlPolicy::Bounded { .. })
+            && !self.has_query_admission_authority()
     }
 
     /// Memory-control policy copied into the lazily built native context.
@@ -1138,7 +1151,8 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
-    fn standalone_bounded_debug_guard_allows_same_task_context_owner_overlap() {
+    #[should_panic(expected = "concurrent unadmitted bounded native contexts")]
+    fn standalone_bounded_debug_guard_panics_on_same_task_context_owner_overlap() {
         let _first = StandaloneBoundedContextDebugGuard::new_with_owner(10_004, Some(42));
         let _nested = StandaloneBoundedContextDebugGuard::new_with_owner(10_004, Some(42));
     }

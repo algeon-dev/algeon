@@ -69,7 +69,7 @@ You can use it in two ways:
 Nexus recognizes the query fragments it supports, lowers them into the
 DataFusion-free `nexus-query-engine` plan, and executes them with cuDF.
 Fragments it does not recognize remain on the standard DataFusion CPU path, and
-a structured report records the reason. [Design](./design.mdx) describes this
+a structured report records the reason. [Design](./design/index.mdx) describes this
 boundary in detail.
 
 ## Current limitations
@@ -113,7 +113,7 @@ boundary behind the `cugraph_*` SQL functions.
 
 ## Next steps
 
-- [Design](./design.mdx) — the integration surfaces, execution boundary, and
+- [Design](./design/index.mdx) — the integration surfaces, execution boundary, and
   diagnostic contracts.
 - [Integrating Nexus](./using/overview.mdx) — embedded Rust setup, Flight SQL
   server startup, client connection, and server configuration.

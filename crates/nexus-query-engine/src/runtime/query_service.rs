@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fmt,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -29,6 +29,7 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     metrics::QueryId,
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
+    util::comma_separated_usize,
 };
 
 /// Stable tenant identifier used by service-level admission and future caches.
@@ -150,6 +151,15 @@ pub enum SlotGuarantee {
     /// Grant from currently available memory without reserving minimum budgets
     /// for empty slots. Later arrivals wait for their minimum if necessary.
     Optimistic,
+}
+
+impl SlotGuarantee {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::GuaranteedMinimum => "guaranteed_minimum",
+            Self::Optimistic => "optimistic",
+        }
+    }
 }
 
 /// Service-level configuration for multi-tenant native query admission.
@@ -307,6 +317,44 @@ fn validate_nonzero_config_field(field: &'static str, is_zero: bool) -> Result<(
     Ok(())
 }
 
+fn admission_capacity_bounds(resources: Option<&QueryServiceResources>, fallback_capacity_bytes: u64) -> (u64, u64) {
+    let Some(resources) = resources else {
+        return (fallback_capacity_bytes, fallback_capacity_bytes);
+    };
+    let mut max_device_capacity = 0u64;
+    let mut total_capacity = 0u64;
+    for context in resources.devices.contexts() {
+        let capacity = context.capacity_bytes();
+        max_device_capacity = max_device_capacity.max(capacity);
+        total_capacity = total_capacity.saturating_add(capacity);
+    }
+    (max_device_capacity, total_capacity)
+}
+
+fn guaranteed_min_slot_capacity(
+    resources: Option<&QueryServiceResources>,
+    fallback_capacity_bytes: u64,
+    min_bytes: u64,
+) -> usize {
+    let Some(resources) = resources else {
+        return guaranteed_min_slot_capacity_for_capacities([fallback_capacity_bytes], min_bytes);
+    };
+    guaranteed_min_slot_capacity_for_capacities(
+        resources.devices.contexts().map(|context| context.capacity_bytes()),
+        min_bytes,
+    )
+}
+
+fn guaranteed_min_slot_capacity_for_capacities(capacities: impl IntoIterator<Item = u64>, min_bytes: u64) -> usize {
+    if min_bytes == 0 {
+        return usize::MAX;
+    }
+    capacities
+        .into_iter()
+        .map(|capacity| usize::try_from(capacity / min_bytes).unwrap_or(usize::MAX))
+        .fold(0usize, usize::saturating_add)
+}
+
 fn minimum_stream_pool_size(max_concurrent_queries: usize, max_source_reads_in_flight: usize) -> usize {
     let streams_per_query = 1usize.saturating_add(max_source_reads_in_flight.max(1));
     max_concurrent_queries.saturating_mul(streams_per_query).max(max_concurrent_queries)
@@ -431,6 +479,7 @@ struct TenantGrantPolicy {
 #[derive(Debug, Clone)]
 struct QueryServiceResources {
     devices: super::DeviceRegistry,
+    _governor_claim: Option<GovernorClaimLease>,
     host_fetch_budget: HostFetchBudget,
     source_fetch_concurrency: SourceFetchConcurrencyGate,
     lakehouse_cache_fill_budget: HostFetchBudget,
@@ -440,6 +489,91 @@ struct QueryServiceResources {
     lakehouse_cache_fill_runtime: Arc<tokio::runtime::Runtime>,
     source_object_stores: Arc<SourceObjectStoreRegistry>,
     deployment_io_capability: DeploymentIoCapability,
+}
+
+#[derive(Debug, Clone)]
+struct GovernorClaimLease {
+    _inner: Arc<GovernorClaimLeaseInner>,
+}
+
+#[derive(Debug)]
+struct GovernorClaimLeaseInner {
+    ordinals: Vec<usize>,
+    slot_guarantee: SlotGuarantee,
+}
+
+#[derive(Debug, Default)]
+struct GovernorClaimState {
+    optimistic_claims: usize,
+    guaranteed_minimum: bool,
+}
+
+impl Drop for GovernorClaimLeaseInner {
+    fn drop(&mut self) {
+        let claims = governor_claims();
+        let Ok(mut claims) = claims.lock() else {
+            eprintln!("[nexus-query-engine] warning: failed to release query-service governor claims");
+            return;
+        };
+        for ordinal in &self.ordinals {
+            let Some(state) = claims.get_mut(ordinal) else {
+                continue;
+            };
+            match self.slot_guarantee {
+                SlotGuarantee::GuaranteedMinimum => state.guaranteed_minimum = false,
+                SlotGuarantee::Optimistic => state.optimistic_claims = state.optimistic_claims.saturating_sub(1),
+            }
+            if state.optimistic_claims == 0 && !state.guaranteed_minimum {
+                claims.remove(ordinal);
+            }
+        }
+    }
+}
+
+fn governor_claims() -> &'static Mutex<BTreeMap<usize, GovernorClaimState>> {
+    static CLAIMS: OnceLock<Mutex<BTreeMap<usize, GovernorClaimState>>> = OnceLock::new();
+    CLAIMS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn claim_governor_ordinals(ordinals: &[usize], slot_guarantee: SlotGuarantee) -> Result<GovernorClaimLease> {
+    let claims = governor_claims();
+    let mut claims = claims.lock().map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            "nexus_query_engine.query_service.governor_claim",
+            "query-service governor claim registry mutex was poisoned",
+        )
+    })?;
+    if let Some(conflict) = ordinals
+        .iter()
+        .find(|ordinal| claims.get(ordinal).is_some_and(|state| governor_claim_conflicts(state, slot_guarantee)))
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.query_service.tenant.validate",
+            "query-service slot guarantee cannot share an active device memory governor claim",
+        )
+        .with_fact("field", "slot_guarantee")
+        .with_fact("reason", "shared_governor_guaranteed_minimum_conflict")
+        .with_fact("device_ordinal", *conflict)
+        .with_fact("device_ordinals", comma_separated_usize(ordinals))
+        .with_fact("slot_guarantee", slot_guarantee.as_str()));
+    }
+    for ordinal in ordinals {
+        let state = claims.entry(*ordinal).or_default();
+        match slot_guarantee {
+            SlotGuarantee::GuaranteedMinimum => state.guaranteed_minimum = true,
+            SlotGuarantee::Optimistic => state.optimistic_claims = state.optimistic_claims.saturating_add(1),
+        }
+    }
+    Ok(GovernorClaimLease { _inner: Arc::new(GovernorClaimLeaseInner { ordinals: ordinals.to_vec(), slot_guarantee }) })
+}
+
+fn governor_claim_conflicts(state: &GovernorClaimState, requested: SlotGuarantee) -> bool {
+    match requested {
+        SlotGuarantee::GuaranteedMinimum => state.guaranteed_minimum || state.optimistic_claims > 0,
+        SlotGuarantee::Optimistic => state.guaranteed_minimum,
+    }
 }
 
 #[derive(Debug, Default)]
@@ -472,6 +606,7 @@ struct AdmissionRequest {
     tenant_id: TenantId,
     grant_policy: TenantGrantPolicy,
     qos: QueryQos,
+    deadline: Instant,
 }
 
 #[derive(Debug)]
@@ -655,6 +790,7 @@ impl QueryService {
         }
         let resources = QueryServiceResources {
             devices: super::DeviceRegistry::install(&super::CudfInventory, &registry_config)?,
+            _governor_claim: None,
             host_fetch_budget: HostFetchBudget::new(
                 config.source_fetch.host_fetch_budget_bytes.unwrap_or_else(default_host_fetch_budget_bytes),
             )?,
@@ -725,6 +861,7 @@ impl QueryService {
         resources: Option<QueryServiceResources>,
         deployment: DeploymentIoCapability,
     ) -> Result<Self> {
+        let mut resources = resources;
         config.validate(&deployment)?;
         if tenants.is_empty() {
             return Err(QueryError::new(
@@ -776,8 +913,10 @@ impl QueryService {
             .with_fact("field", "device_capacity_bytes")
             .with_fact("reason", "zero"));
         }
+        let (max_admissible_device_capacity_bytes, total_admissible_capacity_bytes) =
+            admission_capacity_bounds(resources.as_ref(), device_capacity_bytes);
         for (tenant_id, grant) in &tenant_grants {
-            if grant.min_bytes > device_capacity_bytes {
+            if grant.min_bytes > max_admissible_device_capacity_bytes {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
                     "nexus_query_engine.query_service.tenant.validate",
@@ -786,8 +925,31 @@ impl QueryService {
                 .with_fact("tenant_id", tenant_id.as_str())
                 .with_fact("field", "min_device_budget_bytes")
                 .with_fact("reason", "min_device_budget_above_capacity")
-                .with_fact("device_capacity_bytes", device_capacity_bytes));
+                .with_fact("device_capacity_bytes", max_admissible_device_capacity_bytes));
             }
+        }
+        if config.slot_guarantee == SlotGuarantee::GuaranteedMinimum {
+            let guaranteed_min_slots =
+                guaranteed_min_slot_capacity(resources.as_ref(), device_capacity_bytes, max_tenant_min_bytes);
+            if guaranteed_min_slots < config.max_concurrent_queries {
+                let guaranteed_min_capacity = max_tenant_min_bytes.saturating_mul(max_concurrent_queries_u64);
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.query_service.tenant.validate",
+                    "tenant minimum device budgets exceed guaranteed slot capacity",
+                )
+                .with_fact("field", "min_device_budget_bytes")
+                .with_fact("reason", "tenant_minima_exceed_guaranteed_slot_capacity")
+                .with_fact("max_tenant_min_device_budget_bytes", max_tenant_min_bytes)
+                .with_fact("max_concurrent_queries", config.max_concurrent_queries)
+                .with_fact("required_capacity_bytes", guaranteed_min_capacity)
+                .with_fact("device_capacity_bytes", total_admissible_capacity_bytes)
+                .with_fact("guaranteed_min_slot_capacity", guaranteed_min_slots));
+            }
+        }
+        if let Some(resources) = resources.as_mut() {
+            resources._governor_claim =
+                Some(claim_governor_ordinals(resources.devices.device_ordinals(), config.slot_guarantee)?);
         }
         let fallback_memory_governor = MemoryGovernor::new(config.device_ordinal, device_capacity_bytes)?;
 
@@ -826,13 +988,14 @@ impl QueryService {
         let grant_policy = self.tenant_grant_policy(&tenant_id)?;
         let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
         let requested_at = Instant::now();
-        let request = AdmissionRequest { request_id, tenant_id: tenant_id.clone(), grant_policy, qos };
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
+        let request = AdmissionRequest { request_id, tenant_id: tenant_id.clone(), grant_policy, qos, deadline };
 
         let mut state = self.lock_admission()?;
         if state.closed {
             return Err(service_closed_error(&tenant_id));
         }
+        self.sweep_expired_queued_requests_locked(&mut state);
         if state.queued.len() >= self.inner.config.max_admission_queue_len {
             return Err(service_overloaded_error(
                 "admission_queue_full",
@@ -845,27 +1008,44 @@ impl QueryService {
 
         loop {
             if state.closed {
-                remove_queued_request(&mut state, request_id);
+                self.remove_queued_request_without_admission_locked(&mut state, request_id);
                 self.inner.notify_admission_available();
                 return Err(service_closed_error(&tenant_id));
             }
-            if self.request_is_admissible(&state, request_id)?
+            let request_is_admissible = match self.request_is_admissible(&mut state, request_id) {
+                Ok(admissible) => admissible,
+                Err(error) => {
+                    self.abandon_queued_request_locked(&mut state, request_id);
+                    return Err(error);
+                },
+            };
+            if request_is_admissible
                 && let Some(position) = state.queued.iter().position(|queued| queued.request_id == request_id)
             {
-                let Some(placed_query) = self.try_place_query(
+                let placed_query = match self.try_place_query(
                     &tenant_id,
                     request_id,
                     grant_policy,
                     qos,
                     Some(deadline),
                     state.active_queries,
-                )?
-                else {
-                    self.request_adaptive_grant_shrink_for_blocked_request_locked(&state, &state.queued[position])?;
+                ) {
+                    Ok(placed_query) => placed_query,
+                    Err(error) => {
+                        self.abandon_queued_request_locked(&mut state, request_id);
+                        return Err(error);
+                    },
+                };
+                let Some(placed_query) = placed_query else {
+                    if let Err(error) =
+                        self.request_adaptive_grant_shrink_for_blocked_request_locked(&state, &state.queued[position])
+                    {
+                        self.abandon_queued_request_locked(&mut state, request_id);
+                        return Err(error);
+                    }
                     let now = Instant::now();
                     if now >= deadline {
-                        remove_queued_request(&mut state, request_id);
-                        self.inner.notify_admission_available();
+                        self.abandon_queued_request_locked(&mut state, request_id);
                         return Err(service_overloaded_error(
                             "memory_grant_wait_timeout",
                             &tenant_id,
@@ -884,8 +1064,7 @@ impl QueryService {
                         })?;
                     state = next_state;
                     if timeout.timed_out() {
-                        remove_queued_request(&mut state, request_id);
-                        self.inner.notify_admission_available();
+                        self.abandon_queued_request_locked(&mut state, request_id);
                         return Err(service_overloaded_error(
                             "memory_grant_wait_timeout",
                             &tenant_id,
@@ -907,6 +1086,7 @@ impl QueryService {
                     &placed_query.memory_grant,
                 );
                 self.rotate_after_admission(&mut state, &admitted.tenant_id);
+                self.refresh_active_adaptive_shrink_requests_locked(&state);
                 if state.queued.is_empty() {
                     self.grow_active_adaptive_grants_locked(&mut state);
                 }
@@ -934,8 +1114,7 @@ impl QueryService {
 
             let now = Instant::now();
             if now >= deadline {
-                remove_queued_request(&mut state, request_id);
-                self.inner.notify_admission_available();
+                self.abandon_queued_request_locked(&mut state, request_id);
                 return Err(service_overloaded_error(
                     "admission_wait_timeout",
                     &tenant_id,
@@ -953,8 +1132,7 @@ impl QueryService {
             })?;
             state = next_state;
             if timeout.timed_out() {
-                remove_queued_request(&mut state, request_id);
-                self.inner.notify_admission_available();
+                self.abandon_queued_request_locked(&mut state, request_id);
                 return Err(service_overloaded_error(
                     "admission_wait_timeout",
                     &tenant_id,
@@ -1020,6 +1198,7 @@ impl QueryService {
         if state.closed {
             return Err(service_closed_error(&tenant_id));
         }
+        self.sweep_expired_queued_requests_locked(&mut state);
         if state.queued.len() >= self.inner.config.max_admission_queue_len {
             return Err(service_overloaded_error(
                 "admission_queue_full",
@@ -1028,7 +1207,13 @@ impl QueryService {
                 self.inner.config.max_admission_queue_len,
             ));
         }
-        state.queued.push_back(AdmissionRequest { request_id, tenant_id: tenant_id.clone(), grant_policy, qos });
+        state.queued.push_back(AdmissionRequest {
+            request_id,
+            tenant_id: tenant_id.clone(),
+            grant_policy,
+            qos,
+            deadline,
+        });
         self.inner.notify_admission_available();
         Ok(QueryAdmissionWaiter {
             service: self.clone(),
@@ -1062,6 +1247,7 @@ impl QueryService {
         if state.closed {
             return Err(service_closed_error(&tenant_id));
         }
+        self.sweep_expired_queued_requests_locked(&mut state);
         if state.active_queries >= self.inner.config.max_concurrent_queries || !state.queued.is_empty() {
             return Ok(None);
         }
@@ -1214,17 +1400,22 @@ impl QueryService {
             .saturating_mul(u64::try_from(slots_to_reserve_on_selected).unwrap_or(u64::MAX)))
     }
 
-    fn grant_want_bytes(
+    fn grant_budget_bytes(
         &self,
         available_bytes: u64,
         grant_policy: TenantGrantPolicy,
         reserved_for_remaining_slots: u64,
-    ) -> u64 {
-        if available_bytes <= reserved_for_remaining_slots {
-            grant_policy.min_bytes
-        } else {
-            grant_policy.want_bytes.min(available_bytes - reserved_for_remaining_slots).max(grant_policy.min_bytes)
+    ) -> Option<u64> {
+        let required_floor = grant_policy.min_bytes.saturating_add(reserved_for_remaining_slots);
+        if available_bytes < required_floor {
+            return None;
         }
+        Some(
+            grant_policy
+                .want_bytes
+                .min(available_bytes.saturating_sub(reserved_for_remaining_slots))
+                .max(grant_policy.min_bytes),
+        )
     }
 
     fn try_grant_from_governor(
@@ -1240,11 +1431,11 @@ impl QueryService {
         if available_bytes < grant_policy.min_bytes {
             return Ok(None);
         }
-        let want_bytes = self.grant_want_bytes(
-            available_bytes,
-            grant_policy,
-            self.reserved_min_bytes_for_remaining_slots(active_queries),
-        );
+        let reserved_for_remaining_slots = self.reserved_min_bytes_for_remaining_slots(active_queries);
+        let Some(want_bytes) = self.grant_budget_bytes(available_bytes, grant_policy, reserved_for_remaining_slots)
+        else {
+            return Ok(None);
+        };
         let mut request = GrantRequest::new(query_id, grant_policy.min_bytes, want_bytes);
         request = request.with_qos(qos);
         if let Some(deadline) = deadline {
@@ -1291,7 +1482,10 @@ impl QueryService {
             }
             let reserved_for_remaining_slots =
                 self.reserved_min_bytes_for_selected_device(resources, device, active_queries)?;
-            let want_bytes = self.grant_want_bytes(available_bytes, grant_policy, reserved_for_remaining_slots);
+            let Some(want_bytes) = self.grant_budget_bytes(available_bytes, grant_policy, reserved_for_remaining_slots)
+            else {
+                continue;
+            };
             let mut request = GrantRequest::new(query_id, grant_policy.min_bytes, want_bytes);
             request = request.with_qos(qos);
             if let Some(deadline) = deadline {
@@ -1465,7 +1659,11 @@ impl QueryService {
         let Some(resources) = &self.inner.resources else {
             let available_bytes = self.inner.fallback_memory_governor.available_bytes()?;
             if available_bytes < min_bytes {
-                self.request_active_adaptive_grant_shrink_on_device_locked(state, self.inner.config.device_ordinal)?;
+                self.request_active_adaptive_grant_shrink_on_device_locked(
+                    state,
+                    self.inner.config.device_ordinal,
+                    min_bytes - available_bytes,
+                )?;
             }
             return Ok(());
         };
@@ -1481,7 +1679,11 @@ impl QueryService {
             if available_bytes >= min_bytes {
                 return Ok(());
             }
-            self.request_active_adaptive_grant_shrink_on_device_locked(state, device.ordinal())?;
+            self.request_active_adaptive_grant_shrink_on_device_locked(
+                state,
+                device.ordinal(),
+                min_bytes - available_bytes,
+            )?;
         }
         Ok(())
     }
@@ -1490,7 +1692,11 @@ impl QueryService {
         &self,
         state: &AdmissionState,
         device_ordinal: usize,
+        deficit_bytes: u64,
     ) -> Result<()> {
+        if deficit_bytes == 0 {
+            return Ok(());
+        }
         let mut query_ids = state
             .active_adaptive_grants
             .iter()
@@ -1498,6 +1704,7 @@ impl QueryService {
             .collect::<Vec<_>>();
         query_ids.sort_unstable();
 
+        let mut remaining_deficit = deficit_bytes;
         for query_id in query_ids {
             let Some(active) = state.active_adaptive_grants.get(&query_id) else {
                 continue;
@@ -1506,9 +1713,54 @@ impl QueryService {
             if current_bytes <= active.min_bytes {
                 continue;
             }
-            active.memory_grant.request_shrink_to(active.min_bytes)?;
+            let shrinkable_bytes = current_bytes - active.min_bytes;
+            let shrink_bytes = shrinkable_bytes.min(remaining_deficit);
+            active.memory_grant.request_shrink_to(current_bytes - shrink_bytes)?;
+            remaining_deficit = remaining_deficit.saturating_sub(shrink_bytes);
+            if remaining_deficit == 0 {
+                break;
+            }
         }
         Ok(())
+    }
+
+    fn refresh_active_adaptive_shrink_requests_locked(&self, state: &AdmissionState) {
+        if self.inner.config.native_pipeline_execution_mode != NativePipelineExecutionMode::Adaptive {
+            return;
+        }
+        for active in state.active_adaptive_grants.values() {
+            if let Err(error) = active.memory_grant.clear_requested_shrink() {
+                eprintln!("[nexus-query-engine] warning: failed to rescind adaptive grant shrink request: {error}");
+            }
+        }
+        for request in &state.queued {
+            if let Err(error) = self.request_adaptive_grant_shrink_for_blocked_request_locked(state, request) {
+                eprintln!("[nexus-query-engine] warning: failed to refresh adaptive grant shrink request: {error}");
+            }
+        }
+    }
+
+    fn remove_queued_request_without_admission_locked(
+        &self,
+        state: &mut AdmissionState,
+        request_id: u64,
+    ) -> Option<AdmissionRequest> {
+        let removed = remove_queued_request(state, request_id);
+        if removed.is_some() {
+            self.refresh_active_adaptive_shrink_requests_locked(state);
+            if state.queued.is_empty() {
+                self.grow_active_adaptive_grants_locked(state);
+            }
+        }
+        removed
+    }
+
+    fn abandon_queued_request_locked(&self, state: &mut AdmissionState, request_id: u64) -> Option<AdmissionRequest> {
+        let removed = self.remove_queued_request_without_admission_locked(state, request_id);
+        if removed.is_some() {
+            self.inner.notify_admission_available();
+        }
+        removed
     }
 
     /// Returns the service memory-governor report.
@@ -1547,7 +1799,8 @@ impl QueryService {
 
     /// Returns a point-in-time admission snapshot for service reports.
     pub fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
-        let state = self.lock_admission()?;
+        let mut state = self.lock_admission()?;
+        self.sweep_expired_queued_requests_locked(&mut state);
         let queued_by_tenant = self
             .inner
             .tenant_order
@@ -1575,7 +1828,8 @@ impl QueryService {
         })
     }
 
-    fn request_is_admissible(&self, state: &AdmissionState, request_id: u64) -> Result<bool> {
+    fn request_is_admissible(&self, state: &mut AdmissionState, request_id: u64) -> Result<bool> {
+        self.sweep_expired_queued_requests_locked(state);
         if state.active_queries >= self.inner.config.max_concurrent_queries {
             return Ok(false);
         }
@@ -1583,6 +1837,19 @@ impl QueryService {
             return Ok(false);
         };
         Ok(state.queued[position].request_id == request_id)
+    }
+
+    fn sweep_expired_queued_requests_locked(&self, state: &mut AdmissionState) {
+        let now = Instant::now();
+        let before = state.queued.len();
+        state.queued.retain(|request| request.deadline > now);
+        if state.queued.len() != before {
+            self.refresh_active_adaptive_shrink_requests_locked(state);
+            if state.queued.is_empty() {
+                self.grow_active_adaptive_grants_locked(state);
+            }
+            self.inner.notify_admission_available();
+        }
     }
 
     fn select_next_request_position(&self, state: &AdmissionState) -> Result<Option<usize>> {
@@ -1599,7 +1866,7 @@ impl QueryService {
                     (&request.tenant_id == tenant_id && request.qos.priority() == priority).then_some(position)
                 }) {
                     first_candidate.get_or_insert(position);
-                    if self.request_can_receive_minimum_grant(&state.queued[position])? {
+                    if self.request_can_receive_minimum_grant(state, &state.queued[position])? {
                         return Ok(Some(position));
                     }
                 }
@@ -1609,13 +1876,24 @@ impl QueryService {
         Ok(first_candidate.or(Some(0)))
     }
 
-    fn request_can_receive_minimum_grant(&self, request: &AdmissionRequest) -> Result<bool> {
+    fn request_can_receive_minimum_grant(&self, state: &AdmissionState, request: &AdmissionRequest) -> Result<bool> {
         let Some(resources) = &self.inner.resources else {
-            return Ok(self.inner.fallback_memory_governor.available_bytes()? >= request.grant_policy.min_bytes);
+            let available_bytes = self.inner.fallback_memory_governor.available_bytes()?;
+            return Ok(self
+                .grant_budget_bytes(
+                    available_bytes,
+                    request.grant_policy,
+                    self.reserved_min_bytes_for_remaining_slots(state.active_queries),
+                )
+                .is_some());
         };
         for context in resources.devices.contexts() {
+            let reserved_for_remaining_slots =
+                self.reserved_min_bytes_for_selected_device(resources, context.device(), state.active_queries)?;
             if context.capacity_bytes() >= request.grant_policy.min_bytes
-                && context.available_bytes()? >= request.grant_policy.min_bytes
+                && self
+                    .grant_budget_bytes(context.available_bytes()?, request.grant_policy, reserved_for_remaining_slots)
+                    .is_some()
             {
                 return Ok(true);
             }
@@ -1730,29 +2008,49 @@ impl QueryAdmissionWaiter {
 
         let mut state = self.service.lock_admission()?;
         if state.closed {
-            remove_queued_request(&mut state, self.request_id);
+            self.service.remove_queued_request_without_admission_locked(&mut state, self.request_id);
             self.queued = false;
             self.service.inner.notify_admission_available();
             return Err(service_closed_error(&self.tenant_id));
         }
-        if self.service.request_is_admissible(&state, self.request_id)?
+        let request_is_admissible = match self.service.request_is_admissible(&mut state, self.request_id) {
+            Ok(admissible) => admissible,
+            Err(error) => {
+                self.service.abandon_queued_request_locked(&mut state, self.request_id);
+                self.queued = false;
+                return Err(error);
+            },
+        };
+        if request_is_admissible
             && let Some(position) = state.queued.iter().position(|queued| queued.request_id == self.request_id)
         {
-            let Some(placed_query) = self.service.try_place_query(
+            let placed_query = match self.service.try_place_query(
                 &self.tenant_id,
                 self.request_id,
                 self.grant_policy,
                 state.queued[position].qos,
                 Some(self.deadline),
                 state.active_queries,
-            )?
-            else {
-                self.service
-                    .request_adaptive_grant_shrink_for_blocked_request_locked(&state, &state.queued[position])?;
-                if Instant::now() >= self.deadline {
-                    remove_queued_request(&mut state, self.request_id);
+            ) {
+                Ok(placed_query) => placed_query,
+                Err(error) => {
+                    self.service.abandon_queued_request_locked(&mut state, self.request_id);
                     self.queued = false;
-                    self.service.inner.notify_admission_available();
+                    return Err(error);
+                },
+            };
+            let Some(placed_query) = placed_query else {
+                if let Err(error) = self
+                    .service
+                    .request_adaptive_grant_shrink_for_blocked_request_locked(&state, &state.queued[position])
+                {
+                    self.service.abandon_queued_request_locked(&mut state, self.request_id);
+                    self.queued = false;
+                    return Err(error);
+                }
+                if Instant::now() >= self.deadline {
+                    self.service.abandon_queued_request_locked(&mut state, self.request_id);
+                    self.queued = false;
                     return Err(service_overloaded_error(
                         "memory_grant_wait_timeout",
                         &self.tenant_id,
@@ -1775,6 +2073,7 @@ impl QueryAdmissionWaiter {
             );
             self.service.rotate_after_admission(&mut state, &admitted.tenant_id);
             self.queued = false;
+            self.service.refresh_active_adaptive_shrink_requests_locked(&state);
             if state.queued.is_empty() {
                 self.service.grow_active_adaptive_grants_locked(&mut state);
             }
@@ -1801,9 +2100,8 @@ impl QueryAdmissionWaiter {
         }
 
         if Instant::now() >= self.deadline {
-            remove_queued_request(&mut state, self.request_id);
+            self.service.abandon_queued_request_locked(&mut state, self.request_id);
             self.queued = false;
-            self.service.inner.notify_admission_available();
             return Err(service_overloaded_error(
                 "admission_wait_timeout",
                 &self.tenant_id,
@@ -1828,7 +2126,7 @@ impl Drop for QueryAdmissionWaiter {
         }
         match self.service.inner.admission.lock() {
             Ok(mut state) => {
-                remove_queued_request(&mut state, self.request_id);
+                self.service.remove_queued_request_without_admission_locked(&mut state, self.request_id);
                 self.service.inner.notify_admission_available();
             },
             Err(_error) => {
@@ -1838,9 +2136,11 @@ impl Drop for QueryAdmissionWaiter {
     }
 }
 
-fn remove_queued_request(state: &mut AdmissionState, request_id: u64) {
+fn remove_queued_request(state: &mut AdmissionState, request_id: u64) -> Option<AdmissionRequest> {
     if let Some(position) = state.queued.iter().position(|request| request.request_id == request_id) {
-        state.queued.remove(position);
+        state.queued.remove(position)
+    } else {
+        None
     }
 }
 
@@ -2003,9 +2303,13 @@ impl QueryHandle {
         if let Some(context) = root_context.as_ref() {
             return Ok(TenantQueryContext { context: context.clone(), _lifetime_guard: lifetime_guard });
         }
-        let stream_lease = device
-            .stream_pool()
-            .acquire_with_cancellation(&cancellation, "nexus_query_engine.query_service.context.stream_acquire")?;
+        let stream_acquire_deadline =
+            Instant::now().checked_add(self.service.config.admission_wait_timeout).unwrap_or_else(Instant::now);
+        let stream_lease = device.stream_pool().acquire_with_cancellation_deadline(
+            &cancellation,
+            stream_acquire_deadline,
+            "nexus_query_engine.query_service.context.stream_acquire",
+        )?;
         validate_service_stream_pool_device(device.stream_pool(), stream_lease.runtime().device())?;
         let stream_lease_guard = Arc::new(stream_lease);
         let memory_grant = self.lifetime.memory_grant()?;
@@ -2886,15 +3190,15 @@ mod tests {
         let mut waiter = service.enqueue_admission("tenant").unwrap();
 
         assert!(waiter.try_admit().unwrap().is_none());
-        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), Some(40));
+        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), Some(60));
         assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
         assert!(waiter.try_admit().unwrap().is_none());
 
-        assert!(first_grant.try_apply_requested_shrink(40).unwrap());
+        assert!(first_grant.try_apply_requested_shrink(60).unwrap());
         let admitted = waiter.try_admit().unwrap().expect("waiter should admit after actual refund");
 
-        assert_eq!(first_grant.budget_bytes(), 40);
-        assert_eq!(admitted.device_budget_bytes(), 60);
+        assert_eq!(first_grant.budget_bytes(), 60);
+        assert_eq!(admitted.device_budget_bytes(), 40);
         assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
     }
 
@@ -2923,14 +3227,97 @@ mod tests {
         assert_eq!(second.device_budget_bytes(), 60);
         assert!(waiter.try_admit().unwrap().is_none());
         assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), Some(30));
-        assert_eq!(second_grant.requested_shrink_target_bytes().unwrap(), Some(30));
+        assert_eq!(second_grant.requested_shrink_target_bytes().unwrap(), None);
 
-        assert!(!first_grant.try_apply_requested_shrink(60).unwrap());
-        assert!(waiter.try_admit().unwrap().is_none());
-        assert!(second_grant.try_apply_requested_shrink(30).unwrap());
-        let admitted = waiter.try_admit().unwrap().expect("waiter should admit after the second grant refunds");
+        assert!(first_grant.try_apply_requested_shrink(30).unwrap());
+        let admitted = waiter.try_admit().unwrap().expect("waiter should admit after the deficit-sized refund");
 
         assert_eq!(admitted.device_budget_bytes(), 30);
+        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), None);
+        assert_eq!(second_grant.requested_shrink_target_bytes().unwrap(), None);
+    }
+
+    #[test]
+    fn adaptive_optimistic_query_service_rescinds_requested_shrink_when_waiter_drops() {
+        let service = optimistic_shrink_test_service(NativePipelineExecutionMode::Adaptive);
+        let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+        let first_grant = first.lifetime.memory_grant().unwrap();
+        let mut waiter = service.enqueue_admission("tenant").unwrap();
+
+        assert!(waiter.try_admit().unwrap().is_none());
+        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), Some(60));
+
+        drop(waiter);
+
+        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), None);
+        assert_eq!(service.admission_snapshot().unwrap().queued_queries, 0);
+    }
+
+    #[test]
+    fn adaptive_optimistic_query_service_keeps_requested_shrink_for_remaining_waiter() {
+        let service = optimistic_shrink_test_service(NativePipelineExecutionMode::Adaptive);
+        let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+        let first_grant = first.lifetime.memory_grant().unwrap();
+        let mut first_waiter = service.enqueue_admission("tenant").unwrap();
+        let second_waiter = service.enqueue_admission("tenant").unwrap();
+
+        assert!(first_waiter.try_admit().unwrap().is_none());
+        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), Some(60));
+
+        drop(first_waiter);
+
+        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), Some(60));
+        assert_eq!(service.admission_snapshot().unwrap().queued_queries, 1);
+
+        drop(second_waiter);
+        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), None);
+    }
+
+    #[test]
+    fn adaptive_optimistic_query_service_rescinds_requested_shrink_when_waiter_times_out() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                slot_guarantee: SlotGuarantee::Optimistic,
+                max_admission_queue_len: 8,
+                admission_wait_timeout: Duration::from_millis(10),
+                native_pipeline_execution_mode: NativePipelineExecutionMode::Adaptive,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range("tenant", 40, 100)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+        let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+        let first_grant = first.lifetime.memory_grant().unwrap();
+        let mut waiter = service.enqueue_admission("tenant").unwrap();
+
+        assert!(waiter.try_admit().unwrap().is_none());
+        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), Some(60));
+        std::thread::sleep(Duration::from_millis(20));
+        let error = waiter.try_admit().unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+        assert_eq!(error.fact_value("reason"), Some("admission_wait_timeout"));
+        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), None);
+        assert_eq!(service.admission_snapshot().unwrap().queued_queries, 0);
+    }
+
+    #[test]
+    fn adaptive_optimistic_query_service_rescinds_requested_shrink_when_waiter_admits() {
+        let service = optimistic_shrink_test_service(NativePipelineExecutionMode::Adaptive);
+        let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+        let first_grant = first.lifetime.memory_grant().unwrap();
+        let mut waiter = service.enqueue_admission("tenant").unwrap();
+
+        assert!(waiter.try_admit().unwrap().is_none());
+        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), Some(60));
+        assert!(first_grant.try_apply_requested_shrink(60).unwrap());
+        let admitted = waiter.try_admit().unwrap().expect("waiter should admit after shrink");
+
+        assert_eq!(admitted.device_budget_bytes(), 40);
+        assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), None);
     }
 
     #[test]
@@ -2949,13 +3336,13 @@ mod tests {
 
         started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
         wait_for_queued_len(&service, 1);
-        wait_for_requested_shrink(&first_grant, Some(40));
+        wait_for_requested_shrink(&first_grant, Some(60));
         assert!(admitted_receiver.recv_timeout(Duration::from_millis(50)).is_err());
 
-        assert!(first_grant.try_apply_requested_shrink(40).unwrap());
+        assert!(first_grant.try_apply_requested_shrink(60).unwrap());
         let admitted_budget = admitted_receiver.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
 
-        assert_eq!(admitted_budget, 60);
+        assert_eq!(admitted_budget, 40);
         waiter.join().unwrap();
     }
 
@@ -3000,7 +3387,7 @@ mod tests {
     fn query_service_reserves_remaining_slots_for_largest_tenant_minimum() {
         let service = QueryService::new_for_admission_tests(
             QueryServiceConfig {
-                device_capacity_bytes: Some(100),
+                device_capacity_bytes: Some(120),
                 max_concurrent_queries: 2,
                 max_admission_queue_len: 8,
                 ..QueryServiceConfig::default()
@@ -3013,9 +3400,79 @@ mod tests {
         let low = service.try_admit_query("low").unwrap().expect("low-min tenant should admit");
         let high = service.try_admit_query("high").unwrap().expect("high-min tenant should retain capacity");
 
-        assert_eq!(low.device_budget_bytes(), 40);
+        assert_eq!(low.device_budget_bytes(), 60);
         assert_eq!(high.device_budget_bytes(), 60);
         assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    }
+
+    #[test]
+    fn query_service_rejects_guaranteed_minima_that_exceed_slot_capacity() {
+        let error = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                max_admission_queue_len: 8,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range("low", 10, 100), QueryServiceTenantConfig::new("high", 60)],
+            non_gds_deployment(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("reason"), Some("tenant_minima_exceed_guaranteed_slot_capacity"));
+        assert_eq!(error.fact_value("required_capacity_bytes"), Some("120"));
+        assert_eq!(error.fact_value("device_capacity_bytes"), Some("100"));
+    }
+
+    #[test]
+    fn guaranteed_min_slot_capacity_uses_per_device_packing_not_total_capacity() {
+        let packed_slots = guaranteed_min_slot_capacity_for_capacities([90_u64, 30], 50);
+
+        assert_eq!(packed_slots, 1);
+        assert!(packed_slots < 2, "two 50-byte guaranteed slots cannot pack onto 90-byte and 30-byte devices");
+    }
+
+    #[test]
+    fn governor_claim_rejects_guaranteed_minimum_overlap_and_releases_on_drop() {
+        let ordinal = usize::MAX - 17;
+        let first = claim_governor_ordinals(&[ordinal], SlotGuarantee::GuaranteedMinimum)
+            .expect("first guaranteed claim should install");
+        let error = claim_governor_ordinals(&[ordinal], SlotGuarantee::GuaranteedMinimum)
+            .expect_err("overlapping guaranteed claim should reject");
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("reason"), Some("shared_governor_guaranteed_minimum_conflict"));
+        let ordinal_string = ordinal.to_string();
+        assert_eq!(error.fact_value("device_ordinal"), Some(ordinal_string.as_str()));
+
+        drop(first);
+        let second = claim_governor_ordinals(&[ordinal], SlotGuarantee::GuaranteedMinimum)
+            .expect("dropped claim should release the ordinal");
+        drop(second);
+    }
+
+    #[test]
+    fn governor_claim_rejects_optimistic_overlap_with_guaranteed_minimum() {
+        let guaranteed_first_ordinal = usize::MAX - 18;
+        let guaranteed = claim_governor_ordinals(&[guaranteed_first_ordinal], SlotGuarantee::GuaranteedMinimum)
+            .expect("guaranteed claim should install");
+        let error = claim_governor_ordinals(&[guaranteed_first_ordinal], SlotGuarantee::Optimistic)
+            .expect_err("optimistic service must not share an active guaranteed governor claim");
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("reason"), Some("shared_governor_guaranteed_minimum_conflict"));
+        drop(guaranteed);
+
+        let optimistic_first_ordinal = usize::MAX - 19;
+        let optimistic = claim_governor_ordinals(&[optimistic_first_ordinal], SlotGuarantee::Optimistic)
+            .expect("optimistic claim should install");
+        let error = claim_governor_ordinals(&[optimistic_first_ordinal], SlotGuarantee::GuaranteedMinimum)
+            .expect_err("guaranteed service must not build while an optimistic service can consume the governor");
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("reason"), Some("shared_governor_guaranteed_minimum_conflict"));
+        drop(optimistic);
     }
 
     #[test]
@@ -3026,6 +3483,7 @@ mod tests {
                 max_concurrent_queries: 2,
                 max_admission_queue_len: 8,
                 admission_wait_timeout: Duration::from_secs(2),
+                slot_guarantee: SlotGuarantee::Optimistic,
                 ..QueryServiceConfig::default()
             },
             vec![QueryServiceTenantConfig::new("tenant", 100)],
@@ -3059,6 +3517,7 @@ mod tests {
                 max_concurrent_queries: 2,
                 max_admission_queue_len: 8,
                 admission_wait_timeout: Duration::from_secs(2),
+                slot_guarantee: SlotGuarantee::Optimistic,
                 ..QueryServiceConfig::default()
             },
             vec![QueryServiceTenantConfig::new("tenant", 100)],
@@ -3092,6 +3551,7 @@ mod tests {
                 max_concurrent_queries: 2,
                 max_admission_queue_len: 8,
                 admission_wait_timeout: Duration::from_millis(20),
+                slot_guarantee: SlotGuarantee::Optimistic,
                 ..QueryServiceConfig::default()
             },
             vec![QueryServiceTenantConfig::new("tenant", 100)],
@@ -3105,7 +3565,7 @@ mod tests {
         let error = waiter.try_admit().unwrap_err();
 
         assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
-        assert_eq!(error.fact_value("reason"), Some("memory_grant_wait_timeout"));
+        assert_eq!(error.fact_value("reason"), Some("admission_wait_timeout"));
     }
 
     #[test]
@@ -3115,6 +3575,7 @@ mod tests {
                 device_capacity_bytes: Some(100),
                 max_concurrent_queries: 2,
                 max_admission_queue_len: 8,
+                slot_guarantee: SlotGuarantee::Optimistic,
                 ..QueryServiceConfig::default()
             },
             vec![
@@ -3186,6 +3647,35 @@ mod tests {
 
         drop(waiter);
         assert!(service.enqueue_admission("large").is_ok());
+    }
+
+    #[test]
+    fn query_service_sweeps_expired_unpolled_waiter_before_queue_and_try_admit_gates() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 1,
+                max_admission_queue_len: 1,
+                admission_wait_timeout: Duration::from_millis(10),
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::new("tenant", 100)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+        let active = service.admit_query("tenant").unwrap();
+        let stale_waiter = service.enqueue_admission("tenant").unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+
+        let replacement_waiter = service.enqueue_admission("tenant").expect("expired waiter should be swept");
+        assert_eq!(service.admission_snapshot().unwrap().queued_queries, 1);
+        drop(replacement_waiter);
+        drop(active);
+
+        let admitted =
+            service.try_admit_query("tenant").unwrap().expect("expired stale waiter must not block try-admit");
+        assert_eq!(admitted.device_budget_bytes(), 100);
+        drop(stale_waiter);
     }
 
     #[test]

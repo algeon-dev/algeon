@@ -80,6 +80,7 @@ struct ActiveGrant {
     qos: QueryQos,
     min_bytes: u64,
     budget_bytes: u64,
+    live_reserved_bytes: u64,
     requested_shrink_target_bytes: u64,
 }
 
@@ -89,6 +90,18 @@ pub struct MemoryGrant {
     inner: Arc<MemoryGrantInner>,
 }
 
+/// Shared live-reservation retention held by GPU-resident outputs that outlive
+/// their executor-side reservation tracker.
+#[derive(Clone)]
+pub(crate) struct MemoryGrantLiveReservation {
+    inner: Arc<MemoryGrantLiveReservationInner>,
+}
+
+struct MemoryGrantLiveReservationInner {
+    grant: MemoryGrant,
+    bytes: u64,
+}
+
 struct MemoryGrantInner {
     governor: Arc<MemoryGovernorInner>,
     grant_id: u64,
@@ -96,6 +109,7 @@ struct MemoryGrantInner {
     qos: QueryQos,
     min_bytes: u64,
     budget_bytes: AtomicU64,
+    live_reserved_bytes: AtomicU64,
     release_observers: Mutex<Vec<ReleaseObserver>>,
     budget_decrease_observers: Mutex<Vec<ReleaseObserver>>,
 }
@@ -268,6 +282,7 @@ impl MemoryGovernor {
                 qos: request.qos,
                 min_bytes: request.min_bytes,
                 budget_bytes,
+                live_reserved_bytes: 0,
                 requested_shrink_target_bytes: NO_SHRINK_REQUEST,
             },
         );
@@ -279,6 +294,7 @@ impl MemoryGovernor {
                 qos: request.qos,
                 min_bytes: request.min_bytes,
                 budget_bytes: AtomicU64::new(budget_bytes),
+                live_reserved_bytes: AtomicU64::new(0),
                 release_observers: Mutex::new(Vec::new()),
                 budget_decrease_observers: Mutex::new(Vec::new()),
             }),
@@ -324,6 +340,111 @@ impl MemoryGrant {
     /// Current grant budget.
     pub fn budget_bytes(&self) -> u64 {
         self.inner.budget_bytes.load(Ordering::Acquire)
+    }
+
+    /// Device-resident bytes currently protected by all reservation trackers
+    /// sharing this grant.
+    pub(crate) fn live_reserved_bytes(&self) -> u64 {
+        self.inner.live_reserved_bytes.load(Ordering::Acquire)
+    }
+
+    /// Remaining bytes this grant can admit across all active reservation
+    /// trackers sharing it.
+    pub(crate) fn remaining_live_reservation_bytes(&self) -> Result<u64> {
+        let state = self.inner.governor.state.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.gpu.memory_grant.remaining_live_reservation_bytes",
+                "memory governor mutex was poisoned",
+            )
+        })?;
+        let Some(active) = state.grants.get(&self.inner.grant_id) else {
+            return Ok(0);
+        };
+        Ok(active.budget_bytes.saturating_sub(active.live_reserved_bytes))
+    }
+
+    /// Attempts to charge new device-resident bytes to this grant.
+    ///
+    /// This check is serialized with cooperative shrink floor reads so sibling
+    /// trackers cannot jointly reserve more live bytes than the shared budget.
+    pub(crate) fn try_reserve_live_bytes(&self, bytes: u64) -> Result<bool> {
+        if bytes == 0 {
+            return Ok(true);
+        }
+        let mut state = self.inner.governor.state.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.gpu.memory_grant.try_reserve_live_bytes",
+                "memory governor mutex was poisoned",
+            )
+        })?;
+        let Some(active) = state.grants.get_mut(&self.inner.grant_id) else {
+            return Ok(false);
+        };
+        let Some(next_live_reserved_bytes) = active.live_reserved_bytes.checked_add(bytes) else {
+            return Ok(false);
+        };
+        if next_live_reserved_bytes > active.budget_bytes {
+            return Ok(false);
+        }
+        active.live_reserved_bytes = next_live_reserved_bytes;
+        self.inner.live_reserved_bytes.store(next_live_reserved_bytes, Ordering::Release);
+        Ok(true)
+    }
+
+    /// Releases live bytes previously admitted by
+    /// [`Self::try_reserve_live_bytes`].
+    pub(crate) fn release_live_bytes(&self, bytes: u64) {
+        self.record_live_reservation_delta(-i128::from(bytes));
+    }
+
+    /// Updates the grant-scoped live reservation footprint without an
+    /// admission check.
+    ///
+    /// Positive deltas are used only to transfer already-admitted resident
+    /// bytes into output-handle retention. New reservations must use
+    /// [`Self::try_reserve_live_bytes`].
+    pub(crate) fn record_live_reservation_delta(&self, delta_bytes: i128) {
+        let mut state = match self.inner.governor.state.lock() {
+            Ok(state) => state,
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to update memory grant live reservation bytes");
+                return;
+            },
+        };
+        let Some(active) = state.grants.get_mut(&self.inner.grant_id) else {
+            if delta_bytes < 0 {
+                let released_bytes = (-delta_bytes) as u64;
+                let _ = self.inner.live_reserved_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    Some(current.saturating_sub(released_bytes))
+                });
+            }
+            return;
+        };
+        if delta_bytes >= 0 {
+            active.live_reserved_bytes = active.live_reserved_bytes.saturating_add(delta_bytes as u64);
+        } else {
+            let released_bytes = (-delta_bytes) as u64;
+            debug_assert!(
+                active.live_reserved_bytes >= released_bytes,
+                "memory grant live-reservation release exceeded tracked live bytes"
+            );
+            active.live_reserved_bytes = active.live_reserved_bytes.saturating_sub(released_bytes);
+        }
+        self.inner.live_reserved_bytes.store(active.live_reserved_bytes, Ordering::Release);
+    }
+
+    /// Retains grant-scoped live bytes after an executor-side reservation has
+    /// been released. Clones share one retention and the final drop releases it.
+    pub(crate) fn retain_live_reservation(&self, bytes: u64) -> Option<MemoryGrantLiveReservation> {
+        if bytes == 0 {
+            return None;
+        }
+        self.record_live_reservation_delta(i128::from(bytes));
+        Some(MemoryGrantLiveReservation {
+            inner: Arc::new(MemoryGrantLiveReservationInner { grant: self.clone(), bytes }),
+        })
     }
 
     /// Records a cooperative shrink target without refunding governor capacity.
@@ -372,6 +493,24 @@ impl MemoryGrant {
         } else {
             Ok(Some(target_bytes.max(active.min_bytes)))
         }
+    }
+
+    /// Clears a pending cooperative shrink request without changing the
+    /// current grant budget.
+    pub fn clear_requested_shrink(&self) -> Result<bool> {
+        let mut state = self.inner.governor.state.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.gpu.memory_grant.clear_requested_shrink",
+                "memory governor mutex was poisoned",
+            )
+        })?;
+        let Some(active) = state.grants.get_mut(&self.inner.grant_id) else {
+            return Ok(false);
+        };
+        let had_request = active.requested_shrink_target_bytes != NO_SHRINK_REQUEST;
+        active.requested_shrink_target_bytes = NO_SHRINK_REQUEST;
+        Ok(had_request)
     }
 
     /// Attempts to increase this grant by `additional_bytes`.
@@ -450,7 +589,7 @@ impl MemoryGrant {
             return Ok(false);
         };
         let current_budget = active.budget_bytes;
-        let target_bytes = target_bytes.max(active.min_bytes);
+        let target_bytes = target_bytes.max(active.min_bytes).max(active.live_reserved_bytes);
         if target_bytes >= current_budget {
             return Ok(true);
         }
@@ -495,7 +634,8 @@ impl MemoryGrant {
             active.requested_shrink_target_bytes = NO_SHRINK_REQUEST;
             return Ok(true);
         }
-        let safe_target = requested_target.max(live_reserved_bytes).max(active.min_bytes);
+        let safe_target =
+            requested_target.max(live_reserved_bytes).max(active.live_reserved_bytes).max(active.min_bytes);
         if safe_target >= active.budget_bytes {
             return Ok(false);
         }
@@ -561,6 +701,40 @@ impl MemoryGrant {
     }
 }
 
+impl Drop for MemoryGrantLiveReservationInner {
+    fn drop(&mut self) {
+        self.grant.record_live_reservation_delta(-i128::from(self.bytes));
+    }
+}
+
+impl MemoryGrantLiveReservation {
+    #[cfg(test)]
+    pub(crate) fn shrink_grant_to_retained_bytes(&self) -> Result<bool> {
+        self.inner.grant.try_shrink_to(self.inner.bytes)
+    }
+
+    pub(crate) fn retain_sibling_live_reservation(&self, bytes: u64) -> Result<Option<Self>> {
+        let retained = self.inner.grant.retain_live_reservation(bytes);
+        if retained.is_none() {
+            return Ok(None);
+        }
+        let target_budget = self.inner.grant.live_reserved_bytes().max(self.inner.grant.min_bytes());
+        if self.inner.grant.try_grow_to(target_budget)? {
+            return Ok(retained);
+        }
+        drop(retained);
+        Err(QueryError::new(
+            QueryErrorCode::MemoryReservationFailed,
+            "nexus_query_engine.runtime.gpu.memory_grant.retain_sibling_live_reservation",
+            "memory grant cannot grow to cover derived resident GPU frame",
+        )
+        .with_fact("requested_bytes", bytes)
+        .with_fact("target_budget_bytes", target_budget)
+        .with_fact("budget_bytes", self.inner.grant.budget_bytes())
+        .with_fact("live_reserved_bytes", self.inner.grant.live_reserved_bytes()))
+    }
+}
+
 impl std::fmt::Debug for MemoryGrant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MemoryGrant")
@@ -569,6 +743,7 @@ impl std::fmt::Debug for MemoryGrant {
             .field("qos", &self.qos())
             .field("min_bytes", &self.min_bytes())
             .field("budget_bytes", &self.budget_bytes())
+            .field("live_reserved_bytes", &self.live_reserved_bytes())
             .finish()
     }
 }
@@ -750,6 +925,50 @@ mod tests {
     }
 
     #[test]
+    fn retained_live_reservation_blocks_shrink_until_final_handle_drop() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
+
+        grant.record_live_reservation_delta(50);
+        let retained = grant.retain_live_reservation(50).unwrap();
+        let retained_clone = retained.clone();
+        grant.record_live_reservation_delta(-50);
+
+        assert_eq!(grant.live_reserved_bytes(), 50);
+        assert_eq!(grant.request_shrink_to(30).unwrap(), Some(30));
+        assert!(!grant.try_apply_requested_shrink(grant.live_reserved_bytes()).unwrap());
+        assert_eq!(grant.budget_bytes(), 50);
+
+        drop(retained);
+        assert_eq!(grant.live_reserved_bytes(), 50);
+        drop(retained_clone);
+        assert_eq!(grant.live_reserved_bytes(), 0);
+        assert!(grant.try_apply_requested_shrink(grant.live_reserved_bytes()).unwrap());
+        assert_eq!(grant.budget_bytes(), 30);
+    }
+
+    #[test]
+    fn sibling_live_reservation_grows_grant_to_combined_live_footprint() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 50)).unwrap().unwrap();
+
+        grant.record_live_reservation_delta(20);
+        let raw = grant.retain_live_reservation(20).unwrap();
+        grant.record_live_reservation_delta(-20);
+
+        let decoded = raw.retain_sibling_live_reservation(45).unwrap().unwrap();
+
+        assert_eq!(grant.live_reserved_bytes(), 65);
+        assert_eq!(grant.budget_bytes(), 65);
+        drop(raw);
+        assert_eq!(grant.live_reserved_bytes(), 45);
+        assert!(decoded.shrink_grant_to_retained_bytes().unwrap());
+        assert_eq!(grant.budget_bytes(), 45);
+        drop(decoded);
+        assert_eq!(grant.live_reserved_bytes(), 0);
+    }
+
+    #[test]
     fn direct_shrink_clears_satisfied_request() {
         let governor = MemoryGovernor::new(0, 100).unwrap();
         let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
@@ -771,6 +990,20 @@ mod tests {
 
         assert_eq!(grant.budget_bytes(), 60);
         assert_eq!(grant.requested_shrink_target_bytes().unwrap(), Some(40));
+    }
+
+    #[test]
+    fn clear_requested_shrink_rescinds_pending_request_without_refund() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
+
+        assert_eq!(grant.request_shrink_to(40).unwrap(), Some(40));
+        assert!(grant.clear_requested_shrink().unwrap());
+
+        assert_eq!(grant.budget_bytes(), 80);
+        assert_eq!(grant.requested_shrink_target_bytes().unwrap(), None);
+        assert_eq!(governor.available_bytes().unwrap(), 20);
+        assert!(!grant.clear_requested_shrink().unwrap());
     }
 
     #[test]

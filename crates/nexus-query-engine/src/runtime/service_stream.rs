@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Condvar, Mutex, OnceLock, mpsc},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(test)]
@@ -150,7 +150,7 @@ impl ServiceStreamPool {
 
     /// Acquire a CUDA stream/runtime lease, blocking when all pool slots are busy.
     pub fn acquire(&self) -> Result<StreamLease> {
-        self.acquire_inner(None, "nexus_query_engine.service_stream_pool.acquire")
+        self.acquire_inner(None, None, "nexus_query_engine.service_stream_pool.acquire")
     }
 
     /// Acquire a CUDA stream/runtime lease while observing cooperative cancellation.
@@ -159,12 +159,24 @@ impl ServiceStreamPool {
         cancellation: &ExecutionCancellation,
         operation: &'static str,
     ) -> Result<StreamLease> {
-        self.acquire_inner(Some(cancellation), operation)
+        self.acquire_inner(Some(cancellation), None, operation)
+    }
+
+    /// Acquire a CUDA stream/runtime lease while observing cancellation and an
+    /// absolute wait deadline.
+    pub fn acquire_with_cancellation_deadline(
+        &self,
+        cancellation: &ExecutionCancellation,
+        deadline: Instant,
+        operation: &'static str,
+    ) -> Result<StreamLease> {
+        self.acquire_inner(Some(cancellation), Some(deadline), operation)
     }
 
     fn acquire_inner(
         &self,
         cancellation: Option<&ExecutionCancellation>,
+        deadline: Option<Instant>,
         operation: &'static str,
     ) -> Result<StreamLease> {
         enum AcquireAction {
@@ -176,6 +188,11 @@ impl ServiceStreamPool {
             if let Some(cancellation) = cancellation {
                 cancellation.check(operation)?;
             }
+            if let Some(deadline) = deadline
+                && Instant::now() >= deadline
+            {
+                return Err(stream_acquire_timeout_error(operation, self.device(), self.pool_size()));
+            }
             let mut state = self.lock_state(operation)?;
             if let Some(runtime) = state.idle.pop() {
                 break AcquireAction::Reuse(runtime);
@@ -184,17 +201,15 @@ impl ServiceStreamPool {
                 state.created += 1;
                 break AcquireAction::Create;
             }
-            if cancellation.is_some() {
-                let (_guard, _timeout) =
-                    self.inner.available.wait_timeout(state, STREAM_ACQUIRE_CANCELLATION_POLL_INTERVAL).map_err(
-                        |_error| {
-                            QueryError::new(
-                                QueryErrorCode::Internal,
-                                operation,
-                                "service stream pool mutex was poisoned while waiting for a stream",
-                            )
-                        },
-                    )?;
+            if cancellation.is_some() || deadline.is_some() {
+                let wait = stream_acquire_wait_interval(deadline);
+                let (_guard, _timeout) = self.inner.available.wait_timeout(state, wait).map_err(|_error| {
+                    QueryError::new(
+                        QueryErrorCode::Internal,
+                        operation,
+                        "service stream pool mutex was poisoned while waiting for a stream",
+                    )
+                })?;
             } else {
                 let _guard = self.inner.available.wait(state).map_err(|_error| {
                     QueryError::new(
@@ -258,6 +273,21 @@ impl ServiceStreamPool {
             },
         }
     }
+}
+
+fn stream_acquire_wait_interval(deadline: Option<Instant>) -> Duration {
+    let cancellation_poll = STREAM_ACQUIRE_CANCELLATION_POLL_INTERVAL;
+    let Some(deadline) = deadline else {
+        return cancellation_poll;
+    };
+    deadline.saturating_duration_since(Instant::now()).min(cancellation_poll)
+}
+
+fn stream_acquire_timeout_error(operation: &'static str, device: cudf::DeviceId, pool_size: usize) -> QueryError {
+    QueryError::new(QueryErrorCode::ServiceOverloaded, operation, "service stream pool acquire timed out")
+        .with_fact("reason", "stream_pool_wait_timeout")
+        .with_fact("device_ordinal", device.ordinal())
+        .with_fact("stream_pool_size", pool_size)
 }
 
 /// RAII handle for a runtime borrowed from a [`ServiceStreamPool`].
@@ -438,5 +468,28 @@ mod tests {
 
         assert_eq!(error.code(), QueryErrorCode::Cancelled);
         assert_eq!(error.operation(), "nexus_query_engine.service_stream_pool.test_cancelled_acquire");
+    }
+
+    #[test]
+    fn stream_acquire_deadline_times_out_while_pool_is_saturated() {
+        let device = cudf::DeviceId::DEFAULT;
+        let pool = ServiceStreamPool::new(device, 1).unwrap();
+        let held = pool.acquire().unwrap();
+        let cancellation = ExecutionCancellation::new();
+        let deadline = Instant::now() + Duration::from_millis(10);
+
+        let error = pool
+            .acquire_with_cancellation_deadline(
+                &cancellation,
+                deadline,
+                "nexus_query_engine.service_stream_pool.test_timed_acquire",
+            )
+            .unwrap_err();
+
+        drop(held);
+        assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+        assert_eq!(error.operation(), "nexus_query_engine.service_stream_pool.test_timed_acquire");
+        assert_eq!(error.fact_value("reason"), Some("stream_pool_wait_timeout"));
+        assert_eq!(error.fact_value("stream_pool_size"), Some("1"));
     }
 }

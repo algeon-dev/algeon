@@ -142,6 +142,23 @@ fn compiled_scheduler_errors_when_no_ready_task_can_be_admitted() {
 }
 
 #[test]
+fn compiled_scheduler_allows_one_overbudget_task_after_cooperative_shrink() {
+    let pipeline = independent_two_source_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new()
+        .with_admission_remaining_bytes(50)
+        .with_task_admission_required_bytes(PipelineTaskId::new(0), 60)
+        .with_task_admission_required_bytes(PipelineTaskId::new(1), 70)
+        .with_remaining_bytes_after_task(PipelineTaskId::new(0), 100)
+        .with_cooperative_shrink_applied_cycles(1);
+
+    let state = scheduler.run(&mut executor).expect("cooperative shrink should permit a progress attempt");
+
+    assert_eq!(state.execution_order()[0], PipelineTaskId::new(0));
+    assert_eq!(state.live_resource_count(), 0);
+}
+
+#[test]
 fn compiled_scheduler_runs_shared_resident_fanout_and_releases_after_all_consumers() {
     let pipeline = shared_resident_fanout_pipeline();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("shared fan-out pipeline should be schedulable");

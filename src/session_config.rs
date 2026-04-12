@@ -258,12 +258,26 @@ impl DataFusionNexusSessionConfig {
         self.validate_matches_optimizer_config(config)
     }
 
+    pub(crate) fn validate_matches_query_service_policy(&self, config: &CudfOptimizerConfig) -> DataFusionResult<()> {
+        self.validate_matches_optimizer_config_inner(config, NativeDeviceBudgetValidation::QueryServiceGrant)
+    }
+
     pub(crate) fn validate_matches_optimizer_config(&self, config: &CudfOptimizerConfig) -> DataFusionResult<()> {
+        self.validate_matches_optimizer_config_inner(config, NativeDeviceBudgetValidation::Exact)
+    }
+
+    fn validate_matches_optimizer_config_inner(
+        &self,
+        config: &CudfOptimizerConfig,
+        device_budget_validation: NativeDeviceBudgetValidation,
+    ) -> DataFusionResult<()> {
         let expected = Self::from_optimizer_config(config);
         if self.native_memory_policy != expected.native_memory_policy {
             return Err(frozen_backend_config_error(NATIVE_MEMORY_POLICY_KEY));
         }
-        if self.native_device_budget_bytes != expected.native_device_budget_bytes {
+        if device_budget_validation == NativeDeviceBudgetValidation::Exact
+            && self.native_device_budget_bytes != expected.native_device_budget_bytes
+        {
             return Err(frozen_backend_config_error(NATIVE_DEVICE_BUDGET_BYTES_KEY));
         }
         if self.native_max_source_chunk_bytes != expected.native_max_source_chunk_bytes {
@@ -366,6 +380,12 @@ impl DataFusionNexusSessionConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeDeviceBudgetValidation {
+    Exact,
+    QueryServiceGrant,
+}
+
 impl ConfigExtension for DataFusionNexusSessionConfig {
     const PREFIX: &'static str = DATAFUSION_NEXUS_CONFIG_PREFIX;
 }
@@ -460,7 +480,7 @@ pub fn optimizer_config_with_datafusion_options(
         Some(session_config) => {
             if config.native_execution_config().has_query_admission_authority() {
                 if !session_config.is_backend_admission_frozen() {
-                    return Err(frozen_backend_config_error(NATIVE_MEMORY_POLICY_KEY));
+                    return Err(backend_admission_session_config_not_frozen_error());
                 }
                 session_config.validate_backend_admission_matches(config)?;
                 Ok(config.clone())
@@ -540,6 +560,10 @@ fn config_error(message: impl Into<String>) -> DataFusionError {
 
 fn frozen_backend_config_error(key: &str) -> DataFusionError {
     config_error(format!(
-        "{DATAFUSION_NEXUS_CONFIG_PREFIX}.{key} is managed by NexusGpuBackend admission and cannot be overridden"
+        "{DATAFUSION_NEXUS_CONFIG_PREFIX}.{key} is managed by query-service admission and cannot be overridden"
     ))
+}
+
+fn backend_admission_session_config_not_frozen_error() -> DataFusionError {
+    config_error("datafusion_nexus native session config must be frozen when query-service admission is authoritative")
 }

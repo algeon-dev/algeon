@@ -311,7 +311,7 @@ fn query_service_handle_rejects_stale_session_budget_extension() {
     let error = query_config.with_datafusion_config_options(&options).unwrap_err();
 
     assert!(error.to_string().contains("native.device_budget_bytes"));
-    assert!(error.to_string().contains("NexusGpuBackend"));
+    assert!(error.to_string().contains("query-service admission"));
     assert_eq!(query_config.native_execution_config().memory_control_policy(), admitted_policy);
 }
 
