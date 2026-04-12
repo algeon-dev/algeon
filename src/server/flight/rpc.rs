@@ -851,10 +851,17 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     }
 
     async fn list_custom_actions(&self) -> Option<Vec<Result<arrow_flight::ActionType, Status>>> {
-        Some(vec![Ok(arrow_flight::ActionType {
-            r#type: GET_QUERY_STATS_ACTION.to_string(),
-            description: "Returns retained datafusion-nexus query diagnostics for a UTF-8 query_id body".to_string(),
-        })])
+        Some(vec![
+            Ok(arrow_flight::ActionType {
+                r#type: GET_QUERY_STATS_ACTION.to_string(),
+                description: "Returns retained datafusion-nexus query diagnostics for a UTF-8 query_id body"
+                    .to_string(),
+            }),
+            Ok(arrow_flight::ActionType {
+                r#type: GET_ADMISSION_STATS_ACTION.to_string(),
+                description: "Returns current datafusion-nexus admission and memory-governor diagnostics".to_string(),
+            }),
+        ])
     }
 
     async fn do_action_fallback(
@@ -862,10 +869,18 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         request: Request<arrow_flight::Action>,
     ) -> Result<Response<<Self as FlightService>::DoActionStream>, Status> {
         self.check_auth(&request)?;
-        if request.get_ref().r#type != GET_QUERY_STATS_ACTION {
+        let action_type = request.get_ref().r#type.as_str();
+        if action_type == GET_ADMISSION_STATS_ACTION {
+            let payload = self
+                .admission
+                .diagnostics_payload()
+                .map_err(|error| Status::internal(format!("failed to read admission diagnostics: {error}")))?;
+            let output = futures::stream::iter(vec![Ok(arrow_flight::Result { body: payload.into_bytes().into() })]);
+            return Ok(Response::new(Box::pin(output) as <Self as FlightService>::DoActionStream));
+        }
+        if action_type != GET_QUERY_STATS_ACTION {
             return Err(Status::invalid_argument(format!(
-                "do_action: The defined request is invalid: {:?}",
-                request.get_ref().r#type
+                "do_action: The defined request is invalid: {action_type:?}"
             )));
         }
         let query_id = std::str::from_utf8(&request.get_ref().body)
