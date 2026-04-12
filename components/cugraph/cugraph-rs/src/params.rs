@@ -37,6 +37,28 @@ use std::{
 
 use crate::error::{Error, ErrorKind};
 
+pub(crate) mod defaults {
+    use super::{ClosedUnitF64, IterationCount, NonNegativeF64, NonZeroU32, PositiveF64};
+
+    pub(crate) const PAGERANK_ALPHA: ClosedUnitF64 = ClosedUnitF64(0.85);
+    pub(crate) const PAGERANK_EPSILON: NonNegativeF64 = NonNegativeF64(1e-5);
+    pub(crate) const PAGERANK_MAX_ITERATIONS: IterationCount = {
+        // SAFETY: the literal `100` is non-zero.
+        IterationCount(unsafe { NonZeroU32::new_unchecked(100) })
+    };
+
+    pub(crate) const FORCE_ATLAS2_MAX_ITER: IterationCount = {
+        // SAFETY: the literal `500` is non-zero.
+        IterationCount(unsafe { NonZeroU32::new_unchecked(500) })
+    };
+    pub(crate) const FORCE_ATLAS2_OVERLAP_SCALING_RATIO: PositiveF64 = PositiveF64(2.0);
+    pub(crate) const FORCE_ATLAS2_EDGE_WEIGHT_INFLUENCE: NonNegativeF64 = NonNegativeF64(1.0);
+    pub(crate) const FORCE_ATLAS2_JITTER_TOLERANCE: NonNegativeF64 = NonNegativeF64(1.0);
+    pub(crate) const FORCE_ATLAS2_BARNES_HUT_THETA: ClosedUnitF64 = ClosedUnitF64(0.5);
+    pub(crate) const FORCE_ATLAS2_SCALING_RATIO: PositiveF64 = PositiveF64(2.0);
+    pub(crate) const FORCE_ATLAS2_GRAVITY: NonNegativeF64 = NonNegativeF64(1.0);
+}
+
 // ---------------------------------------------------------------------------
 // IterationCount
 // ---------------------------------------------------------------------------

@@ -5,5 +5,5 @@ pub mod pagerank;
 mod result;
 
 pub use betweenness::BetweennessCentralityParams;
-pub use pagerank::{InitialGuess, PageRankOptions, PageRankParams, PrecomputedWeights};
+pub use pagerank::{InitialGuess, PageRankParams, PrecomputedWeights};
 pub use result::{BetweennessCentralityResult, PageRankResult};

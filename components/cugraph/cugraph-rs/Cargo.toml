@@ -6,14 +6,18 @@ rust-version.workspace = true
 description = "Safe Rust bindings for NVIDIA cuGraph GPU-accelerated graph analytics"
 license.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/cugraph"
+categories = ["algorithms", "api-bindings", "science"]
+keywords = ["cugraph", "cuda", "gpu", "graph", "rapids"]
 build = "build.rs"
 
 [dependencies]
-anyhow = "1"
 cugraph-sys = { path = "../cugraph-sys" }
 cudf = { path = "../../cudf-rs/cudf-rs" }
 cudf-sys = { path = "../../cudf-rs/cudf-sys" }
 rapids-interop = { path = "../../cudf-rs/rapids-interop" }
 
 [dev-dependencies]
+anyhow = "1"
+criterion = "0.5"
 static_assertions = "1"

@@ -3,9 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cudf::{core::Table, io::parquet};
+use cudf::{core::Table, interop::prepared::PreparedTableExport, io::parquet};
 use cugraph::{
-    centrality::PageRankOptions,
+    centrality::PageRankParams,
     cudf_interop::{DataFrameGraphOptions, TableGraphOptions, graph_from_dataframe, graph_from_prepared_table_export},
     graph::{Forward, Graph, Transposed},
     handle::ResourceHandle,
@@ -57,14 +57,14 @@ pub fn build_undirected_named_dataframe_graph(
 
 pub fn build_undirected_prepared_graph(
     handle: &ResourceHandle,
-    export: &cudf::interop::PreparedTableExport<'_>,
+    export: &PreparedTableExport<'_>,
 ) -> cugraph::error::Result<Graph<Transposed>> {
     let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::undirected()).renumber();
     graph_from_prepared_table_export::<Transposed>(handle, export, &opts)
 }
 
 pub fn pagerank_score_map(handle: &ResourceHandle, graph: &mut Graph<Transposed>) -> HashMap<i32, f32> {
-    let result = graph.pagerank(handle, &PageRankOptions::default()).expect("pagerank");
+    let result = graph.pagerank(handle, &PageRankParams::default()).expect("pagerank");
     let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertices");
     let scores: Vec<f32> = result.scores().expect("scores").to_vec_f32(handle).expect("scores");
     vertices.into_iter().zip(scores).collect()

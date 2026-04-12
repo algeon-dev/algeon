@@ -11,8 +11,8 @@ use common::support::{
 };
 use cugraph::{
     DeviceArray, Forward, GraphBuilder, ResourceHandle, Transposed, VertexSelection,
-    centrality::{BetweennessCentralityParams, PageRankOptions},
-    layout::{ForceAtlas2Options, ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
+    centrality::{BetweennessCentralityParams, PageRankParams},
+    layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
     params::IterationCount,
     random::RngState,
     structure::{Distances, ScoreValues, VertexIds},
@@ -189,17 +189,15 @@ fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
     let y_view = y.view().expect("y_view");
     let mass_values_view = mass_values.view().expect("mass_values_view");
 
-    let options = ForceAtlas2Options {
-        params: ForceAtlas2Params {
-            max_iter: IterationCount::new(TEST_LAYOUT_SMOKE_ITERATIONS).expect("iter"),
-            ..Default::default()
-        },
+    let params = ForceAtlas2Params {
+        max_iter: IterationCount::new(TEST_LAYOUT_SMOKE_ITERATIONS).expect("iter"),
+        ..Default::default()
     };
     let init_pos = InitialPositions { vertices: &pos_vertices_view, x: &x_view, y: &y_view };
     let attrs = ForceAtlas2VertexAttrs { mass: Some((&pos_vertices_view, &mass_values_view)), ..Default::default() };
 
     let result =
-        graph.force_atlas2_with(&handle, &mut rng, &options, Some(&attrs), Some(&init_pos)).expect("force_atlas2");
+        graph.force_atlas2_with(&handle, &mut rng, &params, Some(&attrs), Some(&init_pos)).expect("force_atlas2");
 
     let vertex_ids = result.vertex_ids().expect("vertex_ids");
     assert!(matches!(vertex_ids, VertexIds::I64(_)));
@@ -231,7 +229,7 @@ fn pagerank_on_single_vertex_graph_returns_score_one() {
     let mut graph =
         GraphBuilder::new(&src_view, &dst_view).vertices(&vertices_view).build::<Transposed>(&handle).expect("graph");
 
-    let result = graph.pagerank(&handle, &PageRankOptions::default()).expect("pagerank");
+    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
     let returned_vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertex copy");
     let scores = result.scores().expect("scores").to_vec_f32(&handle).expect("score copy");
 
@@ -251,7 +249,7 @@ fn pagerank_on_disconnected_graph_returns_normalized_positive_scores() {
 
     let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&handle).expect("graph");
 
-    let result = graph.pagerank(&handle, &PageRankOptions::default()).expect("pagerank");
+    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
     let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertex copy");
     let scores = result.scores().expect("scores").to_vec_f32(&handle).expect("score copy");
 

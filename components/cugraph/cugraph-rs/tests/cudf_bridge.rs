@@ -13,7 +13,7 @@ use common::{
 use cugraph::{
     VertexSelection,
     array::DeviceArray,
-    centrality::PageRankOptions,
+    centrality::PageRankParams,
     cudf_interop::{IntoSeries, SeriesGraphOptions, device_array_view_from_slice, graph_from_series},
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
@@ -55,7 +55,7 @@ fn graph_from_series_weighted_pagerank() {
     let opts = SeriesGraphOptions::default().properties(GraphProperties::undirected()).renumber();
     let mut graph = graph_from_series::<Transposed>(&handle, &src, &dst, Some(&wgt), &opts).expect("graph_from_series");
 
-    let result = graph.pagerank(&handle, &PageRankOptions::default()).expect("pagerank");
+    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
     let scores: Vec<f32> = result.scores().expect("scores").to_vec_f32(&handle).expect("copy");
 
     assert_eq!(scores.len(), 3, "should have 3 vertices");

@@ -496,6 +496,7 @@ impl TryFrom<&OutDegreesResult> for cudf::DataFrame {
 /// let opts = TableGraphOptions::new(0, 1).weight_col(2).renumber();
 /// ```
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct TableGraphOptions {
     /// Zero-based column index for source vertex IDs.
     pub src_col: usize,
@@ -551,6 +552,7 @@ impl TableGraphOptions {
 ///
 /// [`DataFrame`]: cudf::DataFrame
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct DataFrameGraphOptions<'a> {
     /// Column name for source vertex IDs.
     pub src_col: &'a str,
@@ -603,6 +605,7 @@ impl<'a> DataFrameGraphOptions<'a> {
 ///
 /// [`Series`]: cudf::Series
 #[derive(Debug, Clone, Default)]
+#[must_use]
 pub struct SeriesGraphOptions {
     /// Graph properties (directed/undirected, multigraph).
     pub properties: GraphProperties,
@@ -636,6 +639,7 @@ impl SeriesGraphOptions {
 ///     .renumber();
 /// ```
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct ParquetGraphOptions<'a> {
     /// File-system path to the Parquet file.
     pub path: &'a str,
@@ -1079,6 +1083,8 @@ fn fence_producer_streams(edge_list: &BorrowedEdgeList<'_>, operation: &'static 
         if stream.is_null() || !seen.insert(stream as usize) {
             continue;
         }
+        // SAFETY: `stream` comes from cudf execution metadata for a live
+        // borrowed input column on the currently selected CUDA device.
         check_cudf_status(unsafe { cudf_sys::cudf_raw_cuda_stream_synchronize(stream) }, operation)?;
     }
 

@@ -11,7 +11,11 @@ use common::{
         bfs_graph_dataframe,
     },
 };
-use cudf::interop::{InteropErrorKind, RuntimeCompletionAuthority};
+use cudf::interop::{
+    prepared::InteropErrorKind,
+    runtime::RuntimeCompletionAuthority,
+    transfer::{ReleaseSynchronization, TransferCompletionRule},
+};
 use cugraph::handle::ResourceHandle;
 
 #[test]
@@ -77,11 +81,8 @@ fn owned_transfer_with_release_accepts_same_device_stream_completion() {
     let producer_df = bfs_graph_dataframe(&runtime);
     let (transfer, releaser) = producer_df.try_into_owned_transfer_with_release().expect("owned transfer with release");
 
-    assert_eq!(
-        transfer.release_contract().completion(),
-        cudf::interop::TransferCompletionRule::ReleaseWaitsOnConsumerSignal
-    );
-    assert_eq!(transfer.release_contract().synchronization(), cudf::interop::ReleaseSynchronization::Asynchronous);
+    assert_eq!(transfer.release_contract().completion(), TransferCompletionRule::ReleaseWaitsOnConsumerSignal);
+    assert_eq!(transfer.release_contract().synchronization(), ReleaseSynchronization::Asynchronous);
 
     drop(transfer);
     releaser

@@ -37,6 +37,7 @@ use crate::{
 /// Internal type-erased owning device array. Used for C API interop.
 pub(crate) struct RawDeviceArray {
     raw: *mut cugraph_type_erased_device_array_t,
+    raw_view: *mut cugraph_type_erased_device_array_view_t,
     device: i32,
     _nosend_nosync: PhantomData<*mut ()>,
 }
@@ -65,20 +66,26 @@ impl RawDeviceArray {
         }
 
         let raw = require_non_null(raw, "RawDeviceArray::new", "device_array")?;
+        // SAFETY: `raw` is a freshly created cuGraph device-array handle that
+        // remains owned by this wrapper after construction.
+        let raw_view = unsafe { cugraph_type_erased_device_array_view(raw) };
+        let raw_view = match require_non_null(raw_view, "RawDeviceArray::new", "device_array_view") {
+            Ok(raw_view) => raw_view,
+            Err(error) => {
+                let _guard = DeviceGuard::switch_to(handle.device(), "RawDeviceArray::new").ok();
+                // SAFETY: `raw` is still uniquely owned here because
+                // construction has not succeeded yet.
+                unsafe { cugraph_type_erased_device_array_free(raw) };
+                return Err(error);
+            },
+        };
 
-        Ok(Self { raw, device: handle.device(), _nosend_nosync: PhantomData })
+        Ok(Self { raw, raw_view, device: handle.device(), _nosend_nosync: PhantomData })
     }
 
     pub(crate) fn raw_view(&self) -> Result<RawDeviceArrayView<'_>> {
-        // SAFETY: `self.raw` is owned by `self` and remains valid for the
-        // duration of this accessor call.
-        let raw = unsafe { cugraph_type_erased_device_array_view(self.raw) };
-        let raw = require_non_null(raw, "RawDeviceArray::raw_view", "device_array_view")?;
-        Ok(RawDeviceArrayView { raw, owned: true, _lifetime: PhantomData, _nosend_nosync: PhantomData })
-    }
-
-    fn raw_view_invariant(&self) -> RawDeviceArrayView<'_> {
-        self.raw_view().unwrap_or_else(|error| panic!("RawDeviceArray invariant violated: {}", error))
+        let raw = require_non_null(self.raw_view, "RawDeviceArray::raw_view", "device_array_view")?;
+        Ok(RawDeviceArrayView { raw, owned: false, _lifetime: PhantomData, _nosend_nosync: PhantomData })
     }
 
     fn copy_from_host(&mut self, handle: &ResourceHandle, data: &[u8]) -> Result<()> {
@@ -104,6 +111,12 @@ impl RawDeviceArray {
 
 impl Drop for RawDeviceArray {
     fn drop(&mut self) {
+        if !self.raw_view.is_null() {
+            let _guard = DeviceGuard::switch_to(self.device, "RawDeviceArray::drop").ok();
+            // SAFETY: `self.raw_view` is owned by this wrapper and is freed at
+            // most once here.
+            unsafe { cugraph_type_erased_device_array_view_free(self.raw_view) };
+        }
         if !self.raw.is_null() {
             let _guard = DeviceGuard::switch_to(self.device, "RawDeviceArray::drop").ok();
             // SAFETY: `self.raw` is owned by this wrapper and has not been
@@ -498,16 +511,34 @@ impl<'a, T: CugraphElement> DeviceArrayView<'a, T> {
     }
 }
 
+// SAFETY: `DeviceArray<T>` owns a contiguous GPU allocation of `T` elements
+// for its full lifetime and exposes the same pointer/length pair that backs
+// its typed view APIs.
 unsafe impl<T: CugraphElement> DeviceBuffer<T> for DeviceArray<T> {
     fn device_ptr(&self) -> *mut std::ffi::c_void {
-        self.inner.raw_view_invariant().device_ptr()
+        if self.inner.raw_view.is_null() {
+            debug_assert!(!self.inner.raw_view.is_null(), "DeviceArray invariant violated: missing raw view handle");
+            return ptr::null_mut();
+        }
+        // SAFETY: `self.inner.raw_view` is created during `RawDeviceArray::new`
+        // and remains owned by the array until drop.
+        unsafe { cugraph_type_erased_device_array_view_pointer(self.inner.raw_view) as *mut std::ffi::c_void }
     }
 
     fn len(&self) -> usize {
-        self.inner.raw_view_invariant().len()
+        if self.inner.raw_view.is_null() {
+            debug_assert!(!self.inner.raw_view.is_null(), "DeviceArray invariant violated: missing raw view handle");
+            return 0;
+        }
+        // SAFETY: `self.inner.raw_view` is created during `RawDeviceArray::new`
+        // and remains owned by the array until drop.
+        unsafe { cugraph_type_erased_device_array_view_size(self.inner.raw_view) }
     }
 }
 
+// SAFETY: `DeviceArrayView<'a, T>` is a borrowed view over a contiguous GPU
+// allocation of `T` elements, and its lifetime ensures the underlying memory
+// outlives the trait accessors.
 unsafe impl<'a, T: CugraphElement> DeviceBuffer<T> for DeviceArrayView<'a, T> {
     fn device_ptr(&self) -> *mut std::ffi::c_void {
         self.inner.device_ptr()

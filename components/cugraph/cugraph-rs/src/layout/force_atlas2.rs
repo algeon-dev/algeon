@@ -14,7 +14,7 @@
 //! use cugraph::{
 //!     Forward, ResourceHandle,
 //!     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
-//!     layout::{ForceAtlas2Options, ForceAtlas2Params},
+//!     layout::ForceAtlas2Params,
 //!     params::IterationCount,
 //!     random::RngState,
 //! };
@@ -31,13 +31,11 @@
 //! let mut graph =
 //!     graph_from_dataframe::<Forward>(&handle, &edges, &opts).unwrap();
 //!
-//! let options = ForceAtlas2Options {
-//!     params: ForceAtlas2Params {
-//!         max_iter: IterationCount::new(100).unwrap(),
-//!         ..Default::default()
-//!     },
+//! let params = ForceAtlas2Params {
+//!     max_iter: IterationCount::new(100).unwrap(),
+//!     ..Default::default()
 //! };
-//! let result = graph.force_atlas2(&handle, &mut rng, &options).unwrap();
+//! let result = graph.force_atlas2(&handle, &mut rng, &params).unwrap();
 //!
 //! assert_eq!(result.vertex_ids().unwrap().len(), 3);
 //! assert_eq!(result.x().unwrap().len(), 3);
@@ -57,7 +55,7 @@ use crate::{
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::Graph,
     handle::ResourceHandle,
-    params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
+    params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64, defaults},
     random::RngState,
     structure::typed_results::{ScoreValues, VertexIds},
     types::{CugraphElement, DataType, to_bool_t},
@@ -78,6 +76,7 @@ use crate::{
 /// See the [Force Atlas 2 paper](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0098679)
 /// for detailed descriptions.
 #[derive(Debug, Clone, Copy)]
+#[must_use]
 pub struct ForceAtlas2Params {
     /// Maximum number of iterations (default: 500). Must be at least 1.
     pub max_iter: IterationCount,
@@ -121,19 +120,18 @@ pub struct ForceAtlas2Params {
 impl Default for ForceAtlas2Params {
     fn default() -> Self {
         Self {
-            // SAFETY: these literals are known-valid constants.
-            max_iter: IterationCount::new(500).unwrap(),
+            max_iter: defaults::FORCE_ATLAS2_MAX_ITER,
             outbound_attraction_distribution: false,
             lin_log_mode: false,
             prevent_overlapping: false,
-            overlap_scaling_ratio: PositiveF64::new(2.0).unwrap(),
-            edge_weight_influence: NonNegativeF64::new(1.0).unwrap(),
-            jitter_tolerance: NonNegativeF64::new(1.0).unwrap(),
+            overlap_scaling_ratio: defaults::FORCE_ATLAS2_OVERLAP_SCALING_RATIO,
+            edge_weight_influence: defaults::FORCE_ATLAS2_EDGE_WEIGHT_INFLUENCE,
+            jitter_tolerance: defaults::FORCE_ATLAS2_JITTER_TOLERANCE,
             barnes_hut_optimize: false,
-            barnes_hut_theta: ClosedUnitF64::new(0.5).unwrap(),
-            scaling_ratio: PositiveF64::new(2.0).unwrap(),
+            barnes_hut_theta: defaults::FORCE_ATLAS2_BARNES_HUT_THETA,
+            scaling_ratio: defaults::FORCE_ATLAS2_SCALING_RATIO,
             strong_gravity_mode: false,
-            gravity: NonNegativeF64::new(1.0).unwrap(),
+            gravity: defaults::FORCE_ATLAS2_GRAVITY,
             verbose: false,
             do_expensive_check: false,
         }
@@ -191,33 +189,6 @@ pub struct InitialPositions<'a, V: CugraphElement = i32, W: CugraphElement = f32
     pub y: &'a DeviceArrayView<'a, W>,
 }
 
-/// Consolidated options for a Force Atlas 2 layout computation.
-///
-/// Contains only owned algorithm parameters — no lifetime annotations needed.
-/// Optional per-vertex attributes and initial positions are passed separately
-/// to [`Graph::force_atlas2`](crate::graph::Graph::force_atlas2).
-///
-/// # Example
-///
-/// ```no_run
-/// use cugraph::{
-///     layout::{ForceAtlas2Options, ForceAtlas2Params},
-///     params::IterationCount,
-/// };
-///
-/// let options = ForceAtlas2Options {
-///     params: ForceAtlas2Params {
-///         max_iter: IterationCount::new(100).unwrap(),
-///         ..Default::default()
-///     },
-/// };
-/// ```
-#[derive(Debug, Clone, Default)]
-pub struct ForceAtlas2Options {
-    /// Algorithm parameters (iterations, gravity, scaling, etc.).
-    pub params: ForceAtlas2Params,
-}
-
 /// Result of a Force Atlas 2 layout computation.
 ///
 /// Provides access to vertex ids and their (x, y) coordinates. The result
@@ -251,6 +222,8 @@ impl LayoutResult {
     /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
     /// graph's vertex type.
     pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
+        // SAFETY: `self.raw` is a live layout result owned by this wrapper for
+        // the duration of the call.
         let view_ptr = require_non_null(
             unsafe { cugraph_layout_result_get_vertices(self.raw) },
             "LayoutResult::vertex_ids",
@@ -270,6 +243,8 @@ impl LayoutResult {
     ///
     /// The current cuGraph ForceAtlas2 C API returns Float32 coordinates.
     pub fn x(&self) -> Result<ScoreValues<'_>> {
+        // SAFETY: `self.raw` is a live layout result owned by this wrapper for
+        // the duration of the call.
         let view_ptr =
             require_non_null(unsafe { cugraph_layout_result_get_x_axis(self.raw) }, "LayoutResult::x", "x_axis")?;
         // SAFETY: `view_ptr` belongs to the live layout result and was
@@ -284,6 +259,8 @@ impl LayoutResult {
     ///
     /// The current cuGraph ForceAtlas2 C API returns Float32 coordinates.
     pub fn y(&self) -> Result<ScoreValues<'_>> {
+        // SAFETY: `self.raw` is a live layout result owned by this wrapper for
+        // the duration of the call.
         let view_ptr =
             require_non_null(unsafe { cugraph_layout_result_get_y_axis(self.raw) }, "LayoutResult::y", "y_axis")?;
         // SAFETY: `view_ptr` belongs to the live layout result and was
@@ -296,6 +273,8 @@ impl LayoutResult {
 impl LayoutResult {
     /// Get the raw vertices view (for cudf interop).
     pub(crate) fn vertices_raw(&self) -> crate::error::Result<crate::array::RawDeviceArrayView<'_>> {
+        // SAFETY: `self.raw` is a live layout result owned by this wrapper for
+        // the duration of the call.
         let view_ptr = require_non_null(
             unsafe { cugraph_layout_result_get_vertices(self.raw) },
             "LayoutResult::vertices_raw",
@@ -308,6 +287,8 @@ impl LayoutResult {
 
     /// Get the raw x-axis view (for cudf interop).
     pub(crate) fn x_raw(&self) -> crate::error::Result<crate::array::RawDeviceArrayView<'_>> {
+        // SAFETY: `self.raw` is a live layout result owned by this wrapper for
+        // the duration of the call.
         let view_ptr =
             require_non_null(unsafe { cugraph_layout_result_get_x_axis(self.raw) }, "LayoutResult::x_raw", "x_axis")?;
         // SAFETY: `view_ptr` belongs to the live layout result and was
@@ -317,6 +298,8 @@ impl LayoutResult {
 
     /// Get the raw y-axis view (for cudf interop).
     pub(crate) fn y_raw(&self) -> crate::error::Result<crate::array::RawDeviceArrayView<'_>> {
+        // SAFETY: `self.raw` is a live layout result owned by this wrapper for
+        // the duration of the call.
         let view_ptr =
             require_non_null(unsafe { cugraph_layout_result_get_y_axis(self.raw) }, "LayoutResult::y_raw", "y_axis")?;
         // SAFETY: `view_ptr` belongs to the live layout result and was
@@ -342,6 +325,8 @@ impl Drop for LayoutResult {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             let _guard = DeviceGuard::switch_to(self.device, "LayoutResult::drop").ok();
+            // SAFETY: `self.raw` is owned by this wrapper and has not been
+            // freed yet.
             unsafe { cugraph_layout_result_free(self.raw) };
         }
     }
@@ -388,12 +373,10 @@ pub(crate) fn force_atlas2<T, V: CugraphElement, W: CugraphElement>(
     handle: &ResourceHandle,
     rng_state: &mut RngState,
     graph: &mut Graph<T>,
-    options: &ForceAtlas2Options,
+    params: &ForceAtlas2Params,
     vertex_attrs: Option<&ForceAtlas2VertexAttrs<'_, V, W>>,
     initial_pos: Option<&InitialPositions<'_, V, W>>,
 ) -> Result<LayoutResult> {
-    let params = &options.params;
-
     // Validate initial position arrays have consistent lengths.
     if let Some(pos) = initial_pos {
         let n = pos.vertices.len();
@@ -570,14 +553,12 @@ mod tests {
             .build::<Forward>(&handle)
             .expect("graph");
 
-        let options = ForceAtlas2Options {
-            params: ForceAtlas2Params {
-                max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
-                ..Default::default()
-            },
+        let params = ForceAtlas2Params {
+            max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
+            ..Default::default()
         };
 
-        let result = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2");
+        let result = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2");
 
         // Should have 3 vertices with x,y coordinates
         assert_eq!(result.vertex_ids().expect("vertex_ids").len(), 3, "should have 3 vertices");
@@ -616,13 +597,11 @@ mod tests {
             .expect("graph");
 
         // First pass: 50 iterations, random initial positions
-        let options1 = ForceAtlas2Options {
-            params: ForceAtlas2Params {
-                max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
-                ..Default::default()
-            },
+        let params1 = ForceAtlas2Params {
+            max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
+            ..Default::default()
         };
-        let result1 = graph.force_atlas2(&handle, &mut rng, &options1).expect("fa2 pass 1");
+        let result1 = graph.force_atlas2(&handle, &mut rng, &params1).expect("fa2 pass 1");
 
         let vids1 = result1.vertex_ids().expect("vertex_ids");
         assert_eq!(vids1.len(), 4);
@@ -634,13 +613,11 @@ mod tests {
         let y1_scores = result1.y().expect("y");
         let y1_view = y1_scores.as_f32().expect("f32 y");
         let init_pos = InitialPositions { vertices: vids1_view, x: x1_view, y: y1_view };
-        let options2 = ForceAtlas2Options {
-            params: ForceAtlas2Params {
-                max_iter: IterationCount::new(TEST_LAYOUT_SMOKE_ITERATIONS).unwrap(),
-                ..Default::default()
-            },
+        let params2 = ForceAtlas2Params {
+            max_iter: IterationCount::new(TEST_LAYOUT_SMOKE_ITERATIONS).unwrap(),
+            ..Default::default()
         };
-        let result2 = graph.force_atlas2_with(&handle, &mut rng, &options2, None, Some(&init_pos)).expect("fa2 pass 2");
+        let result2 = graph.force_atlas2_with(&handle, &mut rng, &params2, None, Some(&init_pos)).expect("fa2 pass 2");
 
         assert_eq!(result2.vertex_ids().expect("vertex_ids").len(), 4);
         assert_eq!(result2.x().expect("x").len(), 4);
@@ -677,14 +654,12 @@ mod tests {
             .build::<Forward>(&handle)
             .expect("graph");
 
-        let options = ForceAtlas2Options {
-            params: ForceAtlas2Params {
-                max_iter: IterationCount::new(TEST_LAYOUT_SMOKE_ITERATIONS).unwrap(),
-                ..Default::default()
-            },
+        let params = ForceAtlas2Params {
+            max_iter: IterationCount::new(TEST_LAYOUT_SMOKE_ITERATIONS).unwrap(),
+            ..Default::default()
         };
 
-        let result = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2");
+        let result = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2");
 
         assert_eq!(result.vertex_ids().expect("vertex_ids").len(), 5, "should have 5 vertices");
         assert_eq!(result.x().expect("x").len(), 5, "should have 5 x coords");
@@ -721,15 +696,13 @@ mod tests {
             .build::<Forward>(&handle)
             .expect("graph");
 
-        let options = ForceAtlas2Options {
-            params: ForceAtlas2Params {
-                max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
-                edge_weight_influence: NonNegativeF64::new(1.0).unwrap(),
-                ..Default::default()
-            },
+        let params = ForceAtlas2Params {
+            max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
+            edge_weight_influence: NonNegativeF64::new(1.0).unwrap(),
+            ..Default::default()
         };
 
-        let result = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2");
+        let result = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2");
 
         assert_eq!(result.vertex_ids().expect("vertex_ids").len(), 3);
         assert_eq!(result.x().expect("x").len(), 3);
@@ -756,16 +729,14 @@ mod tests {
             .build::<Forward>(&handle)
             .expect("graph");
 
-        let options = ForceAtlas2Options {
-            params: ForceAtlas2Params {
-                max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
-                barnes_hut_optimize: true,
-                barnes_hut_theta: ClosedUnitF64::new(0.5).unwrap(),
-                ..Default::default()
-            },
+        let params = ForceAtlas2Params {
+            max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
+            barnes_hut_optimize: true,
+            barnes_hut_theta: ClosedUnitF64::new(0.5).unwrap(),
+            ..Default::default()
         };
 
-        let result = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2 BH");
+        let result = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2 BH");
 
         assert_eq!(result.vertex_ids().expect("vertex_ids").len(), 3);
 
@@ -806,10 +777,10 @@ mod tests {
         let y_pos_view = y_pos.view().expect("y_pos_view");
 
         let init = InitialPositions { vertices: &verts_view, x: &x_pos_view, y: &y_pos_view };
-        let options = ForceAtlas2Options::default();
+        let params = ForceAtlas2Params::default();
 
         let err = graph
-            .force_atlas2_with(&handle, &mut rng, &options, None, Some(&init))
+            .force_atlas2_with(&handle, &mut rng, &params, None, Some(&init))
             .expect_err("should reject mismatched y length");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.message().contains("y length"));
@@ -841,10 +812,10 @@ mod tests {
         let mass_vals_view = mass_vals.view().expect("mass_vals_view");
 
         let attrs = ForceAtlas2VertexAttrs { mass: Some((&mass_verts_view, &mass_vals_view)), ..Default::default() };
-        let options = ForceAtlas2Options::default();
+        let params = ForceAtlas2Params::default();
 
         let err = graph
-            .force_atlas2_with(&handle, &mut rng, &options, Some(&attrs), None)
+            .force_atlas2_with(&handle, &mut rng, &params, Some(&attrs), None)
             .expect_err("should reject mismatched mass array lengths");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.message().contains("mass"));
@@ -874,10 +845,10 @@ mod tests {
         let y_pos_view = y_pos.view().expect("y_pos_view");
 
         let init = InitialPositions { vertices: &verts_view, x: &x_pos_view, y: &y_pos_view };
-        let options = ForceAtlas2Options::default();
+        let params = ForceAtlas2Params::default();
 
         let err = graph
-            .force_atlas2_with(&handle, &mut rng, &options, None, Some(&init))
+            .force_atlas2_with(&handle, &mut rng, &params, None, Some(&init))
             .expect_err("should reject i64 graphs with i32 initial position vertices");
         assert_eq!(err.kind(), ErrorKind::UnsupportedType);
         assert!(err.message().contains("initial positions vertex dtype Int32 does not match graph vertex dtype Int64"));
@@ -909,9 +880,9 @@ mod tests {
         let mass_vals_view = mass_vals.view().expect("mass_vals_view");
 
         let attrs = ForceAtlas2VertexAttrs { mass: Some((&mass_verts_view, &mass_vals_view)), ..Default::default() };
-        let options = ForceAtlas2Options::default();
+        let params = ForceAtlas2Params::default();
 
-        let result = graph.force_atlas2_with(&handle, &mut rng, &options, Some(&attrs), None).expect("force_atlas2");
+        let result = graph.force_atlas2_with(&handle, &mut rng, &params, Some(&attrs), None).expect("force_atlas2");
         assert_eq!(result.vertex_ids().expect("vertex_ids").len(), 2);
         assert!(matches!(result.x().expect("x"), ScoreValues::F32(_)));
         assert!(matches!(result.y().expect("y"), ScoreValues::F32(_)));
@@ -937,17 +908,15 @@ mod tests {
             .build::<Forward>(&handle)
             .expect("graph");
 
-        let options = ForceAtlas2Options {
-            params: ForceAtlas2Params {
-                max_iter: IterationCount::new(30).unwrap(),
-                lin_log_mode: true,
-                strong_gravity_mode: true,
-                gravity: NonNegativeF64::new(2.0).unwrap(),
-                ..Default::default()
-            },
+        let params = ForceAtlas2Params {
+            max_iter: IterationCount::new(30).unwrap(),
+            lin_log_mode: true,
+            strong_gravity_mode: true,
+            gravity: NonNegativeF64::new(2.0).unwrap(),
+            ..Default::default()
         };
 
-        let result = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2");
+        let result = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2");
 
         assert_eq!(result.vertex_ids().expect("vertex_ids").len(), 4);
         assert_eq!(result.x().expect("x").len(), 4);

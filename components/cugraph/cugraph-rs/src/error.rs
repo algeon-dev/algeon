@@ -6,6 +6,7 @@
 
 use std::{
     backtrace::{Backtrace, BacktraceStatus},
+    error::Error as StdError,
     fmt,
 };
 
@@ -132,7 +133,7 @@ pub struct Error {
     operation: &'static str,
     message: String,
     context: Vec<(&'static str, String)>,
-    source: Option<anyhow::Error>,
+    source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     backtrace: Option<Box<Backtrace>>,
 }
 
@@ -185,12 +186,12 @@ impl Error {
 
     /// Attach an underlying source error.
     ///
-    /// Accepts any type that converts into [`anyhow::Error`], which covers all
-    /// `std::error::Error + Send + Sync + 'static` types as well as bare
-    /// `anyhow::Error` values.
-    pub fn set_source(mut self, source: impl Into<anyhow::Error>) -> Self {
+    /// Accepts any source error that is safe to store and report from this
+    /// library's public error type.
+    pub fn set_source<E>(mut self, source: E) -> Self
+    where E: StdError + Send + Sync + 'static {
         debug_assert!(self.source.is_none(), "the source error has been set");
-        self.source = Some(source.into());
+        self.source = Some(Box::new(source));
         self
     }
 
@@ -314,7 +315,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|e| e.as_ref())
+        self.source.as_ref().map(|e| e.as_ref() as &(dyn StdError + 'static))
     }
 }
 

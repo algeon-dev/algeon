@@ -45,6 +45,8 @@ impl CentralityResult {
     }
 
     pub(crate) fn vertices_raw(&self) -> Result<RawDeviceArrayView<'_>> {
+        // SAFETY: `self.raw` is a live centrality result owned by this
+        // wrapper for the duration of the call.
         let view_ptr = require_non_null(
             unsafe { cugraph_centrality_result_get_vertices(self.raw) },
             "CentralityResult::vertices_raw",
@@ -56,6 +58,8 @@ impl CentralityResult {
     }
 
     pub(crate) fn values_raw(&self) -> Result<RawDeviceArrayView<'_>> {
+        // SAFETY: `self.raw` is a live centrality result owned by this
+        // wrapper for the duration of the call.
         let view_ptr = require_non_null(
             unsafe { cugraph_centrality_result_get_values(self.raw) },
             "CentralityResult::values_raw",
@@ -67,10 +71,14 @@ impl CentralityResult {
     }
 
     pub(crate) fn num_iterations(&self) -> usize {
+        // SAFETY: `self.raw` is a live centrality result owned by this
+        // wrapper for the duration of the call.
         unsafe { cugraph_centrality_result_get_num_iterations(self.raw) }
     }
 
     pub(crate) fn converged(&self) -> Result<bool> {
+        // SAFETY: `self.raw` is a live centrality result owned by this
+        // wrapper for the duration of the call.
         let b = unsafe { cugraph_centrality_result_converged(self.raw) };
         try_from_bool_t(b).ok_or_else(|| {
             Error::new(ErrorKind::Unexpected, "CentralityResult::converged")
@@ -83,6 +91,8 @@ impl Drop for CentralityResult {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             let _guard = DeviceGuard::switch_to(self.device, "CentralityResult::drop").ok();
+            // SAFETY: `self.raw` is owned by this wrapper and has not been
+            // freed yet.
             unsafe { cugraph_centrality_result_free(self.raw) };
         }
     }
