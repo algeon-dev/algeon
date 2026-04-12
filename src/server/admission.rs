@@ -327,7 +327,10 @@ fn server_backend_from_config_admission_only(config: &ServerConfig) -> Result<Op
 }
 
 fn server_admission_policy(config: &ServerConfig) -> NexusAdmissionPolicy {
-    config.admission_policy.clone()
+    // `ServerConfig` keeps the legacy public `max_in_flight` field beside the
+    // richer admission policy. Normalize here so direct test/operator config
+    // mutation still controls the QueryService concurrency gate.
+    config.admission_policy.clone().with_max_concurrent_queries(config.max_in_flight)
 }
 
 fn format_tenant_queue_depths(depths: &[nexus_query_engine::TenantQueueDepth]) -> String {

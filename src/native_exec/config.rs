@@ -81,9 +81,11 @@ pub(crate) struct NativeCudfExecutionContext {
 }
 
 impl NativeCudfExecutionContext {
-    fn standalone(context: ExecutionContext) -> Self {
+    fn standalone(context: ExecutionContext, task_context_owner: Option<usize>) -> Self {
         #[cfg(debug_assertions)]
-        let standalone_bounded_context_guard = standalone_bounded_context_debug_guard(&context);
+        let standalone_bounded_context_guard = standalone_bounded_context_debug_guard(&context, task_context_owner);
+        #[cfg(not(debug_assertions))]
+        let _ = task_context_owner;
         Self {
             context,
             admission_facts: None,
@@ -150,16 +152,23 @@ impl NativeCudfExecutionContext {
 #[derive(Debug)]
 struct StandaloneBoundedContextDebugGuard {
     device_ordinal: usize,
+    task_context_owner: Option<usize>,
 }
 
 #[cfg(debug_assertions)]
-fn standalone_bounded_context_counts() -> &'static std::sync::Mutex<std::collections::BTreeMap<usize, usize>> {
-    static COUNTS: OnceLock<std::sync::Mutex<std::collections::BTreeMap<usize, usize>>> = OnceLock::new();
+fn standalone_bounded_context_counts()
+-> &'static std::sync::Mutex<std::collections::BTreeMap<usize, std::collections::BTreeMap<Option<usize>, usize>>> {
+    static COUNTS: OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<usize, std::collections::BTreeMap<Option<usize>, usize>>>,
+    > = OnceLock::new();
     COUNTS.get_or_init(Default::default)
 }
 
 #[cfg(debug_assertions)]
-fn standalone_bounded_context_debug_guard(context: &ExecutionContext) -> Option<StandaloneBoundedContextDebugGuard> {
+fn standalone_bounded_context_debug_guard(
+    context: &ExecutionContext,
+    task_context_owner: Option<usize>,
+) -> Option<StandaloneBoundedContextDebugGuard> {
     if !matches!(context.memory_control_policy(), MemoryControlPolicy::Bounded { .. }) {
         return None;
     }
@@ -167,24 +176,34 @@ fn standalone_bounded_context_debug_guard(context: &ExecutionContext) -> Option<
         nexus_query_engine::DevicePlacement::SingleDevice { device_ordinal } => device_ordinal,
         _ => return None,
     };
-    Some(StandaloneBoundedContextDebugGuard::new(device_ordinal))
+    Some(StandaloneBoundedContextDebugGuard::new_with_owner(device_ordinal, task_context_owner))
 }
 
 #[cfg(debug_assertions)]
 impl StandaloneBoundedContextDebugGuard {
+    #[cfg(test)]
     fn new(device_ordinal: usize) -> Self {
-        let guard = Self { device_ordinal };
-        let previous_count = {
+        Self::new_with_owner(device_ordinal, None)
+    }
+
+    fn new_with_owner(device_ordinal: usize, task_context_owner: Option<usize>) -> Self {
+        let guard = Self { device_ordinal, task_context_owner };
+        let has_conflicting_owner = {
             let mut counts = standalone_bounded_context_counts()
                 .lock()
                 .expect("standalone bounded native context debug registry poisoned");
-            let count = counts.entry(device_ordinal).or_default();
-            let previous_count = *count;
-            *count += 1;
-            previous_count
+            let device_counts = counts.entry(device_ordinal).or_default();
+            // cuGraph table functions build a graph context and then execute
+            // native child fragments under the same DataFusion task context.
+            // Keep flagging independent task owners, but allow that nested
+            // same-task composition path to share one standalone admission.
+            let has_conflicting_owner =
+                device_counts.keys().any(|active_owner| *active_owner != task_context_owner || active_owner.is_none());
+            *device_counts.entry(task_context_owner).or_default() += 1;
+            has_conflicting_owner
         };
-        debug_assert_eq!(
-            previous_count, 0,
+        debug_assert!(
+            !has_conflicting_owner,
             "concurrent unadmitted bounded native contexts on CUDA device {device_ordinal}; use NexusGpuBackend to share QueryService admission"
         );
         guard
@@ -195,10 +214,15 @@ impl StandaloneBoundedContextDebugGuard {
 impl Drop for StandaloneBoundedContextDebugGuard {
     fn drop(&mut self) {
         if let Ok(mut counts) = standalone_bounded_context_counts().lock()
-            && let Some(count) = counts.get_mut(&self.device_ordinal)
+            && let Some(device_counts) = counts.get_mut(&self.device_ordinal)
         {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
+            if let Some(count) = device_counts.get_mut(&self.task_context_owner) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    device_counts.remove(&self.task_context_owner);
+                }
+            }
+            if device_counts.is_empty() {
                 counts.remove(&self.device_ordinal);
             }
         }
@@ -799,7 +823,15 @@ impl NativeCudfExecutionConfig {
 
     // DataFusion-to-native config boundary. Native context construction and validation errors are
     // converted here into adapter errors before any query execution starts.
+    #[cfg(test)]
     pub(crate) fn execution_context(&self) -> crate::error::Result<NativeCudfExecutionContext> {
+        self.execution_context_with_standalone_owner(None)
+    }
+
+    fn execution_context_with_standalone_owner(
+        &self,
+        standalone_owner: Option<usize>,
+    ) -> crate::error::Result<NativeCudfExecutionContext> {
         self.validate_query_policies()?;
         if let Some(handle) = &self.query_service_handle {
             let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
@@ -870,13 +902,15 @@ impl NativeCudfExecutionConfig {
         if let Some(trace_id) = &self.trace_id {
             builder = builder.with_trace_id(trace_id.clone());
         }
-        builder.build().map(NativeCudfExecutionContext::standalone).map_err(|error| {
-            Error::from_native(
-                "datafusion_nexus.native_exec.context",
-                "failed to build native cudf execution context",
-                self.stamp_native_error_correlation(error),
-            )
-        })
+        builder.build().map(|context| NativeCudfExecutionContext::standalone(context, standalone_owner)).map_err(
+            |error| {
+                Error::from_native(
+                    "datafusion_nexus.native_exec.context",
+                    "failed to build native cudf execution context",
+                    self.stamp_native_error_correlation(error),
+                )
+            },
+        )
     }
 
     pub(crate) async fn execution_context_async(
@@ -906,7 +940,7 @@ impl NativeCudfExecutionConfig {
                     )
                 });
         }
-        self.execution_context()
+        self.execution_context_with_standalone_owner(Some(Arc::as_ptr(&task_context) as usize))
     }
 
     fn stamp_native_error_correlation(
@@ -1100,6 +1134,21 @@ mod tests {
     fn standalone_bounded_debug_guard_panics_on_same_device_overlap() {
         let _first = StandaloneBoundedContextDebugGuard::new(10_003);
         let _second = StandaloneBoundedContextDebugGuard::new(10_003);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn standalone_bounded_debug_guard_allows_same_task_context_owner_overlap() {
+        let _first = StandaloneBoundedContextDebugGuard::new_with_owner(10_004, Some(42));
+        let _nested = StandaloneBoundedContextDebugGuard::new_with_owner(10_004, Some(42));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "concurrent unadmitted bounded native contexts")]
+    fn standalone_bounded_debug_guard_panics_on_different_task_context_owner_overlap() {
+        let _first = StandaloneBoundedContextDebugGuard::new_with_owner(10_005, Some(42));
+        let _second = StandaloneBoundedContextDebugGuard::new_with_owner(10_005, Some(43));
     }
 
     #[test]
