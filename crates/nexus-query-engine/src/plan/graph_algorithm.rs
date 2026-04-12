@@ -1566,6 +1566,9 @@ pub struct GraphAlgorithmSpec {
     pub edge_columns: GraphEdgeColumnBindings,
     /// Shared graph construction options.
     pub graph_options: GraphConstructionOptions,
+    /// Whether this graph algorithm consumes an explicit edge-normalize node
+    /// inserted from Python-compatible construction semantics.
+    pub edge_normalize_inserted: bool,
     /// Algorithm-specific parameter payload.
     pub params: GraphAlgorithmParams,
     /// Stable output schema expected from execution.
@@ -1582,7 +1585,13 @@ impl GraphAlgorithmSpec {
         output_schema: SchemaRef,
     ) -> Self {
         assert_eq!(algorithm, params.algorithm(), "graph algorithm and parameter variant must match");
-        Self { algorithm, edge_columns, graph_options, params, output_schema }
+        Self { algorithm, edge_columns, graph_options, edge_normalize_inserted: false, params, output_schema }
+    }
+
+    /// Mark this spec as consuming an explicit edge-normalize input.
+    pub fn with_edge_normalize_inserted(mut self, inserted: bool) -> Self {
+        self.edge_normalize_inserted = inserted;
+        self
     }
 
     /// Create a graph algorithm spec using this crate's stable result schema.

@@ -150,6 +150,7 @@ impl QueryPlanBuilder {
         let input = if spec.graph_options.policy == GraphConstructionPolicy::PythonCugraph {
             let normalize_spec = EdgeNormalizeSpec::python_cugraph(spec.edge_columns.clone(), &spec.graph_options);
             spec.graph_options.policy = GraphConstructionPolicy::RawLibcugraph;
+            spec.edge_normalize_inserted = true;
             let output_schema = edge_normalize_output_schema(self.node(input).output_schema(), &normalize_spec)?;
             self.add_edge_normalize(input, normalize_spec, output_schema)
         } else {

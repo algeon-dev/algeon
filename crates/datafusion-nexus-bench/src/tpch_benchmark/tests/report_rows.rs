@@ -78,6 +78,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 output_rows: 4,
                 output_columns: 2,
                 output_device_bytes: Some(320),
+                graph_peak_bytes: Some(2048),
                 elapsed_ns: 123_000,
                 gpu_resident_input_handoffs: 1,
                 host_to_device_uploads: 0,
@@ -324,7 +325,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert!(text.contains(
         "\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
     ));
-    assert!(text.contains("\t64\t65\t66\tnone\tnode_id=g0,algorithm=pagerank,runtime_outcome=succeeded,input_boundary=device,output_boundary=device,construction_policy=python_cugraph,source_column=src,destination_column=dst,weight_column=weight,directed=true,renumber=true,algorithm_parameters=alpha=0.85,epsilon=0.000001,max_iterations=100,algorithm_metadata=converged=true,iterations=12,input_rows=100,input_columns=3,output_rows=4,output_columns=2,output_device_bytes=320,elapsed_ns=123000,gpu_resident_input_handoffs=1,host_to_device_uploads=0,device_to_host_materializations=0\toperator_kind=source_read,task_count=3,elapsed_ns=7000000,reservation_requested_bytes=0,reservation_granted_bytes=0,reservation_released_bytes=0,reservation_live_peak_bytes=64,max_observed_peak_bytes=none,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,elapsed_ns=7000000,reservation_requested_bytes=64,reservation_granted_bytes=64,reservation_released_bytes=64,reservation_live_peak_bytes=64,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
+    assert!(text.contains("\t64\t65\t66\tnone\tnode_id=g0,algorithm=pagerank,runtime_outcome=succeeded,input_boundary=device,output_boundary=device,construction_policy=python_cugraph,source_column=src,destination_column=dst,weight_column=weight,directed=true,renumber=true,algorithm_parameters=alpha=0.85,epsilon=0.000001,max_iterations=100,algorithm_metadata=converged=true,iterations=12,input_rows=100,input_columns=3,output_rows=4,output_columns=2,output_device_bytes=320,graph_peak_bytes=2048,elapsed_ns=123000,gpu_resident_input_handoffs=1,host_to_device_uploads=0,device_to_host_materializations=0\toperator_kind=source_read,task_count=3,elapsed_ns=7000000,reservation_requested_bytes=0,reservation_granted_bytes=0,reservation_released_bytes=0,reservation_live_peak_bytes=64,max_observed_peak_bytes=none,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,elapsed_ns=7000000,reservation_requested_bytes=64,reservation_granted_bytes=64,reservation_released_bytes=64,reservation_live_peak_bytes=64,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
     let mut lines = text.lines().filter(|line| !line.starts_with('#'));
     let header = lines.next().expect("benchmark report should contain a TSV header");
     let fields = lines.next().expect("benchmark report should contain a q01 row").split('\t').collect::<Vec<_>>();

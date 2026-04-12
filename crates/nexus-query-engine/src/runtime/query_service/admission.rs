@@ -198,11 +198,10 @@ impl QueryAdmissionWaiter {
                 if Instant::now() >= self.deadline {
                     self.service.abandon_queued_request_locked(&mut state, self.request_id);
                     self.queued = false;
-                    return Err(service_overloaded_error(
-                        "memory_grant_wait_timeout",
+                    return Err(self.service.memory_grant_wait_timeout_error(
                         &self.tenant_id,
+                        self.grant_policy,
                         state.queued.len(),
-                        self.service.inner.config.max_admission_queue_len,
                     ));
                 }
                 return Ok(None);

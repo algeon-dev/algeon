@@ -55,8 +55,8 @@ pub mod prelude {
         CudfSessionStateBuilderExt, DataFusionNexusSessionConfig, FallbackReason, GpuFallbackPolicy, GrantBand,
         MemoryShare, NativeCudfExec, NativeCudfExecutionConfig, NativeMemoryPolicyConfig, NexusAdmissionPolicy,
         NexusGpuBackend, NexusGpuBackendBuilder, NexusMemoryPolicy, PhysicalOptimizerRules, PlanningReport, Priority,
-        QueryHandle, QueryQos, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
-        cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
+        QueryGrantRequest, QueryHandle, QueryQos, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
+        SlotGuarantee, TenantId, cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
     };
 }
 
@@ -65,9 +65,9 @@ pub mod prelude {
 pub mod admission_contracts {
     pub use nexus_query_engine::{
         DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, Priority,
-        QueryAdmissionWaiter, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryHandle, QueryQos,
-        QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, Result,
-        SlotGuarantee, TenantId, TenantQueueDepth,
+        QueryAdmissionWaiter, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryGrantRequest,
+        QueryHandle, QueryQos, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
+        QueryServiceTenantConfig, Result, SlotGuarantee, TenantId, TenantQueueDepth,
     };
 }
 
@@ -295,9 +295,9 @@ pub use nexus_query_engine::{
     AdaptiveMemoryHistory, DeploymentIoCapability, DynamicFilterExecutionOptions, GdsDriverProbeStatus,
     GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, KeyedHashJoinStrategyOptions, KvikioCompatModeStatus,
     MemoryControlPolicy, NativeOptimizerOptions, NativePipelineExecutionMode, NativePlanCpuPreferenceReason,
-    NativePlanPreferenceOptions, NvidiaFsProbeStatus, Priority, QueryAdmissionWaiter, QueryHandle, QueryQos,
-    QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, RemoteParquetReadMode,
-    S3SourceStorageCredential, S3SourceStorageProfile, SemijoinReductionOptions, SlotGuarantee,
+    NativePlanPreferenceOptions, NvidiaFsProbeStatus, Priority, QueryAdmissionWaiter, QueryGrantRequest, QueryHandle,
+    QueryQos, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig,
+    RemoteParquetReadMode, S3SourceStorageCredential, S3SourceStorageProfile, SemijoinReductionOptions, SlotGuarantee,
     SourceChunkPlanningMode, SourceStorageProfile, StatisticalAggregateExecutionMode,
     StatisticalAggregateToleranceContract, TenantId, TenantQueueDepth, TriageCode, TriageEvidenceRef, TriageSeverity,
     TriageSignal, TriageSummary, TriageVerdict,

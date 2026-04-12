@@ -5,13 +5,16 @@ use datafusion::{
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
-use nexus_query_engine::QueryId;
+use nexus_query_engine::{PlanNode, QueryId};
 
 use super::CudfOptimizerConfig;
+#[cfg(feature = "cugraph")]
+use crate::graph_sql::CugraphAlgoExec;
 use crate::{
     Error, ErrorCode,
     native_exec::{
-        NativeCudfComposedExec, NativeCudfExec, plan_is_cpu_fallback_limited, plan_is_query_admission_wrapped,
+        NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
+        admission::QueryAdmissionTicket, plan_is_cpu_fallback_limited, plan_is_query_admission_wrapped,
         plan_is_unbounded_native_execution_limited, wrap_plan_with_cpu_fallback_limit,
         wrap_plan_with_query_admission_ticket, wrap_plan_with_unbounded_native_execution_limit,
     },
@@ -249,7 +252,15 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             )?,
         };
         let mut optimized = apply_native_fallback_policy(Arc::clone(&plan), optimized, &effective_config)?;
-        apply_execution_admission_wrappers(self.stage, &mut optimized, &effective_config, native_execution_config);
+        let query_admission_ticket =
+            plan_query_admission_ticket_for_optimized_plan(optimized.plan.as_ref(), native_execution_config)?;
+        apply_execution_admission_wrappers(
+            self.stage,
+            &mut optimized,
+            &effective_config,
+            native_execution_config,
+            query_admission_ticket,
+        );
         *self.state.last_report.lock().map_err(|_| {
             datafusion::common::DataFusionError::from(Error::new(
                 ErrorCode::Internal,
@@ -288,10 +299,11 @@ fn apply_execution_admission_wrappers(
     stage: NativeOptimizerStage,
     optimized: &mut NativeOptimizationAttempt,
     effective_config: &CudfOptimizerConfig,
-    native_execution_config: &crate::native_exec::NativeCudfExecutionConfig,
+    native_execution_config: &NativeCudfExecutionConfig,
+    query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
 ) {
     if optimized.rewritten
-        && let Some(ticket) = native_execution_config.query_admission_ticket()
+        && let Some(ticket) = query_admission_ticket
     {
         optimized.plan = wrap_plan_with_query_admission_ticket(Arc::clone(&optimized.plan), ticket);
     } else if optimized.rewritten
@@ -307,14 +319,211 @@ fn apply_execution_admission_wrappers(
     }
 }
 
+fn plan_query_admission_ticket_for_optimized_plan(
+    plan: &dyn ExecutionPlan,
+    native_execution_config: &NativeCudfExecutionConfig,
+) -> DataFusionResult<Option<Arc<QueryAdmissionTicket>>> {
+    let requested_grant_bytes = graph_aware_requested_grant_bytes_for_plan(plan, native_execution_config)?;
+    Ok(native_execution_config.new_plan_query_admission_ticket(requested_grant_bytes))
+}
+
+fn graph_aware_requested_grant_bytes_for_plan(
+    plan: &dyn ExecutionPlan,
+    native_execution_config: &NativeCudfExecutionConfig,
+) -> DataFusionResult<Option<u64>> {
+    if native_execution_config.requested_grant_bytes().is_some() {
+        return Ok(None);
+    }
+    let Some(source) = native_execution_config.query_admission_source() else {
+        return Ok(None);
+    };
+    let graph_model_ask = complete_graph_dominated_model_ask_bytes(
+        plan,
+        native_execution_config.graph_memory_calibration_override(),
+        Some(source.max_device_total_memory_bytes()),
+    )?;
+    native_execution_config.graph_aware_requested_grant_bytes_for_model_ask(graph_model_ask).map_err(|error| {
+        datafusion::common::DataFusionError::from(Error::from_native(
+            "datafusion_nexus.native_optimizer.graph_ticket_ask",
+            "failed to compute graph-aware query admission ticket ask",
+            error,
+        ))
+    })
+}
+
+#[derive(Debug, Default)]
+struct GraphModelAskScan {
+    max_graph_model_ask_bytes: Option<u64>,
+    graph_node_count: usize,
+    estimated_graph_node_count: usize,
+    disqualified: bool,
+    non_graph_native_fragment_count: usize,
+}
+
+fn complete_graph_dominated_model_ask_bytes(
+    plan: &dyn ExecutionPlan,
+    calibration_override: nexus_query_engine::GraphMemoryCalibrationOverride,
+    device_total_memory_bytes: Option<u64>,
+) -> DataFusionResult<Option<u64>> {
+    let mut scan = GraphModelAskScan::default();
+    collect_graph_model_ask_scan(plan, calibration_override, device_total_memory_bytes, &mut scan)?;
+    if scan.disqualified
+        || scan.non_graph_native_fragment_count > 0
+        || scan.graph_node_count != 1
+        || scan.estimated_graph_node_count != scan.graph_node_count
+    {
+        return Ok(None);
+    }
+    Ok(scan.max_graph_model_ask_bytes)
+}
+
+fn collect_graph_model_ask_scan(
+    plan: &dyn ExecutionPlan,
+    calibration_override: nexus_query_engine::GraphMemoryCalibrationOverride,
+    device_total_memory_bytes: Option<u64>,
+    scan: &mut GraphModelAskScan,
+) -> DataFusionResult<bool> {
+    #[cfg(feature = "cugraph")]
+    if let Some(cugraph) = plan.downcast_ref::<CugraphAlgoExec>() {
+        update_cugraph_model_ask_scan(cugraph, scan)?;
+        return Ok(true);
+    }
+
+    let mut child_has_graph = false;
+    for child in plan.children() {
+        child_has_graph |=
+            collect_graph_model_ask_scan(child.as_ref(), calibration_override, device_total_memory_bytes, scan)?;
+    }
+
+    let mut local_has_graph = false;
+    if let Some(native) = plan.downcast_ref::<NativeCudfExec>() {
+        local_has_graph =
+            update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
+    } else if let Some(native) = plan.downcast_ref::<NativeCudfComposedExec>() {
+        if child_has_graph && native_plan_is_graph_ticket_light_fragment(native.native_plan()) {
+            return Ok(true);
+        }
+        local_has_graph =
+            update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
+    } else if let Some(native) = plan.downcast_ref::<NativeCudfGpuProducerExec>() {
+        local_has_graph =
+            update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
+    }
+    Ok(local_has_graph || child_has_graph)
+}
+
+fn update_graph_model_ask_scan(
+    native_plan: &nexus_query_engine::QueryPlan,
+    calibration_override: nexus_query_engine::GraphMemoryCalibrationOverride,
+    device_total_memory_bytes: Option<u64>,
+    scan: &mut GraphModelAskScan,
+) -> DataFusionResult<bool> {
+    let graph_node_count = native_plan_graph_node_count(native_plan);
+    if graph_node_count == 0 {
+        scan.non_graph_native_fragment_count += 1;
+        return Ok(false);
+    }
+    scan.graph_node_count += graph_node_count;
+    if !native_plan_is_graph_dominated(native_plan) {
+        scan.disqualified = true;
+        return Ok(true);
+    }
+    for estimate in nexus_query_engine::graph_memory_estimates_for_plan(
+        native_plan,
+        calibration_override,
+        device_total_memory_bytes,
+    )
+    .map_err(|error| {
+        datafusion::common::DataFusionError::from(Error::from_native(
+            "datafusion_nexus.native_optimizer.graph_ticket_ask",
+            "failed to estimate graph memory from native plan metadata",
+            error,
+        ))
+    })? {
+        scan.estimated_graph_node_count += 1;
+        scan.max_graph_model_ask_bytes =
+            Some(scan.max_graph_model_ask_bytes.map_or(estimate.estimate.requested_bytes, |current: u64| {
+                current.max(estimate.estimate.requested_bytes)
+            }));
+    }
+    Ok(true)
+}
+
+#[cfg(feature = "cugraph")]
+fn update_cugraph_model_ask_scan(cugraph: &CugraphAlgoExec, scan: &mut GraphModelAskScan) -> DataFusionResult<()> {
+    scan.graph_node_count += 1;
+    if let Some(model_ask) = cugraph.graph_model_ask_bytes_for_admission_ticket()? {
+        scan.estimated_graph_node_count += 1;
+        scan.max_graph_model_ask_bytes =
+            Some(scan.max_graph_model_ask_bytes.map_or(model_ask, |current: u64| current.max(model_ask)));
+    }
+    Ok(())
+}
+
+fn native_plan_graph_node_count(native_plan: &nexus_query_engine::QueryPlan) -> usize {
+    native_plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))).count()
+}
+
+fn native_plan_is_graph_dominated(native_plan: &nexus_query_engine::QueryPlan) -> bool {
+    let mut has_graph = false;
+    for node in native_plan.nodes() {
+        match &node.kind {
+            PlanNode::GraphAlgorithm(_) => has_graph = true,
+            PlanNode::Source(_)
+            | PlanNode::Filter(_)
+            | PlanNode::Projection(_)
+            | PlanNode::Limit(_)
+            | PlanNode::EdgeNormalize(_) => {},
+            PlanNode::Aggregate(_)
+            | PlanNode::Window(_)
+            | PlanNode::Sort(_)
+            | PlanNode::Join(_)
+            | PlanNode::Union(_) => {
+                return false;
+            },
+        }
+    }
+    has_graph
+}
+
+fn native_plan_is_graph_ticket_light_fragment(native_plan: &nexus_query_engine::QueryPlan) -> bool {
+    native_plan.nodes().iter().all(|node| {
+        matches!(node.kind, PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Limit(_))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
 
-    use arrow::datatypes::Schema;
-    use datafusion::physical_plan::empty::EmptyExec;
+    use arrow::datatypes::{DataType, Field, Schema};
+    #[cfg(feature = "cugraph")]
+    use arrow::{
+        array::{ArrayRef, Float64Array, Int64Array},
+        record_batch::RecordBatch,
+    };
+    #[cfg(feature = "cugraph")]
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
+    #[cfg(feature = "cugraph")]
+    use nexus_query_engine::GpuResidentSource;
+    use nexus_query_engine::{
+        DeploymentIoCapability, GdsDriverProbeStatus, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
+        GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings,
+        GraphMemoryCalibrationOverride, GraphTopologyFamily, GraphTriangleCountAllParams, KvikioCompatModeStatus,
+        LocalParquetFile, LocalParquetSource, NvidiaFsProbeStatus, QueryPlan, QueryPlanBuilder, QueryService,
+        QueryServiceConfig, QueryServiceTenantConfig, SourceNode, TenantId,
+    };
 
     use super::*;
+    #[cfg(feature = "cugraph")]
+    use crate::graph_sql::{
+        CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphGraphConstructionPolicy,
+        CugraphGraphOptions, CugraphTableReference, CugraphTriangleCountAllParams, result_schema_for_params,
+    };
+    use crate::native_exec::QueryAdmissionSource;
+    #[cfg(feature = "cugraph")]
+    use crate::native_exec::gpu_resident_producer_input_name;
 
     fn attempt(rewritten: bool) -> NativeOptimizationAttempt {
         NativeOptimizationAttempt {
@@ -326,6 +535,131 @@ mod tests {
             adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
             rewritten,
         }
+    }
+
+    fn nongds_deployment() -> DeploymentIoCapability {
+        DeploymentIoCapability::from_probe_inputs(
+            NvidiaFsProbeStatus::DriverMissing,
+            KvikioCompatModeStatus::Unset,
+            GdsDriverProbeStatus::ProbeUnimplemented,
+        )
+    }
+
+    fn backend_admission_config(min_bytes: u64, want_bytes: u64, capacity_bytes: u64) -> NativeCudfExecutionConfig {
+        let tenant_id = TenantId::new("tenant");
+        let service = QueryService::new_admission_only(
+            QueryServiceConfig { device_capacity_bytes: Some(capacity_bytes), ..QueryServiceConfig::default() },
+            vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), min_bytes, want_bytes)],
+            nongds_deployment(),
+        )
+        .unwrap();
+        NativeCudfExecutionConfig::bounded(min_bytes, 512, 1, 3, 1)
+            .with_query_admission_source(QueryAdmissionSource::new(service, tenant_id))
+    }
+
+    fn edge_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+            Field::new("weight", DataType::Float64, false),
+        ]))
+    }
+
+    fn triangle_spec() -> GraphAlgorithmSpec {
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::TriangleCountAll,
+            GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+            GraphConstructionOptions {
+                directed: false,
+                renumber: true,
+                policy: GraphConstructionPolicy::PythonCugraph,
+            },
+            GraphAlgorithmParams::TriangleCountAll(GraphTriangleCountAllParams),
+        )
+    }
+
+    fn edge_source(row_group_rows: Option<Vec<u64>>) -> LocalParquetSource {
+        let mut file = LocalParquetFile::new("edges.parquet");
+        if let Some(row_group_rows) = row_group_rows {
+            file = file.with_row_group_rows(row_group_rows);
+        }
+        LocalParquetSource::from_files(
+            vec![file],
+            edge_schema(),
+            vec!["src".to_string(), "dst".to_string(), "weight".to_string()],
+        )
+    }
+
+    fn graph_native_plan(row_group_rows: Option<Vec<u64>>) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(edge_source(row_group_rows)));
+        let spec = triangle_spec();
+        let graph = builder.try_add_graph_algorithm(source, spec).unwrap();
+        builder.finish_with_host_sink(graph)
+    }
+
+    fn bfs_native_plan(row_group_rows: Option<Vec<u64>>) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(edge_source(row_group_rows)));
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::PythonCugraph },
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        );
+        let graph = builder.try_add_graph_algorithm(source, spec).unwrap();
+        builder.finish_with_host_sink(graph)
+    }
+
+    fn graph_exec(row_group_rows: Option<Vec<u64>>, config: &NativeCudfExecutionConfig) -> NativeCudfExec {
+        NativeCudfExec::try_new(graph_native_plan(row_group_rows), config.clone()).unwrap()
+    }
+
+    fn graph_union_native_plan(row_group_rows: Option<Vec<u64>>) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(edge_source(row_group_rows)));
+        let spec = triangle_spec();
+        let output_schema = Arc::clone(&spec.output_schema);
+        let graph = builder.try_add_graph_algorithm(source, spec).unwrap();
+        let union = builder.add_union(vec![graph, graph], Arc::clone(&output_schema));
+        builder.finish_with_host_sink_schema(union, output_schema)
+    }
+
+    #[cfg(feature = "cugraph")]
+    fn memory_edge_source(rows: usize) -> Arc<dyn ExecutionPlan> {
+        let schema = edge_schema();
+        let src = Arc::new(Int64Array::from_iter_values((0..rows).map(|row| row as i64))) as ArrayRef;
+        let dst = Arc::new(Int64Array::from_iter_values((0..rows).map(|row| row as i64 + 1))) as ArrayRef;
+        let weight = Arc::new(Float64Array::from_iter_values((0..rows).map(|_| 1.0))) as ArrayRef;
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![src, dst, weight]).unwrap();
+        MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap() as Arc<dyn ExecutionPlan>
+    }
+
+    #[cfg(feature = "cugraph")]
+    fn cugraph_triangle_spec() -> CugraphAlgorithmSpec {
+        let params = CugraphAlgorithmParams::TriangleCountAll(CugraphTriangleCountAllParams);
+        CugraphAlgorithmSpec {
+            algorithm: CugraphAlgorithm::TriangleCountAll,
+            table_name: CugraphTableReference::parse("edges").unwrap(),
+            src_col: "src".to_string(),
+            dst_col: "dst".to_string(),
+            weight_col: Some("weight".to_string()),
+            edge_id_col: None,
+            graph_options: CugraphGraphOptions {
+                directed: false,
+                renumber: true,
+                construction_policy: CugraphGraphConstructionPolicy::PythonCugraph,
+            },
+            output_schema: result_schema_for_params(CugraphAlgorithm::TriangleCountAll, &params),
+            params,
+        }
+    }
+
+    #[cfg(feature = "cugraph")]
+    fn composed_cugraph_consumer_plan(input_name: String, schema: Arc<Schema>) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
+        builder.finish_with_host_sink(source)
     }
 
     #[test]
@@ -340,6 +674,7 @@ mod tests {
             &mut optimized,
             &config,
             &native_execution_config,
+            native_execution_config.query_admission_ticket(),
         );
 
         assert!(
@@ -360,11 +695,115 @@ mod tests {
             &mut optimized,
             &config,
             &native_execution_config,
+            native_execution_config.query_admission_ticket(),
         );
 
         assert!(
             plan_is_cpu_fallback_limited(optimized.plan.as_ref()),
             "non-rewritten final plans should be wrapped by the configured CPU fallback limiter"
         );
+    }
+
+    #[test]
+    fn graph_aware_ticket_ask_uses_lowered_graph_model_and_clamps_to_tenant_band() {
+        let min = 64 * 1024 * 1024;
+        let want = 2 * 1024 * 1024 * 1024;
+        let capacity = 4 * 1024 * 1024 * 1024;
+        let config = backend_admission_config(min, want, capacity).with_graph_memory_calibration_override(
+            GraphMemoryCalibrationOverride::none().with_topology_family(GraphTopologyFamily::CitationLikeSparse),
+        );
+        let exec = graph_exec(Some(vec![100, 200]), &config);
+        let model_ask =
+            complete_graph_dominated_model_ask_bytes(&exec, config.graph_memory_calibration_override(), Some(capacity))
+                .unwrap();
+        let expected = config.graph_aware_requested_grant_bytes_for_model_ask(model_ask).unwrap();
+
+        let requested = graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap();
+
+        assert_eq!(requested, expected);
+        assert!(requested.unwrap() < want, "small graph ask should not default to tenant want");
+    }
+
+    #[test]
+    fn graph_aware_ticket_ask_does_not_override_explicit_requested_grant_bytes() {
+        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024)
+            .with_requested_grant_bytes(Some(768 * 1024 * 1024));
+        let exec = graph_exec(Some(vec![100, 200]), &config);
+
+        assert_eq!(graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap(), None);
+        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config).unwrap().unwrap();
+        assert_eq!(ticket.requested_grant_bytes(), Some(768 * 1024 * 1024));
+    }
+
+    #[test]
+    fn graph_aware_ticket_ask_keeps_default_ticket_when_graph_rows_are_unknown() {
+        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+        let exec = graph_exec(None, &config);
+
+        assert_eq!(graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap(), None);
+        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config).unwrap().unwrap();
+        assert_eq!(ticket.requested_grant_bytes(), None);
+    }
+
+    #[test]
+    fn graph_aware_ticket_ask_keeps_default_ticket_for_non_reserving_bfs() {
+        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+        let exec = NativeCudfExec::try_new(bfs_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
+
+        assert_eq!(graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap(), None);
+        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config).unwrap().unwrap();
+        assert_eq!(ticket.requested_grant_bytes(), None);
+    }
+
+    #[test]
+    fn graph_aware_ticket_ask_keeps_default_ticket_when_any_graph_rows_are_unknown() {
+        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+        let known = Arc::new(graph_exec(Some(vec![100, 200]), &config)) as Arc<dyn ExecutionPlan>;
+        let unknown = Arc::new(graph_exec(None, &config)) as Arc<dyn ExecutionPlan>;
+        let plan = UnionExec::try_new(vec![known, unknown]).unwrap();
+
+        assert_eq!(graph_aware_requested_grant_bytes_for_plan(plan.as_ref(), &config).unwrap(), None);
+        let ticket = plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), &config).unwrap().unwrap();
+        assert_eq!(ticket.requested_grant_bytes(), None);
+    }
+
+    #[test]
+    fn graph_aware_ticket_ask_keeps_default_ticket_for_non_graph_dominated_native_plan() {
+        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+        let exec = NativeCudfExec::try_new(graph_union_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
+
+        assert_eq!(graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap(), None);
+        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config).unwrap().unwrap();
+        assert_eq!(ticket.requested_grant_bytes(), None);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn graph_aware_ticket_ask_includes_composed_cugraph_producer() {
+        let min = 64 * 1024 * 1024;
+        let want = 2 * 1024 * 1024 * 1024;
+        let capacity = 4 * 1024 * 1024 * 1024;
+        let config = backend_admission_config(min, want, capacity).with_graph_memory_calibration_override(
+            GraphMemoryCalibrationOverride::none().with_topology_family(GraphTopologyFamily::CitationLikeSparse),
+        );
+        let cugraph = Arc::new(
+            CugraphAlgoExec::try_new(
+                cugraph_triangle_spec(),
+                memory_edge_source(300),
+                vec![],
+                None,
+                None,
+                config.clone(),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let input_name = gpu_resident_producer_input_name(cugraph.as_ref()).unwrap();
+        let consumer = composed_cugraph_consumer_plan(input_name, cugraph.schema());
+        let composed = NativeCudfComposedExec::try_new(consumer, vec![cugraph], config.clone()).unwrap();
+
+        let requested = graph_aware_requested_grant_bytes_for_plan(&composed, &config).unwrap();
+
+        assert!(requested.is_some(), "composed cuGraph producer should contribute a graph-aware ask");
+        assert!(requested.unwrap() < want, "composed cuGraph ask should not default to tenant want");
     }
 }

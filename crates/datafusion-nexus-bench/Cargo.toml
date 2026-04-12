@@ -74,6 +74,10 @@ name = "cugraph_sql_construction_report"
 required-features = ["cugraph"]
 
 [[bin]]
+name = "cugraph_admission_stress"
+required-features = ["cugraph"]
+
+[[bin]]
 name = "substrait_ingress_experiment"
 required-features = ["substrait"]
 

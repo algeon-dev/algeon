@@ -61,6 +61,43 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
 }
 
 #[tokio::test]
+async fn cugraph_sql_gpu_betweenness_reservation_reports_request_calibration_and_seed_mode() {
+    let state = default_backend_cugraph_sql_state();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    ctx.sql("SET datafusion_nexus.request.graph_raw_input_edges = '45564149'").await.unwrap().collect().await.unwrap();
+    ctx.sql("SET datafusion_nexus.request.graph_topology_family = 'citation_like_sparse'")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let df = ctx
+        .sql(
+            "SELECT vertex, value \
+             FROM cugraph_betweenness_centrality('raw_edges', 'src', 'dst', NULL, '{\"k\": 2}') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    assert!(!batches.is_empty());
+
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
+    let graph_reservations = metrics.graph_reservation_rows;
+    assert_eq!(graph_reservations.len(), 1);
+    let row = &graph_reservations[0];
+    assert_eq!(row.algorithm, "betweenness_centrality");
+    assert_eq!(row.outcome, "admitted");
+    assert_eq!(row.raw_input_edges, Some(45_564_149));
+    assert_eq!(row.topology_family, "citation_like_sparse");
+    assert_eq!(row.seed_count, Some(2));
+    assert_eq!(row.seed_mode, "runtime_k_selection");
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_pagerank_filter_sort_limit_stays_gpu_resident_until_collect() {
     let dir = unique_temp_dir("datafusion-nexus-cugraph-pagerank-compose");
     let path = dir.join("tiny_directed_edges.parquet");

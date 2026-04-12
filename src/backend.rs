@@ -535,6 +535,7 @@ fn backend_query_service_config(
         keyed_hash_join_strategy_options: execution_config.keyed_hash_join_strategy_options(),
         aggregate_strategy_execution_options: execution_config.aggregate_strategy_execution_options(),
         source_chunk_planning_options: execution_config.source_chunk_planning_options(),
+        graph_memory_calibration_override: execution_config.graph_memory_calibration_override(),
         stream_pool_size: Some(backend_stream_pool_size(
             max_concurrent_queries,
             execution_config.source_scheduler_policy().max_source_reads_in_flight(),
@@ -1073,7 +1074,11 @@ mod tests {
         for option in DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS {
             let mut extension = extension.clone();
             if option.key.starts_with("request.") {
-                extension.set(option.key, "1").unwrap();
+                let request_value = match option.key {
+                    "request.graph_topology_family" => "citation_like_sparse",
+                    _ => "1",
+                };
+                extension.set(option.key, request_value).unwrap();
                 continue;
             }
             let error = extension.set(option.key, "1").unwrap_err();

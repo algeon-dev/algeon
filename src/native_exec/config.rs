@@ -16,18 +16,25 @@ use datafusion::execution::context::TaskContext;
 use nexus_query_engine::{
     AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, CudfInventory, DynamicFilterExecutionOptions,
     ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache, GpuInventory,
-    GpuLocalParquetSourceCache, KeyedHashJoinStrategyOptions, MemoryControlPolicy, MemoryResourcePolicy,
-    NativePipelineExecutionMode, QueryHandle, QueryId, ServiceStreamPool, SourceChunkPlanningMode,
-    SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy, SourceStorageProfile,
-    StddevSampExecutionMode, TenantQueryContext, TraceId, device_budget_bytes_from_facts,
+    GpuLocalParquetSourceCache, GraphMemoryCalibrationOverride, GraphTopologyFamily, KeyedHashJoinStrategyOptions,
+    MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode, QueryGrantRequest, QueryHandle, QueryId,
+    ServiceStreamPool, SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy,
+    SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext, TraceId, device_budget_bytes_from_facts,
 };
 
 use super::{
-    admission::{QueryAdmissionFacts, QueryAdmissionSource, QueryAdmissionTicket, TicketTenantQueryContext},
+    admission::{
+        QueryAdmissionFacts, QueryAdmissionSource, QueryAdmissionTicket, TicketTenantQueryContext,
+        query_admission_ticket_from_task_context,
+    },
     metrics::NativeMetricsCapture,
     unbounded_native::UnboundedNativeExecutionLimiter,
 };
 use crate::error::Error;
+
+const GRAPH_TICKET_ASK_SAFETY_NUMERATOR: u64 = 6;
+const GRAPH_TICKET_ASK_SAFETY_DENOMINATOR: u64 = 5;
+const GRAPH_TICKET_NON_GRAPH_FLOOR_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Adapter-side native execution configuration.
 ///
@@ -55,6 +62,9 @@ pub struct NativeCudfExecutionConfig {
     keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions,
     aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     source_chunk_planning_options: SourceChunkPlanningOptions,
+    graph_memory_calibration_override: GraphMemoryCalibrationOverride,
+    graph_raw_input_edges_override_configured: bool,
+    graph_topology_family_override_configured: bool,
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
@@ -63,6 +73,7 @@ pub struct NativeCudfExecutionConfig {
     query_admission_facts_recorded: Option<Arc<AtomicBool>>,
     query_admission_source: Option<QueryAdmissionSource>,
     query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
+    requested_grant_min_bytes: Option<u64>,
     requested_grant_bytes: Option<u64>,
     unbounded_native_execution_limiter: Option<UnboundedNativeExecutionLimiter>,
     query_id: Option<QueryId>,
@@ -138,6 +149,11 @@ impl NativeCudfExecutionContext {
 
     fn with_trace_id(mut self, trace_id: TraceId) -> Self {
         self.context = self.context.with_trace_id(trace_id);
+        self
+    }
+
+    fn with_graph_memory_calibration_override(mut self, override_: GraphMemoryCalibrationOverride) -> Self {
+        self.context = self.context.with_graph_memory_calibration_override(override_);
         self
     }
 
@@ -272,6 +288,9 @@ impl NativeCudfExecutionConfig {
             keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
+            graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
+            graph_raw_input_edges_override_configured: false,
+            graph_topology_family_override_configured: false,
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -280,6 +299,7 @@ impl NativeCudfExecutionConfig {
             query_admission_facts_recorded: None,
             query_admission_source: None,
             query_admission_ticket: None,
+            requested_grant_min_bytes: None,
             requested_grant_bytes: None,
             unbounded_native_execution_limiter: None,
             query_id: None,
@@ -381,6 +401,9 @@ impl NativeCudfExecutionConfig {
             keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
+            graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
+            graph_raw_input_edges_override_configured: false,
+            graph_topology_family_override_configured: false,
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -389,6 +412,7 @@ impl NativeCudfExecutionConfig {
             query_admission_facts_recorded: None,
             query_admission_source: None,
             query_admission_ticket: None,
+            requested_grant_min_bytes: None,
             requested_grant_bytes: None,
             unbounded_native_execution_limiter: None,
             query_id: None,
@@ -609,6 +633,31 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Attach fixture/config metadata for graph memory calibration.
+    pub fn with_graph_memory_calibration_override(mut self, override_: GraphMemoryCalibrationOverride) -> Self {
+        self.graph_memory_calibration_override = override_;
+        self.graph_raw_input_edges_override_configured = true;
+        self.graph_topology_family_override_configured = true;
+        self
+    }
+
+    pub(crate) fn with_graph_raw_input_edges_override(mut self, raw_input_edges: Option<u64>) -> Self {
+        self.graph_memory_calibration_override.raw_input_edges = raw_input_edges;
+        self.graph_raw_input_edges_override_configured = true;
+        self
+    }
+
+    pub(crate) fn with_graph_topology_family_override(mut self, topology_family: GraphTopologyFamily) -> Self {
+        self.graph_memory_calibration_override.topology_family = topology_family;
+        self.graph_topology_family_override_configured = true;
+        self
+    }
+
+    /// Fixture/config metadata used by graph memory calibration.
+    pub fn graph_memory_calibration_override(&self) -> GraphMemoryCalibrationOverride {
+        self.graph_memory_calibration_override
+    }
+
     /// Attach an adaptive-only memory-history store for adaptive admission/execution.
     ///
     /// Strict bounded admission does not read this store. Supplying it while strict mode is selected
@@ -681,9 +730,25 @@ impl NativeCudfExecutionConfig {
         self.query_admission_facts_recorded = Some(Arc::new(AtomicBool::new(false)));
         self.query_admission_source = None;
         self.query_admission_ticket = None;
+        self.requested_grant_min_bytes = None;
         self.requested_grant_bytes = None;
         self.unbounded_native_execution_limiter = None;
         self
+    }
+
+    /// Set a request-scoped minimum query-service grant floor.
+    ///
+    /// The value is validated by query-service admission when a plan ticket is
+    /// executed. It must be within the backend tenant grant band and device
+    /// capacity. `None` uses the backend tenant minimum.
+    pub fn with_requested_grant_min_bytes(mut self, requested_grant_min_bytes: Option<u64>) -> Self {
+        self.requested_grant_min_bytes = requested_grant_min_bytes;
+        self
+    }
+
+    /// Request-scoped minimum query-service grant floor in bytes.
+    pub fn requested_grant_min_bytes(&self) -> Option<u64> {
+        self.requested_grant_min_bytes
     }
 
     /// Set a request-scoped preferred query-service grant override.
@@ -720,9 +785,61 @@ impl NativeCudfExecutionConfig {
             && self.query_admission_ticket.is_none()
             && let Some(source) = self.query_admission_source.clone()
         {
-            self.query_admission_ticket = Some(QueryAdmissionTicket::new(source, self.requested_grant_bytes));
+            self.query_admission_ticket =
+                Some(QueryAdmissionTicket::new(source, self.requested_grant_min_bytes, self.requested_grant_bytes));
         }
         self
+    }
+
+    pub(crate) fn new_plan_query_admission_ticket(
+        &self,
+        requested_grant_bytes: Option<u64>,
+    ) -> Option<Arc<QueryAdmissionTicket>> {
+        if self.query_service_handle.is_some() {
+            return None;
+        }
+        let source = self.query_admission_source.clone()?;
+        Some(QueryAdmissionTicket::new(
+            source,
+            self.requested_grant_min_bytes,
+            self.requested_grant_bytes.or(requested_grant_bytes),
+        ))
+    }
+
+    pub(crate) fn graph_aware_requested_grant_bytes_for_model_ask(
+        &self,
+        graph_model_ask_bytes: Option<u64>,
+    ) -> nexus_query_engine::Result<Option<u64>> {
+        if self.requested_grant_bytes.is_some() {
+            return Ok(None);
+        }
+        let Some(graph_model_ask_bytes) = graph_model_ask_bytes else {
+            return Ok(None);
+        };
+        let Some(source) = self.query_admission_source.clone() else {
+            return Ok(None);
+        };
+        let priced = graph_ticket_requested_grant_bytes(graph_model_ask_bytes);
+        let band = source.requested_grant_band(QueryGrantRequest {
+            requested_grant_min_bytes: self.requested_grant_min_bytes,
+            requested_grant_bytes: None,
+        })?;
+        Ok(Some(priced.clamp(band.min_bytes, band.want_bytes)))
+    }
+
+    pub(crate) fn with_graph_aware_plan_query_admission_ticket(
+        mut self,
+        graph_model_ask_bytes: Option<u64>,
+    ) -> nexus_query_engine::Result<Self> {
+        let requested_grant_bytes = self.graph_aware_requested_grant_bytes_for_model_ask(graph_model_ask_bytes)?;
+        if let Some(ticket) = self.new_plan_query_admission_ticket(requested_grant_bytes) {
+            self.query_admission_ticket = Some(ticket);
+        }
+        Ok(self)
+    }
+
+    pub(crate) fn query_admission_source(&self) -> Option<QueryAdmissionSource> {
+        self.query_admission_source.clone()
     }
 
     #[cfg(feature = "cugraph")]
@@ -736,6 +853,16 @@ impl NativeCudfExecutionConfig {
     #[cfg(test)]
     pub(crate) fn query_admission_ticket_id(&self) -> Option<u64> {
         self.query_admission_ticket.as_ref().map(|ticket| ticket.id())
+    }
+
+    fn query_admission_ticket_for_task_context(&self, task_context: &TaskContext) -> Option<Arc<QueryAdmissionTicket>> {
+        query_admission_ticket_from_task_context(task_context)
+            .or_else(|| self.query_admission_ticket.as_ref().map(Arc::clone))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query_admission_ticket_id_for_task_context(&self, task_context: &TaskContext) -> Option<u64> {
+        self.query_admission_ticket_for_task_context(task_context).map(|ticket| ticket.id())
     }
 
     pub(crate) fn query_admission_ticket(&self) -> Option<Arc<QueryAdmissionTicket>> {
@@ -907,15 +1034,7 @@ impl NativeCudfExecutionConfig {
                         .is_some_and(|recorded| !recorded.swap(true, Ordering::AcqRel));
                     NativeCudfExecutionContext::tenant_bound(tenant_context, admission_facts, record_admission_facts)
                 })
-                .map(|mut context| {
-                    if let Some(query_id) = self.query_id.clone() {
-                        context = context.with_query_id(query_id);
-                    }
-                    if let Some(trace_id) = self.trace_id.clone() {
-                        context = context.with_trace_id(trace_id);
-                    }
-                    context
-                })
+                .map(|context| self.stamp_acquired_service_context(context))
                 .map_err(|error| {
                     Error::from_native(
                         "datafusion_nexus.native_exec.context",
@@ -937,6 +1056,7 @@ impl NativeCudfExecutionConfig {
             .with_statistical_aggregate_execution_mode(self.stddev_samp_execution_mode)
             .with_aggregate_strategy_execution_options(self.aggregate_strategy_execution_options)
             .with_source_chunk_planning_options(self.source_chunk_planning_options)
+            .with_graph_memory_calibration_override(self.graph_memory_calibration_override)
             .with_source_storage_profiles(self.source_storage_profiles.clone());
         if let Some(pool) = &self.service_stream_pool {
             builder = builder.with_service_stream_pool(pool.clone());
@@ -981,20 +1101,12 @@ impl NativeCudfExecutionConfig {
         task_context: Arc<TaskContext>,
     ) -> crate::error::Result<NativeCudfExecutionContext> {
         self.validate_query_policies()?;
-        if let Some(ticket) = &self.query_admission_ticket {
+        if let Some(ticket) = self.query_admission_ticket_for_task_context(&task_context) {
             return ticket
                 .acquire_context(task_context, self.cancellation.clone())
                 .await
                 .map(NativeCudfExecutionContext::ticket_bound)
-                .map(|mut context| {
-                    if let Some(query_id) = self.query_id.clone() {
-                        context = context.with_query_id(query_id);
-                    }
-                    if let Some(trace_id) = self.trace_id.clone() {
-                        context = context.with_trace_id(trace_id);
-                    }
-                    context
-                })
+                .map(|context| self.stamp_acquired_service_context(context))
                 .map_err(|error| {
                     Error::from_native(
                         "datafusion_nexus.native_exec.context",
@@ -1004,6 +1116,35 @@ impl NativeCudfExecutionConfig {
                 });
         }
         self.execution_context_with_standalone_owner(Some(Arc::as_ptr(&task_context) as usize))
+    }
+
+    fn stamp_acquired_service_context(&self, mut context: NativeCudfExecutionContext) -> NativeCudfExecutionContext {
+        if let Some(query_id) = self.query_id.clone() {
+            context = context.with_query_id(query_id);
+        }
+        if let Some(trace_id) = self.trace_id.clone() {
+            context = context.with_trace_id(trace_id);
+        }
+        let current = context.context().graph_memory_calibration_override();
+        let graph_memory_calibration_override =
+            self.graph_memory_calibration_override_for_acquired_service_context(current);
+        if graph_memory_calibration_override != current {
+            context = context.with_graph_memory_calibration_override(graph_memory_calibration_override);
+        }
+        context
+    }
+
+    pub(crate) fn graph_memory_calibration_override_for_acquired_service_context(
+        &self,
+        mut current: GraphMemoryCalibrationOverride,
+    ) -> GraphMemoryCalibrationOverride {
+        if self.graph_raw_input_edges_override_configured {
+            current.raw_input_edges = self.graph_memory_calibration_override.raw_input_edges;
+        }
+        if self.graph_topology_family_override_configured {
+            current.topology_family = self.graph_memory_calibration_override.topology_family;
+        }
+        current
     }
 
     fn stamp_native_error_correlation(
@@ -1018,6 +1159,24 @@ impl NativeCudfExecutionConfig {
         }
         error
     }
+}
+
+fn graph_ticket_requested_grant_bytes(graph_model_ask_bytes: u64) -> u64 {
+    let padded = ceil_saturating_ratio(
+        graph_model_ask_bytes,
+        GRAPH_TICKET_ASK_SAFETY_NUMERATOR,
+        GRAPH_TICKET_ASK_SAFETY_DENOMINATOR,
+    );
+    padded.saturating_add(GRAPH_TICKET_NON_GRAPH_FLOOR_BYTES)
+}
+
+fn ceil_saturating_ratio(value: u64, numerator: u64, denominator: u64) -> u64 {
+    if denominator == 0 {
+        return u64::MAX;
+    }
+    let product = u128::from(value).saturating_mul(u128::from(numerator));
+    let rounded = product.saturating_add(u128::from(denominator - 1)) / u128::from(denominator);
+    rounded.min(u128::from(u64::MAX)) as u64
 }
 
 fn detect_auto_sized_device_budget_bytes() -> u64 {
@@ -1081,6 +1240,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::native_exec::admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket};
 
     enum FakeInventory {
         Facts(DeviceFacts),
@@ -1106,6 +1266,14 @@ mod tests {
 
     fn device_facts(total_bytes: u64) -> DeviceFacts {
         DeviceFacts { device: 0, total_bytes, free_bytes: total_bytes / 2, sm_count: Some(16), utilization_pct: None }
+    }
+
+    fn nongds_deployment() -> DeploymentIoCapability {
+        DeploymentIoCapability::from_probe_inputs(
+            NvidiaFsProbeStatus::DriverMissing,
+            KvikioCompatModeStatus::Unset,
+            GdsDriverProbeStatus::ProbeUnimplemented,
+        )
     }
 
     #[test]
@@ -1180,6 +1348,49 @@ mod tests {
         assert_eq!(context.context().trace_id().map(TraceId::as_str), Some("trace-config"));
     }
 
+    #[test]
+    fn service_acquired_context_preserves_service_graph_calibration_without_adapter_override() {
+        let service_override = GraphMemoryCalibrationOverride::default()
+            .with_raw_input_edges(45_564_149)
+            .with_topology_family(GraphTopologyFamily::CitationLikeSparse);
+        let config = NativeCudfExecutionConfig::bounded_auto_sized();
+
+        assert_eq!(
+            config.graph_memory_calibration_override_for_acquired_service_context(service_override),
+            service_override
+        );
+    }
+
+    #[test]
+    fn service_acquired_context_applies_only_configured_adapter_graph_calibration_fields() {
+        let service_override = GraphMemoryCalibrationOverride::default()
+            .with_raw_input_edges(45_564_149)
+            .with_topology_family(GraphTopologyFamily::CitationLikeSparse);
+
+        let raw_reset = NativeCudfExecutionConfig::bounded_auto_sized().with_graph_raw_input_edges_override(None);
+        assert_eq!(
+            raw_reset.graph_memory_calibration_override_for_acquired_service_context(service_override),
+            GraphMemoryCalibrationOverride::default().with_topology_family(GraphTopologyFamily::CitationLikeSparse)
+        );
+
+        let topology_reset = NativeCudfExecutionConfig::bounded_auto_sized()
+            .with_graph_topology_family_override(GraphTopologyFamily::Unknown);
+        assert_eq!(
+            topology_reset.graph_memory_calibration_override_for_acquired_service_context(service_override),
+            GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149)
+        );
+
+        let full_override = GraphMemoryCalibrationOverride::default()
+            .with_raw_input_edges(99)
+            .with_topology_family(GraphTopologyFamily::DenseRemappedSparse);
+        let config =
+            NativeCudfExecutionConfig::bounded_auto_sized().with_graph_memory_calibration_override(full_override);
+        assert_eq!(
+            config.graph_memory_calibration_override_for_acquired_service_context(service_override),
+            full_override
+        );
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     fn standalone_bounded_debug_guard_is_per_device_and_releases() {
@@ -1224,13 +1435,16 @@ mod tests {
             GdsDriverProbeStatus::ProbeUnimplemented,
         );
         let service = QueryService::new_admission_only(
-            QueryServiceConfig::default(),
-            vec![QueryServiceTenantConfig::new(tenant_id.clone(), 1024 * 1024)],
+            QueryServiceConfig { device_capacity_bytes: Some(1024 * 1024), ..QueryServiceConfig::default() },
+            vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), 256, 1024 * 1024)],
             deployment,
         )
         .unwrap();
         let source = QueryAdmissionSource::new(service, tenant_id);
-        let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+            .with_query_admission_source(source)
+            .with_requested_grant_min_bytes(Some(384))
+            .with_requested_grant_bytes(Some(512));
         let config = base.clone().with_plan_query_admission_ticket();
 
         let cloned = config.clone().with_plan_query_admission_ticket();
@@ -1238,6 +1452,9 @@ mod tests {
 
         assert_eq!(config.query_admission_ticket_id(), cloned.query_admission_ticket_id());
         assert_ne!(config.query_admission_ticket_id(), separate_plan.query_admission_ticket_id());
+        let ticket = config.query_admission_ticket().expect("plan ticket should be created");
+        assert_eq!(ticket.requested_grant_min_bytes(), Some(384));
+        assert_eq!(ticket.requested_grant_bytes(), Some(512));
     }
 
     #[test]
@@ -1249,14 +1466,20 @@ mod tests {
             GdsDriverProbeStatus::ProbeUnimplemented,
         );
         let service = QueryService::new_admission_only(
-            QueryServiceConfig { max_concurrent_queries: 1, ..QueryServiceConfig::default() },
-            vec![QueryServiceTenantConfig::new(tenant_id.clone(), 1024 * 1024)],
+            QueryServiceConfig {
+                device_capacity_bytes: Some(1024 * 1024),
+                max_concurrent_queries: 1,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), 256, 1024 * 1024)],
             deployment,
         )
         .unwrap();
         let source = QueryAdmissionSource::new(service.clone(), tenant_id.clone());
         let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_query_admission_source(source)
+            .with_requested_grant_min_bytes(Some(384))
+            .with_requested_grant_bytes(Some(512))
             .with_plan_query_admission_ticket();
         let handle = Arc::new(service.try_admit_query(tenant_id.clone()).unwrap().expect("query should admit"));
 
@@ -1268,10 +1491,54 @@ mod tests {
         assert!(config.has_query_service_handle());
         assert!(config.query_admission_source.is_none());
         assert!(config.query_admission_ticket().is_none());
+        assert_eq!(config.requested_grant_min_bytes(), None);
+        assert_eq!(config.requested_grant_bytes(), None);
         let snapshot = service.admission_snapshot().unwrap();
         assert_eq!(snapshot.active_queries, 1);
         assert_eq!(snapshot.queued_queries, 0);
         assert!(service.try_admit_query(tenant_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn query_admission_ticket_selection_prefers_ambient_query_admission_ticket() {
+        let root_tenant = TenantId::new("root");
+        let root_service = QueryService::new_admission_only(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(2048),
+                max_concurrent_queries: 1,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range(root_tenant.clone(), 256, 2048)],
+            nongds_deployment(),
+        )
+        .unwrap();
+        let child_tenant = TenantId::new("child");
+        let child_service = QueryService::new_admission_only(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(2048),
+                max_concurrent_queries: 1,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range(child_tenant.clone(), 256, 2048)],
+            nongds_deployment(),
+        )
+        .unwrap();
+        let ambient_ticket =
+            QueryAdmissionTicket::new(QueryAdmissionSource::new(root_service.clone(), root_tenant), None, Some(1536));
+        let child_config = NativeCudfExecutionConfig::bounded(256, 512, 1, 3, 1)
+            .with_query_admission_source(QueryAdmissionSource::new(child_service.clone(), child_tenant))
+            .with_requested_grant_bytes(Some(512))
+            .with_plan_query_admission_ticket();
+        let child_ticket_id = child_config.query_admission_ticket_id();
+        let task_context =
+            task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&ambient_ticket));
+
+        assert_ne!(Some(ambient_ticket.id()), child_ticket_id);
+        assert_eq!(
+            child_config.query_admission_ticket_id_for_task_context(&task_context),
+            Some(ambient_ticket.id()),
+            "embedded child config ticket must not win when an ambient root ticket exists"
+        );
     }
 
     #[test]

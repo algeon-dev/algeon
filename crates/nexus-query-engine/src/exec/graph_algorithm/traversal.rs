@@ -1151,6 +1151,13 @@ fn append_bfs_target_metadata_columns(
     if !params.return_target_info {
         return Ok(frame);
     }
+    let frame = frame.copy_into_runtime(context.runtime()).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_target_metadata",
+            "failed to place BFS result in metadata runtime",
+            error,
+        )
+    })?;
     let info = target_info.ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,

@@ -59,6 +59,14 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=2"));
+    assert!(graph_metrics[0].graph_peak_bytes.is_some());
+    assert!(result.metrics().graph_reservation_rows.is_empty());
+    assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
+        event.operation == "datafusion_nexus_cugraph_bfs"
+            && event.boundary == "graph_memory"
+            && event.enforcement == "budget_tracking_memory_resource"
+            && event.allocator_high_water_bytes.is_some()
+    }));
 
     let null_filter = result
         .metrics()
@@ -112,6 +120,70 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=2"));
+    assert!(graph_metrics[0].graph_peak_bytes.is_some());
+    assert!(result.metrics().graph_reservation_rows.is_empty());
+    assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
+        event.operation == "datafusion_nexus_cugraph_bfs"
+            && event.boundary == "graph_memory"
+            && event.enforcement == "budget_tracking_memory_resource"
+            && event.allocator_high_water_bytes.is_some()
+    }));
+}
+
+#[test]
+fn pagerank_python_cugraph_reports_edge_normalize_in_graph_reservation() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_graph_memory_calibration_override(
+            GraphMemoryCalibrationOverride::default()
+                .with_raw_input_edges(45)
+                .with_topology_family(GraphTopologyFamily::CitationLikeSparse),
+        )
+        .build()
+        .unwrap();
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2])), Arc::new(Int32Array::from(vec![1, 2, 0]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::PageRank));
+    assert!(plan.contains_edge_normalize());
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let reservations = &result.metrics().graph_reservation_rows;
+    assert_eq!(reservations.len(), 1);
+    assert!(reservations[0].edge_normalize_inserted);
+    assert_eq!(reservations[0].construction_policy, GraphConstructionPolicy::RawLibcugraph);
+    assert_eq!(reservations[0].raw_input_edges, Some(45));
+    assert_eq!(reservations[0].topology_family, GraphTopologyFamily::CitationLikeSparse);
+    assert!(reservations[0].graph_model_error_ratio.is_some());
 }
 
 #[test]
@@ -166,13 +238,16 @@ fn bounded_bfs_counts_gpu_tables_without_graph_memory_reservation() {
     assert!(!result.metrics().reservation_events.iter().any(|event| {
         event.memory_boundary == "graph_memory" && event.reservation_kind == ReservationKind::GraphAlgorithm
     }));
-    assert!(
-        !result
-            .metrics()
-            .budgeted_execution_events
-            .iter()
-            .any(|event| event.operation == "datafusion_nexus_cugraph_bfs")
-    );
+    let graph_budget = result
+        .metrics()
+        .budgeted_execution_events
+        .iter()
+        .find(|event| event.operation == "datafusion_nexus_cugraph_bfs")
+        .expect("bounded BFS should record a graph budget-tracking observation");
+    assert_eq!(graph_budget.boundary, "graph_memory");
+    assert_eq!(graph_budget.enforcement, "budget_tracking_memory_resource");
+    assert_eq!(result.metrics().graph_algorithm_runtime_rows.len(), 1);
+    assert!(result.metrics().graph_algorithm_runtime_rows[0].graph_peak_bytes.is_some());
     let source_borrow = result
         .metrics()
         .reservation_events
@@ -281,13 +356,16 @@ fn bounded_bfs_counts_side_input_tables_without_graph_memory_reservation() {
     assert!(!result.metrics().reservation_events.iter().any(|event| {
         event.memory_boundary == "graph_memory" && event.reservation_kind == ReservationKind::GraphAlgorithm
     }));
-    assert!(
-        !result
-            .metrics()
-            .budgeted_execution_events
-            .iter()
-            .any(|event| event.operation == "datafusion_nexus_cugraph_bfs")
-    );
+    let graph_budget = result
+        .metrics()
+        .budgeted_execution_events
+        .iter()
+        .find(|event| event.operation == "datafusion_nexus_cugraph_bfs")
+        .expect("bounded BFS with side inputs should record a graph budget-tracking observation");
+    assert_eq!(graph_budget.boundary, "graph_memory");
+    assert_eq!(graph_budget.enforcement, "budget_tracking_memory_resource");
+    assert_eq!(result.metrics().graph_algorithm_runtime_rows.len(), 1);
+    assert!(result.metrics().graph_algorithm_runtime_rows[0].graph_peak_bytes.is_some());
     let source_read_bytes = result
         .metrics()
         .reservation_events
@@ -393,6 +471,17 @@ fn bounded_betweenness_success_keeps_graph_memory_reservation() {
         })
         .expect("bounded betweenness should reserve graph memory");
     assert_eq!(graph_reserve.requested_bytes, graph_reservations[0].requested_bytes);
+    let probe_reserve = result
+        .metrics()
+        .reservation_events
+        .iter()
+        .find(|event| {
+            event.memory_boundary == GRAPH_VERTEX_ESTIMATE_BOUNDARY
+                && event.reservation_kind == ReservationKind::GraphAlgorithm
+                && event.action == MemoryReservationEventAction::Reserve
+        })
+        .expect("bounded betweenness should reserve a floor-sized exact-vertex probe");
+    assert_eq!(probe_reserve.requested_bytes, GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES);
     let graph_budget = result
         .metrics()
         .budgeted_execution_events
@@ -434,12 +523,15 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
         GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
     );
     let model_input = GraphMemoryModelInput {
+        raw_input_edges: None,
         input_edges: edge_count,
         vertex_width_bytes: 4,
         weight_width_bytes: None,
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: None,
+        edge_normalize_inserted: false,
+        topology_family: GraphTopologyFamily::Unknown,
     };
     let fallback_estimate = GraphMemoryModel.estimate(&spec, model_input).unwrap();
     let exact_estimate = GraphMemoryModel
@@ -485,17 +577,38 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
     assert_eq!(graph_reservations[0].vertex_upper_bound, edge_count * 2);
     assert_eq!(graph_reservations[0].vertex_estimate, 4);
     assert_eq!(graph_reservations[0].vertex_estimate_source, GraphVertexEstimateSource::RuntimeExactDistinct);
+    // The error ratio is only recorded when the graph stage raises the device
+    // pool high-water past the pre-stage snapshot; a four-edge graph cannot,
+    // so the honest outcome here is "no physical attribution", never a ratio
+    // computed from the budget-runtime fallback peak.
+    assert!(
+        graph_reservations[0].graph_model_error_ratio.is_none(),
+        "tiny graph stage cannot raise the pool high-water, so no drift ratio may be attached"
+    );
+    let graph_runtime_rows = &result.metrics().graph_algorithm_runtime_rows;
+    assert_eq!(graph_runtime_rows.len(), 1);
+    assert!(
+        graph_runtime_rows[0].graph_peak_bytes.is_some(),
+        "every successful graph runtime row must carry a non-null peak"
+    );
     assert!(
         graph_reservations[0].requested_bytes <= graph_budget_remaining,
         "runtime exact vertex estimate should admit within a budget that the 2E fallback would exceed"
     );
     assert!(fallback_request > graph_budget_remaining);
 
-    assert!(result.metrics().reservation_events.iter().any(|event| {
-        event.memory_boundary == GRAPH_VERTEX_ESTIMATE_BOUNDARY
-            && event.reservation_kind == ReservationKind::GraphAlgorithm
-            && event.action == MemoryReservationEventAction::Reserve
-    }));
+    let probe_expected_bytes = graph_vertex_estimate_probe_bytes(model_input, graph_budget_remaining);
+    let probe_reserve = result
+        .metrics()
+        .reservation_events
+        .iter()
+        .find(|event| {
+            event.memory_boundary == GRAPH_VERTEX_ESTIMATE_BOUNDARY
+                && event.reservation_kind == ReservationKind::GraphAlgorithm
+                && event.action == MemoryReservationEventAction::Reserve
+        })
+        .expect("bounded graph admission should reserve a sized exact-vertex probe");
+    assert_eq!(probe_reserve.requested_bytes, probe_expected_bytes);
     assert!(result.metrics().reservation_events.iter().any(|event| {
         event.memory_boundary == GRAPH_VERTEX_ESTIMATE_BOUNDARY
             && event.reservation_kind == ReservationKind::GraphAlgorithm
@@ -610,6 +723,10 @@ fn betweenness_k_selects_deterministic_approximate_seed_count() {
     assert!(graph_metrics[0].algorithm_parameters.contains("k=2"));
     assert!(graph_metrics[0].algorithm_metadata.contains("approximate=true"));
     assert!(graph_metrics[0].algorithm_metadata.contains("seed_count=2"));
+    let graph_reservations = &result.metrics().graph_reservation_rows;
+    assert_eq!(graph_reservations.len(), 1);
+    assert_eq!(graph_reservations[0].seed_count, Some(2));
+    assert_eq!(graph_reservations[0].seed_mode, Some(GraphSeedMode::RuntimeKSelection));
 }
 
 #[test]
@@ -696,7 +813,8 @@ fn adaptive_betweenness_oom_retries_once_by_chunking_same_seed_set() {
         .filter(|event| event.operation == "datafusion_nexus_cugraph_betweenness_centrality")
         .collect::<Vec<_>>();
     assert_eq!(graph_budget_events.len(), 2, "adaptive retry should budget each seed chunk");
-    for event in graph_budget_events {
+    let max_budget_peak = graph_budget_events.iter().filter_map(|event| event.allocator_high_water_bytes).max();
+    for event in &graph_budget_events {
         assert_eq!(event.boundary, "graph_memory");
         assert_eq!(event.enforcement, "budget_tracking_memory_resource");
         assert_eq!(event.status, "budget_tracking_enforced");
@@ -710,6 +828,12 @@ fn adaptive_betweenness_oom_retries_once_by_chunking_same_seed_set() {
     assert!(graph_metrics[0].algorithm_metadata.contains("adaptive_retry=oom_retry"));
     assert!(graph_metrics[0].algorithm_metadata.contains("seed_count=4"));
     assert!(graph_metrics[0].algorithm_metadata.contains("seed_chunk_batches=2"));
+    if let Some(max_budget_peak) = max_budget_peak {
+        assert!(
+            graph_metrics[0].graph_peak_bytes.is_some_and(|peak| peak >= max_budget_peak),
+            "runtime graph peak should cover the graph-boundary budget high-water fallback"
+        );
+    }
     assert!(
         memory_history.lookup_query_plan(&plan).is_none(),
         "graph retry evidence must not enter query-level adaptive history"

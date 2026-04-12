@@ -44,6 +44,12 @@ pub struct GraphAlgorithmRuntimeMetrics {
     pub output_columns: u64,
     /// Output device bytes when known.
     pub output_device_bytes: Option<u64>,
+    /// Graph-stage CUDA async-pool high-water bytes above pre-stage current use, when observed.
+    ///
+    /// If physical pool usage is unavailable, execution falls back to the
+    /// graph-boundary budget-tracking high-water. Successful graph rows that do
+    /// no graph allocation report zero instead of null.
+    pub graph_peak_bytes: Option<u64>,
     /// Runtime elapsed nanoseconds.
     pub elapsed_ns: u64,
     /// GPU-resident input handoffs performed for this algorithm.
@@ -69,6 +75,19 @@ impl QueryMetrics {
             report.query_id = self.inherited_query_id();
         }
         self.graph_reservation_rows.push(report);
+    }
+
+    /// Records model error evidence on the matching graph reservation row.
+    pub fn record_graph_model_error_ratio(&mut self, node_id: &str, algorithm: &str, measured_peak_bytes: Option<u64>) {
+        let Some(measured_peak_bytes) = measured_peak_bytes else {
+            return;
+        };
+        for row in self.graph_reservation_rows.iter_mut().rev() {
+            if row.node_id == node_id && row.algorithm.as_str() == algorithm {
+                row.record_model_error_ratio(measured_peak_bytes);
+                return;
+            }
+        }
     }
 
     /// Records a graph execution bounded by a budget-tracking RMM resource.

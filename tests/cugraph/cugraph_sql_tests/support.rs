@@ -57,6 +57,28 @@ pub(super) fn plan_metric_usize(plan: &dyn datafusion::physical_plan::ExecutionP
     own + plan.children().into_iter().map(|child| plan_metric_usize(child.as_ref(), name)).sum::<usize>()
 }
 
+pub(super) fn plan_metrics_recursive(
+    plan: &dyn datafusion::physical_plan::ExecutionPlan,
+) -> datafusion::physical_plan::metrics::MetricsSet {
+    let mut metrics = datafusion::physical_plan::metrics::MetricsSet::new();
+    append_plan_metrics(&mut metrics, plan);
+    metrics
+}
+
+fn append_plan_metrics(
+    metrics: &mut datafusion::physical_plan::metrics::MetricsSet,
+    plan: &dyn datafusion::physical_plan::ExecutionPlan,
+) {
+    if let Some(plan_metrics) = plan.metrics() {
+        for metric in plan_metrics.iter() {
+            metrics.push(Arc::clone(metric));
+        }
+    }
+    for child in plan.children() {
+        append_plan_metrics(metrics, child.as_ref());
+    }
+}
+
 pub(super) fn backend_cugraph_sql_state(builder: SessionStateBuilder) -> datafusion::execution::SessionState {
     let backend = NexusGpuBackend::builder()
         .fallback_policy(GpuFallbackPolicy::GpuPreferred)

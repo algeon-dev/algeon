@@ -14,7 +14,7 @@ use arrow::{
 };
 use cudf::{DataFrame, Series, frame::factorization::Codebook};
 use datafusion::{
-    common::{DataFusionError, Result},
+    common::{DataFusionError, Result, stats::Precision},
     datasource::{memory::MemorySourceConfig, physical_plan::FileScanConfig, source::DataSourceExec},
     execution::context::TaskContext,
     physical_expr::{EquivalenceProperties, Partitioning, expressions::Column},
@@ -44,8 +44,10 @@ use nexus_query_engine::{
     GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
     GraphPageRankPersonalizationInput as NativeGraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
     GraphPredicateInput as NativeGraphPredicateInput, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
-    GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, MemoryControlPolicy, ProjectionOutput,
-    QueryMetrics, QueryOutput, QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
+    GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, MemoryControlPolicy, PlanNode,
+    ProjectionOutput, QueryMetrics, QueryOutput, QueryPlanBuilder, SourceNode, execute_query_plan,
+    execute_query_plan_with_gpu_inputs, graph_edge_list_output_rows_for_plan, graph_memory_estimate_for_edge_list,
+    graph_memory_reservation_required,
 };
 
 use super::{
@@ -78,7 +80,7 @@ pub struct CugraphAlgoExec {
 }
 
 impl CugraphAlgoExec {
-    pub(super) fn try_new(
+    pub(crate) fn try_new(
         spec: CugraphAlgorithmSpec,
         edge_source: Arc<dyn ExecutionPlan>,
         predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
@@ -109,6 +111,13 @@ impl CugraphAlgoExec {
     ) -> Result<Self> {
         let schema = projected_schema(&spec.output_schema, projection.as_ref())?;
         let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
+        let edge_normalize_inserted = cugraph_edge_normalize_inserted(&spec, &edge_source_canonical_facts);
+        let native_execution_config = cugraph_execution_config_with_graph_aware_ticket(
+            &spec,
+            edge_source.as_ref(),
+            edge_normalize_inserted,
+            native_execution_config,
+        )?;
         Ok(Self {
             spec,
             edge_source,
@@ -129,8 +138,16 @@ impl CugraphAlgoExec {
     }
 
     pub(crate) fn edge_normalize_inserted(&self) -> bool {
-        self.spec.graph_options.construction_policy == CugraphGraphConstructionPolicy::PythonCugraph
-            && !self.edge_source_canonical_facts.satisfies_python_options(&self.spec)
+        cugraph_edge_normalize_inserted(&self.spec, &self.edge_source_canonical_facts)
+    }
+
+    pub(crate) fn graph_model_ask_bytes_for_admission_ticket(&self) -> Result<Option<u64>> {
+        cugraph_graph_model_ask_bytes(
+            &self.spec,
+            self.edge_source.as_ref(),
+            self.edge_normalize_inserted(),
+            &self.native_execution_config,
+        )
     }
 
     fn validate_standalone_bounded_sources(&self) -> Result<()> {
@@ -538,7 +555,12 @@ fn cugraph_execution_config(
     plan: &dyn ExecutionPlan,
     default_execution_config: &NativeCudfExecutionConfig,
 ) -> NativeCudfExecutionConfig {
-    edge_execution_config(plan, default_execution_config).with_plan_query_admission_ticket()
+    let execution_config = edge_execution_config(plan, default_execution_config);
+    if let Some(ticket) = default_execution_config.query_admission_ticket() {
+        execution_config.with_existing_query_admission_ticket(ticket)
+    } else {
+        execution_config.with_plan_query_admission_ticket()
+    }
 }
 
 fn cugraph_execution_config_for_task_context(
@@ -549,9 +571,129 @@ fn cugraph_execution_config_for_task_context(
     let execution_config = edge_execution_config(plan, default_execution_config);
     if let Some(ticket) = query_admission_ticket_from_task_context(task_context) {
         execution_config.with_existing_query_admission_ticket(ticket)
+    } else if let Some(ticket) = default_execution_config.query_admission_ticket() {
+        execution_config.with_existing_query_admission_ticket(ticket)
     } else {
         execution_config.with_plan_query_admission_ticket()
     }
+}
+
+fn cugraph_execution_config_with_graph_aware_ticket(
+    spec: &CugraphAlgorithmSpec,
+    edge_source: &dyn ExecutionPlan,
+    edge_normalize_inserted: bool,
+    execution_config: NativeCudfExecutionConfig,
+) -> Result<NativeCudfExecutionConfig> {
+    let graph_model_ask =
+        if execution_config.requested_grant_bytes().is_some() || execution_config.query_admission_source().is_none() {
+            None
+        } else {
+            cugraph_graph_model_ask_bytes(spec, edge_source, edge_normalize_inserted, &execution_config)?
+        };
+    execution_config.with_graph_aware_plan_query_admission_ticket(graph_model_ask).map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+            "failed to compute cuGraph SQL graph-aware query admission ticket ask",
+            error,
+        ))
+    })
+}
+
+fn cugraph_graph_model_ask_bytes(
+    spec: &CugraphAlgorithmSpec,
+    edge_source: &dyn ExecutionPlan,
+    edge_normalize_inserted: bool,
+    execution_config: &NativeCudfExecutionConfig,
+) -> Result<Option<u64>> {
+    let algorithm = native_algorithm(spec.algorithm);
+    if !graph_memory_reservation_required(algorithm) {
+        return Ok(None);
+    }
+    let Some(native_spec) = native_graph_spec_for_memory_estimate(spec, edge_normalize_inserted) else {
+        return Ok(None);
+    };
+    if !native_edge_source_allows_graph_aware_ticket(edge_source) {
+        return Ok(None);
+    }
+    let calibration_override = execution_config.graph_memory_calibration_override();
+    let raw_input_edges = edge_source_output_rows(edge_source)?.or(calibration_override.raw_input_edges);
+    let Some(raw_input_edges) = raw_input_edges else {
+        return Ok(None);
+    };
+    let input_edges = cugraph_effective_input_edges(raw_input_edges, spec, edge_normalize_inserted);
+    let device_total_memory_bytes =
+        execution_config.query_admission_source().map(|source| source.max_device_total_memory_bytes());
+    let estimate = graph_memory_estimate_for_edge_list(
+        &native_spec,
+        &edge_source.schema(),
+        input_edges,
+        Some(raw_input_edges),
+        calibration_override,
+        device_total_memory_bytes,
+    )
+    .map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+            "failed to estimate cuGraph SQL graph memory from planning metadata",
+            error,
+        ))
+    })?;
+    Ok(Some(estimate.requested_bytes))
+}
+
+fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result<Option<u64>> {
+    let statistics = edge_source.partition_statistics(None)?;
+    if let Precision::Exact(rows) = statistics.num_rows {
+        return Ok(u64::try_from(rows).ok());
+    }
+    Ok(native_edge_source_output_rows(edge_source))
+}
+
+fn native_edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Option<u64> {
+    if !native_edge_source_allows_graph_aware_ticket(edge_source) {
+        return None;
+    }
+    graph_edge_source_output_rows(edge_source)
+}
+
+fn native_edge_source_allows_graph_aware_ticket(edge_source: &dyn ExecutionPlan) -> bool {
+    if let Some(native) = as_native_cudf_exec(edge_source) {
+        return native_plan_is_graph_ticket_light_edge_source(native.native_plan());
+    }
+    if let Some(native) = as_native_cudf_composed_exec(edge_source) {
+        return native_plan_is_graph_ticket_light_edge_source(native.native_plan());
+    }
+    if let Some(native) = edge_source.downcast_ref::<NativeCudfGpuProducerExec>() {
+        return native_plan_is_graph_ticket_light_edge_source(native.native_plan());
+    }
+    true
+}
+
+fn graph_edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Option<u64> {
+    if let Some(native) = as_native_cudf_exec(edge_source) {
+        return graph_edge_list_output_rows_for_plan(native.native_plan());
+    }
+    if let Some(native) = as_native_cudf_composed_exec(edge_source) {
+        return graph_edge_list_output_rows_for_plan(native.native_plan());
+    }
+    if let Some(native) = edge_source.downcast_ref::<NativeCudfGpuProducerExec>() {
+        return graph_edge_list_output_rows_for_plan(native.native_plan());
+    }
+    None
+}
+
+fn native_plan_is_graph_ticket_light_edge_source(native_plan: &nexus_query_engine::QueryPlan) -> bool {
+    native_plan.nodes().iter().all(|node| {
+        matches!(node.kind, PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Limit(_))
+    })
+}
+
+fn cugraph_effective_input_edges(
+    raw_input_edges: u64,
+    spec: &CugraphAlgorithmSpec,
+    edge_normalize_inserted: bool,
+) -> u64 {
+    raw_input_edges.saturating_mul(if edge_normalize_inserted && !spec.graph_options.directed { 2 } else { 1 })
 }
 
 fn task_context_with_cugraph_execution_ticket(
@@ -643,6 +785,11 @@ impl CugraphEdgeCanonicalFacts {
     }
 }
 
+fn cugraph_edge_normalize_inserted(spec: &CugraphAlgorithmSpec, facts: &CugraphEdgeCanonicalFacts) -> bool {
+    spec.graph_options.construction_policy == CugraphGraphConstructionPolicy::PythonCugraph
+        && !facts.satisfies_python_options(spec)
+}
+
 fn cugraph_edge_canonical_facts(plan: &dyn ExecutionPlan, spec: &CugraphAlgorithmSpec) -> CugraphEdgeCanonicalFacts {
     if let Some(aggregate) = plan.downcast_ref::<AggregateExec>() {
         let input_facts = cugraph_edge_canonical_facts(aggregate.input().as_ref(), spec);
@@ -676,19 +823,39 @@ fn cugraph_edge_canonical_facts(plan: &dyn ExecutionPlan, spec: &CugraphAlgorith
 mod tests {
     use std::sync::Arc;
 
-    use arrow::datatypes::Schema;
-    use datafusion::{execution::context::TaskContext, physical_plan::empty::EmptyExec};
+    use arrow::{
+        array::{ArrayRef, Float64Array, Int64Array},
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use datafusion::{
+        common::ScalarValue,
+        execution::context::TaskContext,
+        logical_expr::Operator,
+        physical_expr::expressions::{binary, col, lit},
+        physical_plan::{empty::EmptyExec, filter::FilterExec},
+    };
     use nexus_query_engine::{
-        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, LiteralBatchSource, NvidiaFsProbeStatus,
-        QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+        DeploymentIoCapability, Expr, GdsDriverProbeStatus, KvikioCompatModeStatus, LiteralBatchSource,
+        LocalParquetFile, LocalParquetSource, NvidiaFsProbeStatus, QueryService, QueryServiceConfig,
+        QueryServiceTenantConfig, SortExpr, SortSpec, TenantId,
     };
 
     use super::*;
-    use crate::native_exec::{
-        QueryAdmissionSource, task_context_with_query_admission_ticket, wrap_plan_with_query_admission_ticket,
+    use crate::{
+        graph_sql::{
+            CugraphGraphOptions, CugraphTableReference, CugraphTriangleCountAllParams, result_schema_for_params,
+        },
+        native_exec::{
+            QueryAdmissionSource, task_context_with_query_admission_ticket, wrap_plan_with_query_admission_ticket,
+        },
     };
 
     fn admission_only_source() -> QueryAdmissionSource {
+        admission_source_with_band(1024 * 1024, 1024 * 1024, 1024 * 1024)
+    }
+
+    fn admission_source_with_band(min_bytes: u64, want_bytes: u64, capacity_bytes: u64) -> QueryAdmissionSource {
         let tenant_id = TenantId::new("cugraph-test");
         let deployment = DeploymentIoCapability::from_probe_inputs(
             NvidiaFsProbeStatus::DriverMissing,
@@ -696,12 +863,97 @@ mod tests {
             GdsDriverProbeStatus::ProbeUnimplemented,
         );
         let service = QueryService::new_admission_only(
-            QueryServiceConfig::default(),
-            vec![QueryServiceTenantConfig::new(tenant_id.clone(), 1024 * 1024)],
+            QueryServiceConfig {
+                device_capacity_bytes: Some(capacity_bytes),
+                max_concurrent_queries: 1,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), min_bytes, want_bytes)],
             deployment,
         )
         .expect("admission-only query service should build");
         QueryAdmissionSource::new(service, tenant_id)
+    }
+
+    fn edge_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+            Field::new("weight", DataType::Float64, false),
+        ]))
+    }
+
+    fn memory_edge_source(rows: usize) -> Arc<dyn ExecutionPlan> {
+        let schema = edge_schema();
+        let src = Arc::new(Int64Array::from_iter_values((0..rows).map(|row| row as i64))) as ArrayRef;
+        let dst = Arc::new(Int64Array::from_iter_values((0..rows).map(|row| row as i64 + 1))) as ArrayRef;
+        let weight = Arc::new(Float64Array::from_iter_values((0..rows).map(|_| 1.0))) as ArrayRef;
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![src, dst, weight]).unwrap();
+        MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap() as Arc<dyn ExecutionPlan>
+    }
+
+    #[test]
+    fn edge_source_output_rows_rejects_inexact_datafusion_statistics() {
+        let edge_source = memory_edge_source(1_000);
+        let schema = edge_source.schema();
+        let predicate =
+            binary(col("src", &schema).unwrap(), Operator::Gt, lit(ScalarValue::Int64(Some(500))), &schema).unwrap();
+        let filter = FilterExec::try_new(predicate, edge_source).unwrap();
+
+        assert_eq!(edge_source_output_rows(&filter).unwrap(), None);
+    }
+
+    fn native_edge_source(row_group_rows: Vec<u64>, config: &NativeCudfExecutionConfig) -> Arc<dyn ExecutionPlan> {
+        native_edge_source_with_root(row_group_rows, config, |_, source| source)
+    }
+
+    fn sorted_native_edge_source(
+        row_group_rows: Vec<u64>,
+        config: &NativeCudfExecutionConfig,
+    ) -> Arc<dyn ExecutionPlan> {
+        native_edge_source_with_root(row_group_rows, config, |builder, source| {
+            builder.add_sort(
+                source,
+                SortSpec::new(vec![SortExpr::new(Expr::column("src"), false, false)]),
+                edge_schema(),
+            )
+        })
+    }
+
+    fn native_edge_source_with_root(
+        row_group_rows: Vec<u64>,
+        config: &NativeCudfExecutionConfig,
+        root: impl FnOnce(&mut QueryPlanBuilder, nexus_query_engine::NodeId) -> nexus_query_engine::NodeId,
+    ) -> Arc<dyn ExecutionPlan> {
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("edges.parquet").with_row_group_rows(row_group_rows)],
+            edge_schema(),
+            vec!["src".to_string(), "dst".to_string(), "weight".to_string()],
+        );
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let root = root(&mut builder, source);
+        let plan = builder.finish_with_host_sink(root);
+        Arc::new(NativeCudfExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
+    }
+
+    fn triangle_spec() -> CugraphAlgorithmSpec {
+        let params = CugraphAlgorithmParams::TriangleCountAll(CugraphTriangleCountAllParams);
+        CugraphAlgorithmSpec {
+            algorithm: CugraphAlgorithm::TriangleCountAll,
+            table_name: CugraphTableReference::parse("edges").unwrap(),
+            src_col: "src".to_string(),
+            dst_col: "dst".to_string(),
+            weight_col: Some("weight".to_string()),
+            edge_id_col: None,
+            graph_options: CugraphGraphOptions {
+                directed: false,
+                renumber: true,
+                construction_policy: CugraphGraphConstructionPolicy::PythonCugraph,
+            },
+            output_schema: result_schema_for_params(CugraphAlgorithm::TriangleCountAll, &params),
+            params,
+        }
     }
 
     #[test]
@@ -720,6 +972,108 @@ mod tests {
         let cloned = cugraph_execution_config(&plan, &graph_config);
 
         assert_eq!(cloned.query_admission_ticket_id(), Some(ticket_id));
+    }
+
+    #[test]
+    fn cugraph_algo_exec_mints_graph_aware_ticket_below_tenant_want() {
+        let min = 64 * 1024 * 1024;
+        let want = 2 * 1024 * 1024 * 1024;
+        let capacity = 4 * 1024 * 1024 * 1024;
+        let source = admission_source_with_band(min, want, capacity);
+        let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1)
+            .with_query_admission_source(source)
+            .with_graph_memory_calibration_override(
+                nexus_query_engine::GraphMemoryCalibrationOverride::none()
+                    .with_topology_family(nexus_query_engine::GraphTopologyFamily::CitationLikeSparse),
+            );
+
+        let exec = CugraphAlgoExec::try_new(triangle_spec(), memory_edge_source(300), vec![], None, None, config)
+            .expect("cuGraph exec should build with graph-aware admission ticket");
+        let ticket =
+            exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
+        let requested = ticket.requested_grant_bytes().expect("known edge rows should produce graph-aware ask");
+
+        assert!(requested >= min);
+        assert!(requested < want, "small graph ask should not default to tenant want");
+    }
+
+    #[test]
+    fn cugraph_graph_model_ask_prefers_exact_edge_rows_over_configured_raw_edges() {
+        let min = 64 * 1024 * 1024;
+        let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1).with_graph_memory_calibration_override(
+            nexus_query_engine::GraphMemoryCalibrationOverride::none()
+                .with_topology_family(nexus_query_engine::GraphTopologyFamily::CitationLikeSparse),
+        );
+        let stale_config = config.clone().with_graph_memory_calibration_override(
+            nexus_query_engine::GraphMemoryCalibrationOverride::none()
+                .with_raw_input_edges(30_000)
+                .with_topology_family(nexus_query_engine::GraphTopologyFamily::CitationLikeSparse),
+        );
+        let edge_source = memory_edge_source(300);
+
+        let exact_ask = cugraph_graph_model_ask_bytes(&triangle_spec(), edge_source.as_ref(), true, &config)
+            .unwrap()
+            .expect("exact rows should produce graph ask");
+        let stale_override_ask =
+            cugraph_graph_model_ask_bytes(&triangle_spec(), edge_source.as_ref(), true, &stale_config)
+                .unwrap()
+                .expect("exact rows should win over stale override");
+
+        assert_eq!(stale_override_ask, exact_ask);
+    }
+
+    #[test]
+    fn cugraph_algo_exec_uses_native_edge_source_rows_for_graph_aware_ticket() {
+        let min = 64 * 1024 * 1024;
+        let want = 2 * 1024 * 1024 * 1024;
+        let capacity = 4 * 1024 * 1024 * 1024;
+        let source = admission_source_with_band(min, want, capacity);
+        let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1)
+            .with_query_admission_source(source)
+            .with_graph_memory_calibration_override(
+                nexus_query_engine::GraphMemoryCalibrationOverride::none()
+                    .with_topology_family(nexus_query_engine::GraphTopologyFamily::CitationLikeSparse),
+            );
+        let edge_source = native_edge_source(vec![100, 200], &config);
+
+        let exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
+            .expect("cuGraph exec should price native edge-source row evidence");
+        let ticket =
+            exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
+        let requested =
+            ticket.requested_grant_bytes().expect("native edge-source row evidence should produce graph-aware ask");
+
+        assert!(requested >= min);
+        assert!(requested < want, "native edge-source graph ask should not default to tenant want");
+    }
+
+    #[test]
+    fn cugraph_algo_exec_keeps_default_ticket_for_non_light_native_edge_source() {
+        let min = 64 * 1024 * 1024;
+        let want = 2 * 1024 * 1024 * 1024;
+        let capacity = 4 * 1024 * 1024 * 1024;
+        let source = admission_source_with_band(min, want, capacity);
+        let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1)
+            .with_query_admission_source(source)
+            .with_graph_memory_calibration_override(
+                nexus_query_engine::GraphMemoryCalibrationOverride::none()
+                    .with_raw_input_edges(300)
+                    .with_topology_family(nexus_query_engine::GraphTopologyFamily::CitationLikeSparse),
+            );
+        let edge_source = sorted_native_edge_source(vec![100, 200], &config);
+
+        let exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
+            .expect("cuGraph exec should build with non-light native edge source");
+        let ticket = exec
+            .native_execution_config
+            .query_admission_ticket()
+            .expect("cuGraph exec should still mint a plan ticket");
+
+        assert_eq!(
+            ticket.requested_grant_bytes(),
+            None,
+            "non-light native preprocessing should keep tenant-default ask"
+        );
     }
 
     #[test]
@@ -2299,6 +2653,44 @@ fn native_graph_spec(
         params,
         output_schema,
     )
+}
+
+fn native_graph_spec_for_memory_estimate(
+    spec: &CugraphAlgorithmSpec,
+    edge_normalize_inserted: bool,
+) -> Option<GraphAlgorithmSpec> {
+    let mut edge_columns =
+        GraphEdgeColumnBindings::new(spec.src_col.clone(), spec.dst_col.clone(), spec.weight_col.clone());
+    if let Some(edge_id) = &spec.edge_id_col {
+        edge_columns = edge_columns.with_edge_id(edge_id.clone());
+    }
+    let algorithm = native_algorithm(spec.algorithm);
+    let params = native_algorithm_params_for_memory_estimate(&spec.params)?;
+    let output_schema = algorithm.definition().result_schema_for_params(&params);
+    Some(
+        GraphAlgorithmSpec::new(
+            algorithm,
+            edge_columns,
+            GraphConstructionOptions {
+                directed: spec.graph_options.directed,
+                renumber: spec.graph_options.renumber,
+                policy: GraphConstructionPolicy::RawLibcugraph,
+            },
+            params,
+            output_schema,
+        )
+        .with_edge_normalize_inserted(edge_normalize_inserted),
+    )
+}
+
+fn native_algorithm_params_for_memory_estimate(params: &CugraphAlgorithmParams) -> Option<GraphAlgorithmParams> {
+    match params {
+        // These variants require side-input node ids in the native IR. Fall back
+        // to tenant-default admission instead of minting placeholder ids.
+        CugraphAlgorithmParams::PersonalizedPageRank(_) => None,
+        CugraphAlgorithmParams::Bfs(_) => None,
+        _ => Some(native_algorithm_params(params, &[])),
+    }
 }
 
 fn bfs_normalized_output_projection(

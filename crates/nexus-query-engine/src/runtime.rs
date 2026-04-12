@@ -24,6 +24,7 @@ use crate::{
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
+    graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
 };
@@ -64,8 +65,8 @@ pub use policy::{
     DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind, SourceChunkPlanningMode,
 };
 pub use query_service::{
-    QueryAdmissionWaiter, QueryHandle, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
-    QueryServiceTenantConfig, SlotGuarantee, TenantId, TenantQueryContext, TenantQueueDepth,
+    QueryAdmissionWaiter, QueryGrantBand, QueryGrantRequest, QueryHandle, QueryService, QueryServiceAdmissionSnapshot,
+    QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId, TenantQueryContext, TenantQueueDepth,
 };
 pub use reservation::{MemoryReservationRequest, RetryFacts};
 pub(crate) use service_stream::SourceReadStreamLease;
@@ -374,6 +375,8 @@ pub struct ExecutionContext {
     aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     /// Expert policy for local-throughput source chunk planning.
     source_chunk_planning_options: SourceChunkPlanningOptions,
+    /// Optional graph calibration metadata supplied by fixture/config.
+    graph_memory_calibration_override: GraphMemoryCalibrationOverride,
     /// Optional adaptive-only memory history store.
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     /// Optional durable GPU hash-join build cache.
@@ -443,6 +446,7 @@ struct ExecutionContextParts {
     stddev_samp_execution_mode: StddevSampExecutionMode,
     aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     source_chunk_planning_options: SourceChunkPlanningOptions,
+    graph_memory_calibration_override: GraphMemoryCalibrationOverride,
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
@@ -505,6 +509,7 @@ impl ExecutionContext {
             stddev_samp_execution_mode: StddevSampExecutionMode::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
+            graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -542,6 +547,7 @@ impl ExecutionContext {
             stddev_samp_execution_mode: parts.stddev_samp_execution_mode,
             aggregate_strategy_execution_options: parts.aggregate_strategy_execution_options,
             source_chunk_planning_options: parts.source_chunk_planning_options,
+            graph_memory_calibration_override: parts.graph_memory_calibration_override,
             adaptive_memory_history: parts.adaptive_memory_history,
             hash_join_build_cache: parts.hash_join_build_cache,
             local_parquet_source_cache: parts.local_parquet_source_cache,
@@ -642,6 +648,7 @@ impl ExecutionContext {
             stddev_samp_execution_mode: self.stddev_samp_execution_mode,
             aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
             source_chunk_planning_options: self.source_chunk_planning_options,
+            graph_memory_calibration_override: self.graph_memory_calibration_override,
             adaptive_memory_history: self.adaptive_memory_history.as_ref().map(Arc::clone),
             hash_join_build_cache: self.hash_join_build_cache.as_ref().map(Arc::clone),
             local_parquet_source_cache: self.local_parquet_source_cache.as_ref().map(Arc::clone),
@@ -1063,6 +1070,18 @@ impl ExecutionContext {
         self.source_chunk_planning_options
     }
 
+    /// Returns fixture/config-supplied graph calibration metadata.
+    pub fn graph_memory_calibration_override(&self) -> GraphMemoryCalibrationOverride {
+        self.graph_memory_calibration_override
+    }
+
+    /// Returns a cloned context with different graph calibration metadata.
+    pub fn with_graph_memory_calibration_override(&self, override_: GraphMemoryCalibrationOverride) -> Self {
+        let mut context = self.clone();
+        context.graph_memory_calibration_override = override_;
+        context
+    }
+
     /// Returns the adaptive-only memory history store, when configured.
     pub fn adaptive_memory_history(&self) -> Option<Arc<AdaptiveMemoryHistory>> {
         self.adaptive_memory_history.as_ref().map(Arc::clone)
@@ -1142,6 +1161,8 @@ pub struct ExecutionContextBuilder {
     aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     /// Expert policy for local-throughput source chunk planning.
     source_chunk_planning_options: SourceChunkPlanningOptions,
+    /// Optional graph calibration metadata supplied by fixture/config.
+    graph_memory_calibration_override: GraphMemoryCalibrationOverride,
     /// Optional adaptive-only memory history store.
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     /// Optional durable hash-join build cache.
@@ -1347,6 +1368,12 @@ impl ExecutionContextBuilder {
         self
     }
 
+    /// Supplies fixture/config graph calibration metadata.
+    pub fn with_graph_memory_calibration_override(mut self, override_: GraphMemoryCalibrationOverride) -> Self {
+        self.graph_memory_calibration_override = override_;
+        self
+    }
+
     /// Provides the adaptive-only memory history store.
     pub fn with_adaptive_memory_history(mut self, memory_history: Arc<AdaptiveMemoryHistory>) -> Self {
         self.adaptive_memory_history = Some(memory_history);
@@ -1459,6 +1486,7 @@ impl ExecutionContextBuilder {
                 stddev_samp_execution_mode: self.stddev_samp_execution_mode,
                 aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
                 source_chunk_planning_options: self.source_chunk_planning_options,
+                graph_memory_calibration_override: self.graph_memory_calibration_override,
                 adaptive_memory_history: self.adaptive_memory_history,
                 hash_join_build_cache: self.hash_join_build_cache,
                 local_parquet_source_cache: self.local_parquet_source_cache,
@@ -1530,6 +1558,7 @@ impl ExecutionContextBuilder {
             stddev_samp_execution_mode: self.stddev_samp_execution_mode,
             aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
             source_chunk_planning_options: self.source_chunk_planning_options,
+            graph_memory_calibration_override: self.graph_memory_calibration_override,
             adaptive_memory_history: self.adaptive_memory_history,
             hash_join_build_cache: self.hash_join_build_cache,
             local_parquet_source_cache: self.local_parquet_source_cache,
