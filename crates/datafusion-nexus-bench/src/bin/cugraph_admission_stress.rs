@@ -60,6 +60,7 @@ const ENV_QUERY_TIMEOUT_MS: &str = "CUDF_CUGRAPH_ADMISSION_QUERY_TIMEOUT_MS";
 const ENV_OUT_DIR: &str = "CUDF_CUGRAPH_ADMISSION_OUT_DIR";
 const ENV_RUN_ID: &str = "CUDF_CUGRAPH_ADMISSION_RUN_ID";
 const ENV_BFS_SEED: &str = "CUDF_CUGRAPH_ADMISSION_BFS_SEED";
+const ENV_BATCH_SIZE: &str = "CUDF_CUGRAPH_ADMISSION_BATCH_SIZE";
 const ENV_PRINT_PLANNING: &str = "CUDF_CUGRAPH_ADMISSION_PRINT_PLANNING";
 
 /// Retained optimizer rules (diagnostic planning-report mode only).
@@ -160,6 +161,7 @@ struct HarnessConfig {
     out_dir: PathBuf,
     run_id: String,
     bfs_seed: Option<i64>,
+    batch_size: Option<usize>,
 }
 
 impl HarnessConfig {
@@ -193,6 +195,7 @@ impl HarnessConfig {
             out_dir,
             run_id,
             bfs_seed: parse_optional_i64(ENV_BFS_SEED)?,
+            batch_size: parse_optional_usize(ENV_BATCH_SIZE)?,
         })
     }
 }
@@ -232,6 +235,16 @@ fn catalog(seed: i64) -> Vec<QuerySpec> {
             format!(
                 "SELECT COUNT(*) AS reached FROM cugraph_bfs('citation_edges', {seed}, 'src', 'dst', NULL, \
                  '{{\"depth_limit\": 3, \"output_mode\": \"normalized\"}}')"
+            ),
+            false,
+            false,
+        ),
+        spec("edge_scan", "SELECT src, dst FROM citation_edges".to_string(), false, false),
+        spec(
+            "bfs_deep",
+            format!(
+                "SELECT COUNT(*) AS reached FROM cugraph_bfs('citation_edges', {seed}, 'src', 'dst', NULL, \
+                 '{{\"output_mode\": \"normalized\"}}')"
             ),
             false,
             false,
@@ -414,11 +427,14 @@ async fn build_session(
     config: &HarnessConfig,
     request: &Request,
 ) -> Result<SessionContext, Box<dyn Error>> {
-    let session_config = SessionConfig::new()
+    let mut session_config = SessionConfig::new()
         .with_target_partitions(1)
         .with_repartition_file_scans(false)
         .with_repartition_aggregations(false)
         .with_repartition_sorts(false);
+    if let Some(batch_size) = config.batch_size {
+        session_config = session_config.with_batch_size(batch_size);
+    }
     let builder = SessionStateBuilder::new().with_config(session_config).with_default_features();
     let builder = backend.install_on_with_cugraph_sql(builder, CugraphSqlConfig::default())?;
     // Diagnostic mode: swap in a retained copy of the optimizer rule (same
@@ -1070,6 +1086,10 @@ fn parse_optional_i64(name: &str) -> Result<Option<i64>, Box<dyn Error>> {
     std::env::var(name).ok().map(|raw| raw.trim().parse::<i64>().map_err(Into::into)).transpose()
 }
 
+fn parse_optional_usize(name: &str) -> Result<Option<usize>, Box<dyn Error>> {
+    std::env::var(name).ok().map(|raw| raw.trim().parse::<usize>().map_err(Into::into)).transpose()
+}
+
 fn fmt_opt<T: ToString>(value: Option<T>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
@@ -1120,6 +1140,7 @@ mod tests {
             out_dir: PathBuf::from("."),
             run_id: "test".into(),
             bfs_seed: None,
+            batch_size: None,
         };
         let request = Request {
             task_index: 0,
@@ -1155,6 +1176,7 @@ mod tests {
             out_dir: PathBuf::from("."),
             run_id: "test".into(),
             bfs_seed: None,
+            batch_size: None,
         };
         let request = Request {
             task_index: 0,
