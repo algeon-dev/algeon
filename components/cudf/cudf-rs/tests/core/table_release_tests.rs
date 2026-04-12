@@ -1,13 +1,12 @@
 //! Tests for Table::into_columns.
 
-use cudf::{
-    TypeId,
-    core::{Column, Table},
-};
+use cudf::{Runtime, TypeId, core::Table};
+
+use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs};
 
 #[test]
 fn test_into_columns_single_column() {
-    let c1 = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let c1 = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
 
     let columns = table.into_columns().unwrap();
@@ -20,9 +19,9 @@ fn test_into_columns_single_column() {
 
 #[test]
 fn test_into_columns_multiple_columns() {
-    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let c2 = Column::from_slice(&[4.0f64, 5.0, 6.0]).unwrap();
-    let c3 = Column::from_slice(&[7i64, 8, 9]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = column_from_slice(&[4.0f64, 5.0, 6.0]).unwrap();
+    let c3 = column_from_slice(&[7i64, 8, 9]).unwrap();
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
 
     let columns = table.into_columns().unwrap();
@@ -43,16 +42,16 @@ fn test_into_columns_multiple_columns() {
 
 #[test]
 fn test_into_columns_empty_table() {
-    let table = Table::from_columns(vec![]).unwrap();
+    let table = Runtime::new().unwrap().empty_table().unwrap();
     let columns = table.into_columns().unwrap();
     assert_eq!(columns.len(), 0);
 }
 
 #[test]
 fn test_into_columns_preserves_column_order() {
-    let c1 = Column::from_slice(&[100i32]).unwrap();
-    let c2 = Column::from_slice(&[200i64]).unwrap();
-    let c3 = Column::from_slice(&[3.25f32]).unwrap();
+    let c1 = column_from_slice(&[100i32]).unwrap();
+    let c2 = column_from_slice(&[200i64]).unwrap();
+    let c3 = column_from_slice(&[3.25f32]).unwrap();
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
 
     let columns = table.into_columns().unwrap();
@@ -65,7 +64,7 @@ fn test_into_columns_preserves_column_order() {
 
 #[test]
 fn test_into_columns_nullable_column() {
-    let c1 = Column::from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
+    let c1 = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
 
     let columns = table.into_columns().unwrap();
@@ -84,8 +83,8 @@ fn test_into_columns_nullable_column() {
 #[test]
 fn test_into_columns_roundtrip() {
     // Create table, decompose into columns, re-create table, verify data.
-    let c1 = Column::from_slice(&[10i32, 20]).unwrap();
-    let c2 = Column::from_slice(&[1.5f64, 2.5]).unwrap();
+    let c1 = column_from_slice(&[10i32, 20]).unwrap();
+    let c2 = column_from_slice(&[1.5f64, 2.5]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
 
     let columns = table.into_columns().unwrap();
@@ -106,7 +105,7 @@ fn test_into_columns_roundtrip() {
 
 #[test]
 fn test_into_columns_with_string_column() {
-    let c1 = Column::from_strs(&["hello", "world"]).unwrap();
+    let c1 = column_from_strs(&["hello", "world"]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
 
     let columns = table.into_columns().unwrap();
@@ -120,8 +119,8 @@ fn test_into_columns_with_string_column() {
 #[test]
 fn test_into_columns_with_empty_rows() {
     // Table with columns that have zero rows.
-    let c1 = Column::empty(TypeId::Int32).unwrap();
-    let c2 = Column::empty(TypeId::Float64).unwrap();
+    let c1 = crate::common::empty_column(TypeId::Int32).unwrap();
+    let c2 = crate::common::empty_column(TypeId::Float64).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
 
     let columns = table.into_columns().unwrap();

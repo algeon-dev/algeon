@@ -1,23 +1,20 @@
 //! Tests for filter operations.
 
-use cudf::{
-    core::{Column, Table},
-    ops::filter,
-};
+use cudf::{core::Table, ops::filter};
 
 use crate::common::{
-    explicit_bool_column, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    reset_exec_observation, reset_sync_observation,
+    column_from_slice, explicit_bool_column, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
 #[test]
 fn test_boolean_mask_basic() {
-    let col = Column::from_slice(&[10i32, 20, 30, 40]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30, 40]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
     // Keep rows 0 and 2.
-    let mask = Column::from_slice(&[true, false, true, false]).unwrap();
+    let mask = column_from_slice(&[true, false, true, false]).unwrap();
     let mask_view = mask.view().unwrap();
 
     let filtered = filter::apply_boolean_mask(&view, &mask_view).unwrap();
@@ -29,11 +26,11 @@ fn test_boolean_mask_basic() {
 
 #[test]
 fn test_boolean_mask_all_false() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
-    let mask = Column::from_slice(&[false, false, false]).unwrap();
+    let mask = column_from_slice(&[false, false, false]).unwrap();
     let mask_view = mask.view().unwrap();
 
     let filtered = filter::apply_boolean_mask(&view, &mask_view).unwrap();
@@ -43,11 +40,11 @@ fn test_boolean_mask_all_false() {
 
 #[test]
 fn test_boolean_mask_all_true() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
-    let mask = Column::from_slice(&[true, true, true]).unwrap();
+    let mask = column_from_slice(&[true, true, true]).unwrap();
     let mask_view = mask.view().unwrap();
 
     let filtered = filter::apply_boolean_mask(&view, &mask_view).unwrap();
@@ -59,12 +56,12 @@ fn test_boolean_mask_all_true() {
 
 #[test]
 fn test_boolean_mask_multi_column() {
-    let c0 = Column::from_slice(&[1i32, 2, 3, 4]).unwrap();
-    let c1 = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
+    let c0 = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
+    let c1 = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
     let table = Table::from_columns(vec![c0, c1]).unwrap();
     let view = table.view().unwrap();
 
-    let mask = Column::from_slice(&[false, true, false, true]).unwrap();
+    let mask = column_from_slice(&[false, true, false, true]).unwrap();
     let mask_view = mask.view().unwrap();
 
     let filtered = filter::apply_boolean_mask(&view, &mask_view).unwrap();

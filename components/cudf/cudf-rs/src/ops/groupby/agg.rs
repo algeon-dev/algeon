@@ -66,6 +66,7 @@ pub(crate) fn groupby_aggregate_impl(
     keys: &TableView<'_>,
     requests: &[AggregationRequest<'_>],
     null_policy: NullPolicy,
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<GroupByResult> {
@@ -177,7 +178,7 @@ pub(crate) fn groupby_aggregate_impl(
         ],
     )?;
 
-    let keys_table = unsafe { Table::from_raw(out_keys) };
+    let keys_table = unsafe { Table::from_raw_with_domain(out_keys, std::sync::Arc::clone(output_domain)) };
     let total = usize::try_from(out_total_columns).map_err(|_| {
         Error::new(ErrorKind::InvalidOperation, "FFI returned negative total column count")
             .with_operation(operation)
@@ -191,7 +192,9 @@ pub(crate) fn groupby_aggregate_impl(
         let n = *count as usize;
         let mut cols = Vec::with_capacity(n);
         for i in 0..n {
-            cols.push(unsafe { Column::from_raw(col_array[offset + i]) });
+            cols.push(unsafe {
+                Column::from_raw_with_domain(col_array[offset + i], std::sync::Arc::clone(output_domain))
+            });
         }
         offset += n;
         results.push(cols);
@@ -216,23 +219,6 @@ fn compatible_groupby_domain(
     }
     Ok(output_domain)
 }
-
-fn bind_groupby_result_domain(result: GroupByResult, output_domain: std::sync::Arc<ExecutionDomain>) -> GroupByResult {
-    GroupByResult {
-        keys: result.keys.with_execution_domain(std::sync::Arc::clone(&output_domain)),
-        results: result
-            .results
-            .into_iter()
-            .map(|columns| {
-                columns
-                    .into_iter()
-                    .map(|column| column.with_execution_domain(std::sync::Arc::clone(&output_domain)))
-                    .collect()
-            })
-            .collect(),
-    }
-}
-
 /// Create a C-side aggregation handle from an [`GroupByAgg`] enum.
 ///
 /// # Safety
@@ -322,6 +308,12 @@ pub fn groupby_aggregate(
 ) -> Result<GroupByResult> {
     let output_domain = compatible_groupby_domain(keys, requests)?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    groupby_aggregate_impl(keys, requests, null_policy, exec_options.as_ref(), "groupby::groupby_aggregate")
-        .map(|result| bind_groupby_result_domain(result, output_domain))
+    groupby_aggregate_impl(
+        keys,
+        requests,
+        null_policy,
+        &output_domain,
+        exec_options.as_ref(),
+        "groupby::groupby_aggregate",
+    )
 }

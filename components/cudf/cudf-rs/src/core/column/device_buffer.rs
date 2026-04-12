@@ -2,8 +2,8 @@
 //!
 //! **Advanced/Core.** This is a low-level building block for zero-copy
 //! ownership transfer into [`Column`](super::Column). Most users should
-//! construct columns via [`Column::from_slice`](super::Column::from_slice)
-//! or [`Series`](crate::Series) instead.
+//! construct columns via [`Runtime::column_from_slice`](crate::Runtime::column_from_slice)
+//! or [`Runtime::series`](crate::Runtime::series) instead.
 
 use std::{
     mem,
@@ -11,44 +11,39 @@ use std::{
     ptr::{self, NonNull},
 };
 
-use crate::core::{
-    error::{self, Result},
-    types::CudfType,
+use crate::{
+    core::{
+        error::{self, Result},
+        types::CudfType,
+    },
+    runtime::{Runtime, device_guard::DeviceGuard},
 };
-
-fn current_device_snapshot() -> i32 {
-    let mut device: i32 = 0;
-    let _ = unsafe { cudf_sys::cudf_cuda_get_device(&mut device) };
-    device
-}
 
 /// An owned block of GPU device memory.
 ///
 /// `DeviceBuffer` wraps an `rmm::device_buffer` via the cudf-sys C shim.
 /// The underlying GPU memory is freed when this value is dropped.
-/// It also snapshots the ambient CUDA device at creation time so later
-/// zero-copy adoption into a [`Column`](super::Column) preserves the buffer's
-/// original device provenance even if the calling thread switches devices.
+/// It snapshots the explicit runtime device that created it so later zero-copy
+/// adoption into a [`Column`](super::Column) can reject cross-device misuse
+/// before handing ownership to libcudf.
 ///
 /// The primary use case is to prepare device memory externally (e.g., from
 /// another CUDA library) and then transfer ownership into a
 /// [`Column`](super::Column) via
-/// [`Column::from_device_buffer`](super::Column::from_device_buffer)
+/// [`Runtime::column_from_device_buffer`](crate::Runtime::column_from_device_buffer)
 /// **without** any device-to-device copy.
 ///
 /// # Example
 ///
 /// ```no_run
-/// use cudf::{
-///     TypeId,
-///     core::{Column, DeviceBuffer},
-/// };
+/// use cudf::{Runtime, TypeId, core::DeviceBuffer};
 ///
 /// // Upload host data to a device buffer (this copies from host to GPU).
-/// let buf = DeviceBuffer::from_host_data(&[1i32, 2, 3]).unwrap();
+/// let rt = Runtime::new().unwrap();
+/// let buf = rt.device_buffer_from_host_data(&[1i32, 2, 3]).unwrap();
 ///
 /// // Adopt the existing device allocation into a Column without another copy.
-/// let col = Column::from_device_buffer(buf, 3, TypeId::Int32).unwrap();
+/// let col = rt.column_from_device_buffer(buf, 3, TypeId::Int32).unwrap();
 /// ```
 pub struct DeviceBuffer {
     handle: NonNull<c_void>,
@@ -63,29 +58,24 @@ unsafe impl Send for DeviceBuffer {}
 unsafe impl Sync for DeviceBuffer {}
 
 impl DeviceBuffer {
-    /// Allocate a new device buffer of `size_bytes` bytes.
-    ///
-    /// The contents are uninitialized. For `size_bytes == 0`, the buffer is
-    /// valid but empty.
-    pub fn new(size_bytes: usize) -> Result<Self> {
+    fn create_on_current_device(size_bytes: usize, device_snapshot: i32) -> Result<Self> {
         let mut handle = ptr::null_mut();
         error::check_status_in(
             unsafe { cudf_sys::cudf_device_buffer_create(size_bytes, &mut handle) },
-            "device_buffer::new",
+            "device_buffer::create_on_current_device",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null device_buffer handle on success"),
-            device_snapshot: current_device_snapshot(),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null device_buffer handle on success"), device_snapshot })
     }
 
-    /// Create a device buffer by copying a host slice to GPU memory.
-    ///
-    /// The buffer size is `data.len() * size_of::<T>()` bytes. For an empty
-    /// slice the buffer is valid but empty.
-    pub fn from_host_data<T: CudfType>(data: &[T]) -> Result<Self> {
+    pub(crate) fn new_in_runtime(runtime: &Runtime, size_bytes: usize) -> Result<Self> {
+        let _guard = DeviceGuard::new(runtime.device())?;
+        Self::create_on_current_device(size_bytes, runtime.device().ordinal_raw())
+    }
+
+    pub(crate) fn from_host_data_in_runtime<T: CudfType>(runtime: &Runtime, data: &[T]) -> Result<Self> {
+        let _guard = DeviceGuard::new(runtime.device())?;
         let byte_len = mem::size_of_val(data);
-        let buf = Self::new(byte_len)?;
+        let buf = Self::create_on_current_device(byte_len, runtime.device().ordinal_raw())?;
         if byte_len > 0 {
             error::check_status_in(
                 unsafe {
@@ -95,7 +85,7 @@ impl DeviceBuffer {
                         byte_len,
                     )
                 },
-                "device_buffer::from_host_data",
+                "device_buffer::from_host_data_in_runtime",
             )?;
         }
         Ok(buf)

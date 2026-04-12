@@ -66,7 +66,7 @@ fn owned_column_transfer_round_trips_across_thread_boundary() {
 
     let transfer = column.try_into_owned_transfer().unwrap();
     let (values, ptr, stream, mr) = thread::spawn(move || {
-        let imported = Column::try_from_owned_device_column_transfer(transfer).unwrap();
+        let imported = Column::try_import_from_owned_device_column_transfer_into_runtime(transfer, &runtime).unwrap();
         let view = imported.view().unwrap();
         let values = view.to_vec::<i32>().unwrap();
         let ptr = view.device_data_ptr().unwrap() as usize;

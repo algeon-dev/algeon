@@ -10,9 +10,6 @@ repository.workspace = true
 [lints]
 workspace = true
 
-[features]
-strict-multi-gpu = []
-
 [dependencies]
 cudf-sys = { path = "../cudf-sys" }
 rapids-interop = { path = "../rapids-interop" }

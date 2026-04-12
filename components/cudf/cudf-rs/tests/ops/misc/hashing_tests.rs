@@ -1,14 +1,12 @@
 //! Tests for hashing functions.
 
-use cudf::{
-    TypeId,
-    core::{Column, Table},
-    ops::hashing,
-};
+use cudf::{TypeId, core::Table, ops::hashing};
+
+use crate::common::column_from_slice;
 
 #[test]
 fn test_murmurhash3_i32_column() {
-    let col = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -29,7 +27,7 @@ fn test_murmurhash3_i32_column() {
 
 #[test]
 fn test_murmurhash3_deterministic() {
-    let col = Column::from_slice(&[42i32, 99, 7]).unwrap();
+    let col = column_from_slice(&[42i32, 99, 7]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -43,7 +41,7 @@ fn test_murmurhash3_deterministic() {
 
 #[test]
 fn test_murmurhash3_different_seeds() {
-    let col = Column::from_slice(&[42i32, 99, 7]).unwrap();
+    let col = column_from_slice(&[42i32, 99, 7]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -58,7 +56,7 @@ fn test_murmurhash3_different_seeds() {
 #[test]
 fn test_murmurhash3_device_ptr() {
     // Verify the hash result column has a non-null device pointer.
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -71,7 +69,7 @@ fn test_murmurhash3_device_ptr() {
 
 #[test]
 fn test_xxhash_64() {
-    let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -87,8 +85,8 @@ fn test_xxhash_64() {
 
 #[test]
 fn test_murmurhash3_multi_column() {
-    let col1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let col2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let col1 = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let col2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let table = Table::from_columns(vec![col1, col2]).unwrap();
     let view = table.view().unwrap();
 

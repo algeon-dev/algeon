@@ -1,4 +1,4 @@
-//! Tests for explicit placement before `fillna_with_series` and ambient constructor variants.
+//! Tests for explicit placement before `fillna_with_series` and runtime-seeded constructors.
 //!
 //! Coverage:
 //! - `DataFrame::copy_into_runtime` + `fillna_with_series` — explicit placement
@@ -187,7 +187,7 @@ fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 // ---------------------------------------------------------------------------
 
 /// An empty column created via `Runtime::empty_column` carries the runtime's
-/// explicit domain, not the ambient default.
+/// explicit domain instead of relying on any implicit fallback.
 #[test]
 fn runtime_empty_column_retains_explicit_domain() {
     let rt = sample_runtime();

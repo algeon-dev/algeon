@@ -6,9 +6,9 @@
 //!
 //! Direct unit tests for the helpers live inside `src/internal/mod.rs`.
 
-use cudf::{DataFrame, DropDuplicatesOptions, DuplicateKeepOption, Series, core::Column};
+use cudf::{DataFrame, DropDuplicatesOptions, DuplicateKeepOption};
 
-use crate::common::{assert_duplicate_name_error, assert_missing_column_error};
+use crate::common::{assert_duplicate_name_error, assert_missing_column_error, column_from_slice};
 
 // ---------------------------------------------------------------------------
 // TempTableView — exercised via filter, sort, distinct, drop_nulls
@@ -18,12 +18,12 @@ use crate::common::{assert_duplicate_name_error, assert_missing_column_error};
 #[test]
 fn filter_preserves_row_and_column_counts() {
     // filter internally uses build_table_view / TempTableView infrastructure.
-    let ids = Series::new::<i32>("ids", &[1, 2, 3, 4, 5]).unwrap();
-    let vals = Series::new::<f64>("vals", &[10.0, 20.0, 30.0, 40.0, 50.0]).unwrap();
+    let ids = crate::common::series::<i32>("ids", &[1, 2, 3, 4, 5]).unwrap();
+    let vals = crate::common::series::<f64>("vals", &[10.0, 20.0, 30.0, 40.0, 50.0]).unwrap();
     let df = DataFrame::from_named_pairs([("id", ids), ("val", vals)]).unwrap();
 
     // Boolean mask: keep rows 0, 2, 4.
-    let mask = Series::new::<bool>("mask", &[true, false, true, false, true]).unwrap();
+    let mask = crate::common::series::<bool>("mask", &[true, false, true, false, true]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_columns(), 2, "column count preserved");
@@ -34,8 +34,8 @@ fn filter_preserves_row_and_column_counts() {
 #[test]
 fn sort_preserves_schema_names_and_lengths() {
     // sort internally resolves column names and builds table views.
-    let names_col = Series::new::<i32>("a", &[3, 1, 2]).unwrap();
-    let vals_col = Series::new::<i64>("b", &[30, 10, 20]).unwrap();
+    let names_col = crate::common::series::<i32>("a", &[3, 1, 2]).unwrap();
+    let vals_col = crate::common::series::<i64>("b", &[30, 10, 20]).unwrap();
     let df = DataFrame::from_series([names_col, vals_col]).unwrap();
 
     let sorted = df.sort_values(["a"], cudf::SortOptions::new()).unwrap();
@@ -53,8 +53,8 @@ fn sort_preserves_schema_names_and_lengths() {
 #[test]
 fn reassembly_after_drop_duplicates_preserves_schema() {
     // drop_duplicates internally uses resolve + reassemble helpers.
-    let a = Series::new::<i32>("x", &[1, 1, 2, 2, 3]).unwrap();
-    let b = Series::new::<i64>("y", &[10, 10, 20, 20, 30]).unwrap();
+    let a = crate::common::series::<i32>("x", &[1, 1, 2, 2, 3]).unwrap();
+    let b = crate::common::series::<i64>("y", &[10, 10, 20, 20, 30]).unwrap();
     let df = DataFrame::from_series([a, b]).unwrap();
 
     let distinct = df
@@ -75,7 +75,7 @@ fn reassembly_after_drop_duplicates_preserves_schema() {
 #[test]
 fn sort_with_missing_column_returns_error() {
     // resolve_column_names should produce a clear error for unknown columns.
-    let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
+    let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([a]).unwrap();
 
     let err = df.sort_values(["nonexistent"], cudf::SortOptions::new()).unwrap_err();
@@ -89,12 +89,12 @@ fn sort_with_missing_column_returns_error() {
 #[test]
 fn join_reassembly_preserves_schema_names() {
     // join internally uses reassembly helpers to rebuild DataFrames.
-    let left_key = Series::new::<i32>("key", &[1, 2, 3]).unwrap();
-    let left_val = Series::new::<f64>("lval", &[10.0, 20.0, 30.0]).unwrap();
+    let left_key = crate::common::series::<i32>("key", &[1, 2, 3]).unwrap();
+    let left_val = crate::common::series::<f64>("lval", &[10.0, 20.0, 30.0]).unwrap();
     let left = DataFrame::from_series([left_key, left_val]).unwrap();
 
-    let right_key = Series::new::<i32>("key", &[2, 3, 4]).unwrap();
-    let right_val = Series::new::<f64>("rval", &[200.0, 300.0, 400.0]).unwrap();
+    let right_key = crate::common::series::<i32>("key", &[2, 3, 4]).unwrap();
+    let right_val = crate::common::series::<f64>("rval", &[200.0, 300.0, 400.0]).unwrap();
     let right = DataFrame::from_series([right_key, right_val]).unwrap();
 
     let opts = cudf::MergeOptions::new().on(["key"]).how_inner();
@@ -112,8 +112,8 @@ fn join_reassembly_preserves_schema_names() {
 
 #[test]
 fn from_named_pairs_rejects_duplicate_names() {
-    let a = Series::new::<i32>("a", &[1]).unwrap();
-    let b = Series::new::<i32>("b", &[2]).unwrap();
+    let a = crate::common::series::<i32>("a", &[1]).unwrap();
+    let b = crate::common::series::<i32>("b", &[2]).unwrap();
 
     let err = DataFrame::from_named_pairs(vec![("x".to_string(), a), ("x".to_string(), b)]).unwrap_err();
     assert_duplicate_name_error(&err, "x");
@@ -121,8 +121,8 @@ fn from_named_pairs_rejects_duplicate_names() {
 
 #[test]
 fn dataframe_new_rejects_duplicate_names() {
-    let c1 = Column::from_slice(&[1i32]).unwrap();
-    let c2 = Column::from_slice(&[2i32]).unwrap();
+    let c1 = column_from_slice(&[1i32]).unwrap();
+    let c2 = column_from_slice(&[2i32]).unwrap();
     let err = crate::common::dataframe_from_columns(vec!["dup".into(), "dup".into()], vec![c1, c2]).unwrap_err();
     assert_duplicate_name_error(&err, "dup");
 }

@@ -32,8 +32,8 @@ pub struct CsvTableReadOptions {
     delimiter: u8,
     #[builder(default = true)]
     has_header: bool,
-    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
-    runtime: Option<Runtime>,
+    #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
+    runtime: Runtime,
 }
 
 /// Read a CSV file into a low-level table result.
@@ -41,42 +41,29 @@ pub fn read_csv(options: &CsvTableReadOptions) -> Result<IoTableResult> {
     let operation = "io::csv::read_csv";
     let filepath = super::path_to_cstring(&options.filepath, operation)?;
     super::validate_input_path(&options.filepath, operation)?;
-    let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
-    let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
+    let output_domain = Arc::clone(options.runtime.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw().expect("execution domain is always explicit");
 
     let mut table_handle = ptr::null_mut();
     error::check_status_in_with(
         // SAFETY: filepath is a valid CString (converted above).
-        match exec_options.as_ref() {
-            Some(exec_options) => unsafe {
-                cudf_sys::cudf_io_read_csv_ex(
-                    filepath.as_ptr(),
-                    options.delimiter as std::os::raw::c_char,
-                    if options.has_header { 1 } else { 0 },
-                    &mut table_handle,
-                    exec_options,
-                )
-            },
-            None => unsafe {
-                cudf_sys::cudf_io_read_csv(
-                    filepath.as_ptr(),
-                    options.delimiter as std::os::raw::c_char,
-                    if options.has_header { 1 } else { 0 },
-                    &mut table_handle,
-                )
-            },
+        unsafe {
+            cudf_sys::cudf_io_read_csv_ex(
+                filepath.as_ptr(),
+                options.delimiter as std::os::raw::c_char,
+                if options.has_header { 1 } else { 0 },
+                &mut table_handle,
+                &exec_options,
+            )
         },
         operation,
         [("delimiter_char", (options.delimiter as char).to_string()), ("has_header", options.has_header.to_string())],
     )?;
     // SAFETY: table_handle was returned by a successful FFI call, transferring ownership.
-    let table = match output_domain {
-        Some(domain) => unsafe { Table::from_raw(table_handle).with_execution_domain(domain) },
-        None => unsafe { Table::from_raw(table_handle) },
-    };
+    let table = unsafe { Table::from_raw_with_domain(table_handle, output_domain) };
     let num_columns = {
         let view = table.view()?;
-        view.num_columns()? as usize
+        view.num_columns()?
     };
     let column_names = if options.has_header {
         let names = read_header_names(&options.filepath, options.delimiter)?;
@@ -130,7 +117,7 @@ pub(crate) fn write_csv_with_exec(
     let filepath = super::path_to_cstring(&options.filepath, "io::csv::write_csv")?;
 
     if let Some(ref names) = options.column_names {
-        let expected = table.num_columns()? as usize;
+        let expected = table.num_columns()?;
         if names.len() != expected {
             return Err(Error::new(
                 ErrorKind::InvalidArgument,

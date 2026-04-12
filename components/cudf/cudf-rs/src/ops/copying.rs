@@ -16,6 +16,7 @@ pub(crate) fn gather_impl(
     gather_map: &ColumnView<'_>,
     bounds_policy: cudf_sys::cudf_out_of_bounds_policy_t,
     bounds_policy_label: &'static str,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
@@ -34,7 +35,7 @@ pub(crate) fn gather_impl(
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
-    Ok(unsafe { Table::from_raw(out) })
+    Ok(unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 /// Gather (select) rows from a table by index.
@@ -49,14 +50,12 @@ pub(crate) fn gather_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{
-///     core::{Column, Table},
-///     ops::copying,
-/// };
+/// use cudf::{Runtime, core::Table, ops::copying};
 ///
-/// let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+/// let rt = Runtime::new().unwrap();
+/// let col = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
 /// let table = Table::from_columns(vec![col]).unwrap();
-/// let map = Column::from_slice(&[2i32, 0]).unwrap();
+/// let map = rt.column_from_slice(&[2i32, 0]).unwrap();
 /// let result =
 ///     copying::gather(&table.view().unwrap(), &map.view().unwrap()).unwrap();
 /// // result row 0 = source row 2 (30), result row 1 = source row 0 (10)
@@ -77,10 +76,10 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
         gather_map,
         cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
         "nullify",
+        &output_domain,
         exec_options.as_ref(),
         "copying::gather",
     )
-    .map(|table| table.with_execution_domain(output_domain))
 }
 
 /// Gather (select) rows from a table by index, without bounds checking.
@@ -97,14 +96,12 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{
-///     core::{Column, Table},
-///     ops::copying,
-/// };
+/// use cudf::{Runtime, core::Table, ops::copying};
 ///
-/// let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+/// let rt = Runtime::new().unwrap();
+/// let col = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
 /// let table = Table::from_columns(vec![col]).unwrap();
-/// let map = Column::from_slice(&[2i32, 0]).unwrap();
+/// let map = rt.column_from_slice(&[2i32, 0]).unwrap();
 /// // SAFETY: indices 2 and 0 are valid for a 3-row table.
 /// let result = unsafe {
 ///     copying::gather_unchecked(&table.view().unwrap(), &map.view().unwrap())
@@ -129,10 +126,10 @@ pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_
         gather_map,
         cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
         "dont_check",
+        &output_domain,
         exec_options.as_ref(),
         "copying::gather_unchecked",
     )
-    .map(|table| table.with_execution_domain(output_domain))
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +140,7 @@ fn copy_if_else_impl(
     lhs: &ColumnView<'_>,
     rhs: &ColumnView<'_>,
     boolean_mask: &ColumnView<'_>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -167,7 +165,7 @@ fn copy_if_else_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 /// Conditionally select elements from two columns based on a boolean mask.
@@ -181,11 +179,12 @@ fn copy_if_else_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{core::Column, ops::copying};
+/// use cudf::{Runtime, ops::copying};
 ///
-/// let lhs = Column::from_slice(&[10i32, 20, 30]).unwrap();
-/// let rhs = Column::from_slice(&[1i32, 2, 3]).unwrap();
-/// let mask = Column::from_slice(&[true, false, true]).unwrap();
+/// let rt = Runtime::new().unwrap();
+/// let lhs = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
+/// let rhs = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
+/// let mask = rt.column_from_slice(&[true, false, true]).unwrap();
 /// let result = copying::copy_if_else(
 ///     &lhs.view().unwrap(),
 ///     &rhs.view().unwrap(),
@@ -207,6 +206,5 @@ pub fn copy_if_else(lhs: &ColumnView<'_>, rhs: &ColumnView<'_>, boolean_mask: &C
         "copying::copy_if_else",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    copy_if_else_impl(lhs, rhs, boolean_mask, exec_options.as_ref(), "copying::copy_if_else")
-        .map(|col| col.with_execution_domain(output_domain))
+    copy_if_else_impl(lhs, rhs, boolean_mask, &output_domain, exec_options.as_ref(), "copying::copy_if_else")
 }

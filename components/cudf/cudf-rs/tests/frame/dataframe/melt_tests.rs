@@ -2,7 +2,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataFrame, MeltOptions, Series};
+use cudf::{DataFrame, MeltOptions};
 
 use crate::common::assert_missing_column_error;
 
@@ -15,9 +15,9 @@ fn test_melt_single_value_var() {
     // df: A=[a,b,c], B=[1,3,5], C=[2,4,6]
     // melt(id_vars=["A"], value_vars=["B"])
     // → A=[a,b,c], variable=["B","B","B"], value=[1,3,5]
-    let a = Series::new("A", &["a", "b", "c"]).unwrap();
-    let b = Series::new::<i32>("B", &[1, 3, 5]).unwrap();
-    let c = Series::new::<i32>("C", &[2, 4, 6]).unwrap();
+    let a = crate::common::series("A", &["a", "b", "c"]).unwrap();
+    let b = crate::common::series::<i32>("B", &[1, 3, 5]).unwrap();
+    let c = crate::common::series::<i32>("C", &[2, 4, 6]).unwrap();
     let df = DataFrame::from_series(vec![a, b, c]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).build();
@@ -40,9 +40,9 @@ fn test_melt_single_value_var() {
 fn test_melt_multiple_value_vars() {
     // melt(id_vars=["A"], value_vars=["B", "C"])
     // → A repeated 2x, variable=["B","B","B","C","C","C"], value=[1,3,5,2,4,6]
-    let a = Series::new("A", &["a", "b", "c"]).unwrap();
-    let b = Series::new::<i32>("B", &[1, 3, 5]).unwrap();
-    let c = Series::new::<i32>("C", &[2, 4, 6]).unwrap();
+    let a = crate::common::series("A", &["a", "b", "c"]).unwrap();
+    let b = crate::common::series::<i32>("B", &[1, 3, 5]).unwrap();
+    let c = crate::common::series::<i32>("C", &[2, 4, 6]).unwrap();
     let df = DataFrame::from_series(vec![a, b, c]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B", "C"]).build();
@@ -64,8 +64,8 @@ fn test_melt_multiple_value_vars() {
 
 #[test]
 fn test_melt_custom_var_value_names() {
-    let a = Series::new("A", &["x"]).unwrap();
-    let b = Series::new::<i32>("B", &[10]).unwrap();
+    let a = crate::common::series("A", &["x"]).unwrap();
+    let b = crate::common::series::<i32>("B", &[10]).unwrap();
     let df = DataFrame::from_series(vec![a, b]).unwrap();
 
     let opts =
@@ -84,9 +84,9 @@ fn test_melt_custom_var_value_names() {
 
 #[test]
 fn test_melt_default_value_vars() {
-    let a = Series::new("A", &["x", "y"]).unwrap();
-    let b = Series::new::<i32>("B", &[1, 2]).unwrap();
-    let c = Series::new::<i32>("C", &[3, 4]).unwrap();
+    let a = crate::common::series("A", &["x", "y"]).unwrap();
+    let b = crate::common::series::<i32>("B", &[1, 2]).unwrap();
+    let c = crate::common::series::<i32>("C", &[3, 4]).unwrap();
     let df = DataFrame::from_series(vec![a, b, c]).unwrap();
 
     // Only id_vars specified → value_vars = [B, C]
@@ -103,8 +103,8 @@ fn test_melt_default_value_vars() {
 
 #[test]
 fn test_melt_no_id_vars() {
-    let b = Series::new::<i32>("B", &[1, 2]).unwrap();
-    let c = Series::new::<i32>("C", &[3, 4]).unwrap();
+    let b = crate::common::series::<i32>("B", &[1, 2]).unwrap();
+    let c = crate::common::series::<i32>("C", &[3, 4]).unwrap();
     let df = DataFrame::from_series(vec![b, c]).unwrap();
 
     let opts = MeltOptions::builder().value_vars(&["B", "C"]).build();
@@ -120,8 +120,8 @@ fn test_melt_no_id_vars() {
 
 #[test]
 fn test_melt_preserves_nulls_in_values() {
-    let a = Series::new("A", &["x", "y"]).unwrap();
-    let b = Series::new_nullable::<i32>("B", &[1, 0], &[true, false]).unwrap();
+    let a = crate::common::series("A", &["x", "y"]).unwrap();
+    let b = crate::common::nullable_series::<i32>("B", &[1, 0], &[true, false]).unwrap();
     let df = DataFrame::from_series(vec![a, b]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).build();
@@ -139,8 +139,8 @@ fn test_melt_preserves_nulls_in_values() {
 
 #[test]
 fn test_melt_empty_dataframe() {
-    let a = Series::new::<&str>("A", &[]).unwrap();
-    let b = Series::new::<i32>("B", &[]).unwrap();
+    let a = crate::common::series::<&str>("A", &[]).unwrap();
+    let b = crate::common::series::<i32>("B", &[]).unwrap();
     let df = DataFrame::from_series(vec![a, b]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).build();
@@ -152,8 +152,8 @@ fn test_melt_empty_dataframe() {
 
 #[test]
 fn test_melt_all_columns_as_id_vars_returns_empty_long_frame() {
-    let a = Series::new("A", &["x", "y"]).unwrap();
-    let b = Series::new::<i32>("B", &[1, 2]).unwrap();
+    let a = crate::common::series("A", &["x", "y"]).unwrap();
+    let b = crate::common::series::<i32>("B", &[1, 2]).unwrap();
     let df = DataFrame::from_series(vec![a, b]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A", "B"]).build();
@@ -169,9 +169,9 @@ fn test_melt_all_columns_as_id_vars_returns_empty_long_frame() {
 
 #[test]
 fn test_melt_single_row() {
-    let a = Series::new("A", &["x"]).unwrap();
-    let b = Series::new::<i32>("B", &[10]).unwrap();
-    let c = Series::new::<i32>("C", &[20]).unwrap();
+    let a = crate::common::series("A", &["x"]).unwrap();
+    let b = crate::common::series::<i32>("B", &[10]).unwrap();
+    let c = crate::common::series::<i32>("C", &[20]).unwrap();
     let df = DataFrame::from_series(vec![a, b, c]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B", "C"]).build();
@@ -182,7 +182,7 @@ fn test_melt_single_row() {
 
 #[test]
 fn test_melt_missing_id_var_returns_error() {
-    let b = Series::new::<i32>("B", &[1]).unwrap();
+    let b = crate::common::series::<i32>("B", &[1]).unwrap();
     let df = DataFrame::from_series(vec![b]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["nonexistent"]).value_vars(&["B"]).build();
@@ -192,7 +192,7 @@ fn test_melt_missing_id_var_returns_error() {
 
 #[test]
 fn test_melt_missing_value_var_returns_error() {
-    let a = Series::new::<i32>("A", &[1]).unwrap();
+    let a = crate::common::series::<i32>("A", &[1]).unwrap();
     let df = DataFrame::from_series(vec![a]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["nonexistent"]).build();

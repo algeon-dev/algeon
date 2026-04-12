@@ -3,14 +3,12 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{
-//!     core::{Column, Table},
-//!     ops::filter,
-//! };
+//! use cudf::{Runtime, core::Table, ops::filter};
 //!
-//! let col = Column::from_slice(&[10i32, 20, 30, 40]).unwrap();
+//! let rt = Runtime::new().unwrap();
+//! let col = rt.column_from_slice(&[10i32, 20, 30, 40]).unwrap();
 //! let table = Table::from_columns(vec![col]).unwrap();
-//! let mask = Column::from_slice(&[true, false, true, false]).unwrap();
+//! let mask = rt.column_from_slice(&[true, false, true, false]).unwrap();
 //!
 //! let result = filter::apply_boolean_mask(
 //!     &table.view().unwrap(),
@@ -34,6 +32,7 @@ use crate::{
 pub(crate) fn apply_boolean_mask_impl(
     input: &TableView<'_>,
     mask: &ColumnView<'_>,
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
@@ -49,7 +48,7 @@ pub(crate) fn apply_boolean_mask_impl(
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    Ok(unsafe { Table::from_raw(out) })
+    Ok(unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
 }
 
 /// Filter rows of a table using a boolean mask column.
@@ -68,6 +67,5 @@ pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Resul
         mask.execution_domain().fence_stream("filter::apply_boolean_mask")?;
     }
     let exec_options = output_domain.explicit_exec_options_raw();
-    apply_boolean_mask_impl(input, mask, exec_options.as_ref(), "filter::apply_boolean_mask")
-        .map(|table| table.with_execution_domain(output_domain))
+    apply_boolean_mask_impl(input, mask, &output_domain, exec_options.as_ref(), "filter::apply_boolean_mask")
 }

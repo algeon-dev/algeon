@@ -240,15 +240,18 @@ impl Series {
     }
 
     /// Convenience consumer that zero-copy imports a shared owned device
-    /// transfer root into an unnamed high-level `Series`.
+    /// transfer root into an unnamed high-level `Series` inside the provided
+    /// explicit runtime.
     ///
-    /// This inherits the current `Column` consumer slice: `cudf-rs`
-    /// round-trips stay zero-copy, and foreign roots in the supported layout
-    /// set are accepted
-    /// without deep-copying into a destination runtime.
-    pub fn try_from_owned_device_column_transfer(transfer: OwnedColumnTransfer) -> Result<Self, InteropError> {
-        let operation = "interop::Series::try_from_owned_device_column_transfer";
-        let column = Column::try_from_owned_device_column_transfer(transfer)?;
+    /// This inherits the low-level `Column` import contract: the destination
+    /// runtime must be pinned to the transfer device, and the imported series
+    /// is rebound to that runtime's retained provenance without a deep copy.
+    pub fn try_import_from_owned_device_column_transfer_into_runtime(
+        transfer: OwnedColumnTransfer,
+        runtime: &Runtime,
+    ) -> Result<Self, InteropError> {
+        let operation = "interop::Series::try_import_from_owned_device_column_transfer_into_runtime";
+        let column = Column::try_import_from_owned_device_column_transfer_into_runtime(transfer, runtime)?;
         wrap_imported_series(column, operation)
     }
 
@@ -406,37 +409,41 @@ impl DataFrame {
 
     /// Convenience consumer that zero-copy imports a shared owned device
     /// transfer root into a high-level `DataFrame` using schema names carried
-    /// on the shared root.
+    /// on the shared root and binding the result to the provided explicit
+    /// runtime.
     ///
-    /// This inherits the current `Table` consumer slice: `cudf-rs`
-    /// round-trips stay zero-copy, and foreign roots in the supported layout
-    /// set are accepted
-    /// without deep-copying into a destination runtime.
-    pub fn try_from_owned_device_table_transfer(transfer: OwnedTableTransfer) -> Result<Self, InteropError> {
-        let operation = "interop::DataFrame::try_from_owned_device_table_transfer";
+    /// This inherits the low-level `Table` import contract: the destination
+    /// runtime must be pinned to the transfer device, and the imported frame
+    /// is rebound to that runtime's retained provenance without a deep copy.
+    pub fn try_import_from_owned_device_table_transfer_into_runtime(
+        transfer: OwnedTableTransfer,
+        runtime: &Runtime,
+    ) -> Result<Self, InteropError> {
+        let operation = "interop::DataFrame::try_import_from_owned_device_table_transfer_into_runtime";
         let names = required_dataframe_import_names(
             transfer.table().names(),
             operation,
-            "DataFrame::try_from_owned_device_table_transfer_and_names",
+            "DataFrame::try_import_from_owned_device_table_transfer_into_runtime_and_names",
         )?;
-        let table = Table::try_from_owned_device_table_transfer(transfer)?;
+        let table = Table::try_import_from_owned_device_table_transfer_into_runtime(transfer, runtime)?;
         wrap_imported_dataframe(table, names, operation)
     }
 
     /// Convenience consumer that zero-copy imports a shared owned device
     /// transfer root into a high-level `DataFrame` using explicit
-    /// caller-provided schema names.
+    /// caller-provided schema names and binding the result to the provided
+    /// explicit runtime.
     ///
-    /// This inherits the current `Table` consumer slice: `cudf-rs`
-    /// round-trips stay zero-copy, and foreign roots in the supported layout
-    /// set are accepted
-    /// without deep-copying into a destination runtime.
-    pub fn try_from_owned_device_table_transfer_and_names(
+    /// This inherits the low-level `Table` import contract: the destination
+    /// runtime must be pinned to the transfer device, and the imported frame
+    /// is rebound to that runtime's retained provenance without a deep copy.
+    pub fn try_import_from_owned_device_table_transfer_into_runtime_and_names(
         transfer: OwnedTableTransfer,
+        runtime: &Runtime,
         names: Vec<String>,
     ) -> Result<Self, InteropError> {
-        let operation = "interop::DataFrame::try_from_owned_device_table_transfer_and_names";
-        let table = Table::try_from_owned_device_table_transfer(transfer)?;
+        let operation = "interop::DataFrame::try_import_from_owned_device_table_transfer_into_runtime_and_names";
+        let table = Table::try_import_from_owned_device_table_transfer_into_runtime(transfer, runtime)?;
         wrap_imported_dataframe(table, names, operation)
     }
 

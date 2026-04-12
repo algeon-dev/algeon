@@ -7,18 +7,19 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{DataFrame, Series};
+//! use cudf::{DataFrame, Runtime};
 //!
-//! let ids = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
-//! let scores = Series::new::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
+//! let rt = Runtime::new().unwrap();
+//! let ids = rt.series("id", &[1i32, 2, 3]).unwrap();
+//! let scores = rt.series("score", &[10.0f64, 20.0, 30.0]).unwrap();
 //! let df = DataFrame::from_series([ids, scores]).unwrap();
 //!
 //! // GPU → Arrow RecordBatch (host-copy)
 //! let batch = df.to_record_batch().unwrap();
 //! assert_eq!(batch.num_rows(), 3);
 //!
-//! // Arrow RecordBatch → GPU DataFrame (host-copy)
-//! let df2 = DataFrame::from_record_batch(&batch).unwrap();
+//! // Arrow RecordBatch → GPU DataFrame (host-copy) inside the explicit runtime
+//! let df2 = DataFrame::from_record_batch(&rt, &batch).unwrap();
 //! assert_eq!(df2.num_columns(), 2);
 //! ```
 
@@ -33,7 +34,8 @@ use crate::{
         types::TypeId,
     },
     frame::dataframe::DataFrame,
-    internal::resolve::missing_column_error,
+    internal::{hash::fast_index_map, resolve::missing_column_error},
+    runtime::Runtime,
 };
 
 impl DataFrame {
@@ -70,14 +72,16 @@ impl DataFrame {
             })
             .collect::<Result<_>>()?;
 
-        RecordBatch::try_from_iter_with_nullable(columns).map_err(|e| map_record_batch_error(e))
+        RecordBatch::try_from_iter_with_nullable(columns).map_err(map_record_batch_error)
     }
 
-    /// Create a GPU `DataFrame` from an Arrow [`RecordBatch`] via host copy.
+    /// Create a GPU `DataFrame` from an Arrow [`RecordBatch`] via host copy
+    /// inside the caller-provided runtime.
     ///
     /// This is the inverse of [`to_record_batch()`](Self::to_record_batch).
     /// Each Arrow array is copied from host memory to the GPU. The schema
-    /// (column names and types) is preserved.
+    /// (column names and types) is preserved, and all imported columns are
+    /// seeded with the caller runtime's retained provenance.
     ///
     /// # Supported types
     ///
@@ -90,17 +94,28 @@ impl DataFrame {
     ///
     /// Returns an error if any column has an unsupported Arrow type, or if
     /// the host-to-GPU copy fails.
-    pub fn from_record_batch(batch: &RecordBatch) -> Result<Self> {
-        dataframe_from_record_batch(batch)
+    pub fn from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Result<Self> {
+        runtime.dataframe_from_record_batch(batch)
     }
 }
 
-/// Convert an Arrow [`RecordBatch`] to a GPU [`DataFrame`] via host copy.
+impl Runtime {
+    /// Convert an Arrow [`RecordBatch`] to a GPU [`DataFrame`] via host copy
+    /// inside this runtime.
+    pub fn dataframe_from_record_batch(&self, batch: &RecordBatch) -> Result<DataFrame> {
+        dataframe_from_record_batch(self, batch)
+    }
+}
+
+/// Convert an Arrow [`RecordBatch`] to a GPU [`DataFrame`] via host copy
+/// inside the caller-provided runtime.
 ///
-/// Prefer [`DataFrame::from_record_batch()`] for a more ergonomic API.
+/// Prefer [`Runtime::dataframe_from_record_batch()`] or
+/// [`DataFrame::from_record_batch()`] for a more ergonomic API.
 ///
 /// Each Arrow array is copied from host memory to the GPU. The schema
-/// (column names and types) is preserved.
+/// (column names and types) is preserved, and imported columns inherit the
+/// supplied runtime's retained provenance.
 ///
 /// # Supported types
 ///
@@ -115,9 +130,17 @@ impl DataFrame {
 ///
 /// Returns an error if any column has an unsupported Arrow type, or if
 /// the host-to-GPU copy fails.
-pub fn dataframe_from_record_batch(batch: &RecordBatch) -> Result<DataFrame> {
+pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Result<DataFrame> {
     let schema = batch.schema();
     let num_cols = schema.fields().len();
+
+    if num_cols == 0 {
+        return Ok(DataFrame::from_raw_parts(
+            fast_index_map(),
+            batch.num_rows(),
+            Arc::clone(runtime.execution_domain()),
+        ));
+    }
 
     let mut names: Vec<String> = Vec::with_capacity(num_cols);
     let mut columns: Vec<Column> = Vec::with_capacity(num_cols);
@@ -125,7 +148,7 @@ pub fn dataframe_from_record_batch(batch: &RecordBatch) -> Result<DataFrame> {
     for (i, field) in schema.fields().iter().enumerate() {
         names.push(field.name().clone());
         let arr = batch.column(i);
-        let col = arrow_array_to_column(arr.as_ref(), field.name())?;
+        let col = arrow_array_to_column(runtime, arr.as_ref(), field.name())?;
         columns.push(col);
     }
 
@@ -303,22 +326,22 @@ fn string_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
 // ---------------------------------------------------------------------------
 
 /// Convert a single Arrow array to an owned cudf `Column`.
-fn arrow_array_to_column(arr: &dyn Array, field_name: &str) -> Result<Column> {
+fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -> Result<Column> {
     let dt = arr.data_type();
     match dt {
-        ArrowDataType::Int8 => primitive_to_column::<i8>(arr),
-        ArrowDataType::Int16 => primitive_to_column::<i16>(arr),
-        ArrowDataType::Int32 => primitive_to_column::<i32>(arr),
-        ArrowDataType::Int64 => primitive_to_column::<i64>(arr),
-        ArrowDataType::UInt8 => primitive_to_column::<u8>(arr),
-        ArrowDataType::UInt16 => primitive_to_column::<u16>(arr),
-        ArrowDataType::UInt32 => primitive_to_column::<u32>(arr),
-        ArrowDataType::UInt64 => primitive_to_column::<u64>(arr),
-        ArrowDataType::Float32 => primitive_to_column::<f32>(arr),
-        ArrowDataType::Float64 => primitive_to_column::<f64>(arr),
-        ArrowDataType::Boolean => bool_to_column(arr),
-        ArrowDataType::Utf8 => string_array_to_column(arr),
-        ArrowDataType::LargeUtf8 => large_string_array_to_column(arr),
+        ArrowDataType::Int8 => primitive_to_column::<i8>(runtime, arr),
+        ArrowDataType::Int16 => primitive_to_column::<i16>(runtime, arr),
+        ArrowDataType::Int32 => primitive_to_column::<i32>(runtime, arr),
+        ArrowDataType::Int64 => primitive_to_column::<i64>(runtime, arr),
+        ArrowDataType::UInt8 => primitive_to_column::<u8>(runtime, arr),
+        ArrowDataType::UInt16 => primitive_to_column::<u16>(runtime, arr),
+        ArrowDataType::UInt32 => primitive_to_column::<u32>(runtime, arr),
+        ArrowDataType::UInt64 => primitive_to_column::<u64>(runtime, arr),
+        ArrowDataType::Float32 => primitive_to_column::<f32>(runtime, arr),
+        ArrowDataType::Float64 => primitive_to_column::<f64>(runtime, arr),
+        ArrowDataType::Boolean => bool_to_column(runtime, arr),
+        ArrowDataType::Utf8 => string_array_to_column(runtime, arr),
+        ArrowDataType::LargeUtf8 => large_string_array_to_column(runtime, arr),
         _ => Err(Error::new(
             ErrorKind::InvalidOperation,
             format!("unsupported Arrow type for column '{}': {:?}", field_name, dt),
@@ -330,36 +353,36 @@ fn arrow_array_to_column(arr: &dyn Array, field_name: &str) -> Result<Column> {
 }
 
 /// Convert a primitive Arrow array to a cudf Column.
-fn primitive_to_column<T>(arr: &dyn Array) -> Result<Column>
+fn primitive_to_column<T>(runtime: &Runtime, arr: &dyn Array) -> Result<Column>
 where T: ArrowPrimitiveMapping {
     let prim = arr.as_primitive::<T::ArrowPrimitive>();
     let values: Vec<T> = prim.values().iter().copied().collect();
 
     match prim.nulls() {
-        None => Column::from_slice(&values),
+        None => runtime.column_from_slice(&values),
         Some(null_buf) => {
             let validity: Vec<bool> = null_buf.iter().collect();
-            Column::from_slice_nullable(&values, &validity)
+            runtime.column_from_slice_nullable(&values, &validity)
         },
     }
 }
 
 /// Convert a boolean Arrow array to a cudf Column (Bool8).
-fn bool_to_column(arr: &dyn Array) -> Result<Column> {
+fn bool_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
     let bool_arr = arr.as_boolean();
     let values: Vec<bool> = bool_arr.values().iter().collect();
 
     match bool_arr.nulls() {
-        None => Column::from_slice(&values),
+        None => runtime.column_from_slice(&values),
         Some(null_buf) => {
             let validity: Vec<bool> = null_buf.iter().collect();
-            Column::from_slice_nullable(&values, &validity)
+            runtime.column_from_slice_nullable(&values, &validity)
         },
     }
 }
 
 /// Convert an Arrow StringArray (Utf8) to a cudf STRING Column.
-fn string_array_to_column(arr: &dyn Array) -> Result<Column> {
+fn string_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
     let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
         Error::new(ErrorKind::InvalidOperation, "expected StringArray for Utf8 type")
             .with_operation("arrow::string_array_to_column")
@@ -368,16 +391,16 @@ fn string_array_to_column(arr: &dyn Array) -> Result<Column> {
     let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
 
     match str_arr.nulls() {
-        None => Column::from_strs(&values),
+        None => runtime.column_from_strs(&values),
         Some(null_buf) => {
             let validity: Vec<bool> = null_buf.iter().collect();
-            Column::from_strs_nullable(&values, &validity)
+            runtime.column_from_strs_nullable(&values, &validity)
         },
     }
 }
 
 /// Convert an Arrow LargeStringArray (LargeUtf8) to a cudf STRING Column.
-fn large_string_array_to_column(arr: &dyn Array) -> Result<Column> {
+fn large_string_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
     let str_arr = arr.as_any().downcast_ref::<LargeStringArray>().ok_or_else(|| {
         Error::new(ErrorKind::InvalidOperation, "expected LargeStringArray for LargeUtf8 type")
             .with_operation("arrow::large_string_array_to_column")
@@ -386,10 +409,10 @@ fn large_string_array_to_column(arr: &dyn Array) -> Result<Column> {
     let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
 
     match str_arr.nulls() {
-        None => Column::from_strs(&values),
+        None => runtime.column_from_strs(&values),
         Some(null_buf) => {
             let validity: Vec<bool> = null_buf.iter().collect();
-            Column::from_strs_nullable(&values, &validity)
+            runtime.column_from_strs_nullable(&values, &validity)
         },
     }
 }

@@ -7,9 +7,9 @@
 mod common;
 
 use cudf::{
-    DataFrame, DeviceId, ErrorKind, ExecutionContext, MeltOptions, MergeOptions, ParquetWriteOptions, Runtime, Series,
+    DataFrame, DeviceId, ErrorKind, ExecutionContext, MeltOptions, MergeOptions, ParquetWriteOptions, Runtime,
     SortOptions, TypeId,
-    core::{Column, DeviceBuffer, Scalar, memory::DeviceMemoryResource},
+    core::memory::DeviceMemoryResource,
     ops::{
         expr::{col, lit},
         join, strings,
@@ -17,6 +17,8 @@ use cudf::{
     runtime::CudaStream,
 };
 use tempfile::TempDir;
+
+use crate::common::scalar;
 
 const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
 
@@ -248,13 +250,13 @@ fn columns_from_different_devices_have_different_domains() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    // Create a column on the primary ambient device.
+    // Create a column on the calling thread's current primary device.
     common::reset_exec_observation();
-    let s0 = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let s0 = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     assert_eq!(
         common::last_exec_device(),
         device0.ordinal() as i32,
-        "ambient column should be created on device {}",
+        "current-device column should be created on device {}",
         device0.ordinal()
     );
 
@@ -275,7 +277,7 @@ fn columns_from_different_devices_have_different_domains() {
 }
 
 #[test]
-fn adopted_device_buffer_preserves_creation_device_provenance() {
+fn adopted_device_buffer_uses_matching_runtime_provenance_after_current_device_switch() {
     if !should_run_multi_gpu_test() {
         return;
     }
@@ -283,24 +285,24 @@ fn adopted_device_buffer_preserves_creation_device_provenance() {
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
-    let buffer = DeviceBuffer::from_host_data(&[1i32, 2, 3]).unwrap();
+    let runtime = Runtime::builder().with_device(device0).build().unwrap();
+    let buffer = runtime.device_buffer_from_host_data(&[1i32, 2, 3]).unwrap();
 
     common::set_current_device(device1);
-    let adopted = Column::from_device_buffer(buffer, 3, TypeId::Int32).unwrap();
+    let adopted = runtime.column_from_device_buffer(buffer, 3, TypeId::Int32).unwrap();
 
-    common::set_current_device(device0);
-    let ambient = Column::from_slice(&[4i32, 5, 6]).unwrap();
-    let frame = crate::common::dataframe_from_columns(vec!["adopted".into(), "ambient".into()], vec![adopted, ambient]);
+    let peer = runtime.column_from_slice(&[4i32, 5, 6]).unwrap();
+    let frame = crate::common::dataframe_from_columns(vec!["adopted".into(), "peer".into()], vec![adopted, peer]);
     assert!(
         frame.is_ok(),
-        "adopted column should retain ambient-default provenance from device {} even after switching to device {}",
+        "adopted column should bind to runtime device {} even after switching the calling thread's current device to {}",
         device0.ordinal(),
         device1.ordinal()
     );
 }
 
 #[test]
-fn adopted_nullable_device_buffer_preserves_creation_device_provenance() {
+fn adopted_nullable_device_buffer_uses_matching_runtime_provenance_after_current_device_switch() {
     if !should_run_multi_gpu_test() {
         return;
     }
@@ -308,20 +310,20 @@ fn adopted_nullable_device_buffer_preserves_creation_device_provenance() {
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
-    let data_buffer = DeviceBuffer::from_host_data(&[10i32, 20, 30]).unwrap();
+    let runtime = Runtime::builder().with_device(device0).build().unwrap();
+    let data_buffer = runtime.device_buffer_from_host_data(&[10i32, 20, 30]).unwrap();
     let mut mask = [0u8; 64];
     mask[0] = 0x05;
-    let mask_buffer = DeviceBuffer::from_host_data(&mask).unwrap();
+    let mask_buffer = runtime.device_buffer_from_host_data(&mask).unwrap();
 
     common::set_current_device(device1);
-    let adopted = Column::from_device_buffer_nullable(data_buffer, mask_buffer, 1, 3, TypeId::Int32).unwrap();
+    let adopted = runtime.column_from_device_buffer_nullable(data_buffer, mask_buffer, 1, 3, TypeId::Int32).unwrap();
 
-    common::set_current_device(device0);
-    let ambient = Column::from_slice(&[40i32, 50, 60]).unwrap();
-    let frame = crate::common::dataframe_from_columns(vec!["adopted".into(), "ambient".into()], vec![adopted, ambient]);
+    let peer = runtime.column_from_slice(&[40i32, 50, 60]).unwrap();
+    let frame = crate::common::dataframe_from_columns(vec!["adopted".into(), "peer".into()], vec![adopted, peer]);
     assert!(
         frame.is_ok(),
-        "nullable adopted column should retain ambient-default provenance from device {} even after switching to device {}",
+        "nullable adopted column should bind to runtime device {} even after switching the calling thread's current device to {}",
         device0.ordinal(),
         device1.ordinal()
     );
@@ -337,25 +339,71 @@ fn adopted_nullable_device_buffer_rejects_cross_device_data_and_mask_buffers() {
     let (device0, device1) = first_two_test_devices();
 
     common::set_current_device(device0);
-    let data_buffer = DeviceBuffer::from_host_data(&[10i32, 20, 30]).unwrap();
+    let runtime0 = Runtime::builder().with_device(device0).build().unwrap();
+    let data_buffer = runtime0.device_buffer_from_host_data(&[10i32, 20, 30]).unwrap();
 
     common::set_current_device(device1);
     let mut mask = [0u8; 64];
     mask[0] = 0x05;
-    let mask_buffer = DeviceBuffer::from_host_data(&mask).unwrap();
+    let runtime1 = Runtime::builder().with_device(device1).build().unwrap();
+    let mask_buffer = runtime1.device_buffer_from_host_data(&mask).unwrap();
 
-    let err = Column::from_device_buffer_nullable(data_buffer, mask_buffer, 1, 3, TypeId::Int32)
-        .err()
-        .expect("cross-device nullable adoption should fail");
+    let err = crate::common::column_from_device_buffer_nullable(data_buffer, mask_buffer, 1, 3, TypeId::Int32)
+        .expect_err("cross-device nullable adoption should fail");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert_eq!(err.operation(), "column::from_device_buffer_nullable");
+    assert_eq!(err.operation(), "column::from_device_buffer_nullable_with_runtime");
+}
+
+#[test]
+fn runtime_adopted_device_buffer_rejects_cross_device_runtime() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let _device_guard = common::DeviceRestoreGuard::new();
+    let (device0, device1) = first_two_test_devices();
+
+    common::set_current_device(device0);
+    let runtime0 = Runtime::builder().with_device(device0).build().unwrap();
+    let buffer = runtime0.device_buffer_from_host_data(&[1i32, 2, 3]).unwrap();
+
+    let runtime = Runtime::builder().with_device(device1).build().unwrap();
+    let err = runtime
+        .column_from_device_buffer(buffer, 3, TypeId::Int32)
+        .expect_err("cross-device runtime adoption should fail");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "column::from_device_buffer_with_runtime");
+}
+
+#[test]
+fn runtime_adopted_nullable_device_buffer_rejects_cross_device_runtime() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let _device_guard = common::DeviceRestoreGuard::new();
+    let (device0, device1) = first_two_test_devices();
+
+    common::set_current_device(device0);
+    let runtime0 = Runtime::builder().with_device(device0).build().unwrap();
+    let data_buffer = runtime0.device_buffer_from_host_data(&[10i32, 20, 30]).unwrap();
+    let mut mask = [0u8; 64];
+    mask[0] = 0x05;
+    let mask_buffer = runtime0.device_buffer_from_host_data(&mask).unwrap();
+
+    let runtime = Runtime::builder().with_device(device1).build().unwrap();
+    let err = runtime
+        .column_from_device_buffer_nullable(data_buffer, mask_buffer, 1, 3, TypeId::Int32)
+        .expect_err("cross-device nullable runtime adoption should fail");
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "column::from_device_buffer_nullable_with_runtime");
 }
 
 // ---------------------------------------------------------------------------
 // Device-pinned execution observation tests
 //
 // These tests verify that runtime-first high-level factories actually execute
-// on the runtime's pinned device, not just the calling thread's ambient device.
+// on the runtime's pinned device, not just the calling thread's current CUDA device.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -368,9 +416,9 @@ fn runtime_pinned_device_is_used_for_execution() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    // Ensure the ambient device is the primary device.
-    let ambient = DeviceId::current().unwrap();
-    assert_eq!(ambient, device0, "test setup should begin on the primary device");
+    // Ensure the calling thread starts on the primary device.
+    let current_device = DeviceId::current().unwrap();
+    assert_eq!(current_device, device0, "test setup should begin on the primary device");
 
     // Create a runtime pinned to the secondary device.
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
@@ -379,7 +427,7 @@ fn runtime_pinned_device_is_used_for_execution() {
     common::reset_exec_observation();
     let _series = rt1.series("x", &[10, 20, 30]).unwrap();
 
-    // The FFI should have executed on the runtime's device, not the ambient one.
+    // The FFI should have executed on the runtime's device, not the calling thread's current device.
     let observed = common::last_exec_device();
     assert_eq!(
         observed,
@@ -388,7 +436,7 @@ fn runtime_pinned_device_is_used_for_execution() {
         device1.ordinal()
     );
 
-    // The ambient device should still be the primary device.
+    // The calling thread's current device should still be the primary device.
     let after = DeviceId::current().unwrap();
     assert_eq!(after, device0, "runtime leaked device state to the calling thread");
 }
@@ -458,8 +506,12 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
     let filtered_ctx_ids: Vec<i32> = filtered_with_ctx.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(filtered_ctx_ids, vec![3, 4]);
 
-    let ambient_after = DeviceId::current().unwrap();
-    assert_eq!(ambient_after, device0, "filter paths should not leak runtime device state to the calling thread");
+    let current_device_after = DeviceId::current().unwrap();
+    assert_eq!(
+        current_device_after,
+        device0,
+        "filter paths should not leak runtime device state to the calling thread"
+    );
 }
 
 #[test]
@@ -599,9 +651,9 @@ fn stream_records_creation_device() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    // Create a stream on the ambient primary device.
+    // Create a stream on the current primary device.
     let stream0 = CudaStream::new().unwrap();
-    assert_eq!(stream0.device(), device0, "stream should record the ambient device");
+    assert_eq!(stream0.device(), device0, "stream should record the current device");
 
     // Create a stream on the secondary device via RuntimeBuilder's DeviceGuard.
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
@@ -618,9 +670,9 @@ fn memory_resource_records_creation_device() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    // Create an MR on the ambient primary device.
+    // Create an MR on the current primary device.
     let mr0 = DeviceMemoryResource::cuda().unwrap();
-    assert_eq!(mr0.device(), device0, "MR should record the ambient device");
+    assert_eq!(mr0.device(), device0, "MR should record the current device");
 
     // Create an MR on the secondary device via RuntimeBuilder's DeviceGuard.
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
@@ -884,7 +936,7 @@ fn strings_contains_without_relocation_rejects_cross_device_runtime_inputs() {
 }
 
 // ---------------------------------------------------------------------------
-// Additional ambient-seeding regression probes
+// Additional runtime-seeding regression probes
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -937,7 +989,9 @@ fn runtime_head_tail_slice_regression() {
     let head = match df.head(2) {
         Ok(result) => result,
         Err(err) => {
-            panic!("head() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
+            panic!(
+                "head() should succeed on a runtime-pinned dataframe with the calling thread on another GPU: {err:?}"
+            )
         },
     };
     assert_eq!(head.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20]);
@@ -946,7 +1000,9 @@ fn runtime_head_tail_slice_regression() {
     let tail = match df.tail(2) {
         Ok(result) => result,
         Err(err) => {
-            panic!("tail() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
+            panic!(
+                "tail() should succeed on a runtime-pinned dataframe with the calling thread on another GPU: {err:?}"
+            )
         },
     };
     assert_eq!(tail.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![30, 40]);
@@ -955,7 +1011,9 @@ fn runtime_head_tail_slice_regression() {
     let slice = match df.slice(1, 2) {
         Ok(result) => result,
         Err(err) => {
-            panic!("slice() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
+            panic!(
+                "slice() should succeed on a runtime-pinned dataframe with the calling thread on another GPU: {err:?}"
+            )
         },
     };
     assert_eq!(slice.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30]);
@@ -982,7 +1040,9 @@ fn runtime_melt_regression() {
     let result = match df.melt(opts) {
         Ok(result) => result,
         Err(err) => {
-            panic!("melt() should succeed on a runtime-pinned dataframe with ambient device on another GPU: {err:?}")
+            panic!(
+                "melt() should succeed on a runtime-pinned dataframe with the calling thread on another GPU: {err:?}"
+            )
         },
     };
     assert_eq!(result.series("A").unwrap().to_strings_strict().unwrap(), vec!["a", "b", "c", "a", "b", "c"]);
@@ -1067,7 +1127,7 @@ fn runtime_series_from_scalar_executes_on_target_device() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    let scalar = Scalar::from_value(7i32).unwrap();
+    let scalar = scalar(7i32).unwrap();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
 
     common::reset_exec_observation();
@@ -1093,7 +1153,7 @@ fn runtime_column_from_scalar_executes_on_target_device() {
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
 
-    let scalar = Scalar::from_value(13i32).unwrap();
+    let scalar = scalar(13i32).unwrap();
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
 
     common::reset_exec_observation();

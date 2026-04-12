@@ -34,12 +34,12 @@ pub struct JsonTableReadOptions {
     /// If `false`, read as a single JSON array.
     #[builder(default = true)]
     lines: bool,
-    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
-    runtime: Option<Runtime>,
+    #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
+    runtime: Runtime,
 }
 
 impl JsonTableReadOptions {
-    pub(crate) fn from_parts(filepath: PathBuf, lines: bool, runtime: Option<Runtime>) -> Self {
+    pub(crate) fn from_parts(filepath: PathBuf, lines: bool, runtime: Runtime) -> Self {
         Self { filepath, lines, runtime }
     }
 }
@@ -49,33 +49,22 @@ pub fn read_json_table(options: &JsonTableReadOptions) -> Result<IoTableResult> 
     const OPERATION: &str = "io::json::read_json_table";
     let filepath = super::path_to_cstring(&options.filepath, OPERATION)?;
     super::validate_input_path(&options.filepath, OPERATION)?;
-    let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
-    let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
+    let output_domain = Arc::clone(options.runtime.execution_domain());
+    let exec_options = output_domain.explicit_exec_options_raw().expect("execution domain is always explicit");
 
     let mut table_handle = ptr::null_mut();
     let mut names_ptr: *mut *mut std::os::raw::c_char = ptr::null_mut();
     let mut num_names: i32 = 0;
     error::check_status_in_with(
-        match exec_options.as_ref() {
-            Some(exec_options) => unsafe {
-                cudf_sys::cudf_io_read_json_with_metadata_ex(
-                    filepath.as_ptr(),
-                    i32::from(options.lines),
-                    &mut table_handle,
-                    &mut names_ptr,
-                    &mut num_names,
-                    exec_options,
-                )
-            },
-            None => unsafe {
-                cudf_sys::cudf_io_read_json_with_metadata(
-                    filepath.as_ptr(),
-                    i32::from(options.lines),
-                    &mut table_handle,
-                    &mut names_ptr,
-                    &mut num_names,
-                )
-            },
+        unsafe {
+            cudf_sys::cudf_io_read_json_with_metadata_ex(
+                filepath.as_ptr(),
+                i32::from(options.lines),
+                &mut table_handle,
+                &mut names_ptr,
+                &mut num_names,
+                &exec_options,
+            )
         },
         OPERATION,
         [("lines", options.lines.to_string())],
@@ -83,10 +72,7 @@ pub fn read_json_table(options: &JsonTableReadOptions) -> Result<IoTableResult> 
 
     // SAFETY: table_handle was returned by a successful FFI call, transferring ownership.
     // Wrap early so table is freed via RAII if collect_column_names() fails.
-    let table = match output_domain {
-        Some(domain) => unsafe { Table::from_raw(table_handle).with_execution_domain(domain) },
-        None => unsafe { Table::from_raw(table_handle) },
-    };
+    let table = unsafe { Table::from_raw_with_domain(table_handle, output_domain) };
 
     let column_names = unsafe {
         let names = super::collect_column_names(names_ptr, num_names, OPERATION);
@@ -147,7 +133,7 @@ pub(crate) fn write_json_with_exec(
 
     // Validate column name count matches the table before the FFI call.
     if !options.column_names.is_empty() {
-        let expected = table.num_columns()? as usize;
+        let expected = table.num_columns()?;
         if options.column_names.len() != expected {
             return Err(Error::new(
                 ErrorKind::InvalidArgument,

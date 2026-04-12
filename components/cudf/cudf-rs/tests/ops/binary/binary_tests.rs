@@ -2,19 +2,18 @@
 
 use cudf::{
     DataType, TypeId,
-    core::{Column, Scalar},
     ops::binary::{self, BinaryOperator},
 };
 
 use crate::common::{
-    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation,
+    column_from_slice, column_from_strs, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, reset_exec_observation, reset_sync_observation, scalar,
 };
 
 #[test]
 fn test_add_column_column() {
-    let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let b = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let b = column_from_slice(&[10i32, 20, 30]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -26,8 +25,8 @@ fn test_add_column_column() {
 
 #[test]
 fn test_mul_column_scalar() {
-    let col = Column::from_slice(&[2i32, 3, 4]).unwrap();
-    let scalar = Scalar::from_value(10i32).unwrap();
+    let col = column_from_slice(&[2i32, 3, 4]).unwrap();
+    let scalar = scalar(10i32).unwrap();
     let cv = col.view().unwrap();
 
     let result = binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Mul, &DataType::new(TypeId::Int32)).unwrap();
@@ -38,8 +37,8 @@ fn test_mul_column_scalar() {
 
 #[test]
 fn test_div_scalar_column() {
-    let scalar = Scalar::from_value(100.0f64).unwrap();
-    let col = Column::from_slice(&[2.0f64, 4.0, 5.0]).unwrap();
+    let scalar = scalar(100.0f64).unwrap();
+    let col = column_from_slice(&[2.0f64, 4.0, 5.0]).unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -51,8 +50,8 @@ fn test_div_scalar_column() {
 
 #[test]
 fn test_comparison() {
-    let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let b = Column::from_slice(&[2i32, 2, 1]).unwrap();
+    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let b = column_from_slice(&[2i32, 2, 1]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -64,14 +63,13 @@ fn test_comparison() {
 
 #[test]
 fn test_binary_operation_error_contains_operation_context() {
-    let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let b = Column::from_slice(&[10i32, 20]).unwrap(); // mismatched length
+    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let b = column_from_slice(&[10i32, 20]).unwrap(); // mismatched length
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
     let err = binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::Int32))
-        .err()
-        .expect("expected error");
+        .expect_err("expected error");
 
     assert_eq!(err.operation(), "binary::binary_operation_vv");
     assert!(err.context().iter().any(|(k, _)| *k == "operator"));
@@ -79,8 +77,8 @@ fn test_binary_operation_error_contains_operation_context() {
 
 #[test]
 fn test_logical_and() {
-    let a = Column::from_slice(&[true, true, false, false]).unwrap();
-    let b = Column::from_slice(&[true, false, true, false]).unwrap();
+    let a = column_from_slice(&[true, true, false, false]).unwrap();
+    let b = column_from_slice(&[true, false, true, false]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -120,7 +118,7 @@ fn test_mixed_domain_binary_operation_vv_uses_lhs_provenance() {
 #[test]
 fn test_mixed_domain_binary_operation_vs_uses_column_provenance() {
     let lhs = explicit_i32_column(&[2, 3, 4], 902);
-    let rhs = Scalar::from_value(10i32).unwrap().__debug_rebind_execution_domain_explicit(903).unwrap();
+    let rhs = scalar(10i32).unwrap().__debug_rebind_execution_domain_explicit(903).unwrap();
     let expected_stream = lhs.__debug_execution_domain_stream_value();
     let expected_mr = lhs.__debug_execution_domain_mr_value();
 
@@ -141,7 +139,7 @@ fn test_mixed_domain_binary_operation_vs_uses_column_provenance() {
 
 #[test]
 fn test_mixed_domain_binary_operation_sv_uses_column_provenance() {
-    let lhs = Scalar::from_value(100i32).unwrap().__debug_rebind_execution_domain_explicit(904).unwrap();
+    let lhs = scalar(100i32).unwrap().__debug_rebind_execution_domain_explicit(904).unwrap();
     let rhs = explicit_i32_column(&[2, 4, 5], 905);
     // After the L11 fix, binary_operation_sv uses the column's (rhs) domain
     // as primary, consistent with binary_operation_vs.
@@ -167,8 +165,8 @@ fn test_mixed_domain_binary_operation_sv_uses_column_provenance() {
 
 #[test]
 fn test_string_equal_vv() {
-    let a = Column::from_strs(&["foo", "bar", "baz"]).unwrap();
-    let b = Column::from_strs(&["foo", "bar", "qux"]).unwrap();
+    let a = column_from_strs(&["foo", "bar", "baz"]).unwrap();
+    let b = column_from_strs(&["foo", "bar", "qux"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -179,8 +177,8 @@ fn test_string_equal_vv() {
 
 #[test]
 fn test_string_not_equal_vv() {
-    let a = Column::from_strs(&["foo", "bar", "baz"]).unwrap();
-    let b = Column::from_strs(&["foo", "bar", "qux"]).unwrap();
+    let a = column_from_strs(&["foo", "bar", "baz"]).unwrap();
+    let b = column_from_strs(&["foo", "bar", "qux"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -192,8 +190,8 @@ fn test_string_not_equal_vv() {
 
 #[test]
 fn test_string_less_vv() {
-    let a = Column::from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let b = Column::from_strs(&["banana", "banana", "banana"]).unwrap();
+    let a = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
+    let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -205,8 +203,8 @@ fn test_string_less_vv() {
 
 #[test]
 fn test_string_greater_vv() {
-    let a = Column::from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let b = Column::from_strs(&["banana", "banana", "banana"]).unwrap();
+    let a = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
+    let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -218,8 +216,8 @@ fn test_string_greater_vv() {
 
 #[test]
 fn test_string_less_equal_vv() {
-    let a = Column::from_strs(&["apple", "banana", "cherry"]).unwrap();
-    let b = Column::from_strs(&["banana", "banana", "banana"]).unwrap();
+    let a = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
+    let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -232,8 +230,8 @@ fn test_string_less_equal_vv() {
 
 #[test]
 fn test_string_greater_equal_vv() {
-    let a = Column::from_strs(&["apple", "banana", "cherry"]).unwrap();
-    let b = Column::from_strs(&["banana", "banana", "banana"]).unwrap();
+    let a = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
+    let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -250,8 +248,8 @@ fn test_string_greater_equal_vv() {
 
 #[test]
 fn test_string_equal_vs() {
-    let col = Column::from_strs(&["active", "inactive", "active"]).unwrap();
-    let scalar = Scalar::from_str("active").unwrap();
+    let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
+    let scalar = crate::common::string_scalar("active").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -262,8 +260,8 @@ fn test_string_equal_vs() {
 
 #[test]
 fn test_string_not_equal_vs() {
-    let col = Column::from_strs(&["active", "inactive", "active"]).unwrap();
-    let scalar = Scalar::from_str("active").unwrap();
+    let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
+    let scalar = crate::common::string_scalar("active").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -274,8 +272,8 @@ fn test_string_not_equal_vs() {
 
 #[test]
 fn test_string_less_vs() {
-    let col = Column::from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let scalar = Scalar::from_str("banana").unwrap();
+    let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
+    let scalar = crate::common::string_scalar("banana").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -287,8 +285,8 @@ fn test_string_less_vs() {
 
 #[test]
 fn test_string_greater_vs() {
-    let col = Column::from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let scalar = Scalar::from_str("banana").unwrap();
+    let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
+    let scalar = crate::common::string_scalar("banana").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -300,8 +298,8 @@ fn test_string_greater_vs() {
 
 #[test]
 fn test_string_less_equal_vs() {
-    let col = Column::from_strs(&["apple", "banana", "cherry"]).unwrap();
-    let scalar = Scalar::from_str("banana").unwrap();
+    let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
+    let scalar = crate::common::string_scalar("banana").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -313,8 +311,8 @@ fn test_string_less_equal_vs() {
 
 #[test]
 fn test_string_greater_equal_vs() {
-    let col = Column::from_strs(&["apple", "banana", "cherry"]).unwrap();
-    let scalar = Scalar::from_str("banana").unwrap();
+    let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
+    let scalar = crate::common::string_scalar("banana").unwrap();
     let cv = col.view().unwrap();
 
     let result =
@@ -330,8 +328,8 @@ fn test_string_greater_equal_vs() {
 
 #[test]
 fn test_string_equal_empty() {
-    let a = Column::from_strs(&["", "hello", ""]).unwrap();
-    let b = Column::from_strs(&["", "", "hello"]).unwrap();
+    let a = column_from_strs(&["", "hello", ""]).unwrap();
+    let b = column_from_strs(&["", "", "hello"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -342,8 +340,8 @@ fn test_string_equal_empty() {
 
 #[test]
 fn test_string_equal_case_sensitive() {
-    let a = Column::from_strs(&["Foo", "BAR", "baz"]).unwrap();
-    let b = Column::from_strs(&["foo", "bar", "baz"]).unwrap();
+    let a = column_from_strs(&["Foo", "BAR", "baz"]).unwrap();
+    let b = column_from_strs(&["foo", "bar", "baz"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -359,8 +357,8 @@ fn test_string_equal_case_sensitive() {
 
 #[test]
 fn test_string_add_vv_error() {
-    let a = Column::from_strs(&["foo", "bar"]).unwrap();
-    let b = Column::from_strs(&["baz", "qux"]).unwrap();
+    let a = column_from_strs(&["foo", "bar"]).unwrap();
+    let b = column_from_strs(&["baz", "qux"]).unwrap();
     let av = a.view().unwrap();
     let bv = b.view().unwrap();
 
@@ -370,8 +368,8 @@ fn test_string_add_vv_error() {
 
 #[test]
 fn test_string_sub_vs_error() {
-    let col = Column::from_strs(&["foo", "bar"]).unwrap();
-    let scalar = Scalar::from_str("baz").unwrap();
+    let col = column_from_strs(&["foo", "bar"]).unwrap();
+    let scalar = crate::common::string_scalar("baz").unwrap();
     let cv = col.view().unwrap();
 
     let result = binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Sub, &DataType::new(TypeId::String));

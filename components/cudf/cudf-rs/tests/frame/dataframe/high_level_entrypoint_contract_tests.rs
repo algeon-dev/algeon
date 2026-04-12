@@ -6,13 +6,12 @@
 
 use cudf::{
     DataFrame, Series,
-    core::Column,
     ops::{copying, filter as low_level_filter, search},
 };
 
 use crate::common::{
-    assert_missing_column_error, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    reset_exec_observation, reset_sync_observation, sample_runtime,
+    assert_missing_column_error, column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation, sample_runtime, scalar,
 };
 
 // ===========================================================================
@@ -21,8 +20,8 @@ use crate::common::{
 
 /// Build a 5-row DataFrame with id (i32) and score (f64) columns.
 fn sample_df() -> DataFrame {
-    let ids = Series::new::<i32>("id", &[10, 20, 30, 40, 50]).unwrap();
-    let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+    let ids = crate::common::series::<i32>("id", &[10, 20, 30, 40, 50]).unwrap();
+    let scores = crate::common::series::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
     DataFrame::from_series([ids, scores]).unwrap()
 }
 
@@ -33,7 +32,7 @@ fn sample_df() -> DataFrame {
 #[test]
 fn test_gather_with_series() {
     let df = sample_df(); // id: 10,20,30,40,50
-    let indices = Series::new::<i32>("idx", &[0, 2, 4]).unwrap();
+    let indices = crate::common::series::<i32>("idx", &[0, 2, 4]).unwrap();
     let result = df.gather(&indices).unwrap();
     assert_eq!(result.num_rows(), 3);
     // Gather produces nullable output; use to_optional_vec.
@@ -81,7 +80,7 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
 #[test]
 fn test_filter_isin_with_series() {
     let df = sample_df(); // id: 10,20,30,40,50
-    let values = Series::new::<i32>("vals", &[10, 30, 50]).unwrap();
+    let values = crate::common::series::<i32>("vals", &[10, 30, 50]).unwrap();
     let result = df.filter_isin("id", &values).unwrap();
     assert_eq!(result.num_rows(), 3);
     assert_eq!(result.column_names(), vec!["id", "score"]);
@@ -117,7 +116,7 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_p
 #[test]
 fn test_filter_isin_with_series_no_matches_preserves_schema() {
     let df = sample_df();
-    let values = Series::new::<i32>("vals", &[99, 100]).unwrap();
+    let values = crate::common::series::<i32>("vals", &[99, 100]).unwrap();
     let result = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(result.num_rows(), 0);
@@ -127,7 +126,7 @@ fn test_filter_isin_with_series_no_matches_preserves_schema() {
 #[test]
 fn test_filter_isin_with_series_rejects_missing_column() {
     let df = sample_df();
-    let values = Series::new::<i32>("vals", &[10]).unwrap();
+    let values = crate::common::series::<i32>("vals", &[10]).unwrap();
     let err = df.filter_isin("nonexistent", &values).unwrap_err();
 
     assert_missing_column_error(&err, "nonexistent");
@@ -139,8 +138,9 @@ fn test_filter_isin_with_series_rejects_missing_column() {
 
 #[test]
 fn test_fillna_with_plain_value() {
-    let ids = Series::new_nullable::<i32>("id", &[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
-    let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+    let ids =
+        crate::common::nullable_series::<i32>("id", &[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
+    let scores = crate::common::series::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
     let df = DataFrame::from_series([ids, scores]).unwrap();
 
     let filled = df.fillna::<i32>("id", 42).unwrap();
@@ -152,11 +152,12 @@ fn test_fillna_with_plain_value() {
 
 #[test]
 fn test_fillna_with_scalar_still_works() {
-    let ids = Series::new_nullable::<i32>("id", &[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
-    let scores = Series::new::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+    let ids =
+        crate::common::nullable_series::<i32>("id", &[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
+    let scores = crate::common::series::<f64>("score", &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
     let df = DataFrame::from_series([ids, scores]).unwrap();
 
-    let fill = cudf::core::Scalar::from_value(42i32).unwrap();
+    let fill = scalar(42i32).unwrap();
     let filled = df.fillna_with_scalar("id", &fill).unwrap();
 
     assert_eq!(filled.num_rows(), 5);
@@ -166,7 +167,7 @@ fn test_fillna_with_scalar_still_works() {
 
 #[test]
 fn test_fillna_rejects_missing_column() {
-    let ids = Series::new::<i32>("id", &[10, 20, 30]).unwrap();
+    let ids = crate::common::series::<i32>("id", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([ids]).unwrap();
     let err = df.fillna::<i32>("nonexistent", 42).unwrap_err();
 
@@ -195,7 +196,7 @@ fn test_factorize_returns_series() {
 #[test]
 fn test_advanced_gather_still_works_via_table_view_and_ops() {
     let df = sample_df(); // id: 10,20,30,40,50
-    let indices = Column::from_slice(&[0i32, 2, 4]).unwrap();
+    let indices = column_from_slice(&[0i32, 2, 4]).unwrap();
     let table_view = df.table_view().unwrap();
     let result = copying::gather(table_view.table(), &indices.view().unwrap()).unwrap();
     let result = DataFrame::from_table(result, vec!["id".to_string(), "score".to_string()]).unwrap();
@@ -218,7 +219,7 @@ fn test_advanced_gather_still_works_via_table_view_and_ops() {
 #[test]
 fn test_advanced_filter_isin_still_works_via_table_view_and_ops() {
     let df = sample_df(); // id: 10,20,30,40,50
-    let values = Column::from_slice(&[10i32, 30, 50]).unwrap();
+    let values = column_from_slice(&[10i32, 30, 50]).unwrap();
     let values_view = values.view().unwrap();
     let ids = df.series("id").unwrap();
     let ids_view = ids.as_column_view().unwrap();

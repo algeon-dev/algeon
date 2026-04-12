@@ -10,9 +10,11 @@
 
 use std::sync::Arc;
 
-use cudf::{DataFrame, Series, TypeId, core::Column};
+use cudf::{DataFrame, TypeId, core::Column};
 
-use crate::common::dataframe_device_ptr as device_ptr;
+use crate::common::{
+    column_from_slice, dataframe_device_ptr as device_ptr, error_context_value, fail_next_column_view_metadata_read,
+};
 
 // ===========================================================================
 // Helpers
@@ -20,8 +22,8 @@ use crate::common::dataframe_device_ptr as device_ptr;
 
 /// Build a 3-row, 2-column DataFrame.
 fn sample_df() -> DataFrame {
-    let ids = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
-    let scores = Series::new::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
+    let ids = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
+    let scores = crate::common::series::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
     DataFrame::from_series([ids, scores]).unwrap()
 }
 
@@ -87,11 +89,37 @@ fn df_series_two_calls_share_arc() {
 #[test]
 fn df_get_probe_access() {
     let df = sample_df();
-    assert!(df.get("nonexistent").is_none());
+    assert!(df.get("nonexistent").unwrap().is_none());
 
-    let s = df.get("id").unwrap();
+    let s = df.get("id").unwrap().unwrap();
     assert_eq!(s.name(), Some("id"));
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+#[test]
+fn df_series_returns_error_when_shared_series_reconstruction_metadata_read_fails() {
+    let df = sample_df();
+
+    fail_next_column_view_metadata_read();
+    let err = df.series("id").unwrap_err();
+
+    assert_eq!(err.kind(), cudf::ErrorKind::Unknown);
+    assert_eq!(err.operation(), "dataframe::series");
+    assert_eq!(error_context_value(&err, "column_name"), Some("id"));
+    assert!(err.message().contains("test metadata read failure"), "unexpected error: {err}");
+}
+
+#[test]
+fn df_get_preserves_missing_column_vs_reconstruction_failure() {
+    let df = sample_df();
+    assert!(df.get("missing").unwrap().is_none());
+
+    fail_next_column_view_metadata_read();
+    let err = df.get("id").unwrap_err();
+
+    assert_eq!(err.kind(), cudf::ErrorKind::Unknown);
+    assert_eq!(err.operation(), "dataframe::get");
+    assert_eq!(error_context_value(&err, "column_name"), Some("id"));
 }
 
 /// `contains()` returns `true` for existing columns, `false` otherwise.
@@ -107,7 +135,7 @@ fn df_contains_check() {
 #[test]
 fn df_iter_series_preserves_schema_order_and_shares_gpu_data() {
     let df = sample_df();
-    let items: Vec<_> = df.iter_series().collect();
+    let items: Vec<_> = df.iter_series().collect::<cudf::Result<Vec<_>>>().unwrap();
 
     let names: Vec<_> = items.iter().map(|series| series.name().unwrap().to_string()).collect();
     assert_eq!(names, vec!["id", "score"]);
@@ -117,6 +145,22 @@ fn df_iter_series_preserves_schema_order_and_shares_gpu_data() {
     let iter_ptr = items[0].as_column_view().unwrap().device_data_ptr().unwrap();
     let direct_ptr = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(iter_ptr, direct_ptr);
+}
+
+#[test]
+fn df_iter_series_yields_per_item_errors_without_reordering() {
+    let df = sample_df();
+    let mut iter = df.iter_series();
+
+    fail_next_column_view_metadata_read();
+    let err = iter.next().unwrap().unwrap_err();
+    assert_eq!(err.kind(), cudf::ErrorKind::Unknown);
+    assert_eq!(err.operation(), "dataframe::iter_series");
+    assert_eq!(error_context_value(&err, "column_name"), Some("id"));
+
+    let second = iter.next().unwrap().unwrap();
+    assert_eq!(second.name(), Some("score"));
+    assert_eq!(second.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 // ===========================================================================
@@ -162,7 +206,7 @@ fn df_to_table_source_still_usable() {
 /// count == 1), `into_table()` can unwrap without copying.
 #[test]
 fn df_into_table_unique_owner_no_extra_copy() {
-    let df = crate::common::dataframe_from_columns(vec!["a".into()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()])
+    let df = crate::common::dataframe_from_columns(vec!["a".into()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
         .unwrap();
 
     let original_ptr = device_ptr(&df, "a");
@@ -222,7 +266,7 @@ fn filter_allocates_new_gpu_data() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
 
-    let mask = cudf::Series::new::<bool>("mask", &[true, false, true]).unwrap();
+    let mask = crate::common::series::<bool>("mask", &[true, false, true]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     let filtered_ptr = device_ptr(&filtered, "id");
@@ -276,7 +320,7 @@ fn rename_column_shares_arc() {
 /// same device data as the underlying Column.
 #[test]
 fn series_column_view_same_device_ptr_as_column() {
-    let s = Series::new::<i32>("x", &[1, 2]).unwrap();
+    let s = crate::common::series::<i32>("x", &[1, 2]).unwrap();
     let cv = s.as_column_view().unwrap();
     let col_cv = s.as_column().view().unwrap();
 
@@ -286,7 +330,7 @@ fn series_column_view_same_device_ptr_as_column() {
 /// `Series::as_column()` returns `&Column` — a direct borrow.
 #[test]
 fn series_column_returns_ref() {
-    let s = Series::new::<i32>("c", &[1, 2, 3]).unwrap();
+    let s = crate::common::series::<i32>("c", &[1, 2, 3]).unwrap();
     let col_ref: &Column = s.as_column();
     let cv = col_ref.view().unwrap();
     assert_eq!(cv.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
@@ -296,7 +340,7 @@ fn series_column_returns_ref() {
 /// A clone of the Series shares the same device data.
 #[test]
 fn series_into_inner_shares_arc() {
-    let s = Series::new::<i32>("c", &[1, 2, 3]).unwrap();
+    let s = crate::common::series::<i32>("c", &[1, 2, 3]).unwrap();
 
     let arc1 = s.clone().into_inner();
     let arc2 = s.into_inner();
@@ -314,7 +358,7 @@ fn series_into_inner_shares_arc() {
 /// `Series::clone()` is a cheap Arc bump — same device pointer.
 #[test]
 fn series_clone_shares_gpu_data() {
-    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let cloned = s.clone();
 
     let ptr1 = s.as_column_view().unwrap().device_data_ptr().unwrap();
@@ -327,7 +371,7 @@ fn series_clone_shares_gpu_data() {
 /// the same GPU data.
 #[test]
 fn series_rename_shares_gpu_data() {
-    let s = Series::new::<i32>("old", &[1, 2, 3]).unwrap();
+    let s = crate::common::series::<i32>("old", &[1, 2, 3]).unwrap();
     let renamed = s.rename("new");
 
     let ptr1 = s.as_column_view().unwrap().device_data_ptr().unwrap();
@@ -345,7 +389,7 @@ fn series_rename_shares_gpu_data() {
 #[test]
 fn df_filter_gpu_allocates() {
     let df = sample_df();
-    let mask = Series::new::<bool>("mask", &[true, false, true]).unwrap();
+    let mask = crate::common::series::<bool>("mask", &[true, false, true]).unwrap();
 
     let filtered = df.filter(&mask).unwrap();
     assert_eq!(filtered.num_rows(), 2);
@@ -374,7 +418,7 @@ fn df_slicing_ops_gpu_allocate() {
 /// GPU-allocating unary ops on Series produce new columns.
 #[test]
 fn series_ops_gpu_allocate() {
-    let s = Series::new::<i32>("v", &[1, 2, 3]).unwrap();
+    let s = crate::common::series::<i32>("v", &[1, 2, 3]).unwrap();
     let original_ptr = s.as_column_view().unwrap().device_data_ptr().unwrap();
 
     let mask = s.gt_scalar(1i32).unwrap();

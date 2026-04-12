@@ -271,6 +271,7 @@ impl<'a> GroupBy<'a> {
                 keys_table.table(),
                 &requests,
                 self.options.null_policy(),
+                &output_domain,
                 Some(exec_options),
                 operation,
             )?
@@ -278,13 +279,8 @@ impl<'a> GroupBy<'a> {
             groupby_aggregate(keys_table.table(), &requests, self.options.null_policy())?
         };
 
-        let mut grouped_results: Vec<Vec<Option<Column>>> = gb_result
-            .results
-            .into_iter()
-            .map(|cols| {
-                cols.into_iter().map(|col| Some(col.with_execution_domain(Arc::clone(&output_domain)))).collect()
-            })
-            .collect();
+        let mut grouped_results: Vec<Vec<Option<Column>>> =
+            gb_result.results.into_iter().map(|cols| cols.into_iter().map(Some).collect()).collect();
 
         let mut all_result_cols: Vec<Column> = Vec::with_capacity(output_order.len());
         for (request_index, (group_idx, agg_idx)) in output_order.iter().enumerate() {
@@ -314,7 +310,7 @@ impl<'a> GroupBy<'a> {
             all_result_cols.push(col);
         }
 
-        let result_keys_cols = gb_result.keys.with_execution_domain(Arc::clone(&output_domain)).into_columns()?;
+        let result_keys_cols = gb_result.keys.into_columns()?;
 
         let mut final_cols: Vec<Column> = Vec::with_capacity(result_keys_cols.len() + all_result_cols.len());
         final_cols.extend(result_keys_cols);

@@ -1,15 +1,15 @@
 use cudf::{
     AggSpec, DataFrame, GroupByAgg,
-    core::{Column, TableView},
+    core::TableView,
     ops::groupby::{AggregationRequest, NullPolicy, groupby_aggregate},
 };
 
-use crate::allocation::allocation_count_delta;
+use crate::{allocation::allocation_count_delta, common::column_from_slice};
 
 fn sample_df() -> DataFrame {
-    let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
-    let a = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let b = Column::from_slice(&[1i64, 2, 3, 4]).unwrap();
+    let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
+    let a = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let b = column_from_slice(&[1i64, 2, 3, 4]).unwrap();
     crate::common::dataframe_from_columns(vec!["key".to_string(), "a".to_string(), "b".to_string()], vec![keys, a, b])
         .unwrap()
 }

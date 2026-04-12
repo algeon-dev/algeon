@@ -32,14 +32,13 @@ pub enum FillPolicy {
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{
-///     core::{Column, Scalar},
-///     ops::replace,
-/// };
+/// use cudf::{Runtime, ops::replace};
 ///
-/// let col = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
+/// let rt = Runtime::new().unwrap();
+/// let col = rt
+///     .column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
 ///     .unwrap();
-/// let fill = Scalar::from_value(99i32).unwrap();
+/// let fill = rt.scalar(99i32).unwrap();
 /// let result = replace::replace_nulls(&col.view().unwrap(), &fill).unwrap();
 /// // result: [1, 99, 3]
 /// ```
@@ -51,13 +50,13 @@ pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Col
         "replace::replace_nulls",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    replace_nulls_with_exec_options(input, replacement, exec_options.as_ref(), "replace::replace_nulls")
-        .map(|column| column.with_execution_domain(output_domain))
+    replace_nulls_with_exec_options(input, replacement, &output_domain, exec_options.as_ref(), "replace::replace_nulls")
 }
 
 pub(crate) fn replace_nulls_with_exec_options(
     input: &ColumnView<'_>,
     replacement: &Scalar,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -74,7 +73,7 @@ pub(crate) fn replace_nulls_with_exec_options(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 /// Replace null values in a column with corresponding values from another column.
@@ -86,11 +85,13 @@ pub(crate) fn replace_nulls_with_exec_options(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{core::Column, ops::replace};
+/// use cudf::{Runtime, ops::replace};
 ///
-/// let left = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
+/// let rt = Runtime::new().unwrap();
+/// let left = rt
+///     .column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
 ///     .unwrap();
-/// let right = Column::from_slice(&[10i32, 20, 30]).unwrap();
+/// let right = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
 /// let result = replace::replace_nulls_column(
 ///     &left.view().unwrap(),
 ///     &right.view().unwrap(),
@@ -106,13 +107,19 @@ pub fn replace_nulls_column(input: &ColumnView<'_>, replacement: &ColumnView<'_>
         "replace::replace_nulls_column",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    replace_nulls_column_with_exec_options(input, replacement, exec_options.as_ref(), "replace::replace_nulls_column")
-        .map(|column| column.with_execution_domain(output_domain))
+    replace_nulls_column_with_exec_options(
+        input,
+        replacement,
+        &output_domain,
+        exec_options.as_ref(),
+        "replace::replace_nulls_column",
+    )
 }
 
 pub(crate) fn replace_nulls_column_with_exec_options(
     input: &ColumnView<'_>,
     replacement: &ColumnView<'_>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -129,7 +136,7 @@ pub(crate) fn replace_nulls_column_with_exec_options(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 /// Replace null values using a directional fill policy (forward or backward fill).
@@ -142,15 +149,17 @@ pub(crate) fn replace_nulls_column_with_exec_options(
 /// # Example
 /// ```no_run
 /// use cudf::{
-///     core::Column,
+///     Runtime,
 ///     ops::replace::{self, FillPolicy},
 /// };
 ///
-/// let col = Column::from_slice_nullable(
-///     &[1i32, 0, 0, 4],
-///     &[true, false, false, true],
-/// )
-/// .unwrap();
+/// let rt = Runtime::new().unwrap();
+/// let col = rt
+///     .column_from_slice_nullable(
+///         &[1i32, 0, 0, 4],
+///         &[true, false, false, true],
+///     )
+///     .unwrap();
 /// let result = replace::replace_nulls_policy(
 ///     &col.view().unwrap(),
 ///     FillPolicy::Preceding,
@@ -161,13 +170,19 @@ pub(crate) fn replace_nulls_column_with_exec_options(
 pub fn replace_nulls_policy(input: &ColumnView<'_>, policy: FillPolicy) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    replace_nulls_policy_with_exec_options(input, policy, exec_options.as_ref(), "replace::replace_nulls_policy")
-        .map(|column| column.with_execution_domain(output_domain))
+    replace_nulls_policy_with_exec_options(
+        input,
+        policy,
+        &output_domain,
+        exec_options.as_ref(),
+        "replace::replace_nulls_policy",
+    )
 }
 
 pub(crate) fn replace_nulls_policy_with_exec_options(
     input: &ColumnView<'_>,
     policy: FillPolicy,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -184,5 +199,5 @@ pub(crate) fn replace_nulls_policy_with_exec_options(
         [("execution_context_provided", exec_options.is_some().to_string()), ("policy", format!("{policy:?}"))],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }

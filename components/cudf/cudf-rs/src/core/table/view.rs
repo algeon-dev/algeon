@@ -24,6 +24,14 @@ pub struct TableView<'a> {
 }
 
 impl<'a> TableView<'a> {
+    fn empty_requires_authoritative_source_error(operation: &'static str) -> Error {
+        Error::new(
+            ErrorKind::InvalidOperation,
+            "creating an empty table view requires an authoritative source because no input column views exist",
+        )
+        .with_operation(operation)
+    }
+
     pub(crate) fn from_raw_handle(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
         Self { handle: NonNull::new(handle).expect("null handle on success"), domain, _lifetime: PhantomData }
     }
@@ -134,31 +142,44 @@ impl<'a> TableView<'a> {
         Ok(Self::from_raw_handle(out, Arc::clone(&self.domain)))
     }
 
-    /// Construct a `TableView` from a slice of `ColumnView`s.
-    ///
-    /// This is useful when you have individually-owned columns and need to
-    /// present them as a table to libcudf operations.
-    pub fn from_column_views(views: &[&ColumnView<'a>]) -> Result<Self> {
+    pub(crate) fn from_column_views_in_domain(
+        views: &[&ColumnView<'a>],
+        authoritative_domain: Option<Arc<ExecutionDomain>>,
+        operation: &'static str,
+    ) -> Result<Self> {
         let domain = if let Some(first) = views.first() {
             let domain = Arc::clone(first.execution_domain());
             for (index, view) in views.iter().enumerate().skip(1) {
                 ExecutionDomain::require_same_provenance(
                     &domain,
                     view.execution_domain(),
-                    "table_view::from_column_views",
+                    operation,
                     "all column views in a table view must share one retained provenance",
                     "use copy_into_runtime(...) on higher-level Series/DataFrame values or rebuild the table view from columns already placed in one Runtime before calling this operation",
                 )
                 .map_err(|e| e.with_context("column_index", index.to_string()))?;
             }
-            domain
+            if let Some(authoritative_domain) = authoritative_domain.as_ref() {
+                ExecutionDomain::require_same_provenance(
+                    authoritative_domain,
+                    &domain,
+                    operation,
+                    "table-view construction requires all columns to match the authoritative retained provenance",
+                    "use copy_into_runtime(...) to relocate all columns into one Runtime before constructing the table view",
+                )?;
+                Arc::clone(authoritative_domain)
+            } else {
+                domain
+            }
+        } else if let Some(authoritative_domain) = authoritative_domain {
+            authoritative_domain
         } else {
-            ExecutionDomain::ambient_default()
+            return Err(Self::empty_requires_authoritative_source_error(operation));
         };
 
         let num_columns = i32::try_from(views.len()).map_err(|_| {
             Error::new(ErrorKind::InvalidOperation, "number of column views exceeds i32::MAX")
-                .with_operation("table_view::from_column_views")
+                .with_operation(operation)
                 .with_context("num_columns", views.len().to_string())
         })?;
 
@@ -169,10 +190,18 @@ impl<'a> TableView<'a> {
         // SAFETY: handles are valid column view pointers from raw_handle(). num_columns matches.
         error::check_status_in(
             unsafe { cudf_sys::cudf_table_view_from_column_views(handles.as_mut_ptr(), num_columns, &mut out) },
-            "table_view::from_column_views",
+            operation,
         )?;
 
         Ok(Self::from_raw_handle(out, domain))
+    }
+
+    /// Construct a `TableView` from a slice of `ColumnView`s.
+    ///
+    /// This is useful when you have individually-owned columns and need to
+    /// present them as a table to libcudf operations.
+    pub fn from_column_views(views: &[&ColumnView<'a>]) -> Result<Self> {
+        Self::from_column_views_in_domain(views, None, "table_view::from_column_views")
     }
 
     /// Returns the raw FFI handle. For internal I/O use.

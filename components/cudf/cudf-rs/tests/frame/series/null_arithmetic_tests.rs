@@ -17,17 +17,17 @@ use cudf::Series;
 
 /// Create a nullable i32 series: [10, null, 30]
 fn series_with_null_middle() -> Series {
-    Series::new_nullable::<i32>("a", &[10, 0, 30], &[true, false, true]).unwrap()
+    crate::common::nullable_series::<i32>("a", &[10, 0, 30], &[true, false, true]).unwrap()
 }
 
 /// Create a non-null i32 series: [1, 2, 3]
 fn series_non_null() -> Series {
-    Series::new::<i32>("b", &[1, 2, 3]).unwrap()
+    crate::common::series::<i32>("b", &[1, 2, 3]).unwrap()
 }
 
 /// Create a nullable i32 series with null at a different position: [100, 200, null]
 fn series_with_null_last() -> Series {
-    Series::new_nullable::<i32>("c", &[100, 200, 0], &[true, true, false]).unwrap()
+    crate::common::nullable_series::<i32>("c", &[100, 200, 0], &[true, true, false]).unwrap()
 }
 
 // ===========================================================================
@@ -55,7 +55,7 @@ fn test_add_value_plus_null_propagates_null() {
 #[test]
 fn test_add_both_null_at_same_position() {
     let a = series_with_null_middle(); // [10, null, 30]
-    let b = Series::new_nullable::<i32>("d", &[1, 0, 3], &[true, false, true]).unwrap();
+    let b = crate::common::nullable_series::<i32>("d", &[1, 0, 3], &[true, false, true]).unwrap();
     let result = a.add(&b).unwrap();
     let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(11), None, Some(33)]);
@@ -93,8 +93,8 @@ fn test_mul_with_nulls() {
 
 #[test]
 fn test_div_with_nulls() {
-    let a = Series::new_nullable::<f64>("a", &[10.0, 0.0, 30.0], &[true, false, true]).unwrap();
-    let b = Series::new::<f64>("b", &[2.0, 5.0, 3.0]).unwrap();
+    let a = crate::common::nullable_series::<f64>("a", &[10.0, 0.0, 30.0], &[true, false, true]).unwrap();
+    let b = crate::common::series::<f64>("b", &[2.0, 5.0, 3.0]).unwrap();
     let result = a.div(&b).unwrap();
     let vals = result.to_optional_vec::<f64>().unwrap();
     assert_eq!(vals, vec![Some(5.0), None, Some(10.0)]);
@@ -103,7 +103,7 @@ fn test_div_with_nulls() {
 #[test]
 fn test_rem_with_nulls() {
     let a = series_with_null_middle(); // [10, null, 30]
-    let b = Series::new::<i32>("b", &[3, 3, 7]).unwrap();
+    let b = crate::common::series::<i32>("b", &[3, 3, 7]).unwrap();
     let result = a.rem(&b).unwrap();
     let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(1), None, Some(2)]);
@@ -139,7 +139,7 @@ fn test_mul_scalar_preserves_nulls() {
 
 #[test]
 fn test_div_scalar_preserves_nulls() {
-    let a = Series::new_nullable::<f64>("a", &[10.0, 0.0, 30.0], &[true, false, true]).unwrap();
+    let a = crate::common::nullable_series::<f64>("a", &[10.0, 0.0, 30.0], &[true, false, true]).unwrap();
     let result = a.div_scalar(2.0f64).unwrap();
     let vals = result.to_optional_vec::<f64>().unwrap();
     assert_eq!(vals, vec![Some(5.0), None, Some(15.0)]);
@@ -191,7 +191,7 @@ fn test_operator_mul_with_nulls() {
 #[test]
 fn test_eq_null_propagates() {
     let a = series_with_null_middle(); // [10, null, 30]
-    let b = Series::new::<i32>("b", &[10, 2, 99]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 2, 99]).unwrap();
     let result = a.eq(&b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     // position 0: 10==10 -> true
@@ -203,7 +203,7 @@ fn test_eq_null_propagates() {
 #[test]
 fn test_ne_null_propagates() {
     let a = series_with_null_middle();
-    let b = Series::new::<i32>("b", &[10, 2, 99]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 2, 99]).unwrap();
     let result = a.ne(&b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(false), None, Some(true)]);
@@ -212,7 +212,7 @@ fn test_ne_null_propagates() {
 #[test]
 fn test_gt_null_propagates() {
     let a = series_with_null_middle(); // [10, null, 30]
-    let b = Series::new::<i32>("b", &[5, 2, 50]).unwrap();
+    let b = crate::common::series::<i32>("b", &[5, 2, 50]).unwrap();
     let result = a.gt(&b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
@@ -221,7 +221,7 @@ fn test_gt_null_propagates() {
 #[test]
 fn test_lt_null_propagates() {
     let a = series_with_null_middle();
-    let b = Series::new::<i32>("b", &[5, 2, 50]).unwrap();
+    let b = crate::common::series::<i32>("b", &[5, 2, 50]).unwrap();
     let result = a.lt(&b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(false), None, Some(true)]);
@@ -230,7 +230,7 @@ fn test_lt_null_propagates() {
 #[test]
 fn test_ge_null_propagates() {
     let a = series_with_null_middle();
-    let b = Series::new::<i32>("b", &[10, 2, 30]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 2, 30]).unwrap();
     let result = a.ge(&b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(true)]);
@@ -239,7 +239,7 @@ fn test_ge_null_propagates() {
 #[test]
 fn test_le_null_propagates() {
     let a = series_with_null_middle();
-    let b = Series::new::<i32>("b", &[10, 2, 30]).unwrap();
+    let b = crate::common::series::<i32>("b", &[10, 2, 30]).unwrap();
     let result = a.le(&b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(true)]);
@@ -249,7 +249,7 @@ fn test_le_null_propagates() {
 fn test_eq_null_vs_null_is_null_not_true() {
     // Two nulls compared: null == null should be null, not true.
     let a = series_with_null_middle(); // [10, null, 30]
-    let b = Series::new_nullable::<i32>("d", &[10, 0, 30], &[true, false, true]).unwrap();
+    let b = crate::common::nullable_series::<i32>("d", &[10, 0, 30], &[true, false, true]).unwrap();
     let result = a.eq(&b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(true)]);
@@ -313,7 +313,7 @@ fn test_le_scalar_preserves_nulls() {
 
 #[test]
 fn test_eq_scalar_str_preserves_nulls() {
-    let s = Series::new_nullable("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
+    let s = crate::common::nullable_series("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.eq_scalar_str("hello").unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
@@ -321,7 +321,7 @@ fn test_eq_scalar_str_preserves_nulls() {
 
 #[test]
 fn test_gt_scalar_str_preserves_nulls() {
-    let s = Series::new_nullable("s", &["banana", "x", "apple"], &[true, false, true]).unwrap();
+    let s = crate::common::nullable_series("s", &["banana", "x", "apple"], &[true, false, true]).unwrap();
     let result = s.gt_scalar_str("avocado").unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
@@ -341,7 +341,7 @@ fn test_neg_preserves_nulls() {
 
 #[test]
 fn test_logical_not_preserves_nulls() {
-    let a = Series::new_nullable::<bool>("f", &[true, false, true], &[true, false, true]).unwrap();
+    let a = crate::common::nullable_series::<bool>("f", &[true, false, true], &[true, false, true]).unwrap();
     let result = (!&a).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(false), None, Some(false)]);
@@ -349,8 +349,8 @@ fn test_logical_not_preserves_nulls() {
 
 #[test]
 fn test_logical_and_preserves_nulls() {
-    let a = Series::new_nullable::<bool>("lhs", &[true, false, true], &[true, false, true]).unwrap();
-    let b = Series::new::<bool>("rhs", &[true, true, false]).unwrap();
+    let a = crate::common::nullable_series::<bool>("lhs", &[true, false, true], &[true, false, true]).unwrap();
+    let b = crate::common::series::<bool>("rhs", &[true, true, false]).unwrap();
 
     let result = (&a & &b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
@@ -359,8 +359,8 @@ fn test_logical_and_preserves_nulls() {
 
 #[test]
 fn test_logical_or_preserves_nulls() {
-    let a = Series::new_nullable::<bool>("lhs", &[true, false, true], &[true, false, true]).unwrap();
-    let b = Series::new::<bool>("rhs", &[false, true, false]).unwrap();
+    let a = crate::common::nullable_series::<bool>("lhs", &[true, false, true], &[true, false, true]).unwrap();
+    let b = crate::common::series::<bool>("rhs", &[false, true, false]).unwrap();
 
     let result = (&a | &b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
@@ -369,7 +369,7 @@ fn test_logical_or_preserves_nulls() {
 
 #[test]
 fn test_abs_preserves_nulls() {
-    let a = Series::new_nullable::<i32>("a", &[-10, 0, 30], &[true, false, true]).unwrap();
+    let a = crate::common::nullable_series::<i32>("a", &[-10, 0, 30], &[true, false, true]).unwrap();
     let result = a.abs().unwrap();
     let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(10), None, Some(30)]);
@@ -397,7 +397,7 @@ fn test_is_not_null_on_nullable() {
 
 #[test]
 fn test_add_all_null_series() {
-    let a = Series::new_nullable::<i32>("a", &[0, 0, 0], &[false, false, false]).unwrap();
+    let a = crate::common::nullable_series::<i32>("a", &[0, 0, 0], &[false, false, false]).unwrap();
     let b = series_non_null();
     let result = a.add(&b).unwrap();
     let vals = result.to_optional_vec::<i32>().unwrap();
@@ -406,7 +406,7 @@ fn test_add_all_null_series() {
 
 #[test]
 fn test_eq_all_null_series() {
-    let a = Series::new_nullable::<i32>("a", &[0, 0, 0], &[false, false, false]).unwrap();
+    let a = crate::common::nullable_series::<i32>("a", &[0, 0, 0], &[false, false, false]).unwrap();
     let b = series_non_null();
     let result = a.eq(&b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
@@ -419,7 +419,7 @@ fn test_eq_all_null_series() {
 
 #[test]
 fn test_is_nan_does_not_flag_null_as_nan() {
-    let a = Series::new_nullable::<f64>("a", &[1.0, f64::NAN, 0.0], &[true, true, false]).unwrap();
+    let a = crate::common::nullable_series::<f64>("a", &[1.0, f64::NAN, 0.0], &[true, true, false]).unwrap();
     let result = a.is_nan().unwrap();
     // libcudf is_nan returns a non-nullable bool column: null slots → false.
     let vals = result.to_vec_strict::<bool>().unwrap();
@@ -430,7 +430,7 @@ fn test_is_nan_does_not_flag_null_as_nan() {
 
 #[test]
 fn test_is_not_nan_does_not_flag_null_as_not_nan() {
-    let a = Series::new_nullable::<f64>("a", &[1.0, f64::NAN, 0.0], &[true, true, false]).unwrap();
+    let a = crate::common::nullable_series::<f64>("a", &[1.0, f64::NAN, 0.0], &[true, true, false]).unwrap();
     let result = a.is_not_nan().unwrap();
     // libcudf is_not_nan returns a non-nullable bool column: null slots → true.
     let vals = result.to_vec_strict::<bool>().unwrap();

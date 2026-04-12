@@ -176,15 +176,10 @@ impl<'a> ColumnView<'a> {
     /// the root list offset to the child range.
     pub(crate) fn list_sliced_child(&self) -> Result<ColumnView<'a>> {
         let mut child_handle = ptr::null_mut();
-        let exec_options = self.domain.explicit_exec_options_raw();
+        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
         error::check_status_in(
-            match exec_options.as_ref() {
-                Some(options) => unsafe {
-                    cudf_sys::cudf_column_view_list_sliced_child_ex(self.handle.as_ptr(), options, &mut child_handle)
-                },
-                None => unsafe {
-                    cudf_sys::cudf_column_view_list_sliced_child(self.handle.as_ptr(), &mut child_handle)
-                },
+            unsafe {
+                cudf_sys::cudf_column_view_list_sliced_child_ex(self.handle.as_ptr(), &exec_options, &mut child_handle)
             },
             "column_view::list_sliced_child",
         )?;
@@ -222,20 +217,14 @@ impl<'a> ColumnView<'a> {
     pub(crate) fn string_chars_ptr_and_size(&self) -> Result<(*const c_void, usize)> {
         let mut out_ptr: *const c_void = std::ptr::null();
         let mut out_size: usize = 0;
-        let exec_options = self.domain.explicit_exec_options_raw();
-        let status = if let Some(exec_options) = exec_options.as_ref() {
-            unsafe {
-                cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(
-                    self.handle.as_ptr(),
-                    exec_options,
-                    &mut out_ptr,
-                    &mut out_size,
-                )
-            }
-        } else {
-            unsafe {
-                cudf_sys::cudf_column_view_string_chars_ptr_and_size(self.handle.as_ptr(), &mut out_ptr, &mut out_size)
-            }
+        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let status = unsafe {
+            cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(
+                self.handle.as_ptr(),
+                &exec_options,
+                &mut out_ptr,
+                &mut out_size,
+            )
         };
         error::check_status_in(status, "column_view::string_chars_ptr_and_size")?;
         Ok((out_ptr, out_size))
@@ -291,26 +280,18 @@ impl<'a> ColumnView<'a> {
 
         // SAFETY: buf is a valid mutable buffer of buf_size bytes. self.handle is
         // valid. Type was checked above to match T::TYPE_ID.
-        if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
-            error::check_status_in(
-                unsafe {
-                    cudf_sys::cudf_column_view_to_host_ex(
-                        self.handle.as_ptr(),
-                        buf.as_mut_ptr() as *mut c_void,
-                        buf_size,
-                        &exec_options,
-                    )
-                },
-                "column_view::to_vec",
-            )?;
-        } else {
-            error::check_status_in(
-                unsafe {
-                    cudf_sys::cudf_column_view_to_host(self.handle.as_ptr(), buf.as_mut_ptr() as *mut c_void, buf_size)
-                },
-                "column_view::to_vec",
-            )?;
-        }
+        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_view_to_host_ex(
+                    self.handle.as_ptr(),
+                    buf.as_mut_ptr() as *mut c_void,
+                    buf_size,
+                    &exec_options,
+                )
+            },
+            "column_view::to_vec",
+        )?;
 
         Ok(buf)
     }
@@ -361,26 +342,18 @@ impl<'a> ColumnView<'a> {
 
         self.synchronize_host_visibility("column_view::to_raw_bytes")?;
 
-        if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
-            error::check_status_in(
-                unsafe {
-                    cudf_sys::cudf_column_view_to_host_ex(
-                        self.handle.as_ptr(),
-                        buf.as_mut_ptr() as *mut c_void,
-                        size,
-                        &exec_options,
-                    )
-                },
-                "column_view::to_raw_bytes",
-            )?;
-        } else {
-            error::check_status_in(
-                unsafe {
-                    cudf_sys::cudf_column_view_to_host(self.handle.as_ptr(), buf.as_mut_ptr() as *mut c_void, size)
-                },
-                "column_view::to_raw_bytes",
-            )?;
-        }
+        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_view_to_host_ex(
+                    self.handle.as_ptr(),
+                    buf.as_mut_ptr() as *mut c_void,
+                    size,
+                    &exec_options,
+                )
+            },
+            "column_view::to_raw_bytes",
+        )?;
 
         Ok(buf)
     }
@@ -434,26 +407,18 @@ impl<'a> ColumnView<'a> {
 
         self.synchronize_host_visibility("column_view::to_fixed_width_host_bytes")?;
 
-        if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
-            error::check_status_in(
-                unsafe {
-                    cudf_sys::cudf_column_view_to_host_ex(
-                        self.handle.as_ptr(),
-                        buf.as_mut_ptr() as *mut c_void,
-                        buf_size,
-                        &exec_options,
-                    )
-                },
-                "column_view::to_fixed_width_host_bytes",
-            )?;
-        } else {
-            error::check_status_in(
-                unsafe {
-                    cudf_sys::cudf_column_view_to_host(self.handle.as_ptr(), buf.as_mut_ptr() as *mut c_void, buf_size)
-                },
-                "column_view::to_fixed_width_host_bytes",
-            )?;
-        }
+        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_view_to_host_ex(
+                    self.handle.as_ptr(),
+                    buf.as_mut_ptr() as *mut c_void,
+                    buf_size,
+                    &exec_options,
+                )
+            },
+            "column_view::to_fixed_width_host_bytes",
+        )?;
 
         Ok(buf)
     }
@@ -481,26 +446,18 @@ impl<'a> ColumnView<'a> {
 
         // SAFETY: mask buffer is large enough (padded to 64-byte boundaries).
         // self.handle is valid and nullable (checked above).
-        if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
-            error::check_status_in(
-                unsafe {
-                    cudf_sys::cudf_column_view_null_mask_to_host_ex(
-                        self.handle.as_ptr(),
-                        mask.as_mut_ptr(),
-                        alloc_bytes,
-                        &exec_options,
-                    )
-                },
-                "column_view::validity",
-            )?;
-        } else {
-            error::check_status_in(
-                unsafe {
-                    cudf_sys::cudf_column_view_null_mask_to_host(self.handle.as_ptr(), mask.as_mut_ptr(), alloc_bytes)
-                },
-                "column_view::validity",
-            )?;
-        }
+        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_view_null_mask_to_host_ex(
+                    self.handle.as_ptr(),
+                    mask.as_mut_ptr(),
+                    alloc_bytes,
+                    &exec_options,
+                )
+            },
+            "column_view::validity",
+        )?;
 
         // Unpack bitmask to bool vec.
         let validity: Vec<bool> = (0..size).map(|i| (mask[i / 8] >> (i % 8)) & 1 != 0).collect();
@@ -556,7 +513,7 @@ impl<'a> ColumnView<'a> {
         let offsets_count = size + 1;
         let offsets_buf_size = offsets_count * std::mem::size_of::<i32>();
         let mut offsets = vec![0i32; offsets_count];
-        let exec_options = self.domain.explicit_exec_options_raw();
+        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
 
         // First call to get total_chars_bytes: pass a generous chars buffer initially.
         // We do a two-phase approach: first get offsets + total size, then get chars.
@@ -565,29 +522,16 @@ impl<'a> ColumnView<'a> {
         // Phase 1: get offsets and total char bytes (with null chars_buf if 0 chars)
         // SAFETY: offsets buffer has n+1 capacity. self.handle is valid STRING column.
         error::check_status_in(
-            if let Some(exec_options) = exec_options.as_ref() {
-                unsafe {
-                    cudf_sys::cudf_column_view_strings_to_host_ex(
-                        self.handle.as_ptr(),
-                        offsets.as_mut_ptr(),
-                        offsets_buf_size,
-                        ptr::null_mut(), // chars_buf not needed yet for size query
-                        0,               // chars_buf_size = 0
-                        &mut total_chars_bytes,
-                        exec_options,
-                    )
-                }
-            } else {
-                unsafe {
-                    cudf_sys::cudf_column_view_strings_to_host(
-                        self.handle.as_ptr(),
-                        offsets.as_mut_ptr(),
-                        offsets_buf_size,
-                        ptr::null_mut(), // chars_buf not needed yet for size query
-                        0,               // chars_buf_size = 0
-                        &mut total_chars_bytes,
-                    )
-                }
+            unsafe {
+                cudf_sys::cudf_column_view_strings_to_host_ex(
+                    self.handle.as_ptr(),
+                    offsets.as_mut_ptr(),
+                    offsets_buf_size,
+                    ptr::null_mut(), // chars_buf not needed yet for size query
+                    0,               // chars_buf_size = 0
+                    &mut total_chars_bytes,
+                    &exec_options,
+                )
             },
             operation,
         )?;
@@ -599,29 +543,16 @@ impl<'a> ColumnView<'a> {
             // may not have written chars. Re-call to get everything.
             // SAFETY: chars buffer is sized to total_chars_bytes from Phase 1.
             error::check_status_in(
-                if let Some(exec_options) = exec_options.as_ref() {
-                    unsafe {
-                        cudf_sys::cudf_column_view_strings_to_host_ex(
-                            self.handle.as_ptr(),
-                            offsets.as_mut_ptr(),
-                            offsets_buf_size,
-                            chars.as_mut_ptr() as *mut c_char,
-                            total_chars_bytes as usize,
-                            &mut total_chars_bytes,
-                            exec_options,
-                        )
-                    }
-                } else {
-                    unsafe {
-                        cudf_sys::cudf_column_view_strings_to_host(
-                            self.handle.as_ptr(),
-                            offsets.as_mut_ptr(),
-                            offsets_buf_size,
-                            chars.as_mut_ptr() as *mut c_char,
-                            total_chars_bytes as usize,
-                            &mut total_chars_bytes,
-                        )
-                    }
+                unsafe {
+                    cudf_sys::cudf_column_view_strings_to_host_ex(
+                        self.handle.as_ptr(),
+                        offsets.as_mut_ptr(),
+                        offsets_buf_size,
+                        chars.as_mut_ptr() as *mut c_char,
+                        total_chars_bytes as usize,
+                        &mut total_chars_bytes,
+                        &exec_options,
+                    )
                 },
                 operation,
             )?;
@@ -696,9 +627,10 @@ impl<'a> ColumnView<'a> {
     /// # Example
     ///
     /// ```no_run
-    /// use cudf::core::Column;
+    /// use cudf::Runtime;
     ///
-    /// let col = Column::from_slice(&[1i32, 2, 3, 4]).unwrap();
+    /// let rt = Runtime::new().unwrap();
+    /// let col = rt.column_from_slice(&[1i32, 2, 3, 4]).unwrap();
     /// let view = col.view().unwrap();
     /// let slice = view.device_slice::<i32>().unwrap();
     ///
@@ -812,14 +744,12 @@ impl ColumnView<'_> {
             })?;
         }
 
-        let exec_options = self.domain.explicit_exec_options_raw();
-        search::contains_impl(values, self, exec_options.as_ref(), "column_view::isin")
-            .map(|column| column.with_execution_domain(Arc::clone(&self.domain)))
-            .map_err(|e| {
-                e.with_operation("column_view::isin")
-                    .with_context("input_type_id", input_type_id_str)
-                    .with_context("values_type_id", values_type_id_str)
-            })
+        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        search::contains_impl(values, self, &self.domain, Some(&exec_options), "column_view::isin").map_err(|e| {
+            e.with_operation("column_view::isin")
+                .with_context("input_type_id", input_type_id_str)
+                .with_context("values_type_id", values_type_id_str)
+        })
     }
 
     /// Map values through a lookup table.
@@ -835,10 +765,11 @@ impl ColumnView<'_> {
     ///
     /// # Example
     /// ```no_run
-    /// use cudf::core::Column;
-    /// let input = Column::from_strs(&["a", "b", "c", "a"]).unwrap();
-    /// let keys = Column::from_strs(&["a", "b", "c"]).unwrap();
-    /// let values = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    /// use cudf::Runtime;
+    /// let rt = Runtime::new().unwrap();
+    /// let input = rt.column_from_strs(&["a", "b", "c", "a"]).unwrap();
+    /// let keys = rt.column_from_strs(&["a", "b", "c"]).unwrap();
+    /// let values = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
     /// let mapped = input
     ///     .view()
     ///     .unwrap()
@@ -925,9 +856,8 @@ impl ColumnView<'_> {
         }
 
         if input_count == 0 {
-            return Column::empty(values_type_id)
-                .map(|column| column.with_execution_domain(Arc::clone(&self.domain)))
-                .map_err(|e| {
+            return Column::empty_in_domain(values_type_id, Arc::clone(&self.domain), "column_view::map").map_err(
+                |e| {
                     e.with_operation("column_view::map")
                         .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
                         .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
@@ -935,7 +865,8 @@ impl ColumnView<'_> {
                         .with_context("input_count", input_count.to_string())
                         .with_context("keys_count", keys_count.to_string())
                         .with_context("values_count", values_count.to_string())
-                });
+                },
+            );
         }
 
         let keys_owned = copy_view_to_owned(keys).map_err(|e| {

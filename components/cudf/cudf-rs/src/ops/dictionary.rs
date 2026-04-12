@@ -7,10 +7,11 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{TypeId, core::Column, ops::dictionary};
+//! use cudf::{Runtime, TypeId, ops::dictionary};
 //!
+//! let rt = Runtime::new().unwrap();
 //! let col =
-//!     Column::from_slice(&[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
+//!     rt.column_from_slice(&[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
 //! let view = col.view().unwrap();
 //!
 //! let dict = dictionary::encode(&view, TypeId::Int32).unwrap();
@@ -35,6 +36,7 @@ use crate::{
 pub(crate) fn encode_impl(
     input: &ColumnView<'_>,
     indices_type: TypeId,
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -52,11 +54,12 @@ pub(crate) fn encode_impl(
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
 }
 
 fn decode_impl(
     dict_column: &ColumnView<'_>,
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -71,12 +74,13 @@ fn decode_impl(
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
 }
 
 fn set_keys_impl(
     dict_column: &ColumnView<'_>,
     keys: &ColumnView<'_>,
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -93,18 +97,26 @@ fn set_keys_impl(
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
 }
 
-fn primary_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Arc<ExecutionDomain>> {
+fn primary_column_domain(
+    columns: &[&ColumnView<'_>],
+    operation: &'static str,
+) -> Result<std::sync::Arc<ExecutionDomain>> {
     let Some(first) = columns.first() else {
-        return Ok(ExecutionDomain::ambient_default());
+        return Err(error::Error::new(
+            error::ErrorKind::InvalidOperation,
+            "match_dictionaries requires at least one column",
+        )
+        .with_operation(operation));
     };
     Ok(std::sync::Arc::clone(first.execution_domain()))
 }
 
 fn match_dictionaries_impl(
     dict_columns: &[&ColumnView<'_>],
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Vec<Column>> {
@@ -165,7 +177,11 @@ fn match_dictionaries_impl(
     }
 
     let returned = unsafe { std::slice::from_raw_parts(out_columns, out_count as usize) };
-    let columns = returned.iter().copied().map(|handle| unsafe { Column::from_raw(handle) }).collect();
+    let columns = returned
+        .iter()
+        .copied()
+        .map(|handle| unsafe { Column::from_raw_with_domain(handle, std::sync::Arc::clone(output_domain)) })
+        .collect();
     unsafe { cudf_sys::cudf_free_column_array(out_columns) };
     Ok(columns)
 }
@@ -185,8 +201,7 @@ fn match_dictionaries_impl(
 pub fn encode(input: &ColumnView<'_>, indices_type: TypeId) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    encode_impl(input, indices_type, exec_options.as_ref(), "dictionary::encode")
-        .map(|column| column.with_execution_domain(output_domain))
+    encode_impl(input, indices_type, &output_domain, exec_options.as_ref(), "dictionary::encode")
 }
 
 /// Decode a dictionary column back to a regular column.
@@ -196,8 +211,7 @@ pub fn encode(input: &ColumnView<'_>, indices_type: TypeId) -> Result<Column> {
 pub fn decode(dict_column: &ColumnView<'_>) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(dict_column.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    decode_impl(dict_column, exec_options.as_ref(), "dictionary::decode")
-        .map(|column| column.with_execution_domain(output_domain))
+    decode_impl(dict_column, &output_domain, exec_options.as_ref(), "dictionary::decode")
 }
 
 /// Get the keys column view from a dictionary column.
@@ -252,8 +266,7 @@ pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<C
         keys.execution_domain().fence_stream("dictionary::set_keys")?;
     }
     let exec_options = output_domain.explicit_exec_options_raw();
-    set_keys_impl(dict_column, keys, exec_options.as_ref(), "dictionary::set_keys")
-        .map(|column| column.with_execution_domain(output_domain))
+    set_keys_impl(dict_column, keys, &output_domain, exec_options.as_ref(), "dictionary::set_keys")
 }
 
 /// Align multiple dictionary columns to a shared, deduplicated key set.
@@ -270,10 +283,11 @@ pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<C
 /// # Example
 ///
 /// ```no_run
-/// use cudf::{TypeId, core::Column, ops::dictionary};
+/// use cudf::{Runtime, TypeId, ops::dictionary};
 ///
-/// let src = Column::from_slice(&[10i32, 20, 30]).unwrap();
-/// let dst = Column::from_slice(&[20i32, 30, 40]).unwrap();
+/// let rt = Runtime::new().unwrap();
+/// let src = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
+/// let dst = rt.column_from_slice(&[20i32, 30, 40]).unwrap();
 ///
 /// let src_dict =
 ///     dictionary::encode(&src.view().unwrap(), TypeId::Int32).unwrap();
@@ -297,7 +311,7 @@ pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column
         .with_operation("dictionary::match_dictionaries"));
     }
 
-    let output_domain = primary_column_domain(dict_columns)?;
+    let output_domain = primary_column_domain(dict_columns, "dictionary::match_dictionaries")?;
     for dict_column in &dict_columns[1..] {
         ExecutionDomain::require_same_device_for_mixed_inputs(
             &output_domain,
@@ -309,7 +323,5 @@ pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column
         }
     }
     let exec_options = output_domain.explicit_exec_options_raw();
-    match_dictionaries_impl(dict_columns, exec_options.as_ref(), "dictionary::match_dictionaries").map(|columns| {
-        columns.into_iter().map(|column| column.with_execution_domain(std::sync::Arc::clone(&output_domain))).collect()
-    })
+    match_dictionaries_impl(dict_columns, &output_domain, exec_options.as_ref(), "dictionary::match_dictionaries")
 }

@@ -1,8 +1,8 @@
 //! Tests for `SortOptions` and the high-level `DataFrame::sort_values`.
 
-use cudf::{DataFrame, ErrorKind, Series, SortOptions, core::Column};
+use cudf::{DataFrame, ErrorKind, SortOptions};
 
-use crate::common::{assert_missing_column_error, sample_df};
+use crate::common::{assert_missing_column_error, column_from_slice, column_from_slice_nullable, sample_df};
 
 // ---------------------------------------------------------------------------
 // SortOptions defaults
@@ -62,8 +62,8 @@ fn test_sort_values_single_column_descending() {
 #[test]
 fn test_sort_values_multi_column() {
     // Sort by id ascending, then score descending within each id group.
-    let ids = Series::new::<i32>("id", &[2, 1, 2, 1]).unwrap();
-    let scores = Series::new::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
+    let ids = crate::common::series::<i32>("id", &[2, 1, 2, 1]).unwrap();
+    let scores = crate::common::series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
     let df = DataFrame::from_series([ids, scores]).unwrap();
 
     let sorted = df.sort_values(["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
@@ -74,9 +74,9 @@ fn test_sort_values_multi_column() {
 
 #[test]
 fn test_sort_values_multi_column_with_owned_string_keys() {
-    let ids = Series::new::<i32>("id", &[2, 1, 2, 1]).unwrap();
-    let scores = Series::new::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
-    let tags = Series::new::<i32>("tag", &[200, 100, 400, 300]).unwrap();
+    let ids = crate::common::series::<i32>("id", &[2, 1, 2, 1]).unwrap();
+    let scores = crate::common::series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
+    let tags = crate::common::series::<i32>("tag", &[200, 100, 400, 300]).unwrap();
     let df = DataFrame::from_series([ids, scores, tags]).unwrap();
 
     let keys = vec!["id".to_string(), "score".to_string()];
@@ -94,8 +94,8 @@ fn test_sort_values_multi_column_with_owned_string_keys() {
 #[test]
 fn test_sort_values_stable_preserves_order() {
     // All ids are the same — stable sort should preserve original row order.
-    let ids = Series::new::<i32>("id", &[1, 1, 1, 1]).unwrap();
-    let tags = Series::new::<i32>("tag", &[10, 20, 30, 40]).unwrap();
+    let ids = crate::common::series::<i32>("id", &[1, 1, 1, 1]).unwrap();
+    let tags = crate::common::series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
     let df = DataFrame::from_series([ids, tags]).unwrap();
 
     let sorted = df.sort_values(["id"], SortOptions::new().with_stable(true)).unwrap();
@@ -186,8 +186,8 @@ fn test_sort_values_empty_options_means_defaults() {
 
 #[test]
 fn test_sort_values_nulls_first() {
-    let ids = Column::from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
-    let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
+    let ids = column_from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
+    let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
     let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "val".to_string()],
         vec![ids.unwrap(), vals.unwrap()],
@@ -208,8 +208,8 @@ fn test_sort_values_nulls_first() {
 
 #[test]
 fn test_sort_values_default_places_nulls_last() {
-    let ids = Column::from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
-    let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
+    let ids = column_from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
+    let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
     let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "val".to_string()],
         vec![ids.unwrap(), vals.unwrap()],

@@ -6,15 +6,15 @@
 //! Sharing is verified by comparing device pointers: two `ColumnView`s that
 //! originate from the same `Arc<Column>` will report the same `as_ptr()`.
 
-use cudf::{DataFrame, core::Column};
+use cudf::DataFrame;
 
-use crate::common::dataframe_device_ptr as device_ptr;
+use crate::common::{column_from_slice, dataframe_device_ptr as device_ptr};
 
 /// Helper: build a 3-row, 3-column DataFrame with distinct column types.
 fn sample_df() -> DataFrame {
-    let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let scores = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
-    let flags = Column::from_slice(&[true, false, true]).unwrap();
+    let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let scores = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let flags = column_from_slice(&[true, false, true]).unwrap();
     crate::common::dataframe_from_columns(
         vec!["id".to_string(), "score".to_string(), "flag".to_string()],
         vec![ids, scores, flags],
@@ -141,7 +141,7 @@ fn test_rename_original_unchanged() {
 #[test]
 fn test_with_column_unchanged_columns_shared() {
     let df = sample_df();
-    let new_col = Column::from_slice(&[100i32, 200, 300]).unwrap();
+    let new_col = column_from_slice(&[100i32, 200, 300]).unwrap();
     let result = df.with_column("extra", new_col).unwrap();
 
     // Existing columns should share GPU memory.
@@ -155,7 +155,7 @@ fn test_with_column_replaced_column_has_new_allocation() {
     let df = sample_df();
     let original_score_ptr = device_ptr(&df, "score");
 
-    let new_score = Column::from_slice(&[99.0f64, 88.0, 77.0]).unwrap();
+    let new_score = column_from_slice(&[99.0f64, 88.0, 77.0]).unwrap();
     let result = df.with_column("score", new_score).unwrap();
 
     // The replaced column should have a DIFFERENT device pointer (new GPU allocation).
@@ -169,7 +169,7 @@ fn test_with_column_replaced_column_has_new_allocation() {
 #[test]
 fn test_with_column_replaced_column_has_correct_data() {
     let df = sample_df();
-    let new_score = Column::from_slice(&[99.0f64, 88.0, 77.0]).unwrap();
+    let new_score = column_from_slice(&[99.0f64, 88.0, 77.0]).unwrap();
     let result = df.with_column("score", new_score).unwrap();
 
     assert_eq!(result.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![99.0, 88.0, 77.0]);
@@ -247,7 +247,7 @@ fn test_rename_then_select_shares_columns() {
 #[test]
 fn test_with_column_then_clone_shares_new_and_old() {
     let df = sample_df();
-    let new_col = Column::from_slice(&[100i32, 200, 300]).unwrap();
+    let new_col = column_from_slice(&[100i32, 200, 300]).unwrap();
     let with_extra = df.with_column("extra", new_col).unwrap();
     let copied = with_extra.clone();
 
@@ -276,7 +276,7 @@ fn test_chained_renames_share_all_data() {
 fn test_select_subset_then_with_column_shares_retained() {
     let df = sample_df();
     let selected = df.select(["id", "score"]).unwrap();
-    let new_flag = Column::from_slice(&[false, true, false]).unwrap();
+    let new_flag = column_from_slice(&[false, true, false]).unwrap();
     let result = selected.with_column("new_flag", new_flag).unwrap();
 
     // "id" and "score" are shared all the way through.

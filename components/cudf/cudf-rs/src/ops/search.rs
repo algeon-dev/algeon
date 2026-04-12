@@ -13,6 +13,7 @@ use crate::{
 pub(crate) fn contains_impl(
     haystack: &ColumnView<'_>,
     needles: &ColumnView<'_>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -28,7 +29,7 @@ pub(crate) fn contains_impl(
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 /// Test which elements of `needles` exist anywhere in `haystack`
@@ -45,10 +46,11 @@ pub(crate) fn contains_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{core::Column, ops::search};
+/// use cudf::{Runtime, ops::search};
 ///
-/// let haystack = Column::from_slice(&[10i32, 20, 30]).unwrap();
-/// let needles = Column::from_slice(&[20i32, 40]).unwrap();
+/// let rt = Runtime::new().unwrap();
+/// let haystack = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
+/// let needles = rt.column_from_slice(&[20i32, 40]).unwrap();
 /// let result =
 ///     search::contains(&haystack.view().unwrap(), &needles.view().unwrap())
 ///         .unwrap();
@@ -65,6 +67,5 @@ pub fn contains(haystack: &ColumnView<'_>, needles: &ColumnView<'_>) -> Result<C
         needles.execution_domain().fence_stream("search::contains")?;
     }
     let exec_options = output_domain.explicit_exec_options_raw();
-    contains_impl(haystack, needles, exec_options.as_ref(), "search::contains")
-        .map(|column| column.with_execution_domain(output_domain))
+    contains_impl(haystack, needles, &output_domain, exec_options.as_ref(), "search::contains")
 }

@@ -10,6 +10,8 @@ use cudf::{
     core::{Column, Table},
 };
 
+use crate::common::column_from_slice;
+
 fn assert_send_sync<T: Send + Sync>() {}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -19,7 +21,7 @@ async fn test_cudf_api_inside_spawn_blocking_is_thread_safe_and_runtime_responsi
     assert_send_sync::<Table>();
 
     let data: Vec<i32> = (0..4096).collect();
-    let shared = Arc::new(Column::from_slice(&data).unwrap());
+    let shared = Arc::new(column_from_slice(&data).unwrap());
 
     // Heartbeat task: if Tokio's async worker gets blocked, tick count will stall.
     let ticker = tokio::spawn(async {

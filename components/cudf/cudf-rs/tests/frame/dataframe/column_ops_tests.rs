@@ -1,11 +1,10 @@
 //! Tests for DataFrame column-level convenience.
 
-use cudf::{
-    DataType, ErrorKind, TypeId,
-    core::{Column, Scalar},
-};
+use cudf::{DataType, ErrorKind, TypeId};
 
-use crate::common::assert_missing_column_error;
+use crate::common::{
+    assert_missing_column_error, column_from_slice, column_from_slice_nullable, column_from_strs, scalar,
+};
 
 // ---------------------------------------------------------------------------
 // Column-level convenience (with_column, fillna_with_scalar, cast_column)
@@ -14,10 +13,10 @@ use crate::common::assert_missing_column_error;
 #[test]
 fn test_with_column_adds_new_column() {
     let df =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()])
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
             .unwrap();
 
-    let new_col = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let new_col = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let result = df.with_column("b", new_col).unwrap();
 
     assert_eq!(result.num_columns(), 2);
@@ -37,11 +36,11 @@ fn test_with_column_adds_new_column() {
 fn test_with_column_replaces_existing_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
-        vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
+        vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
-    let replacement = Column::from_slice(&[99i32, 100]).unwrap();
+    let replacement = column_from_slice(&[99i32, 100]).unwrap();
     let result = df.with_column("b", replacement).unwrap();
 
     assert_eq!(result.num_columns(), 2);
@@ -61,15 +60,15 @@ fn test_with_column_preserves_schema_order_on_replace() {
     let df = crate::common::dataframe_from_columns(
         vec!["x".to_string(), "y".to_string(), "z".to_string()],
         vec![
-            Column::from_slice(&[1i32]).unwrap(),
-            Column::from_slice(&[2i32]).unwrap(),
-            Column::from_slice(&[3i32]).unwrap(),
+            column_from_slice(&[1i32]).unwrap(),
+            column_from_slice(&[2i32]).unwrap(),
+            column_from_slice(&[3i32]).unwrap(),
         ],
     )
     .unwrap();
 
     // Replace middle column.
-    let replacement = Column::from_slice(&[42i32]).unwrap();
+    let replacement = column_from_slice(&[42i32]).unwrap();
     let result = df.with_column("y", replacement).unwrap();
 
     assert_eq!(result.column_names(), vec!["x", "y", "z"]);
@@ -81,23 +80,23 @@ fn test_with_column_preserves_schema_order_on_replace() {
 #[test]
 fn test_with_column_mismatched_row_count_returns_error() {
     let df =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()])
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
             .unwrap();
 
     // New column has 2 rows, DataFrame has 3.
-    let new_col = Column::from_slice(&[10i32, 20]).unwrap();
+    let new_col = column_from_slice(&[10i32, 20]).unwrap();
     let err = df.with_column("b", new_col).expect_err("expected row count mismatch error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
 #[test]
 fn test_fillna_with_scalar_fills_values() {
-    let col_a = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let col_b = Column::from_slice_nullable(&[10i32, 0, 30], &[true, false, true]).unwrap();
+    let col_a = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let col_b = column_from_slice_nullable(&[10i32, 0, 30], &[true, false, true]).unwrap();
 
     let df = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![col_a, col_b]).unwrap();
 
-    let fill = Scalar::from_value(99i32).unwrap();
+    let fill = scalar(99i32).unwrap();
     let result = df.fillna_with_scalar("b", &fill).unwrap();
 
     assert_eq!(result.num_columns(), 2);
@@ -114,19 +113,19 @@ fn test_fillna_with_scalar_fills_values() {
 
 #[test]
 fn test_fillna_with_scalar_nonexistent_column_returns_error() {
-    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()])
+    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
         .unwrap();
 
-    let fill = Scalar::from_value(0i32).unwrap();
+    let fill = scalar(0i32).unwrap();
     let err = df.fillna_with_scalar("missing", &fill).expect_err("expected error");
     assert_missing_column_error(&err, "missing");
 }
 
 #[test]
 fn test_fillna_with_scalar_preserves_other_columns() {
-    let col_a = Column::from_slice(&[1i32, 2]).unwrap();
-    let col_b = Column::from_slice_nullable(&[10i32, 0], &[true, false]).unwrap();
-    let col_c = Column::from_slice(&[100i64, 200]).unwrap();
+    let col_a = column_from_slice(&[1i32, 2]).unwrap();
+    let col_b = column_from_slice_nullable(&[10i32, 0], &[true, false]).unwrap();
+    let col_c = column_from_slice(&[100i64, 200]).unwrap();
 
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string(), "c".to_string()],
@@ -134,7 +133,7 @@ fn test_fillna_with_scalar_preserves_other_columns() {
     )
     .unwrap();
 
-    let fill = Scalar::from_value(99i32).unwrap();
+    let fill = scalar(99i32).unwrap();
     let result = df.fillna_with_scalar("b", &fill).unwrap();
 
     assert_eq!(result.column_names(), vec!["a", "b", "c"]);
@@ -150,7 +149,7 @@ fn test_fillna_with_scalar_preserves_other_columns() {
 fn test_cast_column_changes_type() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
-        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i32, 20, 30]).unwrap()],
+        vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i32, 20, 30]).unwrap()],
     )
     .unwrap();
 
@@ -173,7 +172,7 @@ fn test_cast_column_changes_type() {
 
 #[test]
 fn test_cast_column_nonexistent_returns_error() {
-    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()])
+    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
         .unwrap();
 
     let target = DataType::new(TypeId::Float64);
@@ -186,9 +185,9 @@ fn test_cast_column_preserves_schema_order() {
     let df = crate::common::dataframe_from_columns(
         vec!["x".to_string(), "y".to_string(), "z".to_string()],
         vec![
-            Column::from_slice(&[1i32]).unwrap(),
-            Column::from_slice(&[2i32]).unwrap(),
-            Column::from_slice(&[3i32]).unwrap(),
+            column_from_slice(&[1i32]).unwrap(),
+            column_from_slice(&[2i32]).unwrap(),
+            column_from_slice(&[3i32]).unwrap(),
         ],
     )
     .unwrap();
@@ -209,11 +208,11 @@ fn test_cast_column_preserves_schema_order() {
 fn test_with_column_add_preserves_existing_string_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "a".to_string()],
-        vec![Column::from_strs(&["alice", "bob", "cara"]).unwrap(), Column::from_slice(&[1i32, 2, 3]).unwrap()],
+        vec![column_from_strs(&["alice", "bob", "cara"]).unwrap(), column_from_slice(&[1i32, 2, 3]).unwrap()],
     )
     .unwrap();
 
-    let result = df.with_column("b", Column::from_slice(&[10i64, 20, 30]).unwrap()).unwrap();
+    let result = df.with_column("b", column_from_slice(&[10i64, 20, 30]).unwrap()).unwrap();
 
     assert_eq!(result.column_names(), vec!["name", "a", "b"]);
 
@@ -232,13 +231,13 @@ fn test_fillna_with_scalar_with_string_sibling_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "b".to_string()],
         vec![
-            Column::from_strs(&["x", "y", "z"]).unwrap(),
-            Column::from_slice_nullable(&[10i32, 0, 30], &[true, false, true]).unwrap(),
+            column_from_strs(&["x", "y", "z"]).unwrap(),
+            column_from_slice_nullable(&[10i32, 0, 30], &[true, false, true]).unwrap(),
         ],
     )
     .unwrap();
 
-    let fill = Scalar::from_value(99i32).unwrap();
+    let fill = scalar(99i32).unwrap();
     let result = df.fillna_with_scalar("b", &fill).unwrap();
 
     let names = result.series("name").unwrap().to_strings_strict().unwrap();
@@ -252,7 +251,7 @@ fn test_fillna_with_scalar_with_string_sibling_column() {
 fn test_cast_column_with_string_sibling_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "qty".to_string()],
-        vec![Column::from_strs(&["a", "b", "c"]).unwrap(), Column::from_slice(&[1i32, 2, 3]).unwrap()],
+        vec![column_from_strs(&["a", "b", "c"]).unwrap(), column_from_slice(&[1i32, 2, 3]).unwrap()],
     )
     .unwrap();
 

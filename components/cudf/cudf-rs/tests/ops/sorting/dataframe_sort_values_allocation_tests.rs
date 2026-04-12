@@ -1,15 +1,14 @@
 use cudf::{
     DataFrame, SortOptions,
-    core::Column,
     ops::sorting::{self, NullOrder, Order},
 };
 
-use crate::allocation::allocation_count_delta;
+use crate::{allocation::allocation_count_delta, common::column_from_slice};
 
 fn sample_df() -> DataFrame {
-    let ids = Column::from_slice(&[2i32, 1, 2, 1]).unwrap();
-    let scores = Column::from_slice(&[20i32, 10, 40, 30]).unwrap();
-    let tags = Column::from_slice(&[200i32, 100, 400, 300]).unwrap();
+    let ids = column_from_slice(&[2i32, 1, 2, 1]).unwrap();
+    let scores = column_from_slice(&[20i32, 10, 40, 30]).unwrap();
+    let tags = column_from_slice(&[200i32, 100, 400, 300]).unwrap();
     crate::common::dataframe_from_columns(
         vec!["id".to_string(), "score".to_string(), "tag".to_string()],
         vec![ids, scores, tags],

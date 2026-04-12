@@ -26,6 +26,24 @@
 #include <limits>
 #include <memory>
 
+namespace {
+
+thread_local bool g_fail_next_column_view_metadata_read = false;
+
+bool should_fail_next_column_view_metadata_read() {
+  if (!g_fail_next_column_view_metadata_read) { return false; }
+  g_fail_next_column_view_metadata_read = false;
+  return true;
+}
+
+cudf_status_t maybe_fail_column_view_metadata_read() {
+  if (!should_fail_next_column_view_metadata_read()) { return CUDF_SUCCESS; }
+  set_error("test metadata read failure");
+  return CUDF_ERROR_UNKNOWN;
+}
+
+}  // namespace
+
 static cudf_status_t create_column_from_device_data_impl(
     cudf_type_id_t type_id,
     const void* device_data,
@@ -78,6 +96,10 @@ static cudf_status_t create_column_from_device_data_impl(
 }
 
 extern "C" {
+
+void cudf_test_fail_next_column_view_metadata_read() {
+  g_fail_next_column_view_metadata_read = true;
+}
 
 cudf_status_t cudf_column_create_empty(cudf_type_id_t type_id,
                                        cudf_column_handle* out) {
@@ -402,6 +424,8 @@ cudf_status_t cudf_column_view_size(cudf_column_view_handle handle,
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  cudf_status_t const fail_status = maybe_fail_column_view_metadata_read();
+  if (fail_status != CUDF_SUCCESS) { return fail_status; }
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     *out = view->size();
@@ -415,6 +439,8 @@ cudf_status_t cudf_column_view_null_count(cudf_column_view_handle handle,
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  cudf_status_t const fail_status = maybe_fail_column_view_metadata_read();
+  if (fail_status != CUDF_SUCCESS) { return fail_status; }
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     *out = view->null_count();

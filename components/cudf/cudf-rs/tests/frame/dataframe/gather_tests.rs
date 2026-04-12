@@ -1,13 +1,13 @@
 //! Tests for DataFrame::gather().
 
-use cudf::{Series, core::Column};
+use crate::common::{column_from_slice, column_from_strs};
 
 #[test]
 fn test_gather_sequential_indices() {
-    let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
-    let indices = Series::new::<i32>("idx", &[0, 1, 2]).unwrap();
+    let indices = crate::common::series::<i32>("idx", &[0, 1, 2]).unwrap();
     let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
@@ -18,10 +18,10 @@ fn test_gather_sequential_indices() {
 
 #[test]
 fn test_gather_reversed() {
-    let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
-    let indices = Series::new::<i32>("idx", &[2, 1, 0]).unwrap();
+    let indices = crate::common::series::<i32>("idx", &[2, 1, 0]).unwrap();
     let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
@@ -32,10 +32,10 @@ fn test_gather_reversed() {
 
 #[test]
 fn test_gather_out_of_bounds_nullify() {
-    let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
-    let indices = Series::new::<i32>("idx", &[0, 99, 2]).unwrap();
+    let indices = crate::common::series::<i32>("idx", &[0, 99, 2]).unwrap();
     let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
@@ -48,10 +48,10 @@ fn test_gather_out_of_bounds_nullify() {
 
 #[test]
 fn test_gather_duplicate_indices() {
-    let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
-    let indices = Series::new::<i32>("idx", &[1, 1, 1]).unwrap();
+    let indices = crate::common::series::<i32>("idx", &[1, 1, 1]).unwrap();
     let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
@@ -62,11 +62,11 @@ fn test_gather_duplicate_indices() {
 
 #[test]
 fn test_gather_preserves_schema() {
-    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let c2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![c1, c2]).unwrap();
 
-    let indices = Series::new::<i32>("idx", &[2, 0]).unwrap();
+    let indices = crate::common::series::<i32>("idx", &[2, 0]).unwrap();
     let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.column_names(), &["id", "score"]);
@@ -78,10 +78,10 @@ fn test_gather_preserves_schema() {
 
 #[test]
 fn test_gather_empty_indices() {
-    let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
-    let indices = Series::new::<i32>("idx", &[]).unwrap();
+    let indices = crate::common::series::<i32>("idx", &[]).unwrap();
     let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 0);
@@ -90,16 +90,16 @@ fn test_gather_empty_indices() {
 
 #[test]
 fn test_gather_multi_type() {
-    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let c2 = Column::from_slice(&[1.5f64, 2.5, 3.5]).unwrap();
-    let c3 = Column::from_strs(&["a", "b", "c"]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = column_from_slice(&[1.5f64, 2.5, 3.5]).unwrap();
+    let c3 = column_from_strs(&["a", "b", "c"]).unwrap();
     let df = crate::common::dataframe_from_columns(
         vec!["ints".to_string(), "floats".to_string(), "strs".to_string()],
         vec![c1, c2, c3],
     )
     .unwrap();
 
-    let indices = Series::new::<i32>("idx", &[2, 0]).unwrap();
+    let indices = crate::common::series::<i32>("idx", &[2, 0]).unwrap();
     let result = df.gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 2);

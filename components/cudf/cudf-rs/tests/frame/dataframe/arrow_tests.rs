@@ -7,7 +7,14 @@ use arrow::{
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf::{DataFrame, ErrorKind, TypeId, core::Column};
+use cudf::{DataFrame, ErrorKind, TypeId};
+
+use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, column_from_strs_nullable};
+
+fn import_record_batch(batch: &RecordBatch) -> cudf::Result<DataFrame> {
+    let runtime = crate::common::sample_runtime();
+    DataFrame::from_record_batch(&runtime, batch)
+}
 
 // ---------------------------------------------------------------------------
 // Round-trip: DataFrame → RecordBatch → DataFrame
@@ -75,7 +82,7 @@ fn test_to_record_batch_wrapper_preserves_source_chain() {
 #[test]
 fn test_round_trip_i32() {
     let df =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()])
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
             .unwrap();
 
     let batch = df.to_record_batch().unwrap();
@@ -84,7 +91,7 @@ fn test_round_trip_i32() {
     assert_eq!(batch.schema().field(0).name(), "a");
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Int32);
 
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["a"]);
     let vals: Vec<i32> = df2.series("a").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(vals, vec![1, 2, 3]);
@@ -94,14 +101,14 @@ fn test_round_trip_i32() {
 fn test_round_trip_i64() {
     let df = crate::common::dataframe_from_columns(
         vec!["x".to_string()],
-        vec![Column::from_slice(&[100i64, 200, 300]).unwrap()],
+        vec![column_from_slice(&[100i64, 200, 300]).unwrap()],
     )
     .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Int64);
 
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     let vals: Vec<i64> = df2.series("x").unwrap().to_vec_strict::<i64>().unwrap();
     assert_eq!(vals, vec![100, 200, 300]);
 }
@@ -110,7 +117,7 @@ fn test_round_trip_i64() {
 fn test_round_trip_f32_f64() {
     let df = crate::common::dataframe_from_columns(
         vec!["f32_col".to_string(), "f64_col".to_string()],
-        vec![Column::from_slice(&[1.5f32, 2.5, 3.5]).unwrap(), Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap()],
+        vec![column_from_slice(&[1.5f32, 2.5, 3.5]).unwrap(), column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap()],
     )
     .unwrap();
 
@@ -118,7 +125,7 @@ fn test_round_trip_f32_f64() {
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Float32);
     assert_eq!(*batch.schema().field(1).data_type(), ArrowDataType::Float64);
 
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     let f32_vals: Vec<f32> = df2.series("f32_col").unwrap().to_vec_strict::<f32>().unwrap();
     assert_eq!(f32_vals, vec![1.5, 2.5, 3.5]);
 
@@ -134,7 +141,7 @@ fn test_round_trip_f32_f64() {
 fn test_round_trip_nullable_i32() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string()],
-        vec![Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap()],
+        vec![column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap()],
     )
     .unwrap();
 
@@ -147,7 +154,7 @@ fn test_round_trip_nullable_i32() {
     assert_eq!(arr.value(2), 3);
 
     // Round-trip back.
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("a").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
@@ -163,7 +170,7 @@ fn test_round_trip_nullable_i32() {
 fn test_round_trip_nullable_f64() {
     let df = crate::common::dataframe_from_columns(
         vec!["v".to_string()],
-        vec![Column::from_slice_nullable(&[1.1f64, 0.0, 3.3, 0.0], &[true, false, true, false]).unwrap()],
+        vec![column_from_slice_nullable(&[1.1f64, 0.0, 3.3, 0.0], &[true, false, true, false]).unwrap()],
     )
     .unwrap();
 
@@ -174,7 +181,7 @@ fn test_round_trip_nullable_f64() {
     assert!(arr.is_valid(2));
     assert!(!arr.is_valid(3));
 
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("v").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true, false]);
@@ -195,7 +202,7 @@ fn test_round_trip_nullable_f64() {
 fn test_round_trip_bool8() {
     let df = crate::common::dataframe_from_columns(
         vec!["flag".to_string()],
-        vec![Column::from_slice(&[true, false, true]).unwrap()],
+        vec![column_from_slice(&[true, false, true]).unwrap()],
     )
     .unwrap();
 
@@ -207,7 +214,7 @@ fn test_round_trip_bool8() {
     assert!(!arr.value(1));
     assert!(arr.value(2));
 
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     let vals: Vec<bool> = df2.series("flag").unwrap().to_vec_strict::<bool>().unwrap();
     assert_eq!(vals, vec![true, false, true]);
 }
@@ -216,7 +223,7 @@ fn test_round_trip_bool8() {
 fn test_round_trip_nullable_bool8() {
     let df = crate::common::dataframe_from_columns(
         vec!["flag".to_string()],
-        vec![Column::from_slice_nullable(&[true, false, true], &[true, false, true]).unwrap()],
+        vec![column_from_slice_nullable(&[true, false, true], &[true, false, true]).unwrap()],
     )
     .unwrap();
 
@@ -228,7 +235,7 @@ fn test_round_trip_nullable_bool8() {
     assert!(arr.value(0));
     assert!(arr.value(2));
 
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("flag").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
@@ -236,8 +243,8 @@ fn test_round_trip_nullable_bool8() {
 
 #[test]
 fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
-    let lhs = cudf::Series::new_nullable("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
-    let rhs = cudf::Series::new_nullable("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
+    let lhs = crate::common::nullable_series("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
+    let rhs = crate::common::nullable_series("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
     let flag = lhs.eq(&rhs).unwrap().rename("flag");
     let df = DataFrame::from_series([flag]).unwrap();
 
@@ -261,9 +268,9 @@ fn test_schema_preserved_multi_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "score".to_string(), "active".to_string()],
         vec![
-            Column::from_slice(&[1i32, 2]).unwrap(),
-            Column::from_slice(&[99.5f64, 88.0]).unwrap(),
-            Column::from_slice(&[true, false]).unwrap(),
+            column_from_slice(&[1i32, 2]).unwrap(),
+            column_from_slice(&[99.5f64, 88.0]).unwrap(),
+            column_from_slice(&[true, false]).unwrap(),
         ],
     )
     .unwrap();
@@ -274,7 +281,7 @@ fn test_schema_preserved_multi_column() {
     assert_eq!(batch.schema().field(1).name(), "score");
     assert_eq!(batch.schema().field(2).name(), "active");
 
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["id", "score", "active"]);
 
     // Verify types survived.
@@ -297,7 +304,7 @@ fn test_from_record_batch_creates_dataframe() {
     )
     .unwrap();
 
-    let df = DataFrame::from_record_batch(&batch).unwrap();
+    let df = import_record_batch(&batch).unwrap();
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["x", "y"]);
@@ -310,12 +317,34 @@ fn test_from_record_batch_creates_dataframe() {
 }
 
 #[test]
+fn test_from_record_batch_binds_caller_runtime_provenance() {
+    let runtime = crate::common::sample_runtime();
+    let expected_id = runtime.__debug_execution_domain_id();
+    let expected_stream = runtime.stream().__debug_raw_handle_value();
+    let expected_mr = runtime.memory_resource().__debug_raw_handle_value();
+
+    let schema =
+        Schema::new(vec![Field::new("x", ArrowDataType::Int32, false), Field::new("y", ArrowDataType::Float64, false)]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(Int32Array::from(vec![10, 20, 30])), Arc::new(Float64Array::from(vec![1.1, 2.2, 3.3]))],
+    )
+    .unwrap();
+
+    let df = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+    assert_eq!(df.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(df.__debug_execution_domain_id(), expected_id);
+    assert_eq!(df.__debug_execution_domain_stream_value(), expected_stream);
+    assert_eq!(df.__debug_execution_domain_mr_value(), expected_mr);
+}
+
+#[test]
 fn test_from_record_batch_with_nulls() {
     let schema = Schema::new(vec![Field::new("a", ArrowDataType::Int32, true)]);
     let batch =
         RecordBatch::try_new(Arc::new(schema), vec![Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]))]).unwrap();
 
-    let df = DataFrame::from_record_batch(&batch).unwrap();
+    let df = import_record_batch(&batch).unwrap();
     let cv = df.series("a").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
@@ -335,7 +364,7 @@ fn test_from_record_batch_with_nulls() {
 fn test_round_trip_string_only() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string()],
-        vec![Column::from_strs(&["alice", "bob", "charlie"]).unwrap()],
+        vec![column_from_strs(&["alice", "bob", "charlie"]).unwrap()],
     )
     .unwrap();
 
@@ -350,7 +379,7 @@ fn test_round_trip_string_only() {
     assert_eq!(arr.value(2), "charlie");
 
     // Round-trip back to GPU DataFrame.
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["name"]);
     assert_eq!(df2.series("name").unwrap().dtype().unwrap().id(), TypeId::String);
     let strs = df2.series("name").unwrap().to_strings_strict().unwrap();
@@ -362,8 +391,8 @@ fn test_round_trip_mixed_string_and_numeric() {
     let df = crate::common::dataframe_from_columns(
         vec!["city".to_string(), "pop".to_string()],
         vec![
-            Column::from_strs(&["tokyo", "london", "paris"]).unwrap(),
-            Column::from_slice(&[14_000_000i64, 9_000_000, 2_000_000]).unwrap(),
+            column_from_strs(&["tokyo", "london", "paris"]).unwrap(),
+            column_from_slice(&[14_000_000i64, 9_000_000, 2_000_000]).unwrap(),
         ],
     )
     .unwrap();
@@ -373,7 +402,7 @@ fn test_round_trip_mixed_string_and_numeric() {
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Utf8);
     assert_eq!(*batch.schema().field(1).data_type(), ArrowDataType::Int64);
 
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["city", "pop"]);
 
     let cities = df2.series("city").unwrap().to_strings_strict().unwrap();
@@ -387,7 +416,7 @@ fn test_round_trip_mixed_string_and_numeric() {
 fn test_round_trip_nullable_string() {
     let df = crate::common::dataframe_from_columns(
         vec!["tag".to_string()],
-        vec![Column::from_strs_nullable(&["hello", "", "world"], &[true, false, true]).unwrap()],
+        vec![column_from_strs_nullable(&["hello", "", "world"], &[true, false, true]).unwrap()],
     )
     .unwrap();
 
@@ -400,7 +429,7 @@ fn test_round_trip_nullable_string() {
     assert_eq!(arr.value(2), "world");
 
     // Round-trip back.
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     let cv = df2.series("tag").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
@@ -416,12 +445,12 @@ fn test_round_trip_nullable_string() {
 fn test_round_trip_string_with_empty_values() {
     let df = crate::common::dataframe_from_columns(
         vec!["s".to_string()],
-        vec![Column::from_strs(&["", "data", ""]).unwrap()],
+        vec![column_from_strs(&["", "data", ""]).unwrap()],
     )
     .unwrap();
 
     let batch = df.to_record_batch().unwrap();
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     let strs = df2.series("s").unwrap().to_strings_strict().unwrap();
     assert_eq!(strs, vec!["", "data", ""]);
 }
@@ -430,7 +459,7 @@ fn test_round_trip_string_with_empty_values() {
 fn test_round_trip_string_unicode() {
     let df = crate::common::dataframe_from_columns(
         vec!["text".to_string()],
-        vec![Column::from_strs(&["héllo", "日本語", "🚀🎉"]).unwrap()],
+        vec![column_from_strs(&["héllo", "日本語", "🚀🎉"]).unwrap()],
     )
     .unwrap();
 
@@ -440,7 +469,7 @@ fn test_round_trip_string_unicode() {
     assert_eq!(arr.value(1), "日本語");
     assert_eq!(arr.value(2), "🚀🎉");
 
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     let strs = df2.series("text").unwrap().to_strings_strict().unwrap();
     assert_eq!(strs, vec!["héllo", "日本語", "🚀🎉"]);
 }
@@ -452,7 +481,7 @@ fn test_from_record_batch_string_array() {
         RecordBatch::try_new(Arc::new(schema), vec![Arc::new(StringArray::from(vec!["alpha", "beta", "gamma"]))])
             .unwrap();
 
-    let df = DataFrame::from_record_batch(&batch).unwrap();
+    let df = import_record_batch(&batch).unwrap();
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.series("name").unwrap().dtype().unwrap().id(), TypeId::String);
     let strs = df.series("name").unwrap().to_strings_strict().unwrap();
@@ -466,7 +495,7 @@ fn test_from_record_batch_nullable_string_array() {
         RecordBatch::try_new(Arc::new(schema), vec![Arc::new(StringArray::from(vec![Some("a"), None, Some("c")]))])
             .unwrap();
 
-    let df = DataFrame::from_record_batch(&batch).unwrap();
+    let df = import_record_batch(&batch).unwrap();
     let cv = df.series("s").unwrap();
     let validity = cv.as_column_view().unwrap().validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
@@ -484,7 +513,7 @@ fn test_from_record_batch_large_string_array() {
     let batch =
         RecordBatch::try_new(Arc::new(schema), vec![Arc::new(LargeStringArray::from(vec!["x", "y", "z"]))]).unwrap();
 
-    let df = DataFrame::from_record_batch(&batch).unwrap();
+    let df = import_record_batch(&batch).unwrap();
     let strs = df.series("s").unwrap().to_strings_strict().unwrap();
     assert_eq!(strs, vec!["x", "y", "z"]);
 }
@@ -492,7 +521,7 @@ fn test_from_record_batch_large_string_array() {
 #[test]
 fn test_round_trip_empty_string_schema() {
     let df =
-        crate::common::dataframe_from_columns(vec!["s".to_string()], vec![Column::from_strs(&[]).unwrap()]).unwrap();
+        crate::common::dataframe_from_columns(vec!["s".to_string()], vec![column_from_strs(&[]).unwrap()]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(batch.num_columns(), 1);
@@ -502,7 +531,7 @@ fn test_round_trip_empty_string_schema() {
     let arr = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
     assert_eq!(arr.len(), 0);
 
-    let df2 = DataFrame::from_record_batch(&batch).unwrap();
+    let df2 = import_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["s"]);
     assert_eq!(df2.num_rows(), 0);
     assert_eq!(df2.series("s").unwrap().dtype().unwrap().id(), TypeId::String);

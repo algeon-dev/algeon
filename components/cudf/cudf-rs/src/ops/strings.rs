@@ -48,12 +48,12 @@ impl StripSide {
 pub fn to_lower(input: &ColumnView<'_>) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    to_lower_impl(input, exec_options.as_ref(), "strings::to_lower")
-        .map(|column| column.with_execution_domain(output_domain))
+    to_lower_impl(input, &output_domain, exec_options.as_ref(), "strings::to_lower")
 }
 
 pub(crate) fn to_lower_impl(
     input: &ColumnView<'_>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -63,19 +63,19 @@ pub(crate) fn to_lower_impl(
         None => unsafe { cudf_sys::cudf_strings_to_lower(input.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 /// Convert each string element to uppercase. Returns a new STRING column.
 pub fn to_upper(input: &ColumnView<'_>) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    to_upper_impl(input, exec_options.as_ref(), "strings::to_upper")
-        .map(|column| column.with_execution_domain(output_domain))
+    to_upper_impl(input, &output_domain, exec_options.as_ref(), "strings::to_upper")
 }
 
 pub(crate) fn to_upper_impl(
     input: &ColumnView<'_>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -85,7 +85,7 @@ pub(crate) fn to_upper_impl(
         None => unsafe { cudf_sys::cudf_strings_to_upper(input.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 // ---------------------------------------------------------------------------
@@ -103,13 +103,13 @@ pub fn str_contains(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
         "strings::contains",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    str_contains_impl(input, target, exec_options.as_ref(), "strings::contains")
-        .map(|column| column.with_execution_domain(output_domain))
+    str_contains_impl(input, target, &output_domain, exec_options.as_ref(), "strings::contains")
 }
 
 pub(crate) fn str_contains_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -121,7 +121,7 @@ pub(crate) fn str_contains_impl(
         None => unsafe { cudf_sys::cudf_strings_contains(input.raw_handle(), target.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 /// Element-wise starts-with test against a scalar string. Returns a BOOL8 column.
@@ -133,13 +133,13 @@ pub fn starts_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
         "strings::starts_with",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    starts_with_impl(input, target, exec_options.as_ref(), "strings::starts_with")
-        .map(|column| column.with_execution_domain(output_domain))
+    starts_with_impl(input, target, &output_domain, exec_options.as_ref(), "strings::starts_with")
 }
 
 pub(crate) fn starts_with_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -151,7 +151,7 @@ pub(crate) fn starts_with_impl(
         None => unsafe { cudf_sys::cudf_strings_starts_with(input.raw_handle(), target.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 /// Element-wise ends-with test against a scalar string. Returns a BOOL8 column.
@@ -163,13 +163,13 @@ pub fn ends_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
         "strings::ends_with",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    ends_with_impl(input, target, exec_options.as_ref(), "strings::ends_with")
-        .map(|column| column.with_execution_domain(output_domain))
+    ends_with_impl(input, target, &output_domain, exec_options.as_ref(), "strings::ends_with")
 }
 
 pub(crate) fn ends_with_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -181,7 +181,7 @@ pub(crate) fn ends_with_impl(
         None => unsafe { cudf_sys::cudf_strings_ends_with(input.raw_handle(), target.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 // ---------------------------------------------------------------------------
@@ -200,14 +200,14 @@ pub fn strip(input: &ColumnView<'_>, side: StripSide, to_strip: &Scalar) -> Resu
         "strings::strip",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    strip_impl(input, side, to_strip, exec_options.as_ref(), "strings::strip")
-        .map(|column| column.with_execution_domain(output_domain))
+    strip_impl(input, side, to_strip, &output_domain, exec_options.as_ref(), "strings::strip")
 }
 
 pub(crate) fn strip_impl(
     input: &ColumnView<'_>,
     side: StripSide,
     to_strip: &Scalar,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -220,7 +220,7 @@ pub(crate) fn strip_impl(
         None => unsafe { cudf_sys::cudf_strings_strip(input.raw_handle(), side_ffi, to_strip.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 // ---------------------------------------------------------------------------
@@ -233,12 +233,12 @@ pub(crate) fn strip_impl(
 pub fn count_characters(input: &ColumnView<'_>) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    count_characters_impl(input, exec_options.as_ref(), "strings::count_characters")
-        .map(|column| column.with_execution_domain(output_domain))
+    count_characters_impl(input, &output_domain, exec_options.as_ref(), "strings::count_characters")
 }
 
 pub(crate) fn count_characters_impl(
     input: &ColumnView<'_>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -248,19 +248,19 @@ pub(crate) fn count_characters_impl(
         None => unsafe { cudf_sys::cudf_strings_count_characters(input.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }
 
 /// Byte count per string. Returns an INT32 column.
 pub fn count_bytes(input: &ColumnView<'_>) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
-    count_bytes_impl(input, exec_options.as_ref(), "strings::count_bytes")
-        .map(|column| column.with_execution_domain(output_domain))
+    count_bytes_impl(input, &output_domain, exec_options.as_ref(), "strings::count_bytes")
 }
 
 pub(crate) fn count_bytes_impl(
     input: &ColumnView<'_>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -270,5 +270,5 @@ pub(crate) fn count_bytes_impl(
         None => unsafe { cudf_sys::cudf_strings_count_bytes(input.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
 }

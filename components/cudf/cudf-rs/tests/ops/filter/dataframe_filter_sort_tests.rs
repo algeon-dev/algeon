@@ -1,12 +1,11 @@
 //! Tests for DataFrame high-level filter, filter_isin, sort, deduplicate.
 
-use cudf::{
-    DataFrame, DropDuplicatesOptions, DropNaOptions, DuplicateKeepOption, ErrorKind, Series, SortOptions, core::Column,
-};
+use cudf::{DataFrame, DropDuplicatesOptions, DropNaOptions, DuplicateKeepOption, ErrorKind, SortOptions};
 
 use crate::common::{
-    assert_missing_column_error, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    reset_exec_observation, reset_sync_observation, sample_df, sample_runtime,
+    assert_missing_column_error, column_from_slice, column_from_slice_nullable, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation, sample_df,
+    sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -17,7 +16,7 @@ use crate::common::{
 fn test_filter_basic() {
     let df = sample_df();
     // Keep rows where id > 2: rows 0 (3), 2 (4), 4 (5)
-    let mask = Series::new::<bool>("mask", &[true, false, true, false, true]).unwrap();
+    let mask = crate::common::series::<bool>("mask", &[true, false, true, false, true]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
@@ -28,7 +27,7 @@ fn test_filter_basic() {
 #[test]
 fn test_filter_preserves_schema() {
     let df = sample_df();
-    let mask = Series::new::<bool>("mask", &[true, true, true, true, true]).unwrap();
+    let mask = crate::common::series::<bool>("mask", &[true, true, true, true, true]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
@@ -39,7 +38,7 @@ fn test_filter_preserves_schema() {
 #[test]
 fn test_filter_all_false() {
     let df = sample_df();
-    let mask = Series::new::<bool>("mask", &[false, false, false, false, false]).unwrap();
+    let mask = crate::common::series::<bool>("mask", &[false, false, false, false, false]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
@@ -53,7 +52,7 @@ fn test_filter_all_false() {
 #[test]
 fn test_filter_isin_basic() {
     let df = sample_df(); // ids: 3,1,4,1,5
-    let values = Series::new::<i32>("values", &[1, 5]).unwrap();
+    let values = crate::common::series::<i32>("values", &[1, 5]).unwrap();
     let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 3); // rows with id 1,1,5
@@ -65,7 +64,7 @@ fn test_filter_isin_basic() {
 #[test]
 fn test_filter_isin_no_matches() {
     let df = sample_df(); // ids: 3,1,4,1,5
-    let values = Series::new::<i32>("values", &[99, 100]).unwrap();
+    let values = crate::common::series::<i32>("values", &[99, 100]).unwrap();
     let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
@@ -74,7 +73,7 @@ fn test_filter_isin_no_matches() {
 #[test]
 fn test_filter_isin_all_match() {
     let df = sample_df(); // ids: 3,1,4,1,5
-    let values = Series::new::<i32>("values", &[1, 3, 4, 5]).unwrap();
+    let values = crate::common::series::<i32>("values", &[1, 3, 4, 5]).unwrap();
     let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 5);
@@ -83,7 +82,7 @@ fn test_filter_isin_all_match() {
 #[test]
 fn test_filter_isin_preserves_schema() {
     let df = sample_df();
-    let values = Series::new::<i32>("values", &[1]).unwrap();
+    let values = crate::common::series::<i32>("values", &[1]).unwrap();
     let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
@@ -94,7 +93,7 @@ fn test_filter_isin_preserves_schema() {
 #[test]
 fn test_filter_isin_nonexistent_column() {
     let df = sample_df();
-    let values = Series::new::<i32>("values", &[1]).unwrap();
+    let values = crate::common::series::<i32>("values", &[1]).unwrap();
     let err = df.filter_isin("nonexistent", &values).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
 }
@@ -102,7 +101,7 @@ fn test_filter_isin_nonexistent_column() {
 #[test]
 fn test_filter_isin_float64() {
     let df = sample_df(); // scores: 30.0, 10.0, 40.0, 15.0, 50.0
-    let values = Series::new::<f64>("values", &[10.0, 50.0]).unwrap();
+    let values = crate::common::series::<f64>("values", &[10.0, 50.0]).unwrap();
     let filtered = df.filter_isin("score", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 2);
@@ -114,7 +113,7 @@ fn test_filter_isin_float64() {
 #[test]
 fn test_filter_isin_empty_values() {
     let df = sample_df();
-    let values = Series::new::<i32>("values", &[]).unwrap();
+    let values = crate::common::series::<i32>("values", &[]).unwrap();
     let filtered = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
@@ -173,8 +172,8 @@ fn test_sort_single_column_descending() {
 #[test]
 fn test_sort_by_subset_of_columns() {
     // Sort by id ascending, then score descending within each id group.
-    let ids = Column::from_slice(&[2i32, 1, 2, 1]).unwrap();
-    let scores = Column::from_slice(&[20.0f64, 10.0, 40.0, 30.0]).unwrap();
+    let ids = column_from_slice(&[2i32, 1, 2, 1]).unwrap();
+    let scores = column_from_slice(&[20.0f64, 10.0, 40.0, 30.0]).unwrap();
     let df =
         crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
 
@@ -281,8 +280,8 @@ fn test_drop_duplicates_nonexistent_column() {
 
 #[test]
 fn test_dropna_basic() {
-    let ids = Column::from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true]).unwrap();
-    let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0, 50.0]).unwrap();
+    let ids = column_from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true]).unwrap();
+    let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0, 50.0]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap();
 
     let cleaned = df.dropna(DropNaOptions::builder().subset(&["id"]).thresh(1).build()).unwrap();
@@ -297,8 +296,8 @@ fn test_dropna_basic() {
 
 #[test]
 fn test_dropna_preserves_schema_simple() {
-    let ids = Column::from_slice_nullable(&[1i32, 0], &[true, false]).unwrap();
-    let vals = Column::from_slice(&[10.0f64, 20.0]).unwrap();
+    let ids = column_from_slice_nullable(&[1i32, 0], &[true, false]).unwrap();
+    let vals = column_from_slice(&[10.0f64, 20.0]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap();
 
     let cleaned = df.dropna(DropNaOptions::builder().subset(&["id"]).build()).unwrap();
@@ -307,8 +306,8 @@ fn test_dropna_preserves_schema_simple() {
 
 #[test]
 fn test_dropna_any_equivalent_to_thresh() {
-    let ids = Column::from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true]).unwrap();
-    let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0, 50.0]).unwrap();
+    let ids = column_from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true]).unwrap();
+    let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0, 50.0]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap();
 
     let expected = df.dropna(DropNaOptions::builder().subset(&["id"]).thresh(1).build()).unwrap();
@@ -328,9 +327,9 @@ fn test_dropna_any_equivalent_to_thresh() {
 #[test]
 fn test_dropna_any_mixed_null_patterns() {
     // Two subset columns with nulls in different positions.
-    let a = Column::from_slice_nullable(&[1i32, 2, 3, 4], &[true, false, true, true]).unwrap();
-    let b = Column::from_slice_nullable(&[10i32, 20, 0, 40], &[true, true, false, true]).unwrap();
-    let c = Column::from_slice(&[100.0f64, 200.0, 300.0, 400.0]).unwrap();
+    let a = column_from_slice_nullable(&[1i32, 2, 3, 4], &[true, false, true, true]).unwrap();
+    let b = column_from_slice_nullable(&[10i32, 20, 0, 40], &[true, true, false, true]).unwrap();
+    let c = column_from_slice(&[100.0f64, 200.0, 300.0, 400.0]).unwrap();
     let df =
         crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string(), "c".to_string()], vec![a, b, c])
             .unwrap();
@@ -350,7 +349,7 @@ fn test_dropna_any_mixed_null_patterns() {
 
 #[test]
 fn test_dropna_default_all_columns() {
-    let ids = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap();
+    let ids = column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["id".to_string()], vec![ids]).unwrap();
 
     // Default options: subset=all columns, how=any
@@ -360,7 +359,7 @@ fn test_dropna_default_all_columns() {
 
 #[test]
 fn test_dropna_no_nulls() {
-    let c = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let c = column_from_slice(&[1i32, 2, 3]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![c]).unwrap();
 
     let result = df.dropna(DropNaOptions::builder().subset(&["x"]).build()).unwrap();
@@ -369,7 +368,7 @@ fn test_dropna_no_nulls() {
 
 #[test]
 fn test_dropna_all_null() {
-    let c = Column::from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
+    let c = column_from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![c]).unwrap();
 
     let result = df.dropna(DropNaOptions::builder().subset(&["x"]).build()).unwrap();
@@ -378,8 +377,8 @@ fn test_dropna_all_null() {
 
 #[test]
 fn test_dropna_preserves_schema() {
-    let a = Column::from_slice_nullable(&[1i32, 0], &[true, false]).unwrap();
-    let b = Column::from_slice(&[10.0f64, 20.0]).unwrap();
+    let a = column_from_slice_nullable(&[1i32, 0], &[true, false]).unwrap();
+    let b = column_from_slice(&[10.0f64, 20.0]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![a, b]).unwrap();
 
     let cleaned = df.dropna(DropNaOptions::builder().subset(&["a"]).build()).unwrap();
@@ -390,7 +389,7 @@ fn test_dropna_preserves_schema() {
 
 #[test]
 fn test_dropna_nonexistent_column_returns_error() {
-    let c = Column::from_slice(&[1i32]).unwrap();
+    let c = column_from_slice(&[1i32]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![c]).unwrap();
 
     let err = df.dropna(DropNaOptions::builder().subset(&["missing"]).build()).unwrap_err();

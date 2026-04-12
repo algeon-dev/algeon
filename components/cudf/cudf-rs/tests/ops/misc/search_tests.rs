@@ -1,16 +1,16 @@
 //! Tests for CU-2: contains (isin) and ColumnView::isin.
 
-use cudf::{ErrorKind, core::Column, ops::search};
+use cudf::{ErrorKind, ops::search};
 
 use crate::common::{
-    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation,
+    column_from_slice, column_from_slice_nullable, column_from_strs, explicit_i32_column, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
 #[test]
 fn test_contains_basic_i32() {
-    let haystack = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
-    let needles = Column::from_slice(&[20i32, 40, 60, 80]).unwrap();
+    let haystack = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
+    let needles = column_from_slice(&[20i32, 40, 60, 80]).unwrap();
 
     let hv = haystack.view().unwrap();
     let nv = needles.view().unwrap();
@@ -22,8 +22,8 @@ fn test_contains_basic_i32() {
 
 #[test]
 fn test_contains_all_match() {
-    let haystack = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let needles = Column::from_slice(&[3i32, 1, 2]).unwrap();
+    let haystack = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let needles = column_from_slice(&[3i32, 1, 2]).unwrap();
 
     let hv = haystack.view().unwrap();
     let nv = needles.view().unwrap();
@@ -35,8 +35,8 @@ fn test_contains_all_match() {
 
 #[test]
 fn test_contains_no_match() {
-    let haystack = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let needles = Column::from_slice(&[4i32, 5, 6]).unwrap();
+    let haystack = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let needles = column_from_slice(&[4i32, 5, 6]).unwrap();
 
     let hv = haystack.view().unwrap();
     let nv = needles.view().unwrap();
@@ -48,8 +48,8 @@ fn test_contains_no_match() {
 
 #[test]
 fn test_contains_empty_needles() {
-    let haystack = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let needles = Column::from_slice(&[] as &[i32]).unwrap();
+    let haystack = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let needles = column_from_slice(&[] as &[i32]).unwrap();
 
     let hv = haystack.view().unwrap();
     let nv = needles.view().unwrap();
@@ -61,8 +61,8 @@ fn test_contains_empty_needles() {
 
 #[test]
 fn test_contains_empty_haystack() {
-    let haystack = Column::from_slice(&[] as &[i32]).unwrap();
-    let needles = Column::from_slice(&[1i32, 2]).unwrap();
+    let haystack = column_from_slice(&[] as &[i32]).unwrap();
+    let needles = column_from_slice(&[1i32, 2]).unwrap();
 
     let hv = haystack.view().unwrap();
     let nv = needles.view().unwrap();
@@ -74,8 +74,8 @@ fn test_contains_empty_haystack() {
 
 #[test]
 fn test_contains_with_duplicates_in_haystack() {
-    let haystack = Column::from_slice(&[1i32, 1, 2, 2, 3]).unwrap();
-    let needles = Column::from_slice(&[1i32, 3, 4]).unwrap();
+    let haystack = column_from_slice(&[1i32, 1, 2, 2, 3]).unwrap();
+    let needles = column_from_slice(&[1i32, 3, 4]).unwrap();
 
     let hv = haystack.view().unwrap();
     let nv = needles.view().unwrap();
@@ -87,8 +87,8 @@ fn test_contains_with_duplicates_in_haystack() {
 
 #[test]
 fn test_contains_float64() {
-    let haystack = Column::from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
-    let needles = Column::from_slice(&[2.0f64, 4.0]).unwrap();
+    let haystack = column_from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
+    let needles = column_from_slice(&[2.0f64, 4.0]).unwrap();
 
     let hv = haystack.view().unwrap();
     let nv = needles.view().unwrap();
@@ -127,8 +127,8 @@ fn test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance() {
 
 #[test]
 fn test_isin_i32_some_matches() {
-    let col = Column::from_slice(&[1i32, 2, 3, 4, 5]).unwrap();
-    let values = Column::from_slice(&[2i32, 4]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3, 4, 5]).unwrap();
+    let values = column_from_slice(&[2i32, 4]).unwrap();
 
     let cv = col.view().unwrap();
     let vv = values.view().unwrap();
@@ -165,8 +165,8 @@ fn test_isin_succeeds_with_mixed_domains() {
 
 #[test]
 fn test_isin_string_column() {
-    let col = Column::from_strs(&["apple", "banana", "cherry"]).unwrap();
-    let values = Column::from_strs(&["banana", "date"]).unwrap();
+    let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
+    let values = column_from_strs(&["banana", "date"]).unwrap();
 
     let cv = col.view().unwrap();
     let vv = values.view().unwrap();
@@ -178,8 +178,8 @@ fn test_isin_string_column() {
 
 #[test]
 fn test_isin_no_matches() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let values = Column::from_slice(&[10i32, 20]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let values = column_from_slice(&[10i32, 20]).unwrap();
 
     let cv = col.view().unwrap();
     let vv = values.view().unwrap();
@@ -191,8 +191,8 @@ fn test_isin_no_matches() {
 
 #[test]
 fn test_isin_all_matches() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let values = Column::from_slice(&[3i32, 1, 2]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let values = column_from_slice(&[3i32, 1, 2]).unwrap();
 
     let cv = col.view().unwrap();
     let vv = values.view().unwrap();
@@ -204,8 +204,8 @@ fn test_isin_all_matches() {
 
 #[test]
 fn test_isin_empty_values() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let values = Column::from_slice(&[] as &[i32]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let values = column_from_slice(&[] as &[i32]).unwrap();
 
     let cv = col.view().unwrap();
     let vv = values.view().unwrap();
@@ -218,8 +218,8 @@ fn test_isin_empty_values() {
 
 #[test]
 fn test_isin_column_with_nulls() {
-    let col = Column::from_slice_nullable(&[1i32, 0, 3, 0], &[true, false, true, false]).unwrap();
-    let values = Column::from_slice(&[1i32, 3]).unwrap();
+    let col = column_from_slice_nullable(&[1i32, 0, 3, 0], &[true, false, true, false]).unwrap();
+    let values = column_from_slice(&[1i32, 3]).unwrap();
 
     let cv = col.view().unwrap();
     let vv = values.view().unwrap();
@@ -239,8 +239,8 @@ fn test_isin_column_with_nulls() {
 
 #[test]
 fn test_isin_empty_column() {
-    let col = Column::from_slice(&[] as &[i32]).unwrap();
-    let values = Column::from_slice(&[1i32, 2]).unwrap();
+    let col = column_from_slice(&[] as &[i32]).unwrap();
+    let values = column_from_slice(&[1i32, 2]).unwrap();
 
     let cv = col.view().unwrap();
     let vv = values.view().unwrap();
@@ -252,8 +252,8 @@ fn test_isin_empty_column() {
 
 #[test]
 fn test_isin_type_mismatch_error_has_operation_context() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let values = Column::from_slice(&[1.0f64, 2.0]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let values = column_from_slice(&[1.0f64, 2.0]).unwrap();
 
     let cv = col.view().unwrap();
     let vv = values.view().unwrap();

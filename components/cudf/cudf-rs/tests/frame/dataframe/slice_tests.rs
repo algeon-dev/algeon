@@ -1,11 +1,13 @@
 //! Tests for DataFrame row slicing helpers.
 
-use cudf::{DataFrame, core::Column};
+use cudf::DataFrame;
+
+use crate::common::column_from_slice;
 
 /// Helper: build a 5-row, 2-column DataFrame for slicing tests.
 fn sample_df() -> DataFrame {
-    let ids = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
-    let vals = Column::from_slice(&[1.0f64, 2.0, 3.0, 4.0, 5.0]).unwrap();
+    let ids = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
+    let vals = column_from_slice(&[1.0f64, 2.0, 3.0, 4.0, 5.0]).unwrap();
     crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap()
 }
 

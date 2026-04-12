@@ -31,49 +31,49 @@ use crate::{
 macro_rules! series_context_op {
     // Unary with fixed operation string
     (unary fn $method:ident($($param:ident : $pty:ty),*), $operation:literal,
-     |$cv:ident, $exec:ident, $op:ident| $call:expr) => {
+     |$cv:ident, $domain:ident, $exec:ident, $op:ident| $call:expr) => {
         fn $method(&self, $($param: $pty,)* ctx: &ExecutionContext<'_>) -> Result<Series> {
             let $op = $operation;
-            let output_domain = self.resolve_context_output_domain(ctx, $op)?;
+            let $domain = self.resolve_context_output_domain(ctx, $op)?;
             let $cv = self.column.view()?;
-            let $exec = output_domain.explicit_exec_options_raw();
-            let col = $call?.with_execution_domain(output_domain);
+            let $exec = $domain.explicit_exec_options_raw();
+            let col = $call?;
             self.with_inherited_name(col)
         }
     };
     // Unary with caller-supplied operation string
     (unary fn $method:ident($($param:ident : $pty:ty),*),
-     caller_op |$cv:ident, $exec:ident, $op:ident| $call:expr) => {
+     caller_op |$cv:ident, $domain:ident, $exec:ident, $op:ident| $call:expr) => {
         fn $method(&self, $($param: $pty,)* ctx: &ExecutionContext<'_>, $op: &'static str) -> Result<Series> {
-            let output_domain = self.resolve_context_output_domain(ctx, $op)?;
+            let $domain = self.resolve_context_output_domain(ctx, $op)?;
             let $cv = self.column.view()?;
-            let $exec = output_domain.explicit_exec_options_raw();
-            let col = $call?.with_execution_domain(output_domain);
+            let $exec = $domain.explicit_exec_options_raw();
+            let col = $call?;
             self.with_inherited_name(col)
         }
     };
     // Binary (two-Series): adds require_same_device + fence for the other Series
     (binary fn $method:ident($other:ident : &Series),
-     $operation:literal, |$cv:ident, $other_cv:ident, $exec:ident, $op:ident| $call:expr) => {
+     $operation:literal, |$cv:ident, $other_cv:ident, $domain:ident, $exec:ident, $op:ident| $call:expr) => {
         fn $method(
             &self,
             $other: &Series,
             ctx: &ExecutionContext<'_>,
         ) -> Result<Series> {
             let $op = $operation;
-            let output_domain = self.resolve_context_output_domain(ctx, $op)?;
+            let $domain = self.resolve_context_output_domain(ctx, $op)?;
             ExecutionDomain::require_same_device_for_mixed_inputs(
                 self.column.execution_domain(),
                 $other.column.execution_domain(),
                 $op,
             )?;
-            if !ExecutionDomain::same_provenance($other.column.execution_domain(), &output_domain) {
+            if !ExecutionDomain::same_provenance($other.column.execution_domain(), &$domain) {
                 $other.column.execution_domain().fence_stream($op)?;
             }
             let $cv = self.column.view()?;
             let $other_cv = $other.column.view()?;
-            let $exec = output_domain.explicit_exec_options_raw();
-            let col = $call?.with_execution_domain(output_domain);
+            let $exec = $domain.explicit_exec_options_raw();
+            let col = $call?;
             self.with_inherited_name(col)
         }
     };
@@ -310,23 +310,15 @@ impl Series {
         let cv = self.column.view()?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let sorted = match exec_options.as_ref() {
-            Some(exec_options) => crate::ops::sorting::sort_table_impl(
-                ttv.table(),
-                Some(&orders),
-                null_orders.as_deref(),
-                options.stable,
-                Some(exec_options),
-                operation,
-            )?,
-            None => {
-                if options.stable {
-                    crate::ops::sorting::stable_sort(ttv.table(), Some(&orders), null_orders.as_deref())?
-                } else {
-                    crate::ops::sorting::sort(ttv.table(), Some(&orders), null_orders.as_deref())?
-                }
-            },
-        }
+        let sorted = crate::ops::sorting::sort_table_impl(
+            ttv.table(),
+            Some(&orders),
+            null_orders.as_deref(),
+            options.stable,
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?
         .with_execution_domain(output_domain);
         let mut cols = sorted.into_columns()?;
         self.with_inherited_name(cols.remove(0))
@@ -353,8 +345,7 @@ impl Series {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let dict = dictionary::encode_impl(&cv, TypeId::Int32, exec_options.as_ref(), operation)?
-            .with_execution_domain(Arc::clone(&output_domain));
+        let dict = dictionary::encode_impl(&cv, TypeId::Int32, &output_domain, exec_options.as_ref(), operation)?;
         let dict_view = dict.view()?;
         let indices_view = dictionary::indices(&dict_view)?;
         let keys_view = dictionary::keys(&dict_view)?;
@@ -376,8 +367,13 @@ impl Series {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = replace::replace_nulls_policy_with_exec_options(&cv, policy, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
+        let col = replace::replace_nulls_policy_with_exec_options(
+            &cv,
+            policy,
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
         self.with_inherited_name(col)
     }
 
@@ -393,10 +389,10 @@ impl Series {
             DuplicateKeepOption::KeepAny,
             NullEquality::Equal,
             NanEquality::AllEqual,
+            &output_domain,
             exec_options.as_ref(),
             operation,
-        )?
-        .with_execution_domain(output_domain);
+        )?;
         let mut cols = result.into_columns()?;
         self.with_inherited_name(cols.remove(0))
     }
@@ -480,8 +476,7 @@ impl Series {
         let input_type = self.dtype().map_err(|e| e.with_operation(operation))?;
         let output_type = infer_reduce_output_type(&input_type, &agg).map_err(|e| e.with_operation(operation))?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        reduction::reduce_impl(&cv, &agg, &output_type, exec_options.as_ref(), operation)
-            .map(|scalar| scalar.with_execution_domain(output_domain))
+        reduction::reduce_impl(&cv, &agg, &output_type, &output_domain, exec_options.as_ref(), operation)
     }
 
     fn minmax_in_context(&self, ctx: &ExecutionContext<'_>) -> Result<(Scalar, Scalar)> {
@@ -489,38 +484,41 @@ impl Series {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        reduction::minmax_impl(&cv, exec_options.as_ref(), operation).map(|(min, max)| {
-            (min.with_execution_domain(Arc::clone(&output_domain)), max.with_execution_domain(output_domain))
-        })
+        reduction::minmax_impl(&cv, &output_domain, exec_options.as_ref(), operation)
     }
 
     // ── Macro-generated unary helpers ───────────────────────────────────
 
     series_context_op!(unary fn is_nan_in_context(), "series::in_context::is_nan",
-        |cv, exec, op| unary::is_nan_impl(&cv, exec.as_ref(), op));
+        |cv, output_domain, exec, op| unary::is_nan_impl(&cv, &output_domain, exec.as_ref(), op));
 
     series_context_op!(unary fn is_not_nan_in_context(), "series::in_context::is_not_nan",
-        |cv, exec, op| unary::is_not_nan_impl(&cv, exec.as_ref(), op));
+        |cv, output_domain, exec, op| unary::is_not_nan_impl(&cv, &output_domain, exec.as_ref(), op));
 
     series_context_op!(unary fn logical_not_in_context(), "series::in_context::logical_not",
-        |cv, exec, op| unary::unary_operation_impl(&cv, UnaryOperator::Not, exec.as_ref(), op));
+        |cv, output_domain, exec, op| unary::unary_operation_impl(&cv, UnaryOperator::Not, &output_domain, exec.as_ref(), op));
 
     series_context_op!(unary fn is_null_in_context(), "series::in_context::is_null",
-        |cv, exec, op| unary::is_null_impl(&cv, exec.as_ref(), op));
+        |cv, output_domain, exec, op| unary::is_null_impl(&cv, &output_domain, exec.as_ref(), op));
 
     series_context_op!(unary fn is_not_null_in_context(), "series::in_context::is_not_null",
-        |cv, exec, op| unary::is_valid_impl(&cv, exec.as_ref(), op));
+        |cv, output_domain, exec, op| unary::is_valid_impl(&cv, &output_domain, exec.as_ref(), op));
 
     // Unary helpers with caller-supplied operation string
     series_context_op!(unary fn unary_in_context(op: UnaryOperator),
-        caller_op |cv, exec, operation| unary::unary_operation_impl(&cv, op, exec.as_ref(), operation));
+        caller_op |cv, output_domain, exec, operation| unary::unary_operation_impl(&cv, op, &output_domain, exec.as_ref(), operation));
 
     series_context_op!(unary fn scan_in_context(agg: ScanAgg, scan_type: ScanType, null_policy: NullPolicy),
-        caller_op |cv, exec, operation| reduction::scan_impl(&cv, agg, scan_type, null_policy, exec.as_ref(), operation));
+        caller_op |cv, output_domain, exec, operation| reduction::scan_impl(&cv, agg, scan_type, null_policy, &output_domain, exec.as_ref(), operation));
 
     series_context_op!(unary fn string_unary_in_context(
-        op: fn(&crate::core::column::ColumnView<'_>, Option<&cudf_sys::cudf_exec_options_t>, &'static str) -> Result<crate::core::column::Column>),
-        caller_op |cv, exec, operation| op(&cv, exec.as_ref(), operation));
+        op: fn(
+            &crate::core::column::ColumnView<'_>,
+            &Arc<ExecutionDomain>,
+            Option<&cudf_sys::cudf_exec_options_t>,
+            &'static str,
+        ) -> Result<crate::core::column::Column>),
+        caller_op |cv, output_domain, exec, operation| op(&cv, &output_domain, exec.as_ref(), operation));
 
     fn strip_in_context(
         &self,
@@ -533,8 +531,7 @@ impl Series {
         let cv = self.column.view()?;
         let scalar = Scalar::from_str_in_domain(to_strip, &output_domain)?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = strings::strip_impl(&cv, side, &scalar, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
+        let col = strings::strip_impl(&cv, side, &scalar, &output_domain, exec_options.as_ref(), operation)?;
         self.with_inherited_name(col)
     }
 
@@ -546,6 +543,7 @@ impl Series {
         op: fn(
             &crate::core::column::ColumnView<'_>,
             &Scalar,
+            &Arc<ExecutionDomain>,
             Option<&cudf_sys::cudf_exec_options_t>,
             &'static str,
         ) -> Result<crate::core::column::Column>,
@@ -554,7 +552,7 @@ impl Series {
         let cv = self.column.view()?;
         let scalar = Scalar::from_str_in_domain(target, &output_domain)?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = op(&cv, &scalar, exec_options.as_ref(), operation)?.with_execution_domain(output_domain);
+        let col = op(&cv, &scalar, &output_domain, exec_options.as_ref(), operation)?;
         self.with_inherited_name(col)
     }
 
@@ -570,8 +568,7 @@ impl Series {
         let target = target.into();
         let cv = self.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col =
-            unary::cast_impl(&cv, &target, exec_options.as_ref(), operation)?.with_execution_domain(output_domain);
+        let col = unary::cast_impl(&cv, &target, &output_domain, exec_options.as_ref(), operation)?;
         self.with_inherited_name(col)
     }
 
@@ -583,8 +580,8 @@ impl Series {
         let cv = self.column.view()?;
         let scalar = Scalar::from_value_in_domain(value, &output_domain)?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = replace::replace_nulls_with_exec_options(&cv, &scalar, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
+        let col =
+            replace::replace_nulls_with_exec_options(&cv, &scalar, &output_domain, exec_options.as_ref(), operation)?;
         self.with_inherited_name(col)
     }
 
@@ -592,11 +589,11 @@ impl Series {
 
     series_context_op!(binary fn fillna_with_series_in_context(other: &Series),
         "series::in_context::fillna_with_series",
-        |cv, other_cv, exec, op| replace::replace_nulls_column_with_exec_options(&cv, &other_cv, exec.as_ref(), op));
+        |cv, other_cv, output_domain, exec, op| replace::replace_nulls_column_with_exec_options(&cv, &other_cv, &output_domain, exec.as_ref(), op));
 
     series_context_op!(binary fn isin_in_context(values: &Series),
         "series::in_context::isin",
-        |cv, values_cv, exec, op| crate::ops::search::contains_impl(&values_cv, &cv, exec.as_ref(), op));
+        |cv, values_cv, output_domain, exec, op| crate::ops::search::contains_impl(&values_cv, &cv, &output_domain, exec.as_ref(), op));
 
     // ── Binary with type inference (hand-written — output type depends on both inputs) ──
 
@@ -620,8 +617,15 @@ impl Series {
         let rhs = other.column.view()?;
         let output_type = binary::infer_binary_output_type(lhs.data_type()?.id(), rhs.data_type()?.id(), op)?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = binary::binary_operation_vv_impl(&lhs, &rhs, op, &output_type, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
+        let col = binary::binary_operation_vv_impl(
+            &lhs,
+            &rhs,
+            op,
+            &output_type,
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
         Series::from_column(col)
     }
 
@@ -637,8 +641,15 @@ impl Series {
         let scalar = Scalar::from_value_in_domain(value, &output_domain)?;
         let output_type = binary::infer_binary_output_type(cv.data_type()?.id(), scalar.data_type()?.id(), op)?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = binary::binary_operation_vs_impl(&cv, &scalar, op, &output_type, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
+        let col = binary::binary_operation_vs_impl(
+            &cv,
+            &scalar,
+            op,
+            &output_type,
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
         self.with_inherited_name(col)
     }
 
@@ -654,8 +665,15 @@ impl Series {
         let scalar = Scalar::from_str_in_domain(value, &output_domain)?;
         let output_type = binary::infer_binary_output_type(cv.data_type()?.id(), scalar.data_type()?.id(), op)?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = binary::binary_operation_vs_impl(&cv, &scalar, op, &output_type, exec_options.as_ref(), operation)?
-            .with_execution_domain(output_domain);
+        let col = binary::binary_operation_vs_impl(
+            &cv,
+            &scalar,
+            op,
+            &output_type,
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+        )?;
         self.with_inherited_name(col)
     }
 }

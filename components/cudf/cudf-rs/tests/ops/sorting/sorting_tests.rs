@@ -1,18 +1,18 @@
 //! Tests for sorting operations.
 
 use cudf::{
-    core::{Column, Table},
+    core::Table,
     ops::sorting::{self, NullOrder, Order},
 };
 
 use crate::common::{
-    explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation,
+    column_from_slice, column_from_slice_nullable, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
 #[test]
 fn test_sort_ascending() {
-    let col = Column::from_slice(&[3i32, 1, 2]).unwrap();
+    let col = column_from_slice(&[3i32, 1, 2]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -24,7 +24,7 @@ fn test_sort_ascending() {
 
 #[test]
 fn test_sort_descending() {
-    let col = Column::from_slice(&[1i32, 3, 2]).unwrap();
+    let col = column_from_slice(&[1i32, 3, 2]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -37,8 +37,8 @@ fn test_sort_descending() {
 #[test]
 fn test_sort_multi_column() {
     // Sort by col0 ascending, then col1 descending.
-    let c0 = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
-    let c1 = Column::from_slice(&[10i32, 20, 30, 40]).unwrap();
+    let c0 = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let c1 = column_from_slice(&[10i32, 20, 30, 40]).unwrap();
     let table = Table::from_columns(vec![c0, c1]).unwrap();
     let view = table.view().unwrap();
 
@@ -53,7 +53,7 @@ fn test_sort_multi_column() {
 
 #[test]
 fn test_sort_with_nulls() {
-    let col = Column::from_slice_nullable(&[3i32, 1, 2], &[true, false, true]).unwrap();
+    let col = column_from_slice_nullable(&[3i32, 1, 2], &[true, false, true]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -67,8 +67,8 @@ fn test_sort_with_nulls() {
 
 #[test]
 fn test_sort_by_key() {
-    let keys = Column::from_slice(&[3i32, 1, 2]).unwrap();
-    let vals = Column::from_slice(&[30.0f64, 10.0, 20.0]).unwrap();
+    let keys = column_from_slice(&[3i32, 1, 2]).unwrap();
+    let vals = column_from_slice(&[30.0f64, 10.0, 20.0]).unwrap();
 
     let keys_table = Table::from_columns(vec![keys]).unwrap();
     let vals_table = Table::from_columns(vec![vals]).unwrap();
@@ -83,7 +83,7 @@ fn test_sort_by_key() {
 
 #[test]
 fn test_sorted_order() {
-    let col = Column::from_slice(&[30i32, 10, 20]).unwrap();
+    let col = column_from_slice(&[30i32, 10, 20]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
@@ -95,19 +95,19 @@ fn test_sorted_order() {
 
 #[test]
 fn test_sort_rejects_mismatched_column_order_len() {
-    let c0 = Column::from_slice(&[3i32, 1, 2]).unwrap();
-    let c1 = Column::from_slice(&[30i32, 10, 20]).unwrap();
+    let c0 = column_from_slice(&[3i32, 1, 2]).unwrap();
+    let c1 = column_from_slice(&[30i32, 10, 20]).unwrap();
     let table = Table::from_columns(vec![c0, c1]).unwrap();
     let view = table.view().unwrap();
 
-    let err = sorting::sort(&view, Some(&[Order::Ascending]), None).err().expect("expected error");
+    let err = sorting::sort(&view, Some(&[Order::Ascending]), None).expect_err("expected error");
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
 }
 
 #[test]
 fn test_is_sorted_rejects_mismatched_null_precedence_len() {
-    let c0 = Column::from_slice(&[3i32, 1, 2]).unwrap();
-    let c1 = Column::from_slice(&[30i32, 10, 20]).unwrap();
+    let c0 = column_from_slice(&[3i32, 1, 2]).unwrap();
+    let c1 = column_from_slice(&[30i32, 10, 20]).unwrap();
     let table = Table::from_columns(vec![c0, c1]).unwrap();
     let view = table.view().unwrap();
 
@@ -118,11 +118,11 @@ fn test_is_sorted_rejects_mismatched_null_precedence_len() {
 
 #[test]
 fn test_sort_error_contains_operation_context() {
-    let col = Column::from_slice(&[3i32, 1, 2]).unwrap();
+    let col = column_from_slice(&[3i32, 1, 2]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
-    let err = sorting::sort(&view, Some(&[Order::Ascending, Order::Descending]), None).err().expect("expected error");
+    let err = sorting::sort(&view, Some(&[Order::Ascending, Order::Descending]), None).expect_err("expected error");
 
     assert_eq!(err.operation(), "sorting::sort");
     let ctx = err.context();
@@ -132,12 +132,12 @@ fn test_sort_error_contains_operation_context() {
 
 #[test]
 fn test_is_sorted() {
-    let sorted_col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let sorted_col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let sorted_table = Table::from_columns(vec![sorted_col]).unwrap();
     let sv = sorted_table.view().unwrap();
     assert!(sorting::is_sorted(&sv, None, None).unwrap());
 
-    let unsorted_col = Column::from_slice(&[3i32, 1, 2]).unwrap();
+    let unsorted_col = column_from_slice(&[3i32, 1, 2]).unwrap();
     let unsorted_table = Table::from_columns(vec![unsorted_col]).unwrap();
     let uv = unsorted_table.view().unwrap();
     assert!(!sorting::is_sorted(&uv, None, None).unwrap());

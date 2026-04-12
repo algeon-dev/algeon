@@ -1,10 +1,10 @@
 //! Tests for the high-level `DataFrame::filter` that accepts `&Series` masks.
 
-use cudf::{DataFrame, ErrorKind, Series, core::Column, ops::filter as low_level_filter};
+use cudf::{DataFrame, ErrorKind, ops::filter as low_level_filter};
 
 use crate::common::{
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
-    sample_df, sample_runtime,
+    column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
+    reset_sync_observation, sample_df, sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
 #[test]
 fn test_filter_series_mask_all_true() {
     let df = sample_df();
-    let mask = Series::new::<bool>("mask", &[true, true, true, true, true]).unwrap();
+    let mask = crate::common::series::<bool>("mask", &[true, true, true, true, true]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 5);
@@ -65,7 +65,7 @@ fn test_filter_series_mask_all_true() {
 #[test]
 fn test_filter_series_mask_all_false() {
     let df = sample_df();
-    let mask = Series::new::<bool>("mask", &[false, false, false, false, false]).unwrap();
+    let mask = crate::common::series::<bool>("mask", &[false, false, false, false, false]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
@@ -80,7 +80,7 @@ fn test_filter_series_mask_all_false() {
 #[test]
 fn test_filter_series_preserves_column_names() {
     let df = sample_df();
-    let mask = Series::new::<bool>("m", &[true, false, true, false, true]).unwrap();
+    let mask = crate::common::series::<bool>("m", &[true, false, true, false, true]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
@@ -95,7 +95,7 @@ fn test_filter_series_preserves_column_names() {
 #[test]
 fn test_filter_series_rejects_wrong_length_mask() {
     let df = sample_df(); // 5 rows
-    let mask = Series::new::<bool>("short", &[true, false]).unwrap();
+    let mask = crate::common::series::<bool>("short", &[true, false]).unwrap();
 
     let result = df.filter(&mask);
     assert!(result.is_err());
@@ -112,7 +112,7 @@ fn test_filter_series_rejects_wrong_length_mask() {
 fn test_filter_series_rejects_non_bool_mask() {
     let df = sample_df();
     // Pass an i32 series as mask — should be rejected.
-    let mask = Series::new::<i32>("bad_mask", &[1, 0, 1, 0, 1]).unwrap();
+    let mask = crate::common::series::<i32>("bad_mask", &[1, 0, 1, 0, 1]).unwrap();
 
     let result = df.filter(&mask);
     assert!(result.is_err());
@@ -157,7 +157,7 @@ fn test_filter_series_with_le_scalar_mask() {
 #[test]
 fn test_advanced_low_level_filter_still_works_via_table_view() {
     let df = sample_df();
-    let mask_col = Column::from_slice(&[true, false, true, false, true]).unwrap();
+    let mask_col = column_from_slice(&[true, false, true, false, true]).unwrap();
     let mask_view = mask_col.view().unwrap();
     let table_view = df.table_view().unwrap();
 
@@ -171,7 +171,7 @@ fn test_advanced_low_level_filter_still_works_via_table_view() {
 #[test]
 fn test_advanced_low_level_filter_rejects_non_bool_mask() {
     let df = sample_df();
-    let mask_col = Column::from_slice(&[1i32, 0, 1, 0, 1]).unwrap();
+    let mask_col = column_from_slice(&[1i32, 0, 1, 0, 1]).unwrap();
     let mask_view = mask_col.view().unwrap();
     let table_view = df.table_view().unwrap();
 
@@ -186,7 +186,7 @@ fn test_advanced_low_level_filter_rejects_non_bool_mask() {
 #[test]
 fn test_advanced_low_level_filter_rejects_wrong_length_mask() {
     let df = sample_df();
-    let mask_col = Column::from_slice(&[true, false]).unwrap();
+    let mask_col = column_from_slice(&[true, false]).unwrap();
     let mask_view = mask_col.view().unwrap();
     let table_view = df.table_view().unwrap();
 

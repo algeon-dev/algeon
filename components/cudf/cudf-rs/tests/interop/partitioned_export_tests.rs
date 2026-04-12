@@ -20,7 +20,7 @@ use cudf::{
     runtime::CudaStream,
 };
 
-use crate::common::{assert_duplicate_name_error, lock_event_observation};
+use crate::common::{assert_duplicate_name_error, column_from_slice, lock_event_observation};
 
 const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
 
@@ -99,10 +99,9 @@ fn wait_for_condition(timeout: Duration, mut predicate: impl FnMut() -> bool) {
 #[test]
 fn partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_appearance_order() {
     let _observation_lock = lock_event_observation();
-    let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7001).unwrap();
-    let middle = Column::from_slice(&[10i32, 20, 30]).unwrap().__debug_rebind_execution_domain_explicit(7002).unwrap();
-    let right =
-        Column::from_slice(&[100i32, 200, 300]).unwrap().__debug_rebind_execution_domain_explicit(7001).unwrap();
+    let left = column_from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7001).unwrap();
+    let middle = column_from_slice(&[10i32, 20, 30]).unwrap().__debug_rebind_execution_domain_explicit(7002).unwrap();
+    let right = column_from_slice(&[100i32, 200, 300]).unwrap().__debug_rebind_execution_domain_explicit(7001).unwrap();
 
     let producer = PartitionedDataFrameExport::new(
         vec!["left".into(), "middle".into(), "right".into()],
@@ -136,10 +135,9 @@ fn partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_a
 #[test]
 fn partitioned_dataframe_export_partition_wrapper_activates_directly() {
     let _observation_lock = lock_event_observation();
-    let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7003).unwrap();
-    let middle = Column::from_slice(&[10i32, 20, 30]).unwrap().__debug_rebind_execution_domain_explicit(7004).unwrap();
-    let right =
-        Column::from_slice(&[100i32, 200, 300]).unwrap().__debug_rebind_execution_domain_explicit(7003).unwrap();
+    let left = column_from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7003).unwrap();
+    let middle = column_from_slice(&[10i32, 20, 30]).unwrap().__debug_rebind_execution_domain_explicit(7004).unwrap();
+    let right = column_from_slice(&[100i32, 200, 300]).unwrap().__debug_rebind_execution_domain_explicit(7003).unwrap();
 
     let producer = PartitionedDataFrameExport::new(
         vec!["left".into(), "middle".into(), "right".into()],
@@ -182,6 +180,7 @@ fn partitioned_prepared_table_export_imports_one_local_table_per_partition_runti
     )
     .unwrap();
     let export = producer.try_prepare_device_partitioned_table_export().unwrap();
+    let _event_lock = lock_event_observation();
 
     let imported = Table::try_import_partitioned_local_tables_from_prepared_table_export_into_runtimes(
         &export,
@@ -259,8 +258,8 @@ fn partitioned_prepared_table_export_import_rejects_runtime_on_wrong_device_for_
 
 #[test]
 fn partitioned_dataframe_export_prepare_host_table_export_returns_one_host_visible_root() {
-    let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7101).unwrap();
-    let right = Column::from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(7102).unwrap();
+    let left = column_from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7101).unwrap();
+    let right = column_from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(7102).unwrap();
 
     let export = PartitionedDataFrameExport::new(vec!["left".into(), "right".into()], vec![left, right]).unwrap();
     let prepared = export.try_prepare_host_table_export().unwrap();
@@ -280,10 +279,9 @@ fn partitioned_dataframe_export_prepare_host_table_export_returns_one_host_visib
 
 #[test]
 fn partitioned_dataframe_export_owned_transfer_returns_one_partition_per_retained_provenance() {
-    let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7201).unwrap();
-    let middle = Column::from_slice(&[10i32, 20, 30]).unwrap().__debug_rebind_execution_domain_explicit(7202).unwrap();
-    let right =
-        Column::from_slice(&[100i32, 200, 300]).unwrap().__debug_rebind_execution_domain_explicit(7201).unwrap();
+    let left = column_from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7201).unwrap();
+    let middle = column_from_slice(&[10i32, 20, 30]).unwrap().__debug_rebind_execution_domain_explicit(7202).unwrap();
+    let right = column_from_slice(&[100i32, 200, 300]).unwrap().__debug_rebind_execution_domain_explicit(7201).unwrap();
 
     let transfer = PartitionedDataFrameExport::new(
         vec!["left".into(), "middle".into(), "right".into()],
@@ -425,10 +423,10 @@ fn partitioned_dataframe_export_runtime_release_accepts_per_partition_release_wi
         .unwrap();
 
     wait_for_condition(Duration::from_secs(2), || {
-        observed_raw_record_call_count_for_stream_raw(first_consumer_stream_raw) >= baseline_first_record + 1
+        observed_raw_record_call_count_for_stream_raw(first_consumer_stream_raw) > baseline_first_record
     });
     wait_for_condition(Duration::from_secs(2), || {
-        observed_raw_record_call_count_for_stream_raw(second_consumer_stream_raw) >= baseline_second_record + 1
+        observed_raw_record_call_count_for_stream_raw(second_consumer_stream_raw) > baseline_second_record
     });
     wait_for_condition(Duration::from_secs(2), || observed_event_synchronize_call_count() >= baseline_sync + 2);
 
@@ -459,7 +457,8 @@ fn partitioned_dataframe_export_runtime_release_import_and_release_remain_mutual
     let right_releaser = releaser_partitions.next().expect("missing right partition releaser");
     assert!(releaser_partitions.next().is_none());
 
-    let imported_left = Table::try_from_owned_device_table_transfer(left_transfer).unwrap();
+    let imported_left =
+        Table::try_import_from_owned_device_table_transfer_into_runtime(left_transfer, &left_runtime).unwrap();
     let imported_left_view = imported_left.view().unwrap();
     assert_eq!(imported_left_view.num_columns().unwrap(), 1);
     assert_eq!(imported_left_view.column(0).unwrap().device_data_ptr().unwrap(), left_expected_ptr);
@@ -471,26 +470,27 @@ fn partitioned_dataframe_export_runtime_release_import_and_release_remain_mutual
 
     let _sync_block = EventSynchronizeBlockGuard::new();
     right_releaser.release(RuntimeCompletionAuthority::same_device_stream(&consumer_stream)).unwrap();
-    let right_import_err = match Table::try_from_owned_device_table_transfer(right_transfer) {
-        Ok(_) => panic!("expected partition import to fail after release was accepted"),
-        Err(err) => err,
-    };
+    let right_import_err =
+        match Table::try_import_from_owned_device_table_transfer_into_runtime(right_transfer, &right_runtime) {
+            Ok(_) => panic!("expected partition import to fail after release was accepted"),
+            Err(err) => err,
+        };
     assert_eq!(right_import_err.kind(), InteropErrorKind::ProfileUnsupported);
 }
 
 #[test]
 fn ordinary_dataframe_rejects_mixed_provenance_but_partitioned_export_accepts_it() {
     // Ordinary DataFrame rejects mixed provenance at construction time.
-    let left = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7301).unwrap();
-    let right = Column::from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(7302).unwrap();
+    let left = column_from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7301).unwrap();
+    let right = column_from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(7302).unwrap();
     let frame = crate::common::dataframe_from_columns(vec!["left".into(), "right".into()], vec![left, right]);
     assert!(frame.is_err(), "DataFrame::new should reject mixed-provenance columns");
 
     // The same provenance layout succeeds through the partitioned export path,
     // which is designed to handle heterogeneous provenance by grouping columns
     // into per-provenance partitions.
-    let left2 = Column::from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7301).unwrap();
-    let right2 = Column::from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(7302).unwrap();
+    let left2 = column_from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(7301).unwrap();
+    let right2 = column_from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(7302).unwrap();
     let export = PartitionedDataFrameExport::new(vec!["left".into(), "right".into()], vec![left2, right2])
         .expect("PartitionedDataFrameExport should accept mixed-provenance columns");
 
@@ -503,7 +503,7 @@ fn partitioned_dataframe_export_rejects_duplicate_names_in_wide_schema() {
     let names: Vec<String> = (0..12).map(|idx| if idx == 11 { "c3".to_string() } else { format!("c{idx}") }).collect();
     let columns: Vec<Column> = (0..12)
         .map(|idx| {
-            Column::from_slice(&[idx, idx + 100])
+            column_from_slice(&[idx, idx + 100])
                 .unwrap()
                 .__debug_rebind_execution_domain_explicit(7400 + idx as u64)
                 .unwrap()

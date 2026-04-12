@@ -163,8 +163,8 @@ fn scalar_left_op<T: crate::core::types::CudfType>(series: &Series, lhs: T, op: 
 
     // Dispatch through the low-level sv primitive (preserves operand order).
     // The temporary scalar is created in the Series' execution domain so
-    // multi-GPU pipelines do not accidentally allocate it on the ambient
-    // device.
+    // multi-GPU pipelines do not accidentally allocate it on the calling
+    // thread's current device.
     let result_col = binary::binary_operation_sv(&scalar, &col_view, op, &out_type)
         .map(|c| c.with_execution_domain(Arc::clone(series.column.execution_domain())))?;
 

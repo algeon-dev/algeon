@@ -4,10 +4,12 @@
 
 use cudf::{
     ErrorKind,
-    core::{Column, Table},
+    core::Table,
     io::json::{self, JsonTableReadOptions, JsonTableWriteOptions},
 };
 use tempfile::TempDir;
+
+use crate::common::{column_from_slice, sample_runtime};
 
 // ===========================================================================
 // JSON Lines (NDJSON) round-trip
@@ -17,10 +19,11 @@ use tempfile::TempDir;
 fn test_json_lines_roundtrip_i32() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.jsonl");
+    let rt = sample_runtime();
 
     // Write
-    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let c2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
 
@@ -28,13 +31,15 @@ fn test_json_lines_roundtrip_i32() {
     json::write_json(&view, &write_opts).unwrap();
 
     // Read back through the shared low-level result envelope.
-    let read_opts = JsonTableReadOptions::builder().filepath(&path).build();
+    let read_opts = JsonTableReadOptions::builder().filepath(&path).with_runtime(&rt).build();
     let result = json::read_json_table(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
     assert_eq!(read_view.num_columns().unwrap(), 2);
     assert_eq!(read_view.num_rows().unwrap(), 3);
     assert_eq!(result.column_names, Some(vec!["ids".to_string(), "values".to_string()]));
+    assert_eq!(result.table.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(result.table.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
 
     let col0 = read_view.column(0).unwrap();
     assert_eq!(col0.to_vec::<i64>().unwrap(), vec![1, 2, 3]); // JSON integers default to i64
@@ -44,11 +49,12 @@ fn test_json_lines_roundtrip_i32() {
 fn test_json_lines_roundtrip_strings() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.jsonl");
+    let rt = sample_runtime();
 
     // Write a NDJSON file manually
     std::fs::write(&path, "{\"name\":\"alice\",\"age\":30}\n{\"name\":\"bob\",\"age\":25}\n").unwrap();
 
-    let read_opts = JsonTableReadOptions::builder().filepath(&path).build();
+    let read_opts = JsonTableReadOptions::builder().filepath(&path).with_runtime(&rt).build();
     let result = json::read_json_table(&read_opts).unwrap();
     let read_view = result.table.view().unwrap();
 
@@ -66,10 +72,11 @@ fn test_json_lines_roundtrip_strings() {
 fn test_json_lines_empty_file() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("empty.jsonl");
+    let rt = sample_runtime();
 
     std::fs::write(&path, "").unwrap();
 
-    let read_opts = JsonTableReadOptions::builder().filepath(&path).build();
+    let read_opts = JsonTableReadOptions::builder().filepath(&path).with_runtime(&rt).build();
     let result = json::read_json_table(&read_opts).unwrap();
 
     assert_eq!(result.table.view().unwrap().num_rows().unwrap(), 0);
@@ -84,7 +91,7 @@ fn test_json_lines_write_defaults_to_ndjson() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.jsonl");
 
-    let c1 = Column::from_slice(&[1i32]).unwrap();
+    let c1 = column_from_slice(&[1i32]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
@@ -101,7 +108,7 @@ fn test_json_write_rejects_column_name_with_nul_byte() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bad.jsonl");
 
-    let c1 = Column::from_slice(&[1i32]).unwrap();
+    let c1 = column_from_slice(&[1i32]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
@@ -117,7 +124,8 @@ fn test_json_write_rejects_column_name_with_nul_byte() {
 
 #[test]
 fn test_json_read_nonexistent_file() {
-    let read_opts = JsonTableReadOptions::builder().filepath("/nonexistent/file.jsonl").build();
+    let rt = sample_runtime();
+    let read_opts = JsonTableReadOptions::builder().filepath("/nonexistent/file.jsonl").with_runtime(&rt).build();
     let err = match json::read_json_table(&read_opts) {
         Ok(_) => panic!("missing JSON file should fail"),
         Err(err) => err,

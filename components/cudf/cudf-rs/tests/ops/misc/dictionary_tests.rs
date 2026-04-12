@@ -1,9 +1,10 @@
 //! Tests for dictionary encode/decode.
 
-use cudf::{ErrorKind, TypeId, core::Column, ops::dictionary};
+use cudf::{ErrorKind, TypeId, ops::dictionary};
 
 use crate::common::{
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    column_from_slice, column_from_slice_nullable, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation,
 };
 
 fn dictionary_indices_to_i64(dict_view: &cudf::core::ColumnView<'_>) -> Vec<i64> {
@@ -20,7 +21,7 @@ fn dictionary_indices_to_i64(dict_view: &cudf::core::ColumnView<'_>) -> Vec<i64>
 #[test]
 fn test_dictionary_encode_i32() {
     let data = vec![429i32, 111, 213, 111, 213, 429, 213];
-    let col = Column::from_slice(&data).unwrap();
+    let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
 
     let dict = dictionary::encode(&view, TypeId::Int32).unwrap();
@@ -58,7 +59,7 @@ fn test_dictionary_encode_i32() {
 #[test]
 fn test_dictionary_decode_roundtrip() {
     let data = vec![429i32, 111, 213, 111, 213, 429, 213];
-    let col = Column::from_slice(&data).unwrap();
+    let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
 
     // Encode then decode.
@@ -76,7 +77,7 @@ fn test_dictionary_decode_roundtrip() {
 #[test]
 fn test_dictionary_encode_f64() {
     let data = vec![3.25f64, 2.75, 3.25, 1.5, 2.75];
-    let col = Column::from_slice(&data).unwrap();
+    let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
 
     let dict = dictionary::encode(&view, TypeId::Int32).unwrap();
@@ -110,7 +111,7 @@ fn test_dictionary_encode_f64() {
 
 #[test]
 fn test_dictionary_encode_empty() {
-    let col = Column::from_slice::<i32>(&[]).unwrap();
+    let col = column_from_slice::<i32>(&[]).unwrap();
     let view = col.view().unwrap();
 
     let dict = dictionary::encode(&view, TypeId::Int32).unwrap();
@@ -123,7 +124,7 @@ fn test_dictionary_indices_device_ptr() {
     // Verify that the indices column's device pointer is non-null,
     // enabling zero-copy handoff to cugraph.
     let data = vec![10i32, 20, 10, 30, 20];
-    let col = Column::from_slice(&data).unwrap();
+    let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
 
     let dict = dictionary::encode(&view, TypeId::Int32).unwrap();
@@ -137,13 +138,13 @@ fn test_dictionary_indices_device_ptr() {
 #[test]
 fn test_dictionary_set_keys_reindexes_and_drops_missing() {
     let data = vec![3i32, 1, 3, 2];
-    let col = Column::from_slice(&data).unwrap();
+    let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
     let dict = dictionary::encode(&view, TypeId::Int32).unwrap();
     let dict_view = dict.view().unwrap();
 
     // Key `1` is removed; key `4` is new.
-    let new_keys = Column::from_slice(&[2i32, 3, 4]).unwrap();
+    let new_keys = column_from_slice(&[2i32, 3, 4]).unwrap();
     let new_keys_view = new_keys.view().unwrap();
 
     let updated = dictionary::set_keys(&dict_view, &new_keys_view).unwrap();
@@ -165,13 +166,13 @@ fn test_dictionary_set_keys_reindexes_and_drops_missing() {
 #[test]
 fn test_dictionary_set_keys_adds_new_keys_without_changing_values() {
     let data = vec![1i32, 2, 1, 2];
-    let col = Column::from_slice(&data).unwrap();
+    let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
     let dict = dictionary::encode(&view, TypeId::Int32).unwrap();
     let dict_view = dict.view().unwrap();
 
     // Add a new key not present in data.
-    let new_keys = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let new_keys = column_from_slice(&[1i32, 2, 3]).unwrap();
     let new_keys_view = new_keys.view().unwrap();
 
     let updated = dictionary::set_keys(&dict_view, &new_keys_view).unwrap();
@@ -186,13 +187,13 @@ fn test_dictionary_set_keys_adds_new_keys_without_changing_values() {
 
 #[test]
 fn test_dictionary_set_keys_type_mismatch_errors() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.view().unwrap();
     let dict = dictionary::encode(&view, TypeId::Int32).unwrap();
     let dict_view = dict.view().unwrap();
 
     // i64 keys do not match dictionary key type i32.
-    let mismatched_keys = Column::from_slice(&[1i64, 2, 3]).unwrap();
+    let mismatched_keys = column_from_slice(&[1i64, 2, 3]).unwrap();
     let mismatched_keys_view = mismatched_keys.view().unwrap();
 
     let err = match dictionary::set_keys(&dict_view, &mismatched_keys_view) {
@@ -204,12 +205,12 @@ fn test_dictionary_set_keys_type_mismatch_errors() {
 
 #[test]
 fn test_dictionary_set_keys_rejects_null_keys() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.view().unwrap();
     let dict = dictionary::encode(&view, TypeId::Int32).unwrap();
     let dict_view = dict.view().unwrap();
 
-    let keys_with_null = Column::from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
+    let keys_with_null = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let keys_with_null_view = keys_with_null.view().unwrap();
 
     let err = match dictionary::set_keys(&dict_view, &keys_with_null_view) {
@@ -223,8 +224,8 @@ fn test_dictionary_set_keys_rejects_null_keys() {
 fn test_match_dictionaries_shared_key_space() {
     // src has keys {10, 20, 30}, dst has keys {20, 30, 40}.
     // After matching, both should share {10, 20, 30, 40} (4 unique keys).
-    let src = Column::from_slice(&[10i32, 20, 30, 10]).unwrap();
-    let dst = Column::from_slice(&[20i32, 30, 40, 20]).unwrap();
+    let src = column_from_slice(&[10i32, 20, 30, 10]).unwrap();
+    let dst = column_from_slice(&[20i32, 30, 40, 20]).unwrap();
 
     let src_dict = dictionary::encode(&src.view().unwrap(), TypeId::Int32).unwrap();
     let dst_dict = dictionary::encode(&dst.view().unwrap(), TypeId::Int32).unwrap();
@@ -270,8 +271,8 @@ fn test_match_dictionaries_shared_key_space() {
 #[test]
 fn test_match_dictionaries_no_overlap() {
     // Completely disjoint key sets.
-    let a = Column::from_slice(&[1i32, 2]).unwrap();
-    let b = Column::from_slice(&[3i32, 4]).unwrap();
+    let a = column_from_slice(&[1i32, 2]).unwrap();
+    let b = column_from_slice(&[3i32, 4]).unwrap();
 
     let a_dict = dictionary::encode(&a.view().unwrap(), TypeId::Int32).unwrap();
     let b_dict = dictionary::encode(&b.view().unwrap(), TypeId::Int32).unwrap();
@@ -295,11 +296,11 @@ fn test_match_dictionaries_no_overlap() {
 
 #[test]
 fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_syncs_secondary_input_before_authoritative_exec() {
-    let dict = dictionary::encode(&Column::from_slice(&[3i32, 1, 3, 2]).unwrap().view().unwrap(), TypeId::Int32)
+    let dict = dictionary::encode(&column_from_slice(&[3i32, 1, 3, 2]).unwrap().view().unwrap(), TypeId::Int32)
         .unwrap()
         .__debug_rebind_execution_domain_explicit(601)
         .unwrap();
-    let keys = Column::from_slice(&[2i32, 3, 4]).unwrap().__debug_rebind_execution_domain_explicit(602).unwrap();
+    let keys = column_from_slice(&[2i32, 3, 4]).unwrap().__debug_rebind_execution_domain_explicit(602).unwrap();
     let expected_exec_stream = dict.__debug_execution_domain_stream_value();
     let expected_exec_mr = dict.__debug_execution_domain_mr_value();
     let expected_presync_stream = keys.__debug_execution_domain_stream_value();
@@ -322,11 +323,11 @@ fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_syncs_secondary_inpu
 
 #[test]
 fn test_match_dictionaries_succeeds_with_mixed_domains_and_syncs_secondary_inputs_before_first_input_exec() {
-    let first = dictionary::encode(&Column::from_slice(&[10i32, 20, 30]).unwrap().view().unwrap(), TypeId::Int32)
+    let first = dictionary::encode(&column_from_slice(&[10i32, 20, 30]).unwrap().view().unwrap(), TypeId::Int32)
         .unwrap()
         .__debug_rebind_execution_domain_explicit(603)
         .unwrap();
-    let second = dictionary::encode(&Column::from_slice(&[20i32, 30, 40]).unwrap().view().unwrap(), TypeId::Int32)
+    let second = dictionary::encode(&column_from_slice(&[20i32, 30, 40]).unwrap().view().unwrap(), TypeId::Int32)
         .unwrap()
         .__debug_rebind_execution_domain_explicit(604)
         .unwrap();

@@ -302,7 +302,8 @@ mod private {
 
 /// Trait for Rust types that map to a cudf `TypeId`.
 ///
-/// This enables generic column construction: `Column::from_slice::<i32>(&data)`.
+/// This enables generic runtime-backed column construction:
+/// `runtime.column_from_slice::<i32>(&data)`.
 pub trait CudfType: private::Sealed + Copy + 'static {
     /// The corresponding cudf type identifier.
     const TYPE_ID: TypeId;

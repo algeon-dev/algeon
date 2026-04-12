@@ -3,10 +3,11 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{core::Column, ops::concatenate};
+//! use cudf::{Runtime, ops::concatenate};
 //!
-//! let a = Column::from_slice(&[1i32, 2]).unwrap();
-//! let b = Column::from_slice(&[3i32, 4, 5]).unwrap();
+//! let rt = Runtime::new().unwrap();
+//! let a = rt.column_from_slice(&[1i32, 2]).unwrap();
+//! let b = rt.column_from_slice(&[3i32, 4, 5]).unwrap();
 //!
 //! let combined = concatenate::concatenate_columns(&[
 //!     &a.view().unwrap(),
@@ -35,9 +36,14 @@ fn checked_len_to_i32(len: usize, operation: &'static str, field: &'static str) 
     })
 }
 
+fn concatenate_requires_input_error(operation: &'static str, input_kind: &'static str) -> Error {
+    Error::new(ErrorKind::InvalidOperation, format!("{operation} requires at least one input {input_kind}"))
+        .with_operation(operation)
+}
+
 fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Arc<ExecutionDomain>> {
     let Some(first) = columns.first() else {
-        return Ok(ExecutionDomain::ambient_default());
+        return Err(concatenate_requires_input_error("concatenate::concatenate_columns", "column"));
     };
     let output_domain = std::sync::Arc::clone(first.execution_domain());
     // Fence any input from a different execution domain so its GPU work
@@ -57,7 +63,7 @@ fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Ar
 
 fn compatible_table_domain(tables: &[&TableView<'_>]) -> Result<std::sync::Arc<ExecutionDomain>> {
     let Some(first) = tables.first() else {
-        return Ok(ExecutionDomain::ambient_default());
+        return Err(concatenate_requires_input_error("concatenate::concatenate_tables", "table"));
     };
     let output_domain = std::sync::Arc::clone(first.execution_domain());
     // Fence any input from a different execution domain so its GPU work
@@ -81,12 +87,12 @@ fn compatible_table_domain(tables: &[&TableView<'_>]) -> Result<std::sync::Arc<E
 pub fn concatenate_columns(columns: &[&ColumnView<'_>]) -> Result<Column> {
     let output_domain = compatible_column_domain(columns)?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    concatenate_columns_with_exec(columns, exec_options.as_ref())
-        .map(|column| column.with_execution_domain(output_domain))
+    concatenate_columns_with_exec(columns, &output_domain, exec_options.as_ref())
 }
 
 pub(crate) fn concatenate_columns_with_exec(
     columns: &[&ColumnView<'_>],
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<Column> {
     let handles: Vec<*mut std::os::raw::c_void> = columns.iter().map(|c| c.raw_handle()).collect();
@@ -105,7 +111,7 @@ pub(crate) fn concatenate_columns_with_exec(
         [("num_columns", handles.len().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw(out) })
+    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
 }
 
 /// Concatenate multiple tables into a single table.
@@ -114,11 +120,12 @@ pub(crate) fn concatenate_columns_with_exec(
 pub fn concatenate_tables(tables: &[&TableView<'_>]) -> Result<Table> {
     let output_domain = compatible_table_domain(tables)?;
     let exec_options = output_domain.explicit_exec_options_raw();
-    concatenate_tables_with_exec(tables, exec_options.as_ref()).map(|table| table.with_execution_domain(output_domain))
+    concatenate_tables_with_exec(tables, &output_domain, exec_options.as_ref())
 }
 
 pub(crate) fn concatenate_tables_with_exec(
     tables: &[&TableView<'_>],
+    output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<Table> {
     let handles: Vec<*mut std::os::raw::c_void> = tables.iter().map(|t| t.raw_handle()).collect();
@@ -137,5 +144,5 @@ pub(crate) fn concatenate_tables_with_exec(
         [("num_tables", handles.len().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Table::from_raw(out) })
+    Ok(unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
 }

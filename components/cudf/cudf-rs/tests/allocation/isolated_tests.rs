@@ -5,20 +5,20 @@ mod dataframe_merge_allocation_tests;
 #[path = "../ops/sorting/dataframe_sort_values_allocation_tests.rs"]
 mod dataframe_sort_values_allocation_tests;
 
-use cudf::{core::Column, interop::prepared::ProducerReadiness};
+use cudf::interop::prepared::ProducerReadiness;
 
-use crate::allocation::allocation_count_delta;
+use crate::{allocation::allocation_count_delta, common::column_from_slice};
 
 #[test]
 fn dataframe_prepare_host_export_does_not_allocate_extra_device_memory_when_columns_are_shared() {
     let baseline = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "value".to_string()],
-        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i64, 20, 30]).unwrap()],
+        vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i64, 20, 30]).unwrap()],
     )
     .unwrap();
     let original = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "value".to_string()],
-        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i64, 20, 30]).unwrap()],
+        vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i64, 20, 30]).unwrap()],
     )
     .unwrap();
     let shared = original.clone();

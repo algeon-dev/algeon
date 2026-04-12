@@ -52,5 +52,5 @@ pub(crate) fn dataframe_from_table_and_names(table: Table, names: Vec<String>) -
         "internal::reassemble::dataframe_from_table_and_names",
     )?;
 
-    Ok(DataFrame::from_raw_parts(map, row_count as usize, domain))
+    Ok(DataFrame::from_raw_parts(map, row_count, domain))
 }

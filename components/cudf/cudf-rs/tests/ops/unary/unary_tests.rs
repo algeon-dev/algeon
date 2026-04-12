@@ -2,13 +2,14 @@
 
 use cudf::{
     DataType, TypeId,
-    core::Column,
     ops::unary::{self, UnaryOperator},
 };
 
+use crate::common::{column_from_slice, column_from_slice_nullable};
+
 #[test]
 fn test_sqrt() {
-    let col = Column::from_slice(&[4.0f64, 9.0, 16.0]).unwrap();
+    let col = column_from_slice(&[4.0f64, 9.0, 16.0]).unwrap();
     let view = col.view().unwrap();
 
     let result = unary::unary_operation(&view, UnaryOperator::Sqrt).unwrap();
@@ -19,7 +20,7 @@ fn test_sqrt() {
 
 #[test]
 fn test_abs() {
-    let col = Column::from_slice(&[-3i32, 0, 5]).unwrap();
+    let col = column_from_slice(&[-3i32, 0, 5]).unwrap();
     let view = col.view().unwrap();
 
     let result = unary::unary_operation(&view, UnaryOperator::Abs).unwrap();
@@ -30,7 +31,7 @@ fn test_abs() {
 
 #[test]
 fn test_negate() {
-    let col = Column::from_slice(&[1i32, -2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, -2, 3]).unwrap();
     let view = col.view().unwrap();
 
     let result = unary::unary_operation(&view, UnaryOperator::Negate).unwrap();
@@ -41,7 +42,7 @@ fn test_negate() {
 
 #[test]
 fn test_is_null() {
-    let col = Column::from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
+    let col = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let view = col.view().unwrap();
 
     let result = unary::is_null(&view).unwrap();
@@ -52,7 +53,7 @@ fn test_is_null() {
 
 #[test]
 fn test_is_valid() {
-    let col = Column::from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
+    let col = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let view = col.view().unwrap();
 
     let result = unary::is_valid(&view).unwrap();
@@ -63,7 +64,7 @@ fn test_is_valid() {
 
 #[test]
 fn test_cast() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.view().unwrap();
 
     let target = DataType::new(TypeId::Float64);
@@ -83,7 +84,7 @@ fn test_is_supported_cast() {
 
 #[test]
 fn test_is_nan() {
-    let col = Column::from_slice(&[1.0f64, f64::NAN, 3.0]).unwrap();
+    let col = column_from_slice(&[1.0f64, f64::NAN, 3.0]).unwrap();
     let view = col.view().unwrap();
 
     let result = unary::is_nan(&view).unwrap();
@@ -94,7 +95,7 @@ fn test_is_nan() {
 
 #[test]
 fn test_is_not_nan() {
-    let col = Column::from_slice(&[1.0f64, f64::NAN, 3.0]).unwrap();
+    let col = column_from_slice(&[1.0f64, f64::NAN, 3.0]).unwrap();
     let view = col.view().unwrap();
 
     let result = unary::is_not_nan(&view).unwrap();
@@ -105,11 +106,11 @@ fn test_is_not_nan() {
 
 #[test]
 fn test_cast_error_contains_operation_context() {
-    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.view().unwrap();
 
     let unsupported = DataType::new(TypeId::Struct);
-    let err = unary::cast(&view, &unsupported).err().expect("expected error");
+    let err = unary::cast(&view, &unsupported).expect_err("expected error");
 
     assert_eq!(err.operation(), "unary::cast");
     assert!(err.context().iter().any(|(k, _)| *k == "output_type_id"));
@@ -117,7 +118,7 @@ fn test_cast_error_contains_operation_context() {
 
 #[test]
 fn test_trig_sin() {
-    let col = Column::from_slice(&[0.0f64]).unwrap();
+    let col = column_from_slice(&[0.0f64]).unwrap();
     let view = col.view().unwrap();
 
     let result = unary::unary_operation(&view, UnaryOperator::Sin).unwrap();
@@ -130,7 +131,7 @@ fn test_trig_sin() {
 
 #[test]
 fn test_logical_not_basic() {
-    let col = Column::from_slice(&[true, false, true]).unwrap();
+    let col = column_from_slice(&[true, false, true]).unwrap();
     let view = col.view().unwrap();
 
     let result = unary::logical_not(&view).unwrap();
@@ -141,7 +142,7 @@ fn test_logical_not_basic() {
 
 #[test]
 fn test_logical_not_with_nulls() {
-    let col = Column::from_slice_nullable(&[true, false, true], &[true, true, false]).unwrap();
+    let col = column_from_slice_nullable(&[true, false, true], &[true, true, false]).unwrap();
     let view = col.view().unwrap();
 
     let result = unary::logical_not(&view).unwrap();
@@ -158,7 +159,7 @@ fn test_logical_not_with_nulls() {
 
 #[test]
 fn test_logical_not_empty() {
-    let col = Column::from_slice::<bool>(&[]).unwrap();
+    let col = column_from_slice::<bool>(&[]).unwrap();
     let view = col.view().unwrap();
 
     let result = unary::logical_not(&view).unwrap();
