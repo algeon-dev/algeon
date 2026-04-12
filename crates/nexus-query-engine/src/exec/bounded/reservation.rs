@@ -235,6 +235,29 @@ impl ActiveReservation {
         }
     }
 
+    pub(in crate::exec) fn borrowed_resident(
+        memory_space: MemorySpaceId,
+        reserved_bytes: Rc<Cell<u64>>,
+        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+        bytes: u64,
+        request: &MemoryReservationRequest,
+    ) -> Self {
+        Self {
+            memory_space,
+            reserved_bytes,
+            live_accounting: None,
+            protected_source_cache_keys,
+            source_cache_key: None,
+            event_context: ActiveReservationEventContext::from_request(request),
+            semantics: ActiveReservationSemantics::Alias,
+            lineage: None,
+            release_action: MemoryReservationEventAction::AliasRelease,
+            bytes,
+            charged_bytes: 0,
+            released: false,
+        }
+    }
+
     fn alias(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
@@ -844,6 +867,29 @@ impl ReservationTracker {
         )
     }
 
+    pub(in crate::exec) fn borrow_resident(
+        &self,
+        request: MemoryReservationRequest,
+        metrics: &mut QueryMetrics,
+    ) -> ActiveReservation {
+        let request = self.stamp_request(request, metrics);
+        metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
+            &request,
+            MemoryReservationEventOutcome::Applied,
+            MemoryReservationEventAction::AliasAcquire,
+            0,
+            0,
+            self.raw_reserved_bytes(),
+        ));
+        ActiveReservation::borrowed_resident(
+            self.memory_space,
+            Rc::clone(&self.reserved_bytes),
+            Rc::clone(&self.protected_source_cache_keys),
+            request.requested_bytes,
+            &request,
+        )
+    }
+
     pub(in crate::exec) fn release(&mut self, mut reservation: ActiveReservation, metrics: &mut QueryMetrics) {
         self.assert_reservation_belongs_to_tracker(&reservation, "release");
         if let Some(event) = reservation.release() {
@@ -1400,6 +1446,42 @@ mod tests {
         assert_eq!(grant.live_reserved_bytes(), 50);
 
         first_tracker.release(first_live, &mut metrics);
+        assert_eq!(grant.live_reserved_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_reservation_tracker_borrowed_resident_does_not_double_charge_grant_live_bytes() -> Result<()> {
+        let governor = MemoryGovernor::new(0, 100)?;
+        let grant = governor.try_request(GrantRequest::new(7, 30, 70))?.expect("initial grant should fit");
+        let retained_input = grant.retain_live_reservation(50).expect("input handle should retain live bytes");
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::AdaptiveGrant(grant.clone()),
+        );
+
+        let borrowed = reservations.borrow_resident(
+            test_request(ReservationKind::SourceRead, "gpu_resident_source", 50, reservations.budget()),
+            &mut metrics,
+        );
+
+        assert_eq!(reservations.raw_reserved_bytes(), 0);
+        assert_eq!(borrowed.bytes(), 50);
+        assert_eq!(borrowed.charged_bytes(), 0);
+        assert_eq!(grant.live_reserved_bytes(), 50);
+
+        let work = reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "consumer_work", 20, reservations.budget()),
+            &mut metrics,
+        )?;
+        assert_eq!(grant.live_reserved_bytes(), 70);
+
+        reservations.release(borrowed, &mut metrics);
+        assert_eq!(grant.live_reserved_bytes(), 70);
+        reservations.release(work, &mut metrics);
+        assert_eq!(grant.live_reserved_bytes(), 50);
+        drop(retained_input);
         assert_eq!(grant.live_reserved_bytes(), 0);
         Ok(())
     }

@@ -338,6 +338,7 @@ pub(super) struct MockExecutor {
     pub(super) task_admission_required_bytes: Vec<(PipelineTaskId, u64)>,
     pub(super) remaining_bytes_after_tasks: Vec<(PipelineTaskId, u64)>,
     pub(super) cooperative_shrink_cycles_remaining: usize,
+    pub(super) cooperative_shrink_release_resources: Vec<ResidentResourceId>,
 }
 
 impl MockExecutor {
@@ -361,6 +362,7 @@ impl MockExecutor {
             task_admission_required_bytes: Vec::new(),
             remaining_bytes_after_tasks: Vec::new(),
             cooperative_shrink_cycles_remaining: 0,
+            cooperative_shrink_release_resources: Vec::new(),
         }
     }
 
@@ -416,6 +418,11 @@ impl MockExecutor {
 
     pub(super) fn with_cooperative_shrink_applied_cycles(mut self, cycles: usize) -> Self {
         self.cooperative_shrink_cycles_remaining = cycles;
+        self
+    }
+
+    pub(super) fn with_cooperative_shrink_after_release_for(mut self, resource: ResidentResourceId) -> Self {
+        self.cooperative_shrink_release_resources.push(resource);
         self
     }
 
@@ -496,6 +503,9 @@ impl CompiledTaskExecutor for MockExecutor {
                 "mock compiled release failure",
             )
             .with_fact("resident_resource_id", resource));
+        }
+        if self.cooperative_shrink_release_resources.contains(&resource) {
+            self.cooperative_shrink_cycles_remaining = self.cooperative_shrink_cycles_remaining.saturating_add(1);
         }
         Ok(())
     }

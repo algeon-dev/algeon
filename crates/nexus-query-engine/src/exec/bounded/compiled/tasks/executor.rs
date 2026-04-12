@@ -26,6 +26,7 @@ pub struct CompiledGpuTaskExecutor<'a> {
     join_builds: BTreeMap<NodeId, BoundedCompiledJoinBuildState>,
     join_probes: BTreeMap<NodeId, BoundedCompiledJoinProbeState>,
     host_output: Option<RecordBatch>,
+    cooperative_shrink_applied_since_last_cycle: bool,
 }
 
 impl<'a> CompiledGpuTaskExecutor<'a> {
@@ -54,6 +55,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             join_builds: BTreeMap::new(),
             join_probes: BTreeMap::new(),
             host_output: None,
+            cooperative_shrink_applied_since_last_cycle: false,
         })
     }
 
@@ -63,6 +65,15 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
 
     pub fn remaining_bytes(&self) -> u64 {
         self.reservations.remaining_bytes()
+    }
+
+    fn acknowledge_requested_grant_shrink(&mut self) -> Result<bool> {
+        let budget_before = self.reservations.budget();
+        let request_satisfied = self.reservations.acknowledge_requested_grant_shrink()?;
+        if self.reservations.budget() < budget_before {
+            self.cooperative_shrink_applied_since_last_cycle = true;
+        }
+        Ok(request_satisfied)
     }
 
     fn select_join_build_strategy(
@@ -172,7 +183,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             },
         };
         self.reservations.release(reservation, self.metrics);
-        self.reservations.acknowledge_requested_grant_shrink()?;
+        self.acknowledge_requested_grant_shrink()?;
         Ok(handle)
     }
 
@@ -1162,7 +1173,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             self.reservations.release(input_reservation, self.metrics);
             match result {
                 Ok(output) => {
-                    if let Err(error) = self.reservations.acknowledge_requested_grant_shrink() {
+                    if let Err(error) = self.acknowledge_requested_grant_shrink() {
                         let ResidentGpuFrame { frame, reservation } = output;
                         drop(frame);
                         self.reservations.release(reservation, self.metrics);
@@ -1941,7 +1952,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
                 self.reservations.clear_diagnostic_context();
             },
         }
-        self.reservations.acknowledge_requested_grant_shrink()?;
+        self.acknowledge_requested_grant_shrink()?;
         Ok(())
     }
 
@@ -1952,14 +1963,14 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         while let Some((_, build)) = self.join_builds.pop_first() {
             release_bounded_compiled_join_build_state(build, &mut self.reservations, self.metrics);
         }
-        self.reservations.acknowledge_requested_grant_shrink()?;
+        self.acknowledge_requested_grant_shrink()?;
         Ok(())
     }
 
     fn before_scheduling_cycle(&mut self) -> Result<CompiledSchedulingCycle> {
-        let budget_before = self.reservations.budget();
-        self.reservations.acknowledge_requested_grant_shrink()?;
-        if self.reservations.budget() < budget_before {
+        self.acknowledge_requested_grant_shrink()?;
+        if self.cooperative_shrink_applied_since_last_cycle {
+            self.cooperative_shrink_applied_since_last_cycle = false;
             Ok(CompiledSchedulingCycle::after_cooperative_shrink_applied())
         } else {
             Ok(CompiledSchedulingCycle::default())

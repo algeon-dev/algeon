@@ -56,8 +56,8 @@ use crate::{
     error::{Error, ErrorCode},
     native_exec::{
         GpuResidentProducerExec, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
-        NativeCudfGpuProducerExec, NativeCudfMetrics, gpu_resident_producer as native_gpu_resident_producer,
-        query_admission_ticket_from_task_context,
+        NativeCudfGpuProducerExec, NativeCudfMetrics, admission::task_context_with_query_admission_ticket,
+        gpu_resident_producer as native_gpu_resident_producer, query_admission_ticket_from_task_context,
     },
 };
 
@@ -413,6 +413,7 @@ impl ExecutionPlan for CugraphAlgoExec {
                 &default_execution_config,
                 &task_context,
             );
+            let task_context = task_context_with_cugraph_execution_ticket(&execution_config, task_context);
             let context_lease =
                 execution_config.execution_context_async(Arc::clone(&task_context)).await.map_err(|error| {
                     DataFusionError::from(
@@ -546,6 +547,17 @@ fn cugraph_execution_config_for_task_context(
     }
 }
 
+fn task_context_with_cugraph_execution_ticket(
+    execution_config: &NativeCudfExecutionConfig,
+    task_context: Arc<TaskContext>,
+) -> Arc<TaskContext> {
+    if let Some(ticket) = execution_config.query_admission_ticket() {
+        task_context_with_query_admission_ticket(task_context, ticket)
+    } else {
+        task_context
+    }
+}
+
 fn validate_standalone_bounded_cugraph_sources(
     config: &NativeCudfExecutionConfig,
     edge_source: &dyn ExecutionPlan,
@@ -658,7 +670,7 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::datatypes::Schema;
-    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::{execution::context::TaskContext, physical_plan::empty::EmptyExec};
     use nexus_query_engine::{
         DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, LiteralBatchSource, NvidiaFsProbeStatus,
         QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
@@ -754,6 +766,23 @@ mod tests {
             cugraph_execution_config_for_task_context(&plan, &local_config, &task_context).query_admission_ticket_id(),
             ambient_config.query_admission_ticket_id()
         );
+    }
+
+    #[test]
+    fn cugraph_execution_context_stamps_resolved_ticket_before_acquire() {
+        let source = admission_only_source();
+        let execution_config =
+            NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let execution_config = execution_config.with_plan_query_admission_ticket();
+        let raw_context = Arc::new(TaskContext::default());
+
+        assert!(query_admission_ticket_from_task_context(&raw_context).is_none());
+
+        let stamped_context = task_context_with_cugraph_execution_ticket(&execution_config, Arc::clone(&raw_context));
+        let stamped_ticket = query_admission_ticket_from_task_context(&stamped_context)
+            .expect("cuGraph execution should stamp its resolved ticket onto the TaskContext");
+
+        assert_eq!(Some(stamped_ticket.id()), execution_config.query_admission_ticket_id());
     }
 
     #[test]

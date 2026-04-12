@@ -173,17 +173,18 @@ fn bounded_bfs_counts_gpu_tables_without_graph_memory_reservation() {
             .iter()
             .any(|event| event.operation == "datafusion_nexus_cugraph_bfs")
     );
-    let source_reserve = result
+    let source_borrow = result
         .metrics()
         .reservation_events
         .iter()
         .find(|event| {
             event.memory_boundary == "bounded_generic_gpu_resident_source"
                 && event.reservation_kind == ReservationKind::SourceRead
-                && event.action == MemoryReservationEventAction::Reserve
+                && event.action == MemoryReservationEventAction::AliasAcquire
         })
-        .expect("bounded BFS should account the GPU-resident edge table");
-    assert!(source_reserve.requested_bytes > 0);
+        .expect("bounded BFS should account the borrowed GPU-resident edge table");
+    assert!(source_borrow.requested_bytes > 0);
+    assert_eq!(source_borrow.charged_delta_bytes, 0);
     let output_reserve = result
         .metrics()
         .reservation_events
@@ -196,9 +197,8 @@ fn bounded_bfs_counts_gpu_tables_without_graph_memory_reservation() {
         .expect("bounded BFS should account the GPU-resident output table");
     assert!(output_reserve.requested_bytes > 0);
     assert!(
-        output_reserve.current_reserved_bytes
-            >= source_reserve.requested_bytes.saturating_add(output_reserve.requested_bytes),
-        "BFS output reservation should be charged while input table reservation is still live"
+        output_reserve.current_reserved_bytes >= output_reserve.requested_bytes,
+        "BFS output reservation should be charged without double-charging the borrowed input table"
     );
     assert!(result.metrics().reservation_events.iter().any(|event| {
         event.memory_boundary == "bounded_generic_graph_algorithm_output"
@@ -295,13 +295,19 @@ fn bounded_bfs_counts_side_input_tables_without_graph_memory_reservation() {
         .filter(|event| {
             event.memory_boundary == "bounded_generic_gpu_resident_source"
                 && event.reservation_kind == ReservationKind::SourceRead
-                && event.action == MemoryReservationEventAction::Reserve
+                && event.action == MemoryReservationEventAction::AliasAcquire
         })
-        .map(|event| event.requested_bytes)
+        .map(|event| {
+            assert_eq!(event.charged_delta_bytes, 0);
+            event.requested_bytes
+        })
         .collect::<Vec<_>>();
-    assert_eq!(source_read_bytes.len(), 2, "BFS edge and source-vertices inputs should both be accounted");
+    assert_eq!(
+        source_read_bytes.len(),
+        2,
+        "BFS edge and source-vertices inputs should both be accounted as borrowed resident inputs"
+    );
     assert!(source_read_bytes.iter().all(|bytes| *bytes > 0));
-    let source_read_bytes: u64 = source_read_bytes.iter().copied().sum();
     let output_reserve = result
         .metrics()
         .reservation_events
@@ -313,8 +319,8 @@ fn bounded_bfs_counts_side_input_tables_without_graph_memory_reservation() {
         })
         .expect("bounded BFS should account the GPU-resident output table");
     assert!(
-        output_reserve.current_reserved_bytes >= source_read_bytes.saturating_add(output_reserve.requested_bytes),
-        "BFS output reservation should be charged while edge and side-input tables are still live"
+        output_reserve.current_reserved_bytes >= output_reserve.requested_bytes,
+        "BFS output reservation should be charged without double-charging borrowed edge and side-input tables"
     );
     assert!(result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("source_vertices_rows=2"));
 }

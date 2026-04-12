@@ -695,12 +695,13 @@ impl QueryHandleLifetime {
             Ok(mut state) => {
                 state.active_queries = state.active_queries.saturating_sub(1);
                 state.active_adaptive_grants.remove(&self.query_id);
-                self.service.notify_admission_available();
             },
             Err(_error) => {
                 eprintln!("[nexus-query-engine] warning: failed to release poisoned query service admission state");
             },
         }
+        self.shrink_memory_grant_to_live_floor();
+        self.service.notify_admission_available();
         match self.root_context.lock() {
             Ok(mut context) => {
                 context.take();
@@ -716,6 +717,26 @@ impl QueryHandleLifetime {
             Err(_error) => {
                 eprintln!("[nexus-query-engine] warning: failed to drop poisoned query service memory grant");
             },
+        }
+    }
+
+    fn shrink_memory_grant_to_live_floor(&self) {
+        let grant = match self.memory_grant.lock() {
+            Ok(memory_grant) => memory_grant.as_ref().cloned(),
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to inspect poisoned query service memory grant");
+                None
+            },
+        };
+        let Some(grant) = grant else {
+            return;
+        };
+        let live_reserved_bytes = grant.live_reserved_bytes();
+        if live_reserved_bytes == 0 {
+            return;
+        }
+        if let Err(error) = grant.try_shrink_to(live_reserved_bytes) {
+            eprintln!("[nexus-query-engine] warning: failed to shrink query service memory grant on release: {error}");
         }
     }
 
@@ -3200,6 +3221,31 @@ mod tests {
         assert_eq!(first_grant.budget_bytes(), 60);
         assert_eq!(admitted.device_budget_bytes(), 40);
         assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    }
+
+    #[test]
+    fn query_service_release_shrinks_retained_grant_to_live_bytes() {
+        let service = optimistic_shrink_test_service(NativePipelineExecutionMode::Adaptive);
+        let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+        let first_grant = first.lifetime.memory_grant().unwrap();
+        let _retained = first_grant.retain_live_reservation(40).expect("retention should be tracked");
+
+        assert_eq!(first_grant.budget_bytes(), 100);
+        assert_eq!(first_grant.live_reserved_bytes(), 40);
+        assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+
+        drop(first);
+
+        let report = service.memory_governor_report().unwrap();
+        assert_eq!(report.outstanding_bytes, 40);
+        assert_eq!(report.available_bytes, 60);
+        assert_eq!(first_grant.budget_bytes(), 40);
+        assert_eq!(first_grant.live_reserved_bytes(), 40);
+        assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
+
+        let second =
+            service.try_admit_query("tenant").unwrap().expect("released slot and refunded budget should admit");
+        assert_eq!(second.device_budget_bytes(), 60);
     }
 
     #[test]
