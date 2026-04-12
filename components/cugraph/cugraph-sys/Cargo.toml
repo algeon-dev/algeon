@@ -7,6 +7,9 @@ links = "cugraph"
 description = "Raw FFI bindings to the cuGraph C API"
 license.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/cugraph-sys"
+categories = ["api-bindings", "external-ffi-bindings"]
+keywords = ["cugraph", "cuda", "ffi", "gpu", "rapids"]
 
 [build-dependencies]
 bindgen = "0.71"

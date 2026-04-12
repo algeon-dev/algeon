@@ -10,6 +10,11 @@ fn read_cargo_toml() -> String {
     fs::read_to_string(manifest_dir.join("Cargo.toml")).expect("failed to read Cargo.toml")
 }
 
+fn read_downstream_build_rs() -> String {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(manifest_dir.join("../cugraph-rs/build.rs")).expect("failed to read downstream build.rs")
+}
+
 fn read_test_source(path: &str) -> String {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     fs::read_to_string(manifest_dir.join(path)).unwrap_or_else(|_| panic!("failed to read {path}"))
@@ -83,6 +88,62 @@ fn build_rs_honors_cc_for_system_include_probing() {
     assert!(
         !build_rs.contains("Command::new(\"gcc\")"),
         "build.rs should not hard-code gcc for system include probing"
+    );
+}
+
+#[test]
+fn build_rs_tracks_conda_and_prefix_env_changes_for_library_discovery() {
+    let build_rs = read_build_rs();
+
+    for env_var in ["CONDA_PREFIX", "LIBRARY_PREFIX", "PREFIX"] {
+        assert!(
+            build_rs.contains(&format!("cargo:rerun-if-env-changed={env_var}")),
+            "build.rs should rerun when {env_var} changes because fallback library discovery depends on it"
+        );
+    }
+}
+
+#[test]
+fn build_rs_tracks_pkg_config_env_changes_for_discovery() {
+    let build_rs = read_build_rs();
+
+    for env_var in ["PKG_CONFIG", "PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR"] {
+        assert!(
+            build_rs.contains(&format!("cargo:rerun-if-env-changed={env_var}")),
+            "build.rs should rerun when {env_var} changes because pkg-config discovery depends on it"
+        );
+    }
+}
+
+#[test]
+fn build_rs_emits_runtime_library_metadata_for_downstream_consumers() {
+    let build_rs = read_build_rs();
+
+    assert!(
+        build_rs.contains("cargo:metadata=runtime-lib-dir="),
+        "build.rs should emit the legacy single runtime library metadata key for downstream consumers"
+    );
+    assert!(
+        build_rs.contains("cargo:metadata=runtime-lib-dirs="),
+        "build.rs should emit the multi-path runtime library metadata key for downstream consumers"
+    );
+}
+
+#[test]
+fn downstream_build_rs_consumes_runtime_library_metadata_without_guessing_submodule_paths() {
+    let build_rs = read_downstream_build_rs();
+
+    assert!(
+        build_rs.contains("DEP_CUGRAPH_RUNTIME_LIB_DIRS"),
+        "cugraph-rs/build.rs should consume the multi-path runtime metadata from cugraph-sys"
+    );
+    assert!(
+        build_rs.contains("env::split_paths"),
+        "cugraph-rs/build.rs should parse DEP_CUGRAPH_RUNTIME_LIB_DIRS as an OS-native path list"
+    );
+    assert!(
+        !build_rs.contains("../cugraph/cpp/build"),
+        "cugraph-rs/build.rs should not guess workspace-local cuGraph build directories on its own"
     );
 }
 
