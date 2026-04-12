@@ -215,8 +215,11 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.graph_reservation_rows[0].budget_bytes, Some(1048576));
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 47);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 132);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 48);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 136);
+    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
+        "\trejected_before_execution\tadmission_sequence\tadmission_wait_ms\tdevice_ordinal\tquery_grant_bytes\tnative_runtime_started\t"
+    ));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
     ));
@@ -295,7 +298,11 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert!(!text.contains("bounded_join_execution_status"));
     assert!(!text.contains("bounded_join_reservation_facts"));
     assert!(text.contains("node_id=n2,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
-    assert!(text.contains("\tNativeCudfExec\tnative\t1\t0\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t"));
+    assert!(
+        text.contains(
+            "\tNativeCudfExec\tnative\t1\t0\tfalse\tnone\tnone\tnone\tnone\ttrue\tsucceeded\tnone\t1\t4\t256\t"
+        )
+    );
 }
 
 #[test]

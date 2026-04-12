@@ -8,6 +8,7 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
+    time::Duration,
 };
 
 use arrow::datatypes::SchemaRef;
@@ -40,6 +41,26 @@ impl QueryAdmissionSource {
     }
 }
 
+/// Immutable facts assigned when query-service admission succeeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QueryAdmissionFacts {
+    pub(crate) admission_sequence: u64,
+    pub(crate) admission_wait: Duration,
+    pub(crate) device_ordinal: usize,
+    pub(crate) query_grant_bytes: u64,
+}
+
+impl QueryAdmissionFacts {
+    pub(crate) fn from_handle(handle: &QueryHandle) -> Self {
+        Self {
+            admission_sequence: handle.admission_sequence(),
+            admission_wait: handle.admission_wait(),
+            device_ordinal: handle.device_ordinal(),
+            query_grant_bytes: handle.device_budget_bytes(),
+        }
+    }
+}
+
 /// Lazy admission ticket shared by every native node emitted in one optimize pass.
 #[derive(Debug)]
 pub(crate) struct QueryAdmissionTicket {
@@ -63,18 +84,29 @@ struct TicketRound {
     active_contexts: usize,
     active_streams: usize,
     epoch: u64,
+    admission_facts_recorded: bool,
 }
 
 /// Context acquired through a [`QueryAdmissionTicket`].
 #[derive(Debug)]
 pub(crate) struct TicketTenantQueryContext {
     tenant_context: TenantQueryContext,
+    admission_facts: QueryAdmissionFacts,
+    record_admission_facts: bool,
     _guard: QueryAdmissionTicketContextGuard,
 }
 
 impl TicketTenantQueryContext {
     pub(crate) fn context(&self) -> &TenantQueryContext {
         &self.tenant_context
+    }
+
+    pub(crate) fn admission_facts(&self) -> QueryAdmissionFacts {
+        self.admission_facts
+    }
+
+    pub(crate) fn should_record_admission_facts(&self) -> bool {
+        self.record_admission_facts
     }
 }
 
@@ -131,7 +163,16 @@ impl QueryAdmissionTicket {
         } else {
             state.next_epoch = state.next_epoch.saturating_add(1);
             let epoch = state.next_epoch;
-            state.rounds.insert(task_key, TicketRound { handle: None, active_contexts: 0, active_streams: 1, epoch });
+            state.rounds.insert(
+                task_key,
+                TicketRound {
+                    handle: None,
+                    active_contexts: 0,
+                    active_streams: 1,
+                    epoch,
+                    admission_facts_recorded: false,
+                },
+            );
             epoch
         };
         Ok(QueryAdmissionExecutionRoundGuard { ticket: Arc::clone(self), task_key, epoch, released: false })
@@ -207,9 +248,16 @@ impl QueryAdmissionTicket {
             } else {
                 state.next_epoch = state.next_epoch.saturating_add(1);
                 let epoch = state.next_epoch;
-                state
-                    .rounds
-                    .insert(task_key, TicketRound { handle: None, active_contexts: 0, active_streams: 0, epoch });
+                state.rounds.insert(
+                    task_key,
+                    TicketRound {
+                        handle: None,
+                        active_contexts: 0,
+                        active_streams: 0,
+                        epoch,
+                        admission_facts_recorded: false,
+                    },
+                );
                 epoch
             };
             let Some(round) = state.rounds.get_mut(&task_key) else {
@@ -253,6 +301,8 @@ impl QueryAdmissionTicket {
         match handle.acquire_context_with_cancellation(cancellation) {
             Ok(tenant_context) => Ok(TicketTenantQueryContext {
                 tenant_context,
+                admission_facts: QueryAdmissionFacts::from_handle(handle.as_ref()),
+                record_admission_facts: self.mark_admission_facts_recorded(task_key, epoch),
                 _guard: QueryAdmissionTicketContextGuard { ticket: Arc::clone(self), task_key, epoch, released: false },
             }),
             Err(error) => {
@@ -260,6 +310,21 @@ impl QueryAdmissionTicket {
                 Err(error)
             },
         }
+    }
+
+    fn mark_admission_facts_recorded(&self, task_key: usize, epoch: u64) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            eprintln!("[datafusion-nexus] warning: failed to mark poisoned query admission ticket facts state");
+            return false;
+        };
+        let Some(round) = state.rounds.get_mut(&task_key) else {
+            return false;
+        };
+        if round.epoch != epoch || round.admission_facts_recorded {
+            return false;
+        }
+        round.admission_facts_recorded = true;
+        true
     }
 
     fn release_epoch_context(self: &Arc<Self>, task_key: usize, epoch: u64, force: bool) {
@@ -562,12 +627,10 @@ mod tests {
         epoch: u64,
     ) {
         let task_key = QueryAdmissionTicket::task_key(task_context);
-        ticket
-            .state
-            .lock()
-            .unwrap()
-            .rounds
-            .insert(task_key, TicketRound { handle: None, active_contexts, active_streams: 0, epoch });
+        ticket.state.lock().unwrap().rounds.insert(
+            task_key,
+            TicketRound { handle: None, active_contexts, active_streams: 0, epoch, admission_facts_recorded: false },
+        );
     }
 
     #[test]
@@ -616,6 +679,24 @@ mod tests {
 
         drop(round);
         assert!(!ticket.state.lock().unwrap().rounds.contains_key(&task_key));
+    }
+
+    #[test]
+    fn admission_facts_marker_records_once_per_ticket_epoch() {
+        let (ticket, _service, _tenant_id) = admission_only_ticket();
+        let task_context = Arc::new(TaskContext::default());
+        let task_key = QueryAdmissionTicket::task_key(&task_context);
+        insert_test_round(&ticket, &task_context, 1, 3);
+
+        assert!(ticket.mark_admission_facts_recorded(task_key, 3));
+        assert!(
+            !ticket.mark_admission_facts_recorded(task_key, 3),
+            "the same execution epoch must not record query-level admission facts twice"
+        );
+        assert!(
+            !ticket.mark_admission_facts_recorded(task_key, 4),
+            "stale or future epochs must not consume the marker for the active round"
+        );
     }
 
     #[test]
@@ -674,7 +755,13 @@ mod tests {
         let handle = service.admit_async(tenant_id.clone()).await.unwrap();
         ticket.state.lock().unwrap().rounds.insert(
             task_key,
-            TicketRound { handle: Some(Arc::new(handle)), active_contexts: 1, active_streams: 0, epoch: 1 },
+            TicketRound {
+                handle: Some(Arc::new(handle)),
+                active_contexts: 1,
+                active_streams: 0,
+                epoch: 1,
+                admission_facts_recorded: false,
+            },
         );
         assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
 

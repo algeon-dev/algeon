@@ -417,6 +417,10 @@ impl TsvRow for NativeDataFusionExecutionRow {
             self.native_plan_fragment_count.to_string(),
             self.host_datafusion_boundary_count.to_string(),
             self.rejected_before_execution.to_string(),
+            self.metrics.admission_sequence.map_or_else(|| "none".to_string(), |value| value.to_string()),
+            optional_duration_ms_text(self.metrics.admission_wait_time_ns),
+            self.metrics.device_ordinal.map_or_else(|| "none".to_string(), |value| value.to_string()),
+            self.metrics.query_grant_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
             self.native_runtime_started.to_string(),
             self.runtime_outcome.as_str().to_string(),
             self.runtime_failure.clone().unwrap_or_else(|| "none".to_string()),
@@ -658,6 +662,10 @@ mod tests {
                 | "strict_bounded_contract_rows"
                 | "strict_bounded_compiled_graphs"
                 | "adaptive_pipeline_rows"
+                | "admission_sequence"
+                | "admission_wait_ms"
+                | "device_ordinal"
+                | "query_grant_bytes"
                 | "runtime_failure"
                 | "resident_dataframe_peak_bytes"
                 | "allocator_high_water_bytes"
@@ -711,6 +719,10 @@ mod tests {
             output_rows: Some(111),
             output_bytes: Some(2222),
             metrics: NativeDataFusionExecutionMetrics {
+                admission_sequence: Some(100),
+                admission_wait_time_ns: Some(1_500_000),
+                device_ordinal: Some(2),
+                query_grant_bytes: Some(4096),
                 gpu_resident_input_handoffs: 10,
                 host_to_device_uploads: 11,
                 host_to_device_uploaded_rows: 12,
@@ -824,7 +836,8 @@ mod tests {
             execution.to_tsv_line(),
             concat!(
                 "q_exec\tRootExec\tRootExec(Source)\tcandidate_shape\tcandidate_family\taccepted_replaced\tnone\tnone\t",
-                "none\tnone\tnone\tNativeCudfExec\tnative\t7\t2\tfalse\ttrue\tsucceeded\tnone\t3\t111\t2222\t",
+                "none\tnone\tnone\tNativeCudfExec\tnative\t7\t2\tfalse\t100\t1.500\t2\t4096\t",
+                "true\tsucceeded\tnone\t3\t111\t2222\t",
                 "10\t11\t12\t13\t14\t15\t16\t17\t18\t19\t20\t21\t22\t23\t24\t25\t26\t27\t28\t29\t30\t31\t",
                 "none\tnone\tnone\tnone\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t",
                 "mixed_post_decode\tmeasured_source_pruned\tsource_read_pruned\tnone\t",

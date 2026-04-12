@@ -15,7 +15,7 @@ use nexus_query_engine::{LakehouseCacheFillEventSnapshot, QueryMetrics};
 use crate::{
     Error, ErrorCode,
     error::ErrorSourceDiagnostics,
-    native_exec::{NativeCudfMetrics, NativeMetricsCaptureSink},
+    native_exec::{NativeCudfMetrics, NativeMetricsCaptureSink, admission::QueryAdmissionFacts},
     native_report::{
         NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport,
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
@@ -222,6 +222,15 @@ impl QueryObservability {
 }
 
 impl NativeMetricsCaptureSink for QueryObservability {
+    fn record_admission_facts(&self, query_id: &str, facts: QueryAdmissionFacts) {
+        let now = Instant::now();
+        {
+            let mut query = self.ensure_query(query_id, now);
+            query.metrics.admission_facts.get_or_insert(facts);
+        }
+        self.enforce_bounds(now);
+    }
+
     fn record_query_metrics(&self, query_id: &str, metrics: &QueryMetrics) {
         let now = Instant::now();
         {
@@ -382,7 +391,10 @@ impl CapturedQuery {
             },
             QueryOutcome::Failed { error, .. } => {
                 if self.native_runtime_started_for_failure(error) {
-                    NativeDataFusionRuntime::Failed { message: error.diagnostic.clone() }
+                    NativeDataFusionRuntime::Failed {
+                        message: error.diagnostic.clone(),
+                        metrics: Some(self.metrics.to_metrics_set()),
+                    }
                 } else {
                     NativeDataFusionRuntime::NotStarted
                 }
@@ -416,6 +428,7 @@ struct CapturedPlanningFailure {
 
 #[derive(Debug, Clone, Default)]
 struct CapturedMetrics {
+    admission_facts: Option<QueryAdmissionFacts>,
     query_metrics: Vec<QueryMetrics>,
     lakehouse_cache_fill_events: Vec<LakehouseCacheFillEventSnapshot>,
     output_batches: Option<usize>,
@@ -431,12 +444,15 @@ impl CapturedMetrics {
     }
 
     fn has_native_runtime_metrics(&self) -> bool {
-        !self.query_metrics.is_empty() || !self.lakehouse_cache_fill_events.is_empty()
+        self.admission_facts.is_some() || !self.query_metrics.is_empty() || !self.lakehouse_cache_fill_events.is_empty()
     }
 
     fn to_metrics_set(&self) -> MetricsSet {
         let metrics_set = datafusion::physical_plan::metrics::ExecutionPlanMetricsSet::new();
         let metrics = NativeCudfMetrics::new(&metrics_set, 0);
+        if let Some(facts) = self.admission_facts {
+            metrics.record_admission_facts(facts);
+        }
         for query_metrics in &self.query_metrics {
             metrics.record_query_metrics(query_metrics);
         }
@@ -805,6 +821,12 @@ mod tests {
         let capture = crate::native_exec::NativeMetricsCapture::new("q1", sink);
         let metrics_set = datafusion::physical_plan::metrics::ExecutionPlanMetricsSet::new();
         let native_metrics = NativeCudfMetrics::new_with_capture(&metrics_set, 0, Some(capture));
+        native_metrics.record_admission_facts(QueryAdmissionFacts {
+            admission_sequence: 31,
+            admission_wait: Duration::from_millis(3),
+            device_ordinal: 2,
+            query_grant_bytes: 4096,
+        });
         native_metrics.record_query_metrics(&metrics);
 
         store.finish_success("q1");
@@ -815,6 +837,10 @@ mod tests {
 
         assert_eq!(tsv_value(&header, &row, "native_runtime_started"), "true", "{payload}");
         assert_eq!(tsv_value(&header, &row, "runtime_outcome"), "succeeded", "{payload}");
+        assert_eq!(tsv_value(&header, &row, "admission_sequence"), "31", "{payload}");
+        assert_eq!(tsv_value(&header, &row, "admission_wait_ms"), "3.000", "{payload}");
+        assert_eq!(tsv_value(&header, &row, "device_ordinal"), "2", "{payload}");
+        assert_eq!(tsv_value(&header, &row, "query_grant_bytes"), "4096", "{payload}");
         assert_eq!(tsv_value(&header, &row, "host_to_device_uploads"), "1", "{payload}");
         assert_eq!(tsv_value(&header, &row, "host_to_device_uploaded_rows"), "7", "{payload}");
         assert_eq!(tsv_value(&header, &row, "host_to_device_uploaded_bytes"), "1024", "{payload}");
@@ -826,6 +852,42 @@ mod tests {
         assert_eq!(tsv_value(&header, &row, "reservation_requested_bytes"), "16384", "{payload}");
         assert_eq!(tsv_value(&header, &row, "reservation_granted_bytes"), "8192", "{payload}");
         assert_eq!(tsv_value(&header, &row, "reservation_live_peak_bytes"), "4096", "{payload}");
+    }
+
+    #[test]
+    fn query_stats_payload_preserves_admission_facts_on_native_runtime_failure() {
+        let store = Arc::new(QueryObservability::new(8, Duration::from_secs(60)));
+        store.start_query_with_correlation_id("q1", "select 1", None);
+        let schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));
+        store.capture_planning(
+            "q1",
+            Some(accepted_native_diagnostics()),
+            Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>,
+        );
+
+        let sink: Arc<dyn NativeMetricsCaptureSink> = store.clone();
+        let capture = crate::native_exec::NativeMetricsCapture::new("q1", sink);
+        let metrics_set = datafusion::physical_plan::metrics::ExecutionPlanMetricsSet::new();
+        let native_metrics = NativeCudfMetrics::new_with_capture(&metrics_set, 0, Some(capture));
+        native_metrics.record_admission_facts(QueryAdmissionFacts {
+            admission_sequence: 41,
+            admission_wait: Duration::from_millis(5),
+            device_ordinal: 1,
+            query_grant_bytes: 8192,
+        });
+
+        store.finish_failed("q1", "stream", captured_error_with_facts([]));
+        store.seal("q1");
+
+        let payload = store.get("q1").expect("query capture must be retained").to_query_stats_payload();
+        let (header, row) = query_stats_tsv_single_row(&payload, "execution");
+
+        assert_eq!(tsv_value(&header, &row, "native_runtime_started"), "true", "{payload}");
+        assert_eq!(tsv_value(&header, &row, "runtime_outcome"), "failed", "{payload}");
+        assert_eq!(tsv_value(&header, &row, "admission_sequence"), "41", "{payload}");
+        assert_eq!(tsv_value(&header, &row, "admission_wait_ms"), "5.000", "{payload}");
+        assert_eq!(tsv_value(&header, &row, "device_ordinal"), "1", "{payload}");
+        assert_eq!(tsv_value(&header, &row, "query_grant_bytes"), "8192", "{payload}");
     }
 
     fn accepted_native_diagnostics() -> NativePlanningDiagnostics {

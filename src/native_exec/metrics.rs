@@ -14,6 +14,8 @@ use datafusion::physical_plan::metrics::{
 };
 use nexus_query_engine::{ExecutionBoundaryPolicy, JoinOperatorMetrics, LakehouseCacheFillEventSnapshot, QueryMetrics};
 
+use super::admission::QueryAdmissionFacts;
+
 /// Stable public DataFusion metric-name contract exposed by native cuDF execution plans.
 ///
 /// Every name in this list is registered as a DataFusion `MetricType::Summary` metric by
@@ -38,6 +40,14 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "build_materialization_boundary_durable",
     "probe_execution_boundary_reusable",
     "result_materialization_boundary_explicit",
+    "admission_sequence",
+    "admission_sequence_observed",
+    "admission_wait_time",
+    "admission_wait_time_observed",
+    "device_ordinal",
+    "device_ordinal_observed",
+    "query_grant_bytes",
+    "query_grant_bytes_observed",
     "reservation_requested_bytes",
     "reservation_granted_bytes",
     "reservation_live_peak_bytes",
@@ -150,6 +160,8 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
 
 /// Query-keyed sink for native metrics captured while DataFusion wrapper metrics are populated.
 pub(crate) trait NativeMetricsCaptureSink: Send + Sync {
+    fn record_admission_facts(&self, query_id: &str, facts: QueryAdmissionFacts);
+
     fn record_query_metrics(&self, query_id: &str, metrics: &QueryMetrics);
 
     fn record_lakehouse_cache_fill_events(&self, query_id: &str, events: &[LakehouseCacheFillEventSnapshot]);
@@ -188,6 +200,12 @@ impl NativeMetricsCapture {
             sink.record_lakehouse_cache_fill_events(&self.query_id, events);
         }
     }
+
+    fn record_admission_facts(&self, facts: QueryAdmissionFacts) {
+        if let Some(sink) = self.sink.upgrade() {
+            sink.record_admission_facts(&self.query_id, facts);
+        }
+    }
 }
 
 impl fmt::Debug for NativeMetricsCapture {
@@ -220,6 +238,14 @@ pub(crate) struct NativeCudfMetrics {
     build_materialization_boundary_durable: Count,
     probe_execution_boundary_reusable: Count,
     result_materialization_boundary_explicit: Count,
+    admission_sequence: Count,
+    admission_sequence_observed: Count,
+    admission_wait_time: Time,
+    admission_wait_time_observed: Count,
+    device_ordinal: Count,
+    device_ordinal_observed: Count,
+    query_grant_bytes: Count,
+    query_grant_bytes_observed: Count,
     reservation_requested_bytes: Count,
     reservation_granted_bytes: Count,
     reservation_live_peak_bytes: Count,
@@ -328,6 +354,7 @@ impl NativeCudfMetrics {
     }
 
     #[cfg(any(test, feature = "cugraph"))]
+    #[allow(dead_code)]
     pub(crate) fn new_with_capture(
         metrics: &ExecutionPlanMetricsSet,
         partition: usize,
@@ -389,6 +416,14 @@ impl NativeCudfMetrics {
                 "result_materialization_boundary_explicit",
                 partition,
             ),
+            admission_sequence: summary_counter(metrics, "admission_sequence", partition),
+            admission_sequence_observed: summary_counter(metrics, "admission_sequence_observed", partition),
+            admission_wait_time: summary_timer(metrics, "admission_wait_time", partition),
+            admission_wait_time_observed: summary_counter(metrics, "admission_wait_time_observed", partition),
+            device_ordinal: summary_counter(metrics, "device_ordinal", partition),
+            device_ordinal_observed: summary_counter(metrics, "device_ordinal_observed", partition),
+            query_grant_bytes: summary_counter(metrics, "query_grant_bytes", partition),
+            query_grant_bytes_observed: summary_counter(metrics, "query_grant_bytes_observed", partition),
             reservation_requested_bytes: summary_counter(metrics, "reservation_requested_bytes", partition),
             reservation_granted_bytes: summary_counter(metrics, "reservation_granted_bytes", partition),
             reservation_live_peak_bytes: summary_counter(metrics, "reservation_live_peak_bytes", partition),
@@ -556,6 +591,29 @@ impl NativeCudfMetrics {
             final_merge_time: summary_timer(metrics, "final_merge_time", partition),
             final_sort_time: summary_timer(metrics, "final_sort_time", partition),
             materialization_time: summary_timer(metrics, "materialization_time", partition),
+        }
+    }
+
+    pub(crate) fn record_admission_facts(&self, facts: QueryAdmissionFacts) {
+        add_optional_count(
+            &self.admission_sequence,
+            Some(&self.admission_sequence_observed),
+            Some(facts.admission_sequence),
+        );
+        self.admission_wait_time_observed.add(1);
+        self.admission_wait_time.add_duration(facts.admission_wait);
+        add_optional_count(
+            &self.device_ordinal,
+            Some(&self.device_ordinal_observed),
+            Some(facts.device_ordinal as u64),
+        );
+        add_optional_count(
+            &self.query_grant_bytes,
+            Some(&self.query_grant_bytes_observed),
+            Some(facts.query_grant_bytes),
+        );
+        if let Some(capture) = &self.capture {
+            capture.record_admission_facts(facts);
         }
     }
 
@@ -1630,6 +1688,7 @@ fn summary_counter_category(name: &str) -> MetricCategory {
 mod tests {
     #[cfg(feature = "server")]
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use nexus_query_engine::{
         JoinOperatorMetrics, LakehouseCacheFillEventSnapshot, OperatorMetrics, SourceReadParquetEvidenceMetrics,
@@ -1650,23 +1709,49 @@ mod tests {
         };
 
         assert_eq!(category_for("reservation_live_peak_bytes"), Some(MetricCategory::Bytes));
+        assert_eq!(category_for("query_grant_bytes"), Some(MetricCategory::Bytes));
         assert_eq!(category_for("resident_dataframe_peak_bytes_observed"), Some(MetricCategory::Rows));
         assert_eq!(category_for("source_chunks_committed"), Some(MetricCategory::Rows));
+        assert_eq!(category_for("admission_wait_time"), Some(MetricCategory::Timing));
         assert_eq!(category_for("source_read_time"), Some(MetricCategory::Timing));
         assert_eq!(category_for("output_rows"), Some(MetricCategory::Rows));
         assert_eq!(category_for("output_bytes"), Some(MetricCategory::Bytes));
         assert_eq!(category_for("elapsed_compute"), Some(MetricCategory::Timing));
     }
 
+    #[test]
+    fn native_metrics_record_query_service_admission_facts() {
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+
+        native_metrics.record_admission_facts(QueryAdmissionFacts {
+            admission_sequence: 7,
+            admission_wait: Duration::from_millis(3),
+            device_ordinal: 2,
+            query_grant_bytes: 4096,
+        });
+
+        let metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics_set.clone_inner());
+        assert_eq!(metrics.admission_sequence, Some(7));
+        assert_eq!(metrics.admission_wait_time_ns, Some(3_000_000));
+        assert_eq!(metrics.device_ordinal, Some(2));
+        assert_eq!(metrics.query_grant_bytes, Some(4096));
+    }
+
     #[cfg(feature = "server")]
     #[derive(Default)]
     struct CountingCaptureSink {
+        admission_facts: AtomicUsize,
         query_metrics: AtomicUsize,
         cache_events: AtomicUsize,
     }
 
     #[cfg(feature = "server")]
     impl NativeMetricsCaptureSink for CountingCaptureSink {
+        fn record_admission_facts(&self, _query_id: &str, _facts: QueryAdmissionFacts) {
+            self.admission_facts.fetch_add(1, Ordering::Relaxed);
+        }
+
         fn record_query_metrics(&self, _query_id: &str, _metrics: &QueryMetrics) {
             self.query_metrics.fetch_add(1, Ordering::Relaxed);
         }
@@ -1685,11 +1770,24 @@ mod tests {
         let capture = NativeMetricsCapture::new("q1", erased_sink);
 
         assert_eq!(Arc::strong_count(&sink), 1);
+        capture.record_admission_facts(QueryAdmissionFacts {
+            admission_sequence: 1,
+            admission_wait: Duration::from_millis(1),
+            device_ordinal: 0,
+            query_grant_bytes: 1024,
+        });
         capture.record_query_metrics(&QueryMetrics::default());
+        assert_eq!(sink.admission_facts.load(Ordering::Relaxed), 1);
         assert_eq!(sink.query_metrics.load(Ordering::Relaxed), 1);
 
         drop(sink);
         assert!(weak_sink.upgrade().is_none());
+        capture.record_admission_facts(QueryAdmissionFacts {
+            admission_sequence: 2,
+            admission_wait: Duration::from_millis(1),
+            device_ordinal: 0,
+            query_grant_bytes: 1024,
+        });
         capture.record_query_metrics(&QueryMetrics::default());
         capture.record_lakehouse_cache_fill_events(&[]);
     }

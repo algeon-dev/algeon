@@ -7,7 +7,9 @@ use std::collections::BTreeSet;
 
 use datafusion::physical_plan::metrics::MetricsSet;
 
-use super::tsv::{metric_count, metric_duration_nanos, optional_observed_metric_count};
+use super::tsv::{
+    metric_count, metric_duration_nanos, optional_observed_metric_count, optional_observed_metric_duration_nanos,
+};
 
 mod dynamic_filter;
 mod graph;
@@ -71,6 +73,14 @@ pub struct NativeDataFusionExecutionMetrics {
     pub row_groups_selected: usize,
     /// Physical read columns selected by native source reads.
     pub read_columns: usize,
+    /// Query-service admission sequence, when execution used QueryService admission.
+    pub admission_sequence: Option<usize>,
+    /// Query-service admission wait time in nanoseconds, when observed.
+    pub admission_wait_time_ns: Option<usize>,
+    /// CUDA device ordinal selected by QueryService admission, when observed.
+    pub device_ordinal: Option<usize>,
+    /// Query-service device-memory grant bytes, when observed.
+    pub query_grant_bytes: Option<usize>,
     /// Peak bytes retained by resident cudf DataFrames, when observed.
     pub resident_dataframe_peak_bytes: Option<usize>,
     /// cuDF allocator high-water bytes, when reported by lower layers.
@@ -276,6 +286,10 @@ impl NativeDataFusionExecutionMetrics {
             parquet_bytes_known: metric_count(metrics, "parquet_bytes_known"),
             row_groups_selected: metric_count(metrics, "row_groups_selected"),
             read_columns: metric_count(metrics, "read_columns"),
+            admission_sequence: optional_observed_metric_count(metrics, "admission_sequence"),
+            admission_wait_time_ns: optional_observed_metric_duration_nanos(metrics, "admission_wait_time"),
+            device_ordinal: optional_observed_metric_count(metrics, "device_ordinal"),
+            query_grant_bytes: optional_observed_metric_count(metrics, "query_grant_bytes"),
             resident_dataframe_peak_bytes: optional_observed_metric_count(metrics, "resident_dataframe_peak_bytes"),
             allocator_high_water_bytes: optional_observed_metric_count(metrics, "allocator_high_water_bytes"),
             reservation_requested_bytes: metric_count(metrics, "reservation_requested_bytes"),

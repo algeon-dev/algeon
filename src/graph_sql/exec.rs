@@ -398,6 +398,9 @@ impl ExecutionPlan for CugraphAlgoExec {
                         .with_fact("cpu_fallback_after_native_start", false),
                 )
             })?;
+            if let Some(admission_facts) = context_lease.admission_facts() {
+                metrics.record_admission_facts(admission_facts);
+            }
             let context = context_lease.context();
             let edge_schema = edge_source.schema();
             let edge_frame =
