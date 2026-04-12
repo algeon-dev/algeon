@@ -231,9 +231,10 @@ ORDER BY value DESC;
       detail: <>The engine prepares a cuDF table export, binds a cuGraph
         <code>ResourceHandle</code> to a runtime on the same device and stream,
         builds a typed cuGraph graph, and runs the selected algorithm. Bounded
-        graph execution may use a budget-tracking memory resource instead of the
-        shared runtime. Stable edge-id paths use borrowed device slices
-        directly.</>,
+        graph execution runs on a stream-scoped budget token attached to the
+        query's memory grant, so graph workspace allocations — including
+        libcugraph's own — are charged to the query. Stable edge-id paths use
+        borrowed device slices directly.</>,
     },
     {
       id: 'res', lane: 'host', col: 3,

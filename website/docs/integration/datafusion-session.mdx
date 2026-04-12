@@ -96,16 +96,22 @@ policy in embedded DataFusion sessions:
 
 ```sql
 SET datafusion_nexus.request.requested_grant_bytes = '1073741824';
+SET datafusion_nexus.request.requested_grant_min_bytes = '536870912';
 SELECT ...;
 SET datafusion_nexus.request.requested_grant_bytes = 'none';
+SET datafusion_nexus.request.requested_grant_min_bytes = 'none';
 ```
 
 `datafusion_nexus.request.requested_grant_bytes` is read when the optimizer
 creates the plan ticket. It changes only the preferred grant for that optimized
 statement; it does not change the tenant minimum, slot guarantee, queue limit, or
-backend policy. The value is allowed even on backend-managed frozen sessions,
-but query-service admission rejects it if it is below `grant_min`, above
-`grant_want`, or above device capacity. Flight SQL rejects
+backend policy. `datafusion_nexus.request.requested_grant_min_bytes` is the
+matching request-scoped floor: admission returns a grant at least that large or
+keeps the statement queued until `wait_timeout`, instead of admitting it into a
+leftover grant it would only fail on. Both values are allowed even on
+backend-managed frozen sessions, but query-service admission rejects them if
+they fall outside the tenant band (`grant_min`..`grant_want`) or exceed device
+capacity. Flight SQL rejects
 `SET datafusion_nexus.*` because request policy is lowered from server or tenant
 defaults there, not mutable session state.
 
