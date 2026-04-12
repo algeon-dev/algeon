@@ -8,6 +8,56 @@ use super::{support::*, *};
 // composition entry.
 
 #[tokio::test]
+async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-backend-admission");
+    let path = dir.join("tiny_directed_edges.parquet");
+    write_tiny_directed_edges(&path);
+
+    let backend = NexusGpuBackend::builder().build().unwrap();
+    let cugraph = CugraphSqlConfig::default()
+        .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
+    let mut config = SessionConfig::new()
+        .with_target_partitions(1)
+        .with_repartition_file_scans(false)
+        .with_repartition_aggregations(false)
+        .with_repartition_sorts(false);
+    config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+    let state = backend
+        .install_on(SessionStateBuilder::new().with_config(config).with_default_features())
+        .unwrap()
+        .with_cugraph_sql(cugraph)
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("tiny_directed_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+
+    let df = ctx.sql("SELECT * FROM cugraph_degrees_all('tiny_directed_edges', 'src', 'dst')").await.unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    assert!(!batches.is_empty());
+
+    let cugraph_plan = find_cugraph_algo_exec(plan.as_ref()).expect("physical plan should contain CugraphAlgoExec");
+    let cugraph_display = displayable(cugraph_plan).indent(false).to_string();
+    assert!(
+        plan_contains_native_exec(cugraph_plan),
+        "backend-managed cuGraph plan should have a native edge-source child:\n{cugraph_display}"
+    );
+    let metrics = plan.metrics().expect("backend-managed cuGraph plan should expose native metrics");
+
+    assert_eq!(metric_usize(&metrics, "admission_sequence_observed"), 1);
+    assert!(metric_usize(&metrics, "admission_sequence") > 0);
+    assert_eq!(metric_usize(&metrics, "admission_wait_time_observed"), 1);
+    assert_eq!(metric_usize(&metrics, "device_ordinal_observed"), 1);
+    assert_eq!(metric_usize(&metrics, "query_grant_bytes_observed"), 1);
+    assert!(metric_usize(&metrics, "query_grant_bytes") > 0);
+    assert_eq!(plan_metric_usize(plan.as_ref(), "admission_sequence_observed"), 1);
+    assert_eq!(plan_metric_usize(plan.as_ref(), "admission_wait_time_observed"), 1);
+    assert_eq!(plan_metric_usize(plan.as_ref(), "query_grant_bytes_observed"), 1);
+    assert_eq!(backend.query_service().admission_snapshot().unwrap().active_queries, 0);
+
+    fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_pagerank_filter_sort_limit_stays_gpu_resident_until_collect() {
     let dir = unique_temp_dir("datafusion-nexus-cugraph-pagerank-compose");
     let path = dir.join("tiny_directed_edges.parquet");

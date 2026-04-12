@@ -390,14 +390,15 @@ impl ExecutionPlan for CugraphAlgoExec {
             NativeCudfMetrics::new_with_capture(&self.metrics, partition, default_execution_config.metrics_capture());
         let output = futures::stream::once(async move {
             let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-            let execution_config = edge_execution_config(edge_source.as_ref(), &default_execution_config);
-            let context_lease = execution_config.execution_context().map_err(|error| {
-                DataFusionError::from(
-                    error
-                        .with_fact("cugraph_sql_stage", "runtime_context")
-                        .with_fact("cpu_fallback_after_native_start", false),
-                )
-            })?;
+            let execution_config = cugraph_execution_config(edge_source.as_ref(), &default_execution_config);
+            let context_lease =
+                execution_config.execution_context_async(Arc::clone(&task_context)).await.map_err(|error| {
+                    DataFusionError::from(
+                        error
+                            .with_fact("cugraph_sql_stage", "runtime_context")
+                            .with_fact("cpu_fallback_after_native_start", false),
+                    )
+                })?;
             if let Some(admission_facts) = context_lease.admission_facts() {
                 metrics.record_admission_facts(admission_facts);
             }
@@ -498,6 +499,13 @@ fn edge_execution_config(
     default_execution_config.clone()
 }
 
+fn cugraph_execution_config(
+    plan: &dyn ExecutionPlan,
+    default_execution_config: &NativeCudfExecutionConfig,
+) -> NativeCudfExecutionConfig {
+    edge_execution_config(plan, default_execution_config).with_plan_query_admission_ticket()
+}
+
 fn as_native_cudf_exec(plan: &dyn ExecutionPlan) -> Option<&NativeCudfExec> {
     if let Some(native) = plan.downcast_ref::<NativeCudfExec>() {
         return Some(native);
@@ -563,6 +571,90 @@ fn cugraph_edge_canonical_facts(plan: &dyn ExecutionPlan, spec: &CugraphAlgorith
     }
 
     CugraphEdgeCanonicalFacts::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::Schema;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use nexus_query_engine::{
+        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, LiteralBatchSource, NvidiaFsProbeStatus,
+        QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+    };
+
+    use super::*;
+    use crate::native_exec::{QueryAdmissionSource, wrap_plan_with_query_admission_ticket};
+
+    fn admission_only_source() -> QueryAdmissionSource {
+        let tenant_id = TenantId::new("cugraph-test");
+        let deployment = DeploymentIoCapability::from_probe_inputs(
+            NvidiaFsProbeStatus::DriverMissing,
+            KvikioCompatModeStatus::Unset,
+            GdsDriverProbeStatus::ProbeUnimplemented,
+        );
+        let service = QueryService::new_admission_only(
+            QueryServiceConfig::default(),
+            vec![QueryServiceTenantConfig::new(tenant_id.clone(), 1024 * 1024)],
+            deployment,
+        )
+        .expect("admission-only query service should build");
+        QueryAdmissionSource::new(service, tenant_id)
+    }
+
+    #[test]
+    fn cugraph_execution_config_creates_plan_ticket_for_backend_admission_source() {
+        let source = admission_only_source();
+        let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let plan = EmptyExec::new(Arc::new(Schema::empty()));
+
+        assert!(base.has_query_admission_authority());
+        assert_eq!(base.query_admission_ticket_id(), None);
+
+        let graph_config = cugraph_execution_config(&plan, &base);
+        let ticket_id = graph_config
+            .query_admission_ticket_id()
+            .expect("cuGraph execution should use a plan-scoped backend admission ticket");
+        let cloned = cugraph_execution_config(&plan, &graph_config);
+
+        assert_eq!(cloned.query_admission_ticket_id(), Some(ticket_id));
+    }
+
+    #[test]
+    fn cugraph_execution_config_keeps_standalone_configs_ticketless() {
+        let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1);
+        let plan = EmptyExec::new(Arc::new(Schema::empty()));
+
+        let graph_config = cugraph_execution_config(&plan, &base);
+
+        assert_eq!(graph_config.query_admission_ticket_id(), None);
+    }
+
+    #[test]
+    fn cugraph_execution_config_recovers_wrapped_native_edge_source_ticket() {
+        let source = admission_only_source();
+        let default_config =
+            NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source.clone());
+        let native_config = NativeCudfExecutionConfig::bounded(2048, 512, 1, 3, 1).with_query_admission_source(source);
+        let native_config = native_config.with_plan_query_admission_ticket();
+        let ticket = native_config.query_admission_ticket().expect("native edge source should have a plan ticket");
+        let expected_ticket_id = native_config.query_admission_ticket_id();
+
+        let schema = Arc::new(Schema::empty());
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+        let native_plan = builder.finish_with_host_sink(source);
+        let native_exec =
+            Arc::new(NativeCudfExec::try_new(native_plan, native_config).unwrap()) as Arc<dyn ExecutionPlan>;
+        let wrapped = wrap_plan_with_query_admission_ticket(native_exec, ticket);
+
+        assert!(wrapped.downcast_ref::<NativeCudfExec>().is_some());
+        assert_eq!(
+            cugraph_execution_config(wrapped.as_ref(), &default_config).query_admission_ticket_id(),
+            expected_ticket_id
+        );
+    }
 }
 
 fn preserves_edge_list_canonical_facts(plan: &dyn ExecutionPlan) -> bool {
