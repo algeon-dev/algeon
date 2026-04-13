@@ -120,7 +120,7 @@ fn local_parquet_source_rejects_reader_predicate_with_position_deletes() {
     let error = validate_local_parquet_source(&source).unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("reason"), Some("position_deletes_reject_reader_predicate"));
+    assert_eq!(error.fact_value("reason"), Some("row_deletes_reject_reader_predicate"));
 }
 
 #[test]

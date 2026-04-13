@@ -419,7 +419,7 @@ fn source_contract_supported(source: &LocalParquetSource) -> bool {
         && source_output_schema_override_supported(source)
         && !source.is_zero_column_count_source()
         && !source.is_count_star_probe_source()
-        && !source.has_position_delete_files()
+        && !source.has_row_delete_files()
         && source.partition_columns.is_empty()
         && source.missing_columns.is_empty()
         && source
@@ -811,6 +811,12 @@ fn branch_replay_predicate(predicate: Expr) -> Expr {
         Expr::Substring { expr, start, length } => Expr::substring(branch_replay_predicate(*expr), start, length),
         Expr::Lower(expr) => Expr::lower(branch_replay_predicate(*expr)),
         Expr::Upper(expr) => Expr::upper(branch_replay_predicate(*expr)),
+        Expr::Trim { expr, trim_chars } => Expr::trim(branch_replay_predicate(*expr), trim_chars),
+        Expr::LTrim { expr, trim_chars } => Expr::ltrim(branch_replay_predicate(*expr), trim_chars),
+        Expr::RTrim { expr, trim_chars } => Expr::rtrim(branch_replay_predicate(*expr), trim_chars),
+        Expr::StringContains { expr, pattern } => Expr::string_contains(branch_replay_predicate(*expr), pattern),
+        Expr::StartsWith { expr, prefix } => Expr::starts_with(branch_replay_predicate(*expr), prefix),
+        Expr::EndsWith { expr, suffix } => Expr::ends_with(branch_replay_predicate(*expr), suffix),
         Expr::StringLength { expr, output_type } => Expr::string_length(branch_replay_predicate(*expr), output_type),
         Expr::RegexpReplace { expr, pattern, replacement, output_type } => {
             Expr::regexp_replace(branch_replay_predicate(*expr), pattern, replacement, output_type)

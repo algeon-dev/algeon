@@ -5,7 +5,7 @@ use super::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_upper_bound_bytes,
         prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
         projected_output_columns_for_retained_sizing, reconcile_join_output_upper_bound,
-        release_bounded_join_side_frame,
+        release_bounded_join_side_frame, reserve_full_join_size_preflight_workspace,
     },
     *,
 };
@@ -1391,6 +1391,244 @@ impl CompiledMixedSizeData<'_> {
                 .map_err(|error| join_index_error(error, node)),
         }
     }
+}
+
+struct CompiledEqualityJoinPreflightIndices {
+    indices: CompiledJoinIndices,
+    gather_map_reservation: ActiveReservation,
+    index_bytes: u64,
+    output_rows: u64,
+}
+
+fn materialize_compiled_keyed_equality_join_indices_with_preflight(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    left: &BoundedJoinSideFrame,
+    right: &BoundedJoinSideFrame,
+    build_side: JoinSide,
+    left_keys: &[String],
+    right_keys: &[String],
+    reservation_label: &'static str,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<CompiledEqualityJoinPreflightIndices> {
+    let (build, build_keys, probe, probe_keys) = match build_side {
+        JoinSide::Left => (left, left_keys, right, right_keys),
+        JoinSide::Right => (right, right_keys, left, left_keys),
+    };
+    let hash_options =
+        cudf::DataFrameHashJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
+    let (hash_join, hash_table_reservation, _hash_table_bytes) = super::hash::reserve_and_build_bounded_hash_join(
+        context,
+        node_id,
+        node,
+        &build.frame,
+        build_keys,
+        hash_options,
+        build_side,
+        reservations,
+        metrics,
+        overrides,
+        "join_keyed_equality_preflight_hash_table",
+        false,
+    )?;
+    let left_join_output_rows = match compiled_hash_join_left_probe_size_for_full_size_preflight(
+        node,
+        hash_join.hash_join(),
+        &probe.frame,
+        probe_keys,
+        overrides,
+    ) {
+        Ok(rows) => rows as u64,
+        Err(error) => {
+            release_temporary_compiled_hash_join(hash_join, hash_table_reservation, reservations, metrics);
+            return Err(error);
+        },
+    };
+    let full_size_preflight_workspace = match reserve_full_join_size_preflight_workspace(
+        node_id,
+        node,
+        build.rows,
+        left_join_output_rows,
+        reservations,
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            release_temporary_compiled_hash_join(hash_join, hash_table_reservation, reservations, metrics);
+            return Err(error);
+        },
+    };
+    let output_size =
+        match compiled_hash_join_probe_size(node, hash_join.hash_join(), &probe.frame, probe_keys, overrides) {
+            Ok(output_size) => {
+                if let Some(reservation) = full_size_preflight_workspace {
+                    reservations.release(reservation, metrics);
+                }
+                output_size
+            },
+            Err(error) => {
+                if let Some(reservation) = full_size_preflight_workspace {
+                    reservations.release(reservation, metrics);
+                }
+                release_temporary_compiled_hash_join(hash_join, hash_table_reservation, reservations, metrics);
+                return Err(error);
+            },
+        };
+    let gather_map_reservation_bytes =
+        match hash_join.hash_join().probe_gather_map_reservation_size_bytes(output_size).map(|bytes| bytes as u64) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                release_temporary_compiled_hash_join(hash_join, hash_table_reservation, reservations, metrics);
+                return Err(QueryError::from_cudf(
+                    "nexus_query_engine.bounded.join.compiled_keyed_equality_gather_map_reservation",
+                    "failed to size compiled bounded equality join gather maps from exact output-size preflight",
+                    error,
+                )
+                .with_fact("join_type", node.spec.join_type)
+                .with_fact("build_side", build_side));
+            },
+        };
+    let gather_map_reservation = match reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::GatherMap,
+            reservation_label,
+            gather_map_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            release_temporary_compiled_hash_join(hash_join, hash_table_reservation, reservations, metrics);
+            return Err(error);
+        },
+    };
+    let hash_indices = match compiled_hash_join_probe_with_output_size(
+        node,
+        hash_join.hash_join(),
+        &probe.frame,
+        probe_keys,
+        output_size,
+        overrides,
+    ) {
+        Ok(indices) => indices,
+        Err(error) => {
+            reservations.release(gather_map_reservation, metrics);
+            release_temporary_compiled_hash_join(hash_join, hash_table_reservation, reservations, metrics);
+            return Err(error);
+        },
+    };
+    release_temporary_compiled_hash_join(hash_join, hash_table_reservation, reservations, metrics);
+
+    let index_bytes = match hash_indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(hash_indices);
+            reservations.release(gather_map_reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "nexus_query_engine.bounded.join.compiled_keyed_equality_index_bytes",
+                "failed to observe compiled bounded equality join gather-map memory",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("build_side", build_side));
+        },
+    };
+    if index_bytes > gather_map_reservation.bytes() {
+        drop(hash_indices);
+        reservations.release(gather_map_reservation, metrics);
+        return Err(QueryError::new(
+            QueryErrorCode::MemoryReservationFailed,
+            "nexus_query_engine.bounded.join.compiled_keyed_equality_index_preflight",
+            "compiled bounded equality join gather maps exceeded the exact output-size preflight reservation",
+        )
+        .with_fact("node_id", node_id)
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("build_side", build_side)
+        .with_fact("reserved_bytes", gather_map_reservation_bytes)
+        .with_fact("observed_bytes", index_bytes)
+        .with_fact("output_rows", output_size));
+    }
+
+    let indices = match build_side {
+        JoinSide::Left => {
+            CompiledJoinIndices::Pair { left: hash_indices.build().clone(), right: hash_indices.probe().clone() }
+        },
+        JoinSide::Right => {
+            CompiledJoinIndices::Pair { left: hash_indices.probe().clone(), right: hash_indices.build().clone() }
+        },
+    };
+    drop(hash_indices);
+    Ok(CompiledEqualityJoinPreflightIndices {
+        indices,
+        gather_map_reservation,
+        index_bytes,
+        output_rows: output_size as u64,
+    })
+}
+
+fn compiled_hash_join_left_probe_size_for_full_size_preflight(
+    node: &JoinNode,
+    hash_join: &cudf::DataFrameHashJoin,
+    probe: &DataFrame,
+    probe_keys: &[String],
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<usize> {
+    if node.spec.join_type != JoinType::Full {
+        return Ok(0);
+    }
+    hash_join.left_probe_size_in(probe, probe_keys, overrides).map_err(|error| join_index_error(error, node))
+}
+
+fn release_temporary_compiled_hash_join(
+    hash_join: GpuHashJoinBuildHandle,
+    hash_table_reservation: ActiveReservation,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
+    drop(hash_join);
+    reservations.release(hash_table_reservation, metrics);
+}
+
+fn compiled_hash_join_probe_size(
+    node: &JoinNode,
+    hash_join: &cudf::DataFrameHashJoin,
+    probe: &DataFrame,
+    probe_keys: &[String],
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<usize> {
+    match node.spec.join_type {
+        JoinType::Inner => hash_join.inner_probe_size_in(probe, probe_keys, overrides),
+        JoinType::Left => hash_join.left_probe_size_in(probe, probe_keys, overrides),
+        JoinType::Full => hash_join.full_probe_size_in(probe, probe_keys, overrides),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
+    }
+    .map_err(|error| join_index_error(error, node))
+}
+
+fn compiled_hash_join_probe_with_output_size(
+    node: &JoinNode,
+    hash_join: &cudf::DataFrameHashJoin,
+    probe: &DataFrame,
+    probe_keys: &[String],
+    output_size: usize,
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<cudf::DataFrameHashJoinPairIndices> {
+    match node.spec.join_type {
+        JoinType::Inner => hash_join.inner_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
+        JoinType::Left => hash_join.left_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
+        JoinType::Full => hash_join.full_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
+    }
+    .map_err(|error| join_index_error(error, node))
 }
 
 enum CompiledJoinIndices {

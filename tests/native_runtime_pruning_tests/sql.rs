@@ -37,6 +37,15 @@ ORDER BY avg_m00 DESC, key ASC
 LIMIT 3
 ";
 
+pub(super) const SQL_MEDIAN_AGGREGATE_QUERY: &str = "
+SELECT key, MEDIAN(m00) AS median_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY median_m00 DESC, key ASC
+LIMIT 3
+";
+
 pub(super) const SQL_FILTERED_AGGREGATE_QUERY: &str = "
 SELECT key, SUM(m00) FILTER (WHERE payload >= 10) AS sum_m00
 FROM bench
@@ -214,6 +223,17 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
+pub(super) const SQL_NULL_SEMANTICS_ILIKE_QUERY: &str = "
+SELECT row_id, ilike_match, not_ilike_match, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, status ILIKE 'o%' AS ilike_match, status NOT ILIKE 'r%' AS not_ilike_match
+    FROM bench
+) null_semantics
+GROUP BY row_id, ilike_match, not_ilike_match
+ORDER BY row_id ASC
+LIMIT 20
+";
+
 pub(super) const SQL_NULL_SEMANTICS_SUBSTRING_QUERY: &str = "
 SELECT row_id, status_prefix, COUNT(*) AS row_count
 FROM (
@@ -232,6 +252,41 @@ FROM (
     FROM bench
 ) null_semantics
 GROUP BY row_id, status_lower, status_upper
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_NULL_SEMANTICS_STRING_PREDICATES_QUERY: &str = "
+SELECT row_id, contains_o, starts_o, ends_x, contains_empty, starts_empty, ends_empty, COUNT(*) AS row_count
+FROM (
+    SELECT
+        row_id,
+        contains(status, 'O') AS contains_o,
+        starts_with(status, 'O') AS starts_o,
+        ends_with(status, 'X') AS ends_x,
+        contains(CASE WHEN row_id = 6 THEN '' ELSE status END, '') AS contains_empty,
+        starts_with(CASE WHEN row_id = 6 THEN '' ELSE status END, '') AS starts_empty,
+        ends_with(CASE WHEN row_id = 6 THEN '' ELSE status END, '') AS ends_empty
+    FROM bench
+) null_semantics
+GROUP BY row_id, contains_o, starts_o, ends_x, contains_empty, starts_empty, ends_empty
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_TRIM_FAMILY_QUERY: &str = "
+SELECT row_id, trim_default, ltrim_default, rtrim_default, trim_tab_default, btrim_chars, COUNT(*) AS row_count
+FROM (
+    SELECT
+        row_id,
+        TRIM(CONCAT('  ', status, '  ')) AS trim_default,
+        LTRIM(CONCAT('  ', status, '  ')) AS ltrim_default,
+        RTRIM(CONCAT('  ', status, '  ')) AS rtrim_default,
+        TRIM(CONCAT('\t', status, '\t')) AS trim_tab_default,
+        BTRIM(CONCAT('__', status, '__'), '_') AS btrim_chars
+    FROM bench
+) null_semantics
+GROUP BY row_id, trim_default, ltrim_default, rtrim_default, trim_tab_default, btrim_chars
 ORDER BY row_id ASC
 LIMIT 20
 ";
@@ -286,6 +341,61 @@ FROM (
     FROM bench
 ) null_semantics
 GROUP BY row_id, ship_year, ship_month, ship_day
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_DATE_TRUNC_FIXED_GRAINS_QUERY: &str = "
+SELECT
+    row_id,
+    trunc_day,
+    trunc_hour,
+    trunc_minute,
+    trunc_second,
+    trunc_millisecond,
+    trunc_microsecond,
+    COUNT(*) AS row_count
+FROM (
+    SELECT
+        row_id,
+        DATE_TRUNC('day', event_ts) AS trunc_day,
+        DATE_TRUNC('hour', event_ts) AS trunc_hour,
+        DATE_TRUNC('minute', event_ts) AS trunc_minute,
+        DATE_TRUNC('second', event_ts) AS trunc_second,
+        DATE_TRUNC('millisecond', event_ts) AS trunc_millisecond,
+        DATE_TRUNC('microsecond', event_ts) AS trunc_microsecond
+    FROM bench
+) date_trunc_scalars
+GROUP BY
+    row_id,
+    trunc_day,
+    trunc_hour,
+    trunc_minute,
+    trunc_second,
+    trunc_millisecond,
+    trunc_microsecond
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_DATE_TRUNC_MONTH_UNSUPPORTED_QUERY: &str = "
+SELECT row_id, trunc_month, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, DATE_TRUNC('month', event_ts) AS trunc_month
+    FROM bench
+) date_trunc_month
+GROUP BY row_id, trunc_month
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_DATE_TRUNC_YEAR_UNSUPPORTED_QUERY: &str = "
+SELECT row_id, trunc_year, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, DATE_TRUNC('year', event_ts) AS trunc_year
+    FROM bench
+) date_trunc_year
+GROUP BY row_id, trunc_year
 ORDER BY row_id ASC
 LIMIT 20
 ";
@@ -403,6 +513,24 @@ FROM (
     FROM bench
 ) null_aware_comparison
 GROUP BY row_id, status_distinct, status_not_distinct
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+pub(super) const SQL_NULLIF_SCALAR_QUERY: &str = "
+SELECT row_id, nullif_status, nullif_orderkey, nullif_nullable_rhs, COUNT(*) AS row_count
+FROM (
+    SELECT
+        row_id,
+        NULLIF(status, 'O') AS nullif_status,
+        NULLIF(orderkey, 3) AS nullif_orderkey,
+        NULLIF(
+            orderkey,
+            CASE WHEN row_id IN (1, 4) THEN orderkey ELSE CAST(NULL AS BIGINT) END
+        ) AS nullif_nullable_rhs
+    FROM bench
+) nullif_scalars
+GROUP BY row_id, nullif_status, nullif_orderkey, nullif_nullable_rhs
 ORDER BY row_id ASC
 LIMIT 20
 ";

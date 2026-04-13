@@ -57,6 +57,15 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
         Expr::Substring { expr, start, length } => lower_substring(expr, *start, *length),
         Expr::Lower(expr) => Ok(lower_expr(expr)?.str().lower()),
         Expr::Upper(expr) => Ok(lower_expr(expr)?.str().upper()),
+        Expr::Trim { expr, trim_chars } if trim_chars.is_empty() => lower_expr(expr),
+        Expr::Trim { expr, trim_chars } => Ok(lower_expr(expr)?.str().strip_chars(trim_chars.clone())),
+        Expr::LTrim { expr, trim_chars } if trim_chars.is_empty() => lower_expr(expr),
+        Expr::LTrim { expr, trim_chars } => Ok(lower_expr(expr)?.str().lstrip_chars(trim_chars.clone())),
+        Expr::RTrim { expr, trim_chars } if trim_chars.is_empty() => lower_expr(expr),
+        Expr::RTrim { expr, trim_chars } => Ok(lower_expr(expr)?.str().rstrip_chars(trim_chars.clone())),
+        Expr::StringContains { expr, pattern } => Ok(lower_expr(expr)?.str().contains(pattern.clone())),
+        Expr::StartsWith { expr, prefix } => Ok(lower_expr(expr)?.str().starts_with(prefix.clone())),
+        Expr::EndsWith { expr, suffix } => Ok(lower_expr(expr)?.str().ends_with(suffix.clone())),
         Expr::StringLength { expr, output_type } => lower_string_length(expr, output_type),
         Expr::RegexpReplace { expr, pattern, replacement, output_type } => {
             lower_regexp_replace(expr, pattern, replacement, output_type)
@@ -183,6 +192,11 @@ pub(super) fn lower_literal(value: &LiteralValue) -> Result<cudf::Expr> {
             Ok(lit_decimal128_raw(*raw, crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale)))
         },
         LiteralValue::Date32(value) => Ok(lit_timestamp_raw(i64::from(*value), cudf::TimestampResolution::Days)),
+        LiteralValue::Date64(value) => Ok(lit_timestamp_raw(*value, cudf::TimestampResolution::Milliseconds)),
+        LiteralValue::Time32 { raw, unit } => {
+            Ok(lit_duration_raw(i64::from(*raw), timestamp_unit_to_cudf_resolution(unit)))
+        },
+        LiteralValue::Time64 { raw, unit } => Ok(lit_duration_raw(*raw, timestamp_unit_to_cudf_resolution(unit))),
         LiteralValue::Timestamp { raw, unit } => Ok(lit_timestamp_raw(*raw, timestamp_unit_to_cudf_resolution(unit))),
         LiteralValue::Duration { raw, unit } => Ok(lit_duration_raw(*raw, timestamp_unit_to_cudf_resolution(unit))),
         LiteralValue::IntervalMonthDayNano { .. } => Err(QueryError::new(
@@ -695,6 +709,14 @@ fn lower_extract(field: DatePart, expr: &Expr) -> Result<cudf::Expr> {
         DatePart::Month => lowered.dt().month(),
         DatePart::Day => lowered.dt().day(),
         DatePart::Minute => unreachable!("minute extraction is handled before datetime component lowering"),
+        DatePart::Hour | DatePart::Second | DatePart::Millisecond | DatePart::Microsecond | DatePart::Nanosecond => {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "nexus_query_engine.expr.lower_extract",
+                "native EXTRACT does not support this field",
+            )
+            .with_fact("field", field.to_string()));
+        },
     };
     Ok(component.cast(cudf::DataType::new(cudf::TypeId::Int32)))
 }
@@ -704,11 +726,28 @@ fn lower_timestamp_second_minute(expr: cudf::Expr) -> cudf::Expr {
 }
 
 fn lower_date_trunc(field: DatePart, expr: &Expr, output_type: &ArrowDataType) -> Result<cudf::Expr> {
-    if !matches!(field, DatePart::Minute) || !matches!(output_type, ArrowDataType::Timestamp(TimeUnit::Second, None)) {
+    let frequency = match field {
+        DatePart::Day => cudf::ops::datetime::DatetimeRoundingFrequency::Day,
+        DatePart::Hour => cudf::ops::datetime::DatetimeRoundingFrequency::Hour,
+        DatePart::Minute => cudf::ops::datetime::DatetimeRoundingFrequency::Minute,
+        DatePart::Second => cudf::ops::datetime::DatetimeRoundingFrequency::Second,
+        DatePart::Millisecond => cudf::ops::datetime::DatetimeRoundingFrequency::Millisecond,
+        DatePart::Microsecond => cudf::ops::datetime::DatetimeRoundingFrequency::Microsecond,
+        DatePart::Nanosecond => cudf::ops::datetime::DatetimeRoundingFrequency::Nanosecond,
+        DatePart::Year | DatePart::Month => {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "nexus_query_engine.expr.lower_date_trunc",
+                "native DATE_TRUNC currently supports only fixed-duration fields",
+            )
+            .with_fact("field", field.to_string()));
+        },
+    };
+    if !matches!(output_type, ArrowDataType::Timestamp(_, None)) {
         return Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
+            QueryErrorCode::UnsupportedType,
             "nexus_query_engine.expr.lower_date_trunc",
-            "native DATE_TRUNC currently supports minute truncation for timezone-free second timestamps",
+            "native DATE_TRUNC output type is not supported",
         )
         .with_fact("field", field.to_string())
         .with_fact("output_type", format!("{output_type:?}")));
@@ -721,19 +760,7 @@ fn lower_date_trunc(field: DatePart, expr: &Expr, output_type: &ArrowDataType) -
         )
         .with_fact("output_type", format!("{output_type:?}"))
     })?;
-    if let Ok(raw_seconds) = lower_timestamp_second_integer_cast_raw(expr) {
-        return Ok(cast_integer_expr_to_temporal(raw_seconds.floor_div(lit(60_i64)) * lit(60_i64), output_type)?
-            .unwrap_or_else(|| unreachable!("validated DATE_TRUNC output is temporal")));
-    }
-    Ok(lower_expr(expr)?.dt().floor(cudf::ops::datetime::DatetimeRoundingFrequency::Minute).cast(target))
-}
-
-fn cast_integer_expr_to_temporal(expr: cudf::Expr, target_type: &ArrowDataType) -> Result<Option<cudf::Expr>> {
-    let Some((timestamp_resolution, duration_resolution)) = temporal_cast_resolutions(target_type) else {
-        return Ok(None);
-    };
-    let duration = expr.cast(cudf::DataType::new(duration_resolution.duration_type_id()));
-    Ok(Some(duration.cast(cudf::DataType::new(timestamp_resolution.type_id()))))
+    Ok(lower_expr(expr)?.dt().floor(frequency).cast(target))
 }
 
 fn lower_timestamp_second_integer_cast_raw(expr: &Expr) -> Result<cudf::Expr> {

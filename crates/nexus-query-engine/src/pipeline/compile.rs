@@ -482,6 +482,9 @@ fn join_node_requirement_task(
         ReservationKind::OperatorOutput if requirement.memory_boundary == "join_filtered_build_key_deduplicate" => {
             build
         },
+        ReservationKind::HashTable if requirement.memory_boundary == "join_keyed_equality_preflight_hash_table" => {
+            materialize
+        },
         ReservationKind::HashTable => build,
         ReservationKind::FilteredProbeState | ReservationKind::MixedSizeData => materialize,
         ReservationKind::OperatorOutput

@@ -147,7 +147,7 @@ fn bounded_source_adjacent_chunk_batching_enabled(
     bounded.has_source_adjacent_stages()
         && context.local_parquet_source_cache().is_none()
         && bounded.source.partition_columns.is_empty()
-        && !bounded.source.files.iter().any(LocalParquetFile::has_position_delete_files)
+        && !bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files)
         && bounded.source.scan_limit.is_none()
         && bounded
             .source
@@ -162,7 +162,7 @@ fn bounded_source_adjacent_chunk_batches(
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
 ) -> Vec<SourceChunkBatch> {
-    if bounded.source.files.iter().any(LocalParquetFile::has_position_delete_files) {
+    if bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files) {
         return singleton_source_chunk_batches(chunks);
     }
     let batching_policy = BoundedSourceBatchingPolicy::default();

@@ -59,6 +59,7 @@ pub(super) fn read_object_store_parquet_source_with_fetch_pipeline(
             metrics,
         )?;
         record_background_cache_file_fill_enqueue(context, source_node_id, source, file, file_index, metrics);
+        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
         let frame = apply_position_deletes_to_data_file(
             context,
             source,

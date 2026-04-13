@@ -35,6 +35,35 @@ pub(super) fn require_timestamp_second(data_type: &ArrowDataType, context: &'sta
     }
 }
 
+pub(super) fn require_timestamp(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
+    if matches!(data_type, ArrowDataType::Timestamp(_, None)) {
+        Ok(())
+    } else {
+        unsupported_type(context, data_type, "expected timezone-free timestamp")
+    }
+}
+
+pub(super) fn require_timestamp_preserving_output(
+    input_type: &ArrowDataType,
+    output_type: &ArrowDataType,
+    context: &'static str,
+) -> Result<()> {
+    require_timestamp(input_type, context)?;
+    require_timestamp(output_type, context)?;
+    if input_type == output_type {
+        Ok(())
+    } else {
+        Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.plan.validate_expr",
+            "native timestamp expression output type must preserve input type",
+        )
+        .with_fact("context", context)
+        .with_fact("input_type", format!("{input_type:?}"))
+        .with_fact("output_type", format!("{output_type:?}")))
+    }
+}
+
 pub(super) fn require_timezone_free_operator_key(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_timestamp_with_timezone(data_type) {
         unsupported_type(context, data_type, "expected timezone-free operator key")

@@ -254,7 +254,9 @@ impl<'a> BoundedPlan<'a> {
         }
 
         validate_aggregate_capability(self.aggregate.0, self.aggregate.1)?;
-        validate_final_aggregate_capability(self.aggregate.0, self.aggregate.1)?;
+        if !aggregate_spec_requires_whole_input(&self.aggregate.0.spec) {
+            validate_final_aggregate_capability(self.aggregate.0, self.aggregate.1)?;
+        }
 
         for stage in &self.post_aggregate_stages {
             validate_bounded_unary_stage_capability(stage)?;

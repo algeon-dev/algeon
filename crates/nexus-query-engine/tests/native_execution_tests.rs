@@ -7,9 +7,10 @@ use std::{
 
 use arrow::{
     array::{
-        Array, AsArray, BooleanArray, Date32Array, Decimal128Array, DurationNanosecondArray, Float32Array,
+        Array, AsArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, DurationNanosecondArray, Float32Array,
         Float64Array, Int8Array, Int32Array, Int64Array, LargeListArray, LargeStringArray, ListArray, StringArray,
-        TimestampMicrosecondArray, TimestampNanosecondArray, UInt32Array, UInt64Array,
+        Time32MillisecondArray, Time64NanosecondArray, TimestampMicrosecondArray, TimestampNanosecondArray,
+        UInt32Array, UInt64Array,
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Schema, TimeUnit},
@@ -36,11 +37,12 @@ use nexus_query_engine::{
     GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, GrantRequest,
     GroupingSetsSpec, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec,
     LiteralBatchSource, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryGovernor,
-    MemoryReservationEventAction, MemorySpaceId, MissingColumn, NativePipelineExecutionMode, ParquetPositionDeleteFile,
-    PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, ReservationKind,
-    ResolvedParquetSource, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy,
-    StddevSampExecutionMode, WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
-    execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
+    MemoryReservationEventAction, MemorySpaceId, MissingColumn, NativePipelineExecutionMode, ParquetEqualityDeleteFile,
+    ParquetPositionDeleteFile, PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput,
+    QueryPlanBuilder, ReservationKind, ResolvedParquetSource, SortExpr, SortSpec, SourceChunkPlanningPolicy,
+    SourceNode, SourceSchedulerPolicy, StddevSampExecutionMode, WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN,
+    execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host,
+    plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 

@@ -20,6 +20,7 @@ fn scalar_filtered_aggregate_expr_supported(expr: &AggregateExpr) -> bool {
         | AggregateFunction::Min
         | AggregateFunction::Max
         | AggregateFunction::Avg => scalar_aggregate_value_expr_supported(&expr.expr),
+        AggregateFunction::Median => false,
         AggregateFunction::StddevSamp
         | AggregateFunction::StddevPop
         | AggregateFunction::VarSamp
@@ -159,6 +160,12 @@ fn collect_expr_columns(expr: &Expr, columns: &mut BTreeSet<String>) {
         | Expr::Substring { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::Trim { expr, .. }
+        | Expr::LTrim { expr, .. }
+        | Expr::RTrim { expr, .. }
+        | Expr::StringContains { expr, .. }
+        | Expr::StartsWith { expr, .. }
+        | Expr::EndsWith { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::Abs(expr)
         | Expr::Sqrt { expr, .. }
@@ -219,6 +226,12 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
         | Expr::Substring { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::Trim { expr, .. }
+        | Expr::LTrim { expr, .. }
+        | Expr::RTrim { expr, .. }
+        | Expr::StringContains { expr, .. }
+        | Expr::StartsWith { expr, .. }
+        | Expr::EndsWith { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::Abs(expr)
         | Expr::Sqrt { expr, .. }

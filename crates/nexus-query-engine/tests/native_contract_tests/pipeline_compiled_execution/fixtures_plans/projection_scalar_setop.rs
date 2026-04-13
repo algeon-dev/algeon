@@ -111,11 +111,11 @@ pub(super) fn projection_root_left_anti_scalar_count_plan() -> QueryPlan {
 #[allow(dead_code)]
 pub(super) fn projection_root_scalar_join_grouped_avg_input_plan() -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
-        Field::new("vendor", DataType::Utf8, true),
+        Field::new("vendor", DataType::Int32, true),
         Field::new("score", DataType::Float64, true),
     ]));
     let grouped_schema = Arc::new(Schema::new(vec![
-        Field::new("vendor", DataType::Utf8, true),
+        Field::new("vendor", DataType::Int32, true),
         Field::new("avg_score", DataType::Float64, true),
     ]));
     let join_schema = Arc::new(Schema::new(vec![

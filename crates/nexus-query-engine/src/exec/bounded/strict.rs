@@ -4,6 +4,8 @@
 //! and crate-local strict exports should pass through this boundary instead of
 //! importing non-strict admission or report surfaces.
 
+use std::collections::BTreeMap;
+
 pub(in crate::exec::bounded) use super::compiled::join_strategy::CompiledJoinExecutionStrategy;
 #[doc(hidden)]
 pub use super::compiled::{
@@ -20,16 +22,18 @@ use super::{
 };
 use crate::{
     capability::{
-        CapabilityAnalysis, CapabilityRejectionProjection, ContractQuality, ContractStatus, ReservationRequirement,
-        StrictBoundedEnvelope, SubgraphInvariantKind,
+        CapabilityAnalysis, CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection,
+        ContractQuality, ContractStatus, ReservationRequirement, ReservationRequirementScope, StrictBoundedEnvelope,
+        SubgraphInvariantKind,
     },
     error::{QueryError, QueryErrorCode, Result},
     exec::types::{GpuResidentInputMap, QueryOutput},
     metrics::QueryMetrics,
     mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
     pipeline::{CompiledPipeline, compile_pipeline},
-    plan::{QueryPlan, ResultSink},
+    plan::{PlanNode, QueryPlan, ResultSink},
     runtime::{ExecutionContext, ReservationKind},
+    source::SourceNode,
 };
 
 /// Strict bounded admission evidence for a compiled bounded pipeline.
@@ -73,6 +77,9 @@ pub fn strict_bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Stri
     let Some(admission) = capability_first_bounded_pipeline_admission(plan)? else {
         return Ok(None);
     };
+    if strict_row_delete_application_rejection_projection(plan).is_some() {
+        return Ok(None);
+    }
     match admission.candidate_status() {
         CapabilityFirstCandidateStatus::Admitted => strict_admission_from_capability_first(admission).map(Some),
         CapabilityFirstCandidateStatus::Rejected => match admission.rejection_reason() {
@@ -122,6 +129,9 @@ pub fn strict_bounded_pipeline_rejection_projection(plan: &QueryPlan) -> Result<
     let Some(admission) = capability_first_bounded_pipeline_admission(plan)? else {
         return Ok(None);
     };
+    if let Some(projection) = strict_row_delete_application_rejection_projection(plan) {
+        return Ok(Some(projection));
+    }
     Ok(admission.rejection_projection().cloned())
 }
 
@@ -134,12 +144,45 @@ pub fn strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_m
     let Some(admission) = capability_first_bounded_pipeline_admission(plan)? else {
         return Ok(None);
     };
+    if let Some(projection) = strict_row_delete_application_rejection_projection(plan) {
+        return Ok(Some(projection));
+    }
     if admission.envelope() == Some(StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort)
         && !statistical_aggregate_execution_mode.is_datafusion_exact()
     {
         return Ok(None);
     }
     Ok(admission.rejection_projection().cloned())
+}
+
+fn strict_row_delete_application_rejection_projection(plan: &QueryPlan) -> Option<CapabilityRejectionProjection> {
+    let unreachable = plan.unreachable_node_ids();
+    plan.nodes().iter().filter(|node| !unreachable.contains(&node.id)).find_map(|node| match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) if source.has_row_delete_files() => {
+                let position_delete_files =
+                    source.files.iter().map(|file| file.position_delete_files.len()).sum::<usize>();
+                let equality_delete_files =
+                    source.files.iter().map(|file| file.equality_delete_files.len()).sum::<usize>();
+                Some(CapabilityRejectionProjection {
+                    owner: CapabilityRejectionOwner::Node(node.id),
+                    category: CapabilityRejectionCategory::MissingLowerLevelContract,
+                    contract_scope: ReservationRequirementScope::Node,
+                    memory_boundary: "row_delete_application",
+                    reason: "strict_row_delete_application_unpriced",
+                    facts: BTreeMap::from([
+                        ("reservation_kind", ReservationKind::SourceRead.as_str().to_string()),
+                        ("required_contract", "row_delete_application_contract".to_string()),
+                        ("contract_status", ContractStatus::BlockedByLowerLevel.as_str().to_string()),
+                        ("position_delete_files", position_delete_files.to_string()),
+                        ("equality_delete_files", equality_delete_files.to_string()),
+                    ]),
+                })
+            },
+            _ => None,
+        },
+        _ => None,
+    })
 }
 
 fn tolerant_statistical_join_final_full_sort_admission(

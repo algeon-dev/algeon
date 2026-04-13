@@ -362,7 +362,7 @@ fn replace_lowered_root_or_keep_plan(
         });
     }
     lowering.report.anchor_rewritten_candidates_to_plan_node(lowering.plans[0].root_id());
-    let candidate = lowering
+    let candidate_before_declared_output_sort = lowering
         .report
         .single_rewritten_candidate()
         .cloned()
@@ -371,24 +371,42 @@ fn replace_lowered_root_or_keep_plan(
         .map_err(DataFusionError::from)?;
     let optimizer_result = nexus_query_engine::optimize_query_plan(lowering.plans[0].clone(), &optimizer_options);
     let native_optimizer = optimizer_result.diagnostics;
-    let native_plan = optimizer_result.plan;
-    if properties_plan.properties().output_ordering().is_some()
-        && !crate::native::native_plan_reproduces_declared_output_ordering(&native_plan)
-    {
-        return Ok(NativeOptimizationAttempt {
-            plan,
-            report: native_execution_rejection_report_for_candidate(
-                candidate.clone(),
-                FallbackReason::NativeOrderedOutputUnsupported,
-                &lowering.report,
-            ),
-            native_optimizer,
-            source_diagnostics: lowering.source_diagnostics,
-            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
-            rewritten: false,
-        });
+    let ordered_output_sort_needed = properties_plan.properties().output_ordering().is_some()
+        && !crate::native::native_plan_reproduces_declared_output_ordering(&optimizer_result.plan);
+    let (native_plan, appended_declared_output_sort) =
+        match crate::native::reestablish_declared_output_ordering_if_needed(
+            optimizer_result.plan,
+            properties_plan.properties().output_ordering(),
+        ) {
+            Ok(native_plan) => native_plan,
+            Err(reason) => {
+                let candidate = if ordered_output_sort_needed {
+                    crate::native::wrap_candidate_with_declared_output_ordering_sort(
+                        candidate_before_declared_output_sort,
+                    )
+                } else {
+                    candidate_before_declared_output_sort
+                };
+                return Ok(NativeOptimizationAttempt {
+                    plan,
+                    report: native_execution_rejection_report_for_candidate(candidate, reason, &lowering.report),
+                    native_optimizer,
+                    source_diagnostics: lowering.source_diagnostics,
+                    strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+                    adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+                    rewritten: false,
+                });
+            },
+        };
+    if appended_declared_output_sort {
+        lowering.report.wrap_rewritten_candidates_with_outer_operator("SortExec");
     }
+    lowering.report.anchor_rewritten_candidates_to_plan_node(native_plan.root_id());
+    let candidate = lowering
+        .report
+        .single_rewritten_candidate()
+        .cloned()
+        .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
     if let nexus_query_engine::NativePlanPreferenceDecision::CpuPreferred { reason, .. } =
         nexus_query_engine::native_plan_preference_decision(&native_plan, native_plan_preference_options)
     {

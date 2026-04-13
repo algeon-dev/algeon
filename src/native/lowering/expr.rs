@@ -209,18 +209,15 @@ fn lower_like_expr(
     input_schema: &SchemaRef,
     bindings: Option<&[FieldBinding]>,
 ) -> Result<NativeExpr, FallbackReason> {
+    let pattern = literal_string(like.pattern())?;
     if like.case_insensitive() {
         return Err(FallbackReason::UnsupportedExpression);
     }
-    let pattern = literal_string(like.pattern())?;
+    let expr = lower_physical_expr_with_bindings(like.expr(), input_schema, bindings)?;
     Ok(if like.negated() {
-        NativeExpr::not_like_escape(
-            lower_physical_expr_with_bindings(like.expr(), input_schema, bindings)?,
-            pattern,
-            "\\",
-        )
+        NativeExpr::not_like_escape(expr, pattern, "\\")
     } else {
-        NativeExpr::like_escape(lower_physical_expr_with_bindings(like.expr(), input_schema, bindings)?, pattern, "\\")
+        NativeExpr::like_escape(expr, pattern, "\\")
     })
 }
 
@@ -294,12 +291,19 @@ fn lower_scalar_function_expr(
         "to_timestamp_seconds" => lower_to_timestamp_seconds_function(function, input_schema, bindings),
         "lower" => lower_string_case_function(function, input_schema, bindings, NativeExpr::lower),
         "upper" => lower_string_case_function(function, input_schema, bindings, NativeExpr::upper),
+        "trim" | "btrim" => lower_trim_function(function, input_schema, bindings, NativeExpr::trim),
+        "ltrim" => lower_trim_function(function, input_schema, bindings, NativeExpr::ltrim),
+        "rtrim" => lower_trim_function(function, input_schema, bindings, NativeExpr::rtrim),
+        "contains" => lower_string_predicate_function(function, input_schema, bindings, NativeExpr::string_contains),
+        "starts_with" => lower_string_predicate_function(function, input_schema, bindings, NativeExpr::starts_with),
+        "ends_with" => lower_string_predicate_function(function, input_schema, bindings, NativeExpr::ends_with),
         "character_length" | "length" => lower_string_length_function(function, input_schema, bindings),
         "regexp_replace" => lower_regexp_replace_function(function, input_schema, bindings),
         "concat" => lower_concat_function(function, input_schema, bindings),
         "abs" => lower_abs_function(function, input_schema, bindings),
         "sqrt" => lower_sqrt_function(function, input_schema, bindings),
         "round" => lower_round_function(function, input_schema, bindings),
+        "nullif" => lower_nullif_function(function, input_schema, bindings),
         _ => Err(FallbackReason::UnsupportedExpression),
     }
 }
@@ -352,16 +356,30 @@ fn lower_date_trunc_function(
     let [field, expr] = function.args() else {
         return Err(FallbackReason::UnsupportedExpression);
     };
-    let field = match literal_string(field)?.to_ascii_lowercase().as_str() {
-        "minute" => NativeDatePart::Minute,
-        _ => return Err(FallbackReason::UnsupportedExpression),
-    };
+    let field = lower_date_trunc_field(&literal_string(field)?.to_ascii_lowercase())?;
+    let input_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
     let output_type =
         function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-    if !matches!(output_type, ArrowDataType::Timestamp(TimeUnit::Second, None)) {
+    if !matches!(
+        (&input_type, &output_type),
+        (ArrowDataType::Timestamp(input_unit, None), ArrowDataType::Timestamp(output_unit, None))
+            if input_unit == output_unit
+    ) {
         return Err(FallbackReason::UnsupportedType);
     }
     Ok(NativeExpr::date_trunc(field, lower_physical_expr_with_bindings(expr, input_schema, bindings)?, output_type))
+}
+
+fn lower_date_trunc_field(field: &str) -> Result<NativeDatePart, FallbackReason> {
+    Ok(match field {
+        "day" => NativeDatePart::Day,
+        "hour" => NativeDatePart::Hour,
+        "minute" => NativeDatePart::Minute,
+        "second" => NativeDatePart::Second,
+        "millisecond" => NativeDatePart::Millisecond,
+        "microsecond" => NativeDatePart::Microsecond,
+        _ => return Err(FallbackReason::UnsupportedExpression),
+    })
 }
 
 fn lower_to_timestamp_seconds_function(
@@ -390,6 +408,33 @@ fn lower_string_case_function(
         return Err(FallbackReason::UnsupportedExpression);
     };
     Ok(constructor(lower_physical_expr_with_bindings(expr, input_schema, bindings)?))
+}
+
+fn lower_trim_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+    bindings: Option<&[FieldBinding]>,
+    constructor: fn(NativeExpr, String) -> NativeExpr,
+) -> Result<NativeExpr, FallbackReason> {
+    let args = function.args();
+    if !(1..=2).contains(&args.len()) {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    let trim_chars = if args.len() == 2 { literal_string(&args[1])? } else { " ".to_string() };
+    let expr = lower_physical_expr_with_bindings(&args[0], input_schema, bindings)?;
+    if trim_chars.is_empty() { Ok(expr) } else { Ok(constructor(expr, trim_chars)) }
+}
+
+fn lower_string_predicate_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+    bindings: Option<&[FieldBinding]>,
+    constructor: fn(NativeExpr, String) -> NativeExpr,
+) -> Result<NativeExpr, FallbackReason> {
+    let [expr, pattern] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    Ok(constructor(lower_physical_expr_with_bindings(expr, input_schema, bindings)?, literal_string(pattern)?))
 }
 
 fn lower_string_length_function(
@@ -491,6 +536,30 @@ fn lower_round_function(
         lower_physical_expr_with_bindings(&args[0], input_schema, bindings)?,
         decimal_places,
         output_type,
+    ))
+}
+
+fn lower_nullif_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+    bindings: Option<&[FieldBinding]>,
+) -> Result<NativeExpr, FallbackReason> {
+    let [left, right] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !is_supported_native_type(&output_type) {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    let left = lower_physical_expr_with_bindings(left, input_schema, bindings)?;
+    let right = lower_physical_expr_with_bindings(right, input_schema, bindings)?;
+    Ok(NativeExpr::case(
+        vec![NativeCaseWhen::new(
+            NativeExpr::is_not_distinct_from(left.clone(), right),
+            NativeExpr::literal(nexus_query_engine::LiteralValue::Null(output_type)),
+        )],
+        left,
     ))
 }
 
@@ -622,10 +691,7 @@ pub(super) fn collect_required_field_indices(
                 let [field, expr] = function.args() else {
                     return Err(FallbackReason::UnsupportedExpression);
                 };
-                match literal_string(field)?.to_ascii_lowercase().as_str() {
-                    "minute" => {},
-                    _ => return Err(FallbackReason::UnsupportedExpression),
-                }
+                lower_date_trunc_field(&literal_string(field)?.to_ascii_lowercase())?;
                 collect_required_field_indices(expr, input_schema, required)
             },
             "to_timestamp_seconds" => {
@@ -639,6 +705,23 @@ pub(super) fn collect_required_field_indices(
                     return Err(FallbackReason::UnsupportedExpression);
                 };
                 collect_required_field_indices(expr, input_schema, required)
+            },
+            "contains" | "starts_with" | "ends_with" => {
+                let [expr, pattern] = function.args() else {
+                    return Err(FallbackReason::UnsupportedExpression);
+                };
+                literal_string(pattern)?;
+                collect_required_field_indices(expr, input_schema, required)
+            },
+            "trim" | "btrim" | "ltrim" | "rtrim" => {
+                let args = function.args();
+                if !(1..=2).contains(&args.len()) {
+                    return Err(FallbackReason::UnsupportedExpression);
+                }
+                if args.len() == 2 {
+                    literal_string(&args[1])?;
+                }
+                collect_required_field_indices(&args[0], input_schema, required)
             },
             "regexp_replace" => {
                 let [expr, pattern, replacement] = function.args() else {
@@ -678,6 +761,13 @@ pub(super) fn collect_required_field_indices(
                     literal_i32(&args[1])?;
                 }
                 collect_required_field_indices(&args[0], input_schema, required)
+            },
+            "nullif" => {
+                let [left, right] = function.args() else {
+                    return Err(FallbackReason::UnsupportedExpression);
+                };
+                collect_required_field_indices(left, input_schema, required)?;
+                collect_required_field_indices(right, input_schema, required)
             },
             _ => Err(FallbackReason::UnsupportedExpression),
         }?;

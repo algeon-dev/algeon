@@ -152,6 +152,19 @@ fn global_partial_with_timestamp_uses_eight_bytes() {
 }
 
 #[test]
+fn grouped_partial_with_temporal_keys_uses_physical_widths() {
+    let input_rows = 256;
+    let columns = [
+        fixed_column(ArrowDataType::Date64),
+        fixed_column(ArrowDataType::Time32(TimeUnit::Millisecond)),
+        fixed_column(ArrowDataType::Time64(TimeUnit::Nanosecond)),
+    ];
+    let bound = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Grouped { input_rows }, &columns).unwrap();
+    let direct = join_output_upper_bound_bytes(input_rows, &columns).unwrap();
+    assert_eq!(bound, direct);
+}
+
+#[test]
 fn grouped_partial_with_no_aggregate_state_only_group_keys() {
     // DISTINCT-style partial: only group keys, no aggregate state columns.
     // (Conceptually mirrors `SELECT DISTINCT col_a, col_b` rewritten as

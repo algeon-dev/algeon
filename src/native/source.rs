@@ -19,7 +19,13 @@ use super::{
         metadata_row_group_selections, scan_predicate_is_dynamic_filter_hint, validate_pruning_only_parquet_predicate,
     },
 };
-use crate::policy::FallbackReason;
+use crate::{
+    policy::FallbackReason,
+    table_format::{
+        TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata, TableFormatReadCapability,
+        resolve_table_format_parquet_source_with_metadata,
+    },
+};
 
 mod columns;
 mod diagnostics;
@@ -37,7 +43,7 @@ pub(super) fn validate_slice1_parquet_scan(
     source_schema: SchemaRef,
     column_requirements: &NativeParquetColumnRequirements,
 ) -> Result<(), FallbackReason> {
-    if !file_scan.object_store_url.as_str().starts_with("file://") {
+    if !native_parquet_object_store_scan_is_supported(file_scan) {
         return Err(FallbackReason::NativeSourceNonLocalObjectStore);
     }
     validate_partition_columns(file_scan, &column_requirements.partition_column_indices)?;
@@ -64,11 +70,22 @@ pub(super) fn validate_slice1_parquet_scan(
 }
 
 pub(super) fn native_preserve_order_scan_is_supported(file_scan: &FileScanConfig) -> bool {
+    // DataFusion may use multiple ordered file groups as parallel sorted runs.
+    // Native lowering flattens groups into one sequential file list, which only
+    // preserves the order contract when there is a single group.
     !file_scan.preserve_order || file_scan.file_groups.len() == 1
 }
 
 pub(super) fn native_declared_output_ordering_scan_is_supported(file_scan: &FileScanConfig) -> bool {
+    // See `native_preserve_order_scan_is_supported`: flattening multiple file
+    // groups does not merge parallel sorted runs, so it cannot reproduce a
+    // declared scan ordering.
     file_scan.output_ordering.is_empty() || file_scan.file_groups.len() == 1
+}
+
+pub(super) fn native_parquet_object_store_scan_is_supported(file_scan: &FileScanConfig) -> bool {
+    let object_store_url = file_scan.object_store_url.as_str();
+    object_store_url.starts_with("file://") || object_store_url.starts_with("s3://")
 }
 
 pub(super) fn native_parquet_file_reader_factory_is_supported(parquet_source: &ParquetSource) -> bool {
@@ -98,7 +115,7 @@ pub(super) fn local_parquet_files(
     column_requirements: &NativeParquetColumnRequirements,
 ) -> Result<Vec<NativeLocalParquetFile>, FallbackReason> {
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
-    if files.is_empty() {
+    if local_parquet_scan_is_empty(file_scan) {
         return Err(FallbackReason::NativeSourceEmpty);
     }
     let scan_files = coalesced_local_parquet_scan_files(&files)?;
@@ -107,15 +124,14 @@ pub(super) fn local_parquet_files(
     let mut native_files = Vec::with_capacity(scan_files.len());
     for (file_index, scan_file) in scan_files.iter().enumerate() {
         let file = scan_file.file;
-        let path = local_object_path_to_filesystem(file.object_meta.location.as_ref());
-        let stable_id = format!("local:{}:{}", path.display(), file.object_meta.size);
-        let mut native_file =
-            NativeLocalParquetFile::new(path).with_stable_id(stable_id).with_file_size_bytes(file.object_meta.size);
+        let mut native_file = native_parquet_file_for_scan(file_scan, file)?;
         if !column_requirements.partition_column_indices.is_empty() {
             native_file = native_file
                 .with_partition_values(native_partition_values(file, &column_requirements.partition_column_indices)?);
         }
-        if let Some(row_groups) = explicit_row_group_selection(file)? {
+        if let Some(row_groups) = scan_file.byte_range_row_groups.clone() {
+            native_file = native_file.with_row_groups(row_groups);
+        } else if let Some(row_groups) = explicit_row_group_selection(file)? {
             native_file = native_file.with_row_groups(row_groups);
         } else if let Some(row_groups) =
             metadata_row_group_selections.as_ref().and_then(|selections| selections.get(file_index))
@@ -126,6 +142,59 @@ pub(super) fn local_parquet_files(
         native_files.push(native_file);
     }
     Ok(native_files)
+}
+
+pub(super) fn local_parquet_scan_is_empty(file_scan: &FileScanConfig) -> bool {
+    file_scan.file_groups.iter().all(|group| group.files().is_empty())
+}
+
+fn native_parquet_file_for_scan(
+    file_scan: &FileScanConfig,
+    file: &datafusion::datasource::listing::PartitionedFile,
+) -> Result<NativeLocalParquetFile, FallbackReason> {
+    if file_scan.object_store_url.as_str().starts_with("file://") {
+        let path = local_object_path_to_filesystem(file.object_meta.location.as_ref());
+        let stable_id = format!("local:{}:{}", path.display(), file.object_meta.size);
+        return Ok(NativeLocalParquetFile::new(path)
+            .with_stable_id(stable_id)
+            .with_file_size_bytes(file.object_meta.size));
+    }
+
+    if !file_scan.object_store_url.as_str().starts_with("s3://") {
+        return Err(FallbackReason::NativeSourceNonLocalObjectStore);
+    }
+
+    let uri = object_store_file_uri(file_scan, file)?;
+    let mut metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(file.object_meta.size), None);
+    if let Some(content_identity) = file.object_meta.e_tag.as_ref().or(file.object_meta.version.as_ref()) {
+        metadata = metadata.with_content_identity(content_identity.clone());
+    }
+    let resolved = resolve_table_format_parquet_source_with_metadata(
+        uri.as_str(),
+        &TableFormatReadCapability::object_store("s3"),
+        &TableFormatParquetReadStrategyConfig::from_env(),
+        &metadata,
+    )
+    .map_err(|_error| FallbackReason::NativeSourceNonLocalObjectStore)?;
+    NativeLocalParquetFile::from_resolved_parquet_source(resolved)
+        .map(|native_file| native_file.with_file_size_bytes(file.object_meta.size))
+        .map_err(|_error| FallbackReason::NativeSourceNonLocalObjectStore)
+}
+
+fn object_store_file_uri(
+    file_scan: &FileScanConfig,
+    file: &datafusion::datasource::listing::PartitionedFile,
+) -> Result<String, FallbackReason> {
+    let location = file.object_meta.location.as_ref();
+    if location.starts_with("s3://") {
+        return Ok(location.to_string());
+    }
+    if location.contains("://") {
+        return Err(FallbackReason::NativeSourceNonLocalObjectStore);
+    }
+    let base = file_scan.object_store_url.as_str().trim_end_matches('/');
+    let key = location.trim_start_matches('/');
+    Ok(format!("{base}/{key}"))
 }
 
 pub(super) fn attach_row_group_byte_metadata(

@@ -59,7 +59,7 @@ pub(super) fn iceberg_file_scan_tasks_to_table_format_scan_plan_with_config_and_
     if let Some(schema) = logical_schema {
         plan = plan.with_logical_schema(Arc::clone(&schema)).with_native_source_schema(schema);
     }
-    if let Some(mapping) = count_star_probe_column_mapping_for_tasks(&tasks)? {
+    if let Some(mapping) = count_star_probe_column_mapping_for_tasks(&mut plan, &tasks)? {
         plan.pure_filter_columns.push(mapping);
     }
 
@@ -318,6 +318,7 @@ pub(super) fn attach_manifest_delete_metadata(
         for delete_file in data_file
             .position_delete_files
             .iter_mut()
+            .chain(data_file.equality_delete_files.iter_mut())
             .filter(|delete_file| delete_file.location == limited_delete.file_path)
         {
             delete_file.row_count = Some(limited_delete.record_count);
@@ -357,6 +358,7 @@ pub(super) fn file_scan_task_from_manifest_entry(
     schema: IcebergSchemaRef,
     field_ids: Arc<Vec<i32>>,
     partition_spec: Option<Arc<PartitionSpec>>,
+    name_mapping: Option<Arc<IcebergNameMapping>>,
     deletes: Vec<FileScanTaskDeleteFile>,
     case_sensitive: bool,
 ) -> FileScanTask {
@@ -373,7 +375,7 @@ pub(super) fn file_scan_task_from_manifest_entry(
         .with_deletes(deletes)
         .with_partition(Some(entry.data_file().partition().clone()))
         .with_partition_spec(partition_spec)
-        .with_name_mapping(None)
+        .with_name_mapping(name_mapping)
         .with_case_sensitive(case_sensitive)
         .build()
 }
@@ -443,6 +445,9 @@ pub(super) fn trim_predicate_free_scan_limit_data_files(plan: &mut TableFormatSc
 }
 
 pub(super) fn data_file_live_row_lower_bound(file: &TableFormatDataFile) -> Option<u64> {
+    if file.has_equality_delete_files() {
+        return None;
+    }
     let data_rows = file.row_count?;
     let delete_rows = file
         .position_delete_files
@@ -635,6 +640,7 @@ pub(super) async fn attach_remote_footer_schemas_for_field_id_proof(
 }
 
 pub(super) fn count_star_probe_column_mapping_for_tasks(
+    plan: &mut TableFormatScanPlan,
     tasks: &[FileScanTask],
 ) -> Result<Option<TableFormatColumnMapping>> {
     if tasks.is_empty()
@@ -645,6 +651,7 @@ pub(super) fn count_star_probe_column_mapping_for_tasks(
     }
 
     let schema = tasks[0].schema();
+    let mut rejected_name_mapping = None;
     for field in schema.as_struct().fields() {
         if !count_star_probe_field_is_direct_file_column_for_missing_count_tasks(tasks, field.id)? {
             continue;
@@ -653,7 +660,14 @@ pub(super) fn count_star_probe_column_mapping_for_tasks(
         if !is_supported_arrow_type(&data_type) {
             continue;
         }
-        return Ok(Some(TableFormatColumnMapping::new(
+        let name_mapping_candidates = match count_star_probe_name_mapping_candidates_for_tasks(tasks, field.id) {
+            Ok(candidates) => candidates,
+            Err(code) => {
+                rejected_name_mapping.get_or_insert(code);
+                continue;
+            },
+        };
+        let mut mapping = TableFormatColumnMapping::new(
             Some(field.id),
             field.name.clone(),
             Some(field.name.clone()),
@@ -661,10 +675,46 @@ pub(super) fn count_star_probe_column_mapping_for_tasks(
             !field.required,
             TableFormatColumnSource::DirectTopLevelFileColumn,
             TableFormatColumnRole::PureFilter,
-        )));
+        );
+        if let Some(names) = name_mapping_candidates {
+            mapping = mapping.with_field_id_source_names(names);
+        }
+        return Ok(Some(mapping));
+    }
+
+    if let Some(code) = rejected_name_mapping {
+        plan.unsupported_features.push(TableFormatUnsupportedFeature::new(
+            code,
+            "Iceberg name mapping is ambiguous, incomplete, or nested for the COUNT(*) row-presence carrier",
+        ));
     }
 
     Ok(None)
+}
+
+fn count_star_probe_name_mapping_candidates_for_tasks(
+    tasks: &[FileScanTask],
+    field_id: i32,
+) -> std::result::Result<Option<Vec<String>>, TableFormatUnsupportedFeatureCode> {
+    let mut candidates = None;
+    for task in tasks.iter().filter(|task| task.record_count.is_none()) {
+        let Some(mapping) = task.name_mapping.as_deref() else {
+            continue;
+        };
+        let (mut task_candidates, rejected_code) =
+            name_mapping_candidates_for_field_ids(mapping, task.schema(), &[field_id]);
+        if let Some(code) = rejected_code {
+            return Err(code);
+        }
+        let Some(task_candidate) = task_candidates.pop() else {
+            return Err(TableFormatUnsupportedFeatureCode::IcebergNameMappingUnsupported);
+        };
+        if candidates.as_ref().is_some_and(|candidates| candidates != &task_candidate.names) {
+            return Err(TableFormatUnsupportedFeatureCode::IcebergNameMappingUnsupported);
+        }
+        candidates = Some(task_candidate.names);
+    }
+    Ok(candidates)
 }
 
 pub(super) fn count_star_probe_field_is_direct_file_column_for_missing_count_tasks(
@@ -757,19 +807,56 @@ pub(super) fn append_task_facts(
         ));
     }
 
-    if let Some(name_mapping) = task.name_mapping.as_deref() {
-        if !name_mapping_is_projection_identity(name_mapping, task.schema(), &task.project_field_ids) {
-            plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
-                TableFormatUnsupportedFeatureCode::IcebergNameMappingUnsupported,
-                file_id.clone(),
-                "Iceberg name mapping is not an identity of the scan schema; non-identity mappings require explicit native field-id mapping support",
-            ));
+    let equality_delete_field_ids = task_equality_delete_field_ids(&task);
+    let mut scan_field_ids = task.project_field_ids.clone();
+    for field_id in &equality_delete_field_ids {
+        if !scan_field_ids.contains(field_id) {
+            scan_field_ids.push(*field_id);
         }
     }
+    let name_mapping_candidates =
+        append_name_mapping_unsupported_features(plan, &file_id, &task.name_mapping, task.schema(), &scan_field_ids);
 
     let partition_spec = task.partition_spec.as_deref();
     for field_id in task.project_field_ids.iter().copied() {
-        append_projected_column_mapping(plan, task.schema(), partition_spec, field_id)?;
+        let name_mapping_candidates = name_mapping_candidates.as_ref().and_then(|candidates| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.field_id == field_id)
+                .map(|candidate| candidate.names.as_slice())
+        });
+        append_table_format_column_mapping(
+            plan,
+            task.schema(),
+            partition_spec,
+            field_id,
+            name_mapping_candidates,
+            TableFormatColumnRole::Projected,
+        )?;
+    }
+    for field_id in equality_delete_field_ids {
+        if plan
+            .projected_columns
+            .iter()
+            .chain(plan.pure_filter_columns.iter())
+            .any(|column| column.field_id == Some(field_id))
+        {
+            continue;
+        }
+        let name_mapping_candidates = name_mapping_candidates.as_ref().and_then(|candidates| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.field_id == field_id)
+                .map(|candidate| candidate.names.as_slice())
+        });
+        append_table_format_column_mapping(
+            plan,
+            task.schema(),
+            partition_spec,
+            field_id,
+            name_mapping_candidates,
+            TableFormatColumnRole::PureFilter,
+        )?;
     }
 
     for (delete_index, delete_file) in task.deletes.iter().enumerate() {
@@ -786,6 +873,21 @@ pub(super) fn append_task_facts(
     plan.data_files.push(data_file);
 
     Ok(())
+}
+
+fn task_equality_delete_field_ids(task: &FileScanTask) -> Vec<i32> {
+    let mut field_ids = Vec::new();
+    for delete_file in &task.deletes {
+        if delete_file.file_type != DataContentType::EqualityDeletes {
+            continue;
+        }
+        for field_id in delete_file.equality_ids.iter().flatten() {
+            if !field_ids.contains(field_id) {
+                field_ids.push(*field_id);
+            }
+        }
+    }
+    field_ids
 }
 
 pub(super) fn append_partition_values(
@@ -820,15 +922,15 @@ pub(super) fn append_partition_values(
             .with_fact("partition_index", partition_index));
         };
         let Some(source_field) = task.schema().field_by_id(partition_field.source_id) else {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                TASK_CONVERSION_OPERATION,
-                "Iceberg partition source field is absent from the scan schema",
-            )
-            .with_fact("table_format", TableFormat::Iceberg.code())
-            .with_fact("data_file_id", file_id)
-            .with_fact("source_field_id", partition_field.source_id)
-            .with_fact("partition_field", partition_field.name.as_str()));
+            plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
+                TableFormatUnsupportedFeatureCode::IcebergPartitionTransformUnsupported,
+                file_id,
+                format!(
+                    "Iceberg partition field {} references source field id {} absent from the scan schema",
+                    partition_field.name, partition_field.source_id
+                ),
+            ));
+            return Ok(());
         };
         let transform = table_format_partition_transform(&partition_field.transform);
         let transform_code = transform.code().to_string();
@@ -859,53 +961,84 @@ pub(super) fn append_partition_values(
     Ok(())
 }
 
-/// Whether `mapping` resolves every projected top-level field exactly the way
-/// the native scan already resolves it — by the schema field name.
-///
-/// The native Parquet scan matches file columns by name
-/// (`append_projected_column_mapping` emits the schema field name as the file
-/// column name), so a name mapping is admissible iff following it can never
-/// disagree with name-based resolution:
-///
-/// - every projected field id has exactly one root mapped-field entry, whose
-///   single name is exactly the schema field name and which has no nested
-///   children, and
-/// - no other root entry claims that field name (an alias entry could bind the
-///   same file column to a different field id than name-based resolution).
-///
-/// Java writers attach exactly such identity mappings automatically (e.g.
-/// Spark's `add_files` imports of Parquet files that carry no field ids).
-/// Anything else keeps the structured rejection.
-pub(super) fn name_mapping_is_projection_identity(
-    mapping: &IcebergNameMapping,
-    schema: &IcebergSchema,
-    projected_field_ids: &[i32],
-) -> bool {
-    projected_field_ids.iter().all(|field_id| {
-        let Some(field) = schema.as_struct().field_by_id(*field_id) else {
-            return false;
-        };
-        let mut identity_entries = mapping.fields().iter().filter(|entry| entry.field_id() == Some(*field_id));
-        let Some(entry) = identity_entries.next() else {
-            return false;
-        };
-        if identity_entries.next().is_some() {
-            return false;
-        }
-        let identity = entry.fields().is_empty() && entry.names() == std::slice::from_ref(&field.name);
-        let name_claimed_elsewhere = mapping
-            .fields()
-            .iter()
-            .any(|other| other.field_id() != Some(*field_id) && other.names().contains(&field.name));
-        identity && !name_claimed_elsewhere
-    })
+#[derive(Debug, Clone)]
+struct ProjectedNameMappingCandidates {
+    field_id: i32,
+    names: Vec<String>,
 }
 
-pub(super) fn append_projected_column_mapping(
+fn append_name_mapping_unsupported_features(
+    plan: &mut TableFormatScanPlan,
+    file_id: &str,
+    mapping: &Option<Arc<IcebergNameMapping>>,
+    schema: &IcebergSchema,
+    projected_field_ids: &[i32],
+) -> Option<Vec<ProjectedNameMappingCandidates>> {
+    let mapping = mapping.as_deref()?;
+
+    let (candidates, rejected_code) = name_mapping_candidates_for_field_ids(mapping, schema, projected_field_ids);
+    if let Some(code) = rejected_code {
+        plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
+            code,
+            file_id,
+            "Iceberg name mapping is ambiguous, incomplete, or nested for the projected top-level scan schema",
+        ));
+    }
+    Some(candidates)
+}
+
+fn name_mapping_candidates_for_field_ids(
+    mapping: &IcebergNameMapping,
+    schema: &IcebergSchema,
+    field_ids: &[i32],
+) -> (Vec<ProjectedNameMappingCandidates>, Option<TableFormatUnsupportedFeatureCode>) {
+    let mut candidates = Vec::with_capacity(field_ids.len());
+    let mut rejected_code = None;
+    let mut claimed_names = std::collections::BTreeSet::new();
+    for field_id in field_ids {
+        let Some(field) = schema.as_struct().field_by_id(*field_id) else {
+            rejected_code = Some(TableFormatUnsupportedFeatureCode::IcebergFieldIdMappingUnsupported);
+            continue;
+        };
+        let entries = mapping.fields().iter().filter(|entry| entry.field_id() == Some(*field_id)).collect::<Vec<_>>();
+        let [entry] = entries.as_slice() else {
+            rejected_code = Some(TableFormatUnsupportedFeatureCode::IcebergNameMappingUnsupported);
+            continue;
+        };
+        if !entry.fields().is_empty() {
+            rejected_code = Some(TableFormatUnsupportedFeatureCode::IcebergNestedProjectionUnsupported);
+            continue;
+        }
+        if entry.names().is_empty() {
+            rejected_code = Some(TableFormatUnsupportedFeatureCode::IcebergNameMappingUnsupported);
+            continue;
+        }
+        for name in entry.names() {
+            if !claimed_names.insert(name.clone()) {
+                rejected_code = Some(TableFormatUnsupportedFeatureCode::IcebergNameMappingUnsupported);
+            }
+        }
+        candidates.push(ProjectedNameMappingCandidates { field_id: *field_id, names: entry.names().to_vec() });
+
+        let name_claimed_elsewhere = mapping.fields().iter().any(|other| {
+            other.field_id() != Some(*field_id)
+                && other.names().iter().any(|name| name == &field.name || entry.names().contains(name))
+        });
+        if name_claimed_elsewhere {
+            rejected_code = Some(TableFormatUnsupportedFeatureCode::IcebergNameMappingUnsupported);
+        }
+    }
+
+    (candidates, rejected_code)
+}
+
+pub(super) fn append_table_format_column_mapping(
     plan: &mut TableFormatScanPlan,
     schema: &IcebergSchema,
     partition_spec: Option<&PartitionSpec>,
     field_id: i32,
+    name_mapping_candidates: Option<&[String]>,
+    role: TableFormatColumnRole,
 ) -> Result<()> {
     let Some(field) = schema.field_by_id(field_id) else {
         plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
@@ -941,8 +1074,11 @@ pub(super) fn append_projected_column_mapping(
         data_type,
         !field.required,
         source,
-        TableFormatColumnRole::Projected,
+        role,
     );
+    if let Some(names) = name_mapping_candidates {
+        mapping = mapping.with_field_id_source_names(names.iter().cloned());
+    }
     if let Some(default_value) = field
         .initial_default
         .as_ref()
@@ -950,7 +1086,10 @@ pub(super) fn append_projected_column_mapping(
     {
         mapping = mapping.with_missing_default_value(default_value);
     }
-    plan.projected_columns.push(mapping);
+    match role {
+        TableFormatColumnRole::Projected => plan.projected_columns.push(mapping),
+        TableFormatColumnRole::PureFilter => plan.pure_filter_columns.push(mapping),
+    }
 
     Ok(())
 }
@@ -1027,7 +1166,10 @@ pub(super) fn append_delete_file_facts(
     let content = table_format_delete_content(delete_file.file_type);
     let read_capability = read_capability_for_location(&delete_file.file_path);
     let resolved_parquet_source = if format == TableFormatDataFileFormat::Parquet
-        && content == TableFormatDeleteFileContent::PositionDeletes
+        && matches!(
+            content,
+            TableFormatDeleteFileContent::PositionDeletes | TableFormatDeleteFileContent::EqualityDeletes
+        )
         && read_capability.is_native_parquet_capable()
     {
         let metadata =
@@ -1053,18 +1195,34 @@ pub(super) fn append_delete_file_facts(
     if let Some(resolved_parquet_source) = resolved_parquet_source {
         table_delete = table_delete.with_resolved_parquet_source(resolved_parquet_source);
     }
+    if let Some(equality_ids) = delete_file.equality_ids.clone() {
+        table_delete = table_delete.with_equality_ids(equality_ids);
+    }
 
-    let supported = table_delete.is_supported_position_delete();
     plan.delete_files.push(table_delete.clone());
-    if supported {
+    if table_delete.is_supported_position_delete() {
         data_file.push_position_delete_file(table_delete);
+    } else if table_delete.is_supported_equality_delete() {
+        plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
+            TableFormatUnsupportedFeatureCode::IcebergDeleteFilesUnsupported,
+            delete_id,
+            "Iceberg equality delete files require delete-file footer field-id proof before native execution",
+        ));
     } else {
-        let reason = if content != TableFormatDeleteFileContent::PositionDeletes {
-            format!("Iceberg {} delete files are not supported by native position-delete execution", content.code())
+        let reason = if content != TableFormatDeleteFileContent::PositionDeletes
+            && content != TableFormatDeleteFileContent::EqualityDeletes
+        {
+            format!("Iceberg {} delete files are not supported by native row-delete execution", content.code())
         } else if format != TableFormatDataFileFormat::Parquet {
-            format!("Iceberg position delete file format {} is not native Parquet", format.code())
+            format!("Iceberg {} delete file format {} is not native Parquet", content.code(), format.code())
+        } else if !read_capability.is_native_parquet_capable() {
+            format!(
+                "Iceberg {} delete file location requires {} read capability",
+                content.code(),
+                read_capability.detail()
+            )
         } else {
-            format!("Iceberg position delete file location requires {} read capability", read_capability.detail())
+            format!("Iceberg {} delete files require non-empty equality field ids for native execution", content.code())
         };
         plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
             TableFormatUnsupportedFeatureCode::IcebergDeleteFilesUnsupported,

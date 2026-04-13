@@ -11,7 +11,7 @@ pub(in crate::native) struct NormalizedNativePlan<'a> {
     /// count must stay aligned with the normalized tree below.
     pub(in crate::native) candidate: GpuCandidate,
     pub(in crate::native) root: NormalizedNativeRoot<'a>,
-    pub(in crate::native) sort: Option<&'a SortExec>,
+    pub(in crate::native) sort: Option<NormalizedNativeSortExprs<'a>>,
     pub(in crate::native) limit: Option<LimitSpec>,
 }
 
@@ -324,7 +324,7 @@ impl NormalizedNativeAggregate<'_> {
 /// contract immediately below a native window.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeSort<'a> {
-    pub(in crate::native) sort: &'a SortExec,
+    pub(in crate::native) sort: NormalizedNativeSortExprs<'a>,
     pub(in crate::native) fetch: Option<LimitSpec>,
     pub(in crate::native) input: Box<NormalizedNativeInput<'a>>,
 }
@@ -337,6 +337,45 @@ impl NormalizedNativeSort<'_> {
 
     fn operator_count(&self) -> usize {
         1 + self.input.operator_count()
+    }
+}
+
+/// Sort ordering carried by a normalized native sort node.
+///
+/// Most physical sort roots borrow the original DataFusion `SortExec`.
+/// Sort-preserving merge roots provide only an ordering contract, so the
+/// normalizer stores the ordering plus the schema it should be resolved
+/// against.
+#[derive(Debug, Clone)]
+pub(in crate::native) struct NormalizedNativeSortExprs<'a> {
+    ordering: &'a LexOrdering,
+    input_schema: SchemaRef,
+    output_schema: SchemaRef,
+}
+
+impl<'a> NormalizedNativeSortExprs<'a> {
+    pub(in crate::native) fn from_sort_exec(sort: &'a SortExec) -> Self {
+        Self { ordering: sort.expr(), input_schema: sort.input().schema(), output_schema: sort.schema() }
+    }
+
+    pub(in crate::native) fn from_ordering(
+        ordering: &'a LexOrdering,
+        input_schema: SchemaRef,
+        output_schema: SchemaRef,
+    ) -> Self {
+        Self { ordering, input_schema, output_schema }
+    }
+
+    pub(in crate::native) fn ordering(&self) -> &LexOrdering {
+        self.ordering
+    }
+
+    pub(in crate::native) fn input_schema(&self) -> &SchemaRef {
+        &self.input_schema
+    }
+
+    pub(in crate::native) fn output_schema(&self) -> &SchemaRef {
+        &self.output_schema
     }
 }
 
@@ -484,7 +523,10 @@ pub(in crate::native) enum NativeStackRoot {
     LocalLimit,
     Sort,
     SortFetch,
+    SortPreservingMerge,
     SortPreservingMergeFetch,
+    SortPreservingMergeSort,
+    SortPreservingMergeFetchSort,
 }
 
 /// Aggregate shape family used by diagnostics string builders.

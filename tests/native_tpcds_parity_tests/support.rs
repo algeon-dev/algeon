@@ -50,6 +50,23 @@ pub(super) fn assert_whole_native_parity_row(
     assert_successful_native_parity_row(row, query_id, comparison_mode, output_rows);
 }
 
+pub(super) fn assert_partial_native_parity_row(
+    row: &NativeTpcdsParityRow,
+    query_id: &str,
+    comparison_mode: ParityComparisonMode,
+    output_rows: usize,
+    native_plan_fragment_count: usize,
+    host_datafusion_boundary_count: usize,
+) {
+    assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced, "{query_id}");
+    assert_eq!(row.native_reason_code, None, "{query_id}");
+    assert_eq!(row.native_unsupported_category, None, "{query_id}");
+    assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::PartialNative, "{query_id}");
+    assert_eq!(row.native_plan_fragment_count, native_plan_fragment_count, "{query_id}");
+    assert_eq!(row.host_datafusion_boundary_count, host_datafusion_boundary_count, "{query_id}");
+    assert_successful_native_parity_row(row, query_id, comparison_mode, output_rows);
+}
+
 fn assert_successful_native_parity_row(
     row: &NativeTpcdsParityRow,
     query_id: &str,

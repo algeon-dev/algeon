@@ -132,10 +132,16 @@ fn column_upper_bound_bytes(expected_output_rows: u64, column: &JoinOutputColumn
     let data_bytes = match &column.data_type {
         ArrowDataType::Boolean | ArrowDataType::Int8 | ArrowDataType::UInt8 => expected_output_rows,
         ArrowDataType::Int16 | ArrowDataType::UInt16 => expected_output_rows.saturating_mul(2),
-        ArrowDataType::Int32 | ArrowDataType::UInt32 | ArrowDataType::Float32 | ArrowDataType::Date32 => {
-            expected_output_rows.saturating_mul(4)
-        },
-        ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64 => expected_output_rows.saturating_mul(8),
+        ArrowDataType::Int32
+        | ArrowDataType::UInt32
+        | ArrowDataType::Float32
+        | ArrowDataType::Date32
+        | ArrowDataType::Time32(_) => expected_output_rows.saturating_mul(4),
+        ArrowDataType::Int64
+        | ArrowDataType::UInt64
+        | ArrowDataType::Float64
+        | ArrowDataType::Date64
+        | ArrowDataType::Time64(_) => expected_output_rows.saturating_mul(8),
         ArrowDataType::Timestamp(_, None) => expected_output_rows.saturating_mul(8),
         ArrowDataType::Duration(_) => expected_output_rows.saturating_mul(8),
         ArrowDataType::Decimal128(_, _) => expected_output_rows.saturating_mul(16),

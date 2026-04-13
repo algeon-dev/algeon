@@ -268,6 +268,12 @@ fn eval_scalar(expr: &Expr, batch: &RecordBatch, row: usize) -> Option<Scalar> {
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::StringContains { .. }
+        | Expr::StartsWith { .. }
+        | Expr::EndsWith { .. }
         | Expr::StringLength { .. }
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
@@ -328,6 +334,7 @@ fn literal_scalar(value: &LiteralValue) -> Option<Scalar> {
         LiteralValue::Int8(value) => Some(Scalar::Int64(i64::from(*value))),
         LiteralValue::Int16(value) => Some(Scalar::Int64(i64::from(*value))),
         LiteralValue::Int32(value) | LiteralValue::Date32(value) => Some(Scalar::Int64(i64::from(*value))),
+        LiteralValue::Date64(value) => Some(Scalar::Int64(*value)),
         LiteralValue::Int64(value) => Some(Scalar::Int64(*value)),
         LiteralValue::UInt8(value) => Some(Scalar::UInt64(u64::from(*value))),
         LiteralValue::UInt16(value) => Some(Scalar::UInt64(u64::from(*value))),
@@ -338,6 +345,8 @@ fn literal_scalar(value: &LiteralValue) -> Option<Scalar> {
         LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => Some(Scalar::String(value.clone())),
         LiteralValue::Null(_) => Some(Scalar::Null),
         LiteralValue::Decimal128 { .. }
+        | LiteralValue::Time32 { .. }
+        | LiteralValue::Time64 { .. }
         | LiteralValue::Timestamp { .. }
         | LiteralValue::Duration { .. }
         | LiteralValue::IntervalMonthDayNano { .. } => None,

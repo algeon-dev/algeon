@@ -14,17 +14,23 @@ mod validate;
 
 use std::sync::Arc;
 
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::{
+    physical_expr::{LexOrdering, PhysicalSortExpr, expressions::Column},
+    physical_plan::ExecutionPlan,
+};
 use lowering::lower_normalized_plan;
 use nexus_query_engine::{
-    NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan,
-    SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode,
+    Expr as NativeExpr, NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan,
+    SortExpr as NativeSortExpr, SortSpec as NativeSortSpec, SourceDiagnostics as NativeSourceDiagnostics,
+    SourceNode as NativeSourceNode,
 };
 use normalize::normalize_native_plan;
 use source::source_diagnostics_for_normalized_plan;
-use validate::native_zero_column_count_source_is_safe;
+use validate::{native_zero_column_count_source_is_safe, validate_sort_ordering};
 
-use crate::report::PlanningReport;
+use crate::report::{GpuCandidate, PlanningReport};
+
+const DECLARED_OUTPUT_ORDERING_SORT_OPERATOR: &str = "SortExec";
 
 /// Result of attempting to lower one DataFusion physical plan.
 #[derive(Debug, Clone)]
@@ -104,15 +110,59 @@ fn lower_physical_plan_to_native_with_mode(
                     source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
                 }
             },
-            |native_plan| {
+            |mut native_plan| {
+                let mut candidate = normalized.candidate.clone();
+                if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
+                    let mut report = PlanningReport::new();
+                    report.push_rejected(candidate, crate::policy::FallbackReason::NativeOrderedOutputUnsupported);
+                    return NativeLoweringResult {
+                        plans: Vec::new(),
+                        report,
+                        source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
+                    };
+                }
+                let mut appended_declared_output_sort = false;
+                if let Some(ordering) = plan.properties().output_ordering()
+                    && !native_plan_reproduces_declared_output_ordering(&native_plan)
+                {
+                    if !native_plan_can_append_declared_output_ordering_sort(&native_plan) {
+                        let mut report = PlanningReport::new();
+                        report.push_rejected(
+                            candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR),
+                            crate::policy::FallbackReason::NativeOrderedOutputUnsupported,
+                        );
+                        return NativeLoweringResult {
+                            plans: Vec::new(),
+                            report,
+                            source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
+                        };
+                    }
+                    let sort_spec = match declared_output_ordering_sort_spec(ordering, native_plan.root_node()) {
+                        Ok(sort_spec) => sort_spec,
+                        Err(reason) => {
+                            let mut report = PlanningReport::new();
+                            report.push_rejected(
+                                candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR),
+                                reason,
+                            );
+                            return NativeLoweringResult {
+                                plans: Vec::new(),
+                                report,
+                                source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
+                            };
+                        },
+                    };
+                    native_plan = native_plan.with_appended_sort(sort_spec);
+                    appended_declared_output_sort = true;
+                }
                 if plan.properties().output_ordering().is_some()
                     && !native_plan_reproduces_declared_output_ordering(&native_plan)
                 {
                     let mut report = PlanningReport::new();
-                    report.push_rejected(
-                        normalized.candidate.clone(),
-                        crate::policy::FallbackReason::NativeOrderedOutputUnsupported,
-                    );
+                    if appended_declared_output_sort {
+                        candidate = candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR);
+                    }
+                    report.push_rejected(candidate, crate::policy::FallbackReason::NativeOrderedOutputUnsupported);
                     return NativeLoweringResult {
                         plans: Vec::new(),
                         report,
@@ -121,7 +171,10 @@ fn lower_physical_plan_to_native_with_mode(
                 }
                 let source_diagnostics = source_diagnostics_for_native_plan(&native_plan);
                 let mut report = PlanningReport::new();
-                report.push_rewritten(normalized.candidate.clone());
+                if appended_declared_output_sort {
+                    candidate = candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR);
+                }
+                report.push_rewritten(candidate);
                 NativeLoweringResult { plans: vec![native_plan], report, source_diagnostics }
             },
         ),
@@ -131,6 +184,63 @@ fn lower_physical_plan_to_native_with_mode(
             NativeLoweringResult { plans: Vec::new(), report, source_diagnostics: Vec::new() }
         },
     }
+}
+
+pub(crate) fn reestablish_declared_output_ordering_if_needed(
+    native_plan: NativeQueryPlan,
+    ordering: Option<&LexOrdering>,
+) -> Result<(NativeQueryPlan, bool), crate::policy::FallbackReason> {
+    let Some(ordering) = ordering else {
+        return Ok((native_plan, false));
+    };
+    if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
+        return Err(crate::policy::FallbackReason::NativeOrderedOutputUnsupported);
+    }
+    if native_plan_reproduces_declared_output_ordering(&native_plan) {
+        return Ok((native_plan, false));
+    }
+    if !native_plan_can_append_declared_output_ordering_sort(&native_plan) {
+        return Err(crate::policy::FallbackReason::NativeOrderedOutputUnsupported);
+    }
+    let sort_spec = declared_output_ordering_sort_spec(ordering, native_plan.root_node())?;
+    Ok((native_plan.with_appended_sort(sort_spec), true))
+}
+
+pub(crate) fn wrap_candidate_with_declared_output_ordering_sort(candidate: GpuCandidate) -> GpuCandidate {
+    candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR)
+}
+
+fn declared_output_ordering_sort_spec(
+    ordering: &LexOrdering,
+    output_node: &nexus_query_engine::QueryNode,
+) -> Result<NativeSortSpec, crate::policy::FallbackReason> {
+    if ordering.is_empty() {
+        return Err(crate::policy::FallbackReason::NativeOrderedOutputUnsupported);
+    }
+    let output_schema = output_node.output_schema();
+    validate_sort_ordering(ordering, output_schema)?;
+    let expressions = ordering
+        .iter()
+        .map(|sort_expr| declared_output_ordering_sort_expr(sort_expr, output_schema))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(NativeSortSpec::new(expressions))
+}
+
+fn declared_output_ordering_sort_expr(
+    sort_expr: &PhysicalSortExpr,
+    output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<NativeSortExpr, crate::policy::FallbackReason> {
+    let column =
+        sort_expr.expr.downcast_ref::<Column>().ok_or(crate::policy::FallbackReason::NativeOrderedOutputUnsupported)?;
+    let field = output_schema
+        .fields()
+        .get(column.index())
+        .ok_or(crate::policy::FallbackReason::NativeOrderedOutputUnsupported)?;
+    Ok(NativeSortExpr::new(
+        NativeExpr::column(field.name().as_str()),
+        sort_expr.options.descending,
+        sort_expr.options.nulls_first,
+    ))
 }
 
 fn source_diagnostics_for_native_plan(plan: &NativeQueryPlan) -> Vec<NativeSourceDiagnostics> {
@@ -149,6 +259,53 @@ fn source_diagnostics_for_native_plan(plan: &NativeQueryPlan) -> Vec<NativeSourc
 
 pub(crate) fn native_plan_reproduces_declared_output_ordering(plan: &NativeQueryPlan) -> bool {
     native_node_reproduces_declared_output_ordering(plan, plan.root_id(), &mut Vec::new())
+}
+
+fn native_plan_can_append_declared_output_ordering_sort(plan: &NativeQueryPlan) -> bool {
+    native_plan_order_sensitive_inputs_are_reproduced(plan)
+        && native_node_allows_declared_output_ordering_sort_append(plan, plan.root_id(), &mut Vec::new())
+}
+
+fn native_plan_order_sensitive_inputs_are_reproduced(plan: &NativeQueryPlan) -> bool {
+    plan.nodes().iter().all(|node| match &node.kind {
+        NativePlanNode::Window(window) if !window.spec.order_by.is_empty() => {
+            native_node_reproduces_declared_output_ordering(plan, window.input, &mut Vec::new())
+        },
+        _ => true,
+    })
+}
+
+fn native_node_allows_declared_output_ordering_sort_append(
+    plan: &NativeQueryPlan,
+    node_id: NativeNodeId,
+    stack: &mut Vec<NativeNodeId>,
+) -> bool {
+    if stack.contains(&node_id) {
+        return false;
+    }
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    stack.push(node_id);
+    let allowed = match &node.kind {
+        NativePlanNode::Source(_) => true,
+        NativePlanNode::Filter(filter) => {
+            native_node_allows_declared_output_ordering_sort_append(plan, filter.input, stack)
+        },
+        NativePlanNode::Projection(projection) => {
+            native_node_allows_declared_output_ordering_sort_append(plan, projection.input, stack)
+        },
+        NativePlanNode::Aggregate(_) => true,
+        NativePlanNode::Sort(_) => true,
+        NativePlanNode::Limit(_)
+        | NativePlanNode::Window(_)
+        | NativePlanNode::Join(_)
+        | NativePlanNode::Union(_)
+        | NativePlanNode::EdgeNormalize(_)
+        | NativePlanNode::GraphAlgorithm(_) => false,
+    };
+    stack.pop();
+    allowed
 }
 
 fn native_node_reproduces_declared_output_ordering(
@@ -172,9 +329,43 @@ fn native_node_reproduces_declared_output_ordering(
         NativePlanNode::Projection(projection) => {
             native_node_reproduces_declared_output_ordering(plan, projection.input, stack)
         },
-        NativePlanNode::Limit(limit) => native_node_reproduces_declared_output_ordering(plan, limit.input, stack),
+        NativePlanNode::Limit(limit) => native_node_reproduces_limit_output_ordering(plan, limit.input, stack),
         NativePlanNode::Sort(_) => true,
         NativePlanNode::Aggregate(_)
+        | NativePlanNode::Window(_)
+        | NativePlanNode::Join(_)
+        | NativePlanNode::Union(_)
+        | NativePlanNode::EdgeNormalize(_)
+        | NativePlanNode::GraphAlgorithm(_) => false,
+    };
+    stack.pop();
+    reproduced
+}
+
+fn native_node_reproduces_limit_output_ordering(
+    plan: &NativeQueryPlan,
+    node_id: NativeNodeId,
+    stack: &mut Vec<NativeNodeId>,
+) -> bool {
+    if stack.contains(&node_id) {
+        return false;
+    }
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    stack.push(node_id);
+    let reproduced = match &node.kind {
+        NativePlanNode::Source(source) => match source.as_ref() {
+            NativeSourceNode::LocalParquet(_) | NativeSourceNode::LiteralBatch(_) => true,
+            NativeSourceNode::GpuResident(_) => false,
+        },
+        NativePlanNode::Filter(filter) => native_node_reproduces_limit_output_ordering(plan, filter.input, stack),
+        NativePlanNode::Projection(projection) => {
+            native_node_reproduces_limit_output_ordering(plan, projection.input, stack)
+        },
+        NativePlanNode::Sort(_) => true,
+        NativePlanNode::Limit(_)
+        | NativePlanNode::Aggregate(_)
         | NativePlanNode::Window(_)
         | NativePlanNode::Join(_)
         | NativePlanNode::Union(_)
@@ -190,9 +381,11 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::{
+        compute::SortOptions as ArrowSortOptions,
         datatypes::{DataType, Field, Schema, SchemaRef},
         record_batch::RecordBatch,
     };
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col};
     use nexus_query_engine::{
         AggregateExpr, AggregateFunction, AggregateSpec, Expr, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams,
         GraphConstructionOptions, GraphEdgeColumnBindings, GraphPageRankParams, JoinSpec, JoinType, LimitSpec,
@@ -201,10 +394,11 @@ mod tests {
         plan::{EdgeNormalizeSpec, graph_result_schema_for_params},
     };
 
-    use super::native_plan_reproduces_declared_output_ordering;
+    use super::{declared_output_ordering_sort_spec, native_plan_reproduces_declared_output_ordering};
+    use crate::policy::FallbackReason;
 
     #[test]
-    fn order_reproduction_audit_accepts_local_parquet_filter_projection_limit() {
+    fn order_reproduction_audit_accepts_local_parquet_filter_projection() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
         let filter = builder.add_filter(source, Expr::literal(LiteralValue::Boolean(true)), key_schema());
@@ -212,10 +406,31 @@ mod tests {
             filter,
             vec![ProjectionOutput::new(Expr::column("key"), Field::new("key", DataType::UInt32, false))],
         );
-        let limit = builder.add_limit(projection, LimitSpec::fetch(1), key_schema());
-        let plan = builder.finish_with_host_sink(limit);
+        let plan = builder.finish_with_host_sink(projection);
 
         assert!(native_plan_reproduces_declared_output_ordering(&plan));
+    }
+
+    #[test]
+    fn order_reproduction_audit_rejects_limit_over_order_breaking_input() {
+        let aggregate_schema = Arc::new(Schema::new(vec![
+            Field::new("key", DataType::UInt32, false),
+            Field::new("count_key", DataType::UInt64, false),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+        let aggregate = builder.add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("key")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "count_key")],
+            ),
+            Arc::clone(&aggregate_schema),
+        );
+        let limit = builder.add_limit(aggregate, LimitSpec::fetch(1), aggregate_schema);
+        let plan = builder.finish_with_host_sink(limit);
+
+        assert!(!native_plan_reproduces_declared_output_ordering(&plan));
     }
 
     #[test]
@@ -241,6 +456,29 @@ mod tests {
         let plan = builder.finish_with_host_sink(source);
 
         assert!(native_plan_reproduces_declared_output_ordering(&plan));
+    }
+
+    #[test]
+    fn declared_output_ordering_sort_spec_reuses_native_sort_key_type_admission() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "event_ts",
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into())),
+            false,
+        )]));
+        let ordering = LexOrdering::new([PhysicalSortExpr::new(
+            col("event_ts", &schema).unwrap(),
+            ArrowSortOptions::new(false, false),
+        )])
+        .expect("test ordering should be non-empty");
+        let batch = RecordBatch::new_empty(Arc::clone(&schema));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+        let plan = builder.finish_with_host_sink(source);
+
+        let reason = declared_output_ordering_sort_spec(&ordering, plan.root_node())
+            .expect_err("timestamp-with-timezone keys must stay rejected for appended declared-output ordering sorts");
+
+        assert_eq!(reason, FallbackReason::UnsupportedType);
     }
 
     #[test]

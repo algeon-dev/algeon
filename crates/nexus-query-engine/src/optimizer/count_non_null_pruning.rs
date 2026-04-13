@@ -667,6 +667,12 @@ fn collect_expr_columns(expr: &Expr, out: &mut BTreeSet<String>) {
         | Expr::IsNotNull(inner)
         | Expr::Lower(inner)
         | Expr::Upper(inner)
+        | Expr::Trim { expr: inner, .. }
+        | Expr::LTrim { expr: inner, .. }
+        | Expr::RTrim { expr: inner, .. }
+        | Expr::StringContains { expr: inner, .. }
+        | Expr::StartsWith { expr: inner, .. }
+        | Expr::EndsWith { expr: inner, .. }
         | Expr::Abs(inner) => collect_expr_columns(inner, out),
         Expr::Cast { expr, .. }
         | Expr::TryCast { expr, .. }

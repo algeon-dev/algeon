@@ -1,10 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use arrow::datatypes::{Field, Schema};
-use datafusion::{
-    physical_expr::expressions::Column,
-    physical_plan::{ExecutionPlan, sorts::sort::SortExec},
-};
+use arrow::datatypes::{Field, Schema, SchemaRef};
+use datafusion::physical_expr::{LexOrdering, expressions::Column};
 use nexus_query_engine::{
     Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder, SortExpr as NativeSortExpr,
     SortSpec as NativeSortSpec,
@@ -18,20 +15,22 @@ use super::{
 };
 use crate::policy::FallbackReason;
 
-pub(super) fn lower_sort_with_input(
+pub(super) fn lower_sort_ordering_with_input(
     builder: &mut NativeQueryPlanBuilder,
-    sort: &SortExec,
+    ordering: &LexOrdering,
+    sort_input_schema: &SchemaRef,
+    sort_output_schema: &SchemaRef,
     input: LoweredNativeInput,
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, FallbackReason> {
-    let prepared = materialize_sort_expressions(builder, sort, input)?;
+    let prepared = materialize_sort_expressions(builder, ordering, sort_input_schema, input)?;
     let node = builder.add_sort(
         prepared.input.node,
-        lower_sort_spec_with_prepared_input(sort, &prepared.input, &prepared.sort_columns)?,
+        lower_sort_spec_with_prepared_input(ordering, &prepared.input, &prepared.sort_columns)?,
         Arc::clone(&prepared.input.schema),
     );
     let sorted = LoweredNativeInput::with_bindings(node, prepared.input.schema, prepared.original_bindings);
-    project_sort_output(builder, sort, sorted, required_output_fields)
+    project_sort_output(builder, sort_output_schema, sorted, required_output_fields)
 }
 
 struct PreparedSortInput {
@@ -42,13 +41,14 @@ struct PreparedSortInput {
 
 fn materialize_sort_expressions(
     builder: &mut NativeQueryPlanBuilder,
-    sort: &SortExec,
+    ordering: &LexOrdering,
+    sort_input_schema: &SchemaRef,
     input: LoweredNativeInput,
 ) -> Result<PreparedSortInput, FallbackReason> {
-    let mut sort_columns = Vec::with_capacity(sort.expr().len());
+    let mut sort_columns = Vec::with_capacity(ordering.len());
     let mut temp_exprs = Vec::new();
     let mut used_names = input.schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
-    for (index, sort_expr) in sort.expr().iter().enumerate() {
+    for (index, sort_expr) in ordering.iter().enumerate() {
         if let Some(column) = sort_expr.expr.downcast_ref::<Column>() {
             sort_columns.push(input.binding_for_column(column)?.native_name.clone());
             continue;
@@ -75,15 +75,15 @@ fn materialize_sort_expressions(
     for (name, sort_expr) in temp_exprs {
         let data_type = sort_expr
             .expr
-            .data_type(sort.input().schema().as_ref())
+            .data_type(sort_input_schema.as_ref())
             .map_err(|_error| FallbackReason::UnsupportedExpression)?;
         let nullable = sort_expr
             .expr
-            .nullable(sort.input().schema().as_ref())
+            .nullable(sort_input_schema.as_ref())
             .map_err(|_error| FallbackReason::UnsupportedExpression)?;
         fields.push(Field::new(name.as_str(), data_type, nullable));
         expressions.push(alias_if_needed(
-            lower_physical_expr_with_bindings(&sort_expr.expr, &sort.input().schema(), Some(&input.bindings))?,
+            lower_physical_expr_with_bindings(&sort_expr.expr, sort_input_schema, Some(&input.bindings))?,
             name.as_str(),
         ));
     }
@@ -98,11 +98,11 @@ fn materialize_sort_expressions(
 
 fn project_sort_output(
     builder: &mut NativeQueryPlanBuilder,
-    sort: &SortExec,
+    sort_output_schema: &SchemaRef,
     sorted: LoweredNativeInput,
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, FallbackReason> {
-    let (schema, bindings) = executable_schema_and_bindings(&sort.schema(), required_output_fields)?;
+    let (schema, bindings) = executable_schema_and_bindings(sort_output_schema, required_output_fields)?;
     if bindings.len() == sorted.bindings.len()
         && bindings
             .iter()
@@ -122,15 +122,14 @@ fn unique_sort_key_name(index: usize, used_names: &BTreeSet<String>) -> String {
 }
 
 fn lower_sort_spec_with_prepared_input(
-    sort: &SortExec,
+    ordering: &LexOrdering,
     input: &LoweredNativeInput,
     sort_columns: &[String],
 ) -> Result<NativeSortSpec, FallbackReason> {
-    if sort.expr().len() != sort_columns.len() {
+    if ordering.len() != sort_columns.len() {
         return Err(FallbackReason::UnsupportedExpression);
     }
-    let expressions = sort
-        .expr()
+    let expressions = ordering
         .iter()
         .zip(sort_columns.iter())
         .map(|(sort_expr, column)| {

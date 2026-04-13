@@ -27,8 +27,37 @@ fn adapter_validation_rejects_like_over_non_string_input() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn adapter_validation_lowers_date64_projection() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-date64-projection");
+    let path = dir.join("input.parquet");
+    write_date64_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("event_date64", &scan_schema).unwrap(), alias: "event_date64".to_string() },
+                ProjectionExpr { expr: col("m00", &scan_schema).unwrap(), alias: "m00".to_string() },
+            ],
+            scan,
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["event_date64".to_string(), "m00".to_string()]);
+    assert!(source.diagnostics.rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[tokio::test]
-async fn adapter_validation_rejects_extract_over_date64_until_native_dtype_contract_exists() {
+async fn adapter_validation_rejects_extract_over_date64_until_expression_semantics_exist() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-date64-extract-reject");
     let path = dir.join("input.parquet");
     write_date64_parquet_file(&path);
@@ -138,6 +167,26 @@ async fn scalar_expression_aggregate_argument_required_source_columns_are_exact(
         &aggregate_exprs[0].expr,
         Expr::Column(column) if column.name().starts_with("__cudf_aggregate_arg_")
     ));
+    assert!(!source.read_columns.contains(&"payload".to_string()));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn nullif_aggregate_argument_reads_both_operand_columns() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-nullif-aggregate-argument-columns");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan =
+        sql_plan(&path, direct_friendly_sql_session_config(), SQL_SOURCE_COLUMN_NULLIF_ARGUMENT_REQUIRED_COLUMNS_QUERY)
+            .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
     assert!(!source.read_columns.contains(&"payload".to_string()));
 
     fs::remove_dir_all(dir).unwrap();

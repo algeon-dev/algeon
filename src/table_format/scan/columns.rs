@@ -179,6 +179,9 @@ pub struct TableFormatColumnMapping {
     pub logical_name: String,
     /// Physical source column name, when the value comes from a file column.
     pub source_name: Option<String>,
+    /// Additional physical column names allowed by table-format field-id
+    /// fallback metadata, such as Iceberg name mapping entries.
+    pub field_id_source_names: Vec<String>,
     /// Arrow data type exposed at the native source boundary.
     pub data_type: DataType,
     /// Whether the logical column is nullable.
@@ -229,6 +232,7 @@ impl TableFormatColumnMapping {
             field_id,
             logical_name: logical_name.into(),
             source_name: source_name.map(Into::into),
+            field_id_source_names: Vec::new(),
             data_type,
             nullable,
             source,
@@ -241,5 +245,30 @@ impl TableFormatColumnMapping {
     pub fn with_missing_default_value(mut self, value: TableFormatScalarValue) -> Self {
         self.missing_default_value = Some(value);
         self
+    }
+
+    /// Adds fallback physical names used only when binding by table-format
+    /// field-id metadata and the file footer has no embedded field ids.
+    pub fn with_field_id_source_names<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for name in names {
+            let name = name.into();
+            if !self.field_id_source_names.contains(&name) {
+                self.field_id_source_names.push(name);
+            }
+        }
+        self
+    }
+
+    pub(crate) fn field_id_physical_name_candidates(&self) -> impl Iterator<Item = &str> {
+        let source_name = if self.field_id_source_names.is_empty() {
+            Some(self.source_name.as_deref().unwrap_or(self.logical_name.as_str()))
+        } else {
+            None
+        };
+        source_name.into_iter().chain(self.field_id_source_names.iter().map(String::as_str))
     }
 }

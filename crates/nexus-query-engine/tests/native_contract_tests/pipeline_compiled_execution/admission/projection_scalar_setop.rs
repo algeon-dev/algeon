@@ -420,8 +420,14 @@ fn strict_admission_accepts_projection_scalar_setop_scalar_join_grouped_aggregat
     assert_modeled_gate_row(
         "scalar join grouped aggregate",
         &report,
+        ReservationKind::HashTable,
+        "hash_join_pre_build_reservation_size_bytes",
+    );
+    assert_modeled_gate_row(
+        "scalar join grouped aggregate",
+        &report,
         ReservationKind::JoinOutput,
-        "keyed_equality_join_output_size_preflight",
+        "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
     );
     assert_modeled_gate_row(
         "scalar join grouped aggregate",

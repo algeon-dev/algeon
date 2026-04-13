@@ -74,6 +74,29 @@ async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
 }
 
 #[tokio::test]
+async fn default_sql_distributed_median_aggregate_remains_rejected() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-median");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, SessionConfig::new(), SQL_MEDIAN_AGGREGATE_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(
+        matches!(
+            result.report.outcomes()[0],
+            CandidateOutcome::Rejected { reason: FallbackReason::NativeDistributedAggregateUnsupported, .. }
+        ),
+        "outcomes={:?}",
+        result.report.outcomes()
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn default_sql_distributed_rollup_aggregate_lowers_to_native_grouping_sets() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-rollup");
     let path = dir.join("input.parquet");
@@ -93,6 +116,27 @@ async fn default_sql_distributed_rollup_aggregate_lowers_to_native_grouping_sets
     assert_eq!(aggregates[0].spec.group_exprs.len(), 2);
     assert_eq!(aggregates[0].spec.aggr_exprs.len(), 1);
     assert_eq!(aggregates[0].spec.aggr_exprs[0].function, AggregateFunction::Avg);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn grouping_sets_over_empty_local_parquet_remain_structured_cpu_fallbacks() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-empty-grouping-sets");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+
+    for (label, sql) in
+        [("rollup", SQL_ROLLUP_AVG_QUERY), ("cube", SQL_CUBE_AVG_QUERY), ("grouping_sets", SQL_GROUPING_SETS_AVG_QUERY)]
+    {
+        let plan = sql_plan(&path, direct_friendly_sql_session_config(), sql).await;
+        let plan = replace_parquet_scans_with_empty_file_groups(plan);
+
+        let result = lower_physical_plan_to_native(plan);
+
+        assert_native_rejection(&result, FallbackReason::NativeSourceEmpty);
+        assert_eq!(result.report.outcomes().len(), 1, "{label}");
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }

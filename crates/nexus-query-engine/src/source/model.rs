@@ -912,6 +912,104 @@ impl ParquetPositionDeleteFile {
     }
 }
 
+/// Iceberg equality-delete Parquet file associated with one data file.
+///
+/// The delete file is read as a normal native Parquet source and anti-joined
+/// against the decoded data rows using Iceberg equality semantics: NULL keys
+/// match NULL keys.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ParquetEqualityDeleteFile {
+    /// Stable delete-file id for diagnostics.
+    pub id: String,
+    /// Explicit source location for the delete Parquet file.
+    pub location: ParquetSourceLocation,
+    /// Path-shaped reader string retained for diagnostics and cuDF reader APIs.
+    pub path: PathBuf,
+    /// Resolved reader strategy and decode contract for this delete file.
+    pub resolved_source: ResolvedParquetSource,
+    /// Stable identifier for diagnostics and executor bookkeeping.
+    pub stable_id: String,
+    /// Iceberg field ids used as equality keys.
+    pub equality_ids: Vec<i32>,
+    /// Column names to read from the data file and delete file.
+    pub equality_columns: Vec<String>,
+    /// Known delete-file size in bytes, when available.
+    pub file_size_bytes: Option<u64>,
+    /// Known delete row count, when available.
+    pub row_count: Option<u64>,
+}
+
+impl fmt::Debug for ParquetEqualityDeleteFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ParquetEqualityDeleteFile")
+            .field("id", &self.id)
+            .field("location", &self.location)
+            .field("path", &redacted_debug_value("path", self.path.display().to_string().as_str()))
+            .field("resolved_source", &self.resolved_source)
+            .field("stable_id", &self.location.diagnostic_stable_id(self.stable_id.as_str()))
+            .field("equality_ids", &self.equality_ids)
+            .field("equality_columns", &self.equality_columns)
+            .field("file_size_bytes", &self.file_size_bytes)
+            .field("row_count", &self.row_count)
+            .finish()
+    }
+}
+
+impl ParquetEqualityDeleteFile {
+    /// Creates a delete-file descriptor from an already resolved reader contract.
+    pub fn from_resolved_parquet_source(
+        id: impl Into<String>,
+        resolved_source: ResolvedParquetSource,
+        equality_ids: Vec<i32>,
+        equality_columns: Vec<String>,
+    ) -> Result<Self, String> {
+        if equality_ids.is_empty() || equality_ids.len() != equality_columns.len() {
+            return Err("equality delete files require matching non-empty equality ids and columns".to_string());
+        }
+        let id = id.into();
+        let location = parquet_source_location_for_original(&resolved_source.original_location)?;
+        let stable_id = format!("equality-delete:{id}:{}", location.diagnostic_location());
+        Ok(Self {
+            id,
+            location,
+            path: PathBuf::from(&resolved_source.reader_location),
+            resolved_source,
+            stable_id,
+            equality_ids,
+            equality_columns,
+            file_size_bytes: None,
+            row_count: None,
+        })
+    }
+
+    /// Sets known delete-file size in bytes.
+    pub fn with_file_size_bytes(mut self, file_size_bytes: u64) -> Self {
+        self.file_size_bytes = Some(file_size_bytes);
+        self
+    }
+
+    /// Sets known delete row count.
+    pub fn with_row_count(mut self, row_count: u64) -> Self {
+        self.row_count = Some(row_count);
+        self
+    }
+
+    /// Builds a normal local Parquet file descriptor for reading the delete file.
+    pub fn to_local_parquet_file(&self) -> LocalParquetFile {
+        let mut file = LocalParquetFile::new(self.path.clone())
+            .with_resolved_parquet_source(self.resolved_source.clone())
+            .expect("validated equality delete source remains representable")
+            .with_stable_id(self.stable_id.clone());
+        if let Some(file_size_bytes) = self.file_size_bytes {
+            file = file.with_file_size_bytes(file_size_bytes);
+        }
+        if let Some(row_count) = self.row_count {
+            file = file.with_row_group_rows(vec![row_count]);
+        }
+        file
+    }
+}
+
 /// cuDF reader-side decimal storage type proven from Parquet metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParquetReaderDecimalTypeId {
@@ -1277,10 +1375,20 @@ impl LocalParquetSource {
         self.files.iter().any(LocalParquetFile::has_position_delete_files)
     }
 
+    /// Returns true when any data file in this source carries Iceberg equality deletes.
+    pub fn has_equality_delete_files(&self) -> bool {
+        self.files.iter().any(LocalParquetFile::has_equality_delete_files)
+    }
+
+    /// Returns true when any data file in this source carries Iceberg row-level deletes.
+    pub fn has_row_delete_files(&self) -> bool {
+        self.files.iter().any(LocalParquetFile::has_row_delete_files)
+    }
+
     /// Returns true when source scan-limit accounting must happen after
-    /// per-chunk position deletes have been applied.
+    /// per-chunk row deletes have been applied.
     pub fn has_position_delete_visible_scan_limit(&self) -> bool {
-        self.scan_limit.is_some() && self.has_position_delete_files() && !self.is_count_star_probe_source()
+        self.scan_limit.is_some() && self.has_row_delete_files() && !self.is_count_star_probe_source()
     }
 
     fn mark_zero_column_count_represented(&mut self) {
@@ -1411,6 +1519,12 @@ fn reader_predicate_root_is_supported(expr: &Expr) -> bool {
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::StringContains { .. }
+        | Expr::StartsWith { .. }
+        | Expr::EndsWith { .. }
         | Expr::StringLength { .. }
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
@@ -1467,6 +1581,12 @@ fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) 
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::StringContains { .. }
+        | Expr::StartsWith { .. }
+        | Expr::EndsWith { .. }
         | Expr::StringLength { .. }
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
@@ -1649,10 +1769,16 @@ fn reader_predicate_expr_type(source: &LocalParquetSource, expr: &Expr) -> Optio
         | Expr::TryCast { target_type, .. }
         | Expr::Round { output_type: target_type, .. } => Some(target_type.clone()),
         Expr::Not(_) | Expr::IsNull(_) | Expr::IsNotNull(_) | Expr::InList { .. } => Some(DataType::Boolean),
+        Expr::StringContains { .. } | Expr::StartsWith { .. } | Expr::EndsWith { .. } => Some(DataType::Boolean),
         Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => Some(DataType::Boolean),
         Expr::Binary { output_type: Some(output_type), .. } => Some(output_type.clone()),
         Expr::Binary { op, .. } if reader_predicate_operator_outputs_boolean(*op) => Some(DataType::Boolean),
-        Expr::Lower(_) | Expr::Upper(_) | Expr::Concat(_) => Some(DataType::Utf8),
+        Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::Concat(_) => Some(DataType::Utf8),
         Expr::StringLength { output_type, .. } => Some(output_type.clone()),
         Expr::RegexpReplace { output_type, .. } => Some(output_type.clone()),
         Expr::DateTrunc { output_type, .. } => Some(output_type.clone()),
@@ -1705,6 +1831,13 @@ fn reader_predicate_literal_is_supported_for_type(value: &LiteralValue, data_typ
         },
         DataType::Decimal128(_precision, scale) => decimal_literal_can_target_scale(value, *scale),
         DataType::Date32 => matches!(value, LiteralValue::Date32(_)),
+        DataType::Date64 => matches!(value, LiteralValue::Date64(_)),
+        DataType::Time32(unit) => {
+            matches!(value, LiteralValue::Time32 { unit: literal_unit, .. } if literal_unit == unit)
+        },
+        DataType::Time64(unit) => {
+            matches!(value, LiteralValue::Time64 { unit: literal_unit, .. } if literal_unit == unit)
+        },
         DataType::Timestamp(unit, None) => {
             matches!(value, LiteralValue::Timestamp { unit: literal_unit, .. } if literal_unit == unit)
         },
@@ -1777,6 +1910,12 @@ fn reader_predicate_source_contract_shape_is_supported(source: &LocalParquetSour
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::StringContains { .. }
+        | Expr::StartsWith { .. }
+        | Expr::EndsWith { .. }
         | Expr::StringLength { .. }
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
@@ -1925,6 +2064,8 @@ pub struct LocalParquetFile {
     pub field_id_read_bindings: Vec<ParquetFieldIdReadBinding>,
     /// Position-delete files associated with this data file.
     pub position_delete_files: Vec<ParquetPositionDeleteFile>,
+    /// Equality-delete files associated with this data file.
+    pub equality_delete_files: Vec<ParquetEqualityDeleteFile>,
     /// Values for `LocalParquetSource::partition_columns` in source order.
     pub partition_values: Vec<LiteralValue>,
 }
@@ -1948,6 +2089,7 @@ impl fmt::Debug for LocalParquetFile {
             .field("reader_decimal_types", &self.reader_decimal_types)
             .field("field_id_read_bindings", &self.field_id_read_bindings)
             .field("position_delete_files", &self.position_delete_files)
+            .field("equality_delete_files", &self.equality_delete_files)
             .field("partition_values", &self.partition_values)
             .finish()
     }
@@ -1976,6 +2118,7 @@ impl LocalParquetFile {
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
             position_delete_files: Vec::new(),
+            equality_delete_files: Vec::new(),
             partition_values: Vec::new(),
         }
     }
@@ -2007,6 +2150,7 @@ impl LocalParquetFile {
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
             position_delete_files: Vec::new(),
+            equality_delete_files: Vec::new(),
             partition_values: Vec::new(),
         })
     }
@@ -2032,6 +2176,7 @@ impl LocalParquetFile {
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
             position_delete_files: Vec::new(),
+            equality_delete_files: Vec::new(),
             partition_values: Vec::new(),
         })
     }
@@ -2126,9 +2271,25 @@ impl LocalParquetFile {
         self
     }
 
+    /// Sets equality-delete files associated with this data file.
+    pub fn with_equality_delete_files(mut self, delete_files: Vec<ParquetEqualityDeleteFile>) -> Self {
+        self.equality_delete_files = delete_files;
+        self
+    }
+
     /// Returns true when this data file requires Iceberg position deletes.
     pub fn has_position_delete_files(&self) -> bool {
         !self.position_delete_files.is_empty()
+    }
+
+    /// Returns true when this data file requires Iceberg equality deletes.
+    pub fn has_equality_delete_files(&self) -> bool {
+        !self.equality_delete_files.is_empty()
+    }
+
+    /// Returns true when this data file requires Iceberg row-level deletes.
+    pub fn has_row_delete_files(&self) -> bool {
+        self.has_position_delete_files() || self.has_equality_delete_files()
     }
 
     /// Sets values for represented partition columns.

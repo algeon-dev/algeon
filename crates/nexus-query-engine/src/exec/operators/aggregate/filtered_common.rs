@@ -17,6 +17,7 @@ pub(super) fn unsupported_stateful_filtered_merge(spec: &AggregateSpec) -> bool 
             || matches!(
                 expr.function,
                 AggregateFunction::NUnique
+                    | AggregateFunction::Median
                     | AggregateFunction::StddevSamp
                     | AggregateFunction::StddevPop
                     | AggregateFunction::VarSamp

@@ -371,10 +371,13 @@ fn collect_source_required_columns(
 }
 
 fn native_physical_file_schema(file_scan: &FileScanConfig) -> Result<SchemaRef, FallbackReason> {
+    let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
     if !file_scan.object_store_url.as_str().starts_with("file://") {
+        if files.len() > 1 {
+            return Err(FallbackReason::NativeSourceSchemaMapping);
+        }
         return Ok(Arc::clone(file_scan.file_schema()));
     }
-    let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
     let Some(first_file) = files.first() else {
         return Ok(Arc::clone(file_scan.file_schema()));
     };

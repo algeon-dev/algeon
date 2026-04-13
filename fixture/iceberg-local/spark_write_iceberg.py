@@ -20,6 +20,10 @@ already staged in the object store. It creates an empty Iceberg table from the
 Parquet schema, then registers those staged files with Iceberg's
 `system.add_files` procedure.
 
+The `equality-delete` mode creates tiny deterministic Iceberg v2 tables and
+commits real equality-delete files through the Iceberg Java API. It is used by
+the local REST E2E fixture rather than by benchmark loaders.
+
 Invoked inside the pinned Spark image via spark-submit (see load.sh). Catalog
 config is passed as spark.sql.catalog.* conf; this script only takes the
     namespace, the input parquet dir, and the table spec list.
@@ -33,7 +37,10 @@ Naming contract (must match datafusion-nexus registration):
 
 import argparse
 import os
+import subprocess
 import sys
+import tempfile
+import textwrap
 
 
 def resolve_source(parquet_dir: str, table: str) -> str:
@@ -97,9 +104,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=("create", "add-files"),
+        choices=("create", "add-files", "equality-delete"),
         default="create",
-        help="create rewrites Iceberg data files; add-files registers staged Parquet files in place.",
+        help=(
+            "create rewrites Iceberg data files; add-files registers staged Parquet files in place; "
+            "equality-delete creates tiny v2 equality-delete fixture tables."
+        ),
     )
     parser.add_argument(
         "--reload",
@@ -143,6 +153,10 @@ def qualified_files_table(namespace: str, table: str) -> str:
     return f"{qualified_table(namespace, table)}.files"
 
 
+def qualified_delete_files_table(namespace: str, table: str) -> str:
+    return f"{qualified_table(namespace, table)}.delete_files"
+
+
 def procedure_table_identifier(namespace: str, table: str) -> str:
     return f"{quote_identifier(namespace)}.{quote_identifier(table)}"
 
@@ -173,6 +187,16 @@ def table_row_count(spark, namespace: str, table: str) -> int:
     row = rows[0]
     if hasattr(row, "row_count"):
         return int(row.row_count)
+    return int(row[0])
+
+
+def table_delete_file_count(spark, namespace: str, table: str) -> int:
+    rows = spark.sql(f"SELECT COUNT(*) AS delete_count FROM {qualified_delete_files_table(namespace, table)}").collect()
+    if not rows:
+        return 0
+    row = rows[0]
+    if hasattr(row, "delete_count"):
+        return int(row.delete_count)
     return int(row[0])
 
 
@@ -265,6 +289,154 @@ def add_files_mode(
         print(f"[spark] registered {fq} from {src}: {n} rows", flush=True)
 
 
+EQUALITY_DELETE_HELPER_SOURCE = r"""
+import java.util.List;
+import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.data.GenericRecord;
+import org.apache.iceberg.data.Record;
+import org.apache.iceberg.data.parquet.GenericParquetWriter;
+import org.apache.iceberg.deletes.EqualityDeleteWriter;
+import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.parquet.Parquet;
+import org.apache.iceberg.spark.Spark3Util;
+import org.apache.spark.sql.SparkSession;
+
+public final class NexusEqualityDeleteFixture {
+  private NexusEqualityDeleteFixture() {}
+
+  public static void commitIdEqualityDeletes(
+      SparkSession spark, String tableIdentifier, String fileName, List<?> ids) throws Exception {
+    Table table = Spark3Util.loadIcebergTable(spark, tableIdentifier);
+    table.refresh();
+    Schema deleteSchema = table.schema().select("id");
+    String location = table.locationProvider().newDataLocation(fileName);
+    OutputFile outputFile = table.io().newOutputFile(location);
+    EqualityDeleteWriter<Record> writer = Parquet.writeDeletes(outputFile)
+        .forTable(table)
+        .rowSchema(deleteSchema)
+        .createWriterFunc(GenericParquetWriter::create)
+        .equalityFieldIds(1)
+        .overwrite()
+        .buildEqualityWriter();
+    try {
+      for (Object id : ids) {
+        GenericRecord record = GenericRecord.create(deleteSchema);
+        record.setField("id", Long.valueOf(((Number) id).longValue()));
+        writer.write(record);
+      }
+    } finally {
+      writer.close();
+    }
+    DeleteFile deleteFile = writer.toDeleteFile();
+    if (!deleteFile.content().name().equals("EQUALITY_DELETES")) {
+      throw new IllegalStateException("expected equality delete file, got " + deleteFile.content());
+    }
+    if (!deleteFile.equalityFieldIds().contains(Integer.valueOf(1))) {
+      throw new IllegalStateException("expected equality field id 1, got " + deleteFile.equalityFieldIds());
+    }
+    table.newRowDelta().addDeletes(deleteFile).commit();
+  }
+}
+"""
+
+
+def compile_equality_delete_helper(spark):
+    """Compile and load the tiny Java helper after Spark has resolved Iceberg jars."""
+    helper_root = tempfile.mkdtemp(prefix="nexus-equality-delete-helper.")
+    source_path = os.path.join(helper_root, "NexusEqualityDeleteFixture.java")
+    classes_dir = os.path.join(helper_root, "classes")
+    os.makedirs(classes_dir, exist_ok=True)
+    with open(source_path, "w", encoding="utf-8") as source:
+        source.write(textwrap.dedent(EQUALITY_DELETE_HELPER_SOURCE).strip())
+        source.write("\n")
+
+    classpath = f"{spark._jvm.java.lang.System.getProperty('java.class.path')}:/opt/spark/.ivy2/jars/*"
+    subprocess.run(["javac", "-classpath", classpath, "-d", classes_dir, source_path], check=True)
+
+    url = spark._jvm.java.io.File(classes_dir).toURI().toURL()
+    urls = spark.sparkContext._gateway.new_array(spark._jvm.java.net.URL, 1)
+    urls[0] = url
+    parent = spark._jvm.java.lang.Thread.currentThread().getContextClassLoader()
+    loader = spark._jvm.java.net.URLClassLoader.newInstance(urls, parent)
+    spark._jvm.java.lang.Thread.currentThread().setContextClassLoader(loader)
+    return spark._jvm.java.lang.Class.forName("NexusEqualityDeleteFixture", True, loader)
+
+
+def invoke_static_helper(spark, helper_class, method_name: str, *args) -> None:
+    method = None
+    for candidate in helper_class.getMethods():
+        if candidate.getName() == method_name:
+            method = candidate
+            break
+    if method is None:
+        raise RuntimeError(f"compiled helper is missing method {method_name}")
+
+    gateway = spark.sparkContext._gateway
+    java_args = gateway.new_array(spark._jvm.java.lang.Object, len(args))
+    for index, value in enumerate(args):
+        java_args[index] = value
+    method.invoke(None, java_args)
+
+
+def java_long_list(spark, values: list[int]):
+    output = spark._jvm.java.util.ArrayList()
+    for value in values:
+        output.add(spark._jvm.java.lang.Long.valueOf(int(value)))
+    return output
+
+
+def equality_delete_mode(
+    spark,
+    namespace: str,
+    table_specs: list[tuple[str, str, str | None]],
+    parquet_dir: str,
+) -> None:
+    del parquet_dir
+    helper_class = compile_equality_delete_helper(spark)
+    for table, source, files_source in table_specs:
+        if files_source is not None or source != table:
+            raise ValueError("equality-delete mode takes plain table specs only")
+        fq = qualified_table(namespace, table)
+        spark.sql(f"DROP TABLE IF EXISTS {fq}")
+        spark.sql(
+            f"CREATE TABLE {fq} (id BIGINT, grp INT, payload STRING) "
+            "USING iceberg TBLPROPERTIES ('format-version'='2')"
+        )
+        initial_rows = [
+            (1, 10, "delete-id-1"),
+            (2, 20, "delete-id-2"),
+            (3, 10, "keep-a"),
+            (4, 20, "keep-b"),
+            (5, 30, "keep-c"),
+        ]
+        spark.createDataFrame(initial_rows, "id LONG, grp INT, payload STRING").writeTo(fq).append()
+
+        table_identifier = f"lake.{namespace}.{table}"
+        invoke_static_helper(
+            spark,
+            helper_class,
+            "commitIdEqualityDeletes",
+            spark._jsparkSession,
+            table_identifier,
+            f"eq-delete-{table}.parquet",
+            java_long_list(spark, [1, 2]),
+        )
+
+        # Same equality key as a deleted row, but a newer data sequence number.
+        # It must survive if sequence-number scoping is implemented correctly.
+        spark.createDataFrame([(1, 40, "post-delete-keep")], "id LONG, grp INT, payload STRING").writeTo(fq).append()
+
+        n = table_row_count(spark, namespace, table)
+        delete_count = table_delete_file_count(spark, namespace, table)
+        if n != 4:
+            raise AssertionError(f"expected 4 visible rows after equality delete fixture load, got {n}")
+        if delete_count != 1:
+            raise AssertionError(f"expected exactly one live equality delete file, got {delete_count}")
+        print(f"[spark] wrote equality-delete fixture {fq}: {n} visible rows, {delete_count} delete file", flush=True)
+
+
 def main() -> int:
     args = parse_args(sys.argv[1:])
 
@@ -283,8 +455,10 @@ def main() -> int:
 
     if args.mode == "create":
         create_mode(spark, namespace, table_specs, parquet_dir)
-    else:
+    elif args.mode == "add-files":
         add_files_mode(spark, namespace, table_specs, parquet_dir, args.reload)
+    else:
+        equality_delete_mode(spark, namespace, table_specs, parquet_dir)
 
     spark.stop()
     return 0

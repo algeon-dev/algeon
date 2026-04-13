@@ -3,6 +3,7 @@ use std::{fs, sync::Arc, time::Duration};
 use arrow::compute::SortOptions as ArrowSortOptions;
 use datafusion::{
     common::{DataFusionError, config::ConfigOptions},
+    datasource::{memory::MemorySourceConfig, source::DataSourceExec},
     execution::context::TaskContext,
     logical_expr::Operator,
     physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col},
@@ -12,7 +13,7 @@ use datafusion::{
         execution_plan::Boundedness,
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
-        sorts::sort::SortExec,
+        sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
     },
 };
 use datafusion_nexus::{
@@ -415,24 +416,116 @@ fn native_optimizer_rule_propagates_declared_scan_output_ordering_to_wrapper_pro
 }
 
 #[test]
-fn native_optimizer_does_not_compose_ordered_scan_through_aggregate() {
+fn native_optimizer_reestablishes_declared_scan_ordering_through_aggregate() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-ordered-aggregate-composition");
     let path = dir.join("input.parquet");
     write_sorted_parquet_file(&path);
     let scan = parquet_scan_with_declared_output_ordering(&path);
     let plan = grouped_sum_aggregate_plan(scan);
-    assert!(plan.properties().output_ordering().is_some());
+    let expected_ordering = plan.properties().output_ordering().cloned();
+    assert!(expected_ordering.is_some());
     let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<NativeCudfComposedExec>().is_none());
+    let native = optimized
+        .downcast_ref::<NativeCudfExec>()
+        .expect("ordered aggregate should lower with an explicit final native sort");
+    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::PlanNode::Sort(_)));
+    assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert!(report.outcomes().iter().any(|outcome| {
+    assert_eq!(report.rewritten_count(), 1, "outcomes={:?}", report.outcomes());
+    let CandidateOutcome::Rewritten { candidate } = &report.outcomes()[0] else {
+        panic!("ordered aggregate should be reported as rewritten");
+    };
+    assert!(
+        candidate.shape.starts_with("SortExec(AggregateExec("),
+        "post-optimizer appended declared-ordering sort should be visible in candidate shape: {}",
+        candidate.shape
+    );
+    assert_eq!(
+        candidate.plan_node_id.as_ref().map(ToString::to_string),
+        Some(native.native_plan().root_id().to_string())
+    );
+    assert!(!report.outcomes().iter().any(|outcome| {
         matches!(outcome, CandidateOutcome::Rejected { reason: FallbackReason::NativeOrderedOutputUnsupported, .. })
     }));
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_execution_reestablished_declared_scan_ordering_is_sorted() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-ordered-aggregate-output");
+    let path = dir.join("input.parquet");
+    write_sorted_parquet_file(&path);
+    let scan = parquet_scan_with_declared_output_ordering(&path);
+    let plan = grouped_sum_aggregate_plan(scan);
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    let native = optimized
+        .downcast_ref::<NativeCudfExec>()
+        .expect("ordered aggregate should lower with an explicit final native sort");
+    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::PlanNode::Sort(_)));
+    let batches =
+        futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(int32_array(&batches[0], 0).values().as_ref(), &[1, 2]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_execution_sort_preserving_merge_matches_datafusion_sorted_input() {
+    let scan = sorted_two_partition_memory_source();
+    let ordering = LexOrdering::new([PhysicalSortExpr::new(
+        col("key", &scan.schema()).unwrap(),
+        ArrowSortOptions::new(false, false),
+    )])
+    .expect("SPM test ordering should be non-empty");
+    let sorted: Arc<dyn ExecutionPlan> =
+        Arc::new(SortExec::new(ordering.clone(), scan).with_preserve_partitioning(true));
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(ordering, sorted));
+    let expected = futures::executor::block_on(collect(Arc::clone(&plan), Arc::new(TaskContext::default()))).unwrap();
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    let native = optimized.downcast_ref::<NativeCudfExec>().expect("SPM over sorted input should lower to native");
+    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::PlanNode::Sort(_)));
+    let actual =
+        futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
+    assert_eq!(actual.len(), expected.len());
+    assert_eq!(int32_array(&actual[0], 0).values().as_ref(), int32_array(&expected[0], 0).values().as_ref());
+    assert_eq!(int32_array(&actual[0], 0).values().as_ref(), &[1, 2, 3, 4]);
+}
+
+fn sorted_two_partition_memory_source() -> Arc<dyn ExecutionPlan> {
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+        "key",
+        arrow::datatypes::DataType::Int32,
+        false,
+    )]));
+    let first = arrow::record_batch::RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(arrow::array::Int32Array::from(vec![1, 3]))],
+    )
+    .unwrap();
+    let second = arrow::record_batch::RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(arrow::array::Int32Array::from(vec![2, 4]))],
+    )
+    .unwrap();
+    let ordering =
+        LexOrdering::new([PhysicalSortExpr::new(col("key", &schema).unwrap(), ArrowSortOptions::new(false, false))])
+            .expect("memory source ordering should be non-empty");
+    let source = MemorySourceConfig::try_new(&[vec![first], vec![second]], Arc::clone(&schema), None)
+        .unwrap()
+        .try_with_sort_information(vec![ordering])
+        .unwrap();
+    DataSourceExec::from_data_source(source)
 }
 
 #[test]

@@ -5,7 +5,7 @@ use super::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_upper_bound_bytes,
         join_side_output_upper_bound_bytes_for_row_counts, prepare_bounded_join_side_input_from_resident_frame,
         prepare_bounded_join_side_input_from_shared_frame, projected_output_columns_for_retained_sizing,
-        reconcile_join_output_upper_bound, release_bounded_join_side_frame,
+        reconcile_join_output_upper_bound, release_bounded_join_side_frame, reserve_full_join_size_preflight_workspace,
     },
     *,
 };
@@ -112,6 +112,8 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_frame(
         reservations,
         metrics,
         &overrides,
+        "join_hash_table",
+        true,
     )?;
     Ok(BoundedRootHashJoinBuildState {
         build_side,
@@ -177,6 +179,8 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_reside
         reservations,
         metrics,
         &overrides,
+        "join_hash_table",
+        true,
     )?;
     Ok(BoundedRootHashJoinBuildState {
         build_side,
@@ -377,9 +381,39 @@ fn execute_bounded_root_hash_join_multi_pass_probe_indices(
     metrics: &mut QueryMetrics,
     overrides: &ExecutionOverrides<'_>,
 ) -> Result<(BoundedJoinSideFrame, cudf::DataFrameHashJoinPairIndices, ActiveReservation, u64)> {
-    let output_size = match root_hash_join_multi_pass_probe_size(node, build, &probe, probe_keys, overrides) {
-        Ok(output_size) => output_size,
+    let left_join_output_rows =
+        match root_hash_join_left_probe_size_for_full_size_preflight(node, build, &probe, probe_keys, overrides) {
+            Ok(rows) => rows as u64,
+            Err(error) => {
+                release_bounded_join_side_frame(probe, reservations, metrics);
+                return Err(error);
+            },
+        };
+    let full_size_preflight_workspace = match reserve_full_join_size_preflight_workspace(
+        node_id,
+        node,
+        build.build.rows,
+        left_join_output_rows,
+        reservations,
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
         Err(error) => {
+            release_bounded_join_side_frame(probe, reservations, metrics);
+            return Err(error);
+        },
+    };
+    let output_size = match root_hash_join_multi_pass_probe_size(node, build, &probe, probe_keys, overrides) {
+        Ok(output_size) => {
+            if let Some(reservation) = full_size_preflight_workspace {
+                reservations.release(reservation, metrics);
+            }
+            output_size
+        },
+        Err(error) => {
+            if let Some(reservation) = full_size_preflight_workspace {
+                reservations.release(reservation, metrics);
+            }
             release_bounded_join_side_frame(probe, reservations, metrics);
             return Err(error);
         },
@@ -442,6 +476,23 @@ fn execute_bounded_root_hash_join_multi_pass_probe_indices(
         },
     };
     Ok((probe, indices, gather_map_reservation, gather_map_bytes))
+}
+
+fn root_hash_join_left_probe_size_for_full_size_preflight(
+    node: &JoinNode,
+    build: &BoundedRootHashJoinBuildState,
+    probe: &BoundedJoinSideFrame,
+    probe_keys: &[String],
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<usize> {
+    if node.spec.join_type != JoinType::Full {
+        return Ok(0);
+    }
+    build
+        .hash_join
+        .hash_join()
+        .left_probe_size_in(&probe.frame, probe_keys, overrides)
+        .map_err(|error| join_index_error(error, node))
 }
 
 fn root_hash_join_multi_pass_probe_size(
@@ -557,7 +608,11 @@ fn root_hash_join_output_reservation_bounds(
     Ok(RootHashJoinOutputReservationBounds { output_reservation_bytes, minimum_output_reservation_bytes })
 }
 
-fn single_key_build_is_unique(frame: &DataFrame, build_keys: &[String], overrides: &ExecutionOverrides<'_>) -> bool {
+pub(super) fn single_key_build_is_unique(
+    frame: &DataFrame,
+    build_keys: &[String],
+    overrides: &ExecutionOverrides<'_>,
+) -> bool {
     let [key] = build_keys else {
         return false;
     };
@@ -1707,7 +1762,7 @@ fn validate_root_hash_join(node: &JoinNode) -> Result<()> {
     }
     Ok(())
 }
-fn reserve_and_build_bounded_hash_join(
+pub(in crate::exec::bounded::join) fn reserve_and_build_bounded_hash_join(
     context: &ExecutionContext,
     node_id: NodeId,
     node: &JoinNode,
@@ -1718,6 +1773,8 @@ fn reserve_and_build_bounded_hash_join(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
     overrides: &ExecutionOverrides<'_>,
+    hash_table_memory_boundary: &'static str,
+    record_hash_join_metrics: bool,
 ) -> Result<(GpuHashJoinBuildHandle, ActiveReservation, u64)> {
     let hash_table_reservation_bytes = build
         .with_execution(overrides)
@@ -1735,31 +1792,41 @@ fn reserve_and_build_bounded_hash_join(
     let hash_table_reservation = reservations.try_reserve(
         bounded_join_request(
             ReservationKind::HashTable,
-            "join_hash_table",
+            hash_table_memory_boundary,
             hash_table_reservation_bytes,
             reservations.budget(),
             node_id,
         ),
         metrics,
     )?;
-    let hash_join = build.with_execution(overrides).build_hash_join(build_keys, hash_options).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.bounded.join.build_hash_join",
-            "failed to build bounded native reusable hash join",
-            error,
-        )
-        .with_fact("join_type", node.spec.join_type)
-        .with_fact("key_count", node.spec.keys.len())
-        .with_fact("build_side", build_side)
-    })?;
-    let hash_join = GpuHashJoinBuildHandle::new(context, hash_join, node.spec.null_equality).map_err(|error| {
-        error
+    let hash_join = match build.with_execution(overrides).build_hash_join(build_keys, hash_options) {
+        Ok(hash_join) => hash_join,
+        Err(error) => {
+            reservations.release(hash_table_reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "nexus_query_engine.bounded.join.build_hash_join",
+                "failed to build bounded native reusable hash join",
+                error,
+            )
             .with_fact("join_type", node.spec.join_type)
             .with_fact("key_count", node.spec.keys.len())
-            .with_fact("build_side", build_side)
-    })?;
+            .with_fact("build_side", build_side));
+        },
+    };
+    let hash_join = match GpuHashJoinBuildHandle::new(context, hash_join, node.spec.null_equality) {
+        Ok(hash_join) => hash_join,
+        Err(error) => {
+            reservations.release(hash_table_reservation, metrics);
+            return Err(error
+                .with_fact("join_type", node.spec.join_type)
+                .with_fact("key_count", node.spec.keys.len())
+                .with_fact("build_side", build_side));
+        },
+    };
     let hash_table_bytes = hash_join.device_allocated_size_bytes();
-    metrics.record_hash_join_build();
-    metrics.record_hash_join_hash_table_bytes(hash_table_bytes);
+    if record_hash_join_metrics {
+        metrics.record_hash_join_build();
+        metrics.record_hash_join_hash_table_bytes(hash_table_bytes);
+    }
     Ok((hash_join, hash_table_reservation, hash_table_bytes))
 }

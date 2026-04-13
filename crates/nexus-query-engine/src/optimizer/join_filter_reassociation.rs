@@ -874,9 +874,17 @@ fn infer_expr_type_with_schema(expr: &Expr, schema: &SchemaRef) -> Option<ArrowD
         | Expr::IsNotNull(_)
         | Expr::Like { .. }
         | Expr::InList { .. }
+        | Expr::StringContains { .. }
+        | Expr::StartsWith { .. }
+        | Expr::EndsWith { .. }
         | Expr::IsDistinctFrom { .. }
         | Expr::IsNotDistinctFrom { .. } => Some(ArrowDataType::Boolean),
-        Expr::Lower(expr) | Expr::Upper(expr) | Expr::Abs(expr) => infer_expr_type_with_schema(expr, schema),
+        Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::Trim { expr, .. }
+        | Expr::LTrim { expr, .. }
+        | Expr::RTrim { expr, .. }
+        | Expr::Abs(expr) => infer_expr_type_with_schema(expr, schema),
         Expr::StringLength { output_type, .. }
         | Expr::RegexpReplace { output_type, .. }
         | Expr::Sqrt { output_type, .. }
@@ -987,6 +995,24 @@ fn remap_unqualified_columns(expr: &Expr, map_column: &mut impl FnMut(&ColumnRef
         },
         Expr::Lower(expr) => Some(Expr::lower(remap_unqualified_columns(expr, map_column)?)),
         Expr::Upper(expr) => Some(Expr::upper(remap_unqualified_columns(expr, map_column)?)),
+        Expr::Trim { expr, trim_chars } => {
+            Some(Expr::trim(remap_unqualified_columns(expr, map_column)?, trim_chars.clone()))
+        },
+        Expr::LTrim { expr, trim_chars } => {
+            Some(Expr::ltrim(remap_unqualified_columns(expr, map_column)?, trim_chars.clone()))
+        },
+        Expr::RTrim { expr, trim_chars } => {
+            Some(Expr::rtrim(remap_unqualified_columns(expr, map_column)?, trim_chars.clone()))
+        },
+        Expr::StringContains { expr, pattern } => {
+            Some(Expr::string_contains(remap_unqualified_columns(expr, map_column)?, pattern.clone()))
+        },
+        Expr::StartsWith { expr, prefix } => {
+            Some(Expr::starts_with(remap_unqualified_columns(expr, map_column)?, prefix.clone()))
+        },
+        Expr::EndsWith { expr, suffix } => {
+            Some(Expr::ends_with(remap_unqualified_columns(expr, map_column)?, suffix.clone()))
+        },
         Expr::StringLength { expr, output_type } => {
             Some(Expr::string_length(remap_unqualified_columns(expr, map_column)?, output_type.clone()))
         },
@@ -1074,6 +1100,12 @@ fn expression_scope(plan: &QueryPlan, join: &JoinNode, expr: &Expr) -> Expressio
         | Expr::Substring { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::Trim { expr, .. }
+        | Expr::LTrim { expr, .. }
+        | Expr::RTrim { expr, .. }
+        | Expr::StringContains { expr, .. }
+        | Expr::StartsWith { expr, .. }
+        | Expr::EndsWith { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
         | Expr::Abs(expr)
@@ -1160,6 +1192,12 @@ fn strip_input_qualifiers(expr: &Expr) -> Expr {
         Expr::Substring { expr, start, length } => Expr::substring(strip_input_qualifiers(expr), *start, *length),
         Expr::Lower(expr) => Expr::lower(strip_input_qualifiers(expr)),
         Expr::Upper(expr) => Expr::upper(strip_input_qualifiers(expr)),
+        Expr::Trim { expr, trim_chars } => Expr::trim(strip_input_qualifiers(expr), trim_chars.clone()),
+        Expr::LTrim { expr, trim_chars } => Expr::ltrim(strip_input_qualifiers(expr), trim_chars.clone()),
+        Expr::RTrim { expr, trim_chars } => Expr::rtrim(strip_input_qualifiers(expr), trim_chars.clone()),
+        Expr::StringContains { expr, pattern } => Expr::string_contains(strip_input_qualifiers(expr), pattern.clone()),
+        Expr::StartsWith { expr, prefix } => Expr::starts_with(strip_input_qualifiers(expr), prefix.clone()),
+        Expr::EndsWith { expr, suffix } => Expr::ends_with(strip_input_qualifiers(expr), suffix.clone()),
         Expr::StringLength { expr, output_type } => {
             Expr::string_length(strip_input_qualifiers(expr), output_type.clone())
         },

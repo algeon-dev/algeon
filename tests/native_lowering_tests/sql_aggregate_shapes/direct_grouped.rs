@@ -58,6 +58,45 @@ async fn direct_friendly_sql_native_aggregate_parity_functions_lower() {
 }
 
 #[tokio::test]
+async fn direct_friendly_sql_median_aggregate_lowers_to_native_median() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-median");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_MEDIAN_AGGREGATE_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert_eq!(aggregate_exprs[0].function, AggregateFunction::Median);
+    assert_eq!(aggregate_exprs[0].alias, "median(bench.m00)");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_mixed_median_and_statistical_aggregate_is_rejected() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-mixed-median-statistical");
+    let path = dir.join("input.parquet");
+    write_float_measure_parquet_file(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "SELECT key, STDDEV_SAMP(m00) AS stdev_m00, MEDIAN(m00) AS median_m00 FROM bench GROUP BY key",
+    )
+    .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedOperator);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn direct_friendly_sql_statistical_aggregate_aliases_lower() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-statistical-aggregates");
     let path = dir.join("input.parquet");

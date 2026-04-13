@@ -94,6 +94,10 @@ pub(super) fn bounded_execution_context() -> ExecutionContext {
         .unwrap()
 }
 
+pub(super) fn unbounded_execution_context() -> ExecutionContext {
+    ExecutionContext::builder().with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap())).build().unwrap()
+}
+
 pub(super) fn adapter_error(error: &DataFusionError) -> &Error {
     let DataFusionError::External(source) = error else {
         panic!("native execution errors should cross DataFusion as external adapter errors: {error}");

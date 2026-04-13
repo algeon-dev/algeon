@@ -1,6 +1,73 @@
 use super::*;
 
 #[test]
+fn native_query_projects_date64_and_time_types() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("event_date64", DataType::Date64, false),
+        Field::new("event_time_ms", DataType::Time32(TimeUnit::Millisecond), false),
+        Field::new("event_time_ns", DataType::Time64(TimeUnit::Nanosecond), false),
+    ]));
+    let input_batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(Date64Array::from(vec![1_577_836_800_000, 1_580_428_800_000])),
+            Arc::new(Time32MillisecondArray::from(vec![1_000, 86_399_000])),
+            Arc::new(Time64NanosecondArray::from(vec![1_000_000_000, 86_399_000_000_000])),
+        ],
+    )
+    .unwrap();
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("event_date64", DataType::Date64, false),
+        Field::new("event_time_ms", DataType::Time32(TimeUnit::Millisecond), false),
+        Field::new("event_time_ns", DataType::Time64(TimeUnit::Nanosecond), false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
+    let projection = builder.add_projection(
+        source,
+        projection_outputs(
+            vec![Expr::column("event_date64"), Expr::column("event_time_ms"), Expr::column("event_time_ns")],
+            output_schema,
+        ),
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "input".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &input_batch).unwrap()),
+            Arc::clone(&input_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema().field(0).data_type(), &DataType::Date64);
+    assert_eq!(batch.schema().field(1).data_type(), &DataType::Time32(TimeUnit::Millisecond));
+    assert_eq!(batch.schema().field(2).data_type(), &DataType::Time64(TimeUnit::Nanosecond));
+    assert_eq!(
+        batch.column(0).as_any().downcast_ref::<Date64Array>().unwrap().values().as_ref(),
+        &[1_577_836_800_000, 1_580_428_800_000]
+    );
+    assert_eq!(
+        batch.column(1).as_any().downcast_ref::<Time32MillisecondArray>().unwrap().values().as_ref(),
+        &[1_000, 86_399_000]
+    );
+    assert_eq!(
+        batch.column(2).as_any().downcast_ref::<Time64NanosecondArray>().unwrap().values().as_ref(),
+        &[1_000_000_000, 86_399_000_000_000]
+    );
+}
+
+#[test]
 fn native_query_executes_scalar_expression_families() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-scalar_expression-scalars");
     let path = dir.join("tpch-like.parquet");
@@ -20,6 +87,9 @@ fn native_query_executes_scalar_expression_families() {
         Field::new("status_not_f", DataType::Boolean, true),
         Field::new("status_like_o", DataType::Boolean, true),
         Field::new("status_not_like_f", DataType::Boolean, true),
+        Field::new("status_contains_o", DataType::Boolean, true),
+        Field::new("status_starts_o", DataType::Boolean, true),
+        Field::new("status_ends_o", DataType::Boolean, true),
         Field::new("abs_order_delta", DataType::Int64, false),
         Field::new("sqrt_orderkey", DataType::Float64, false),
         Field::new("status_distinct_from_o", DataType::Boolean, false),
@@ -70,6 +140,9 @@ fn native_query_executes_scalar_expression_families() {
             .alias("status_not_f"),
         Expr::like(Expr::column("status"), "O%").alias("status_like_o"),
         Expr::not_like(Expr::column("status"), "F%").alias("status_not_like_f"),
+        Expr::string_contains(Expr::column("status"), "O").alias("status_contains_o"),
+        Expr::starts_with(Expr::column("status"), "O").alias("status_starts_o"),
+        Expr::ends_with(Expr::column("status"), "O").alias("status_ends_o"),
         Expr::abs(Expr::binary(Expr::column("orderkey"), BinaryOp::Subtract, Expr::literal(LiteralValue::Int64(3))))
             .alias("abs_order_delta"),
         Expr::sqrt(Expr::column("orderkey"), DataType::Float64).alias("sqrt_orderkey"),
@@ -114,16 +187,25 @@ fn native_query_executes_scalar_expression_families() {
     assert!(boolean_array(batch, 12).value(0));
     assert!(boolean_array(batch, 12).value(1));
     assert!(boolean_array(batch, 12).is_null(2));
-    assert_eq!(int64_array(batch, 13).values().as_ref(), &[2, 0, 1]);
-    assert_eq!(float64_array(batch, 14).value(0), 1.0);
-    assert!((float64_array(batch, 14).value(1) - 3.0_f64.sqrt()).abs() < 1e-12);
-    assert_eq!(float64_array(batch, 14).value(2), 2.0);
-    assert!(!boolean_array(batch, 15).value(0));
-    assert!(!boolean_array(batch, 15).value(1));
-    assert!(boolean_array(batch, 15).value(2));
-    assert!(boolean_array(batch, 16).value(0));
-    assert!(boolean_array(batch, 16).value(1));
-    assert!(!boolean_array(batch, 16).value(2));
+    assert!(boolean_array(batch, 13).value(0));
+    assert!(boolean_array(batch, 13).value(1));
+    assert!(boolean_array(batch, 13).is_null(2));
+    assert!(boolean_array(batch, 14).value(0));
+    assert!(boolean_array(batch, 14).value(1));
+    assert!(boolean_array(batch, 14).is_null(2));
+    assert!(boolean_array(batch, 15).value(0));
+    assert!(boolean_array(batch, 15).value(1));
+    assert!(boolean_array(batch, 15).is_null(2));
+    assert_eq!(int64_array(batch, 16).values().as_ref(), &[2, 0, 1]);
+    assert_eq!(float64_array(batch, 17).value(0), 1.0);
+    assert!((float64_array(batch, 17).value(1) - 3.0_f64.sqrt()).abs() < 1e-12);
+    assert_eq!(float64_array(batch, 17).value(2), 2.0);
+    assert!(!boolean_array(batch, 18).value(0));
+    assert!(!boolean_array(batch, 18).value(1));
+    assert!(boolean_array(batch, 18).value(2));
+    assert!(boolean_array(batch, 19).value(0));
+    assert!(boolean_array(batch, 19).value(1));
+    assert!(!boolean_array(batch, 19).value(2));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -374,6 +456,52 @@ fn native_query_rejects_scalar_type_mismatch_before_cudf_execution() {
     assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(error.operation(), "nexus_query_engine.plan.validate_expr");
     assert_eq!(error.fact_value("context"), Some("LIKE input"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_rejects_date_trunc_output_unit_mismatch_before_cudf_execution() {
+    let dir = unique_temp_dir("nexus-query-engine-native-execution-date-trunc-output-unit-reject");
+    let path = dir.join("tpch-like.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_scalar_expression_parquet(&runtime, &path);
+    let output_schema =
+        Arc::new(Schema::new(vec![Field::new("bad_trunc", DataType::Timestamp(TimeUnit::Millisecond, None), false)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["event_ts".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(
+        source,
+        projection_outputs(
+            vec![
+                Expr::date_trunc(
+                    nexus_query_engine::DatePart::Microsecond,
+                    Expr::column("event_ts"),
+                    DataType::Timestamp(TimeUnit::Millisecond, None),
+                )
+                .alias("bad_trunc"),
+            ],
+            output_schema,
+        ),
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("native plan validation should reject DATE_TRUNC output unit mismatches"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.operation(), "nexus_query_engine.plan.validate_expr");
+    assert_eq!(error.fact_value("context"), Some("DATE_TRUNC input/output"));
+    assert_eq!(error.fact_value("input_type"), Some("Timestamp(Nanosecond, None)"));
+    assert_eq!(error.fact_value("output_type"), Some("Timestamp(Millisecond, None)"));
 
     fs::remove_dir_all(dir).unwrap();
 }

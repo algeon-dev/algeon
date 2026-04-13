@@ -62,6 +62,51 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                 .with_fact("delete_index", delete_index));
             }
         }
+        for (delete_index, delete_file) in file.equality_delete_files.iter().enumerate() {
+            if delete_file.stable_id.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_source.validate",
+                    "equality delete file must have a stable identity",
+                )
+                .with_fact("reason", "empty_equality_delete_stable_id")
+                .with_fact("file_index", file_index)
+                .with_fact("delete_index", delete_index));
+            }
+            if delete_file.path.as_os_str().is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_source.validate",
+                    "equality delete source path must not be empty",
+                )
+                .with_fact("reason", "empty_equality_delete_path")
+                .with_fact("file_index", file_index)
+                .with_fact("delete_index", delete_index));
+            }
+            if delete_file.equality_columns.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_source.validate",
+                    "equality delete file must name at least one equality column",
+                )
+                .with_fact("reason", "empty_equality_delete_columns")
+                .with_fact("file_index", file_index)
+                .with_fact("delete_index", delete_index));
+            }
+            for column in &delete_file.equality_columns {
+                if !source.read_columns.iter().any(|read_column| read_column == column) {
+                    return Err(QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "nexus_query_engine.local_parquet_source.validate",
+                        "equality delete key columns must be present in the source read projection",
+                    )
+                    .with_fact("reason", "missing_equality_delete_read_column")
+                    .with_fact("file_index", file_index)
+                    .with_fact("delete_index", delete_index)
+                    .with_fact("column", column.as_str()));
+                }
+            }
+        }
         if file.partition_values.len() != source.partition_columns.len() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -113,21 +158,21 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
             }
         }
     }
-    if source.files.iter().any(LocalParquetFile::has_position_delete_files) && source.read_columns.is_empty() {
+    if source.files.iter().any(LocalParquetFile::has_row_delete_files) && source.read_columns.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.local_parquet_source.validate",
-            "Iceberg position deletes require at least one physical data column to establish row positions",
+            "Iceberg row deletes require at least one physical data column",
         )
-        .with_fact("reason", "position_deletes_require_data_column"));
+        .with_fact("reason", "row_deletes_require_data_column"));
     }
-    if source.files.iter().any(LocalParquetFile::has_position_delete_files) && source.reader_predicate.is_some() {
+    if source.files.iter().any(LocalParquetFile::has_row_delete_files) && source.reader_predicate.is_some() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.local_parquet_source.validate",
-            "Iceberg position deletes require full file-row ordinals before source filtering",
+            "Iceberg row deletes must be applied before source filtering",
         )
-        .with_fact("reason", "position_deletes_reject_reader_predicate"));
+        .with_fact("reason", "row_deletes_reject_reader_predicate"));
     }
     if let Some(predicate) = &source.reader_predicate
         && !source.reader_predicate_is_supported(predicate)

@@ -356,7 +356,8 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         result = run_cmd([str(FIXTURE_SH), "iceberg", "rest", "load", "--help"])
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("--load-mode create|add-files", result.stdout)
+        self.assertIn("--workload tpch|tpcds|citation_network|equality_delete", result.stdout)
+        self.assertIn("--load-mode create|add-files|equality-delete", result.stdout)
         self.assertIn("--reload", result.stdout)
 
     def test_citation_network_loader_fails_fast_with_acquisition_instructions(self) -> None:

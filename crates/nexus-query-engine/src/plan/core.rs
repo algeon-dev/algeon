@@ -135,6 +135,30 @@ impl QueryPlan {
         }
     }
 
+    /// Returns this plan with a native sort appended above the current root.
+    ///
+    /// The existing DAG is preserved and the result sink is retargeted to the
+    /// new root. This is used by frontends that need to make an ordering
+    /// contract explicit after lowering an order-breaking operator.
+    pub fn with_appended_sort(mut self, spec: SortSpec) -> Self {
+        let input = self.root;
+        let output_schema = Arc::clone(self.root_node().output_schema());
+        let root = NodeId(self.nodes.len());
+        let output_ordering = spec.expressions.clone();
+        self.nodes.push(QueryNode {
+            id: root,
+            kind: PlanNode::Sort(SortNode { input, spec }),
+            facts: PlanFacts::device(output_schema, SchemaBehavior::PreservesInput)
+                .with_output_ordering(output_ordering),
+        });
+        self.root = root;
+        self.sink = match self.sink {
+            ResultSink::GpuResident { .. } => ResultSink::GpuResident { input: root },
+            ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input: root, schema },
+        };
+        self
+    }
+
     /// Returns all nodes in append order.
     ///
     /// The slice order is also the [`NodeId::index`] address space. Existing

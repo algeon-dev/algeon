@@ -7,7 +7,8 @@ use super::{
     types::{
         is_decimal_type, is_integral_type, require_arithmetic_type, require_boolean, require_comparable_types,
         require_compatible_types, require_date_or_timestamp, require_integral_type, require_scalar_operator_value,
-        require_string, require_timestamp_second, temporal_duration_binary_output_type,
+        require_string, require_timestamp_preserving_output, require_timestamp_second,
+        temporal_duration_binary_output_type,
     },
     *,
 };
@@ -56,10 +57,19 @@ pub(super) fn validate_expr(
             validate_substring_bounds(*start, *length)?;
             Ok(ArrowDataType::Utf8)
         },
-        Expr::Lower(expr) | Expr::Upper(expr) => {
+        Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::Trim { expr, .. }
+        | Expr::LTrim { expr, .. }
+        | Expr::RTrim { expr, .. } => {
             let data_type = validate_expr(expr, input_schema, available_columns)?;
             require_string(&data_type, "string case input")?;
             Ok(data_type)
+        },
+        Expr::StringContains { expr, .. } | Expr::StartsWith { expr, .. } | Expr::EndsWith { expr, .. } => {
+            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            require_string(&data_type, "string predicate input")?;
+            Ok(ArrowDataType::Boolean)
         },
         Expr::StringLength { expr, output_type } => {
             let data_type = validate_expr(expr, input_schema, available_columns)?;
@@ -124,18 +134,35 @@ pub(super) fn validate_expr(
                     require_date_or_timestamp(&data_type, "EXTRACT input")?
                 },
                 DatePart::Minute => validate_timestamp_second_integer_cast_expr(expr, input_schema, available_columns)?,
+                DatePart::Hour
+                | DatePart::Second
+                | DatePart::Millisecond
+                | DatePart::Microsecond
+                | DatePart::Nanosecond => {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedExpression,
+                        "nexus_query_engine.plan.validate_expr",
+                        "native EXTRACT does not support this field",
+                    )
+                    .with_fact("field", field.to_string()));
+                },
             }
             Ok(ArrowDataType::Int32)
         },
         Expr::DateTrunc { field, expr, output_type } => {
             let data_type = validate_expr(expr, input_schema, available_columns)?;
             match field {
-                DatePart::Minute => {
-                    require_timestamp_second(&data_type, "DATE_TRUNC minute input")?;
-                    require_timestamp_second(output_type, "DATE_TRUNC minute output")?;
+                DatePart::Day
+                | DatePart::Hour
+                | DatePart::Minute
+                | DatePart::Second
+                | DatePart::Millisecond
+                | DatePart::Microsecond
+                | DatePart::Nanosecond => {
+                    require_timestamp_preserving_output(&data_type, output_type, "DATE_TRUNC input/output")?;
                     Ok(output_type.clone())
                 },
-                DatePart::Year | DatePart::Month | DatePart::Day => Err(QueryError::new(
+                DatePart::Year | DatePart::Month => Err(QueryError::new(
                     QueryErrorCode::UnsupportedExpression,
                     "nexus_query_engine.plan.validate_expr",
                     "native DATE_TRUNC does not support this field",

@@ -192,10 +192,10 @@ pub(in crate::exec) fn execute_aggregate(
     // the result scale equal to the source scale on `fixed_point` columns and
     // truncates the division remainder, so a `Decimal128(7, 2)` input averaged
     // to a `Decimal128(11, 6)` output rounds e.g. `34.65 / 2` to `17.32`
-    // instead of `17.325`. Route AVG through the same explicit `sum + count +
-    // finalize` state used by the partial/final and global aggregate paths so
-    // the division happens at the output scale.
-    let aggregate = lower_partial_aggregate_spec(&spec)?;
+    // instead of `17.325`. Route AVG through explicit `sum + count + finalize`
+    // state even in single-stage grouped execution, while keeping non-mergeable
+    // aggregates such as MEDIAN on their true single-stage cuDF operators.
+    let aggregate = lower_single_stage_grouped_aggregate_spec(&spec)?;
     if aggregate_spec_has_avg(&spec) {
         validate_avg_output_fields(&spec, output_schema)?;
     }
@@ -463,7 +463,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
 
     // See `execute_aggregate` for why AVG must not lower to libcudf groupby
     // `MEAN`; the same finalize-at-output-scale contract applies here.
-    let aggregate = match lower_partial_aggregate_spec(&spec) {
+    let aggregate = match lower_single_stage_grouped_aggregate_spec(&spec) {
         Ok(aggregate) => aggregate,
         Err(error) => {
             if let Some(decision) = filtered_grouped_strategy {

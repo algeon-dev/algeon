@@ -53,12 +53,11 @@ pub(super) fn validate_table_format_direct_file_column_field_ids(
         let schema =
             table_format_data_file_footer_arrow_schema(file).ok_or(FallbackReason::IcebergFieldIdMappingUnsupported)?;
         for (mapping, field_id) in &direct_mappings {
-            let Some((_index, field)) = footer_field_by_id(&schema, *field_id)
-                .or_else(|| footer_field_by_mapping_name_without_field_id(&schema, mapping))
-            else {
-                if footer_field_by_mapping_name(&schema, mapping).is_some() {
-                    return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
-                }
+            let matched_field = match footer_field_by_id(&schema, *field_id) {
+                Some(field) => Some(field),
+                None => footer_field_by_mapping_name_without_field_id(&schema, mapping)?,
+            };
+            let Some((_index, field)) = matched_field else {
                 if mapping.nullable {
                     continue;
                 }
@@ -117,12 +116,11 @@ pub(super) fn table_format_file_field_id_read_bindings(
         if !seen.insert(field_id) {
             continue;
         }
-        let Some((physical_root_index, field)) = footer_field_by_id(footer_schema, field_id)
-            .or_else(|| footer_field_by_mapping_name_without_field_id(footer_schema, mapping))
-        else {
-            if footer_field_by_mapping_name(footer_schema, mapping).is_some() {
-                return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
-            }
+        let matched_field = match footer_field_by_id(footer_schema, field_id) {
+            Some(field) => Some(field),
+            None => footer_field_by_mapping_name_without_field_id(footer_schema, mapping)?,
+        };
+        let Some((physical_root_index, field)) = matched_field else {
             if mapping.nullable || mapping.missing_default_value.is_some() {
                 continue;
             }
@@ -155,21 +153,34 @@ pub(super) fn footer_field_by_id(schema: &Schema, field_id: i32) -> Option<(usiz
 pub(super) fn footer_field_by_mapping_name_without_field_id<'a>(
     schema: &'a Schema,
     mapping: &TableFormatColumnMapping,
-) -> Option<(usize, &'a Field)> {
-    footer_field_by_mapping_name(schema, mapping).filter(|(_index, field)| {
-        parquet_field_id_metadata_is_absent(field) && table_format_footer_field_matches_mapping(field, mapping)
-    })
+) -> Result<Option<(usize, &'a Field)>, FallbackReason> {
+    let matches = footer_fields_by_mapping_names(schema, mapping);
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    if matches.iter().any(|(_index, field)| !parquet_field_id_metadata_is_absent(field)) {
+        return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+    }
+    let [matched] = matches.as_slice() else {
+        return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+    };
+    if !table_format_footer_field_matches_mapping(matched.1, mapping) {
+        return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+    }
+    Ok(Some(*matched))
 }
 
-fn footer_field_by_mapping_name<'a>(
+fn footer_fields_by_mapping_names<'a>(
     schema: &'a Schema,
     mapping: &TableFormatColumnMapping,
-) -> Option<(usize, &'a Field)> {
-    let source_name = mapping.source_name.as_ref().unwrap_or(&mapping.logical_name);
+) -> Vec<(usize, &'a Field)> {
     schema
         .fields()
         .iter()
         .enumerate()
-        .find(|(_index, field)| field.name() == source_name)
+        .filter(|(_index, field)| {
+            mapping.field_id_physical_name_candidates().any(|candidate| field.name() == candidate)
+        })
         .map(|(index, field)| (index, field.as_ref()))
+        .collect()
 }

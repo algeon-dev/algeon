@@ -300,6 +300,7 @@ fn read_local_parquet_source_uncached(
             record_background_cache_file_fill_enqueue(context, source_node_id, source, file, file_index, metrics);
             frame
         };
+        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
         let frame = apply_position_deletes_to_data_file(
             context,
             source,
@@ -551,6 +552,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     metrics.parquet_read_time += read_elapsed;
     metrics.source_read_time += read_elapsed;
     let frame = outcome.into_value().into_frame();
+    let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
     let frame = apply_position_deletes_to_data_file(
         context,
         source,
@@ -816,7 +818,7 @@ fn validate_local_parquet_chunk_batch(
             || chunk.row_group_indexes.is_empty()
             || chunk.read_columns.is_empty()
             || !chunk.partition_values.is_empty()
-            || source.files.get(chunk.file_index).is_some_and(LocalParquetFile::has_position_delete_files)
+            || source.files.get(chunk.file_index).is_some_and(LocalParquetFile::has_row_delete_files)
         {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -879,7 +881,9 @@ fn cudf_error_for_chunk_batch_with_budget_details(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::{CredentialMode, LakehouseCacheFillMode, MissingColumn, ResolvedParquetSource};
+    use crate::source::{
+        CredentialMode, LakehouseCacheFillMode, MissingColumn, ParquetEqualityDeleteFile, ResolvedParquetSource,
+    };
 
     fn test_source(files: Vec<LocalParquetFile>, read_columns: Vec<String>) -> LocalParquetSource {
         let schema = Arc::new(Schema::new(vec![Field::new("c1", ArrowDataType::Int32, true)]));
@@ -922,6 +926,47 @@ mod tests {
         assert_eq!(request.row_groups, Some(vec![0, 1]));
         assert_eq!(request.attempt, Some(2));
         assert_eq!(request.max_attempts, Some(5));
+    }
+
+    #[test]
+    fn local_parquet_chunk_batch_rejects_equality_delete_files() {
+        let delete_file = ParquetEqualityDeleteFile::from_resolved_parquet_source(
+            "delete-000",
+            ResolvedParquetSource::local_kvikio("/tmp/delete-000.parquet"),
+            vec![1],
+            vec!["c1".to_string()],
+        )
+        .unwrap();
+        let source = test_source(
+            vec![
+                LocalParquetFile::new("/tmp/source-read-equality-delete.parquet")
+                    .with_row_groups(vec![0, 1])
+                    .with_row_group_bytes(vec![10, 10])
+                    .with_projected_row_group_bytes(vec![10, 10], vec![10, 10])
+                    .with_row_group_rows(vec![10, 10])
+                    .with_equality_delete_files(vec![delete_file]),
+            ],
+            vec!["c1".to_string()],
+        );
+        let node_id = NodeId::from_index_for_internal_use(7);
+        let plan = crate::chunk::plan_local_parquet_source_chunks(
+            node_id,
+            &source,
+            crate::chunk::SourceChunkPlanningPolicy::new(None, 1),
+        )
+        .expect("chunk planning should split the file by row group");
+        assert_eq!(plan.chunks.len(), 2);
+        let batch = SourceChunkBatch {
+            batch_index: 0,
+            chunks: vec![plan.chunks[0].clone()],
+            estimated_source_read_bytes: Some(10),
+            source_batching_reason: "batched".to_string(),
+        };
+
+        let error = validate_local_parquet_chunk_batch(&source, &batch).unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("reason"), Some("ineligible_chunk"));
     }
 
     #[test]

@@ -25,6 +25,37 @@ pub(in crate::exec) fn lower_aggregate_spec(spec: &AggregateSpec) -> Result<Lowe
     Ok(aggregate)
 }
 
+pub(in crate::exec) fn lower_single_stage_grouped_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
+    let mut aggregate = lower_aggregate_spec_keys(spec)?;
+    let mut aggregations = Vec::with_capacity(spec.aggr_exprs.len().saturating_mul(2));
+    let mut output_names = aggregate.output_key_names.clone();
+
+    for (index, expr) in spec.aggr_exprs.iter().enumerate() {
+        let input_column = lower_column_expr(&expr.expr, "nexus_query_engine.aggregate.lower_single_expr")?;
+        match expr.function {
+            AggregateFunction::Avg => {
+                let state = AvgStateAliases::for_aggregate_index(index);
+                aggregations.push(CudfAggSpec::new(input_column.as_str(), GroupByAgg::Sum).with_alias(state.sum()));
+                aggregations.push(
+                    CudfAggSpec::new(input_column.as_str(), GroupByAgg::Count { include_nulls: false })
+                        .with_alias(state.count()),
+                );
+                output_names.extend(state.output_names());
+            },
+            _ => {
+                aggregations.push(
+                    CudfAggSpec::new(input_column, lower_aggregate_function(expr)).with_alias(expr.alias.as_str()),
+                );
+                output_names.push(expr.alias.clone());
+            },
+        }
+    }
+
+    aggregate.aggregations = aggregations;
+    aggregate.output_names = output_names;
+    Ok(aggregate)
+}
+
 pub(in crate::exec) fn lower_partial_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
     let mut aggregate = lower_aggregate_spec_keys(spec)?;
     let mut aggregations = Vec::with_capacity(spec.aggr_exprs.len().saturating_mul(2));
@@ -41,6 +72,14 @@ pub(in crate::exec) fn lower_partial_aggregate_spec(spec: &AggregateSpec) -> Res
                         .with_alias(state.count()),
                 );
                 output_names.extend(state.output_names());
+            },
+            AggregateFunction::Median => {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedOperator,
+                    "nexus_query_engine.aggregate.lower_partial",
+                    "median aggregate does not have native partial/final state",
+                )
+                .with_fact("alias", expr.alias.as_str()));
             },
             _ => {
                 aggregations.push(
@@ -67,6 +106,14 @@ pub(in crate::exec) fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Resul
                 aggregations.push(CudfAggSpec::new(state.sum(), GroupByAgg::Sum).with_alias(state.sum()));
                 aggregations.push(CudfAggSpec::new(state.count(), GroupByAgg::Sum).with_alias(state.count()));
                 output_names.extend(state.output_names());
+            },
+            AggregateFunction::Median => {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedOperator,
+                    "nexus_query_engine.aggregate.lower_final",
+                    "median aggregate does not have native partial/final state",
+                )
+                .with_fact("alias", expr.alias.as_str()));
             },
             _ => {
                 aggregations.push(
@@ -97,6 +144,7 @@ pub(in crate::exec) fn lower_aggregate_function(expr: &AggregateExpr) -> GroupBy
         AggregateFunction::Count => GroupByAgg::Count { include_nulls: false },
         AggregateFunction::NUnique => GroupByAgg::NUnique,
         AggregateFunction::Avg => GroupByAgg::Mean,
+        AggregateFunction::Median => GroupByAgg::Median,
         AggregateFunction::StddevSamp => GroupByAgg::Std { ddof: 1 },
         AggregateFunction::StddevPop => GroupByAgg::Std { ddof: 0 },
         AggregateFunction::VarSamp => GroupByAgg::Variance { ddof: 1 },
@@ -112,6 +160,7 @@ pub(in crate::exec) fn lower_final_aggregate_function(function: AggregateFunctio
         AggregateFunction::Count => GroupByAgg::Sum,
         AggregateFunction::NUnique => GroupByAgg::Sum,
         AggregateFunction::Avg => unreachable!("avg final aggregate is lowered as explicit sum/count state"),
+        AggregateFunction::Median => unreachable!("median aggregate does not have native partial/final state"),
         AggregateFunction::StddevSamp
         | AggregateFunction::StddevPop
         | AggregateFunction::VarSamp
@@ -150,6 +199,16 @@ pub(in crate::exec) fn aggregate_spec_has_avg(spec: &AggregateSpec) -> bool {
 
 pub(in crate::exec) fn aggregate_spec_has_floating_statistical_aggregate(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical())
+}
+
+pub(in crate::exec) fn aggregate_spec_has_median(spec: &AggregateSpec) -> bool {
+    spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Median)
+}
+
+pub(in crate::exec) fn aggregate_spec_requires_whole_input(spec: &AggregateSpec) -> bool {
+    aggregate_spec_has_floating_statistical_aggregate(spec)
+        || aggregate_spec_has_distinct(spec)
+        || aggregate_spec_has_median(spec)
 }
 
 pub(in crate::exec) fn aggregate_spec_has_distinct(spec: &AggregateSpec) -> bool {
@@ -198,5 +257,61 @@ impl AvgStateAliases {
 
     pub(in crate::exec) fn output_names(&self) -> [String; 2] {
         [self.sum_alias.clone(), self.count_alias.clone()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn median_spec() -> AggregateSpec {
+        AggregateSpec::new(
+            vec![Expr::column("key")],
+            vec![AggregateExpr::new(AggregateFunction::Median, Expr::column("value"), "median_value")],
+        )
+    }
+
+    #[test]
+    fn median_rejects_partial_and_final_state_lowering() {
+        let partial = match lower_partial_aggregate_spec(&median_spec()) {
+            Ok(_) => panic!("median partial state must reject"),
+            Err(error) => error,
+        };
+        assert_eq!(partial.code(), QueryErrorCode::UnsupportedOperator);
+        assert_eq!(partial.operation(), "nexus_query_engine.aggregate.lower_partial");
+        assert_eq!(partial.fact_value("alias"), Some("median_value"));
+
+        let final_merge = match lower_final_aggregate_spec(&median_spec()) {
+            Ok(_) => panic!("median final state must reject"),
+            Err(error) => error,
+        };
+        assert_eq!(final_merge.code(), QueryErrorCode::UnsupportedOperator);
+        assert_eq!(final_merge.operation(), "nexus_query_engine.aggregate.lower_final");
+        assert_eq!(final_merge.fact_value("alias"), Some("median_value"));
+    }
+
+    #[test]
+    fn median_lowers_for_single_stage_grouped_aggregate() {
+        let lowered =
+            lower_single_stage_grouped_aggregate_spec(&median_spec()).expect("median single-stage aggregate lowers");
+        assert_eq!(lowered.output_names, vec!["key", "median_value"]);
+        assert_eq!(lowered.aggregations.len(), 1);
+    }
+
+    #[test]
+    fn mixed_avg_and_median_lower_for_single_stage_grouped_aggregate() {
+        let spec = AggregateSpec::new(
+            vec![Expr::column("key")],
+            vec![
+                AggregateExpr::new(AggregateFunction::Avg, Expr::column("value"), "avg_value"),
+                AggregateExpr::new(AggregateFunction::Median, Expr::column("value"), "median_value"),
+            ],
+        );
+
+        let lowered = lower_single_stage_grouped_aggregate_spec(&spec)
+            .expect("mixed avg and median single-stage aggregate lowers");
+
+        assert_eq!(lowered.output_names, vec!["key", "__cudf_avg_0_sum", "__cudf_avg_0_count", "median_value"]);
+        assert_eq!(lowered.aggregations.len(), 3);
     }
 }

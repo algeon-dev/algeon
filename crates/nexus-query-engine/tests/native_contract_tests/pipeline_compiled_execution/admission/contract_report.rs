@@ -4,7 +4,7 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
     let mut source_unresolved_rows = 0;
     let mut aggregate_unresolved_rows = 0;
     let mut final_sort_unresolved_rows = 0;
-    let mut one_shot_output_unresolved_rows = 0;
+    let mut one_shot_output_exact_rows = 0;
     let mut filtered_retained_state_rows = 0;
     let mut mixed_retained_state_rows = 0;
     let mut observed_retained_state_rows = 0;
@@ -49,7 +49,6 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
                     ReservationKind::SourceRead => source_unresolved_rows += 1,
                     ReservationKind::OperatorOutput => aggregate_unresolved_rows += 1,
                     ReservationKind::FinalSort => final_sort_unresolved_rows += 1,
-                    ReservationKind::JoinOutput => one_shot_output_unresolved_rows += 1,
                     _ => {},
                 }
                 assert_eq!(
@@ -103,10 +102,14 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
                             "dataframe_gather_output_reservation_size_bytes"
                                 | "projected_cross_join_reservation_size_bytes"
                                 | "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes"
+                                | "keyed_equality_join_output_size_preflight"
                         ),
                         "{}: join-output exact preflight must name an owned lower-level output sizing contract",
                         case.label
                     );
+                    if row.required_contract == "keyed_equality_join_output_size_preflight" {
+                        one_shot_output_exact_rows += 1;
+                    }
                 },
                 _ => {},
             }
@@ -117,10 +120,7 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
     assert!(source_unresolved_rows > 0, "D.5 inventory should cover source unresolved preflight gates");
     assert!(aggregate_unresolved_rows > 0, "D.5 inventory should cover aggregate unresolved preflight gates");
     assert!(final_sort_unresolved_rows > 0, "D.5 inventory should cover final-sort unresolved preflight gates");
-    assert!(
-        one_shot_output_unresolved_rows > 0,
-        "D.5 inventory should cover one-shot equality join output-size preflight gates"
-    );
+    assert!(one_shot_output_exact_rows > 0, "D.5 inventory should cover one-shot equality join output-size preflight gates");
     assert!(filtered_retained_state_rows > 0, "D.5 inventory should cover filtered semi/anti retained state");
     assert!(mixed_retained_state_rows > 0, "D.5 inventory should cover mixed residual retained state");
     assert!(observed_retained_state_rows > 0, "D.5 inventory should cover observed retained-state gates");
@@ -157,12 +157,13 @@ fn strict_preflight_gap_strict_preflight_gap_registry_tracks_current_retirement_
     }
 
     assert!(markers.contains("libcudf_parquet_decoded_output_preflight_unavailable"));
+    assert!(markers.contains("libcudf_row_delete_application_preflight_unavailable"));
     assert!(markers.contains("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"));
     assert!(markers.contains("libcudf_window_output_temporary_workspace_preflight_unavailable"));
     assert!(markers.contains("libcudf_regexp_replace_output_preflight_unavailable"));
     assert!(markers.contains("libcudf_edge_normalize_output_preflight_unavailable"));
     assert!(markers.contains("libcudf_final_sort_order_preflight_unavailable"));
-    assert!(markers.contains("libcudf_equality_join_output_size_preflight_unavailable"));
+    assert!(markers.contains("libcudf_drop_duplicates_output_preflight_unavailable"));
 }
 
 #[test]
@@ -285,7 +286,6 @@ fn d5_contract_report_rejects_public_unresolved_preflight_rows_with_non_hard_bud
         (ReservationKind::SourceRead, "source_read", "source_contract"),
         (ReservationKind::OperatorOutput, "aggregate_output", "aggregate_contract"),
         (ReservationKind::FinalSort, "final_sort", "final_sort_contract"),
-        (ReservationKind::JoinOutput, "join_output", "keyed_equality_join_output_size_preflight"),
     ];
     let non_hard_budgeted_qualities = [
         ContractQuality::ExactPreflight,

@@ -164,6 +164,12 @@ fn collect_reader_predicate_decimal_columns(source: &LocalParquetSource, expr: &
         | Expr::Substring { expr: inner, .. }
         | Expr::Lower(inner)
         | Expr::Upper(inner)
+        | Expr::Trim { expr: inner, .. }
+        | Expr::LTrim { expr: inner, .. }
+        | Expr::RTrim { expr: inner, .. }
+        | Expr::StringContains { expr: inner, .. }
+        | Expr::StartsWith { expr: inner, .. }
+        | Expr::EndsWith { expr: inner, .. }
         | Expr::StringLength { expr: inner, .. }
         | Expr::RegexpReplace { expr: inner, .. }
         | Expr::Abs(inner)

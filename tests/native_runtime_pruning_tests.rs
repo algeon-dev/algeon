@@ -14,7 +14,10 @@ use arrow::{
 use datafusion::{
     common::DataFusionError,
     datasource::{
-        physical_plan::{FileScanConfigBuilder, ParquetSource},
+        physical_plan::{
+            FileGroup, FileScanConfigBuilder, ParquetSource,
+            parquet::{ParquetAccessPlan, RowGroupAccess},
+        },
         source::DataSourceExec,
     },
     execution::{SessionStateBuilder, context::TaskContext},
@@ -139,6 +142,63 @@ async fn native_runtime_mixed_filtered_and_unfiltered_aggregates_match_cpu() {
 }
 
 #[tokio::test]
+async fn native_runtime_median_aggregate_matches_cpu_single_stage_unbounded() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-median-aggregate");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+
+    let cpu_batches = cpu_sql_output(&path, SQL_MEDIAN_AGGREGATE_QUERY).await;
+    let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_MEDIAN_AGGREGATE_QUERY).await;
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+
+    let context = unbounded_execution_context();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_median_aggregate_matches_cpu_single_stage_bounded_without_partials() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-median-aggregate-bounded");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+
+    let cpu_batches = cpu_sql_output(&path, SQL_MEDIAN_AGGREGATE_QUERY).await;
+    let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_MEDIAN_AGGREGATE_QUERY).await;
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+
+    let context = bounded_execution_context();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.partial_aggregate_count, 0, "median must stay single-stage in bounded execution");
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_reader_pushdown_reduces_source_rows_and_retained_bytes() {
     let dir = unique_temp_dir("datafusion-nexus-native-runtime-reader-pushdown-selective");
     let path = dir.join("input.parquet");
@@ -222,6 +282,62 @@ async fn native_runtime_decimal32_equality_reader_pushdown_matches_post_scan() {
         reader_pushdown.input_rows,
         post_scan.input_rows
     );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_pushed_predicate_source_limit_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-pushed-predicate-source-limit");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+
+    let scan = parquet_scan_with_source_limit(
+        parquet_scan_with_pushed_down_payload_predicate(parquet_scan(&path).await, 10),
+        3,
+    );
+    let cpu_batches =
+        collect(Arc::clone(&scan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+    let lowering = lower_physical_plan_to_native(scan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
+    assert!(lowering.source_diagnostics[0].rejected_features.is_empty());
+    let source = lowering.plans[0]
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source),
+                SourceNode::GpuResident(_) | SourceNode::LiteralBatch(_) => None,
+            },
+            _ => None,
+        })
+        .expect("lowered plan should contain a local parquet source");
+    assert_eq!(source.scan_limit, None, "scan limit must be applied after the pushed predicate");
+    assert!(source.reader_predicate.is_some());
+
+    let context = bounded_execution_context();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_empty_local_parquet_aggregates_match_cpu() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-empty-local-aggregates");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+
+    let empty_scan = parquet_scan_without_files(parquet_scan(&path).await);
+    assert_empty_local_parquet_aggregate_parity(grouped_sum_aggregate_plan(Arc::clone(&empty_scan))).await;
+    assert_empty_local_parquet_aggregate_parity(global_sum_aggregate_plan(empty_scan)).await;
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -592,6 +708,38 @@ async fn native_runtime_default_sql_prunes_metadata_row_groups_for_pushed_parque
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn native_runtime_partial_byte_range_access_plan_intersection_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-byte-range-access-plan");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let row_group_offsets = row_group_range_pruning_offsets(&path);
+    assert!(row_group_offsets.len() >= 4, "fixture must have at least four row groups");
+    let access_plan = ParquetAccessPlan::new(vec![
+        RowGroupAccess::Skip,
+        RowGroupAccess::Scan,
+        RowGroupAccess::Skip,
+        RowGroupAccess::Scan,
+    ]);
+    let scan = parquet_scan_with_explicit_byte_ranges_and_access_plan(
+        parquet_scan(&path).await,
+        vec![(row_group_offsets[1], row_group_offsets[3])],
+        access_plan,
+    );
+    let scan_schema = scan.schema();
+    let predicate = binary(
+        col("payload", &scan_schema).unwrap(),
+        Operator::GtEq,
+        lit(datafusion::common::ScalarValue::Int32(Some(0))),
+        &scan_schema,
+    )
+    .unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+    assert_native_physical_plan_parity(plan, Some((1, 4))).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 async fn assert_default_sql_native_parity(
     path: &std::path::Path,
     sql: &str,
@@ -641,6 +789,34 @@ async fn assert_sql_native_parity(
         panic!("native host sink should return a RecordBatch");
     };
     assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+}
+
+async fn assert_empty_local_parquet_aggregate_parity(plan: Arc<dyn ExecutionPlan>) {
+    let cpu_batches =
+        collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+    let lowering = lower_physical_plan_to_native(plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert!(lowering.source_diagnostics.is_empty());
+    assert!(lowering.plans[0].nodes().iter().any(|node| {
+        matches!(
+            &node.kind,
+            PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LiteralBatch(_))
+        )
+    }));
+    assert!(lowering.plans[0].nodes().iter().all(|node| {
+        !matches!(
+            &node.kind,
+            PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LocalParquet(_))
+        )
+    }));
+
+    let context = bounded_execution_context();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal_allow_empty(&cpu_batches, std::slice::from_ref(native_batch));
 }
 
 async fn assert_native_physical_plan_parity(
@@ -707,6 +883,119 @@ fn parquet_scan_with_order_sensitive_limit(scan: Arc<dyn ExecutionPlan>, limit: 
     let file_scan =
         FileScanConfigBuilder::from(file_scan.clone()).with_limit(Some(limit)).with_preserve_order(true).build();
     DataSourceExec::from_data_source(file_scan)
+}
+
+fn parquet_scan_with_source_limit(scan: Arc<dyn ExecutionPlan>, limit: usize) -> Arc<dyn ExecutionPlan> {
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_limit(Some(limit)).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
+fn parquet_scan_without_files(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_scan =
+        FileScanConfigBuilder::from(file_scan.clone()).with_file_groups(vec![FileGroup::new(vec![])]).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
+fn parquet_scan_with_pushed_down_payload_predicate(scan: Arc<dyn ExecutionPlan>, value: i32) -> Arc<dyn ExecutionPlan> {
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let scan_schema = scan.schema();
+    let predicate = binary(
+        col("payload", &scan_schema).unwrap(),
+        Operator::GtEq,
+        lit(datafusion::common::ScalarValue::Int32(Some(value))),
+        &scan_schema,
+    )
+    .unwrap();
+    let parquet_source = parquet_source.with_predicate(predicate).with_pushdown_filters(true);
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_source(Arc::new(parquet_source)).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
+fn grouped_sum_aggregate_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("key", &scan_schema).unwrap(), "key".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("m00", &scan_schema).unwrap()])
+        .schema(Arc::clone(&scan_schema))
+        .alias("sum_m00")
+        .build()
+        .unwrap();
+    Arc::new(
+        AggregateExec::try_new(AggregateMode::Single, group_by, vec![Arc::new(sum)], vec![None], scan, scan_schema)
+            .unwrap(),
+    )
+}
+
+fn global_sum_aggregate_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("m00", &scan_schema).unwrap()])
+        .schema(Arc::clone(&scan_schema))
+        .alias("sum_m00")
+        .build()
+        .unwrap();
+    Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(Vec::new()),
+            vec![Arc::new(sum)],
+            vec![None],
+            scan,
+            scan_schema,
+        )
+        .unwrap(),
+    )
+}
+
+fn parquet_scan_with_explicit_byte_ranges_and_access_plan(
+    scan: Arc<dyn ExecutionPlan>,
+    ranges: Vec<(i64, i64)>,
+    access_plan: ParquetAccessPlan,
+) -> Arc<dyn ExecutionPlan> {
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_groups = file_scan
+        .file_groups
+        .iter()
+        .map(|group| {
+            FileGroup::new(
+                group
+                    .files()
+                    .iter()
+                    .flat_map(|file| {
+                        ranges
+                            .iter()
+                            .map(|(start, end)| {
+                                file.clone().with_range(*start, *end).with_extension(access_plan.clone())
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_file_groups(file_groups).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
+fn row_group_range_pruning_offsets(path: &std::path::Path) -> Vec<i64> {
+    let reader = SerializedFileReader::try_from(path).unwrap();
+    reader
+        .metadata()
+        .row_groups()
+        .iter()
+        .map(|row_group| {
+            let column = row_group.column(0);
+            column.dictionary_page_offset().unwrap_or_else(|| column.data_page_offset())
+        })
+        .collect()
 }
 
 async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> Arc<dyn ExecutionPlan> {

@@ -5,13 +5,13 @@ const ICEBERG_POSITION_DELETE_POS_COLUMN: &str = "pos";
 const ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN: &str = "__nexus_iceberg_row_position";
 
 pub(super) fn source_requires_position_delete_chunk_reads(source: &LocalParquetSource) -> bool {
-    source.has_position_delete_files()
+    source.has_row_delete_files()
         && !source.is_count_star_probe_source()
         && (source.scan_limit.is_some()
-            || source
-                .files
-                .iter()
-                .any(|file| file.row_groups.as_ref().is_some_and(|row_groups| !row_groups.is_empty())))
+            || source.files.iter().any(|file| {
+                file.has_position_delete_files()
+                    && file.row_groups.as_ref().is_some_and(|row_groups| !row_groups.is_empty())
+            }))
 }
 
 pub(super) fn read_position_delete_parquet_source_as_chunks(
@@ -156,6 +156,7 @@ pub(super) fn read_position_delete_source_chunk(
     metrics.parquet_read_time += read_elapsed;
     metrics.source_read_time += read_elapsed;
     let frame = output.into_frame();
+    let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
     let frame = apply_position_deletes_to_data_file(
         context,
         source,
@@ -203,16 +204,16 @@ pub(super) fn apply_position_deletes_to_data_file(
     mut frame: DataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
-    if file.position_delete_files.is_empty() || frame.num_rows() == 0 {
+    if !file.has_row_delete_files() || frame.num_rows() == 0 {
         return Ok(frame);
     }
     if source.read_columns.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.local_parquet_source.position_deletes",
-            "Iceberg position deletes require at least one decoded data column",
+            "Iceberg row deletes require at least one decoded data column",
         )
-        .with_fact("reason", "position_deletes_require_data_column")
+        .with_fact("reason", "row_deletes_require_data_column")
         .with_fact("path", parquet_file_path_fact(file))
         .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("file_index", file_index));
@@ -320,6 +321,38 @@ pub(super) fn apply_position_deletes_to_data_file(
                 .with_fact("file_index", file_index)
                 .with_fact("delete_index", delete_index)
                 .with_fact("delete_rows", matching_deletes.num_rows())
+            })?;
+    }
+    for (delete_index, delete_file) in file.equality_delete_files.iter().enumerate() {
+        context.check_cancellation("nexus_query_engine.local_parquet_source.equality_deletes")?;
+        if delete_file.row_count == Some(0) {
+            continue;
+        }
+        let delete_frame =
+            read_equality_delete_file(context, source_node_id, source, delete_file, file_index, delete_index, metrics)?;
+        if delete_frame.num_rows() == 0 {
+            continue;
+        }
+        frame = frame
+            .with_execution(&execution_overrides(context))
+            .left_anti_join(
+                &delete_frame,
+                cudf::DataFrameJoinOptions::new()
+                    .left_on(delete_file.equality_columns.iter().map(String::as_str))
+                    .right_on(delete_file.equality_columns.iter().map(String::as_str))
+                    .null_equality(cudf::NullEquality::Equal),
+            )
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.local_parquet_source.equality_deletes.apply",
+                    "failed to apply Iceberg equality deletes with native cudf anti join",
+                    error,
+                )
+                .with_fact("path", parquet_file_path_fact(file))
+                .with_fact("stable_id", parquet_file_stable_id_fact(file))
+                .with_fact("file_index", file_index)
+                .with_fact("delete_index", delete_index)
+                .with_fact("delete_rows", delete_frame.num_rows())
             })?;
     }
     frame = frame
@@ -562,6 +595,89 @@ pub(super) fn read_position_delete_file(
     coerce_local_parquet_source_schema(frame, &source, None, metrics).map_err(|error| {
         error.with_fact("position_delete_index", delete_index).with_fact(
             "position_delete_stable_id",
+            delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()),
+        )
+    })
+}
+
+pub(super) fn read_equality_delete_file(
+    context: &ExecutionContext,
+    source_node_id: NodeId,
+    source: &LocalParquetSource,
+    delete_file: &crate::source::ParquetEqualityDeleteFile,
+    data_file_index: usize,
+    delete_index: usize,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    let file = delete_file.to_local_parquet_file();
+    let schema_fields = delete_file
+        .equality_columns
+        .iter()
+        .map(|column| {
+            source.schema.field_with_name(column).map(|field| field.as_ref().clone()).map_err(|error| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_source.equality_deletes",
+                    "Iceberg equality-delete key column is not present in the data source schema",
+                )
+                .with_fact("reason", "missing_equality_delete_source_column")
+                .with_fact("column", column.to_owned())
+                .with_fact("delete_index", delete_index)
+                .with_source(error)
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let delete_schema = Arc::new(Schema::new(schema_fields));
+    let delete_source =
+        LocalParquetSource::from_files(vec![file.clone()], delete_schema, delete_file.equality_columns.clone());
+    let columns = delete_file.equality_columns.iter().map(String::as_str).collect::<Vec<_>>();
+    let frame = if file.resolved_source.uses_host_buffer() {
+        read_object_store_parquet_file(
+            context,
+            &delete_source,
+            source_node_id,
+            &file,
+            data_file_index,
+            delete_index,
+            metrics,
+        )?
+    } else {
+        let _cache_read_pin =
+            if file.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio {
+                ensure_local_cache_parquet_file(context, &file, metrics)?;
+                Some(acquire_lakehouse_cache_file_read_pin(context, &file)?)
+            } else {
+                None
+            };
+        let (cudf_source, cudf_chunk) =
+            cudf_local_parquet_source_file_selection(context, &delete_source, &file, data_file_index, delete_index)?;
+        read_local_parquet_file(
+            context,
+            &delete_source,
+            source_node_id,
+            &file,
+            data_file_index,
+            &cudf_source,
+            &cudf_chunk,
+            &columns,
+            metrics,
+        )?
+    };
+    let frame = coerce_local_parquet_source_schema(frame, &delete_source, None, metrics).map_err(|error| {
+        error.with_fact("equality_delete_index", delete_index).with_fact(
+            "equality_delete_stable_id",
+            delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()),
+        )
+    })?;
+    frame.select(columns).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.local_parquet_source.equality_deletes.read",
+            "failed to select Iceberg equality-delete key columns",
+            error,
+        )
+        .with_fact("equality_delete_index", delete_index)
+        .with_fact(
+            "equality_delete_stable_id",
             delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()),
         )
     })

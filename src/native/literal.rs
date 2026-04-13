@@ -48,6 +48,17 @@ pub(super) fn native_literal_value(
             NativeLiteralValue::Decimal128 { raw: *raw, precision: *precision, scale: *scale }
         },
         ScalarValue::Date32(Some(value)) => NativeLiteralValue::Date32(*value),
+        ScalarValue::Date64(Some(value)) => NativeLiteralValue::Date64(*value),
+        ScalarValue::Time32Second(Some(raw)) => NativeLiteralValue::Time32 { raw: *raw, unit: TimeUnit::Second },
+        ScalarValue::Time32Millisecond(Some(raw)) => {
+            NativeLiteralValue::Time32 { raw: *raw, unit: TimeUnit::Millisecond }
+        },
+        ScalarValue::Time64Microsecond(Some(raw)) => {
+            NativeLiteralValue::Time64 { raw: *raw, unit: TimeUnit::Microsecond }
+        },
+        ScalarValue::Time64Nanosecond(Some(raw)) => {
+            NativeLiteralValue::Time64 { raw: *raw, unit: TimeUnit::Nanosecond }
+        },
         ScalarValue::TimestampSecond(Some(raw), _) => {
             NativeLiteralValue::Timestamp { raw: *raw, unit: TimeUnit::Second }
         },
@@ -93,6 +104,11 @@ pub(super) fn native_literal_value(
             NativeLiteralValue::Null(DataType::Decimal128(*precision, *scale))
         },
         ScalarValue::Date32(None) => NativeLiteralValue::Null(DataType::Date32),
+        ScalarValue::Date64(None) => NativeLiteralValue::Null(DataType::Date64),
+        ScalarValue::Time32Second(None) => NativeLiteralValue::Null(DataType::Time32(TimeUnit::Second)),
+        ScalarValue::Time32Millisecond(None) => NativeLiteralValue::Null(DataType::Time32(TimeUnit::Millisecond)),
+        ScalarValue::Time64Microsecond(None) => NativeLiteralValue::Null(DataType::Time64(TimeUnit::Microsecond)),
+        ScalarValue::Time64Nanosecond(None) => NativeLiteralValue::Null(DataType::Time64(TimeUnit::Nanosecond)),
         ScalarValue::TimestampSecond(None, timezone) => {
             NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Second, timezone.clone()))
         },

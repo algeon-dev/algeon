@@ -24,6 +24,9 @@ pub(in crate::exec) fn partial_global_aggregate_spec(spec: &AggregateSpec) -> Ag
                         global_valid_count_state_alias(expr.alias.as_str()),
                     ),
                 ],
+                AggregateFunction::Median => {
+                    unreachable!("median aggregate does not have a native global partial/final state")
+                },
                 AggregateFunction::Count | AggregateFunction::NUnique => {
                     vec![expr.clone()]
                 },
@@ -62,6 +65,14 @@ pub(in crate::exec) fn partial_global_aggregate_output_schema(
                     ArrowDataType::Int64,
                     false,
                 ));
+            },
+            AggregateFunction::Median => {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedOperator,
+                    "nexus_query_engine.global_aggregate.state_schema",
+                    "median aggregate does not have a native global partial/final state",
+                )
+                .with_fact("alias", expr.alias.as_str()));
             },
             AggregateFunction::StddevSamp
             | AggregateFunction::StddevPop
@@ -116,6 +127,9 @@ pub(in crate::exec) fn final_global_aggregate_spec(spec: &AggregateSpec) -> Aggr
                             valid_count_alias,
                         ),
                     ]
+                },
+                AggregateFunction::Median => {
+                    unreachable!("median aggregate does not have a native global final-merge state")
                 },
                 AggregateFunction::StddevSamp
                 | AggregateFunction::StddevPop

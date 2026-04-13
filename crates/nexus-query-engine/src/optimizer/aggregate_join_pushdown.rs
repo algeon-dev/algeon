@@ -999,6 +999,12 @@ fn collect_unqualified_column_names(expr: &Expr, out: &mut Vec<String>) {
         | Expr::IsNotNull(inner)
         | Expr::Lower(inner)
         | Expr::Upper(inner)
+        | Expr::Trim { expr: inner, .. }
+        | Expr::LTrim { expr: inner, .. }
+        | Expr::RTrim { expr: inner, .. }
+        | Expr::StringContains { expr: inner, .. }
+        | Expr::StartsWith { expr: inner, .. }
+        | Expr::EndsWith { expr: inner, .. }
         | Expr::Abs(inner) => collect_unqualified_column_names(inner, out),
         Expr::Cast { expr, .. }
         | Expr::TryCast { expr, .. }
@@ -1072,6 +1078,14 @@ fn substitute_unqualified_columns(expr: Expr, map: &dyn Fn(&str) -> Option<Expr>
         },
         Expr::Lower(inner) => Expr::Lower(Box::new(substitute_unqualified_columns(*inner, map))),
         Expr::Upper(inner) => Expr::Upper(Box::new(substitute_unqualified_columns(*inner, map))),
+        Expr::Trim { expr, trim_chars } => Expr::trim(substitute_unqualified_columns(*expr, map), trim_chars),
+        Expr::LTrim { expr, trim_chars } => Expr::ltrim(substitute_unqualified_columns(*expr, map), trim_chars),
+        Expr::RTrim { expr, trim_chars } => Expr::rtrim(substitute_unqualified_columns(*expr, map), trim_chars),
+        Expr::StringContains { expr, pattern } => {
+            Expr::string_contains(substitute_unqualified_columns(*expr, map), pattern)
+        },
+        Expr::StartsWith { expr, prefix } => Expr::starts_with(substitute_unqualified_columns(*expr, map), prefix),
+        Expr::EndsWith { expr, suffix } => Expr::ends_with(substitute_unqualified_columns(*expr, map), suffix),
         Expr::StringLength { expr, output_type } => {
             Expr::StringLength { expr: Box::new(substitute_unqualified_columns(*expr, map)), output_type }
         },

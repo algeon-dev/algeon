@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use arrow::datatypes::{DataType, SchemaRef, TimeUnit};
 use datafusion::{
     physical_expr::{
-        PhysicalExpr, ScalarFunctionExpr,
+        LexOrdering, PhysicalExpr, ScalarFunctionExpr,
         expressions::{
             BinaryExpr, CaseExpr, CastExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNotNullExpr, IsNullExpr,
             LikeExpr, Literal, NotExpr, TryCastExpr,
@@ -13,7 +13,6 @@ use datafusion::{
         aggregates::{AggregateExec, AggregateMode},
         filter::FilterExec,
         projection::ProjectionExec,
-        sorts::sort::SortExec,
     },
 };
 use nexus_query_engine::{
@@ -88,6 +87,9 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
     {
         return Err(FallbackReason::UnsupportedOperator);
     }
+    if aggregate_has_median_and_floating_statistical(aggregate) {
+        return Err(FallbackReason::UnsupportedOperator);
+    }
     for aggregate_expr in aggregate.aggr_expr() {
         if aggregate_expr.is_distinct() && !aggregate_expr.fun().name().eq_ignore_ascii_case("count") {
             return Err(FallbackReason::UnsupportedOperator);
@@ -98,18 +100,33 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
         if !is_supported_native_aggregate_function(aggregate_expr.fun().name()) {
             return Err(FallbackReason::UnsupportedOperator);
         }
+        if matches!(aggregate.mode(), AggregateMode::Partial)
+            && aggregate_expr.fun().name().eq_ignore_ascii_case("median")
+        {
+            return Err(FallbackReason::UnsupportedOperator);
+        }
         let expressions = aggregate_expr.expressions();
         let [arg] = expressions.as_slice() else {
             return Err(FallbackReason::UnsupportedExpression);
         };
         validate_physical_expr(arg, &aggregate.input().schema())?;
         validate_operator_value_expr(arg, &aggregate.input().schema())?;
+        if aggregate_expr.fun().name().eq_ignore_ascii_case("median") {
+            validate_median_input_type(arg, &aggregate.input().schema())?;
+        }
     }
     validate_aggregate_filters(aggregate)?;
     for (group_expr, _alias) in group_by.expr() {
         validate_operator_key_expr(group_expr, &aggregate.input().schema())?;
     }
     Ok(())
+}
+
+fn aggregate_has_median_and_floating_statistical(aggregate: &AggregateExec) -> bool {
+    let has_median = aggregate.aggr_expr().iter().any(|expr| expr.fun().name().eq_ignore_ascii_case("median"));
+    let has_floating_statistical =
+        aggregate.aggr_expr().iter().any(|expr| is_floating_statistical_aggregate_function(expr.fun().name()));
+    has_median && has_floating_statistical
 }
 
 pub(super) fn validate_aggregate_for_native_lowering(
@@ -143,6 +160,9 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
             return Err(FallbackReason::UnsupportedExpression);
         }
         if !is_supported_native_aggregate_function(aggregate_expr.fun().name()) {
+            return Err(FallbackReason::UnsupportedOperator);
+        }
+        if aggregate_expr.fun().name().eq_ignore_ascii_case("median") {
             return Err(FallbackReason::UnsupportedOperator);
         }
         let expressions = aggregate_expr.expressions();
@@ -191,12 +211,12 @@ fn validate_grouping_sets(
     Ok(())
 }
 
-pub(super) fn validate_sort(sort: &SortExec) -> Result<(), FallbackReason> {
-    if sort.expr().is_empty() {
+pub(super) fn validate_sort_ordering(ordering: &LexOrdering, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+    if ordering.is_empty() {
         return Err(FallbackReason::UnsupportedExpression);
     }
-    for sort_expr in sort.expr() {
-        validate_operator_key_expr(&sort_expr.expr, &sort.input().schema())?;
+    for sort_expr in ordering {
+        validate_operator_key_expr(&sort_expr.expr, input_schema)?;
     }
     Ok(())
 }
@@ -213,6 +233,27 @@ fn validate_operator_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &Sch
     } else {
         Ok(())
     }
+}
+
+fn validate_median_input_type(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if is_cudf_median_input_type(&data_type) { Ok(()) } else { Err(FallbackReason::UnsupportedType) }
+}
+
+fn is_cudf_median_input_type(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Float32
+            | DataType::Float64
+    )
 }
 
 pub(super) fn native_zero_column_count_source_is_safe(
@@ -252,7 +293,20 @@ fn is_supported_native_aggregate_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("max")
         || name.eq_ignore_ascii_case("count")
         || name.eq_ignore_ascii_case("avg")
+        || name.eq_ignore_ascii_case("median")
         || name.eq_ignore_ascii_case("stddev")
+        || name.eq_ignore_ascii_case("stddev_samp")
+        || name.eq_ignore_ascii_case("stddev_pop")
+        || name.eq_ignore_ascii_case("var_samp")
+        || name.eq_ignore_ascii_case("var_sample")
+        || name.eq_ignore_ascii_case("var")
+        || name.eq_ignore_ascii_case("variance")
+        || name.eq_ignore_ascii_case("var_pop")
+        || name.eq_ignore_ascii_case("var_population")
+}
+
+fn is_floating_statistical_aggregate_function(name: &str) -> bool {
+    name.eq_ignore_ascii_case("stddev")
         || name.eq_ignore_ascii_case("stddev_samp")
         || name.eq_ignore_ascii_case("stddev_pop")
         || name.eq_ignore_ascii_case("var_samp")
@@ -372,7 +426,7 @@ fn collect_required_columns_for_scalar_function(
                 return Err(FallbackReason::UnsupportedExpression);
             };
             match literal_string(field)?.to_ascii_lowercase().as_str() {
-                "minute" => {},
+                "day" | "hour" | "minute" | "second" | "millisecond" | "microsecond" => {},
                 _ => return Err(FallbackReason::UnsupportedExpression),
             }
             collect_required_columns(expr, input_schema, required)

@@ -554,6 +554,12 @@ fn expr_references_any_column_name(expr: &Expr, column_names: &[&str]) -> bool {
         | Expr::TryCast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::Trim { expr, .. }
+        | Expr::LTrim { expr, .. }
+        | Expr::RTrim { expr, .. }
+        | Expr::StringContains { expr, .. }
+        | Expr::StartsWith { expr, .. }
+        | Expr::EndsWith { expr, .. }
         | Expr::Abs(expr)
         | Expr::Sqrt { expr, .. }
         | Expr::Round { expr, .. }

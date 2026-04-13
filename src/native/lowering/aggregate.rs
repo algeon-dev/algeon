@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
     physical_expr::{expressions::Column, projection::ProjectionExprs},
-    physical_plan::{ExecutionPlan, aggregates::AggregateExec, projection::ProjectionExec, sorts::sort::SortExec},
+    physical_plan::{ExecutionPlan, aggregates::AggregateExec, projection::ProjectionExec},
 };
 use nexus_query_engine::{
     AggregateExpr as NativeAggregateExpr, AggregateFunction as NativeAggregateFunction,
@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     native::{
-        normalize::{NormalizedNativeAggregate, NormalizedNativeAggregateRoot},
+        normalize::{NormalizedNativeAggregate, NormalizedNativeAggregateRoot, NormalizedNativeSortExprs},
         validate::{
             aggregate_is_count_star_only, validate_aggregate_for_native_lowering, validate_physical_expr,
             validate_schema,
@@ -180,7 +180,7 @@ pub(super) fn validate_aggregate_root_operator_schemas(
     root: &NormalizedNativeAggregateRoot<'_>,
     pre_aggregate_projection: Option<&ProjectionExec>,
     post_aggregate_projection: Option<&ProjectionExec>,
-    sort: Option<&SortExec>,
+    sort: Option<&NormalizedNativeSortExprs<'_>>,
 ) -> Result<(), FallbackReason> {
     if let Some(projection) = pre_aggregate_projection {
         validate_schema(projection.schema())?;
@@ -191,7 +191,7 @@ pub(super) fn validate_aggregate_root_operator_schemas(
         validate_schema(projection.schema())?;
     }
     if let Some(sort) = sort {
-        validate_schema(sort.schema())?;
+        validate_schema(Arc::clone(sort.output_schema()))?;
     }
     Ok(())
 }
@@ -360,6 +360,8 @@ pub(super) fn lower_native_aggregate_function(name: &str) -> Result<NativeAggreg
         Ok(NativeAggregateFunction::Count)
     } else if name.eq_ignore_ascii_case("avg") {
         Ok(NativeAggregateFunction::Avg)
+    } else if name.eq_ignore_ascii_case("median") {
+        Ok(NativeAggregateFunction::Median)
     } else if name.eq_ignore_ascii_case("stddev") || name.eq_ignore_ascii_case("stddev_samp") {
         Ok(NativeAggregateFunction::StddevSamp)
     } else if name.eq_ignore_ascii_case("stddev_pop") {

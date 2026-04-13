@@ -979,7 +979,14 @@ fn build_lag_lead_value_fill_scalar(
             Float64(v) => runtime.scalar(*v),
             Utf8(s) | LargeUtf8(s) => runtime.string_scalar(s),
             Null(_) => return null_for_output(),
-            Decimal128 { .. } | Date32(_) | Timestamp { .. } | Duration { .. } | IntervalMonthDayNano { .. } => {
+            Decimal128 { .. }
+            | Date32(_)
+            | Date64(_)
+            | Time32 { .. }
+            | Time64 { .. }
+            | Timestamp { .. }
+            | Duration { .. }
+            | IntervalMonthDayNano { .. } => {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedExpression,
                     "nexus_query_engine.window.lag_lead.fill",

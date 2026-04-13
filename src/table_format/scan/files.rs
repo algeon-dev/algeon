@@ -56,6 +56,8 @@ pub struct TableFormatDataFile {
     pub partition_values: Vec<TableFormatPartitionValue>,
     /// Supported position-delete files associated with this data file.
     pub position_delete_files: Vec<TableFormatDeleteFile>,
+    /// Supported equality-delete files associated with this data file.
+    pub equality_delete_files: Vec<TableFormatDeleteFile>,
 }
 
 impl fmt::Debug for TableFormatDataFile {
@@ -73,6 +75,7 @@ impl fmt::Debug for TableFormatDataFile {
             .field("row_group_null_counts", &self.row_group_null_counts)
             .field("partition_values", &self.partition_values)
             .field("position_delete_files", &self.position_delete_files)
+            .field("equality_delete_files", &self.equality_delete_files)
             .finish()
     }
 }
@@ -98,6 +101,7 @@ impl TableFormatDataFile {
             row_group_null_counts: BTreeMap::new(),
             partition_values: Vec::new(),
             position_delete_files: Vec::new(),
+            equality_delete_files: Vec::new(),
         }
     }
 
@@ -149,14 +153,35 @@ impl TableFormatDataFile {
         self
     }
 
+    /// Records supported equality-delete files attached to this data file.
+    pub fn with_equality_delete_files(mut self, equality_delete_files: Vec<TableFormatDeleteFile>) -> Self {
+        self.equality_delete_files = equality_delete_files;
+        self
+    }
+
     /// Adds one supported position-delete file attached to this data file.
     pub fn push_position_delete_file(&mut self, delete_file: TableFormatDeleteFile) {
         self.position_delete_files.push(delete_file);
     }
 
+    /// Adds one supported equality-delete file attached to this data file.
+    pub fn push_equality_delete_file(&mut self, delete_file: TableFormatDeleteFile) {
+        self.equality_delete_files.push(delete_file);
+    }
+
     /// Whether this data file has supported position deletes attached.
     pub fn has_position_delete_files(&self) -> bool {
         !self.position_delete_files.is_empty()
+    }
+
+    /// Whether this data file has supported equality deletes attached.
+    pub fn has_equality_delete_files(&self) -> bool {
+        !self.equality_delete_files.is_empty()
+    }
+
+    /// Whether this data file has row-level delete files attached.
+    pub fn has_row_delete_files(&self) -> bool {
+        self.has_position_delete_files() || self.has_equality_delete_files()
     }
 
     /// Whether the file can be represented by direct native Parquet reads.
@@ -227,6 +252,8 @@ pub struct TableFormatDeleteFile {
     pub read_capability: TableFormatReadCapability,
     /// Resolved Parquet read strategy for native source lowering.
     pub resolved_parquet_source: Option<ResolvedParquetSource>,
+    /// Iceberg equality-delete field ids for equality-delete files.
+    pub equality_ids: Option<Vec<i32>>,
 }
 
 impl fmt::Debug for TableFormatDeleteFile {
@@ -247,6 +274,7 @@ impl fmt::Debug for TableFormatDeleteFile {
             .field("position_upper_bound", &self.position_upper_bound)
             .field("read_capability", &self.read_capability)
             .field("resolved_parquet_source", &self.resolved_parquet_source)
+            .field("equality_ids", &self.equality_ids)
             .finish()
     }
 }
@@ -283,6 +311,7 @@ impl TableFormatDeleteFile {
             position_upper_bound: None,
             read_capability: TableFormatReadCapability::unsupported("unresolved"),
             resolved_parquet_source: None,
+            equality_ids: None,
         }
     }
 
@@ -323,11 +352,31 @@ impl TableFormatDeleteFile {
         self
     }
 
+    /// Records Iceberg equality-delete field ids.
+    pub fn with_equality_ids(mut self, equality_ids: impl IntoIterator<Item = i32>) -> Self {
+        self.equality_ids = Some(equality_ids.into_iter().collect());
+        self
+    }
+
     /// Whether this delete file can be represented by native position-delete handling.
     pub fn is_supported_position_delete(&self) -> bool {
         self.format == TableFormatDataFileFormat::Parquet
             && self.content == TableFormatDeleteFileContent::PositionDeletes
             && self.read_capability.is_native_parquet_capable()
             && self.resolved_parquet_source.is_some()
+    }
+
+    /// Whether this delete file can be represented by native equality-delete handling.
+    pub fn is_supported_equality_delete(&self) -> bool {
+        self.format == TableFormatDataFileFormat::Parquet
+            && self.content == TableFormatDeleteFileContent::EqualityDeletes
+            && self.read_capability.is_native_parquet_capable()
+            && self.resolved_parquet_source.is_some()
+            && self.equality_ids.as_ref().is_some_and(|ids| !ids.is_empty())
+    }
+
+    /// Whether this delete file can be represented by native row-level delete handling.
+    pub fn is_supported_row_delete(&self) -> bool {
+        self.is_supported_position_delete() || self.is_supported_equality_delete()
     }
 }

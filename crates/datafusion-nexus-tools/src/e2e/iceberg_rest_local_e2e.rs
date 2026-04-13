@@ -196,6 +196,13 @@ async fn rest_datafusion_scan_local() {
         assert_eq!(n, expected, "row count mismatch for {namespace}.{table}");
     }
 
+    if let Some(expected_ids) = expected_i64_list_env("NEXUS_ICEBERG_REST_E2E_EXPECTED_IDS") {
+        let ids_sql = format!("SELECT id FROM lake.\"{namespace}\".\"{table}\" ORDER BY id");
+        let id_batches = ctx.sql(&ids_sql).await.expect("plan id scan").collect().await.expect("execute id scan");
+        let ids = collect_i64_column(&id_batches, 0);
+        assert_eq!(ids, expected_ids, "visible id set mismatch for {namespace}.{table}");
+    }
+
     // A small projecting LIMIT scan exercises the actual data-file read path.
     let limit_sql = format!("SELECT * FROM lake.\"{namespace}\".\"{table}\" LIMIT 3");
     let limited = ctx.sql(&limit_sql).await.expect("plan limit").collect().await.expect("execute limit");
@@ -215,30 +222,58 @@ async fn rest_datafusion_scan_local() {
 async fn rest_table_metadata_contract_local() {
     let namespace =
         std::env::var("NEXUS_ICEBERG_NAMESPACE").expect("set NEXUS_ICEBERG_NAMESPACE for local REST metadata E2E");
+    let table_name = std::env::var("NEXUS_ICEBERG_REST_E2E_TABLE").unwrap_or_else(|_| "nation".to_string());
 
     let backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.unwrap());
 
     let ns = NamespaceIdent::new(namespace.clone());
-    let ident = TableIdent::new(ns, "nation".to_string());
-    let table = backend.load_table(&ident).await.expect("load nation table");
+    let ident = TableIdent::new(ns, table_name.clone());
+    let table = backend.load_table(&ident).await.expect("load REST E2E table");
 
-    // (1) Schema field names match the TPC-H nation columns.
+    // (1) Schema field names match the selected fixture table.
     let schema = table.metadata().current_schema();
     let mut field_names: Vec<String> = schema.as_struct().fields().iter().map(|f| f.name.clone()).collect();
     field_names.sort();
-    let mut expected = vec!["n_comment", "n_name", "n_nationkey", "n_regionkey"];
-    expected.sort();
-    eprintln!("nation schema field names: {field_names:?}");
-    assert_eq!(field_names, expected, "TPC-H nation schema field names must match the loader output");
+    if table_name == "nation" {
+        let mut expected = vec!["n_comment", "n_name", "n_nationkey", "n_regionkey"];
+        expected.sort();
+        eprintln!("nation schema field names: {field_names:?}");
+        assert_eq!(field_names, expected, "TPC-H nation schema field names must match the loader output");
+    } else if table_name == "eq_deletes" {
+        let mut expected = vec!["grp", "id", "payload"];
+        expected.sort();
+        eprintln!("eq_deletes schema field names: {field_names:?}");
+        assert_eq!(field_names, expected, "equality-delete fixture schema field names must match");
+    } else {
+        eprintln!("{table_name} schema field names: {field_names:?}");
+    }
+
+    if let Some(expected_delete_files) = expected_i64_env("NEXUS_ICEBERG_REST_E2E_EXPECTED_EQ_DELETE_FILES") {
+        let added_equality_delete_files = snapshot_summary_i64_total(table.metadata(), "added-equality-delete-files");
+        assert_eq!(
+            added_equality_delete_files, expected_delete_files,
+            "equality-delete snapshot metadata mismatch for {namespace}.{table_name}"
+        );
+        let total_delete_files = table
+            .metadata()
+            .current_snapshot()
+            .and_then(|snapshot| snapshot.summary().additional_properties.get("total-delete-files"))
+            .and_then(|value| value.parse::<i64>().ok());
+        assert_eq!(
+            total_delete_files,
+            Some(expected_delete_files),
+            "current snapshot total-delete-files mismatch for {namespace}.{table_name}"
+        );
+    }
 
     // (2) Table root and metadata pointer live in S3 (RustFS), not local disk.
     let table_location = table.metadata().location();
-    eprintln!("nation table location: {table_location}");
+    eprintln!("{table_name} table location: {table_location}");
     assert!(table_location.starts_with("s3://"), "table root must be an s3:// location, got {table_location}");
 
     let metadata_location = table.metadata_location().expect("metadata pointer present");
-    eprintln!("nation metadata location: {metadata_location}");
+    eprintln!("{table_name} metadata location: {metadata_location}");
     assert!(
         metadata_location.starts_with("s3://"),
         "metadata pointer must be an s3:// location, got {metadata_location}"
@@ -438,4 +473,49 @@ fn sorted_rows(batches: &[arrow::record_batch::RecordBatch]) -> Vec<String> {
     }
     rows.sort();
     rows
+}
+
+fn expected_i64_env(name: &str) -> Option<i64> {
+    std::env::var(name).ok().filter(|value| !value.trim().is_empty()).map(|value| {
+        value.parse::<i64>().unwrap_or_else(|error| panic!("{name} must be an integer, got {value:?}: {error}"))
+    })
+}
+
+fn expected_i64_list_env(name: &str) -> Option<Vec<i64>> {
+    std::env::var(name).ok().filter(|value| !value.trim().is_empty()).map(|value| {
+        value
+            .split(',')
+            .map(|part| {
+                let part = part.trim();
+                part.parse::<i64>().unwrap_or_else(|error| panic!("{name} contains non-integer {part:?}: {error}"))
+            })
+            .collect()
+    })
+}
+
+fn collect_i64_column(batches: &[arrow::record_batch::RecordBatch], column_index: usize) -> Vec<i64> {
+    use arrow::array::Array;
+
+    let mut values = Vec::new();
+    for batch in batches {
+        let column = batch
+            .column(column_index)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .expect("expected Int64 column");
+        for row in 0..column.len() {
+            values.push(column.value(row));
+        }
+    }
+    values
+}
+
+fn snapshot_summary_i64_total(metadata: &iceberg::spec::TableMetadata, key: &str) -> i64 {
+    metadata
+        .snapshots()
+        .filter_map(|snapshot| snapshot.summary().additional_properties.get(key))
+        .map(|value| {
+            value.parse::<i64>().unwrap_or_else(|error| panic!("invalid snapshot summary {key}={value}: {error}"))
+        })
+        .sum()
 }

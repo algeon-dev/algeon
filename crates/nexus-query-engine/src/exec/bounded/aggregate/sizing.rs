@@ -201,6 +201,14 @@ fn global_partial_aggregate_upper_bound_columns(
                     "global aggregate valid-count state",
                 )?));
             },
+            AggregateFunction::Median => {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedOperator,
+                    "nexus_query_engine.bounded.aggregate.global_partial_sizing",
+                    "median aggregate does not have a native partial/final state contract",
+                )
+                .with_fact("alias", expr.alias.as_str()));
+            },
             AggregateFunction::Count | AggregateFunction::NUnique => {
                 columns.push(partial_column_for_field_and_optional_input(
                     context,
@@ -344,6 +352,14 @@ fn grouped_partial_aggregate_upper_bound_columns(
                     reservations,
                     metrics,
                 )?);
+            },
+            AggregateFunction::Median => {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedOperator,
+                    "nexus_query_engine.bounded.aggregate.partial_sizing",
+                    "median aggregate does not have a native partial/final state contract",
+                )
+                .with_fact("alias", expr.alias.as_str()));
             },
             AggregateFunction::StddevSamp
             | AggregateFunction::StddevPop

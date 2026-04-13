@@ -689,7 +689,7 @@ fn generic_source_chunk_batches(
 
 fn generic_source_chunk_batching_supported(source: &LocalParquetSource) -> bool {
     source.partition_columns.is_empty()
-        && !source.files.iter().any(LocalParquetFile::has_position_delete_files)
+        && !source.files.iter().any(LocalParquetFile::has_row_delete_files)
         && source.scan_limit.is_none()
         && source.reader_predicate.as_ref().is_none_or(|predicate| source.reader_predicate_is_supported(predicate))
 }

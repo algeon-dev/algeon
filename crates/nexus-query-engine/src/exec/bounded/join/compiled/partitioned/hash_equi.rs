@@ -111,63 +111,33 @@ fn materialize_partitioned_hash_equi_join_partition(
 ) -> Result<PartitionedJoinPartitionOutput> {
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let options = dataframe_join_options(&left_keys, &right_keys, node.spec.null_equality);
     let overrides = execution_overrides(context);
     let timer = Instant::now();
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
     let (left, right) = txn.sides();
-    let pair_indices = match node.spec.join_type {
-        JoinType::Inner => left.frame.with_execution(&overrides).inner_join_indices(&right.frame, options),
-        JoinType::Left => left.frame.with_execution(&overrides).left_join_indices(&right.frame, options),
-        JoinType::Full => left.frame.with_execution(&overrides).full_join_indices(&right.frame, options),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
-            unreachable!("validated above")
-        },
-    }
-    .map_err(|error| join_index_error(error, node));
-    let pair_indices = match pair_indices {
+    let preflight_indices = match materialize_compiled_keyed_equality_join_indices_with_preflight(
+        context,
+        node_id,
+        node,
+        left,
+        right,
+        node.spec.build_side,
+        &left_keys,
+        &right_keys,
+        "join_partition_indices",
+        reservations,
+        metrics,
+        &overrides,
+    ) {
         Ok(indices) => indices,
         Err(error) => {
             txn.rollback(reservations, metrics);
             return Err(error);
         },
     };
-    let index_bytes = match pair_indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.bounded.join.partitioned_index_bytes",
-            "failed to observe compiled partitioned join index memory",
-            error,
-        )
-        .with_fact("join_type", node.spec.join_type)
-    }) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            drop(pair_indices);
-            txn.rollback(reservations, metrics);
-            return Err(error);
-        },
-    };
-    let gather_map_reservation = match reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::GatherMap,
-            "join_partition_indices",
-            index_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            drop(pair_indices);
-            txn.rollback(reservations, metrics);
-            return Err(error);
-        },
-    };
+    let CompiledEqualityJoinPreflightIndices { indices, gather_map_reservation, index_bytes, output_rows } =
+        preflight_indices;
     txn.set_gather_map_reservation(gather_map_reservation);
-    let output_rows = pair_indices.len() as u64;
-    let indices = CompiledJoinIndices::Pair { left: pair_indices.left().clone(), right: pair_indices.right().clone() };
-    drop(pair_indices);
     txn.set_indices(indices);
     let (left, right) = txn.sides();
     super::super::common::trace_preflight_entry(

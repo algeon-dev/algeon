@@ -56,6 +56,7 @@ pub(in crate::capability) enum AggregateStateContract {
 pub(in crate::capability) enum UnsupportedAggregateStateContract {
     GroupingSets,
     UnsupportedDistinctFunction,
+    NonMergeableAggregateFunction,
 }
 
 impl UnsupportedAggregateStateContract {
@@ -63,6 +64,7 @@ impl UnsupportedAggregateStateContract {
         match self {
             Self::GroupingSets => "grouping_sets",
             Self::UnsupportedDistinctFunction => "unsupported_distinct_function",
+            Self::NonMergeableAggregateFunction => "non_mergeable_aggregate_function",
         }
     }
 }
@@ -81,6 +83,8 @@ pub(in crate::capability) fn aggregate_state_contract(
     for expr in &spec.aggr_exprs {
         if aggregate_expr_is_exact_distinct_count(expr) {
             has_exact_distinct_count = true;
+        } else if expr.function == AggregateFunction::Median {
+            return Err(UnsupportedAggregateStateContract::NonMergeableAggregateFunction);
         } else if expr.distinct {
             return Err(UnsupportedAggregateStateContract::UnsupportedDistinctFunction);
         }
@@ -580,6 +584,9 @@ fn encoded_key_partial_rejected_reason(
     if aggregate_filter_count(spec) > 0 {
         return Some("encoded_key_partial_aggregate_filter_unsupported");
     }
+    if aggregate_spec_has_median(spec) {
+        return Some("encoded_key_partial_median_unsupported");
+    }
     if distinct_aggregate_count(spec) > 0 {
         return Some("encoded_key_partial_distinct_aggregate_unsupported");
     }
@@ -623,6 +630,9 @@ fn prepared_sort_groupby_rejected_reason(
     if aggregate_filter_count(spec) > 0 {
         return Some("prepared_sort_groupby_aggregate_filter_unsupported");
     }
+    if stage != AggregateExecutionStage::Single && aggregate_spec_has_median(spec) {
+        return Some("prepared_sort_groupby_median_requires_single_stage");
+    }
     if distinct_aggregate_count(spec) > 0 {
         return Some("prepared_sort_groupby_distinct_aggregate_unsupported");
     }
@@ -648,6 +658,9 @@ fn partitioned_merge_rejected_reason(spec: &AggregateSpec, stage: AggregateExecu
     if aggregate_spec_has_floating_statistical_aggregate(spec) {
         return Some("partitioned_merge_floating_statistical_aggregate_unsupported");
     }
+    if aggregate_spec_has_median(spec) {
+        return Some("partitioned_merge_median_unsupported");
+    }
     if distinct_aggregate_count(spec) > 0 {
         return Some("partitioned_merge_distinct_aggregate_unsupported");
     }
@@ -656,6 +669,10 @@ fn partitioned_merge_rejected_reason(spec: &AggregateSpec, stage: AggregateExecu
 
 fn aggregate_spec_has_floating_statistical_aggregate(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical())
+}
+
+fn aggregate_spec_has_median(spec: &AggregateSpec) -> bool {
+    spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Median)
 }
 
 fn aggregate_group_key_exprs(spec: &AggregateSpec) -> String {

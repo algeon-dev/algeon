@@ -130,10 +130,13 @@ fn shared_literal_width(value: &crate::expr::LiteralValue) -> u64 {
         crate::expr::LiteralValue::Int32(_)
         | crate::expr::LiteralValue::UInt32(_)
         | crate::expr::LiteralValue::Float32(_)
-        | crate::expr::LiteralValue::Date32(_) => 4,
+        | crate::expr::LiteralValue::Date32(_)
+        | crate::expr::LiteralValue::Time32 { .. } => 4,
         crate::expr::LiteralValue::Int64(_)
         | crate::expr::LiteralValue::UInt64(_)
         | crate::expr::LiteralValue::Float64(_)
+        | crate::expr::LiteralValue::Date64(_)
+        | crate::expr::LiteralValue::Time64 { .. }
         | crate::expr::LiteralValue::Timestamp { .. }
         | crate::expr::LiteralValue::Duration { .. } => 8,
         crate::expr::LiteralValue::Decimal128 { .. } | crate::expr::LiteralValue::IntervalMonthDayNano { .. } => 16,

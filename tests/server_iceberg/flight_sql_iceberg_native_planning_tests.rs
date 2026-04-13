@@ -7,10 +7,9 @@
 //!   `GROUP BY ... ORDER BY` and `JOIN + GROUP BY + ORDER BY` queries must
 //!   rewrite to native and leave no `CudfTableFormatScanExec` behind.
 //! - Under a CPU-style session profile that re-enables DataFusion
-//!   repartitioning, the same `GROUP BY ... ORDER BY` shape is rejected by
-//!   native lowering (full `SortPreservingMergeExec` unsupported) and the
-//!   leftover GPU-only leaf is caught by the Milestone 1 leaf guard before
-//!   `execute()`.
+//!   repartitioning, the same `GROUP BY ... ORDER BY` shape includes a full
+//!   `SortPreservingMergeExec`; native lowering must absorb that SPM as an
+//!   explicit native sort and still leave no GPU-only leaf behind.
 //! - A leaf-guard unit test asserts that a leftover `CudfTableFormatScanExec`
 //!   beneath a non-rewritable wrapper produces the structured
 //!   `table_format_gpu_only_leaf_not_rewritten` error.
@@ -65,6 +64,22 @@ async fn native_profile_iceberg_group_by_order_by_rewrites_with_no_leftover_leaf
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
     assert_query_fully_lowered_to_native(physical_plan.as_ref());
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_lead_window_ordering_uses_host_window_over_native_scan() {
+    let plan = native_admissible_scan_plan(iceberg_test_schema());
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[("iceberg_t", plan)],
+        "SELECT id, LEAD(id) OVER (ORDER BY id) AS next_id FROM iceberg_t",
+    )
+    .await
+    .expect("native profile must rewrite the Iceberg scan under the LEAD window");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+    assert_plan_contains_operator(physical_plan.as_ref(), "BoundedWindowAggExec");
+    assert_plan_contains_operator(physical_plan.as_ref(), "SortExec");
 }
 
 #[tokio::test]
@@ -136,7 +151,7 @@ async fn native_profile_iceberg_q1_style_cast_round_aggregate_order_limit_rewrit
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_cte_aggregate_join_back_rewrites_as_native_root() {
+async fn native_profile_iceberg_cte_aggregate_join_back_uses_partial_native_fragments() {
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[("iceberg_t", plan)],
@@ -149,10 +164,12 @@ async fn native_profile_iceberg_cte_aggregate_join_back_rewrites_as_native_root(
          LIMIT 5",
     )
     .await
-    .expect("native profile must rewrite CTE aggregate joined back to Iceberg fact");
+    .expect("native profile must rewrite native-safe CTE aggregate fragments");
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_query_root_is_native(physical_plan.as_ref());
+    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+    assert_plan_contains_operator(physical_plan.as_ref(), "HashJoinExec");
+    assert_plan_contains_operator(physical_plan.as_ref(), "SortExec");
 }
 
 #[tokio::test]
@@ -177,7 +194,7 @@ async fn native_profile_iceberg_not_in_count_distinct_composes_gpu_resident_chil
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_two_derived_aggregates_joined_to_fact_rewrites_as_native_root() {
+async fn native_profile_iceberg_two_derived_aggregates_joined_to_fact_use_partial_native_fragments() {
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[("iceberg_t", plan)],
@@ -192,10 +209,12 @@ async fn native_profile_iceberg_two_derived_aggregates_joined_to_fact_rewrites_a
          LIMIT 5",
     )
     .await
-    .expect("native profile must rewrite fact joined to two derived aggregate branches");
+    .expect("native profile must rewrite native-safe aggregate branches");
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_query_root_is_native(physical_plan.as_ref());
+    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+    assert_plan_contains_operator(physical_plan.as_ref(), "HashJoinExec");
+    assert_plan_contains_operator(physical_plan.as_ref(), "SortExec");
 }
 
 #[tokio::test]
@@ -272,7 +291,7 @@ async fn native_profile_iceberg_correlated_scalar_avg_rewrites_with_no_leftover_
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_correlated_scalar_max_rewrites_with_no_leftover_leaf() {
+async fn native_profile_iceberg_correlated_scalar_max_uses_partial_native_fragments() {
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[("iceberg_t", plan)],
@@ -282,10 +301,12 @@ async fn native_profile_iceberg_correlated_scalar_max_rewrites_with_no_leftover_
            AND s.id = (SELECT MAX(s2.id) FROM iceberg_t s2 WHERE s2.value = s.value)",
     )
     .await
-    .expect("native profile must rewrite correlated scalar MAX over Iceberg");
+    .expect("native profile must rewrite native-safe correlated scalar MAX fragments");
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_query_fully_lowered_to_native(physical_plan.as_ref());
+    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+    assert_plan_contains_operator(physical_plan.as_ref(), "HashJoinExec");
+    assert_plan_contains_operator(physical_plan.as_ref(), "AggregateExec");
 }
 
 #[tokio::test]
@@ -384,48 +405,23 @@ async fn native_profile_iceberg_scalar_subquery_scope_skips_mixed_regular_parque
 }
 
 #[tokio::test]
-async fn cpu_style_profile_iceberg_group_by_order_by_rejected_by_leaf_guard() {
-    // The CPU-style profile mirrors the pre-Milestone-2 audit scenario: DataFusion
-    // is allowed to repartition sorts so an unbounded GROUP BY + ORDER BY plan
-    // produces a root SortPreservingMergeExec over the GPU-only
-    // CudfTableFormatScanExec. The native rule rejects the full SPM shape, and
-    // the Milestone 1 leaf guard converts the leftover leaf into a structured
-    // planning error so DataFusion never reaches the leaf's placeholder
-    // execute() failure.
+async fn cpu_style_profile_iceberg_group_by_order_by_full_spm_lowers_to_native_sort() {
+    // The CPU-style profile mirrors the pre-Milestone-2 audit scenario:
+    // DataFusion is allowed to repartition sorts so an unbounded GROUP BY +
+    // ORDER BY plan produces a root SortPreservingMergeExec over the GPU-only
+    // CudfTableFormatScanExec. Full SPM is now lowerable as an explicit native
+    // sort, so this profile should rewrite the whole subtree instead of falling
+    // through to the leaf guard.
     let plan = native_admissible_scan_plan(iceberg_test_schema());
-    let error = run_iceberg_sql_under_cpu_profile(
+    let physical_plan = run_iceberg_sql_under_cpu_profile(
         &[("iceberg_t", plan)],
         "SELECT value, COUNT(*) AS c FROM iceberg_t GROUP BY value ORDER BY value",
     )
     .await
-    .expect_err("CPU-style profile must fail in planning rather than at scan execution");
+    .expect("CPU-style profile should rewrite GROUP BY + ORDER BY over Iceberg after full SPM support");
 
-    let adapter_error = adapter_error_from(&error);
-    let facts = collect_facts(adapter_error);
-    assert_eq!(
-        facts.get("fallback_reason").map(String::as_str),
-        Some(FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code()),
-        "facts={facts:?}",
-    );
-    assert_eq!(facts.get("leftover_operator").map(String::as_str), Some("CudfTableFormatScanExec"), "facts={facts:?}",);
-    assert_eq!(facts.get("table_format").map(String::as_str), Some("iceberg"), "facts={facts:?}");
-    assert_eq!(facts.get("cpu_arrow_reader_fallback").map(String::as_str), Some("false"), "facts={facts:?}");
-
-    // Milestone 1 quotes native rule rejection context when the guard fires
-    // after a native rejection. Under the CPU-style profile the root is a full
-    // SortPreservingMergeExec, which the native rule rejects with
-    // `native_sort_preserving_merge_unsupported`.
-    assert_eq!(
-        facts.get("native_rule_blocking_rejection").map(String::as_str),
-        Some(FallbackReason::NativeSortPreservingMergeUnsupported.code()),
-        "the guard must quote the SPM rejection that triggered the CPU fallback shape; facts={facts:?}",
-    );
-
-    let rendered = error.to_string();
-    assert!(
-        !rendered.contains("does not execute a CPU Arrow reader"),
-        "the placeholder execute() error must not surface under the leaf guard; got: {rendered}",
-    );
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_fully_lowered_to_native(physical_plan.as_ref());
 }
 
 #[tokio::test]
@@ -436,16 +432,10 @@ async fn cpu_style_profile_rejection_is_recognised_by_diagnostics_helper() {
     // without a tracing-subscriber, but the helper is a thin wrapper around
     // `log_leaf_guard_rejection` which calls a `pub(crate)`
     // `leaf_guard_event_fields` extractor exercised by `server::diagnostics`
-    // unit tests. Here we pin the end-to-end contract: the same CPU-style
-    // session profile that triggers the audit shape produces an error the
-    // public helper recognises (does not panic + classifies correctly).
-    let plan = native_admissible_scan_plan(iceberg_test_schema());
-    let error = run_iceberg_sql_under_cpu_profile(
-        &[("iceberg_t", plan)],
-        "SELECT value, COUNT(*) AS c FROM iceberg_t GROUP BY value ORDER BY value",
-    )
-    .await
-    .expect_err("CPU-style profile must fail in planning rather than at scan execution");
+    // unit tests. Here we pin the end-to-end contract: a real leaf-guard error
+    // is recognised by the public helper (does not panic + classifies
+    // correctly).
+    let error = leftover_table_format_scan_under_spm_leaf_guard_error();
 
     log_leaf_guard_rejection("test-query-id", &error, ServerSessionProfile::CpuFallback);
 
@@ -460,29 +450,11 @@ async fn cpu_style_profile_rejection_is_recognised_by_diagnostics_helper() {
 }
 
 #[test]
-fn leaf_guard_rejects_leftover_table_format_scan_under_unsupported_wrapper() {
+fn leaf_guard_rejects_leftover_table_format_scan_under_spm_wrapper() {
     // The Milestone 1 leaf guard is a `PhysicalOptimizerRule` that runs after the
-    // native rewrite. This test exercises it directly with a non-rewritable
-    // wrapper around a CudfTableFormatScanExec so the leaf survives any
-    // upstream rewrite attempt. The wrapper here is a SortPreservingMergeExec
-    // over the leaf, which is exactly the shape the audit identified as the
-    // CPU-fallback trigger.
-    let schema = iceberg_test_schema();
-    let scan: Arc<dyn ExecutionPlan> =
-        Arc::new(CudfTableFormatScanExec::new(native_admissible_scan_plan(Arc::clone(&schema)), schema));
-    let ordering = datafusion::physical_expr::LexOrdering::new([datafusion::physical_expr::PhysicalSortExpr::new(
-        datafusion::physical_expr::expressions::col("id", scan.schema().as_ref()).unwrap(),
-        arrow::compute::SortOptions::new(false, false),
-    )])
-    .expect("non-empty LexOrdering");
-    let wrapper: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(ordering, scan));
-
-    let rule = CudfTableFormatGpuOnlyLeafGuardRule::new();
-    assert_eq!(rule.name(), CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME);
-
-    let error = rule
-        .optimize(wrapper, &datafusion::common::config::ConfigOptions::new())
-        .expect_err("leaf guard must reject a plan that retains a CudfTableFormatScanExec");
+    // native rewrite. This test exercises it directly with a wrapper around a
+    // CudfTableFormatScanExec so the leaf is still present when the guard runs.
+    let error = leftover_table_format_scan_under_spm_leaf_guard_error();
 
     let adapter_error = adapter_error_from(&error);
     let facts = collect_facts(adapter_error);
@@ -501,6 +473,23 @@ fn leaf_guard_rejects_leftover_table_format_scan_under_unsupported_wrapper() {
 
 // ----- helpers ---------------------------------------------------------------
 
+fn leftover_table_format_scan_under_spm_leaf_guard_error() -> DataFusionError {
+    let schema = iceberg_test_schema();
+    let scan: Arc<dyn ExecutionPlan> =
+        Arc::new(CudfTableFormatScanExec::new(native_admissible_scan_plan(Arc::clone(&schema)), schema));
+    let ordering = datafusion::physical_expr::LexOrdering::new([datafusion::physical_expr::PhysicalSortExpr::new(
+        datafusion::physical_expr::expressions::col("id", scan.schema().as_ref()).unwrap(),
+        arrow::compute::SortOptions::new(false, false),
+    )])
+    .expect("non-empty LexOrdering");
+    let wrapper: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(ordering, scan));
+
+    let rule = CudfTableFormatGpuOnlyLeafGuardRule::new();
+    assert_eq!(rule.name(), CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME);
+    rule.optimize(wrapper, &datafusion::common::config::ConfigOptions::new())
+        .expect_err("leaf guard must reject a plan that retains a CudfTableFormatScanExec")
+}
+
 async fn run_iceberg_sql_under_native_profile(
     tables: &[(&str, TableFormatScanPlan)],
     sql: &str,
@@ -516,8 +505,7 @@ async fn run_iceberg_sql_under_cpu_profile(
     // The CPU-fallback profile mirrors the `scripts/run_server.sh` legacy
     // setup the audit captured: DataFusion's defaults plus an explicit
     // multi-partition target so the EnforceDistribution rule actually injects
-    // the repartition / SortPreservingMergeExec shape the native rule does not
-    // yet support. `apply_session_profile(CpuFallback)` only flips
+    // the repartition / SortPreservingMergeExec shape. `apply_session_profile(CpuFallback)` only flips
     // `information_schema`, so the rest is just DataFusion defaults.
     let mut base = SessionConfig::new().with_target_partitions(16);
     base = base.with_repartition_sorts(true);
@@ -648,7 +636,9 @@ fn assert_query_root_is_native(plan: &dyn ExecutionPlan) {
 }
 
 fn plan_contains_operator(plan: &dyn ExecutionPlan, operator: &str) -> bool {
-    plan.name() == operator || plan.children().into_iter().any(|child| plan_contains_operator(child.as_ref(), operator))
+    plan.name() == operator
+        || plan.name().strip_prefix(operator).is_some_and(|suffix| suffix.starts_with('('))
+        || plan.children().into_iter().any(|child| plan_contains_operator(child.as_ref(), operator))
 }
 
 fn find_operator<'a>(plan: &'a dyn ExecutionPlan, operator: &str) -> Option<&'a dyn ExecutionPlan> {

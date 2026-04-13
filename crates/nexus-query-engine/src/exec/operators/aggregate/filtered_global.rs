@@ -757,6 +757,9 @@ fn indexed_partial_global_aggregate_spec(indexed_exprs: &[(usize, AggregateExpr)
                         global_valid_count_state_alias(expr.alias.as_str()),
                     ),
                 ],
+                AggregateFunction::Median => {
+                    unreachable!("median aggregate does not have a native filtered global partial/final state")
+                },
                 AggregateFunction::Count | AggregateFunction::NUnique => vec![expr.clone()],
                 AggregateFunction::StddevSamp
                 | AggregateFunction::StddevPop
@@ -818,6 +821,14 @@ fn indexed_partial_global_aggregate_output_schema(
                     ArrowDataType::Int64,
                     false,
                 ));
+            },
+            AggregateFunction::Median => {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedOperator,
+                    "nexus_query_engine.filtered_global_aggregate.state_schema",
+                    "median aggregate does not have a native filtered global partial/final state",
+                )
+                .with_fact("alias", expr.alias.as_str()));
             },
             AggregateFunction::StddevSamp
             | AggregateFunction::StddevPop

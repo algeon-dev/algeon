@@ -246,6 +246,12 @@ pub(super) fn remap_unqualified_columns(
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::StringContains { .. }
+        | Expr::StartsWith { .. }
+        | Expr::EndsWith { .. }
         | Expr::StringLength { .. }
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)

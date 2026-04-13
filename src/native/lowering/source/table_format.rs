@@ -10,6 +10,7 @@ use nexus_query_engine::{
     Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralBatchSource as NativeLiteralBatchSource,
     LiteralValue as NativeLiteralValue, LocalParquetFile as NativeLocalParquetFile,
     LocalParquetSource as NativeLocalParquetSource, MissingColumn as NativeMissingColumn,
+    ParquetEqualityDeleteFile as NativeParquetEqualityDeleteFile,
     ParquetFieldIdReadBinding as NativeParquetFieldIdReadBinding,
     ParquetPositionDeleteFile as NativeParquetPositionDeleteFile, PartitionColumn as NativePartitionColumn,
     QueryPlanBuilder as NativeQueryPlanBuilder, SourceColumnRef as NativeSourceColumnRef,
@@ -82,11 +83,14 @@ pub(super) fn lower_table_format_source_input(
     if let Some(filter) = filter {
         validate_physical_expr(filter.predicate(), &filter.input().schema())?;
     }
+    if scan_plan.data_files.iter().any(TableFormatDataFile::has_equality_delete_files) {
+        return Err(FallbackReason::IcebergDeleteFilesUnsupported);
+    }
 
     let file_schema = table_format_file_schema(scan_plan);
     let requirements =
         table_format_column_requirements(scan_plan, &file_schema, scan_exec.schema(), filter, required_output_fields)?;
-    if scan_plan.data_files.iter().any(TableFormatDataFile::has_position_delete_files)
+    if scan_plan.data_files.iter().any(TableFormatDataFile::has_row_delete_files)
         && requirements.read_columns.is_empty()
     {
         return Err(FallbackReason::IcebergDeleteFilesUnsupported);
@@ -199,7 +203,7 @@ fn table_format_native_source_for_group(
     let mut reader_pushdown_covers_filter = false;
     if !group.has_field_id_aliases()
         && !group.has_read_coercions()
-        && !native_source.files.iter().any(NativeLocalParquetFile::has_position_delete_files)
+        && !native_source.files.iter().any(NativeLocalParquetFile::has_row_delete_files)
         && let Some(predicate) = table_format_reader_pushdown_predicate(
             filter,
             &group.output_schema,
@@ -313,6 +317,12 @@ fn table_format_reader_predicate_references_stats_filter_risky_type(expr: &Nativ
         | NativeExpr::IsNotNull(expr)
         | NativeExpr::Lower(expr)
         | NativeExpr::Upper(expr)
+        | NativeExpr::Trim { expr, .. }
+        | NativeExpr::LTrim { expr, .. }
+        | NativeExpr::RTrim { expr, .. }
+        | NativeExpr::StringContains { expr, .. }
+        | NativeExpr::StartsWith { expr, .. }
+        | NativeExpr::EndsWith { expr, .. }
         | NativeExpr::Abs(expr) => table_format_reader_predicate_references_stats_filter_risky_type(expr, schema),
         NativeExpr::Cast { expr, .. }
         | NativeExpr::TryCast { expr, .. }
@@ -489,6 +499,174 @@ mod tests {
         assert_eq!(groups[0].field_id_bindings[0][0].logical_name, "status");
         assert_eq!(groups[0].field_id_bindings[0][0].physical_name, "status");
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn table_format_local_footer_missing_field_id_uses_name_mapping_alias() {
+        let dir = unique_table_format_temp_dir("field-id-missing-name-mapping-alias");
+        let path = dir.join("part.parquet");
+        write_plain_parquet_file_with_nullability(&path, "old_status", true);
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
+        let mut scan_plan = single_projected_file_scan_plan_with_nullability(&path, Arc::clone(&scan_schema), 2, true);
+        scan_plan.projected_columns[0] =
+            scan_plan.projected_columns[0].clone().with_field_id_source_names(["old_status"]);
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            Arc::clone(&scan_schema),
+            None,
+            &RequiredFields::all(),
+        )
+        .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].requirements.read_columns, vec!["old_status"]);
+        assert_eq!(groups[0].requirements.read_column_file_indices, vec![0]);
+        assert_eq!(groups[0].field_id_bindings[0][0].logical_name, "status");
+        assert_eq!(groups[0].field_id_bindings[0][0].physical_name, "old_status");
+        let (native_source, _) =
+            table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None)
+                .unwrap();
+        assert_eq!(native_source.read_columns, vec!["old_status"]);
+        assert_eq!(native_source.projected_output_columns, vec!["status"]);
+        assert_eq!(native_source.files[0].field_id_read_bindings[0].physical_name, "old_status");
+        validate_local_parquet_source(&native_source).unwrap();
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn table_format_footer_missing_field_id_rejects_ambiguous_name_mapping_aliases() {
+        let footer_schema = Arc::new(Schema::new(vec![
+            Field::new("status", DataType::Int64, false),
+            Field::new("old_status", DataType::Int64, false),
+        ]));
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, false)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_projected_column(
+                TableFormatColumnMapping::new(
+                    Some(2),
+                    "status",
+                    Some("status"),
+                    DataType::Int64,
+                    false,
+                    TableFormatColumnSource::DirectTopLevelFileColumn,
+                    crate::table_format::TableFormatColumnRole::Projected,
+                )
+                .with_field_id_source_names(["status", "old_status"]),
+            );
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements =
+            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all())
+                .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
+
+        assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    }
+
+    #[test]
+    fn table_format_footer_missing_field_id_rejects_ambiguous_aliases_before_type_filtering() {
+        let footer_schema = Arc::new(Schema::new(vec![
+            Field::new("status", DataType::Utf8, false),
+            Field::new("old_status", DataType::Int64, false),
+        ]));
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, false)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_projected_column(
+                TableFormatColumnMapping::new(
+                    Some(2),
+                    "status",
+                    Some("status"),
+                    DataType::Int64,
+                    false,
+                    TableFormatColumnSource::DirectTopLevelFileColumn,
+                    crate::table_format::TableFormatColumnRole::Projected,
+                )
+                .with_field_id_source_names(["status", "old_status"]),
+            );
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements =
+            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all())
+                .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
+
+        assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    }
+
+    #[test]
+    fn table_format_footer_alias_with_conflicting_field_id_rejects_name_mapping_fallback() {
+        let footer_field = Field::new("old_status", DataType::Int64, false)
+            .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "9".to_string())]));
+        let footer_schema = Arc::new(Schema::new(vec![footer_field]));
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, false)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_projected_column(
+                TableFormatColumnMapping::new(
+                    Some(2),
+                    "status",
+                    Some("status"),
+                    DataType::Int64,
+                    false,
+                    TableFormatColumnSource::DirectTopLevelFileColumn,
+                    crate::table_format::TableFormatColumnRole::Projected,
+                )
+                .with_field_id_source_names(["old_status"]),
+            );
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements =
+            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all())
+                .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
+
+        assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
     }
 
     #[test]
@@ -1525,6 +1703,74 @@ mod tests {
     }
 
     #[test]
+    fn table_format_equality_delete_hidden_key_rejects_without_delete_footer_field_id_proof() {
+        let dir = unique_table_format_temp_dir("equality-delete-hidden-key");
+        let data_path = dir.join("part.parquet");
+        let delete_path = dir.join("delete.parquet");
+        write_two_field_id_parquet_file(&data_path, ("id", 1), ("payload", 2));
+        write_field_id_parquet_file(&delete_path, "id", 1);
+        let scan_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("payload", DataType::Int64, false),
+        ]));
+        let delete_file = TableFormatDeleteFile::for_data_file(
+            "delete-0",
+            "file-0",
+            delete_path.display().to_string(),
+            TableFormatDataFileFormat::Parquet,
+            TableFormatDeleteFileContent::EqualityDeletes,
+        )
+        .with_read_capability(TableFormatReadCapability::local_file_system())
+        .with_resolved_parquet_source(ResolvedParquetSource::local_kvikio(delete_path.display().to_string()))
+        .with_equality_ids([1]);
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            data_path.display().to_string(),
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::local_file_system(),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::local_kvikio(data_path.display().to_string()))
+        .with_equality_delete_files(vec![delete_file.clone()]);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_logical_schema(Arc::clone(&scan_schema))
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_delete_file(delete_file)
+            .with_projected_column(TableFormatColumnMapping::new(
+                Some(2),
+                "payload",
+                Some("payload"),
+                DataType::Int64,
+                false,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::Projected,
+            ))
+            .with_pure_filter_column(TableFormatColumnMapping::new(
+                Some(1),
+                "id",
+                Some("id"),
+                DataType::Int64,
+                false,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::PureFilter,
+            ));
+        let scan_exec = CudfTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
+        let mut builder = NativeQueryPlanBuilder::new();
+
+        let error = lower_table_format_source_input(
+            &scan_exec,
+            None,
+            &mut builder,
+            &RequiredFields::only(BTreeSet::from([1])),
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, FallbackReason::IcebergDeleteFilesUnsupported);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn table_format_position_delete_scan_limit_is_pushed_with_upper_limit() {
         let dir = unique_table_format_temp_dir("position-delete-scan-limit");
         let data_path = dir.join("part.parquet");
@@ -1842,6 +2088,41 @@ mod tests {
     }
 
     #[test]
+    fn table_format_count_star_fallback_admits_name_mapping_alias_carrier_without_field_id() {
+        let dir = unique_table_format_temp_dir("count-star-field-id-missing-name-mapping-alias");
+        let path = dir.join("part.parquet");
+        write_plain_parquet_file_with_nullability(&path, "old_status", false);
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, false)]));
+        let mut scan_plan = single_pure_filter_file_scan_plan(&path, Arc::clone(&scan_schema), 2);
+        scan_plan.pure_filter_columns[0] =
+            scan_plan.pure_filter_columns[0].clone().with_field_id_source_names(["old_status"]);
+        let mut builder = NativeQueryPlanBuilder::new();
+
+        let lowered = lower_table_format_count_star_fallback_source_for_plan(&scan_plan, &mut builder)
+            .expect("name-mapping alias should admit COUNT(*) fallback carrier column");
+        let plan = builder.finish_with_host_sink(lowered.node);
+        let sources = plan
+            .nodes()
+            .iter()
+            .filter_map(|node| match &node.kind {
+                PlanNode::Source(source) => match source.as_ref() {
+                    NativeSourceNode::LocalParquet(source) => Some(source),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(lowered.schema.field(0).name(), NATIVE_ZERO_COLUMN_COUNT_COLUMN);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].read_columns, vec!["old_status"]);
+        assert_eq!(sources[0].pure_filter_columns, vec!["status"]);
+        assert_eq!(sources[0].files[0].field_id_read_bindings[0].logical_name, "status");
+        assert_eq!(sources[0].files[0].field_id_read_bindings[0].physical_name, "old_status");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn table_format_empty_required_fields_uses_field_id_carrier_without_projecting_it() {
         let dir = unique_table_format_temp_dir("empty-required-field-id-carrier");
         let path = dir.join("part.parquet");
@@ -2052,6 +2333,25 @@ mod tests {
     fn write_parquet_file_with_field(path: &Path, field: Field) {
         let schema = Arc::new(Schema::new(vec![field]));
         let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![10, 20]))]).unwrap();
+        let file = File::create(path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, schema, Some(WriterProperties::builder().build())).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+
+    fn write_two_field_id_parquet_file(path: &Path, first: (&str, i32), second: (&str, i32)) {
+        let fields = vec![
+            Field::new(first.0, DataType::Int64, false)
+                .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), first.1.to_string())])),
+            Field::new(second.0, DataType::Int64, false)
+                .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), second.1.to_string())])),
+        ];
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![1, 2])), Arc::new(Int64Array::from(vec![10, 20]))],
+        )
+        .unwrap();
         let file = File::create(path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, Some(WriterProperties::builder().build())).unwrap();
         writer.write(&batch).unwrap();

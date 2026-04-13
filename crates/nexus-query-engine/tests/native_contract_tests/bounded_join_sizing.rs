@@ -85,10 +85,29 @@ fn int16_uint16_match_two_byte_size() {
 }
 
 #[test]
-fn date32_uses_four_bytes() {
+fn date32_and_time32_use_four_bytes() {
     let rows = 10_000;
-    let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Date32)]).unwrap();
-    assert_eq!(bound, fixed_column_expected(rows, 4));
+    let expected = fixed_column_expected(rows, 4);
+    for dtype in
+        [ArrowDataType::Date32, ArrowDataType::Time32(TimeUnit::Second), ArrowDataType::Time32(TimeUnit::Millisecond)]
+    {
+        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())]).unwrap();
+        assert_eq!(bound, expected, "dtype {dtype:?}");
+    }
+}
+
+#[test]
+fn date64_and_time64_use_eight_bytes() {
+    let rows = 10_000;
+    let expected = fixed_column_expected(rows, 8);
+    for dtype in [
+        ArrowDataType::Date64,
+        ArrowDataType::Time64(TimeUnit::Microsecond),
+        ArrowDataType::Time64(TimeUnit::Nanosecond),
+    ] {
+        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())]).unwrap();
+        assert_eq!(bound, expected, "dtype {dtype:?}");
+    }
 }
 
 #[test]

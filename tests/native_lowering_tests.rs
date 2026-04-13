@@ -21,9 +21,10 @@ use datafusion::{
         table_schema::TableSchema,
     },
     execution::object_store::ObjectStoreUrl,
-    functions::{string, unicode},
+    functions::{datetime, string, unicode},
     functions_aggregate::{count::count_udaf, first_last::first_value_udaf, min_max::max_udaf, sum::sum_udaf},
-    logical_expr::Operator,
+    functions_window::row_number::row_number_udwf,
+    logical_expr::{Operator, WindowFrame},
     parquet::{
         arrow::arrow_reader::{RowSelection, RowSelector},
         file::reader::{FileReader, SerializedFileReader},
@@ -35,9 +36,10 @@ use datafusion::{
             CaseExpr, CastExpr, DynamicFilterPhysicalExpr, IsNullExpr, LikeExpr, NotExpr, TryCastExpr, binary, col,
             in_list, is_null, lit,
         },
+        window::{StandardWindowExpr, WindowExpr},
     },
     physical_plan::{
-        ExecutionPlan,
+        ExecutionPlan, InputOrderMode,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
         filter::FilterExec,
         joins::{
@@ -48,6 +50,7 @@ use datafusion::{
         projection::{ProjectionExec, ProjectionExpr},
         repartition::RepartitionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
+        windows::{BoundedWindowAggExec, create_udwf_window_expr},
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
@@ -209,6 +212,19 @@ fn native_local_parquet_sources(plan: &nexus_query_engine::QueryPlan) -> Vec<&ne
                 SourceNode::LocalParquet(source) => Some(source),
                 SourceNode::GpuResident(_) => None,
                 SourceNode::LiteralBatch(_) => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+fn native_literal_batch_sources(plan: &nexus_query_engine::QueryPlan) -> Vec<&nexus_query_engine::LiteralBatchSource> {
+    plan.nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source_node) => match source_node.as_ref() {
+                SourceNode::LocalParquet(_) | SourceNode::GpuResident(_) => None,
+                SourceNode::LiteralBatch(source) => Some(source),
             },
             _ => None,
         })

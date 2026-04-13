@@ -73,10 +73,13 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
         ("like", SQL_NULL_SEMANTICS_LIKE_QUERY),
         ("substring", SQL_NULL_SEMANTICS_SUBSTRING_QUERY),
         ("string-case", SQL_NULL_SEMANTICS_STRING_CASE_QUERY),
+        ("string-predicates", SQL_NULL_SEMANTICS_STRING_PREDICATES_QUERY),
+        ("trim-family", SQL_TRIM_FAMILY_QUERY),
         ("in-list", SQL_NULL_SEMANTICS_IN_LIST_QUERY),
         ("case", SQL_NULL_SEMANTICS_CASE_QUERY),
         ("case-no-else", SQL_NULL_SEMANTICS_CASE_NO_ELSE_QUERY),
         ("extract", SQL_NULL_SEMANTICS_EXTRACT_QUERY),
+        ("date-trunc-fixed-grains", SQL_DATE_TRUNC_FIXED_GRAINS_QUERY),
         ("interval", SQL_NULL_SEMANTICS_INTERVAL_QUERY),
         // Integer modulo now has a dedicated CPU-fallback test below.
         ("bitwise", SQL_BITWISE_SCALAR_QUERY),
@@ -86,6 +89,7 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
         ("sqrt", SQL_SQRT_SCALAR_QUERY),
         ("string-concat-operator", SQL_STRING_CONCAT_OPERATOR_QUERY),
         ("null-aware-comparison", SQL_NULL_AWARE_COMPARISON_QUERY),
+        ("nullif", SQL_NULLIF_SCALAR_QUERY),
         ("integer-to-timestamp-cast", SQL_INTEGER_TO_TIMESTAMP_CAST_QUERY),
     ];
 
@@ -117,6 +121,32 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
 
         fs::remove_dir_all(dir).unwrap();
     }
+}
+
+#[tokio::test]
+async fn native_runtime_ilike_rejects_before_native_execution() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-ilike-reject");
+    let path = dir.join("input.parquet");
+    write_nullable_scalar_expression_input_parquet(&path);
+
+    let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_NULL_SEMANTICS_ILIKE_QUERY).await;
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+
+    assert_eq!(lowering.rewritten_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert!(
+        matches!(
+            lowering.report.outcomes()[0],
+            datafusion_nexus::CandidateOutcome::Rejected {
+                reason: datafusion_nexus::FallbackReason::UnsupportedExpression,
+                ..
+            }
+        ),
+        "outcomes={:?}",
+        lowering.report.outcomes()
+    );
+
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]
@@ -158,6 +188,37 @@ async fn native_runtime_invalid_scalar_expressions_reject_before_native_executio
         let dir = unique_temp_dir(format!("datafusion-nexus-native-runtime-invalid-{name}").as_str());
         let path = dir.join("input.parquet");
         write_scalar_expression_input_parquet(&path);
+
+        let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
+        let lowering = lower_physical_plan_to_native(native_physical_plan);
+
+        assert_eq!(lowering.rewritten_count(), 0, "{name} should not rewrite: {:?}", lowering.report.outcomes());
+        assert_eq!(lowering.rejected_count(), 1, "{name} should reject: {:?}", lowering.report.outcomes());
+        assert!(
+            matches!(
+                lowering.report.outcomes()[0],
+                datafusion_nexus::CandidateOutcome::Rejected {
+                    reason: datafusion_nexus::FallbackReason::UnsupportedExpression,
+                    ..
+                }
+            ),
+            "{name} outcomes={:?}",
+            lowering.report.outcomes()
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn native_runtime_date_trunc_calendrical_grains_reject_before_native_execution() {
+    for (name, sql) in [
+        ("date-trunc-month", SQL_DATE_TRUNC_MONTH_UNSUPPORTED_QUERY),
+        ("date-trunc-year", SQL_DATE_TRUNC_YEAR_UNSUPPORTED_QUERY),
+    ] {
+        let dir = unique_temp_dir(format!("datafusion-nexus-native-runtime-invalid-{name}").as_str());
+        let path = dir.join("input.parquet");
+        write_nullable_scalar_expression_input_parquet(&path);
 
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
         let lowering = lower_physical_plan_to_native(native_physical_plan);

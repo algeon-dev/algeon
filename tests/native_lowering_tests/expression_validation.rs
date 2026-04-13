@@ -143,6 +143,279 @@ async fn sql_round_decimal_integral_cast_lowers_to_native_expr() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn sql_nullif_lowers_to_case_with_null_aware_comparison() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-nullif");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan =
+        sql_plan(&path, direct_friendly_sql_session_config(), "SELECT NULLIF(payload, 10) AS maybe_payload FROM bench")
+            .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let projection = native_projection_exprs(&result.plans[0])
+        .into_iter()
+        .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "maybe_payload"))
+        .expect("native plan should include NULLIF projection");
+    assert!(
+        matches!(
+        projection,
+        Expr::Alias { expr, .. }
+            if matches!(
+                expr.as_ref(),
+                Expr::Case { branches, else_expr }
+                    if branches.len() == 1
+                        && matches!(
+                            &branches[0].when,
+                            Expr::IsNotDistinctFrom { left, right }
+                                if matches!(
+                                    left.as_ref(),
+                                    Expr::Cast { expr, target_type }
+                                        if *target_type == DataType::Int64
+                                            && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "payload")
+                                )
+                                    && matches!(right.as_ref(), Expr::Literal(LiteralValue::Int64(10)))
+                        )
+                        && matches!(&branches[0].then, Expr::Literal(LiteralValue::Null(DataType::Int64)))
+                        && matches!(
+                            else_expr.as_ref(),
+                            Expr::Cast { expr, target_type }
+                                if *target_type == DataType::Int64
+                                    && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "payload")
+                        )
+            )
+        ),
+        "unexpected NULLIF projection: {projection:?}"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sql_ilike_ascii_pattern_remains_rejected() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-ilike");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let plan =
+        sql_plan(&path, direct_friendly_sql_session_config(), "SELECT label ILIKE 'A%' AS label_match FROM bench")
+            .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sql_ilike_non_ascii_pattern_remains_rejected() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-ilike-non-ascii");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let plan =
+        sql_plan(&path, direct_friendly_sql_session_config(), "SELECT label ILIKE 'Å%' AS label_match FROM bench")
+            .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn sql_trim_family_lowers_to_native_string_trim_expressions() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-trim-family");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "SELECT TRIM(label) AS label_trim, LTRIM(label) AS label_ltrim, RTRIM(label) AS label_rtrim, BTRIM(label, 'ab') AS label_btrim, BTRIM(label, '') AS label_btrim_empty FROM bench",
+    )
+    .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let projections = native_projection_exprs(&result.plans[0]);
+    assert!(projections.iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, expr }
+            if alias == "label_trim"
+                && matches!(expr.as_ref(), Expr::Trim { trim_chars, .. } if trim_chars == " ")
+    )));
+    assert!(projections.iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, expr }
+            if alias == "label_ltrim"
+                && matches!(expr.as_ref(), Expr::LTrim { trim_chars, .. } if trim_chars == " ")
+    )));
+    assert!(projections.iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, expr }
+            if alias == "label_rtrim"
+                && matches!(expr.as_ref(), Expr::RTrim { trim_chars, .. } if trim_chars == " ")
+    )));
+    assert!(projections.iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, expr }
+            if alias == "label_btrim"
+                && matches!(expr.as_ref(), Expr::Trim { trim_chars, .. } if trim_chars == "ab")
+    )));
+    assert!(projections.iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, expr }
+            if alias == "label_btrim_empty"
+                && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "label")
+    )));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn string_predicates_lower_to_native_string_predicate_expressions() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-string-predicates");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let string_predicate = |name: &str, fun: Arc<datafusion::logical_expr::ScalarUDF>, literal: &str| {
+        Arc::new(ScalarFunctionExpr::new(
+            name,
+            fun,
+            vec![col("label", &scan_schema).unwrap(), lit(ScalarValue::Utf8(Some(literal.to_string())))],
+            Arc::new(Field::new(name, DataType::Boolean, true)),
+            Arc::new(ConfigOptions::default()),
+        )) as Arc<dyn PhysicalExpr>
+    };
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr {
+                    expr: string_predicate("contains", string::contains(), "a"),
+                    alias: "label_contains".to_string(),
+                },
+                ProjectionExpr {
+                    expr: string_predicate("starts_with", string::starts_with(), "a"),
+                    alias: "label_starts".to_string(),
+                },
+                ProjectionExpr {
+                    expr: string_predicate("ends_with", string::ends_with(), "z"),
+                    alias: "label_ends".to_string(),
+                },
+            ],
+            scan,
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let projections = native_projection_exprs(&result.plans[0]);
+    assert!(projections.iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, expr }
+            if alias == "label_contains"
+                && matches!(expr.as_ref(), Expr::StringContains { expr, pattern } if pattern == "a" && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "label"))
+    )));
+    assert!(projections.iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, expr }
+            if alias == "label_starts"
+                && matches!(expr.as_ref(), Expr::StartsWith { expr, prefix } if prefix == "a" && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "label"))
+    )));
+    assert!(projections.iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, expr }
+            if alias == "label_ends"
+                && matches!(expr.as_ref(), Expr::EndsWith { expr, suffix } if suffix == "z" && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "label"))
+    )));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn date_trunc_plural_and_nanosecond_grains_reject_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-date-trunc-grains");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+
+    for grain in ["milliseconds", "microseconds", "nanosecond"] {
+        let scan = parquet_scan(&path);
+        let scan_schema = scan.schema();
+        let date_trunc: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+            "date_trunc",
+            datetime::date_trunc(),
+            vec![lit(ScalarValue::Utf8(Some(grain.to_string()))), col("event_ts", &scan_schema).unwrap()],
+            Arc::new(Field::new("trunc", DataType::Timestamp(TimeUnit::Nanosecond, None), false)),
+            Arc::new(ConfigOptions::default()),
+        ));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(
+            ProjectionExec::try_new([ProjectionExpr { expr: date_trunc, alias: format!("trunc_{grain}") }], scan)
+                .unwrap(),
+        );
+
+        let result = lower_physical_plan_to_native(plan);
+
+        assert_eq!(result.rewritten_count(), 0, "{grain} outcomes={:?}", result.report.outcomes());
+        assert_eq!(result.rejected_count(), 1, "{grain} outcomes={:?}", result.report.outcomes());
+        assert!(matches!(
+            result.report.outcomes()[0],
+            CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        ));
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn date_trunc_output_unit_mismatch_rejects_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-date-trunc-output-unit");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let date_trunc: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+        "date_trunc",
+        datetime::date_trunc(),
+        vec![lit(ScalarValue::Utf8(Some("day".to_string()))), col("event_ts", &scan_schema).unwrap()],
+        Arc::new(Field::new("trunc", DataType::Timestamp(TimeUnit::Millisecond, None), false)),
+        Arc::new(ConfigOptions::default()),
+    ));
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new([ProjectionExpr { expr: date_trunc, alias: "trunc_day".to_string() }], scan).unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn try_cast_from_non_string_source_is_rejected_during_native_planning() {
     // Native admission for TRY_CAST is currently limited to `STRING → integer`.
@@ -496,10 +769,8 @@ fn every_rejected_native_candidate_has_stable_rejection_code() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-rejection-codes");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
-    let rejected_results = [lower_physical_plan_to_native(aggregate_sort_limit_plan(
-        parquet_scan_with_partial_byte_range(&path),
-        Operator::Plus,
-    ))];
+    let rejected_results =
+        [lower_physical_plan_to_native(aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo))];
 
     for result in rejected_results {
         assert_eq!(result.rejected_count(), 1);
