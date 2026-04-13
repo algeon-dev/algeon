@@ -9,8 +9,8 @@ use datafusion_nexus::{
 use iceberg::{
     scan::{FileScanTask, FileScanTaskDeleteFile},
     spec::{
-        DataContentType, DataFileFormat, Literal, NestedField, PartitionSpec, PrimitiveType, Schema, Struct, Transform,
-        Type,
+        DataContentType, DataFileFormat, Literal, MappedField, NameMapping, NestedField, PartitionSpec, PrimitiveType,
+        Schema, Struct, Transform, Type,
     },
 };
 
@@ -321,4 +321,81 @@ fn unsupported_object_store_scheme_is_rejected_with_structured_reason() {
     let facts = plan.diagnostics().facts();
     assert_eq!(facts["native_source_read_capability"], "object_store");
     assert_eq!(facts["rejected_feature_list"], "iceberg_object_store_read_unsupported");
+}
+
+fn name_mapping_task(mapping: NameMapping) -> FileScanTask {
+    FileScanTask {
+        name_mapping: Some(Arc::new(mapping)),
+        ..file_scan_task("s3://lakehouse/warehouse/lineitem/data-0001.parquet", DataFileFormat::Parquet, vec![])
+    }
+}
+
+#[test]
+fn identity_name_mapping_is_admitted_natively() {
+    // Spark's `add_files` attaches an identity mapping (each schema field name
+    // to its own field id) for imported Parquet without embedded field ids;
+    // by-name native resolution is exactly what the mapping prescribes.
+    let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
+        Some("13579".to_string()),
+        Some("rest".to_string()),
+        [name_mapping_task(NameMapping::new(vec![
+            MappedField::new(Some(1), vec!["id".to_string()], vec![]),
+            MappedField::new(Some(2), vec!["shipmode".to_string()], vec![]),
+        ]))],
+    )
+    .unwrap();
+
+    assert!(plan.is_native_admissible());
+    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+}
+
+#[test]
+fn non_identity_name_mapping_is_rejected_with_structured_reason() {
+    // A renamed source column means by-name resolution and the mapping would
+    // bind different file columns; the scan must not be admitted natively.
+    let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
+        Some("13579".to_string()),
+        Some("rest".to_string()),
+        [name_mapping_task(NameMapping::new(vec![
+            MappedField::new(Some(1), vec!["identifier".to_string()], vec![]),
+            MappedField::new(Some(2), vec!["shipmode".to_string()], vec![]),
+        ]))],
+    )
+    .unwrap();
+
+    assert!(!plan.is_native_admissible());
+    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergNameMappingUnsupported]);
+}
+
+#[test]
+fn name_mapping_missing_projected_field_is_rejected() {
+    // An unmapped projected field reads as null under mapping semantics but
+    // resolves by name in the native scan; that divergence keeps the rejection.
+    let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
+        Some("13579".to_string()),
+        Some("rest".to_string()),
+        [name_mapping_task(NameMapping::new(vec![MappedField::new(Some(1), vec!["id".to_string()], vec![])]))],
+    )
+    .unwrap();
+
+    assert!(!plan.is_native_admissible());
+    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergNameMappingUnsupported]);
+}
+
+#[test]
+fn name_mapping_alias_claiming_projected_name_is_rejected() {
+    // Field 2 also claims the name "id": mapping semantics could bind the file
+    // column "id" to field 2 while by-name resolution binds it to field 1.
+    let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
+        Some("13579".to_string()),
+        Some("rest".to_string()),
+        [name_mapping_task(NameMapping::new(vec![
+            MappedField::new(Some(1), vec!["id".to_string()], vec![]),
+            MappedField::new(Some(2), vec!["shipmode".to_string(), "id".to_string()], vec![]),
+        ]))],
+    )
+    .unwrap();
+
+    assert!(!plan.is_native_admissible());
+    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergNameMappingUnsupported]);
 }
