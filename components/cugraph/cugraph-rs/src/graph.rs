@@ -15,7 +15,7 @@
 //! that require a specific layout accept only the correct variant, so
 //! mismatches are caught at compile time:
 //!
-//! - **[`Forward`]** — required by [`Graph::bfs`]
+//! - **[`Forward`]** — required by [`Graph::bfs`] and [`Graph::louvain`]
 //! - **[`Transposed`]** — required by [`Graph::pagerank`],
 //!   [`Graph::in_degrees`], and [`Graph::degrees`]
 //!
@@ -42,8 +42,10 @@
 use std::{marker::PhantomData, ptr};
 
 use cugraph_sys::{
-    cugraph_error_t, cugraph_graph_create_with_times_sg, cugraph_graph_free, cugraph_graph_t,
-    cugraph_type_erased_device_array_view_t, cugraph_type_erased_device_array_view_type,
+    cugraph_decompress_to_edgelist, cugraph_edgelist_free, cugraph_edgelist_get_destinations,
+    cugraph_edgelist_get_sources, cugraph_edgelist_t, cugraph_error_t, cugraph_graph_create_with_times_sg,
+    cugraph_graph_free, cugraph_graph_t, cugraph_type_erased_device_array_view_t,
+    cugraph_type_erased_device_array_view_type,
 };
 
 use crate::{
@@ -51,7 +53,7 @@ use crate::{
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     handle::ResourceHandle,
-    structure::{ResolvedVertexSelection, VertexSelection},
+    structure::{ResolvedVertexSelection, VertexIds, VertexSelection},
     types::{CugraphElement, DataType, GraphProperties, to_bool_t},
 };
 
@@ -74,7 +76,7 @@ pub trait Transposition: sealed::Sealed {
 
 /// Marker type indicating a graph stored in forward (non-transposed) form.
 ///
-/// Required by algorithms like [`Graph::bfs`].
+/// Required by algorithms like [`Graph::bfs`] and [`Graph::louvain`].
 pub struct Forward;
 impl Transposition for Forward {
     fn store_transposed() -> bool {
@@ -110,10 +112,157 @@ impl Transposition for Transposed {
 pub struct Graph<T = Forward> {
     raw: *mut cugraph_graph_t,
     device: i32,
+    properties: GraphProperties,
     vertex_dtype: DataType,
     weight_dtype: DataType,
     _nosend_nosync: PhantomData<*mut ()>,
     _transposition: PhantomData<T>,
+}
+
+struct DecompressedEdgelist {
+    raw: *mut cugraph_edgelist_t,
+    device: i32,
+    _nosend_nosync: PhantomData<*mut ()>,
+}
+
+impl DecompressedEdgelist {
+    unsafe fn from_raw(raw: *mut cugraph_edgelist_t, device: i32) -> Result<Self> {
+        let raw = require_non_null(raw, "DecompressedEdgelist::from_raw", "edgelist")?;
+        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+    }
+
+    fn raw_view(
+        &self,
+        getter: unsafe extern "C" fn(*mut cugraph_edgelist_t) -> *mut cugraph_type_erased_device_array_view_t,
+        operation: &'static str,
+        pointer_name: &'static str,
+    ) -> Result<RawDeviceArrayView<'_>> {
+        let view_ptr = require_non_null(
+            // SAFETY: `self.raw` is a live decompressed edgelist owned by this
+            // wrapper for the duration of the call.
+            unsafe { getter(self.raw) },
+            operation,
+            pointer_name,
+        )?;
+
+        // SAFETY: `view_ptr` belongs to the live edgelist object and was
+        // checked for null above.
+        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), operation, pointer_name) }
+    }
+
+    fn edge_count(
+        &self,
+        handle: &ResourceHandle,
+        properties: GraphProperties,
+        operation: &'static str,
+    ) -> Result<usize> {
+        let source_len = self.raw_view(cugraph_edgelist_get_sources, operation, "sources")?.len();
+        let destination_len = self.raw_view(cugraph_edgelist_get_destinations, operation, "destinations")?.len();
+
+        if source_len != destination_len {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("decompressed edgelist returned mismatched source/destination lengths")
+                .with_context("source_len", source_len.to_string())
+                .with_context("destination_len", destination_len.to_string()));
+        }
+
+        if properties.is_multigraph && !properties.is_symmetric {
+            return Ok(source_len);
+        }
+
+        let sources = VertexIds::from_raw(self.raw_view(cugraph_edgelist_get_sources, operation, "sources")?)?;
+        let destinations =
+            VertexIds::from_raw(self.raw_view(cugraph_edgelist_get_destinations, operation, "destinations")?)?;
+
+        match (sources, destinations) {
+            (VertexIds::I32(src), VertexIds::I32(dst)) => {
+                let src = src.to_vec(handle)?;
+                let dst = dst.to_vec(handle)?;
+                logical_edge_count_from_host(src, dst, properties, operation)
+            },
+            (VertexIds::I64(src), VertexIds::I64(dst)) => {
+                let src = src.to_vec(handle)?;
+                let dst = dst.to_vec(handle)?;
+                logical_edge_count_from_host(src, dst, properties, operation)
+            },
+            (VertexIds::I32(_), VertexIds::I64(_)) | (VertexIds::I64(_), VertexIds::I32(_)) => {
+                Err(Error::new(ErrorKind::InvalidState, operation)
+                    .with_message("decompressed edgelist source/destination vertex dtypes differ"))
+            },
+        }
+    }
+}
+
+fn logical_edge_count_from_host<T>(
+    src: Vec<T>,
+    dst: Vec<T>,
+    properties: GraphProperties,
+    operation: &'static str,
+) -> Result<usize>
+where
+    T: Ord + Copy + std::fmt::Debug,
+{
+    debug_assert_eq!(src.len(), dst.len(), "source/destination vectors should already be length-checked");
+
+    let mut edges = src
+        .into_iter()
+        .zip(dst)
+        .map(|(src, dst)| if properties.is_symmetric && dst < src { (dst, src) } else { (src, dst) })
+        .collect::<Vec<_>>();
+    edges.sort_unstable();
+
+    if !properties.is_multigraph {
+        edges.dedup();
+        return Ok(edges.len());
+    }
+
+    if !properties.is_symmetric {
+        return Ok(edges.len());
+    }
+
+    let mut logical_edge_count = 0usize;
+    let mut index = 0usize;
+    while index < edges.len() {
+        let edge = edges[index];
+        let mut run_len = 1usize;
+        while index + run_len < edges.len() && edges[index + run_len] == edge {
+            run_len += 1;
+        }
+
+        if edge.0 == edge.1 {
+            logical_edge_count = logical_edge_count.checked_add(run_len).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidState, operation)
+                    .with_message("logical edge count overflow while accumulating undirected self-loops")
+            })?;
+        } else if run_len % 2 != 0 {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message(
+                    "undirected multigraph decompressed edgelist contained an odd count for a non-self-loop edge",
+                )
+                .with_context("edge", format!("{edge:?}"))
+                .with_context("run_len", run_len.to_string()));
+        } else {
+            logical_edge_count = logical_edge_count.checked_add(run_len / 2).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidState, operation)
+                    .with_message("logical edge count overflow while accumulating undirected multiedges")
+            })?;
+        }
+
+        index += run_len;
+    }
+
+    Ok(logical_edge_count)
+}
+
+impl Drop for DecompressedEdgelist {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _guard = DeviceGuard::switch_to(self.device, "DecompressedEdgelist::drop").ok();
+            // SAFETY: `self.raw` is owned by this wrapper and has not been
+            // freed yet.
+            unsafe { cugraph_edgelist_free(self.raw) };
+        }
+    }
 }
 
 impl<T> Graph<T> {
@@ -129,8 +278,73 @@ impl<T> Graph<T> {
         self.weight_dtype
     }
 
+    /// Structural properties declared when this graph was constructed.
+    ///
+    /// These are the graph-construction properties Rust passed to cuGraph
+    /// when creating this graph. They are reused by structural helpers such
+    /// as [`edge_count`](Self::edge_count) to interpret decompressed edge
+    /// lists with the same simple-vs-multigraph and directed-vs-undirected
+    /// semantics the graph was built with.
+    pub fn properties(&self) -> GraphProperties {
+        self.properties
+    }
+
+    /// Return the number of edges currently stored in this graph.
+    ///
+    /// This materializes a transient edgelist view via the cuGraph C API, so
+    /// it should be treated as a structural query rather than a constant-time
+    /// metadata lookup.
+    ///
+    /// The returned count follows the graph's declared
+    /// [`GraphProperties`]:
+    ///
+    /// - directed simple graphs count unique directed edges
+    /// - undirected simple graphs count unique unordered edge pairs
+    /// - directed multigraphs count all stored directed edge rows
+    /// - undirected multigraphs count unordered edge multiplicities, with
+    ///   self-loops counted once each
+    pub fn edge_count(&mut self, handle: &ResourceHandle) -> Result<usize> {
+        self.edge_count_impl(handle, false, "Graph::edge_count")
+    }
+
+    /// Return the number of edges currently stored in this graph with
+    /// optional expensive validation checks.
+    ///
+    /// This has the same counting semantics as [`edge_count`](Self::edge_count).
+    pub fn edge_count_checked(&mut self, handle: &ResourceHandle, do_expensive_check: bool) -> Result<usize> {
+        self.edge_count_impl(handle, do_expensive_check, "Graph::edge_count_checked")
+    }
+
     pub(crate) fn as_ptr(&self) -> *mut cugraph_graph_t {
         self.raw
+    }
+
+    fn edge_count_impl(
+        &mut self,
+        handle: &ResourceHandle,
+        do_expensive_check: bool,
+        operation: &'static str,
+    ) -> Result<usize> {
+        let mut edgelist: *mut cugraph_edgelist_t = ptr::null_mut();
+        let mut error: *mut cugraph_error_t = ptr::null_mut();
+
+        // SAFETY: `self.raw` is a live cuGraph graph handle and
+        // `edgelist`/`error` are valid out-pointers for the C API.
+        unsafe {
+            let code = cugraph_decompress_to_edgelist(
+                handle.as_ptr(),
+                self.as_ptr(),
+                to_bool_t(do_expensive_check),
+                &mut edgelist,
+                &mut error,
+            );
+            check_error(code, error, operation)?;
+        }
+
+        // SAFETY: on success, cuGraph transfers ownership of the edgelist
+        // pointer to the caller.
+        let edgelist = unsafe { DecompressedEdgelist::from_raw(edgelist, handle.device()) }?;
+        edgelist.edge_count(handle, self.properties, operation)
     }
 
     fn validate_vertex_input_dtype(&self, dtype: DataType, op: &'static str, input_name: &'static str) -> Result<()> {
@@ -187,6 +401,7 @@ impl<T> Graph<T> {
 impl<T> std::fmt::Debug for Graph<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Graph")
+            .field("properties", &self.properties)
             .field("vertex_dtype", &self.vertex_dtype)
             .field("weight_dtype", &self.weight_dtype)
             .finish_non_exhaustive()
@@ -482,6 +697,7 @@ impl<'a> GraphBuilder<'a> {
         Ok(Graph {
             raw: graph,
             device: handle.device(),
+            properties: self.properties,
             vertex_dtype,
             weight_dtype,
             _nosend_nosync: PhantomData,
@@ -900,6 +1116,50 @@ impl Graph<Forward> {
         let resolved = sources.resolve(handle)?;
         let view = self.resolved_vertex_view(&resolved, "Graph::bfs", "sources")?;
         crate::traversal::bfs::bfs(handle, self, &view, params)
+    }
+
+    /// Compute Louvain communities on this forward-stored graph.
+    ///
+    /// Louvain is an undirected community-detection algorithm. This wrapper
+    /// preserves the crate's type-state requirement that the graph must be
+    /// stored in forward (non-transposed) layout, but it does not add a new
+    /// Rust-side hard check that the graph was constructed with undirected
+    /// properties.
+    ///
+    /// Returns a [`LouvainResult`](crate::community::LouvainResult)
+    /// containing vertex ids, per-vertex partitions, and modularity.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cugraph::{
+    /// #     Forward, ResourceHandle,
+    /// #     community::LouvainParams,
+    /// #     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
+    /// #     types::GraphProperties,
+    /// # };
+    /// # let runtime = cudf::Runtime::new().unwrap();
+    /// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+    /// # let src = runtime.series("src", &[0i32, 1, 1, 2]).unwrap();
+    /// # let dst = runtime.series("dst", &[1i32, 0, 2, 1]).unwrap();
+    /// # let weight = runtime.series("weight", &[1.0f32, 1.0, 1.0, 1.0]).unwrap();
+    /// # let edges = cudf::DataFrame::from_series([src, dst, weight]).unwrap();
+    /// let opts = DataFrameGraphOptions::new("src", "dst")
+    ///     .weight_col("weight")
+    ///     .properties(GraphProperties::undirected())
+    ///     .renumber();
+    /// let mut graph = graph_from_dataframe::<Forward>(&handle, &edges, &opts).unwrap();
+    ///
+    /// let result = graph.louvain(&handle, &LouvainParams::default()).unwrap();
+    /// let modularity = result.modularity();
+    /// # let _ = modularity;
+    /// ```
+    pub fn louvain(
+        &mut self,
+        handle: &ResourceHandle,
+        params: &crate::community::LouvainParams,
+    ) -> Result<crate::community::LouvainResult> {
+        crate::community::louvain::louvain(handle, self, params)
     }
 }
 

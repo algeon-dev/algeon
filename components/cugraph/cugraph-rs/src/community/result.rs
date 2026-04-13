@@ -1,0 +1,177 @@
+//! Result types for community-detection algorithms.
+//!
+//! Louvain currently returns a `cugraph_hierarchical_clustering_result_t`.
+//! This module keeps ownership and raw accessor logic in an internal wrapper so
+//! future hierarchical community algorithms can reuse it.
+
+use std::marker::PhantomData;
+
+use cugraph_sys::{
+    cugraph_hierarchical_clustering_result_free, cugraph_hierarchical_clustering_result_get_clusters,
+    cugraph_hierarchical_clustering_result_get_modularity, cugraph_hierarchical_clustering_result_get_vertices,
+    cugraph_hierarchical_clustering_result_t,
+};
+
+use crate::{
+    array::RawDeviceArrayView,
+    cuda::DeviceGuard,
+    error::{Error, Result, require_non_null},
+    structure::typed_results::VertexIds,
+};
+
+/// Internal shared wrapper for `cugraph_hierarchical_clustering_result_t`.
+pub(crate) struct HierarchicalClusteringResult {
+    raw: *mut cugraph_hierarchical_clustering_result_t,
+    device: i32,
+    _nosend_nosync: PhantomData<*mut ()>,
+}
+
+impl HierarchicalClusteringResult {
+    /// Wrap a raw hierarchical clustering result pointer.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a valid, non-null pointer returned by a cuGraph
+    /// hierarchical clustering C API. Ownership is transferred to this struct.
+    pub(crate) unsafe fn from_raw(raw: *mut cugraph_hierarchical_clustering_result_t, device: i32) -> Result<Self> {
+        let raw = require_non_null(raw, "HierarchicalClusteringResult::from_raw", "hierarchical_clustering_result")?;
+        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+    }
+
+    pub(crate) fn vertices_raw(&self) -> Result<RawDeviceArrayView<'_>> {
+        let view_ptr = require_non_null(
+            // SAFETY: `self.raw` is a live hierarchical clustering result
+            // owned by this wrapper for the duration of the call.
+            unsafe { cugraph_hierarchical_clustering_result_get_vertices(self.raw) },
+            "HierarchicalClusteringResult::vertices_raw",
+            "vertices",
+        )?;
+        // SAFETY: `view_ptr` belongs to the live result object and was checked
+        // for null above.
+        unsafe {
+            RawDeviceArrayView::from_borrowed(
+                view_ptr,
+                Some(self.device),
+                "HierarchicalClusteringResult::vertices_raw",
+                "vertices",
+            )
+        }
+    }
+
+    pub(crate) fn clusters_raw(&self) -> Result<RawDeviceArrayView<'_>> {
+        let view_ptr = require_non_null(
+            // SAFETY: `self.raw` is a live hierarchical clustering result
+            // owned by this wrapper for the duration of the call.
+            unsafe { cugraph_hierarchical_clustering_result_get_clusters(self.raw) },
+            "HierarchicalClusteringResult::clusters_raw",
+            "clusters",
+        )?;
+        // SAFETY: `view_ptr` belongs to the live result object and was checked
+        // for null above.
+        unsafe {
+            RawDeviceArrayView::from_borrowed(
+                view_ptr,
+                Some(self.device),
+                "HierarchicalClusteringResult::clusters_raw",
+                "clusters",
+            )
+        }
+    }
+
+    pub(crate) fn modularity(&self) -> f64 {
+        // SAFETY: `self.raw` is a live hierarchical clustering result owned by
+        // this wrapper for the duration of the call.
+        unsafe { cugraph_hierarchical_clustering_result_get_modularity(self.raw) }
+    }
+}
+
+impl Drop for HierarchicalClusteringResult {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _guard = DeviceGuard::switch_to(self.device, "HierarchicalClusteringResult::drop").ok();
+            // SAFETY: `self.raw` is owned by this wrapper and has not been
+            // freed yet.
+            unsafe { cugraph_hierarchical_clustering_result_free(self.raw) };
+        }
+    }
+}
+
+/// Result of a Louvain computation.
+///
+/// Provides access to vertex ids, community assignments, and the scalar
+/// modularity score. Freed on drop.
+pub struct LouvainResult(HierarchicalClusteringResult);
+
+impl std::fmt::Debug for LouvainResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LouvainResult").finish_non_exhaustive()
+    }
+}
+
+impl LouvainResult {
+    /// Wrap a raw hierarchical clustering result pointer as a `LouvainResult`.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a valid, non-null pointer returned by `cugraph_louvain`.
+    /// Ownership is transferred to this struct.
+    pub(crate) unsafe fn from_raw(raw: *mut cugraph_hierarchical_clustering_result_t, device: i32) -> Result<Self> {
+        // SAFETY: the caller transfers ownership of a live cuGraph result to
+        // this wrapper on success.
+        Ok(Self(unsafe { HierarchicalClusteringResult::from_raw(raw, device) }?))
+    }
+
+    /// Get the vertex ids as a runtime-typed device array view.
+    ///
+    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
+    /// graph's vertex type.
+    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.0.vertices_raw()?)
+    }
+
+    /// Get the per-vertex cluster assignments as a runtime-typed device array view.
+    ///
+    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
+    /// graph's vertex type.
+    pub fn clusters(&self) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.0.clusters_raw()?)
+    }
+
+    /// Modularity score returned by Louvain.
+    pub fn modularity(&self) -> f64 {
+        self.0.modularity()
+    }
+
+    /// Convert this Louvain result to a cudf DataFrame.
+    ///
+    /// Returns a 2-column DataFrame:
+    /// - `"vertex"` — vertex ids with the underlying result dtype (`Int32` or `Int64`)
+    /// - `"partition"` — cluster assignments with the underlying result dtype
+    ///
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph
+    /// behavior.
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        crate::cudf_interop::louvain_result_to_dataframe(self, runtime)
+            .map_err(|e: Error| e.with_operation("LouvainResult::to_dataframe"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ptr;
+
+    use super::*;
+    use crate::error::ErrorKind;
+
+    #[test]
+    fn hierarchical_clustering_result_from_raw_rejects_null() {
+        // SAFETY: this exercises the constructor's null guard only.
+        let err = match unsafe { HierarchicalClusteringResult::from_raw(ptr::null_mut(), 0) } {
+            Err(err) => err,
+            Ok(_) => panic!("null must be rejected"),
+        };
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert_eq!(err.operation(), "HierarchicalClusteringResult::from_raw");
+    }
+}

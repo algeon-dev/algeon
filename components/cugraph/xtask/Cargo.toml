@@ -1,0 +1,16 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+cudf = { path = "../../cudf-rs/cudf-rs" }
+cugraph = { path = "../cugraph-rs", package = "cugraph" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

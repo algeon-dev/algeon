@@ -32,6 +32,10 @@ fn bindings_include_critical_core_symbols() {
         // Graph lifecycle
         "cugraph_graph_create_with_times_sg",
         "cugraph_graph_free",
+        "cugraph_decompress_to_edgelist",
+        "cugraph_edgelist_get_sources",
+        "cugraph_edgelist_get_destinations",
+        "cugraph_edgelist_free",
         // Centrality
         "cugraph_pagerank",
         "cugraph_centrality_result_get_vertices",
@@ -42,6 +46,12 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_paths_result_get_vertices",
         "cugraph_paths_result_get_distances",
         "cugraph_paths_result_free",
+        // Community
+        "cugraph_louvain",
+        "cugraph_hierarchical_clustering_result_get_vertices",
+        "cugraph_hierarchical_clustering_result_get_clusters",
+        "cugraph_hierarchical_clustering_result_get_modularity",
+        "cugraph_hierarchical_clustering_result_free",
     ];
 
     for symbol in required_symbols {

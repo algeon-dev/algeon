@@ -85,6 +85,7 @@ use rapids_interop::{
 use crate::{
     array::RawDeviceArrayView,
     centrality::{BetweennessCentralityResult, PageRankResult},
+    community::LouvainResult,
     cuda::{DeviceGuard, check_cudf_status},
     error::{Error, ErrorKind, Result},
     graph::{Graph, GraphBuilder, Transposition},
@@ -422,6 +423,14 @@ pub(crate) fn betweenness_result_to_dataframe(
     )
 }
 
+pub(crate) fn louvain_result_to_dataframe(result: &LouvainResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "louvain_result_to_dataframe";
+    dataframe_from_named_series(
+        [result.vertex_ids()?.to_series("vertex", runtime)?, result.clusters()?.to_series("partition", runtime)?],
+        operation,
+    )
+}
+
 pub(crate) fn bfs_result_to_dataframe(result: &BfsResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "bfs_result_to_dataframe";
     let vertices = result.vertices_raw()?;
@@ -499,6 +508,53 @@ pub(crate) fn out_degrees_result_to_dataframe(result: &OutDegreesResult, runtime
 /// // With weight column and renumbering
 /// let opts = TableGraphOptions::new(0, 1).weight_col(2).renumber();
 /// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[must_use]
+pub enum GraphConstructionPolicy {
+    /// Preserve the raw libcugraph graph-construction contract.
+    ///
+    /// Use this when you need the high-level cudf interop entry points to
+    /// behave exactly like the lower-level [`GraphBuilder`] flags you specify.
+    RawLibcugraph,
+    /// Match Python `cugraph.Graph.from_cudf_edgelist(...)` semantics for
+    /// simple-graph workloads.
+    ///
+    /// Today this means:
+    /// - directed simple graphs: no additional builder flags
+    /// - undirected simple graphs: enable `drop_multi_edges` and `symmetrize`
+    ///
+    /// Multigraph construction is intentionally rejected under this policy
+    /// until the Python multigraph contract is specified for these ingress
+    /// paths.
+    #[default]
+    PythonCugraph,
+}
+
+fn apply_graph_construction_policy<'a>(
+    mut builder: GraphBuilder<'a>,
+    properties: GraphProperties,
+    policy: GraphConstructionPolicy,
+    operation: &'static str,
+) -> Result<GraphBuilder<'a>> {
+    match policy {
+        GraphConstructionPolicy::RawLibcugraph => Ok(builder),
+        GraphConstructionPolicy::PythonCugraph => {
+            if properties.is_multigraph {
+                return Err(Error::new(ErrorKind::InvalidInput, operation).with_message(
+                    "GraphConstructionPolicy::PythonCugraph does not support multigraph properties; \
+                     use GraphConstructionPolicy::RawLibcugraph or GraphBuilder for raw libcugraph semantics",
+                ));
+            }
+
+            if properties.is_symmetric {
+                builder = builder.drop_multi_edges().symmetrize();
+            }
+
+            Ok(builder)
+        },
+    }
+}
+
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct TableGraphOptions {
@@ -513,14 +569,25 @@ pub struct TableGraphOptions {
     /// Whether to renumber vertices (recommended when vertex IDs are not
     /// sequential from 0).
     pub renumber: bool,
+    /// High-level graph-construction semantics to apply before crossing into
+    /// libcugraph.
+    pub construction_policy: GraphConstructionPolicy,
 }
 
 impl TableGraphOptions {
     /// Create options with source and destination column indices.
     ///
-    /// Defaults: no weight column, directed graph, renumber disabled.
+    /// Defaults: no weight column, directed graph, renumber disabled, and
+    /// Python-compatible construction semantics.
     pub fn new(src_col: usize, dst_col: usize) -> Self {
-        Self { src_col, dst_col, weight_col: None, properties: GraphProperties::directed(), renumber: false }
+        Self {
+            src_col,
+            dst_col,
+            weight_col: None,
+            properties: GraphProperties::directed(),
+            renumber: false,
+            construction_policy: GraphConstructionPolicy::PythonCugraph,
+        }
     }
 
     /// Set the weight column index.
@@ -538,6 +605,12 @@ impl TableGraphOptions {
     /// Enable vertex renumbering.
     pub fn renumber(mut self) -> Self {
         self.renumber = true;
+        self
+    }
+
+    /// Set graph-construction semantics for this high-level ingress path.
+    pub fn construction_policy(mut self, policy: GraphConstructionPolicy) -> Self {
+        self.construction_policy = policy;
         self
     }
 }
@@ -568,14 +641,25 @@ pub struct DataFrameGraphOptions<'a> {
     pub properties: GraphProperties,
     /// Whether to renumber vertices.
     pub renumber: bool,
+    /// High-level graph-construction semantics to apply before crossing into
+    /// libcugraph.
+    pub construction_policy: GraphConstructionPolicy,
 }
 
 impl<'a> DataFrameGraphOptions<'a> {
     /// Create options with source and destination column names.
     ///
-    /// Defaults: no weight column, directed graph, renumber disabled.
+    /// Defaults: no weight column, directed graph, renumber disabled, and
+    /// Python-compatible construction semantics.
     pub fn new(src_col: &'a str, dst_col: &'a str) -> Self {
-        Self { src_col, dst_col, weight_col: None, properties: GraphProperties::directed(), renumber: false }
+        Self {
+            src_col,
+            dst_col,
+            weight_col: None,
+            properties: GraphProperties::directed(),
+            renumber: false,
+            construction_policy: GraphConstructionPolicy::PythonCugraph,
+        }
     }
 
     /// Set the weight column name.
@@ -593,6 +677,12 @@ impl<'a> DataFrameGraphOptions<'a> {
     /// Enable vertex renumbering.
     pub fn renumber(mut self) -> Self {
         self.renumber = true;
+        self
+    }
+
+    /// Set graph-construction semantics for this high-level ingress path.
+    pub fn construction_policy(mut self, policy: GraphConstructionPolicy) -> Self {
+        self.construction_policy = policy;
         self
     }
 }
@@ -615,6 +705,9 @@ pub struct SeriesGraphOptions {
     pub properties: GraphProperties,
     /// Whether to renumber vertices.
     pub renumber: bool,
+    /// High-level graph-construction semantics to apply before crossing into
+    /// libcugraph.
+    pub construction_policy: GraphConstructionPolicy,
 }
 
 impl SeriesGraphOptions {
@@ -627,6 +720,12 @@ impl SeriesGraphOptions {
     /// Enable vertex renumbering.
     pub fn renumber(mut self) -> Self {
         self.renumber = true;
+        self
+    }
+
+    /// Set graph-construction semantics for this high-level ingress path.
+    pub fn construction_policy(mut self, policy: GraphConstructionPolicy) -> Self {
+        self.construction_policy = policy;
         self
     }
 }
@@ -657,14 +756,26 @@ pub struct ParquetGraphOptions<'a> {
     pub properties: GraphProperties,
     /// Whether to renumber vertices.
     pub renumber: bool,
+    /// High-level graph-construction semantics to apply before crossing into
+    /// libcugraph.
+    pub construction_policy: GraphConstructionPolicy,
 }
 
 impl<'a> ParquetGraphOptions<'a> {
     /// Create options with path and source/destination column indices.
     ///
-    /// Defaults: no weight column, directed graph, renumber disabled.
+    /// Defaults: no weight column, directed graph, renumber disabled, and
+    /// Python-compatible construction semantics.
     pub fn new(path: &'a str, src_col: usize, dst_col: usize) -> Self {
-        Self { path, src_col, dst_col, weight_col: None, properties: GraphProperties::directed(), renumber: false }
+        Self {
+            path,
+            src_col,
+            dst_col,
+            weight_col: None,
+            properties: GraphProperties::directed(),
+            renumber: false,
+            construction_policy: GraphConstructionPolicy::PythonCugraph,
+        }
     }
 
     /// Set the weight column index.
@@ -682,6 +793,12 @@ impl<'a> ParquetGraphOptions<'a> {
     /// Enable vertex renumbering.
     pub fn renumber(mut self) -> Self {
         self.renumber = true;
+        self
+    }
+
+    /// Set graph-construction semantics for this high-level ingress path.
+    pub fn construction_policy(mut self, policy: GraphConstructionPolicy) -> Self {
+        self.construction_policy = policy;
         self
     }
 }
@@ -1099,6 +1216,7 @@ fn build_graph_from_borrowed_edge_list<'a, T: Transposition>(
     edge_list: &BorrowedEdgeList<'a>,
     properties: GraphProperties,
     renumber: bool,
+    construction_policy: GraphConstructionPolicy,
     operation: &'static str,
 ) -> Result<Graph<T>> {
     validate_edge_list_policy(handle, edge_list, operation)?;
@@ -1107,7 +1225,12 @@ fn build_graph_from_borrowed_edge_list<'a, T: Transposition>(
     let wgt = edge_list.weights.as_ref().map(|column| borrowed_column_to_raw(column, "wgt", operation)).transpose()?;
     fence_producer_streams(edge_list, operation)?;
 
-    let mut builder = GraphBuilder::from_raw_views(properties, &src, &dst)?.renumber_flag(renumber);
+    let mut builder = apply_graph_construction_policy(
+        GraphBuilder::from_raw_views(properties, &src, &dst)?.renumber_flag(renumber),
+        properties,
+        construction_policy,
+        operation,
+    )?;
     if let Some(ref weights) = wgt {
         builder = builder.weights_raw(weights)?;
     }
@@ -1156,6 +1279,7 @@ fn build_graph_from_prepared_edge_list<'a, T: Transposition>(
     edge_list: &PreparedEdgeList<'a>,
     properties: GraphProperties,
     renumber: bool,
+    construction_policy: GraphConstructionPolicy,
     operation: &'static str,
 ) -> Result<Graph<T>> {
     validate_prepared_edge_list_policy(handle, edge_list, operation)?;
@@ -1164,7 +1288,12 @@ fn build_graph_from_prepared_edge_list<'a, T: Transposition>(
     let dst = prepared_column_to_raw(edge_list.dst, "dst", operation)?;
     let wgt = edge_list.weights.map(|column| prepared_column_to_raw(column, "wgt", operation)).transpose()?;
 
-    let mut builder = GraphBuilder::from_raw_views(properties, &src, &dst)?.renumber_flag(renumber);
+    let mut builder = apply_graph_construction_policy(
+        GraphBuilder::from_raw_views(properties, &src, &dst)?.renumber_flag(renumber),
+        properties,
+        construction_policy,
+        operation,
+    )?;
     if let Some(ref weights) = wgt {
         builder = builder.weights_raw(weights)?;
     }
@@ -1189,6 +1318,7 @@ pub fn graph_from_borrowed_columns<T: Transposition>(
         &edge_list,
         options.properties,
         options.renumber,
+        options.construction_policy,
         "graph_from_borrowed_columns",
     )
 }
@@ -1201,7 +1331,14 @@ pub fn graph_from_borrowed_table_view<T: Transposition>(
 ) -> Result<Graph<T>> {
     let operation = "graph_from_borrowed_table_view";
     let edge_list = borrowed_table_to_edge_list(view, options, operation)?;
-    build_graph_from_borrowed_edge_list(handle, &edge_list, options.properties, options.renumber, operation)
+    build_graph_from_borrowed_edge_list(
+        handle,
+        &edge_list,
+        options.properties,
+        options.renumber,
+        options.construction_policy,
+        operation,
+    )
 }
 
 /// Build a cuGraph [`Graph`] directly from prepared-device RAPIDS column exports.
@@ -1257,7 +1394,14 @@ pub fn graph_from_prepared_columns<T: Transposition>(
             }),
         };
 
-        build_graph_from_prepared_edge_list(handle, &edge_list, options.properties, options.renumber, operation)
+        build_graph_from_prepared_edge_list(
+            handle,
+            &edge_list,
+            options.properties,
+            options.renumber,
+            options.construction_policy,
+            operation,
+        )
     })();
 
     let src_complete =
@@ -1320,8 +1464,14 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
         weights: options.weight_col.map(|index| PreparedEdgeColumn { column: &columns[index], bindings }),
     };
 
-    let graph_result =
-        build_graph_from_prepared_edge_list(handle, &edge_list, options.properties, options.renumber, operation);
+    let graph_result = build_graph_from_prepared_edge_list(
+        handle,
+        &edge_list,
+        options.properties,
+        options.renumber,
+        options.construction_policy,
+        operation,
+    );
     let lease_complete = complete_prepared_lease(lease.complete(), operation);
 
     finish_prepared_graph_result(graph_result, [lease_complete])
@@ -1360,7 +1510,14 @@ pub fn graph_from_table_view<T: Transposition>(
     let operation = "graph_from_table_view";
     let borrowed = view.try_borrow_table_view().map_err(|error| map_interop_error(error, operation))?;
     let edge_list = borrowed_table_to_edge_list(&borrowed, options, operation)?;
-    build_graph_from_borrowed_edge_list(handle, &edge_list, options.properties, options.renumber, operation)
+    build_graph_from_borrowed_edge_list(
+        handle,
+        &edge_list,
+        options.properties,
+        options.renumber,
+        options.construction_policy,
+        operation,
+    )
 }
 
 /// Build a cuGraph [`Graph`] from a cudf [`DataFrame`] using column names.
@@ -1397,6 +1554,7 @@ pub fn graph_from_dataframe<T: Transposition>(
         weight_col: options.weight_col.map(|name| resolve_index(name, "weight")).transpose()?,
         properties: options.properties,
         renumber: options.renumber,
+        construction_policy: options.construction_policy,
     };
 
     let export = df.try_prepare_device_table_export().map_err(|error| map_interop_error(error, operation))?;
@@ -1541,6 +1699,7 @@ pub fn graph_from_parquet<T: Transposition>(
             weight_col: options.weight_col,
             properties: options.properties,
             renumber: options.renumber,
+            construction_policy: options.construction_policy,
         };
         graph_from_prepared_table_export::<T>(handle, &export, &table_opts)?
     };

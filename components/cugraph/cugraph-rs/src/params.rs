@@ -57,6 +57,13 @@ pub(crate) mod defaults {
     pub(crate) const FORCE_ATLAS2_BARNES_HUT_THETA: ClosedUnitF64 = ClosedUnitF64(0.5);
     pub(crate) const FORCE_ATLAS2_SCALING_RATIO: PositiveF64 = PositiveF64(2.0);
     pub(crate) const FORCE_ATLAS2_GRAVITY: NonNegativeF64 = NonNegativeF64(1.0);
+
+    pub(crate) const LOUVAIN_MAX_LEVEL: IterationCount = {
+        // SAFETY: the literal `100` is non-zero.
+        IterationCount(unsafe { NonZeroU32::new_unchecked(100) })
+    };
+    pub(crate) const LOUVAIN_THRESHOLD: NonNegativeF64 = NonNegativeF64(1e-7);
+    pub(crate) const LOUVAIN_RESOLUTION: PositiveF64 = PositiveF64(1.0);
 }
 
 // ---------------------------------------------------------------------------

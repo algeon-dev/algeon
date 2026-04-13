@@ -68,7 +68,7 @@
 //! forward or transposed form. Algorithms that require a specific layout
 //! accept only the correct variant, catching mismatches at compile time:
 //!
-//! - **[`Forward`]** — required by [`Graph::bfs`]
+//! - **[`Forward`]** — required by [`Graph::bfs`] and [`Graph::louvain`]
 //! - **[`Transposed`]** — required by [`Graph::pagerank`],
 //!   [`Graph::in_degrees`], [`Graph::degrees`]
 //! - **Generic** (`T: Transposition`) — [`Graph::betweenness_centrality`],
@@ -84,6 +84,7 @@
 
 pub mod array;
 pub mod centrality;
+pub mod community;
 mod cuda;
 pub mod cudf_interop;
 pub mod error;

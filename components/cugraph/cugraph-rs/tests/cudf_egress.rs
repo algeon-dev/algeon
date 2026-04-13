@@ -8,12 +8,14 @@ use common::{
     support,
     support::{
         BFS_GRAPH_DST_I32, BFS_GRAPH_SRC_I32, BFS_SOURCE_VERTEX_I32, DIRECTED_STAR_DST_I32, DIRECTED_STAR_SRC_I32,
-        TEST_LAYOUT_PRIMARY_SEED, TEST_LAYOUT_SETTLE_ITERATIONS,
+        LOUVAIN_GRAPH_DST_I32, LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32, TEST_LAYOUT_PRIMARY_SEED,
+        TEST_LAYOUT_SETTLE_ITERATIONS,
     },
 };
 use cugraph::{
     array::DeviceArray,
     centrality::{BetweennessCentralityParams, PageRankParams},
+    community::LouvainParams,
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
     traversal::BfsParams,
@@ -161,4 +163,140 @@ fn betweenness_result_to_dataframe() {
     assert_eq!(vertices.len(), 4);
     assert_eq!(values.len(), 4);
     assert!(values.iter().all(|value| value.is_finite() && *value >= 0.0));
+}
+
+#[test]
+fn louvain_result_to_dataframe() {
+    let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+
+    let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let result = graph.louvain(&handle, &LouvainParams::default()).expect("louvain");
+    let expected_rows = result.vertex_ids().expect("vertex_ids").len();
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
+
+    assert_eq!(df.num_columns(), 2);
+    assert_eq!(df.column_names()[0], "vertex");
+    assert_eq!(df.column_names()[1], "partition");
+    assert_eq!(df.num_rows(), expected_rows);
+}
+
+#[test]
+fn pagerank_result_preserves_external_vertex_ids_for_renumbered_graphs() {
+    let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+
+    let expected_vertices = vec![10_i32, 20, 40, 80];
+    let src_data = vec![10_i32, 20, 40, 80, 20, 40, 80, 10];
+    let dst_data = vec![20_i32, 40, 80, 10, 10, 20, 40, 80];
+
+    let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Transposed>(&handle)
+        .expect("graph");
+
+    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
+
+    let mut raw_vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertex copy");
+    raw_vertices.sort_unstable();
+    assert_eq!(raw_vertices, expected_vertices, "raw PageRank result leaked internal vertex ids");
+
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
+    let mut df_vertices: Vec<i32> = df.series("vertex").expect("vertex column").to_vec_strict().expect("vertex to_vec");
+    df_vertices.sort_unstable();
+    assert_eq!(df_vertices, expected_vertices, "PageRank DataFrame vertex column leaked internal vertex ids");
+}
+
+#[test]
+fn louvain_result_preserves_external_vertex_ids_for_renumbered_graphs() {
+    let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+
+    let expected_vertices = vec![10_i32, 20, 40, 80];
+    let src_data = vec![10_i32, 20, 40, 80, 20, 40, 80, 10];
+    let dst_data = vec![20_i32, 40, 80, 10, 10, 20, 40, 80];
+    let weights_data = vec![1.0_f32; src_data.len()];
+
+    let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+    let weights = DeviceArray::from_slice(&handle, &weights_data).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let result = graph.louvain(&handle, &LouvainParams::default()).expect("louvain");
+
+    let mut raw_vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertex copy");
+    raw_vertices.sort_unstable();
+    assert_eq!(raw_vertices, expected_vertices, "raw Louvain result leaked internal vertex ids");
+
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
+    let mut df_vertices: Vec<i32> = df.series("vertex").expect("vertex column").to_vec_strict().expect("vertex to_vec");
+    df_vertices.sort_unstable();
+    assert_eq!(df_vertices, expected_vertices, "Louvain DataFrame vertex column leaked internal vertex ids");
+}
+
+#[test]
+fn layout_result_preserves_external_vertex_ids_for_renumbered_graphs() {
+    use cugraph::{layout::ForceAtlas2Params, params::IterationCount, random::RngState};
+
+    let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let mut rng = RngState::new(&handle, TEST_LAYOUT_PRIMARY_SEED).expect("rng");
+
+    let expected_vertices = vec![10_i32, 20, 40, 80];
+    let src_data = vec![10_i32, 20, 40, 80, 20, 40, 80, 10];
+    let dst_data = vec![20_i32, 40, 80, 10, 10, 20, 40, 80];
+
+    let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let params = ForceAtlas2Params {
+        max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
+        ..Default::default()
+    };
+    let result = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2");
+
+    let mut raw_vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertex copy");
+    raw_vertices.sort_unstable();
+    assert_eq!(raw_vertices, expected_vertices, "raw layout result leaked internal vertex ids");
+
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
+    let mut df_vertices: Vec<i32> = df.series("vertex").expect("vertex column").to_vec_strict().expect("vertex to_vec");
+    df_vertices.sort_unstable();
+    assert_eq!(df_vertices, expected_vertices, "layout DataFrame vertex column leaked internal vertex ids");
 }

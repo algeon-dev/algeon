@@ -1,13 +1,14 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
 };
 
 use cudf::{core::Table, interop::prepared::PreparedTableExport, io::parquet};
 use cugraph::{
+    array::DeviceArray,
     centrality::PageRankParams,
     cudf_interop::{DataFrameGraphOptions, TableGraphOptions, graph_from_dataframe, graph_from_prepared_table_export},
-    graph::{Forward, Graph, Transposed},
+    graph::{Forward, Graph, GraphBuilder, Transposed},
     handle::ResourceHandle,
     types::GraphProperties,
 };
@@ -68,6 +69,56 @@ pub fn pagerank_score_map(handle: &ResourceHandle, graph: &mut Graph<Transposed>
     let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertices");
     let scores: Vec<f32> = result.scores().expect("scores").to_vec_f32(handle).expect("scores");
     vertices.into_iter().zip(scores).collect()
+}
+
+pub fn assert_score_maps_close_f32(
+    actual: &HashMap<i32, f32>,
+    expected: &HashMap<i32, f32>,
+    tolerance: f32,
+    label: &str,
+) {
+    let actual_vertices = actual.keys().copied().collect::<BTreeSet<_>>();
+    let expected_vertices = expected.keys().copied().collect::<BTreeSet<_>>();
+    assert_eq!(actual_vertices, expected_vertices, "{label} vertex ids mismatch");
+
+    for (vertex, expected_score) in expected {
+        let actual_score = actual.get(vertex).expect("score entry");
+        assert!(
+            (actual_score - expected_score).abs() <= tolerance,
+            "{label} score mismatch for vertex {vertex}: expected {expected_score}, got {actual_score}"
+        );
+    }
+}
+
+pub fn python_weighted_reciprocal_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
+    let src = runtime.series("src", &[0i32, 1, 1, 2]).expect("src");
+    let dst = runtime.series("dst", &[1i32, 0, 2, 1]).expect("dst");
+    let wgt = runtime.series("weight", &[5.0f32, 2.0, 1.0, 1.0]).expect("weight");
+    cudf::DataFrame::from_series([src, dst, wgt]).expect("python-weighted reciprocal dataframe")
+}
+
+pub fn python_undirected_multigraph_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
+    let src = runtime.series("src", &[0i32, 0, 1]).expect("src");
+    let dst = runtime.series("dst", &[1i32, 1, 2]).expect("dst");
+    cudf::DataFrame::from_series([src, dst]).expect("python undirected multigraph dataframe")
+}
+
+pub fn python_weighted_reciprocal_expected_pagerank_map(handle: &ResourceHandle) -> HashMap<i32, f32> {
+    let src = DeviceArray::from_slice(handle, &[0i32, 1, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(handle, &[1i32, 0, 2, 1]).expect("dst");
+    let wgt = DeviceArray::from_slice(handle, &[2.0f32, 2.0, 1.0, 1.0]).expect("weight");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let wgt_view = wgt.view().expect("weight_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&wgt_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Transposed>(handle)
+        .expect("expected python-weighted graph");
+
+    pagerank_score_map(handle, &mut graph)
 }
 
 pub fn write_parquet_table(
