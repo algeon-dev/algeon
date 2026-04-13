@@ -79,12 +79,56 @@ class FakeResult:
         return self._rows
 
 
+class FakeWriteTo:
+    def __init__(self, spark: "FakeSpark", table: str) -> None:
+        self.spark = spark
+        self.table = table
+        self.properties: dict[str, str] = {}
+
+    def using(self, fmt: str) -> "FakeWriteTo":
+        assert fmt == "iceberg"
+        return self
+
+    def tableProperty(self, key: str, value: str) -> "FakeWriteTo":
+        self.properties[key] = value
+        return self
+
+    def create(self) -> None:
+        assert self.properties.get("format-version") == "2", "fixture tables must be Iceberg v2 minimum"
+        self.spark.created_tables.append(self.table)
+
+
+class FakeDataFrame:
+    def __init__(self, spark: "FakeSpark", source: str) -> None:
+        self.spark = spark
+        self.source = source
+
+    def limit(self, n: int) -> "FakeDataFrame":
+        assert n == 0
+        return self
+
+    def writeTo(self, table: str) -> FakeWriteTo:
+        return FakeWriteTo(self.spark, table)
+
+
+class FakeSparkReader:
+    def __init__(self, spark: "FakeSpark") -> None:
+        self.spark = spark
+
+    def parquet(self, source: str) -> FakeDataFrame:
+        self.spark.parquet_reads.append(source)
+        return FakeDataFrame(self.spark, source)
+
+
 class FakeSpark:
     def __init__(self, *, existing: bool = False, file_count: int = 0, fail_on_add_files: bool = False) -> None:
         self.existing = existing
         self.file_count = file_count
         self.fail_on_add_files = fail_on_add_files
         self.sql_calls: list[str] = []
+        self.parquet_reads: list[str] = []
+        self.created_tables: list[str] = []
+        self.read = FakeSparkReader(self)
 
     def sql(self, query: str) -> FakeResult:
         self.sql_calls.append(query)
@@ -388,18 +432,29 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         self.assertTrue(args.reload)
 
         specs = writer.parse_table_specs(args.tables)
-        self.assertEqual(specs, [("papers", "s3://lakehouse/staging/citation_network/v1/papers.parquet")])
+        self.assertEqual(specs, [("papers", "s3://lakehouse/staging/citation_network/v1/papers.parquet", None)])
         self.assertEqual(
             writer.resolve_source("/data", specs[0][1]),
             "s3://lakehouse/staging/citation_network/v1/papers.parquet",
         )
         self.assertEqual(
-            writer.parquet_relation_for_select(specs[0][1]),
-            "parquet.`s3://lakehouse/staging/citation_network/v1/papers.parquet`",
-        )
-        self.assertEqual(
             writer.parquet_relation_for_add_files(specs[0][1]),
             "`parquet`.`s3://lakehouse/staging/citation_network/v1/papers.parquet`",
+        )
+
+    def test_spark_iceberg_writer_parses_three_part_add_files_specs(self) -> None:
+        writer = load_script_module("spark_write_iceberg_three_part_under_test", SPARK_WRITE_ICEBERG)
+
+        specs = writer.parse_table_specs(
+            "papers=profiles_by_paper_id=s3://lakehouse/staging/citation_network/v1/papers.parquet"
+        )
+        self.assertEqual(
+            specs,
+            [(
+                "papers",
+                "profiles_by_paper_id",
+                "s3://lakehouse/staging/citation_network/v1/papers.parquet",
+            )],
         )
 
     def test_spark_iceberg_writer_add_files_mode_creates_and_registers_staged_parquet(self) -> None:
@@ -409,21 +464,69 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         writer.add_files_mode(
             spark,
             "citation_network",
-            [("papers", "s3://lakehouse/staging/citation_network/v1/papers.parquet")],
+            [(
+                "papers",
+                "s3://lakehouse/staging/citation_network/v1/papers.parquet",
+                None,
+            )],
             "/data",
             reload=False,
         )
 
-        self.assertIn(
-            "CREATE TABLE `lake`.`citation_network`.`papers` USING iceberg AS "
-            "SELECT * FROM parquet.`s3://lakehouse/staging/citation_network/v1/papers.parquet` LIMIT 0",
-            spark.sql_calls,
+        # Schema-only create goes through the DataFrame API, not a SQL direct
+        # file query (rejected when spark.sql.defaultCatalog is the REST catalog).
+        self.assertEqual(
+            spark.parquet_reads,
+            ["s3://lakehouse/staging/citation_network/v1/papers.parquet"],
         )
+        self.assertEqual(spark.created_tables, ["`lake`.`citation_network`.`papers`"])
         self.assertTrue(
             any(
                 "CALL lake.system.add_files(" in call
                 and "table => '`citation_network`.`papers`'" in call
                 and "source_table => '`parquet`.`s3://lakehouse/staging/citation_network/v1/papers.parquet`'" in call
+                for call in spark.sql_calls
+            )
+        )
+        rewrite_index = next(
+            index
+            for index, call in enumerate(spark.sql_calls)
+            if "CALL lake.system.rewrite_manifests(" in call
+            and "table => '`citation_network`.`papers`'" in call
+        )
+        self.assertIn(
+            "SET TBLPROPERTIES ('commit.manifest.target-size-bytes'='1024')",
+            spark.sql_calls[rewrite_index - 1],
+        )
+        self.assertIn(
+            "UNSET TBLPROPERTIES ('commit.manifest.target-size-bytes')",
+            spark.sql_calls[rewrite_index + 1],
+        )
+        self.assertFalse(any("schema.name-mapping.default" in call for call in spark.sql_calls))
+
+    def test_spark_iceberg_writer_add_files_mode_reads_schema_locally_for_three_part_specs(self) -> None:
+        writer = load_script_module("spark_write_iceberg_local_schema_under_test", SPARK_WRITE_ICEBERG)
+        spark = FakeSpark()
+
+        with tempfile.TemporaryDirectory(prefix="nexus_add_files_schema.") as tmp:
+            (Path(tmp) / "profiles_by_paper_id.parquet").touch()
+            writer.add_files_mode(
+                spark,
+                "citation_network",
+                [(
+                    "papers",
+                    "profiles_by_paper_id",
+                    "s3://lakehouse/staging/citation_network/v1/papers.parquet",
+                )],
+                tmp,
+                reload=False,
+            )
+
+            self.assertEqual(spark.parquet_reads, [f"{tmp}/profiles_by_paper_id.parquet"])
+        self.assertEqual(spark.created_tables, ["`lake`.`citation_network`.`papers`"])
+        self.assertTrue(
+            any(
+                "source_table => '`parquet`.`s3://lakehouse/staging/citation_network/v1/papers.parquet`'" in call
                 for call in spark.sql_calls
             )
         )
@@ -443,12 +546,12 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         writer.add_files_mode(
             spark,
             "citation_network",
-            [("papers", "s3://lakehouse/staging/citation_network/v1/papers.parquet")],
+            [("papers", "s3://lakehouse/staging/citation_network/v1/papers.parquet", None)],
             "/data",
             reload=False,
         )
 
-        self.assertFalse(any(call.startswith("CREATE TABLE") for call in spark.sql_calls))
+        self.assertEqual(spark.created_tables, [])
         self.assertFalse(any("CALL lake.system.add_files" in call for call in spark.sql_calls))
 
     def test_spark_iceberg_writer_add_files_mode_drops_created_table_after_failure(self) -> None:
@@ -459,7 +562,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
             writer.add_files_mode(
                 spark,
                 "citation_network",
-                [("papers", "s3://lakehouse/staging/citation_network/v1/papers.parquet")],
+                [("papers", "s3://lakehouse/staging/citation_network/v1/papers.parquet", None)],
                 "/data",
                 reload=False,
             )

@@ -6,7 +6,10 @@ table through the REST catalog, so data files land in RustFS. Each source may
 be either a flat `<source>.parquet` file or a `<source>/` directory of part files
 (both layouts are read transparently by Spark). Table specs are either
 `table` or `table=source`, where the latter writes Iceberg table `table` from
-Parquet file/directory `source`.
+Parquet file/directory `source`. In add-files mode a spec may also be
+`table=schema_src=files_src`: the empty table is created from the local
+`schema_src` Parquet schema while the staged `files_src` S3 objects are
+registered with `system.add_files` (sources therefore cannot contain `=`).
 The default `create` mode is the spec-correct write path (Iceberg reference
 implementation): DuckDB's manifest map-type encoding is rejected by
 iceberg-rust 0.9.0's schema deserializer, so the writer is PySpark while data
@@ -52,18 +55,39 @@ def resolve_source(parquet_dir: str, table: str) -> str:
     )
 
 
-def parse_table_specs(raw: str) -> list[tuple[str, str]]:
-    specs: list[tuple[str, str]] = []
+def parse_table_specs(raw: str) -> list[tuple[str, str, str | None]]:
+    """Parse table specs into (table, source, files_source) triples.
+
+    Accepted forms:
+      table                     -> (table, table, None)
+      table=source              -> (table, source, None)
+      table=schema_src=files_src -> (table, schema_src, files_src)
+
+    The three-part form is add-files-only: the schema is read from
+    ``schema_src`` (a local path under the /data mount) while ``files_src`` (an
+    S3 URI of staged Parquet) is what ``system.add_files`` registers.
+    ``create_mode`` rejects it. Sources therefore cannot contain ``=``.
+    """
+    specs: list[tuple[str, str, str | None]] = []
     for entry in (entry.strip() for entry in raw.split(",")):
         if not entry:
             continue
-        if "=" in entry:
-            table, source = (part.strip() for part in entry.split("=", 1))
+        parts = [part.strip() for part in entry.split("=", 2)]
+        if len(parts) == 1:
+            table = source = parts[0]
+            files_source = None
+        elif len(parts) == 2:
+            table, source = parts
+            files_source = None
+        elif len(parts) == 3:
+            table, source, files_source = parts
+            if not files_source:
+                raise ValueError("table specs must be table, table=source, or table=schema_src=files_src")
         else:
-            table = source = entry
+            raise ValueError("table specs must be table, table=source, or table=schema_src=files_src")
         if not table or not source:
-            raise ValueError("table specs must be table or table=source")
-        specs.append((table, source))
+            raise ValueError("table specs must be table, table=source, or table=schema_src=files_src")
+        specs.append((table, source, files_source))
     if not specs:
         raise ValueError("at least one table spec is required")
     return specs
@@ -84,7 +108,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("namespace")
     parser.add_argument("parquet_dir")
-    parser.add_argument("tables", help="Comma-separated table or table=source specs.")
+    parser.add_argument(
+        "tables",
+        help=(
+            "Comma-separated table or table=source specs; add-files mode also "
+            "accepts table=schema_src=files_src (schema from the local /data "
+            "mount, staged S3 URI registered via system.add_files)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -116,10 +147,6 @@ def procedure_table_identifier(namespace: str, table: str) -> str:
     return f"{quote_identifier(namespace)}.{quote_identifier(table)}"
 
 
-def parquet_relation_for_select(source: str) -> str:
-    return f"parquet.{quote_path_identifier(source)}"
-
-
 def parquet_relation_for_add_files(source: str) -> str:
     return f"`parquet`.{quote_path_identifier(source)}"
 
@@ -149,14 +176,24 @@ def table_row_count(spark, namespace: str, table: str) -> int:
     return int(row[0])
 
 
-def create_mode(spark, namespace: str, table_specs: list[tuple[str, str]], parquet_dir: str) -> None:
-    for table, source in table_specs:
+def create_mode(
+    spark,
+    namespace: str,
+    table_specs: list[tuple[str, str, str | None]],
+    parquet_dir: str,
+) -> None:
+    for table, source, files_source in table_specs:
+        if files_source is not None:
+            raise ValueError(
+                f"three-part spec '{table}={source}={files_source}' is add-files-only; "
+                "create mode takes table or table=source"
+            )
         src = resolve_source(parquet_dir, source)
         df = spark.read.parquet(src)
         fq = qualified_table(namespace, table)
         # Recreate from scratch each load (ephemeral fixture).
         spark.sql(f"DROP TABLE IF EXISTS {fq}")
-        df.writeTo(fq).using("iceberg").create()
+        df.writeTo(fq).using("iceberg").tableProperty("format-version", "2").create()
         n = table_row_count(spark, namespace, table)
         print(f"[spark] wrote {fq} from {source}: {n} rows", flush=True)
 
@@ -164,12 +201,13 @@ def create_mode(spark, namespace: str, table_specs: list[tuple[str, str]], parqu
 def add_files_mode(
     spark,
     namespace: str,
-    table_specs: list[tuple[str, str]],
+    table_specs: list[tuple[str, str, str | None]],
     parquet_dir: str,
     reload: bool,
 ) -> None:
-    for table, source in table_specs:
-        src = resolve_source(parquet_dir, source)
+    for table, source, files_source in table_specs:
+        schema_src = resolve_source(parquet_dir, source)
+        src = files_source if files_source is not None else schema_src
         fq = qualified_table(namespace, table)
         if reload:
             spark.sql(f"DROP TABLE IF EXISTS {fq}")
@@ -181,11 +219,18 @@ def add_files_mode(
             print(f"[spark] replacing empty existing {fq}; previous add_files likely did not complete", flush=True)
             spark.sql(f"DROP TABLE IF EXISTS {fq}")
 
-        select_relation = parquet_relation_for_select(src)
         add_files_relation = parquet_relation_for_add_files(src)
         created_table = False
         try:
-            spark.sql(f"CREATE TABLE {fq} USING iceberg AS SELECT * FROM {select_relation} LIMIT 0")
+            # Schema-only create through the DataFrame API: a SQL
+            # `SELECT * FROM parquet.`<path>`` direct file query is rejected
+            # (UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY) when
+            # spark.sql.defaultCatalog is the Iceberg REST catalog. The schema
+            # is read from schema_src (the local /data mount in three-part
+            # specs) so the create never depends on S3A directory semantics.
+            # Schema-only create; format-version 2 is the fixture minimum.
+            spark.read.parquet(schema_src).limit(0).writeTo(fq).using("iceberg") \
+                .tableProperty("format-version", "2").create()
             created_table = True
             result = spark.sql(
                 "CALL lake.system.add_files("
@@ -194,6 +239,24 @@ def add_files_mode(
             )
             for row in result.collect():
                 print(f"[spark] add_files {fq}: {row}", flush=True)
+            # Spark's add_files writes v1-format manifest files even into
+            # format-version-2 tables. The fixture contract is Iceberg v2
+            # minimum, so rewrite the manifests through the table's format
+            # version (metadata-only, data files stay in place). A bare
+            # rewrite_manifests no-ops on a single small manifest, so the
+            # target size is pinned tiny for the call to force the rewrite.
+            # The identity schema.name-mapping.default that add_files
+            # generates is kept: datafusion-nexus admits identity mappings.
+            spark.sql(
+                f"ALTER TABLE {fq} SET TBLPROPERTIES ('commit.manifest.target-size-bytes'='1024')"
+            )
+            spark.sql(
+                "CALL lake.system.rewrite_manifests("
+                f"table => {quote_sql_string(procedure_table_identifier(namespace, table))})"
+            )
+            spark.sql(
+                f"ALTER TABLE {fq} UNSET TBLPROPERTIES ('commit.manifest.target-size-bytes')"
+            )
             n = table_row_count(spark, namespace, table)
         except Exception:
             if created_table:
