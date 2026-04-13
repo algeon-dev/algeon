@@ -1,10 +1,75 @@
 {/* Hand-owned examples for cugraph_spectral_modularity_maximization. NOT generated — safe to edit. */}
-{/* Add dataset-specific runnable examples here against your own tables. */}
 
-Canonical call shape using `target_edges` as the edge table:
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Peel the satellite fields off the dense citation core
+
+This legacy algorithm needs Int32 vertex ids, and AMiner paper ids overflow
+Int32 — so the example uses the
+[SQL renumbering pattern](../demo-dataset.mdx#int32-renumbering-for-the-legacy-algorithms)
+on a graph worth clustering: the k=30 citation core (every paper keeps at
+least 30 combined in+out citation links inside the subgraph, as in the
+[k-core example](../algorithms/structure/cugraph_k_core.mdx)). One algorithm's
+output becomes the next algorithm's input, with a window function in between:
 
 ```sql
-SELECT * FROM cugraph_spectral_modularity_maximization('target_edges')
+CREATE TABLE kcore30_edges AS
+SELECT src, dst FROM cugraph_k_core('citation_edges', 'src', 'dst', NULL, '{"k": 30}');
+
+CREATE TABLE kcore_vertex_ids AS
+SELECT paper_id, CAST(ROW_NUMBER() OVER (ORDER BY paper_id) AS INT) AS vid
+FROM (SELECT src AS paper_id FROM kcore30_edges UNION SELECT dst FROM kcore30_edges);
+
+CREATE VIEW kcore30_i32 AS
+SELECT a.vid AS src, b.vid AS dst
+FROM kcore30_edges e
+JOIN kcore_vertex_ids a ON a.paper_id = e.src
+JOIN kcore_vertex_ids b ON b.paper_id = e.dst;
+
+WITH labeled AS (
+  SELECT s."partition" AS cluster, p.primary_fos
+  FROM cugraph_spectral_modularity_maximization('kcore30_i32', 'src', 'dst', NULL,
+    '{"n_clusters": 6, "n_eigenvectors": 6,
+      "evs_tolerance": 0.00001, "evs_max_iterations": 2000,
+      "k_means_max_iterations": 1000}') s
+  JOIN kcore_vertex_ids v ON v.vid = s.vertex
+  JOIN papers p ON p.paper_id = v.paper_id),
+counts AS (
+  SELECT cluster, primary_fos, COUNT(*) AS n FROM labeled GROUP BY 1, 2),
+ranked AS (
+  SELECT cluster, primary_fos, n,
+         SUM(n) OVER (PARTITION BY cluster) AS members,
+         ROW_NUMBER() OVER (PARTITION BY cluster ORDER BY n DESC) AS rn
+  FROM counts)
+SELECT cluster, members, primary_fos, n
+FROM ranked WHERE rn <= 2
+ORDER BY members DESC, rn;
 ```
 
-Use the same shape with your registered edge table or view; configure algorithm and graph options through `options_json` as described above.
+| cluster | members | primary_fos | n |
+|---|---|---|---|
+| 0 | 28,994 | Convolutional neural network | 1,112 |
+| 0 | 28,994 | Object detection | 912 |
+| 4 | 2,298 | Probabilistic encryption | 115 |
+| 4 | 2,298 | Encryption | 113 |
+| 2 | 1,089 | Fuzzy logic | 159 |
+| 2 | 1,089 | Group decision-making | 122 |
+| 5 | 787 | Dominance-based rough set approach | 168 |
+| 5 | 787 | Rough set | 160 |
+| 3 | 142 | Feature selection | 8 |
+| 3 | 142 | Software metric | 8 |
+| 1 | 79 | Recursive least squares filter | 11 |
+| 1 | 79 | Iterative method | 8 |
+
+The spectral embedding keeps the deep-learning/vision nucleus in one 28,994-
+paper cluster and peels off coherent satellite literatures: a cryptography
+cluster, a fuzzy-logic/decision-making cluster, and a rough-set-theory cluster.
+That shape is characteristic of this algorithm on scale-free graphs — it will
+not carve a power-law nucleus into equal parts (asking Louvain or
+[Leiden](../algorithms/community/cugraph_leiden.mdx) does that better); what it
+answers is "which satellite communities are spectrally separable from the
+core, given exactly `n_clusters` slots". The tight `evs_tolerance` matters;
+the loose default stops the eigensolver early and the satellites smear into
+the nucleus. Cluster ids are arbitrary and k-means may move a few boundary
+papers between runs — snapshot with `CREATE TABLE ... AS` per the
+[demo dataset guide](../demo-dataset.mdx) before building on the labels.

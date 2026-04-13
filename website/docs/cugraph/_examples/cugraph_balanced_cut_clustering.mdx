@@ -1,10 +1,75 @@
 {/* Hand-owned examples for cugraph_balanced_cut_clustering. NOT generated — safe to edit. */}
-{/* Add dataset-specific runnable examples here against your own tables. */}
 
-Canonical call shape using `target_edges` as the edge table:
+This example needs no dataset at all: the graph is generated in SQL. Balanced
+cut is a mesh-partitioning algorithm — given a planar, grid-like graph it
+answers "split this into `n_clusters` near-equal shards while cutting as few
+edges as possible". Scale-free graphs like the
+[citation network](../demo-dataset.mdx) are the wrong shape for it (spectral
+bisection shears off tiny whiskers instead of balancing), so the example
+builds the textbook input: a 200×200 grid.
+
+### Shard a mesh into balanced tiles
+
+`generate_series` and a cross join materialize the 40,000-vertex, 79,600-edge
+mesh; vertex id `x * 200 + y` stays within the Int32 range the legacy
+implementation requires. The tight `evs_tolerance` matters — with the loose
+default the eigensolver stops early and the tiles come out interleaved rather
+than spatial:
 
 ```sql
-SELECT * FROM cugraph_balanced_cut_clustering('target_edges')
+CREATE TABLE mesh_edges AS
+WITH ax(x) AS (SELECT * FROM unnest(generate_series(0, 199))),
+cells AS (SELECT a.x AS x, b.x AS y FROM ax a CROSS JOIN ax b)
+SELECT CAST(x * 200 + y AS INT) AS src, CAST((x + 1) * 200 + y AS INT) AS dst
+FROM cells WHERE x < 199
+UNION ALL
+SELECT CAST(x * 200 + y AS INT), CAST(x * 200 + y + 1 AS INT)
+FROM cells WHERE y < 199;
+
+WITH tiles AS (
+  SELECT vertex, "partition" AS tile
+  FROM cugraph_balanced_cut_clustering('mesh_edges', 'src', 'dst', NULL,
+    '{"n_clusters": 4, "n_eigenvectors": 4,
+      "evs_tolerance": 0.00001, "evs_max_iterations": 2000,
+      "k_means_max_iterations": 1000}'))
+SELECT tile, COUNT(*) AS vertices,
+       CAST(AVG(vertex / 200) AS INT) AS center_x,
+       CAST(AVG(vertex % 200) AS INT) AS center_y
+FROM tiles
+GROUP BY tile
+ORDER BY vertices DESC;
 ```
 
-Use the same shape with your registered edge table or view; configure algorithm and graph options through `options_json` as described above.
+| tile | vertices | center_x | center_y |
+|---|---|---|---|
+| 2 | 10,881 | 50 | 144 |
+| 0 | 10,262 | 149 | 148 |
+| 3 | 9,796 | 148 | 48 |
+| 1 | 9,061 | 48 | 44 |
+
+The four tile centroids land at the four quadrant centers of the grid — the
+partition is both balanced (23–27% of vertices each) and spatially coherent.
+SQL can also score the cut itself: re-joining the assignment onto the edge
+table counts 419 of 79,600 edges crossing tiles (0.53%), just above the
+400-edge baseline of two straight axis-aligned quadrant cuts.
+
+```sql
+WITH tiles AS (
+  SELECT vertex, "partition" AS tile
+  FROM cugraph_balanced_cut_clustering('mesh_edges', 'src', 'dst', NULL,
+    '{"n_clusters": 4, "n_eigenvectors": 4,
+      "evs_tolerance": 0.00001, "evs_max_iterations": 2000,
+      "k_means_max_iterations": 1000}'))
+SELECT SUM(CASE WHEN s.tile <> d.tile THEN 1 ELSE 0 END) AS edges_cut,
+       ROUND(SUM(CASE WHEN s.tile <> d.tile THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS cut_pct
+FROM mesh_edges e
+JOIN tiles s ON s.vertex = e.src
+JOIN tiles d ON d.vertex = e.dst;
+```
+
+Tile ids are arbitrary and k-means can move a few boundary vertices between
+runs; snapshot the assignment with `CREATE TABLE ... AS` when a stable
+partition matters. For community detection on real-world power-law graphs,
+reach for [Leiden](../algorithms/community/cugraph_leiden.mdx) or
+[spectral modularity maximization](../algorithms/community/cugraph_spectral_modularity_maximization.mdx)
+instead.

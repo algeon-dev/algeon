@@ -1,10 +1,62 @@
 {/* Hand-owned examples for cugraph_eigenvector_centrality. NOT generated — safe to edit. */}
-{/* Add dataset-specific runnable examples here against your own tables. */}
 
-Canonical call shape using `target_edges` as the edge table:
+These examples run on the [citation network demo dataset](../demo-dataset.mdx).
+
+### The recursive core of the literature
+
+Eigenvector centrality has no damping and no teleport: a paper scores highly
+only if the papers citing it score highly themselves. On 45.6M citation edges
+the fixed point concentrates all mass in the most self-reinforcing corner of
+the graph — the 1970s theory and databases canon:
 
 ```sql
-SELECT * FROM cugraph_eigenvector_centrality('target_edges')
+SELECT p.title, p.year, ROUND(e.value, 3) AS eigenvector
+FROM cugraph_eigenvector_centrality('citation_edges', 'src', 'dst') e
+JOIN papers p ON p.paper_id = e.vertex
+ORDER BY e.value DESC
+LIMIT 6;
 ```
 
-Use the same shape with your registered edge table or view; configure algorithm and graph options through `options_json` as described above.
+| title | year | eigenvector |
+|---|---|---|
+| A relational model of data for large shared data banks | 1970 | 0.351 |
+| The Design and Analysis of Computer Algorithms | 1974 | 0.244 |
+| The complexity of theorem-proving procedures | 1971 | 0.171 |
+| Further Normalization of the Data Base Relational Model | 1972 | 0.153 |
+| New Directions in Cryptography | 1976 | 0.146 |
+| Reducibility Among Combinatorial Problems | 2010 | 0.129 |
+
+The relational data model, the classic algorithms textbook, the founding
+NP-completeness results, and the paper that introduced public-key cryptography
+(the 2010 year on the last row is a reprint edition in the corpus). Compare
+with the [PageRank example](../algorithms/centrality/cugraph_pagerank.mdx),
+whose damping spreads importance much further out.
+
+### Quantify the winner-take-all behavior
+
+Both functions return plain relations, so one statement can measure how much
+more concentrated eigenvector mass is than PageRank mass — here, the top 100
+of 4.1M scored papers hold 10.7% of all eigenvector centrality but only 2.8%
+of all PageRank:
+
+```sql
+WITH eig AS (
+  SELECT value, ROW_NUMBER() OVER (ORDER BY value DESC) AS rn
+  FROM cugraph_eigenvector_centrality('citation_edges', 'src', 'dst')),
+pr AS (
+  SELECT value, ROW_NUMBER() OVER (ORDER BY value DESC) AS rn
+  FROM cugraph_pagerank('citation_edges', 'src', 'dst'))
+SELECT
+  ROUND(100.0 * (SELECT SUM(value) FROM eig WHERE rn <= 100)
+              / (SELECT SUM(value) FROM eig), 1) AS eigenvector_top100_pct,
+  ROUND(100.0 * (SELECT SUM(value) FROM pr  WHERE rn <= 100)
+              / (SELECT SUM(value) FROM pr), 1)  AS pagerank_top100_pct;
+```
+
+| eigenvector_top100_pct | pagerank_top100_pct |
+|---|---|
+| 10.7 | 2.8 |
+
+If a ranking should reward being cited by the canon, this concentration is the
+point; if it should surface important work across eras and fields, prefer
+PageRank or [Katz](../algorithms/centrality/cugraph_katz_centrality.mdx).

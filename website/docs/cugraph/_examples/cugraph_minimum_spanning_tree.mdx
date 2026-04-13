@@ -1,10 +1,78 @@
 {/* Hand-owned examples for cugraph_minimum_spanning_tree. NOT generated — safe to edit. */}
-{/* Add dataset-specific runnable examples here against your own tables. */}
 
-Canonical call shape using `target_edges` as the edge table:
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### The backbone with the least time travel
+
+An MST needs a weight worth minimizing, and SQL can derive one: weight each
+citation by the **year gap** between the two papers, and the minimum spanning
+tree becomes the backbone that keeps every paper connected through the most
+era-local links available. The graph is the AI literature across all years
+(same ten field-of-study labels as the Louvain example, no year filter);
+`cugraph_minimum_spanning_tree` needs Int32 vertex ids, so the
+[renumbering pattern](../demo-dataset.mdx#int32-renumbering-for-the-legacy-algorithms)
+from the demo-dataset page applies:
 
 ```sql
-SELECT * FROM cugraph_minimum_spanning_tree('target_edges', 'src', 'dst', 'weight')
+CREATE VIEW ai_all_nodes AS
+SELECT paper_id, year FROM papers
+WHERE year BETWEEN 1900 AND 2020 AND primary_fos IN (
+  'Deep learning', 'Artificial neural network', 'Convolutional neural network',
+  'Recurrent neural network', 'Natural language processing',
+  'Reinforcement learning', 'Image segmentation', 'Feature extraction',
+  'Object detection', 'Speech recognition');
+
+CREATE TABLE ai_era_vertex_ids AS
+SELECT paper_id, CAST(ROW_NUMBER() OVER (ORDER BY paper_id) AS INT) AS vid
+FROM (SELECT e.src AS paper_id FROM citation_edges e
+      JOIN ai_all_nodes a ON a.paper_id = e.src
+      JOIN ai_all_nodes b ON b.paper_id = e.dst
+      UNION
+      SELECT e.dst FROM citation_edges e
+      JOIN ai_all_nodes a ON a.paper_id = e.src
+      JOIN ai_all_nodes b ON b.paper_id = e.dst);
+
+CREATE VIEW ai_era_edges AS
+SELECT va.vid AS src, vb.vid AS dst, CAST(ABS(a.year - b.year) AS DOUBLE) AS year_gap
+FROM citation_edges e
+JOIN ai_all_nodes a ON a.paper_id = e.src
+JOIN ai_all_nodes b ON b.paper_id = e.dst
+JOIN ai_era_vertex_ids va ON va.paper_id = e.src
+JOIN ai_era_vertex_ids vb ON vb.paper_id = e.dst;
 ```
 
-Use the same shape with your registered edge table or view; configure algorithm and graph options through `options_json` as described above.
+The interesting rows are the links the tree could **not** avoid: the largest
+year gaps that survive minimization are places where a modern paper's only
+connection to the rest of the field runs through a decades-older one.
+
+```sql
+SELECT pa.year AS year_a, substr(pa.title, 1, 38) AS paper_a,
+       pb.year AS year_b, substr(pb.title, 1, 38) AS paper_b,
+       ABS(pa.year - pb.year) AS gap
+FROM cugraph_minimum_spanning_tree('ai_era_edges', 'src', 'dst', 'year_gap') m
+JOIN ai_era_vertex_ids va ON va.vid = m.src
+JOIN ai_era_vertex_ids vb ON vb.vid = m.dst
+JOIN papers pa ON pa.paper_id = va.paper_id
+JOIN papers pb ON pb.paper_id = vb.paper_id
+WHERE m.src < m.dst
+ORDER BY gap DESC, year_a
+LIMIT 5;
+```
+
+| year_a | paper_a | year_b | paper_b | gap |
+|---|---|---|---|---|
+| 1972 | Results Obtained Using a Simple Charac | 2019 | Comparison of Feature Extraction Techn | 47 |
+| 2015 | A two-level classifier for automatic m | 1973 | The Analysis of Radiographic Images | 42 |
+| 1978 | Image Segmentation and Feature Extract | 2018 | Texture description using multi-scale | 40 |
+| 2015 | A survey of fingerprint classification | 1976 | Feature extraction for fingerprint cla | 39 |
+| 1982 | On the Difficulties Involved in the Se | 2018 | An Accurate Modeling Technology Based | 36 |
+
+Character recognition, radiographic imaging, and fingerprint classification:
+half-century-old pattern-recognition work is still the shortest bridge between
+some modern niches and everything else. Overall the 204,472-edge input reduces
+to 49,263 backbone links over 50,300 connected papers (a forest of ~1,000
+similarity families; the output is symmetrized, which `m.src < m.dst`
+de-duplicates), and minimization pulls the average year gap from 3.9 down to
+2.5 years. The MST output carries only `src`/`dst`, so every attribute in the
+result — years, titles, the gap itself — comes from joining SQL tables back
+onto the tree.
