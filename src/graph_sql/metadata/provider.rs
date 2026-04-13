@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{ArrayRef, BooleanArray, Int64Array, StringArray},
+    array::{ArrayRef, BooleanArray, StringArray},
     datatypes::{DataType, Field, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
@@ -15,10 +15,8 @@ use datafusion::{
 
 use super::{
     super::{
-        CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION,
-        CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, CUGRAPH_OPERATION_REGISTRY,
-        CUGRAPH_VALIDATE_CALL_FUNCTION, CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, CugraphAlgorithm, CugraphSqlConfig,
-        literal_string_arg, plan_error,
+        CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
+        CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphSqlConfig, literal_string_arg, plan_error,
     },
     algorithm_for_metadata_name,
     descriptions::{
@@ -177,9 +175,7 @@ impl TableProvider for CugraphMetadataProvider {
 }
 
 pub(super) fn list_schema() -> SchemaRef {
-    let mut fields = compact_algorithm_fields();
-    fields.push(Field::new("metadata_schema_version", DataType::Int64, false));
-    Arc::new(Schema::new(fields))
+    Arc::new(Schema::new(compact_algorithm_fields()))
 }
 
 fn compact_algorithm_fields() -> Vec<Field> {
@@ -212,7 +208,6 @@ fn compact_describe_schema() -> SchemaRef {
         Field::new("allowed_arg_counts_json", DataType::Utf8, false),
         Field::new("summary", DataType::Utf8, false),
         Field::new("primary_example_sql", DataType::Utf8, false),
-        Field::new("metadata_schema_version", DataType::Int64, false),
     ]))
 }
 
@@ -233,7 +228,6 @@ fn verbose_describe_schema() -> SchemaRef {
         Field::new("result_field_descriptions_json", DataType::Utf8, false),
         Field::new("limitations_json", DataType::Utf8, false),
         Field::new("examples_json", DataType::Utf8, false),
-        Field::new("metadata_schema_version", DataType::Int64, false),
     ]))
 }
 
@@ -243,7 +237,6 @@ pub(super) fn validate_schema() -> SchemaRef {
         Field::new("error_code", DataType::Utf8, true),
         Field::new("message", DataType::Utf8, false),
         Field::new("function_name", DataType::Utf8, false),
-        Field::new("algorithm_enabled", DataType::Boolean, false),
         Field::new("table_resolved", DataType::Boolean, false),
         Field::new("src_col_resolved", DataType::Boolean, false),
         Field::new("dst_col_resolved", DataType::Boolean, false),
@@ -254,7 +247,6 @@ pub(super) fn validate_schema() -> SchemaRef {
         Field::new("output_schema_json", DataType::Utf8, false),
         Field::new("normalized_options_json", DataType::Utf8, false),
         Field::new("would_execute_gpu", DataType::Boolean, false),
-        Field::new("metadata_schema_version", DataType::Int64, false),
     ]))
 }
 
@@ -272,7 +264,6 @@ fn list_batch(config: &CugraphSqlConfig) -> Result<RecordBatch> {
             strings(rows.iter().map(|row| row.signature.clone()).collect()),
             strings(rows.iter().map(|row| row.allowed_arg_counts_json.clone()).collect()),
             strings(rows.iter().map(|row| row.summary.clone()).collect()),
-            int64s(vec![i64::from(CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION); rows.len()]),
         ],
     )
     .map_err(Into::into)
@@ -295,7 +286,6 @@ fn describe_batch(function_name: &str, config: &CugraphSqlConfig, verbosity: Des
                 strings(vec![row.allowed_arg_counts_json]),
                 strings(vec![row.summary]),
                 strings(vec![row.primary_example_sql]),
-                int64s(vec![i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION)]),
             ],
         )
         .map_err(Into::into),
@@ -317,7 +307,6 @@ fn describe_batch(function_name: &str, config: &CugraphSqlConfig, verbosity: Des
                 strings(vec![result_field_descriptions_json(algorithm)]),
                 strings(vec![limitations_json(algorithm)]),
                 strings(vec![examples_json(algorithm)]),
-                int64s(vec![i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION)]),
             ],
         )
         .map_err(Into::into),
@@ -339,7 +328,6 @@ async fn validate_batch(
             opt_strings(vec![row.error_code]),
             strings(vec![row.message]),
             strings(vec![row.function_name]),
-            bools(vec![row.algorithm_enabled]),
             bools(vec![row.table_resolved]),
             bools(vec![row.src_col_resolved]),
             bools(vec![row.dst_col_resolved]),
@@ -350,7 +338,6 @@ async fn validate_batch(
             strings(vec![row.output_schema_json]),
             strings(vec![row.normalized_options_json]),
             bools(vec![row.would_execute_gpu]),
-            int64s(vec![i64::from(CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION)]),
         ],
     )
     .map_err(Into::into)
@@ -460,8 +447,4 @@ fn opt_strings(values: Vec<Option<String>>) -> ArrayRef {
 
 fn bools(values: Vec<bool>) -> ArrayRef {
     Arc::new(BooleanArray::from(values))
-}
-
-fn int64s(values: Vec<i64>) -> ArrayRef {
-    Arc::new(Int64Array::from(values))
 }

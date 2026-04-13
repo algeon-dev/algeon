@@ -512,10 +512,8 @@ fn client_datafusion_error_message(error: &DataFusionError) -> String {
 ///   out, so the function was never registered. Point operators at rebuilding
 ///   with the feature.
 /// - Built *with* the `cugraph` feature: the code is present but registration is
-///   gated on `NEXUS_SERVER_CUGRAPH_ENABLED=true` (and the optional
-///   `NEXUS_SERVER_CUGRAPH_ALGORITHMS` allowlist). A not-found here
-///   means the runtime toggle is off or the function was excluded, not a build
-///   problem — point operators at the env vars instead.
+///   gated on `NEXUS_SERVER_CUGRAPH_ENABLED=true`. A not-found here means the
+///   runtime toggle is off, not a build problem.
 #[cfg(not(feature = "cugraph"))]
 fn maybe_append_cugraph_feature_hint(message: String) -> String {
     if is_cugraph_table_function_not_found(&message) {
@@ -534,8 +532,7 @@ fn maybe_append_cugraph_feature_hint(message: String) -> String {
     if is_cugraph_table_function_not_found(&message) {
         format!(
             "{message}; this build includes the `cugraph` feature but cuGraph SQL functions are \
-             not registered - set NEXUS_SERVER_CUGRAPH_ENABLED=true (and ensure the \
-             function is not excluded by NEXUS_SERVER_CUGRAPH_ALGORITHMS) to enable them"
+             not registered - set NEXUS_SERVER_CUGRAPH_ENABLED=true to enable them"
         )
     } else {
         message

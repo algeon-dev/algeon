@@ -150,9 +150,8 @@ guarantees, and the layered memory stack — is specified in
 ## cuGraph SQL functions
 
 `CugraphSqlConfig::default()` registers every supported `cugraph_*` function.
-Use `CugraphSqlConfig::default().with_allowed_algorithms([...])` to narrow the
-SQL-visible graph surface for a service. On a backend-managed session, call
-`with_cugraph_sql` **after** `install_on` (as shown above) or use
+On a backend-managed session, call `with_cugraph_sql` **after** `install_on` (as
+shown above) or use
 `backend.install_on_with_cugraph_sql(builder, config)`: a cuGraph config
 without its own admission authority automatically inherits the backend's, so
 graph execution shares the backend admission owner. Installing cuGraph on the

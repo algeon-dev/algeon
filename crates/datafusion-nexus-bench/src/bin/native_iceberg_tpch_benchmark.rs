@@ -25,7 +25,6 @@ use tokio::process::Command;
 
 type BenchmarkResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
 
-const REPORT_SCHEMA_VERSION: u32 = 7;
 const REPORT_HEADER: &str = "query_id\titeration\tfixture_mode\tcatalog_type\ttable_ident\ttpch_scale_factor\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_bytes\tadmitted_native_source_file_count\tnative_source_read_capability\tsource_read_strategy\tsource_decode_input\tcredential_mode\tlakehouse_cache_status\tlakehouse_cache_read_mode\tlakehouse_cache_fill_mode\tsource_fallback_reason\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\tnative_source_read_runtime_rows\tlakehouse_cache_fill_event_snapshot_rows\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcomparison_mode\tparity_status\tparity_detail\ttimeout_category\tnative_output_fingerprint\tcpu_output_fingerprint\treport_elapsed_ms\twarmup_iterations\tmeasured_iterations\tcredential_source";
 const REPORT_COLUMNS: &[&str] = &[
     "query_id",
@@ -803,7 +802,7 @@ impl IcebergTpchBenchmarkReport {
     pub(crate) fn to_tsv(&self) -> String {
         let rows = self.rows.iter().map(IcebergTpchBenchmarkRow::to_tsv_row).collect::<Vec<_>>().join("\n");
         debug_assert_eq!(REPORT_COLUMNS.join("\t"), REPORT_HEADER);
-        format!("# native_iceberg_tpch_benchmark_tsv_schema_version={REPORT_SCHEMA_VERSION}\n{REPORT_HEADER}\n{rows}\n")
+        format!("{REPORT_HEADER}\n{rows}\n")
     }
 
     fn timeout_failure_message(&self) -> Option<String> {
@@ -819,7 +818,6 @@ impl IcebergTpchBenchmarkReport {
 }
 
 pub(crate) fn write_benchmark_tsv_header(writer: &mut impl Write) -> io::Result<()> {
-    writeln!(writer, "# native_iceberg_tpch_benchmark_tsv_schema_version={REPORT_SCHEMA_VERSION}")?;
     debug_assert_eq!(REPORT_COLUMNS.join("\t"), REPORT_HEADER);
     writeln!(writer, "{REPORT_HEADER}")?;
     writer.flush()
@@ -1142,7 +1140,6 @@ mod tests {
 
     #[test]
     fn report_header_matches_columns() {
-        assert_eq!(REPORT_SCHEMA_VERSION, 7);
         assert_eq!(REPORT_COLUMNS.first(), Some(&"query_id"));
         assert_eq!(REPORT_COLUMNS.last(), Some(&"credential_source"));
         assert_eq!(REPORT_COLUMNS.join("\t"), REPORT_HEADER);

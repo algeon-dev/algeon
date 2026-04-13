@@ -19,7 +19,6 @@ use datafusion_nexus_bench::{
     register_tpch_table_layout,
 };
 
-const TSV_SCHEMA_VERSION: u32 = 1;
 const TSV_COLUMNS: &[&str] =
     &["query_id", "cpu_wall_ms", "output_batches", "output_rows", "output_bytes", "output_fingerprint", "failure"];
 
@@ -167,7 +166,6 @@ fn workload_error(error: TpchWorkloadError) -> datafusion::common::DataFusionErr
 }
 
 fn print_metadata(metadata: &TpchDatasetMetadata, config: &CpuTpchConfig) {
-    println!("# cpu_tpch_profile_sweep_tsv_schema_version={TSV_SCHEMA_VERSION}");
     println!("# tpch_dataset_root={}", metadata.root.display());
     println!("# tpch_dataset_scale_factor={}", metadata.scale_factor);
     println!("# tpch_dataset_provenance={}", metadata.provenance);
@@ -324,7 +322,6 @@ mod tests {
             output_bytes: 4,
             output_fingerprint: "finger\tprint".to_string(),
         };
-        assert_eq!(TSV_SCHEMA_VERSION, 1);
         assert_eq!(TSV_COLUMNS.first(), Some(&"query_id"));
         assert_eq!(TSV_COLUMNS.last(), Some(&"failure"));
         assert_eq!(row.to_tsv("q01").split('\t').count(), TSV_COLUMNS.len());

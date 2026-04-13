@@ -28,7 +28,6 @@ use nexus_query_engine::{
 };
 use tokio::sync::Barrier;
 
-const TSV_SCHEMA_VERSION: u32 = 2;
 const TSV_COLUMNS: &[&str] = &[
     "row_type",
     "request_index",
@@ -323,7 +322,6 @@ struct StressReport {
 impl StressReport {
     fn to_tsv(&self) -> String {
         let mut output = String::new();
-        output.push_str(&format!("# query_service_tpch_stress_tsv_schema_version={TSV_SCHEMA_VERSION}\n"));
         output.push_str(&format!("# dataset_root={}\n", self.config.dataset_root.display()));
         output.push_str(&format!("# dataset_metadata_fingerprint={}\n", self.dataset.metadata_fingerprint));
         output.push_str(&format!("# device_capacity_bytes={}\n", self.config.device_capacity_bytes));
@@ -1039,7 +1037,6 @@ mod tests {
 
     #[test]
     fn stress_tsv_row_contract_matches_columns() {
-        assert_eq!(TSV_SCHEMA_VERSION, 2);
         assert_eq!(TSV_COLUMNS.first(), Some(&"row_type"));
         assert_eq!(TSV_COLUMNS.last(), Some(&"error_message"));
         let row = StressRow {

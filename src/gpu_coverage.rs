@@ -46,14 +46,8 @@ use crate::{
     session::{CudfSessionStateBuilderExt, installed_cudf_native_optimizer_config},
 };
 
-/// JSON schema identifier emitted by [`QueryGpuCoverage::to_json`].
-pub const QUERY_GPU_COVERAGE_JSON_SCHEMA: &str = "datafusion_nexus.query_gpu_coverage.v1";
-/// Schema version for the query GPU coverage JSON contract.
-pub const QUERY_GPU_COVERAGE_SCHEMA_VERSION: u32 = 1;
 /// SQL table function that exposes query GPU coverage validation.
 pub const NEXUS_EXPLAIN_COVERAGE_FUNCTION: &str = "nexus_explain_coverage";
-/// Schema version for the [`NEXUS_EXPLAIN_COVERAGE_FUNCTION`] SQL row contract.
-pub const NEXUS_EXPLAIN_COVERAGE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const COVERAGE_VALIDATOR_RECURSION_REASON_CODE: &str = "coverage_validator_recursion_unsupported";
 pub(crate) const GPU_COVERAGE_REJECTION_REASON_FACT: &str = "gpu_coverage_rejection_reason";
 
@@ -233,11 +227,9 @@ impl QueryGpuCoverage {
         }
     }
 
-    /// Serialize the verdict to the stable v1 JSON shape.
+    /// Serialize the verdict to a structured JSON shape.
     pub fn to_json(&self) -> Value {
         json!({
-            "schema": QUERY_GPU_COVERAGE_JSON_SCHEMA,
-            "schema_version": QUERY_GPU_COVERAGE_SCHEMA_VERSION,
             "overall": self.overall.to_json(),
             "domains": self.domains.to_json(),
             "fallback_reasons": self.fallback_reasons.iter().map(QueryGpuFallbackReason::to_json).collect::<Vec<_>>(),

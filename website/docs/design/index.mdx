@@ -297,9 +297,9 @@ Use this page as the routing table before changing behavior:
 | --- | --- | --- |
 | Native rewrite coverage | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | `PlanningReport`, `FallbackReason`, rule names |
 | Native execution semantics | `crates/nexus-query-engine/src/exec/`, `capability/`, `pipeline/` | Strict/adaptive separation and reservation evidence |
-| cuGraph SQL behavior | `src/graph_sql/types.rs`, `parser.rs`, `metadata/`, `exec.rs`, engine `exec/graph_algorithm/` | Metadata schema versions and validation output |
+| cuGraph SQL behavior | `src/graph_sql/types.rs`, `parser.rs`, `metadata/`, `exec.rs`, engine `exec/graph_algorithm/` | Metadata column order and validation output |
 | Iceberg/source behavior | `src/table_format/`, `src/table_format/iceberg/`, server workspace configuration | Source diagnostics and credential-safe error facts |
-| Public diagnostics | `src/native_report/schema.rs`, `src/native_exec/metrics.rs`, `src/error.rs` | TSV headers, schema versions, metric names, `ErrorCode`s |
+| Public diagnostics | `src/native_report/schema.rs`, `src/native_exec/metrics.rs`, `src/error.rs` | TSV headers, metric names, `ErrorCode`s |
 
 ## Authoritative references
 

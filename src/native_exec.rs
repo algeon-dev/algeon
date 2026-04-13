@@ -25,14 +25,13 @@ pub(crate) use self::metrics::NativeCudfMetrics;
 pub(crate) use self::metrics::{NativeMetricsCapture, NativeMetricsCaptureSink};
 #[cfg(feature = "cugraph")]
 pub(crate) use self::producer::{GpuResidentProducerExec, gpu_resident_producer};
+#[cfg(feature = "server")]
+pub(crate) use self::unbounded_native::UnboundedNativeExecutionLimiter;
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
     fallback::{CpuFallbackStatementLimiter, plan_is_cpu_fallback_limited, wrap_plan_with_cpu_fallback_limit},
     producer::gpu_resident_producer_input_name,
-    unbounded_native::{
-        UnboundedNativeExecutionLimiter, plan_is_unbounded_native_execution_limited,
-        wrap_plan_with_unbounded_native_execution_limit,
-    },
+    unbounded_native::{plan_is_unbounded_native_execution_limited, wrap_plan_with_unbounded_native_execution_limit},
 };
 pub use self::{
     composed::NativeCudfComposedExec, config::NativeCudfExecutionConfig, host::NativeCudfExec,

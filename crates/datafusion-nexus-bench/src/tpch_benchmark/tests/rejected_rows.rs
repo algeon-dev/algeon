@@ -26,9 +26,7 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
         NativeTpchBenchmarkReport { metadata, config, rows: vec![NativeTpchBenchmarkRow::rejected("q02", planning)] };
 
     let text = report.to_tsv();
-    assert!(text.starts_with(&format!(
-        "# native_tpch_benchmark_tsv_schema_version={NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION}\n"
-    )));
+    assert!(text.starts_with("# tpch_dataset_root=/tmp/tpch\n"));
     assert!(text.contains(&format!("{NATIVE_TPCH_BENCHMARK_TSV_HEADER}\n")));
     assert!(text.contains("# tpch_dataset_scale_factor=sf1\n"));
     assert!(text.contains("# tpch_benchmark_query_ids=q02\n"));

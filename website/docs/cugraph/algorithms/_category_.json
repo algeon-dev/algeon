@@ -2,7 +2,7 @@
   "label": "Algorithms",
   "position": 5,
   "link": {
-    "type": "doc",
-    "id": "cugraph/algorithms/index"
+    "type": "generated-index",
+    "description": "Per-function reference for every cuGraph SQL algorithm, grouped by family."
   }
 }

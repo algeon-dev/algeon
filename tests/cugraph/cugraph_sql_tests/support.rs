@@ -722,10 +722,6 @@ pub(super) fn bool_value(batch: &RecordBatch, column: usize, row: usize) -> bool
     batch.column(column).as_any().downcast_ref::<BooleanArray>().unwrap().value(row)
 }
 
-pub(super) fn int64_value(batch: &RecordBatch, column: usize, row: usize) -> i64 {
-    batch.column(column).as_any().downcast_ref::<Int64Array>().unwrap().value(row)
-}
-
 pub(super) fn is_null_value(batch: &RecordBatch, column: usize, row: usize) -> bool {
     batch.column(column).is_null(row)
 }

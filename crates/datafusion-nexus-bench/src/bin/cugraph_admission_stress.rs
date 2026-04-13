@@ -37,8 +37,6 @@ use datafusion_nexus::{
 };
 use tokio::sync::Barrier;
 
-const SCHEMA_VERSION: u32 = 7;
-
 const ENV_EDGES: &str = "CUDF_CUGRAPH_ADMISSION_EDGES_PARQUET";
 const ENV_PAPERS: &str = "CUDF_CUGRAPH_ADMISSION_PAPERS_PARQUET";
 const ENV_FOS: &str = "CUDF_CUGRAPH_ADMISSION_FOS_PARQUET";
@@ -942,7 +940,6 @@ fn write_outputs(
 ) -> Result<(), Box<dyn Error>> {
     let queries_path = config.out_dir.join("queries.tsv");
     let mut queries_file = fs::File::create(&queries_path)?;
-    writeln!(queries_file, "# cugraph_admission_stress_queries_tsv_schema_version={SCHEMA_VERSION}")?;
     writeln!(queries_file, "{}", QUERY_COLUMNS.join("\t"))?;
     for row in query_rows {
         writeln!(queries_file, "{}", row.to_tsv())?;
@@ -950,7 +947,6 @@ fn write_outputs(
 
     let samples_path = config.out_dir.join("samples.tsv");
     let mut samples_file = fs::File::create(&samples_path)?;
-    writeln!(samples_file, "# cugraph_admission_stress_samples_tsv_schema_version={SCHEMA_VERSION}")?;
     writeln!(samples_file, "{}", SAMPLE_COLUMNS.join("\t"))?;
     for row in samples {
         writeln!(samples_file, "{}", row.to_tsv())?;
@@ -971,7 +967,6 @@ fn write_outputs(
         }
     }
     let summary = serde_json::json!({
-        "schema_version": SCHEMA_VERSION,
         "run_id": config.run_id,
         "makespan_ms": makespan_ms,
         "config": {

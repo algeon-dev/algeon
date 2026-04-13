@@ -25,7 +25,8 @@ The split:
 ## Build
 
 ```bash
-# 1. Stage the binary + forked libs (compiles, strips, rehomes RUNPATHs).
+# 1. Stage the binary + forked libs (compiles; strips/re-homes RUNPATHs when
+#    host tools are available).
 bash docker/build.sh                          # full: server,iceberg,cugraph
 FEATURES=server,iceberg bash docker/build.sh  # lean: cuDF only, ~3x smaller image
 SKIP_CARGO_BUILD=1 bash docker/build.sh        # reuse an existing target/release build
@@ -51,8 +52,9 @@ mostly via the CUDA math libraries it pulls (`libcublasLt` alone is ~517 MB):
 | **lean** (`server,iceberg`) | ~180 MB | ~110 MB (cudart + nvrtc) | **~0.6 GB** |
 | **full** (`+cugraph`) | ~480 MB | ~1.2 GB (+ cublasLt/cusparse/cusolver/curand/nvJitLink) | **~2 GB** |
 
-All artifacts are stripped (`strip --strip-unneeded`, ~35–40% off). Set
-`NO_STRIP=1` to keep symbols for debugging.
+When `strip` is available, staged artifacts are stripped
+(`strip --strip-unneeded`, ~35–40% off). Set `NO_STRIP=1` to keep symbols for
+debugging.
 
 ## GPU architecture & platform support
 
@@ -130,7 +132,8 @@ code-verified env-var reference lives in the Dockerfile header. Highlights:
   `NEXUS_SERVER_NATIVE_*` knobs.
 - Iceberg: `NEXUS_ICEBERG_CATALOG_KIND` (`glue`|`rest`) + `NEXUS_ICEBERG_*`,
   `AWS_DEFAULT_REGION` (**required** for KvikIO S3).
-- cuGraph: `NEXUS_SERVER_CUGRAPH_ENABLED=true` (no effect on a lean image).
+- cuGraph: `NEXUS_SERVER_CUGRAPH_ENABLED=true` requires an image built with
+  `cugraph`; set it to `false` for a lean image.
 
 Startup is **eager**: the server initializes CUDA/RMM before binding, so a
 missing or incompatible GPU fails fast. Readiness is signalled by the log line

@@ -140,10 +140,8 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 # NEXUS_SERVER_CUGRAPH_ENABLED
 #   true exposes the cugraph_* table functions plus metadata UDTFs. The image
 #   must be built with cugraph support; set false to ship one artifact but keep
-#   the SQL surface hidden at runtime.
-#
-# NEXUS_SERVER_CUGRAPH_ALGORITHMS
-#   Optional allowlist by SQL function name, e.g. cugraph_pagerank,cugraph_bfs.
+#   the SQL surface hidden at runtime. A lean image built without the cugraph
+#   feature must use false.
 #
 # NEXUS_SERVER_CUGRAPH_DIRECTED
 # NEXUS_SERVER_CUGRAPH_RENUMBER
@@ -152,7 +150,6 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 #   python_cugraph | raw_libcugraph
 # ---------------------------------------------------------------------------
 CUGRAPH_ENABLED="${NEXUS_SERVER_CUGRAPH_ENABLED:-true}"
-CUGRAPH_ALGORITHMS="${NEXUS_SERVER_CUGRAPH_ALGORITHMS:-}"
 CUGRAPH_DIRECTED="${NEXUS_SERVER_CUGRAPH_DIRECTED:-}"
 CUGRAPH_RENUMBER="${NEXUS_SERVER_CUGRAPH_RENUMBER:-}"
 CUGRAPH_CONSTRUCTION_POLICY="${NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY:-}"
@@ -218,7 +215,6 @@ fi
 [[ -n "${ICEBERG_S3_SESSION_TOKEN}" ]] && ARGS+=(-e "NEXUS_ICEBERG_S3_SESSION_TOKEN=${ICEBERG_S3_SESSION_TOKEN}")
 
 # Optional cuGraph defaults.
-[[ -n "${CUGRAPH_ALGORITHMS}" ]] && ARGS+=(-e "NEXUS_SERVER_CUGRAPH_ALGORITHMS=${CUGRAPH_ALGORITHMS}")
 [[ -n "${CUGRAPH_DIRECTED}" ]] && ARGS+=(-e "NEXUS_SERVER_CUGRAPH_DIRECTED=${CUGRAPH_DIRECTED}")
 [[ -n "${CUGRAPH_RENUMBER}" ]] && ARGS+=(-e "NEXUS_SERVER_CUGRAPH_RENUMBER=${CUGRAPH_RENUMBER}")
 [[ -n "${CUGRAPH_CONSTRUCTION_POLICY}" ]] && \

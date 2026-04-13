@@ -18,10 +18,6 @@ pub fn parse_cugraph_algorithm_spec(
     args: &[Expr],
     config: &CugraphSqlConfig,
 ) -> Result<CugraphAlgorithmSpec> {
-    if !config.allows(algorithm) {
-        return Err(plan_error(format!("cuGraph algorithm {:?} is not enabled in this session", algorithm)));
-    }
-
     validate_arity(algorithm, args.len())?;
     let table_name = CugraphTableReference::parse(&literal_string_arg(args, 0, "table_name")?)?;
 

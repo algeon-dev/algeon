@@ -51,8 +51,6 @@ use nexus_query_engine::{
     SEMIJOIN_REDUCTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
 };
 
-const CURRENT_STATE_TSV_SCHEMA_VERSION: u32 = 1;
-
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn Error>> {
     let cfg = TriageConfig::from_env()?;
@@ -620,9 +618,6 @@ fn summarize_retained_planning_tsv(tsv: &str) -> RetainedPlanningSummary {
 
 fn write_current_state_tsv(out_dir: &Path, rows: &[CurrentStateRow]) -> Result<(), Box<dyn Error>> {
     let mut out = String::new();
-    out.push_str(&format!(
-        "# tpcds_strict_bounded_phase0_current_state_schema_version={CURRENT_STATE_TSV_SCHEMA_VERSION}\n"
-    ));
     out.push_str(&CurrentStateRow::COLUMNS.join("\t"));
     out.push('\n');
     for row in rows {
@@ -957,7 +952,6 @@ mod tests {
             post_rule_planning_outcomes: "accepted_replaced".to_string(),
             bundle: "q01".to_string(),
         };
-        assert_eq!(CURRENT_STATE_TSV_SCHEMA_VERSION, 1);
         assert_eq!(CurrentStateRow::COLUMNS.first(), Some(&"query_id"));
         assert_eq!(CurrentStateRow::COLUMNS.last(), Some(&"bundle"));
         assert_eq!(row.to_tsv_line().split('\t').count(), CurrentStateRow::COLUMNS.len());

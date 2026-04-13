@@ -13,14 +13,14 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
+use arrow_flight::sql::client::FlightSqlServiceClient;
 use datafusion_nexus::server::{
-    NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_SESSION_PROFILE_ENV,
-    Result as ServerResult, ServerConfig, serve_with_listener,
+    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_SESSION_PROFILE_ENV, Result as ServerResult, ServerConfig,
+    serve_with_listener,
 };
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-use tonic::{Code, transport::Endpoint};
+use tonic::transport::Endpoint;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
@@ -356,31 +356,6 @@ async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
     assert!(error.contains("predicate_vertices_absent"), "unexpected Flight SQL error: {error}");
     assert!(error.contains("include_vertices"), "Flight SQL error should carry predicate_role: {error}");
     assert!(!error.contains("Found invalid vertex"), "Flight SQL error should be graph-aware: {error}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cugraph_dsl_disallowed_algorithm_rejected_over_flight_sql() {
-    let _guard = server_test_lock().lock().await;
-    let (listener, addr) = free_local_addr();
-    let env = BTreeMap::from([
-        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string()),
-    ]);
-    let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
-    config.bind_addr = addr;
-
-    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
-    let mut client = connect_with_retry(addr).await;
-
-    let error = client.execute("SELECT * FROM cugraph_louvain('g')".to_string(), None).await.unwrap_err();
-
-    server.abort();
-
-    let FlightError::Tonic(status) = error else {
-        panic!("expected tonic status, got {error:?}");
-    };
-    assert_eq!(status.code(), Code::InvalidArgument);
-    assert!(status.message().contains("not enabled in this session"));
 }
 
 /// Warm the process-wide CUDA context exactly once. The first CUDA call pays a

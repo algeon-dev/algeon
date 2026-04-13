@@ -15,9 +15,9 @@ use super::{
         datafusion_table_reference, parse_cugraph_algorithm_spec, validate_vertex_id_domain_support_for_call,
         vertex_id_domain_for_call,
     },
-    ERROR_ALGORITHM_DISABLED, ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_INVALID_CALL_JSON,
-    ERROR_TABLE_NOT_FOUND, ERROR_UNKNOWN_ALGORITHM, ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE,
-    ERROR_UNSUPPORTED_WEIGHT_DTYPE, ERROR_VERTEX_DTYPE_MISMATCH, algorithm_for_metadata_name,
+    ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_INVALID_CALL_JSON, ERROR_TABLE_NOT_FOUND,
+    ERROR_UNKNOWN_ALGORITHM, ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE, ERROR_UNSUPPORTED_WEIGHT_DTYPE,
+    ERROR_VERTEX_DTYPE_MISMATCH, algorithm_for_metadata_name,
     json_schema::{data_type_label, metadata_output_schema_json, normalized_options_json, schema_json},
 };
 
@@ -28,7 +28,6 @@ pub(super) struct ValidationRow {
     pub(super) error_code: Option<String>,
     pub(super) message: String,
     pub(super) function_name: String,
-    pub(super) algorithm_enabled: bool,
     pub(super) table_resolved: bool,
     pub(super) src_col_resolved: bool,
     pub(super) dst_col_resolved: bool,
@@ -48,7 +47,6 @@ impl ValidationRow {
             error_code: Some(code.to_string()),
             message: message.into(),
             function_name: function_name.to_string(),
-            algorithm_enabled: false,
             table_resolved: false,
             src_col_resolved: false,
             dst_col_resolved: false,
@@ -62,8 +60,7 @@ impl ValidationRow {
         }
     }
 
-    fn with_algorithm(mut self, enabled: bool, output_schema_json: String) -> Self {
-        self.algorithm_enabled = enabled;
+    fn with_output_schema(mut self, output_schema_json: String) -> Self {
         self.output_schema_json = output_schema_json;
         self
     }
@@ -85,20 +82,12 @@ pub(super) async fn cugraph_validate_call(
     };
     let canonical_function_name = algorithm.function_name();
     let output_schema_json = metadata_output_schema_json(algorithm);
-    if !config.allows(algorithm) {
-        return ValidationRow::invalid(
-            canonical_function_name,
-            ERROR_ALGORITHM_DISABLED,
-            format!("cuGraph algorithm {algorithm:?} is not enabled in this session"),
-        )
-        .with_algorithm(false, output_schema_json);
-    }
 
     let call = match parse_validate_call_json(algorithm, call_json) {
         Ok(call) => call,
         Err((code, message)) => {
             return ValidationRow::invalid(canonical_function_name, code, message)
-                .with_algorithm(true, output_schema_json);
+                .with_output_schema(output_schema_json);
         },
     };
 
@@ -110,7 +99,7 @@ pub(super) async fn cugraph_validate_call(
                 parse_error_code(&error.to_string()),
                 error.to_string(),
             )
-            .with_algorithm(true, output_schema_json);
+            .with_output_schema(output_schema_json);
         },
     };
     let mut output_schema_json = schema_json(&spec.output_schema);
@@ -120,7 +109,7 @@ pub(super) async fn cugraph_validate_call(
         Ok(provider) => provider,
         Err(message) => {
             return ValidationRow::invalid(canonical_function_name, ERROR_TABLE_NOT_FOUND, message)
-                .with_algorithm(true, output_schema_json);
+                .with_output_schema(output_schema_json);
         },
     };
     let schema = provider.schema();
@@ -163,7 +152,7 @@ pub(super) async fn cugraph_validate_call(
                 ERROR_COLUMN_NOT_FOUND,
                 format!("cuGraph edge source is missing column(s): {}", missing.join(",")),
             )
-            .with_algorithm(true, output_schema_json)
+            .with_output_schema(output_schema_json)
         };
     }
 
@@ -184,7 +173,7 @@ pub(super) async fn cugraph_validate_call(
                     dst_dtype,
                     weight_dtype,
                     ..ValidationRow::invalid(canonical_function_name, vertex_domain_error_code(&message), message)
-                        .with_algorithm(true, output_schema_json)
+                        .with_output_schema(output_schema_json)
                 };
             },
         };
@@ -202,7 +191,7 @@ pub(super) async fn cugraph_validate_call(
             dst_dtype,
             weight_dtype,
             ..ValidationRow::invalid(canonical_function_name, ERROR_UNSUPPORTED_VERTEX_DTYPE, error.to_string())
-                .with_algorithm(true, output_schema_json)
+                .with_output_schema(output_schema_json)
         };
     }
     if let Some(_edge_id_field) = edge_id_field
@@ -221,7 +210,7 @@ pub(super) async fn cugraph_validate_call(
                 ERROR_UNSUPPORTED_OPTION,
                 "cuGraph BFS logical string vertex-id mapping does not yet support edge_id_col",
             )
-            .with_algorithm(true, output_schema_json)
+            .with_output_schema(output_schema_json)
         };
     }
     if let Some(edge_id_field) = edge_id_field
@@ -244,7 +233,7 @@ pub(super) async fn cugraph_validate_call(
                     vertex_domain.label()
                 ),
             )
-            .with_algorithm(true, output_schema_json)
+            .with_output_schema(output_schema_json)
         };
     }
     if let Some(weight_field) = weight
@@ -263,7 +252,7 @@ pub(super) async fn cugraph_validate_call(
                 ERROR_UNSUPPORTED_WEIGHT_DTYPE,
                 format!("cuGraph weight column '{}' has unsupported dtype", spec.weight_col.as_deref().unwrap_or("")),
             )
-            .with_algorithm(true, output_schema_json)
+            .with_output_schema(output_schema_json)
         };
     }
 
@@ -304,7 +293,6 @@ pub(super) async fn cugraph_validate_call(
         error_code: None,
         message: "cuGraph call is statically valid".to_string(),
         function_name: canonical_function_name.to_string(),
-        algorithm_enabled: true,
         table_resolved: true,
         src_col_resolved: true,
         dst_col_resolved: true,
@@ -549,7 +537,7 @@ fn predicate_validation_error(
         src_col_resolved: true,
         dst_col_resolved: true,
         weight_col_resolved: true,
-        ..ValidationRow::invalid(function_name, code, message).with_algorithm(true, output_schema_json.to_string())
+        ..ValidationRow::invalid(function_name, code, message).with_output_schema(output_schema_json.to_string())
     }
 }
 
@@ -670,8 +658,6 @@ fn parse_error_code(message: &str) -> &'static str {
         || message.contains("requires directed=")
     {
         ERROR_UNSUPPORTED_OPTION
-    } else if message.contains("is not enabled in this session") {
-        ERROR_ALGORITHM_DISABLED
     } else {
         ERROR_INVALID_ARGUMENT
     }

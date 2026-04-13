@@ -20,7 +20,7 @@ SELECT * FROM cugraph_list_algorithms();
 
 Columns: `function_name`, `algorithm`, `source_vertex_policy`,
 `weight_col_policy`, `output_schema_kind`, `signature`,
-`allowed_arg_counts_json`, `summary`, `metadata_schema_version`.
+`allowed_arg_counts_json`, `summary`.
 
 Policy columns use stable machine-readable values:
 
@@ -64,7 +64,6 @@ Output columns (in order):
 | `error_code` | structured code when invalid (for example, `table_not_found`) |
 | `message` | human-readable explanation |
 | `function_name` | the function checked |
-| `algorithm_enabled` | whether the algorithm is enabled on this server |
 | `table_resolved` | whether the edge relation resolved |
 | `src_col_resolved` | whether `src_col` exists |
 | `dst_col_resolved` | whether `dst_col` exists |
@@ -75,11 +74,10 @@ Output columns (in order):
 | `output_schema_json` | the concrete output schema for this call |
 | `normalized_options_json` | options after defaulting and normalization |
 | `would_execute_gpu` | whether execution would dispatch to the GPU |
-| `metadata_schema_version` | metadata contract version |
 
 ### What validation does & does not do
 
-**Does:** confirm the function exists and is enabled; resolve the relation;
+**Does:** confirm the function exists; resolve the relation;
 check that src/dst/weight/predicate columns exist; check vertex dtype
 compatibility; validate JSON option names, types, and values; enforce
 conditional requirements (for example, BFS path mode needs a target relation);

@@ -311,7 +311,7 @@ fn execute_bounded_chunk_batch_operator_from_source(
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
-    let ScheduledLocalParquetReadOutput { frame, reservation: source_reservation, observed_bytes: _, .. } = source;
+    let ScheduledLocalParquetReadOutput { frame, reservation: source_reservation, .. } = source;
     if let Err(error) = context.check_cancellation("nexus_query_engine.exec.bounded.chunk_batch_operator") {
         drop(frame);
         reservations.release(source_reservation, metrics);

@@ -188,6 +188,7 @@ impl CudfOptimizerConfig {
         self.cpu_fallback_statement_limiter.clone()
     }
 
+    #[cfg(feature = "server")]
     pub(crate) fn with_unbounded_native_execution_limiter(
         mut self,
         limiter: crate::native_exec::UnboundedNativeExecutionLimiter,

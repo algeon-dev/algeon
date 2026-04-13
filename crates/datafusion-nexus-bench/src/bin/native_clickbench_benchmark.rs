@@ -23,7 +23,6 @@ use datafusion_nexus_bench::{
     register_clickbench_table,
 };
 
-const SCHEMA_VERSION: u32 = 1;
 const TSV_COLUMNS: &[&str] = &[
     "query_id",
     "parity_status",
@@ -779,7 +778,6 @@ struct BenchmarkReport {
 impl BenchmarkReport {
     fn to_tsv(&self) -> String {
         let mut output = String::new();
-        writeln!(output, "# native_clickbench_benchmark_tsv_schema_version={SCHEMA_VERSION}").unwrap();
         writeln!(output, "# workload=clickbench").unwrap();
         writeln!(output, "# dataset_root={}", self.metadata.root.display()).unwrap();
         writeln!(output, "# dataset_layout={}", self.metadata.layout_label()).unwrap();

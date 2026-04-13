@@ -22,7 +22,6 @@ use datafusion_nexus_bench::tpch_report_session_config;
 use nexus_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId};
 use tokio::sync::Barrier;
 
-const TSV_SCHEMA_VERSION: u32 = 1;
 const TSV_COLUMNS: &[&str] = &[
     "row_type",
     "request_index",
@@ -226,7 +225,6 @@ impl StressReport {
     fn to_tsv(&self) -> String {
         let diagnostics = self.config.glue.diagnostics_from_env();
         let mut output = String::new();
-        output.push_str(&format!("# query_service_iceberg_stress_tsv_schema_version={TSV_SCHEMA_VERSION}\n"));
         output.push_str(&format!("# table_ident={}.{}\n", diagnostics.database, diagnostics.table));
         output.push_str(&format!("# warehouse={}\n", diagnostics.warehouse));
         output.push_str(&format!("# region={}\n", diagnostics.region));
@@ -832,7 +830,6 @@ mod tests {
 
     #[test]
     fn stress_tsv_row_contract_matches_columns() {
-        assert_eq!(TSV_SCHEMA_VERSION, 1);
         assert_eq!(TSV_COLUMNS.first(), Some(&"row_type"));
         assert_eq!(TSV_COLUMNS.last(), Some(&"error_message"));
         let row = StressRow {

@@ -68,9 +68,6 @@ export NEXUS_SERVER_MAX_CONCURRENT_QUERIES="${NEXUS_SERVER_MAX_CONCURRENT_QUERIE
 # cuGraph SQL DSL
 #
 # NEXUS_SERVER_CUGRAPH_ENABLED              true | false (unset = disabled)
-# NEXUS_SERVER_CUGRAPH_ALGORITHMS           optional allowlist by SQL
-#                                                     function name, e.g.
-#                                                     cugraph_pagerank,cugraph_bfs
 # NEXUS_SERVER_CUGRAPH_DIRECTED             default graph direction
 # NEXUS_SERVER_CUGRAPH_RENUMBER             default cuGraph renumber flag
 # NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY  python_cugraph | raw_libcugraph
@@ -82,7 +79,6 @@ export NEXUS_SERVER_MAX_CONCURRENT_QUERIES="${NEXUS_SERVER_MAX_CONCURRENT_QUERIE
 # a binary built with the `cugraph` feature.
 # ---------------------------------------------------------------------------
 # export NEXUS_SERVER_CUGRAPH_ENABLED=true
-# export NEXUS_SERVER_CUGRAPH_ALGORITHMS="cugraph_pagerank,cugraph_bfs"
 # export NEXUS_SERVER_CUGRAPH_DIRECTED=true
 # export NEXUS_SERVER_CUGRAPH_RENUMBER=true
 # export NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY=python_cugraph

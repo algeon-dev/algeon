@@ -11,8 +11,7 @@ use std::{
 use datafusion::common::config::ConfigOptions;
 #[cfg(feature = "cugraph")]
 use datafusion_nexus::server::{
-    NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
-    NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
+    NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
 };
 use datafusion_nexus::{
     CudfOptimizerConfig, DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig, MemoryShare,
@@ -1008,7 +1007,7 @@ fn server_config_accepts_explicit_cugraph_disabled_without_cugraph_feature() {
 fn server_config_rejects_cugraph_settings_alongside_disabled_env_without_cugraph_feature() {
     let env = BTreeMap::from([
         (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "false".to_string()),
-        (datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string()),
+        (datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string()),
     ]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
@@ -1027,10 +1026,9 @@ fn server_config_rejects_malformed_cugraph_enabled_without_cugraph_feature() {
 #[cfg(feature = "cugraph")]
 #[test]
 fn server_cugraph_config_accepts_enabled_env() {
-    use datafusion_nexus::{CugraphAlgorithm, CugraphGraphConstructionPolicy};
+    use datafusion_nexus::CugraphGraphConstructionPolicy;
     let env = BTreeMap::from([
         (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank,cugraph_bfs".to_string()),
         (NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string()),
         (NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, "false".to_string()),
         (NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, "raw_libcugraph".to_string()),
@@ -1038,11 +1036,7 @@ fn server_cugraph_config_accepts_enabled_env() {
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let cugraph = config.cugraph.expect("enabled env must materialize cuGraph server config");
-    let allowed = cugraph.allowed_algorithms.expect("allowlist env must materialize an explicit set");
 
-    assert_eq!(allowed.len(), 2);
-    assert!(allowed.contains(&CugraphAlgorithm::PageRank));
-    assert!(allowed.contains(&CugraphAlgorithm::Bfs));
     assert!(!cugraph.default_graph_options.directed);
     assert!(!cugraph.default_graph_options.renumber);
     assert_eq!(cugraph.default_graph_options.construction_policy, CugraphGraphConstructionPolicy::RawLibcugraph);
@@ -1073,21 +1067,8 @@ async fn server_session_exposes_gpu_coverage_table_function() {
 
 #[cfg(feature = "cugraph")]
 #[test]
-fn server_cugraph_config_rejects_unknown_algorithm() {
-    let env = BTreeMap::from([
-        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank,cugraph_missing".to_string()),
-    ]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
-
-    assert!(error.to_string().contains(NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV));
-    assert!(error.to_string().contains("cugraph_missing"));
-}
-
-#[cfg(feature = "cugraph")]
-#[test]
 fn server_cugraph_config_rejects_settings_without_enabled_true() {
-    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_CUGRAPH_ENABLED_ENV));
@@ -1171,20 +1152,6 @@ async fn server_cugraph_session_does_not_register_udtfs_when_disabled() {
 
     assert!(!ctx.state().table_functions().contains_key("cugraph_pagerank"));
     assert!(!ctx.state().table_functions().contains_key("cugraph_list_algorithms"));
-}
-
-#[cfg(feature = "cugraph")]
-#[tokio::test]
-async fn server_cugraph_allowlist_rejects_disallowed_algorithm_at_planning() {
-    let env = BTreeMap::from([
-        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string()),
-    ]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
-    let ctx = datafusion_nexus::server::build_session_context(&config).await.unwrap();
-
-    let error = ctx.sql("SELECT * FROM cugraph_louvain('g')").await.unwrap_err();
-    assert!(error.to_string().contains("not enabled in this session"));
 }
 
 #[cfg(feature = "cugraph")]

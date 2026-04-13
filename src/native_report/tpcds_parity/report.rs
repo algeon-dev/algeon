@@ -163,7 +163,6 @@ pub struct NativeTpcdsParityRow {
 
 impl TsvRow for NativeTpcdsParityRow {
     const COLUMNS: &'static [&'static str] = NATIVE_TPCDS_PARITY_TSV_COLUMNS;
-    const SCHEMA_VERSION: u32 = NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION;
 
     fn fields(&self) -> Vec<String> {
         vec![
@@ -326,8 +325,8 @@ impl From<NativeDataFusionPlanningOutcome> for NativeTpcdsParityPlanningOutcome 
 
 /// In-memory TPC-DS parity report.
 ///
-/// `to_tsv` writes schema version, float tolerance, optional dataset metadata,
-/// and then rows using [`NATIVE_TPCDS_PARITY_TSV_HEADER`].
+/// `to_tsv` writes float tolerance, optional dataset metadata, and then rows
+/// using [`NATIVE_TPCDS_PARITY_TSV_HEADER`].
 #[derive(Debug, Clone)]
 pub struct NativeTpcdsParityReport {
     /// Per-query rows in caller-provided workload order.
@@ -379,7 +378,6 @@ impl NativeTpcdsParityReport {
     /// Serializes the report as TSV with metadata comments followed by rows.
     pub fn to_tsv(&self) -> String {
         let mut output = String::new();
-        let _ = writeln!(output, "# native_tpcds_parity_tsv_schema_version={}", NativeTpcdsParityRow::SCHEMA_VERSION);
         let _ = writeln!(output, "# parity_float_tolerance_absolute={}", self.float_tolerance.absolute);
         let _ = writeln!(output, "# parity_float_tolerance_relative={}", self.float_tolerance.relative);
         if let Some(mode) = self.statistical_aggregate_execution_mode {
@@ -410,7 +408,6 @@ mod tests {
     #[test]
     fn tpcds_parity_row_contract_header_matches_public_constant() {
         assert_eq!(NativeTpcdsParityRow::COLUMNS.join("\t"), NATIVE_TPCDS_PARITY_TSV_HEADER);
-        assert_eq!(NativeTpcdsParityRow::SCHEMA_VERSION, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION);
     }
 
     #[test]

@@ -53,7 +53,7 @@ flock /tmp/cudf-gpu.lock bash scripts/run_server.sh
 ```
 
 The startup log should show `iceberg_enabled=true`, `cugraph_enabled=true`, a
-non-zero `cugraph_allowed_algorithm_count`, and a workspace overlay backed by
+non-zero `cugraph_registry_algorithm_count`, and a workspace overlay backed by
 `lake.citation_network`.
 
 For the meaning of each server variable, see

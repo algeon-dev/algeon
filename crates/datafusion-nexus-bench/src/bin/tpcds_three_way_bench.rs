@@ -42,7 +42,6 @@ use nexus_query_engine::harness::max_option as max_optional_usize;
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];
 
-const TSV_SCHEMA_VERSION: u32 = 2;
 const TSV_HEADER: &str = concat!(
     "engine\tquery_id\titeration\twarmup\twall_ms\toutcome\tplanning_outcome\toutput_batches\toutput_rows\toutput_bytes",
     "\treservation_live_peak_bytes\treservation_denied_count\tretry_count\tnative_runtime_started\tfailure",
@@ -273,7 +272,6 @@ impl BenchConfig {
 }
 
 fn print_metadata(cfg: &BenchConfig) {
-    println!("# tpcds_three_way_bench_tsv_schema_version={TSV_SCHEMA_VERSION}");
     println!("# tpcds_benchmark_engine={}", cfg.engine.as_str());
     println!("# tpcds_benchmark_root={}", cfg.root.display());
     println!("# tpcds_benchmark_query_ids={}", cfg.queries.iter().map(|q| q.id).collect::<Vec<_>>().join(","));
@@ -1256,7 +1254,6 @@ mod tests {
         };
         let p1 = P1BottleneckSummary::from_outcome(&outcome);
         assert_eq!(p1.runtime_operator_class, "not_run");
-        assert_eq!(TSV_SCHEMA_VERSION, 2);
         assert_eq!(TSV_COLUMNS.join("\t"), TSV_HEADER);
         assert_eq!(TSV_HEADER.split('\t').count(), row_fields(query, 0, false, &outcome, Engine::CpuDataFusion).len());
     }

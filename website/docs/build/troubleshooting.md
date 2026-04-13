@@ -1,5 +1,5 @@
 ---
-sidebar_position: 6
+sidebar_position: 7
 description: Failure modes actually hit while validating this guide, with root causes — not workarounds.
 ---
 

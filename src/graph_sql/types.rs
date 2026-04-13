@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::{DataFusionError, Result};
@@ -39,19 +39,12 @@ pub const CUGRAPH_FORCE_ATLAS2_FUNCTION: &str = "cugraph_force_atlas2";
 pub const CUGRAPH_LIST_ALGORITHMS_FUNCTION: &str = "cugraph_list_algorithms";
 pub const CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION: &str = "cugraph_describe_algorithm";
 pub const CUGRAPH_VALIDATE_CALL_FUNCTION: &str = "cugraph_validate_call";
-pub const CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION: u32 = 7;
-pub const CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION: u32 = 11;
-pub const CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct CugraphSqlConfig {
-    /// SQL-visible cuGraph algorithms registered by `with_cugraph_sql`.
-    pub allowed_algorithms: BTreeSet<CugraphAlgorithm>,
     /// Graph construction defaults applied before per-call `options_json`
     /// overrides.
     pub default_graph_options: CugraphGraphOptions,
-    /// Whether experimental SQL functions should be exposed.
-    pub experimental_functions: bool,
     /// Native execution policy used when a cuGraph edge source has not already
     /// been rewritten into a native cudf execution node.
     pub native_execution_config: NativeCudfExecutionConfig,
@@ -60,20 +53,13 @@ pub struct CugraphSqlConfig {
 impl Default for CugraphSqlConfig {
     fn default() -> Self {
         Self {
-            allowed_algorithms: CugraphAlgorithm::all().collect(),
             default_graph_options: CugraphGraphOptions::default(),
-            experimental_functions: false,
             native_execution_config: NativeCudfExecutionConfig::bounded_auto_sized(),
         }
     }
 }
 
 impl CugraphSqlConfig {
-    pub fn with_allowed_algorithms(mut self, algorithms: impl IntoIterator<Item = CugraphAlgorithm>) -> Self {
-        self.allowed_algorithms = algorithms.into_iter().collect();
-        self
-    }
-
     /// Set the native execution policy used by `CugraphAlgoExec`.
     ///
     /// The server uses this to keep cuGraph SQL execution aligned with the
@@ -84,10 +70,6 @@ impl CugraphSqlConfig {
     pub fn with_native_execution_config(mut self, native_execution_config: NativeCudfExecutionConfig) -> Self {
         self.native_execution_config = native_execution_config;
         self
-    }
-
-    pub(crate) fn allows(&self, algorithm: CugraphAlgorithm) -> bool {
-        self.allowed_algorithms.contains(&algorithm)
     }
 }
 

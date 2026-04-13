@@ -161,3 +161,6 @@ flock /tmp/cudf-gpu.lock cargo nextest run --features cugraph,server --no-fail-f
 server. The nextest invocation is the canonical local check — one flocked run
 covers the CPU and GPU lanes together. See [Tests](./tests.md) for the lane
 model, `scripts/check_all.sh`, and the feature matrix.
+
+To package the standalone Flight SQL server after this source build, continue
+with [Building with Docker](./docker.md).
