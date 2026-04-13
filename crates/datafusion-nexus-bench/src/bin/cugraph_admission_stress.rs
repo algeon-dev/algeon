@@ -60,6 +60,7 @@ const ENV_RUN_ID: &str = "CUDF_CUGRAPH_ADMISSION_RUN_ID";
 const ENV_BFS_SEED: &str = "CUDF_CUGRAPH_ADMISSION_BFS_SEED";
 const ENV_BATCH_SIZE: &str = "CUDF_CUGRAPH_ADMISSION_BATCH_SIZE";
 const ENV_PRINT_PLANNING: &str = "CUDF_CUGRAPH_ADMISSION_PRINT_PLANNING";
+const ENV_DEVICE_ORDINALS: &str = "CUDF_CUGRAPH_ADMISSION_DEVICE_ORDINALS";
 
 /// Retained optimizer rules (diagnostic planning-report mode only).
 static PLANNING_RULES: Mutex<Vec<Arc<CudfNativePhysicalOptimizerRule>>> = Mutex::new(Vec::new());
@@ -160,6 +161,7 @@ struct HarnessConfig {
     run_id: String,
     bfs_seed: Option<i64>,
     batch_size: Option<usize>,
+    device_ordinals: Vec<usize>,
 }
 
 impl HarnessConfig {
@@ -194,6 +196,7 @@ impl HarnessConfig {
             run_id,
             bfs_seed: parse_optional_i64(ENV_BFS_SEED)?,
             batch_size: parse_optional_usize(ENV_BATCH_SIZE)?,
+            device_ordinals: parse_device_ordinals(ENV_DEVICE_ORDINALS)?,
         })
     }
 }
@@ -398,14 +401,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 fn build_backend(config: &HarnessConfig) -> Result<NexusGpuBackend, Box<dyn Error>> {
     let memory_policy = match config.device_budget_bytes {
         Some(bytes) => NexusMemoryPolicy::Bounded {
-            device_ordinals: vec![0],
+            device_ordinals: config.device_ordinals.clone(),
             device_budget_bytes: bytes,
             max_source_chunk_bytes: 256 * 1024 * 1024,
             max_row_groups_per_chunk: 1024,
             max_retry_attempts: 3,
             min_retry_chunk_row_groups: 1,
         },
-        None => NexusMemoryPolicy::BoundedAuto { device_ordinals: vec![0], budget_fraction: config.budget_fraction },
+        None => NexusMemoryPolicy::BoundedAuto {
+            device_ordinals: config.device_ordinals.clone(),
+            budget_fraction: config.budget_fraction,
+        },
     };
     let mut admission = NexusAdmissionPolicy::default()
         .with_max_concurrent_queries(config.max_concurrent_queries)
@@ -1073,6 +1079,24 @@ fn parse_optional_f64(name: &str) -> Result<Option<f64>, Box<dyn Error>> {
     std::env::var(name).ok().map(|raw| raw.trim().parse::<f64>().map_err(Into::into)).transpose()
 }
 
+fn parse_device_ordinals(name: &str) -> Result<Vec<usize>, Box<dyn Error>> {
+    let Ok(raw) = std::env::var(name) else {
+        return Ok(vec![0]);
+    };
+    let mut ordinals = Vec::new();
+    for part in raw.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+        let ordinal = part.parse::<usize>()?;
+        if ordinals.contains(&ordinal) {
+            return Err(format!("{name} must not contain duplicate ordinals").into());
+        }
+        ordinals.push(ordinal);
+    }
+    if ordinals.is_empty() {
+        return Err(format!("{name} must contain at least one device ordinal").into());
+    }
+    Ok(ordinals)
+}
+
 fn parse_optional_u64(name: &str) -> Result<Option<u64>, Box<dyn Error>> {
     std::env::var(name).ok().map(|raw| raw.trim().parse::<u64>().map_err(Into::into)).transpose()
 }
@@ -1136,6 +1160,7 @@ mod tests {
             run_id: "test".into(),
             bfs_seed: None,
             batch_size: None,
+            device_ordinals: vec![0],
         };
         let request = Request {
             task_index: 0,
@@ -1172,6 +1197,7 @@ mod tests {
             run_id: "test".into(),
             bfs_seed: None,
             batch_size: None,
+            device_ordinals: vec![0],
         };
         let request = Request {
             task_index: 0,

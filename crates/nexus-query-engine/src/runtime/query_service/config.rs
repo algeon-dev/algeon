@@ -171,6 +171,10 @@ pub struct QueryServiceConfig {
     pub device_capacity_bytes: Option<u64>,
     /// Maximum number of admitted query handles active at one time.
     pub max_concurrent_queries: usize,
+    /// Optional maximum number of admitted query handles active on one CUDA device.
+    pub max_queries_per_device: Option<usize>,
+    /// Device placement policy for runtime-backed admission.
+    pub placement_policy: QueryPlacementPolicy,
     /// Whether empty admission slots reserve future minimum grants.
     pub slot_guarantee: SlotGuarantee,
     /// Maximum number of queued query admissions across all tenants.
@@ -208,6 +212,9 @@ impl QueryServiceConfig {
             .with_fact("reason", "zero"));
         }
         validate_nonzero_config_field("max_concurrent_queries", self.max_concurrent_queries == 0)?;
+        if let Some(max_queries_per_device) = self.max_queries_per_device {
+            validate_nonzero_config_field("max_queries_per_device", max_queries_per_device == 0)?;
+        }
         validate_nonzero_config_field("max_admission_queue_len", self.max_admission_queue_len == 0)?;
         if let Some(device_capacity_bytes) = self.device_capacity_bytes {
             validate_nonzero_config_field("device_capacity_bytes", device_capacity_bytes == 0)?;
@@ -265,6 +272,8 @@ impl Default for QueryServiceConfig {
             stream_pool_size: None,
             device_capacity_bytes: None,
             max_concurrent_queries: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
+            max_queries_per_device: None,
+            placement_policy: QueryPlacementPolicy::default(),
             slot_guarantee: SlotGuarantee::GuaranteedMinimum,
             max_admission_queue_len: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
             admission_wait_timeout: Duration::from_secs(30),
@@ -292,6 +301,7 @@ fn validate_nonzero_config_field(field: &'static str, is_zero: bool) -> Result<(
 pub(super) fn admission_capacity_bounds(
     resources: Option<&QueryServiceResources>,
     fallback_capacity_bytes: u64,
+    placement_policy: QueryPlacementPolicy,
 ) -> (u64, u64) {
     let Some(resources) = resources else {
         return (fallback_capacity_bytes, fallback_capacity_bytes);
@@ -299,6 +309,9 @@ pub(super) fn admission_capacity_bounds(
     let mut max_device_capacity = 0u64;
     let mut total_capacity = 0u64;
     for context in resources.devices.contexts() {
+        if !placement_policy_admits_ordinal(placement_policy, context.device().ordinal()) {
+            continue;
+        }
         let capacity = context.capacity_bytes();
         max_device_capacity = max_device_capacity.max(capacity);
         total_capacity = total_capacity.saturating_add(capacity);
@@ -310,27 +323,73 @@ pub(super) fn guaranteed_min_slot_capacity(
     resources: Option<&QueryServiceResources>,
     fallback_capacity_bytes: u64,
     min_bytes: u64,
+    max_queries_per_device: Option<usize>,
+    placement_policy: QueryPlacementPolicy,
 ) -> usize {
     let Some(resources) = resources else {
-        return guaranteed_min_slot_capacity_for_capacities([fallback_capacity_bytes], min_bytes);
+        return guaranteed_min_slot_capacity_for_capacities_with_cap(
+            [fallback_capacity_bytes],
+            min_bytes,
+            max_queries_per_device,
+        );
     };
-    guaranteed_min_slot_capacity_for_capacities(
-        resources.devices.contexts().map(|context| context.capacity_bytes()),
+    guaranteed_min_slot_capacity_for_capacities_with_cap(
+        resources
+            .devices
+            .contexts()
+            .filter(|context| placement_policy_admits_ordinal(placement_policy, context.device().ordinal()))
+            .map(|context| context.capacity_bytes()),
         min_bytes,
+        max_queries_per_device,
     )
 }
 
+#[cfg(test)]
 pub(super) fn guaranteed_min_slot_capacity_for_capacities(
     capacities: impl IntoIterator<Item = u64>,
     min_bytes: u64,
+) -> usize {
+    guaranteed_min_slot_capacity_for_capacities_with_cap(capacities, min_bytes, None)
+}
+
+#[cfg(test)]
+pub(super) fn guaranteed_min_slot_capacity_for_ordinal_capacities_with_policy(
+    capacities: impl IntoIterator<Item = (usize, u64)>,
+    min_bytes: u64,
+    max_queries_per_device: Option<usize>,
+    placement_policy: QueryPlacementPolicy,
+) -> usize {
+    guaranteed_min_slot_capacity_for_capacities_with_cap(
+        capacities.into_iter().filter_map(|(ordinal, capacity)| {
+            placement_policy_admits_ordinal(placement_policy, ordinal).then_some(capacity)
+        }),
+        min_bytes,
+        max_queries_per_device,
+    )
+}
+
+pub(super) fn guaranteed_min_slot_capacity_for_capacities_with_cap(
+    capacities: impl IntoIterator<Item = u64>,
+    min_bytes: u64,
+    max_queries_per_device: Option<usize>,
 ) -> usize {
     if min_bytes == 0 {
         return usize::MAX;
     }
     capacities
         .into_iter()
-        .map(|capacity| usize::try_from(capacity / min_bytes).unwrap_or(usize::MAX))
+        .map(|capacity| {
+            let memory_slots = usize::try_from(capacity / min_bytes).unwrap_or(usize::MAX);
+            max_queries_per_device.map_or(memory_slots, |cap| memory_slots.min(cap))
+        })
         .fold(0usize, usize::saturating_add)
+}
+
+pub(super) const fn placement_policy_admits_ordinal(policy: QueryPlacementPolicy, ordinal: usize) -> bool {
+    match policy {
+        QueryPlacementPolicy::LeastLoaded | QueryPlacementPolicy::BestFit => true,
+        QueryPlacementPolicy::Pinned { device_ordinal } => device_ordinal == ordinal,
+    }
 }
 
 pub(super) fn minimum_stream_pool_size(max_concurrent_queries: usize, max_source_reads_in_flight: usize) -> usize {

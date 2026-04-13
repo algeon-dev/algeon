@@ -103,6 +103,12 @@ fn wait_for_requested_shrink(grant: &MemoryGrant, expected: Option<u64>) {
     }
 }
 
+fn first_memory_governor_report(service: &QueryService) -> MemoryGovernorReport {
+    let reports = service.memory_governor_reports().unwrap();
+    assert_eq!(reports.len(), 1);
+    reports.into_iter().next().unwrap()
+}
+
 #[test]
 fn requested_grant_bytes_override_tenant_want_for_one_admission() {
     let service = QueryService::new_for_admission_tests(
@@ -195,7 +201,7 @@ fn requested_grant_min_bytes_raises_floor_for_one_admission() {
         .expect("request within tenant band should admit");
 
     assert_eq!(handle.device_budget_bytes(), 70);
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 30);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 30);
 }
 
 #[test]
@@ -225,7 +231,7 @@ fn requested_grant_min_bytes_queues_instead_of_admitting_below_floor() {
         .unwrap();
 
     assert_eq!(active.device_budget_bytes(), 70);
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 30);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 30);
     assert!(waiter.try_admit().unwrap().is_none());
     assert_eq!(service.admission_snapshot().unwrap().queued_queries, 1);
 
@@ -265,7 +271,7 @@ fn requested_grant_min_bytes_preserves_configured_slot_minima() {
     assert_eq!(second.device_budget_bytes(), 10);
     assert_eq!(third.device_budget_bytes(), 10);
     assert_eq!(fourth.device_budget_bytes(), 10);
-    assert_eq!(service.memory_governor_report().unwrap().outstanding_bytes, 100);
+    assert_eq!(first_memory_governor_report(&service).outstanding_bytes, 100);
 }
 
 #[test]
@@ -742,6 +748,46 @@ fn query_service_rejects_stream_pool_that_covers_only_root_streams() {
 }
 
 #[test]
+fn query_service_rejects_zero_max_queries_per_device() {
+    let config = QueryServiceConfig { max_queries_per_device: Some(0), ..QueryServiceConfig::default() };
+
+    let error = QueryService::new_for_admission_tests(
+        config,
+        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("field"), Some("max_queries_per_device"));
+    assert_eq!(error.fact_value("reason"), Some("zero"));
+}
+
+#[test]
+fn admission_only_query_service_honors_max_queries_per_device_cap() {
+    let service = QueryService::new_for_admission_tests(
+        QueryServiceConfig {
+            device_capacity_bytes: Some(100),
+            max_concurrent_queries: 2,
+            max_queries_per_device: Some(1),
+            slot_guarantee: SlotGuarantee::Optimistic,
+            max_admission_queue_len: 4,
+            ..QueryServiceConfig::default()
+        },
+        vec![QueryServiceTenantConfig::new("tenant", 10)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+
+    assert!(service.try_admit_query("tenant").unwrap().is_none());
+    assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
+    drop(first);
+    assert!(service.try_admit_query("tenant").unwrap().is_some());
+}
+
+#[test]
 fn query_service_try_admit_does_not_queue_when_saturated() {
     let service = test_service(1, 8);
     let active = service.try_admit_query("large").unwrap().expect("first query should admit");
@@ -859,13 +905,13 @@ fn query_service_uses_variable_memory_governor_grants() {
     assert_eq!(third.device_budget_bytes(), 10);
     assert_eq!(fourth.device_budget_bytes(), 10);
     assert!(service.try_admit_query("tenant").unwrap().is_none());
-    let report = service.memory_governor_report().unwrap();
+    let report = first_memory_governor_report(&service);
     assert_eq!(report.capacity_bytes, 100);
     assert_eq!(report.outstanding_bytes, 100);
     assert_eq!(report.available_bytes, 0);
 
     drop(first);
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 60);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 60);
 }
 
 #[test]
@@ -894,7 +940,7 @@ fn adaptive_query_service_grows_partial_active_grant_on_release() {
     drop(first);
 
     assert_eq!(second_grant.budget_bytes(), 90);
-    let report = service.memory_governor_report().unwrap();
+    let report = first_memory_governor_report(&service);
     assert_eq!(report.outstanding_bytes, 90);
     assert_eq!(report.available_bytes, 10);
 }
@@ -921,7 +967,7 @@ fn strict_query_service_does_not_grow_partial_active_grant_on_release() {
     drop(first);
 
     assert_eq!(second_grant.budget_bytes(), 10);
-    let report = service.memory_governor_report().unwrap();
+    let report = first_memory_governor_report(&service);
     assert_eq!(report.outstanding_bytes, 10);
     assert_eq!(report.available_bytes, 90);
 }
@@ -1038,7 +1084,7 @@ fn adaptive_query_service_grows_partial_grants_by_budget_weight() {
     assert_eq!(high_grant.budget_bytes(), 50);
     assert_eq!(low_a_grant.budget_bytes(), 20);
     assert_eq!(low_b_grant.budget_bytes(), 20);
-    let report = service.memory_governor_report().unwrap();
+    let report = first_memory_governor_report(&service);
     assert_eq!(report.outstanding_bytes, 90);
     assert_eq!(report.available_bytes, 10);
 }
@@ -1086,7 +1132,7 @@ fn adaptive_optimistic_query_service_requests_shrink_for_memory_blocked_waiter()
 
     assert!(waiter.try_admit().unwrap().is_none());
     assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), Some(60));
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 0);
     assert!(waiter.try_admit().unwrap().is_none());
 
     assert!(first_grant.try_apply_requested_shrink(60).unwrap());
@@ -1094,7 +1140,7 @@ fn adaptive_optimistic_query_service_requests_shrink_for_memory_blocked_waiter()
 
     assert_eq!(first_grant.budget_bytes(), 60);
     assert_eq!(admitted.device_budget_bytes(), 40);
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 0);
 }
 
 #[test]
@@ -1118,7 +1164,7 @@ fn adaptive_optimistic_query_service_respects_raised_active_floor_when_requestin
     assert!(first_grant.try_apply_requested_shrink(70).unwrap());
     assert_eq!(first_grant.budget_bytes(), 70);
     assert!(waiter.try_admit().unwrap().is_none());
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 30);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 30);
 }
 
 #[test]
@@ -1130,11 +1176,11 @@ fn query_service_release_shrinks_retained_grant_to_live_bytes() {
 
     assert_eq!(first_grant.budget_bytes(), 100);
     assert_eq!(first_grant.live_reserved_bytes(), 40);
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 0);
 
     drop(first);
 
-    let report = service.memory_governor_report().unwrap();
+    let report = first_memory_governor_report(&service);
     assert_eq!(report.outstanding_bytes, 40);
     assert_eq!(report.available_bytes, 60);
     assert_eq!(first_grant.budget_bytes(), 40);
@@ -1299,7 +1345,7 @@ fn strict_query_service_does_not_request_shrink_for_memory_blocked_waiter() {
     assert_eq!(first.device_budget_bytes(), 100);
     assert!(waiter.try_admit().unwrap().is_none());
     assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), None);
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 0);
 }
 
 #[test]
@@ -1323,7 +1369,7 @@ fn query_service_optimistic_slot_guarantee_does_not_reserve_empty_slot_minima() 
     assert_eq!(first.device_budget_bytes(), 60);
     assert_eq!(second.device_budget_bytes(), 40);
     assert!(service.try_admit_query("tenant").unwrap().is_none());
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 0);
 }
 
 #[test]
@@ -1345,7 +1391,7 @@ fn query_service_reserves_remaining_slots_for_largest_tenant_minimum() {
 
     assert_eq!(low.device_budget_bytes(), 60);
     assert_eq!(high.device_budget_bytes(), 60);
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 0);
 }
 
 #[test]
@@ -1374,6 +1420,25 @@ fn guaranteed_min_slot_capacity_uses_per_device_packing_not_total_capacity() {
 
     assert_eq!(packed_slots, 1);
     assert!(packed_slots < 2, "two 50-byte guaranteed slots cannot pack onto 90-byte and 30-byte devices");
+}
+
+#[test]
+fn guaranteed_min_slot_capacity_respects_max_queries_per_device_cap() {
+    let packed_slots = super::config::guaranteed_min_slot_capacity_for_capacities_with_cap([100_u64, 100], 10, Some(3));
+
+    assert_eq!(packed_slots, 6);
+}
+
+#[test]
+fn guaranteed_min_slot_capacity_excludes_devices_unreachable_by_pinned_placement() {
+    let packed_slots = super::config::guaranteed_min_slot_capacity_for_ordinal_capacities_with_policy(
+        [(0, 100_u64), (1, 100)],
+        60,
+        None,
+        QueryPlacementPolicy::Pinned { device_ordinal: 0 },
+    );
+
+    assert_eq!(packed_slots, 1);
 }
 
 #[test]
@@ -1419,6 +1484,89 @@ fn governor_claim_rejects_optimistic_overlap_with_guaranteed_minimum() {
 }
 
 #[test]
+fn shared_device_waiter_registration_prunes_dead_weak_entries() {
+    let service = test_service(1, 2);
+    let mut waiters = vec![Weak::<QueryServiceInner>::new(), Arc::downgrade(&service.inner)];
+
+    prune_dead_shared_device_admission_waiters(&mut waiters);
+
+    assert_eq!(waiters.len(), 1);
+    let retained = waiters[0].upgrade().expect("live service weak should remain");
+    assert!(Arc::ptr_eq(&retained, &service.inner));
+}
+
+#[test]
+fn shared_device_wakeup_locks_target_admission_mutex_before_notifying() {
+    let service = test_service(1, 2);
+    let device_ordinal = usize::MAX - 128;
+    {
+        let mut waiters = shared_device_admission_waiters().lock().unwrap();
+        waiters.insert(device_ordinal, vec![Arc::downgrade(&service.inner)]);
+    }
+    let guard = service.inner.admission.lock().unwrap();
+    let (started_sender, started_receiver) = std::sync::mpsc::channel();
+    let (done_sender, done_receiver) = std::sync::mpsc::channel();
+    let notifier = std::thread::spawn(move || {
+        started_sender.send(()).unwrap();
+        notify_shared_device_admission_available(device_ordinal);
+        done_sender.send(()).unwrap();
+    });
+
+    started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(
+        done_receiver.recv_timeout(Duration::from_millis(50)).is_err(),
+        "shared wakeup must wait for the target admission mutex"
+    );
+
+    drop(guard);
+    done_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    notifier.join().unwrap();
+    shared_device_admission_waiters().lock().unwrap().remove(&device_ordinal);
+}
+
+#[test]
+fn pending_device_slot_notifications_release_slot_and_defer_shared_wakeup_until_drop() {
+    let service = test_service(1, 2);
+    let device_ordinal = usize::MAX - 129;
+    {
+        let mut waiters = shared_device_admission_waiters().lock().unwrap();
+        waiters.insert(device_ordinal, vec![Arc::downgrade(&service.inner)]);
+    }
+    let active_queries = Arc::new(AtomicUsize::new(1));
+    let mut notifications = PendingDeviceSlotNotifications::default();
+    notifications.release_slot(DeviceActiveQuerySlot::new_for_test(device_ordinal, Arc::clone(&active_queries)));
+    assert_eq!(active_queries.load(Ordering::Acquire), 0);
+
+    let guard = service.inner.admission.lock().unwrap();
+    let (started_sender, started_receiver) = std::sync::mpsc::channel();
+    let (done_sender, done_receiver) = std::sync::mpsc::channel();
+    let notifier = std::thread::spawn(move || {
+        started_sender.send(()).unwrap();
+        drop(notifications);
+        done_sender.send(()).unwrap();
+    });
+
+    started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(
+        done_receiver.recv_timeout(Duration::from_millis(50)).is_err(),
+        "pending slot notification must synchronize with the target admission mutex"
+    );
+
+    drop(guard);
+    done_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    notifier.join().unwrap();
+    shared_device_admission_waiters().lock().unwrap().remove(&device_ordinal);
+}
+
+#[test]
+fn adaptive_shrink_deficit_ignores_sentinel_and_unsatisfiable_floors() {
+    assert_eq!(QueryService::adaptive_shrink_deficit_bytes(20, 40, u64::MAX, 100), None);
+    assert_eq!(QueryService::adaptive_shrink_deficit_bytes(20, 80, 30, 100), None);
+    assert_eq!(QueryService::adaptive_shrink_deficit_bytes(20, u64::MAX, 1, u64::MAX), None);
+    assert_eq!(QueryService::adaptive_shrink_deficit_bytes(20, 40, 30, 100), Some(50));
+}
+
+#[test]
 fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
     let service = QueryService::new_for_admission_tests(
         QueryServiceConfig {
@@ -1442,14 +1590,14 @@ fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
     });
     started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
     wait_for_queued_len(&service, 1);
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 0);
 
     drop(active);
     let admitted = waiter.join().unwrap();
     assert_eq!(admitted.device_budget_bytes(), 100);
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 0);
     drop(admitted);
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 100);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 100);
 }
 
 #[test]
@@ -1470,7 +1618,7 @@ fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
     let active = service.admit_query("tenant").unwrap();
     let retained_grant = active.lifetime.memory_grant().unwrap();
     drop(active);
-    assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    assert_eq!(first_memory_governor_report(&service).available_bytes, 0);
 
     let queued_service = service.clone();
     let (started_sender, started_receiver) = std::sync::mpsc::channel();
@@ -1573,7 +1721,7 @@ fn query_service_admission_priority_passes_lower_priority_queue_head() {
 
     assert_eq!(admitted_high.tenant_id().as_str(), "high");
     assert_eq!(admitted_high.admission_sequence(), 2);
-    let report = service.memory_governor_report().unwrap();
+    let report = first_memory_governor_report(&service);
     assert_eq!(report.grants.len(), 1);
     assert_eq!(report.grants[0].priority, "high");
 }

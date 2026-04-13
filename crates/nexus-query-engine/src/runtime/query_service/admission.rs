@@ -53,6 +53,7 @@ pub(super) struct AdmissionRequest {
 pub(super) struct PlacedQuery {
     pub(super) device_ordinal: usize,
     pub(super) memory_grant: MemoryGrant,
+    pub(super) device_slot: Option<DeviceActiveQuerySlot>,
 }
 
 pub(super) fn weighted_adaptive_growth_allocations(
@@ -153,6 +154,7 @@ impl QueryAdmissionWaiter {
             .with_fact("reason", "admission_waiter_completed"));
         }
 
+        let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let mut state = self.service.lock_admission()?;
         if state.closed {
             self.service.remove_queued_request_without_admission_locked(&mut state, self.request_id);
@@ -178,6 +180,7 @@ impl QueryAdmissionWaiter {
                 state.queued[position].qos,
                 Some(self.deadline),
                 state.active_queries,
+                &mut slot_notifications,
             ) {
                 Ok(placed_query) => placed_query,
                 Err(error) => {
@@ -234,6 +237,7 @@ impl QueryAdmissionWaiter {
                     self.tenant_id.clone(),
                     self.request_id,
                     placed_query.memory_grant,
+                    placed_query.device_slot,
                 ),
                 service,
                 tenant_id: self.tenant_id.clone(),

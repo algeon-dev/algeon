@@ -71,6 +71,7 @@ const TENANT_MIN_GRANT_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_TENANT_MIN_GRA
 const TENANT_WANT_GRANT_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_TENANT_WANT_GRANT_BYTES";
 const SLOT_GUARANTEE_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_SLOT_GUARANTEE";
 const MAX_CONCURRENT_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_CONCURRENT_QUERIES";
+const DEVICE_ORDINALS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_DEVICE_ORDINALS";
 const MAX_ADMISSION_QUEUE_LEN_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_ADMISSION_QUEUE_LEN";
 const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_ADMISSION_WAIT_TIMEOUT_MS";
 const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_SOURCE_CHUNK_BYTES";
@@ -115,6 +116,7 @@ struct StressConfig {
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
     run_overload_probe: bool,
+    device_ordinals: Vec<usize>,
 }
 
 impl StressConfig {
@@ -160,6 +162,7 @@ impl StressConfig {
             max_source_chunk_bytes: env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, 64 * 1024 * 1024)?,
             max_row_groups_per_chunk: env_usize(MAX_ROW_GROUPS_PER_CHUNK_ENV, 1)?,
             run_overload_probe: env_bool(OVERLOAD_PROBE_ENV, true)?,
+            device_ordinals: env_device_ordinals(DEVICE_ORDINALS_ENV)?,
         };
         config.validate()?;
         Ok(config)
@@ -431,8 +434,9 @@ async fn run_stress(
     cpu_baselines: Arc<HashMap<String, CpuBaseline>>,
 ) -> DataFusionResult<Vec<StressRow>> {
     let service = Arc::new(
-        QueryService::new(
+        QueryService::new_with_device_ordinals(
             config.service_config(),
+            config.device_ordinals.clone(),
             vec![
                 tenant_config("bulk", config),
                 tenant_config("interactive_a", config),
@@ -610,7 +614,11 @@ fn admission_facts(
     service: &QueryService,
     handle: &nexus_query_engine::QueryHandle,
 ) -> DataFusionResult<AdmissionFacts> {
-    let report = service.memory_governor_report().map_err(native_error)?;
+    let reports = service.memory_governor_reports().map_err(native_error)?;
+    let report = reports
+        .into_iter()
+        .find(|report| report.device_ordinal == handle.device_ordinal())
+        .expect("query service should expose a memory governor report for the handle's device");
     Ok(AdmissionFacts {
         device_ordinal: Some(handle.device_ordinal()),
         query_grant_bytes: Some(handle.device_budget_bytes()),
@@ -895,6 +903,26 @@ fn validate_query_ids(query_ids: &[String]) -> DataFusionResult<()> {
     Ok(())
 }
 
+fn env_device_ordinals(name: &'static str) -> DataFusionResult<Vec<usize>> {
+    let Some(value) = std::env::var_os(name) else {
+        return Ok(vec![0]);
+    };
+    let mut ordinals = Vec::new();
+    for part in value.to_string_lossy().split(',').map(str::trim).filter(|part| !part.is_empty()) {
+        let ordinal = part
+            .parse::<usize>()
+            .map_err(|error| plan_error(format!("failed to parse {name} as device ordinals: {error}")))?;
+        if ordinals.contains(&ordinal) {
+            return Err(plan_error(format!("{name} must not contain duplicate ordinals")));
+        }
+        ordinals.push(ordinal);
+    }
+    if ordinals.is_empty() {
+        return Err(plan_error(format!("{name} must contain at least one device ordinal")));
+    }
+    Ok(ordinals)
+}
+
 fn env_usize(name: &'static str, default: usize) -> DataFusionResult<usize> {
     match std::env::var_os(name) {
         Some(value) => value
@@ -1082,6 +1110,7 @@ mod tests {
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
             run_overload_probe: false,
+            device_ordinals: vec![0],
         };
 
         let error = config.validate().unwrap_err();

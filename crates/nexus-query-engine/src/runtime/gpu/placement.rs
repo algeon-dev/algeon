@@ -1,7 +1,7 @@
 //! Placement policies for independent query scheduling across devices.
 
 use super::DeviceRegistry;
-use crate::error::Result;
+use crate::error::{QueryError, Result};
 
 /// Placement input for one admitted query.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +42,50 @@ pub trait PlacementPolicy: Send + Sync {
     fn candidates(&self, registry: &DeviceRegistry, request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>>;
 }
 
+/// Configured placement policy for query-service admission.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum QueryPlacementPolicy {
+    /// Prefer the device with the most ungranted memory, then fewer active queries.
+    #[default]
+    LeastLoaded,
+    /// Prefer the fullest device that can satisfy the query minimum.
+    BestFit,
+    /// Place every query on one configured CUDA ordinal.
+    Pinned { device_ordinal: usize },
+}
+
+impl QueryPlacementPolicy {
+    /// Stable snake-case label for diagnostics and config surfaces.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LeastLoaded => "least_loaded",
+            Self::BestFit => "best_fit",
+            Self::Pinned { .. } => "pinned",
+        }
+    }
+}
+
+impl PlacementPolicy for QueryPlacementPolicy {
+    fn candidates(&self, registry: &DeviceRegistry, request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>> {
+        match *self {
+            Self::LeastLoaded => LeastLoadedPlacement.candidates(registry, request),
+            Self::BestFit => BestFitPlacement.candidates(registry, request),
+            Self::Pinned { device_ordinal } => {
+                let device = cudf::DeviceId::new(device_ordinal).map_err(|error| {
+                    QueryError::from_cudf(
+                        "nexus_query_engine.query_service.placement",
+                        "failed to resolve pinned query-service CUDA device",
+                        error,
+                    )
+                    .with_fact("device_ordinal", device_ordinal)
+                })?;
+                PinnedDevicePlacement { device }.candidates(registry, request)
+            },
+        }
+    }
+}
+
 /// Places queries on the device with most ungranted capacity, then fewer actives.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LeastLoadedPlacement;
@@ -57,6 +101,27 @@ impl PlacementPolicy for LeastLoadedPlacement {
             });
         }
         Ok(rank_device_loads(loads)
+            .into_iter()
+            .filter_map(|ordinal| registry.context_by_ordinal(ordinal).ok().map(|context| context.device()))
+            .collect())
+    }
+}
+
+/// Places queries on the fullest device that can satisfy the minimum grant.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BestFitPlacement;
+
+impl PlacementPolicy for BestFitPlacement {
+    fn candidates(&self, registry: &DeviceRegistry, request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>> {
+        let mut loads = Vec::with_capacity(registry.len());
+        for context in registry.contexts() {
+            loads.push(DeviceLoad {
+                ordinal: context.device().ordinal(),
+                available_bytes: context.available_bytes()?,
+                active_queries: context.active_queries(),
+            });
+        }
+        Ok(rank_best_fit_device_loads(loads, request.min_device_budget_bytes)
             .into_iter()
             .filter_map(|ordinal| registry.context_by_ordinal(ordinal).ok().map(|context| context.device()))
             .collect())
@@ -93,6 +158,22 @@ fn rank_device_loads(mut loads: Vec<DeviceLoad>) -> Vec<usize> {
     loads.into_iter().map(|load| load.ordinal).collect()
 }
 
+fn rank_best_fit_device_loads(mut loads: Vec<DeviceLoad>, min_device_budget_bytes: u64) -> Vec<usize> {
+    loads.sort_by(|left, right| {
+        let left_fits = left.available_bytes >= min_device_budget_bytes;
+        let right_fits = right.available_bytes >= min_device_budget_bytes;
+        right_fits
+            .cmp(&left_fits)
+            .then_with(|| match (left_fits, right_fits) {
+                (true, true) => left.available_bytes.cmp(&right.available_bytes),
+                _ => right.available_bytes.cmp(&left.available_bytes),
+            })
+            .then_with(|| left.active_queries.cmp(&right.active_queries))
+            .then_with(|| left.ordinal.cmp(&right.ordinal))
+    });
+    loads.into_iter().map(|load| load.ordinal).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +188,41 @@ mod tests {
         ]);
 
         assert_eq!(ranked, vec![0, 3, 1, 2]);
+    }
+
+    #[test]
+    fn best_fit_ranking_prefers_fullest_device_that_can_fit_minimum() {
+        let ranked = rank_best_fit_device_loads(
+            vec![
+                DeviceLoad { ordinal: 0, available_bytes: 80, active_queries: 3 },
+                DeviceLoad { ordinal: 1, available_bytes: 30, active_queries: 0 },
+                DeviceLoad { ordinal: 2, available_bytes: 60, active_queries: 1 },
+                DeviceLoad { ordinal: 3, available_bytes: 60, active_queries: 0 },
+            ],
+            50,
+        );
+
+        assert_eq!(ranked, vec![3, 2, 0, 1]);
+    }
+
+    #[test]
+    fn best_fit_ranking_keeps_non_fitting_devices_last_by_available_bytes() {
+        let ranked = rank_best_fit_device_loads(
+            vec![
+                DeviceLoad { ordinal: 0, available_bytes: 30, active_queries: 0 },
+                DeviceLoad { ordinal: 1, available_bytes: 20, active_queries: 0 },
+                DeviceLoad { ordinal: 2, available_bytes: 40, active_queries: 0 },
+            ],
+            50,
+        );
+
+        assert_eq!(ranked, vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn query_placement_policy_names_are_stable_snake_case() {
+        assert_eq!(QueryPlacementPolicy::LeastLoaded.as_str(), "least_loaded");
+        assert_eq!(QueryPlacementPolicy::BestFit.as_str(), "best_fit");
+        assert_eq!(QueryPlacementPolicy::Pinned { device_ordinal: 2 }.as_str(), "pinned");
     }
 }
