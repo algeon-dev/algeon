@@ -139,6 +139,8 @@ impl QueryAdmission {
                         device_ordinal = report.device_ordinal,
                         capacity_bytes = report.capacity_bytes,
                         outstanding_bytes = report.outstanding_bytes,
+                        evictable_bytes = report.evictable_bytes,
+                        free_bytes = report.free_bytes,
                         available_bytes = report.available_bytes,
                         active_grants = report.grants.len(),
                         "query service memory governor report"
@@ -227,16 +229,20 @@ impl QueryAdmission {
                     ServerError::session("failed to read query service memory governor reports", error)
                 })?;
                 output.push_str("\n[memory_governor_reports]\n");
-                output.push_str("device_ordinal\tcapacity_bytes\toutstanding_bytes\tavailable_bytes\tactive_grants\n");
+                output.push_str(
+                    "device_ordinal\tcapacity_bytes\toutstanding_bytes\tavailable_bytes\tactive_grants\tevictable_bytes\tfree_bytes\n",
+                );
                 for report in &reports {
                     let _ = writeln!(
                         output,
-                        "{}\t{}\t{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                         report.device_ordinal,
                         report.capacity_bytes,
                         report.outstanding_bytes,
                         report.available_bytes,
-                        report.grants.len()
+                        report.grants.len(),
+                        report.evictable_bytes,
+                        report.free_bytes
                     );
                 }
 
@@ -497,7 +503,7 @@ mod tests {
         assert!(payload.contains("[tenant_queue_depths]\ntenant_id\tqueued_queries\ndefault\t0\n"), "{payload}");
         assert!(
             payload.contains(
-                "[memory_governor_reports]\ndevice_ordinal\tcapacity_bytes\toutstanding_bytes\tavailable_bytes\tactive_grants\n0\t1024\t512\t512\t1\n"
+                "[memory_governor_reports]\ndevice_ordinal\tcapacity_bytes\toutstanding_bytes\tavailable_bytes\tactive_grants\tevictable_bytes\tfree_bytes\n0\t1024\t512\t512\t1\t0\t512\n"
             ),
             "{payload}"
         );
