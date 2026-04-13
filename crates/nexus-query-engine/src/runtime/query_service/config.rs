@@ -162,6 +162,14 @@ pub struct QueryServiceConfig {
     pub source_chunk_planning_options: SourceChunkPlanningOptions,
     /// Optional service-scoped graph calibration metadata copied into tenant contexts.
     pub graph_memory_calibration_override: GraphMemoryCalibrationOverride,
+    /// Optional per-device retained-byte cap for service-owned decoded local-Parquet source caches.
+    ///
+    /// `None` disables the cache. When enabled, each configured CUDA device gets
+    /// one cache with runtime-aware entries, so cross-runtime lookups cannot
+    /// evict otherwise reusable entries and the cap remains per device. Until
+    /// cross-runtime source-frame reuse is modeled, one source can retain a
+    /// separate entry per warmed service stream-pool runtime.
+    pub local_parquet_source_cache_max_retained_bytes: Option<u64>,
     /// Optional service stream pool size. `None` uses the SM-aware default.
     pub stream_pool_size: Option<usize>,
     /// Soft memory-governor capacity for the configured CUDA device.
@@ -200,6 +208,9 @@ impl QueryServiceConfig {
         self.keyed_hash_join_strategy_options.validate()?;
         self.aggregate_strategy_execution_options.validate()?;
         self.source_chunk_planning_options.validate()?;
+        if let Some(max_retained_bytes) = self.local_parquet_source_cache_max_retained_bytes {
+            validate_nonzero_config_field("local_parquet_source_cache_max_retained_bytes", max_retained_bytes == 0)?;
+        }
         if let Some(stream_pool_size) = self.stream_pool_size
             && stream_pool_size == 0
         {
@@ -269,6 +280,7 @@ impl Default for QueryServiceConfig {
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
+            local_parquet_source_cache_max_retained_bytes: None,
             stream_pool_size: None,
             device_capacity_bytes: None,
             max_concurrent_queries: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,

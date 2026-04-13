@@ -58,6 +58,7 @@ max-threads = 8
 [[profile.default.overrides]]
 filter = '''
 (package(nexus-query-engine) & binary(native_execution_tests))
+| (package(nexus-query-engine) & kind(lib))
 | (package(nexus-query-engine) & binary(native_contract_tests))
 | (package(datafusion-nexus) & binary(cugraph_tests))
 | (package(datafusion-nexus) & binary(iceberg_tests))
@@ -72,6 +73,7 @@ test-group = "gpu"
 [[profile.gpu-parallel.overrides]]
 filter = '''
 (package(nexus-query-engine) & binary(native_execution_tests))
+| (package(nexus-query-engine) & kind(lib))
 | (package(nexus-query-engine) & binary(native_contract_tests))
 | (package(datafusion-nexus) & binary(cugraph_tests))
 | (package(datafusion-nexus) & binary(iceberg_tests))

@@ -1807,9 +1807,9 @@ fn bounded_local_parquet_source_cache_reuses_equivalent_relowered_scan_contract(
         let source = builder.add_source(SourceNode::LocalParquet(source));
         builder.finish_with_host_sink(source)
     };
-    let build_context = || {
+    let build_context = |runtime: &Arc<cudf::Runtime>| {
         ExecutionContext::builder()
-            .with_shared_runtime(Arc::clone(&runtime))
+            .with_shared_runtime(Arc::clone(runtime))
             .with_memory_control_policy(MemoryControlPolicy::Bounded {
                 device_budget_bytes: 8 * 1024 * 1024 * 1024,
                 max_source_chunk_bytes: 1024 * 1024,
@@ -1822,7 +1822,7 @@ fn bounded_local_parquet_source_cache_reuses_equivalent_relowered_scan_contract(
             .unwrap()
     };
 
-    let first = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    let first = execute_query_plan(&build_context(&runtime), &build_plan()).unwrap();
     let first_metrics = first.metrics();
     assert_eq!(first_metrics.source_chunks_planned, 3);
     assert_eq!(first_metrics.source_cache_hits, 0);
@@ -1834,7 +1834,7 @@ fn bounded_local_parquet_source_cache_reuses_equivalent_relowered_scan_contract(
     let retained_bytes = cache.retained_device_bytes().unwrap();
     assert!(retained_bytes > 0);
 
-    let second = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    let second = execute_query_plan(&build_context(&runtime), &build_plan()).unwrap();
     let second_metrics = second.metrics();
     assert_eq!(second_metrics.source_chunks_planned, 3);
     assert_eq!(second_metrics.source_cache_hits, 3);
@@ -1855,6 +1855,22 @@ fn bounded_local_parquet_source_cache_reuses_equivalent_relowered_scan_contract(
     assert_eq!(batch.num_rows(), 6);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1, 3, 2, 3]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 10, 20, 20, 30, 5]);
+
+    let other_runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let third = execute_query_plan(&build_context(&other_runtime), &build_plan()).unwrap();
+    let third_metrics = third.metrics();
+    assert_eq!(third_metrics.source_cache_hits, 0);
+    assert_eq!(third_metrics.source_cache_misses, 3);
+    assert_eq!(third_metrics.source_cache_inserts, 3);
+    assert_eq!(cache.len().unwrap(), 6);
+    let retained_after_other_runtime = cache.retained_device_bytes().unwrap();
+    assert_eq!(retained_after_other_runtime, retained_bytes.saturating_mul(2));
+
+    let fourth = execute_query_plan(&build_context(&runtime), &build_plan()).unwrap();
+    let fourth_metrics = fourth.metrics();
+    assert_eq!(fourth_metrics.source_cache_hits, 3);
+    assert_eq!(fourth_metrics.source_cache_misses, 0);
+    assert_eq!(fourth_metrics.source_cache_inserts, 0);
 
     fs::remove_dir_all(dir).unwrap();
 }

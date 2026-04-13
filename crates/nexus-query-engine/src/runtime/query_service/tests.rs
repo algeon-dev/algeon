@@ -604,6 +604,36 @@ fn query_service_rejects_invalid_source_chunk_planning_policy() {
 }
 
 #[test]
+fn query_service_rejects_zero_local_parquet_source_cache_capacity() {
+    let config =
+        QueryServiceConfig { local_parquet_source_cache_max_retained_bytes: Some(0), ..QueryServiceConfig::default() };
+
+    let error = QueryService::new_for_admission_tests(
+        config,
+        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("field"), Some("local_parquet_source_cache_max_retained_bytes"));
+    assert_eq!(error.fact_value("reason"), Some("zero"));
+}
+
+#[test]
+fn local_parquet_source_cache_resources_are_per_device() {
+    let caches = local_parquet_source_caches_for_ordinals(&[0, 2], Some(4096));
+
+    let device_0 = caches.get(&0).expect("device 0 cache should exist");
+    let device_2 = caches.get(&2).expect("device 2 cache should exist");
+    assert_eq!(caches.len(), 2);
+    assert_eq!(device_0.max_retained_device_bytes(), 4096);
+    assert_eq!(device_2.max_retained_device_bytes(), 4096);
+    assert!(!Arc::ptr_eq(device_0, device_2));
+    assert!(local_parquet_source_caches_for_ordinals(&[0, 2], None).is_empty());
+}
+
+#[test]
 fn query_service_resources_use_independent_lakehouse_cache_fill_limits() {
     let config = QueryServiceConfig {
         source_fetch: SourceFetchConfig {
@@ -657,9 +687,82 @@ fn query_service_resources_use_independent_lakehouse_cache_fill_limits() {
 }
 
 #[test]
+fn query_service_context_carries_local_parquet_source_cache() {
+    let config = QueryServiceConfig {
+        local_parquet_source_cache_max_retained_bytes: Some(4096),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_deployment(
+        config,
+        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let handle = service.admit_query("tenant").unwrap();
+    let tenant_context = handle.acquire_context().unwrap();
+    let resources = service.inner.resources.as_ref().unwrap();
+    let service_cache = resources.local_parquet_source_cache_for_device(0).expect("device cache should be installed");
+    let context_cache = tenant_context
+        .context()
+        .local_parquet_source_cache()
+        .expect("service context should carry the per-device source cache");
+
+    assert_eq!(context_cache.max_retained_device_bytes(), 4096);
+    assert!(Arc::ptr_eq(&service_cache, &context_cache));
+}
+
+#[test]
+fn query_service_source_cache_is_shared_across_stream_runtimes() {
+    let config = QueryServiceConfig {
+        local_parquet_source_cache_max_retained_bytes: Some(4096),
+        max_concurrent_queries: 2,
+        stream_pool_size: Some(6),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_deployment(
+        config,
+        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let first_handle = service.admit_query("tenant").unwrap();
+    let second_handle = service.admit_query("tenant").unwrap();
+    let first_context = first_handle.acquire_context().unwrap();
+    let second_context = second_handle.acquire_context().unwrap();
+
+    let first_runtime = first_context.context().shared_runtime();
+    let second_runtime = second_context.context().shared_runtime();
+    assert!(
+        !Arc::ptr_eq(&first_runtime, &second_runtime),
+        "holding the first context should force the second stream-pool runtime"
+    );
+
+    let first_cache = first_context.context().local_parquet_source_cache().expect("first runtime should have a cache");
+    let second_cache =
+        second_context.context().local_parquet_source_cache().expect("second runtime should have a cache");
+
+    assert_eq!(first_cache.max_retained_device_bytes(), 4096);
+    assert_eq!(second_cache.max_retained_device_bytes(), 4096);
+    assert!(
+        Arc::ptr_eq(&first_cache, &second_cache),
+        "same-device service contexts share one runtime-aware cache with one retained-byte cap"
+    );
+}
+
+#[test]
 fn query_service_context_carries_graph_calibration_override() {
     let graph_memory_calibration_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-    let config = QueryServiceConfig { graph_memory_calibration_override, ..QueryServiceConfig::default() };
+    let config = QueryServiceConfig {
+        graph_memory_calibration_override,
+        // Runtime-backed services contend for process-global governor claims in
+        // unit tests; optimistic claims can coexist across test cases.
+        slot_guarantee: SlotGuarantee::Optimistic,
+        ..QueryServiceConfig::default()
+    };
     let service = QueryService::new_with_deployment(
         config,
         vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],

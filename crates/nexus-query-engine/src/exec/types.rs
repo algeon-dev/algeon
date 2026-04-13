@@ -850,9 +850,29 @@ struct GpuLocalParquetSourceCacheEntry {
     last_access_epoch: u64,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct GpuLocalParquetSourceCacheEntryKey {
+    source_key: GpuLocalParquetSourceCacheKey,
+    runtime_key: usize,
+}
+
+impl GpuLocalParquetSourceCacheEntryKey {
+    fn new(source_key: GpuLocalParquetSourceCacheKey, runtime: &Arc<cudf::Runtime>) -> Self {
+        Self { source_key, runtime_key: Arc::as_ptr(runtime) as usize }
+    }
+
+    fn for_context(source_key: &GpuLocalParquetSourceCacheKey, context: &ExecutionContext) -> Self {
+        Self::new(source_key.clone(), &context.shared_runtime())
+    }
+
+    fn for_handle(source_key: GpuLocalParquetSourceCacheKey, handle: &GpuResultHandle) -> Self {
+        Self::new(source_key, handle.runtime())
+    }
+}
+
 #[derive(Default)]
 struct GpuLocalParquetSourceCacheState {
-    cache: HashMap<GpuLocalParquetSourceCacheKey, GpuLocalParquetSourceCacheEntry>,
+    cache: HashMap<GpuLocalParquetSourceCacheEntryKey, GpuLocalParquetSourceCacheEntry>,
     retained_device_bytes: u64,
     next_access_epoch: u64,
 }
@@ -860,8 +880,10 @@ struct GpuLocalParquetSourceCacheState {
 /// LRU cache for GPU-resident local Parquet source results.
 ///
 /// Capacity and retained sizes are device bytes. Cached handles remain
-/// runtime/device-affine; a lookup with a different runtime or device silently
-/// misses, while a schema mismatch is treated as an invalid plan.
+/// runtime/device-affine, and runtime identity is part of the internal cache
+/// key. A lookup with a runtime that has not decoded the source yet misses
+/// without evicting entries for other runtimes, while a schema mismatch is
+/// treated as an invalid plan.
 pub struct GpuLocalParquetSourceCache {
     max_retained_device_bytes: u64,
     state: Mutex<GpuLocalParquetSourceCacheState>,
@@ -919,9 +941,10 @@ impl GpuLocalParquetSourceCache {
         context: &ExecutionContext,
         schema: &SchemaRef,
     ) -> Result<Option<(GpuResultHandle, u64)>> {
+        let entry_key = GpuLocalParquetSourceCacheEntryKey::for_context(key, context);
         let mut state = self.lock()?;
         let access_epoch = state.next_epoch();
-        let Some(entry) = state.cache.get_mut(key) else {
+        let Some(entry) = state.cache.get_mut(&entry_key) else {
             return Ok(None);
         };
         entry.last_access_epoch = access_epoch;
@@ -930,7 +953,7 @@ impl GpuLocalParquetSourceCache {
         drop(state);
         if !handle.can_reuse_for_source_cache(context, schema)? {
             let mut state = self.lock()?;
-            if let Some(removed) = state.cache.remove(key) {
+            if let Some(removed) = state.cache.remove(&entry_key) {
                 state.retained_device_bytes = state.retained_device_bytes.saturating_sub(removed.retained_device_bytes);
             }
             return Ok(None);
@@ -954,9 +977,10 @@ impl GpuLocalParquetSourceCache {
         retained_device_bytes: u64,
         protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
     ) -> Result<GpuLocalParquetSourceCacheInsertResult> {
+        let entry_key = GpuLocalParquetSourceCacheEntryKey::for_handle(key, &handle);
         let mut state = self.lock()?;
         let retained_before = state.retained_device_bytes;
-        if state.cache.contains_key(&key) {
+        if state.cache.contains_key(&entry_key) {
             return Ok(GpuLocalParquetSourceCacheInsertResult {
                 outcome: GpuLocalParquetSourceCacheInsert::AlreadyPresent,
                 evicted_device_bytes: 0,
@@ -980,7 +1004,9 @@ impl GpuLocalParquetSourceCache {
             });
         }
         let last_access_epoch = state.next_epoch();
-        state.cache.insert(key, GpuLocalParquetSourceCacheEntry { handle, retained_device_bytes, last_access_epoch });
+        state
+            .cache
+            .insert(entry_key, GpuLocalParquetSourceCacheEntry { handle, retained_device_bytes, last_access_epoch });
         state.retained_device_bytes = state.retained_device_bytes.saturating_add(retained_device_bytes);
         Ok(GpuLocalParquetSourceCacheInsertResult {
             outcome: GpuLocalParquetSourceCacheInsert::Inserted,
@@ -1047,10 +1073,10 @@ impl GpuLocalParquetSourceCacheState {
     fn lru_unprotected_key(
         &self,
         protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
-    ) -> Option<GpuLocalParquetSourceCacheKey> {
+    ) -> Option<GpuLocalParquetSourceCacheEntryKey> {
         self.cache
             .iter()
-            .filter(|(key, _entry)| !protected_keys.contains(*key))
+            .filter(|(key, _entry)| !protected_keys.contains(&key.source_key))
             .min_by_key(|(_key, entry)| entry.last_access_epoch)
             .map(|(key, _entry)| key.clone())
     }
