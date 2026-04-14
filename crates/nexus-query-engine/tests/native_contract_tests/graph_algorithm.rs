@@ -211,12 +211,6 @@ fn graph_residency_fingerprint_distinguishes_rowset_and_preparation_contracts() 
     );
     assert_ne!(base.source_fingerprint, graph_keyable_descriptor(&row_group_plan, &raw_spec).source_fingerprint);
 
-    let scan_limit_plan = graph_edge_source_plan_from_source(
-        graph_local_parquet_source(&["src", "dst"]).with_scan_limit(Some(10)),
-        Some(&["src", "dst"]),
-    );
-    assert_ne!(base.source_fingerprint, graph_keyable_descriptor(&scan_limit_plan, &raw_spec).source_fingerprint);
-
     let predicate = Expr::binary(Expr::column("src"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(7)));
     let predicate_plan = graph_edge_source_plan_from_source(
         graph_local_parquet_source(&["src", "dst"]).with_reader_predicate(predicate),
@@ -316,6 +310,15 @@ fn graph_residency_descriptor_bypasses_delete_files_and_unstable_identity() {
     assert_eq!(
         graph_residency_descriptor_for_edge_plan(&unstable_plan, &spec).bypass_reason(),
         Some(GraphSourceFingerprintBypassReason::UnstableSourceIdentity),
+    );
+
+    let scan_limit_plan = graph_edge_source_plan_from_source(
+        graph_local_parquet_source(&["src", "dst"]).with_scan_limit(Some(10)),
+        Some(&["src", "dst"]),
+    );
+    assert_eq!(
+        graph_residency_descriptor_for_edge_plan(&scan_limit_plan, &spec).bypass_reason(),
+        Some(GraphSourceFingerprintBypassReason::UnsupportedTransformedInput),
     );
 }
 

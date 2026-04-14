@@ -44,11 +44,11 @@ use nexus_query_engine::{
     GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
     GraphPageRankPersonalizationInput as NativeGraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
     GraphPredicateInput as NativeGraphPredicateInput, GraphResidencyDescriptor, GraphResidencyPlanAnalysis,
-    GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams,
-    LimitSpec, LiteralValue, MemoryControlPolicy, PlanNode, ProjectionOutput, QueryMetrics, QueryOutput,
-    QueryPlacementHint, QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
-    graph_edge_list_output_rows_for_plan, graph_memory_estimate_for_edge_list, graph_memory_reservation_required,
-    graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
+    GraphSccParams, GraphSourceFingerprintBypassReason, GraphSpectralClusteringParams, GraphSsspParams,
+    GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, MemoryControlPolicy, PlanNode,
+    ProjectionOutput, QueryMetrics, QueryOutput, QueryPlacementHint, QueryPlanBuilder, SourceNode, execute_query_plan,
+    execute_query_plan_with_gpu_inputs, graph_edge_list_output_rows_for_plan, graph_memory_estimate_for_edge_list,
+    graph_memory_reservation_required, graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
 };
 
 use super::{
@@ -114,7 +114,8 @@ impl CugraphAlgoExec {
         let schema = projected_schema(&spec.output_schema, projection.as_ref())?;
         let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
         let edge_normalize_inserted = cugraph_edge_normalize_inserted(&spec, &edge_source_canonical_facts);
-        let graph_residency = cugraph_graph_residency_descriptor(&spec, edge_source.as_ref(), edge_normalize_inserted);
+        let graph_residency =
+            cugraph_graph_residency_descriptor(&spec, Arc::clone(&edge_source), edge_normalize_inserted);
         let placement_hint =
             cugraph_graph_placement_hint(&spec, graph_residency.as_ref(), edge_normalize_inserted, &predicate_sources);
         let native_execution_config = cugraph_execution_config_with_graph_aware_ticket(
@@ -201,7 +202,8 @@ impl CugraphAlgoExec {
             let edge_frame =
                 execute_edge_source_to_gpu(native_context, Arc::clone(&self.edge_source), Arc::clone(&task_context))
                     .await?;
-            let edge_frame = attach_graph_residency(edge_frame, self.graph_residency.as_ref());
+            let edge_frame =
+                attach_graph_residency(edge_frame, self.graph_residency.as_ref(), edge_schema.as_ref(), &self.spec);
             let predicate_frames =
                 execute_predicate_sources_to_gpu(native_context, &self.predicate_sources, Arc::clone(&task_context))
                     .await?;
@@ -286,7 +288,8 @@ impl CugraphAlgoExec {
         let edge_frame =
             execute_edge_source_to_gpu(native_context, Arc::clone(&self.edge_source), Arc::clone(&task_context))
                 .await?;
-        let edge_frame = attach_graph_residency(edge_frame, self.graph_residency.as_ref());
+        let edge_frame =
+            attach_graph_residency(edge_frame, self.graph_residency.as_ref(), edge_schema.as_ref(), &self.spec);
         let predicate_frames =
             execute_predicate_sources_to_gpu(native_context, &self.predicate_sources, Arc::clone(&task_context))
                 .await?;
@@ -475,7 +478,7 @@ impl ExecutionPlan for CugraphAlgoExec {
             let edge_frame =
                 execute_edge_source_to_gpu(context, Arc::clone(&edge_source), Arc::clone(&execution_task_context))
                     .await?;
-            let edge_frame = attach_graph_residency(edge_frame, graph_residency.as_ref());
+            let edge_frame = attach_graph_residency(edge_frame, graph_residency.as_ref(), edge_schema.as_ref(), &spec);
             let predicate_frames =
                 execute_predicate_sources_to_gpu(context, &predicate_sources, Arc::clone(&execution_task_context))
                     .await?;
@@ -720,25 +723,60 @@ fn graph_edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Option<u64>
 
 fn cugraph_graph_residency_descriptor(
     spec: &CugraphAlgorithmSpec,
-    edge_source: &dyn ExecutionPlan,
+    edge_source: Arc<dyn ExecutionPlan>,
     edge_normalize_inserted: bool,
 ) -> Option<GraphResidencyDescriptor> {
-    let native_spec = native_graph_spec_for_residency(spec, edge_normalize_inserted);
-    let analysis = if let Some(native) = as_native_cudf_exec(edge_source) {
-        graph_residency_descriptor_for_edge_plan(native.native_plan(), &native_spec)
-    } else if let Some(native) = as_native_cudf_composed_exec(edge_source) {
-        graph_residency_descriptor_for_edge_plan(native.native_plan(), &native_spec)
-    } else if let Some(native) = edge_source.downcast_ref::<NativeCudfGpuProducerExec>() {
-        graph_residency_descriptor_for_edge_plan(native.native_plan(), &native_spec)
-    } else {
-        GraphResidencyPlanAnalysis::Bypass(
-            nexus_query_engine::GraphSourceFingerprintBypassReason::NonLocalParquetSource,
-        )
-    };
-    match analysis {
-        GraphResidencyPlanAnalysis::Keyable(descriptor) => Some(descriptor),
-        GraphResidencyPlanAnalysis::Bypass(_) => None,
+    if cugraph_spec_uses_logical_vertex_mapping(spec, edge_source.schema().as_ref()) {
+        return None;
     }
+    let native_spec = native_graph_spec_for_residency(spec, edge_normalize_inserted);
+    cugraph_graph_residency_analysis(Arc::clone(&edge_source), &native_spec).descriptor().cloned()
+}
+
+fn cugraph_spec_uses_logical_vertex_mapping(spec: &CugraphAlgorithmSpec, edge_schema: &Schema) -> bool {
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return false;
+    };
+    if params.source.is_utf8() {
+        return true;
+    }
+    if !matches!(params.source, CugraphBfsSource::Relation(_)) {
+        return false;
+    }
+    let Ok(source_field) = edge_schema.field_with_name(&spec.src_col) else {
+        return true;
+    };
+    let Ok(destination_field) = edge_schema.field_with_name(&spec.dst_col) else {
+        return true;
+    };
+    is_bfs_logical_vertex_type(source_field.data_type()) && is_bfs_logical_vertex_type(destination_field.data_type())
+}
+
+fn cugraph_graph_residency_analysis(
+    edge_source: Arc<dyn ExecutionPlan>,
+    native_spec: &GraphAlgorithmSpec,
+) -> GraphResidencyPlanAnalysis {
+    if let Some(native) = as_native_cudf_exec(edge_source.as_ref()) {
+        graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
+    } else if let Some(native) = as_native_cudf_composed_exec(edge_source.as_ref()) {
+        graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
+    } else if let Some(native) = edge_source.as_ref().downcast_ref::<NativeCudfGpuProducerExec>() {
+        graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
+    } else {
+        cugraph_datafusion_edge_plan_residency_analysis(edge_source, native_spec)
+    }
+}
+
+fn cugraph_datafusion_edge_plan_residency_analysis(
+    edge_source: Arc<dyn ExecutionPlan>,
+    native_spec: &GraphAlgorithmSpec,
+) -> GraphResidencyPlanAnalysis {
+    let lowering = crate::native::lower_physical_plan_to_native(edge_source);
+    if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
+        return GraphResidencyPlanAnalysis::Bypass(GraphSourceFingerprintBypassReason::NonLocalParquetSource);
+    }
+    let native_plan = &lowering.plans[0];
+    graph_residency_descriptor_for_edge_plan(native_plan, native_spec)
 }
 
 fn native_graph_spec_for_residency(spec: &CugraphAlgorithmSpec, edge_normalize_inserted: bool) -> GraphAlgorithmSpec {
@@ -765,10 +803,58 @@ fn native_graph_spec_for_residency(spec: &CugraphAlgorithmSpec, edge_normalize_i
     .with_edge_normalize_inserted(edge_normalize_inserted)
 }
 
-fn attach_graph_residency(frame: GpuDataFrame, graph_residency: Option<&GraphResidencyDescriptor>) -> GpuDataFrame {
+fn attach_graph_residency(
+    frame: GpuDataFrame,
+    graph_residency: Option<&GraphResidencyDescriptor>,
+    edge_schema: &Schema,
+    spec: &CugraphAlgorithmSpec,
+) -> GpuDataFrame {
     match graph_residency {
-        Some(graph_residency) => frame.with_graph_residency(graph_residency.clone()),
+        Some(graph_residency) if graph_residency_matches_edge_schema(graph_residency, edge_schema, spec) => {
+            frame.with_graph_residency(graph_residency.clone())
+        },
         None => frame,
+        Some(_) => frame,
+    }
+}
+
+fn graph_residency_matches_edge_schema(
+    graph_residency: &GraphResidencyDescriptor,
+    edge_schema: &Schema,
+    spec: &CugraphAlgorithmSpec,
+) -> bool {
+    let Ok(source_field) = edge_schema.field_with_name(&spec.src_col) else {
+        return false;
+    };
+    let Ok(destination_field) = edge_schema.field_with_name(&spec.dst_col) else {
+        return false;
+    };
+    if source_field.data_type() != &graph_residency.vertex_data_type
+        || destination_field.data_type() != &graph_residency.vertex_data_type
+    {
+        return false;
+    }
+    graph_residency_optional_dtype_matches(
+        graph_residency.weight_data_type.as_ref(),
+        spec.weight_col.as_deref(),
+        edge_schema,
+    ) && graph_residency_optional_dtype_matches(
+        graph_residency.edge_id_data_type.as_ref(),
+        spec.edge_id_col.as_deref(),
+        edge_schema,
+    )
+}
+
+fn graph_residency_optional_dtype_matches(
+    expected: Option<&DataType>,
+    column: Option<&str>,
+    edge_schema: &Schema,
+) -> bool {
+    match expected {
+        Some(expected) => column
+            .and_then(|column| edge_schema.field_with_name(column).ok())
+            .is_some_and(|field| field.data_type() == expected),
+        None => true,
     }
 }
 
@@ -911,10 +997,10 @@ fn cugraph_edge_canonical_facts(plan: &dyn ExecutionPlan, spec: &CugraphAlgorith
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{fs::File, sync::Arc};
 
     use arrow::{
-        array::{ArrayRef, Float64Array, Int64Array},
+        array::{ArrayRef, Float64Array, Int64Array, StringArray},
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
@@ -924,22 +1010,25 @@ mod tests {
         logical_expr::Operator,
         physical_expr::expressions::{binary, col, lit},
         physical_plan::{empty::EmptyExec, filter::FilterExec},
+        prelude::{ParquetReadOptions, SessionConfig, SessionContext},
     };
     use nexus_query_engine::{
         DeploymentIoCapability, Expr, GdsDriverProbeStatus, KvikioCompatModeStatus, LiteralBatchSource,
         LocalParquetFile, LocalParquetSource, NvidiaFsProbeStatus, ProjectionOutput, QueryService, QueryServiceConfig,
         QueryServiceTenantConfig, SortExpr, SortSpec, TenantId,
     };
+    use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
     use super::*;
     use crate::{
         graph_sql::{
-            CugraphGraphOptions, CugraphPageRankParams, CugraphTableReference, CugraphTriangleCountAllParams,
-            result_schema_for_params,
+            CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphOptions, CugraphPageRankParams, CugraphSqlConfig,
+            CugraphTableReference, CugraphTriangleCountAllParams, result_schema_for_params,
         },
         native_exec::{
             QueryAdmissionSource, task_context_with_query_admission_ticket, wrap_plan_with_query_admission_ticket,
         },
+        session::CudfSessionStateBuilderExt,
     };
 
     fn admission_only_source() -> QueryAdmissionSource {
@@ -974,6 +1063,10 @@ mod tests {
         ]))
     }
 
+    fn string_edge_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, false), Field::new("dst", DataType::Utf8, false)]))
+    }
+
     fn memory_edge_source(rows: usize) -> Arc<dyn ExecutionPlan> {
         let schema = edge_schema();
         let src = Arc::new(Int64Array::from_iter_values((0..rows).map(|row| row as i64))) as ArrayRef;
@@ -981,6 +1074,60 @@ mod tests {
         let weight = Arc::new(Float64Array::from_iter_values((0..rows).map(|_| 1.0))) as ArrayRef;
         let batch = RecordBatch::try_new(Arc::clone(&schema), vec![src, dst, weight]).unwrap();
         MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap() as Arc<dyn ExecutionPlan>
+    }
+
+    fn write_edge_parquet(path: &std::path::Path) {
+        let schema = edge_schema();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(vec![0, 1, 2])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![1, 2, 0])) as ArrayRef,
+                Arc::new(Float64Array::from(vec![1.0, 1.0, 1.0])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let file = File::create(path).unwrap();
+        let mut writer = ArrowWriter::try_new(
+            file,
+            schema,
+            Some(WriterProperties::builder().set_max_row_group_row_count(Some(2)).build()),
+        )
+        .unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+
+    fn write_string_edge_parquet(path: &std::path::Path) {
+        let schema = string_edge_schema();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(vec!["alice", "bob", "carol"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["bob", "carol", "alice"])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let file = File::create(path).unwrap();
+        let mut writer = ArrowWriter::try_new(
+            file,
+            schema,
+            Some(WriterProperties::builder().set_max_row_group_row_count(Some(2)).build()),
+        )
+        .unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+
+    async fn datafusion_parquet_edge_source(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+        datafusion_parquet_edge_source_sql(path, "SELECT src, dst, weight FROM edges").await
+    }
+
+    async fn datafusion_parquet_edge_source_sql(path: &std::path::Path, sql: &str) -> Arc<dyn ExecutionPlan> {
+        let config = SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false);
+        let ctx = SessionContext::new_with_config(config);
+        ctx.register_parquet("edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+        ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap()
     }
 
     #[test]
@@ -1090,6 +1237,54 @@ mod tests {
         }
     }
 
+    fn bfs_spec() -> CugraphAlgorithmSpec {
+        let params = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
+            source: CugraphBfsSource::scalar_i64(0),
+            depth_limit: Some(3),
+            predicates: Default::default(),
+            output: CugraphBfsOutputOptions { mode: CugraphBfsOutputMode::Normalized, return_target_info: false },
+        }));
+        CugraphAlgorithmSpec {
+            algorithm: CugraphAlgorithm::Bfs,
+            table_name: CugraphTableReference::parse("edges").unwrap(),
+            src_col: "src".to_string(),
+            dst_col: "dst".to_string(),
+            weight_col: None,
+            edge_id_col: None,
+            graph_options: CugraphGraphOptions {
+                directed: true,
+                renumber: true,
+                construction_policy: CugraphGraphConstructionPolicy::RawLibcugraph,
+            },
+            output_schema: result_schema_for_params(CugraphAlgorithm::Bfs, &params),
+            params,
+        }
+    }
+
+    fn bfs_utf8_spec() -> CugraphAlgorithmSpec {
+        let params = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
+            source: CugraphBfsSource::scalar_utf8("alice"),
+            depth_limit: Some(3),
+            predicates: Default::default(),
+            output: CugraphBfsOutputOptions { mode: CugraphBfsOutputMode::Normalized, return_target_info: false },
+        }));
+        CugraphAlgorithmSpec {
+            algorithm: CugraphAlgorithm::Bfs,
+            table_name: CugraphTableReference::parse("edges").unwrap(),
+            src_col: "src".to_string(),
+            dst_col: "dst".to_string(),
+            weight_col: None,
+            edge_id_col: None,
+            graph_options: CugraphGraphOptions {
+                directed: true,
+                renumber: true,
+                construction_policy: CugraphGraphConstructionPolicy::RawLibcugraph,
+            },
+            output_schema: result_schema_for_params(CugraphAlgorithm::Bfs, &params),
+            params,
+        }
+    }
+
     #[test]
     fn cugraph_execution_config_creates_plan_ticket_for_backend_admission_source() {
         let source = admission_only_source();
@@ -1183,6 +1378,175 @@ mod tests {
             "Python-compatible edge normalization must keep weight in the source fingerprint even for algorithms \
              that do not consume weights directly",
         );
+    }
+
+    #[tokio::test]
+    async fn cugraph_algo_exec_records_graph_residency_for_datafusion_parquet_edge_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edges.parquet");
+        write_edge_parquet(&path);
+        let config = NativeCudfExecutionConfig::unbounded();
+        let edge_source = datafusion_parquet_edge_source(&path).await;
+
+        let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
+            .expect("cuGraph exec should build for DataFusion local-Parquet edge source");
+        let descriptor = exec.graph_residency.as_ref().expect("DataFusion local-Parquet edge source should be keyable");
+
+        assert!(descriptor.source_fingerprint.as_str().starts_with("graph-source-v1-fnv64-"));
+        assert_eq!(descriptor.vertex_data_type, DataType::Int64);
+        assert_eq!(descriptor.weight_data_type, Some(DataType::Float64));
+    }
+
+    #[tokio::test]
+    async fn cugraph_algo_exec_bypasses_graph_residency_for_datafusion_parquet_scan_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edges.parquet");
+        write_edge_parquet(&path);
+        let config = NativeCudfExecutionConfig::unbounded();
+        let edge_source = datafusion_parquet_edge_source_sql(&path, "SELECT src, dst, weight FROM edges LIMIT 2").await;
+
+        let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
+            .expect("cuGraph exec should build for scan-limited DataFusion local-Parquet edge source");
+
+        assert!(exec.graph_residency.is_none());
+    }
+
+    #[tokio::test]
+    async fn cugraph_algo_exec_bypasses_graph_residency_for_logical_bfs_datafusion_parquet_edge_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edges.parquet");
+        write_string_edge_parquet(&path);
+        let config = NativeCudfExecutionConfig::unbounded();
+        let edge_source = datafusion_parquet_edge_source_sql(&path, "SELECT src, dst FROM edges").await;
+
+        let exec = CugraphAlgoExec::try_new(bfs_utf8_spec(), edge_source, vec![], None, None, config)
+            .expect("cuGraph logical BFS exec should build for DataFusion local-Parquet edge source");
+        let placement_hint = cugraph_graph_placement_hint(
+            &exec.spec,
+            exec.graph_residency.as_ref(),
+            exec.edge_normalize_inserted(),
+            &exec.predicate_sources,
+        );
+
+        assert!(exec.graph_residency.is_none());
+        assert!(placement_hint.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cugraph_algo_exec_mints_graph_cache_placement_hint_for_datafusion_parquet_edge_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edges.parquet");
+        write_edge_parquet(&path);
+        let source = admission_only_source();
+        let config = NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let edge_source = datafusion_parquet_edge_source(&path).await;
+
+        let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
+            .expect("cuGraph exec should build for keyable DataFusion edge source");
+        let ticket =
+            exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
+        let resident_key = ticket
+            .placement_hint()
+            .resident_graph_key()
+            .expect("keyable DataFusion edge source should carry a graph placement hint");
+
+        assert_eq!(resident_key.orientation, nexus_query_engine::GraphResidencyOrientation::Transposed);
+        assert_eq!(resident_key.source_column, "src");
+        assert_eq!(resident_key.destination_column, "dst");
+        assert_eq!(resident_key.weight_column.as_deref(), Some("weight"));
+    }
+
+    #[tokio::test]
+    async fn cugraph_algo_exec_mints_bfs_graph_cache_placement_hint_for_datafusion_parquet_edge_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edges.parquet");
+        write_edge_parquet(&path);
+        let source = admission_only_source();
+        let config = NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let edge_source = datafusion_parquet_edge_source(&path).await;
+
+        let exec = CugraphAlgoExec::try_new(bfs_spec(), edge_source, vec![], None, None, config)
+            .expect("cuGraph BFS exec should build for keyable DataFusion edge source");
+        let ticket =
+            exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
+        let resident_key = ticket
+            .placement_hint()
+            .resident_graph_key()
+            .expect("keyable DataFusion BFS edge source should carry a graph placement hint");
+
+        assert_eq!(resident_key.orientation, nexus_query_engine::GraphResidencyOrientation::Forward);
+        assert_eq!(resident_key.source_column, "src");
+        assert_eq!(resident_key.destination_column, "dst");
+        assert_eq!(resident_key.weight_column, None);
+    }
+
+    #[tokio::test]
+    async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_parquet_edge_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edges.parquet");
+        write_edge_parquet(&path);
+        let config = SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false);
+        let state = datafusion::execution::SessionStateBuilder::new()
+            .with_config(config)
+            .with_default_features()
+            .with_cugraph_sql(CugraphSqlConfig::default())
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        ctx.register_parquet("citation_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+
+        let plan = ctx
+            .sql(
+                "SELECT COUNT(*) AS reached \
+                 FROM cugraph_bfs('citation_edges', 0, 'src', 'dst', NULL, \
+                 '{\"depth_limit\": 3, \"output_mode\": \"normalized\"}')",
+            )
+            .await
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .unwrap();
+        let exec = cugraph_exec_in_plan(Arc::clone(&plan)).expect("planned SQL should contain CugraphAlgoExec");
+        let exec = exec.downcast_ref::<CugraphAlgoExec>().unwrap();
+        let descriptor =
+            exec.graph_residency.as_ref().expect("stress-shaped SQL local-Parquet edge source should be keyable");
+        let edge_schema = exec.edge_source.schema();
+        let placement_hint = cugraph_graph_placement_hint(
+            &exec.spec,
+            Some(descriptor),
+            exec.edge_normalize_inserted(),
+            &exec.predicate_sources,
+        );
+
+        assert!(graph_residency_matches_edge_schema(descriptor, edge_schema.as_ref(), &exec.spec));
+        assert_eq!(
+            placement_hint.resident_graph_key().map(|key| key.orientation),
+            Some(nexus_query_engine::GraphResidencyOrientation::Forward)
+        );
+    }
+
+    fn cugraph_exec_in_plan(plan: Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {
+        if plan.downcast_ref::<CugraphAlgoExec>().is_some() {
+            return Some(plan);
+        }
+        plan.children().into_iter().find_map(|child| cugraph_exec_in_plan(Arc::clone(child)))
+    }
+
+    #[test]
+    fn graph_residency_schema_guard_rejects_descriptor_dtype_mismatch() {
+        let config = NativeCudfExecutionConfig::unbounded();
+        let edge_source = native_graph_residency_edge_source(&config);
+        let spec = triangle_spec();
+        let exec = CugraphAlgoExec::try_new(spec.clone(), edge_source, vec![], None, None, config)
+            .expect("cuGraph exec should build for native edge source");
+        let descriptor = exec.graph_residency.as_ref().expect("native edge source should be keyable");
+        let mismatched_schema = Schema::new(vec![
+            Field::new("src", DataType::Int32, false),
+            Field::new("dst", DataType::Int32, false),
+            Field::new("weight", DataType::Float64, false),
+        ]);
+
+        assert!(graph_residency_matches_edge_schema(descriptor, edge_schema().as_ref(), &spec));
+        assert!(!graph_residency_matches_edge_schema(descriptor, &mismatched_schema, &spec));
     }
 
     #[test]
