@@ -68,6 +68,7 @@ pub struct NativeCudfExecutionConfig {
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
     query_service_local_parquet_source_cache_max_retained_bytes: Option<u64>,
+    query_service_resident_graph_cache_max_retained_bytes: Option<u64>,
     source_storage_profiles: Vec<SourceStorageProfile>,
     query_service_handle: Option<Arc<QueryHandle>>,
     query_admission_facts_recorded: Option<Arc<AtomicBool>>,
@@ -294,6 +295,7 @@ impl NativeCudfExecutionConfig {
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
             query_service_local_parquet_source_cache_max_retained_bytes: None,
+            query_service_resident_graph_cache_max_retained_bytes: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
             query_admission_facts_recorded: None,
@@ -407,6 +409,7 @@ impl NativeCudfExecutionConfig {
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
             query_service_local_parquet_source_cache_max_retained_bytes: None,
+            query_service_resident_graph_cache_max_retained_bytes: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
             query_admission_facts_recorded: None,
@@ -690,6 +693,21 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Configure the service-owned parked cuGraph cache for backend/query-service
+    /// execution.
+    ///
+    /// `None` disables the service cache. `Some(0)` is rejected when a
+    /// `QueryService` is built from this config. Server parsing rejects this
+    /// option on builds without the `cugraph` feature because no resident graph
+    /// resources are installed there.
+    pub fn with_query_service_resident_graph_cache_max_retained_bytes(
+        mut self,
+        max_retained_bytes: Option<u64>,
+    ) -> Self {
+        self.query_service_resident_graph_cache_max_retained_bytes = max_retained_bytes;
+        self
+    }
+
     /// Source object-store profiles registered for native remote source
     /// fetches and local-cache miss fills.
     pub fn source_storage_profiles(&self) -> &[SourceStorageProfile] {
@@ -701,6 +719,11 @@ impl NativeCudfExecutionConfig {
     /// runtime until cross-runtime source-frame reuse is modeled.
     pub fn query_service_local_parquet_source_cache_max_retained_bytes(&self) -> Option<u64> {
         self.query_service_local_parquet_source_cache_max_retained_bytes
+    }
+
+    /// Per-device retained-byte cap for service-owned parked cuGraph caches.
+    pub fn query_service_resident_graph_cache_max_retained_bytes(&self) -> Option<u64> {
+        self.query_service_resident_graph_cache_max_retained_bytes
     }
 
     /// Register source object-store profiles used by native remote source

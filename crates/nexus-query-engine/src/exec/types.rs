@@ -4,10 +4,11 @@
 //! underlying cuDF resources; host materialization is explicit. Cache byte
 //! counters are observed retained device bytes, not reservation totals.
 
+#[cfg(feature = "cugraph")]
+use std::marker::PhantomData;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Write,
-    marker::PhantomData,
     sync::{Arc, Mutex, Weak},
 };
 
@@ -17,12 +18,14 @@ use cudf::{
     frame::dataframe::{GpuRecordBatch, InfoDetail},
 };
 
+#[cfg(feature = "cugraph")]
+use crate::plan::ResidentGraphKey;
 use crate::{
     chunk::SourceChunk,
     error::{QueryError, Result},
     exec::is_datafusion_order_column_name,
     metrics::QueryMetrics,
-    plan::{GraphResidencyDescriptor, HashJoinBuildArtifactId, JoinNullEquality, ResidentGraphKey, ResultSink},
+    plan::{GraphResidencyDescriptor, HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
     runtime::{
         DevicePlacement, ExecutionContext,
         gpu::governor::{EvictableMemoryPressure, MemoryGovernor, MemoryGrantLiveReservation},

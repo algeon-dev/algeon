@@ -220,6 +220,16 @@ impl QueryServiceConfig {
         }
         if let Some(max_retained_bytes) = self.resident_graph_cache_max_retained_bytes {
             validate_nonzero_config_field("resident_graph_cache_max_retained_bytes", max_retained_bytes == 0)?;
+            #[cfg(not(feature = "cugraph"))]
+            {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.query_service.config.validate",
+                    "resident graph cache requires the cugraph feature",
+                )
+                .with_fact("field", "resident_graph_cache_max_retained_bytes")
+                .with_fact("reason", "cugraph_feature_disabled"));
+            }
         }
         if let Some(stream_pool_size) = self.stream_pool_size
             && stream_pool_size == 0

@@ -638,6 +638,24 @@ fn query_service_rejects_zero_resident_graph_cache_capacity() {
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }
 
+#[cfg(not(feature = "cugraph"))]
+#[test]
+fn query_service_rejects_resident_graph_cache_without_cugraph_feature() {
+    let config =
+        QueryServiceConfig { resident_graph_cache_max_retained_bytes: Some(4096), ..QueryServiceConfig::default() };
+
+    let error = QueryService::new_for_admission_tests(
+        config,
+        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("field"), Some("resident_graph_cache_max_retained_bytes"));
+    assert_eq!(error.fact_value("reason"), Some("cugraph_feature_disabled"));
+}
+
 #[test]
 fn local_parquet_source_cache_resources_are_per_device() {
     let caches = local_parquet_source_caches_for_ordinals(&[0, 2], Some(4096));
