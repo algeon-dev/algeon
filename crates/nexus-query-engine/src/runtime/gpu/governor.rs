@@ -755,7 +755,22 @@ impl MemoryGrant {
                 "memory governor mutex was poisoned",
             )
         })?;
-        let available = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, &state);
+        let mut available = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, &state);
+        if available < additional_bytes
+            && let Some(pressure) = self.evictable_pressure_for_growth_locked(&state, additional_bytes)
+        {
+            let governor = MemoryGovernor { inner: Arc::clone(&self.inner.governor) };
+            drop(state);
+            governor.notify_evictable_memory_observers(pressure)?;
+            state = self.inner.governor.state.lock().map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.runtime.gpu.memory_grant.try_grow",
+                    "memory governor mutex was poisoned after evictable pressure",
+                )
+            })?;
+            available = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, &state);
+        }
         if available < additional_bytes {
             return Ok(false);
         }
@@ -788,7 +803,22 @@ impl MemoryGrant {
             return Ok(true);
         }
         let additional_bytes = target_bytes - current_budget;
-        let available = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, &state);
+        let mut available = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, &state);
+        if available < additional_bytes
+            && let Some(pressure) = self.evictable_pressure_for_growth_locked(&state, additional_bytes)
+        {
+            let governor = MemoryGovernor { inner: Arc::clone(&self.inner.governor) };
+            drop(state);
+            governor.notify_evictable_memory_observers(pressure)?;
+            state = self.inner.governor.state.lock().map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.runtime.gpu.memory_grant.try_grow_to",
+                    "memory governor mutex was poisoned after evictable pressure",
+                )
+            })?;
+            available = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, &state);
+        }
         if available < additional_bytes {
             return Ok(false);
         }
@@ -802,6 +832,31 @@ impl MemoryGrant {
         drop(state);
         self.notify_budget_change_observers(change);
         Ok(true)
+    }
+
+    fn evictable_pressure_for_growth_locked(
+        &self,
+        state: &GovernorState,
+        additional_bytes: u64,
+    ) -> Option<EvictableMemoryPressure> {
+        let free_bytes = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, state);
+        if free_bytes >= additional_bytes || state.evictable_bytes == 0 {
+            return None;
+        }
+        let grantable_bytes = MemoryGovernor::grantable_bytes_locked(self.inner.governor.capacity_bytes, state);
+        if grantable_bytes < additional_bytes {
+            return None;
+        }
+        Some(EvictableMemoryPressure {
+            device_ordinal: self.inner.governor.device_ordinal,
+            query_id: self.inner.query_id,
+            requested_evict_bytes: additional_bytes.saturating_sub(free_bytes),
+            min_grant_bytes: additional_bytes,
+            want_grant_bytes: additional_bytes,
+            outstanding_bytes: state.outstanding_bytes,
+            evictable_bytes: state.evictable_bytes,
+            free_bytes,
+        })
     }
 
     /// Attempts to reduce this grant to `target_bytes`, clamped to the
@@ -1498,6 +1553,35 @@ mod tests {
         assert_eq!(report.evictable_bytes, 60);
         assert_eq!(report.free_bytes, 0);
         assert_eq!(report.available_bytes, 60);
+    }
+
+    #[test]
+    fn grant_growth_releases_evictable_bytes_before_growing() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(7, 20, 40)).unwrap().unwrap();
+        assert!(governor.try_reserve_evictable_bytes(50).unwrap());
+        let observer_governor = governor.clone();
+        let (sender, receiver) = mpsc::channel();
+        governor
+            .register_evictable_memory_observer(Arc::new(move |pressure| {
+                sender.send(pressure).unwrap();
+                observer_governor.release_evictable_bytes(pressure.requested_evict_bytes)
+            }))
+            .unwrap();
+
+        assert!(grant.try_grow(30).unwrap());
+
+        let pressure = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(pressure.device_ordinal, 0);
+        assert_eq!(pressure.query_id, 7);
+        assert_eq!(pressure.requested_evict_bytes, 20);
+        assert_eq!(pressure.min_grant_bytes, 30);
+        assert_eq!(pressure.want_grant_bytes, 30);
+        let report = governor.report().unwrap();
+        assert_eq!(grant.budget_bytes(), 70);
+        assert_eq!(report.outstanding_bytes, 70);
+        assert_eq!(report.evictable_bytes, 30);
+        assert_eq!(report.free_bytes, 0);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::{
 use super::*;
 use crate::{
     adaptive_runtime::{AdaptiveMemoryHistory, AdaptiveTaskMemoryHistoryShape},
-    exec::types::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey},
+    exec::types::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, GpuLocalParquetSourceCachePin},
     metrics::{
         CompiledTaskId, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,
         PlanNodeId, QueryId,
@@ -133,6 +133,7 @@ pub(in crate::exec) struct ActiveReservation {
     live_accounting: Option<MemoryGrant>,
     protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
     source_cache_key: Option<GpuLocalParquetSourceCacheKey>,
+    source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     event_context: ActiveReservationEventContext,
     semantics: ActiveReservationSemantics,
     lineage: Option<Rc<ActiveReservationLineage>>,
@@ -196,6 +197,7 @@ impl ActiveReservation {
             live_accounting,
             protected_source_cache_keys,
             source_cache_key: None,
+            source_cache_pin: None,
             event_context: ActiveReservationEventContext::from_request(request),
             semantics,
             lineage: Some(Rc::new(ActiveReservationLineage::new())),
@@ -211,6 +213,7 @@ impl ActiveReservation {
         reserved_bytes: Rc<Cell<u64>>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         source_cache_key: GpuLocalParquetSourceCacheKey,
+        source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
         bytes: u64,
         request: &MemoryReservationRequest,
     ) -> Self {
@@ -225,6 +228,7 @@ impl ActiveReservation {
             live_accounting: None,
             protected_source_cache_keys,
             source_cache_key: Some(source_cache_key),
+            source_cache_pin,
             event_context: ActiveReservationEventContext::from_request(request),
             semantics: ActiveReservationSemantics::Alias,
             lineage: Some(Rc::new(ActiveReservationLineage::new())),
@@ -248,6 +252,7 @@ impl ActiveReservation {
             live_accounting: None,
             protected_source_cache_keys,
             source_cache_key: None,
+            source_cache_pin: None,
             event_context: ActiveReservationEventContext::from_request(request),
             semantics: ActiveReservationSemantics::Alias,
             lineage: Some(Rc::new(ActiveReservationLineage::new())),
@@ -263,6 +268,7 @@ impl ActiveReservation {
         reserved_bytes: Rc<Cell<u64>>,
         live_accounting: Option<MemoryGrant>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+        source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
         lineage: Rc<ActiveReservationLineage>,
         bytes: u64,
         request: &MemoryReservationRequest,
@@ -274,6 +280,7 @@ impl ActiveReservation {
             live_accounting,
             protected_source_cache_keys,
             source_cache_key: None,
+            source_cache_pin,
             event_context: ActiveReservationEventContext::from_request(request),
             semantics: ActiveReservationSemantics::Alias,
             lineage: Some(lineage),
@@ -317,6 +324,7 @@ impl ActiveReservation {
             live_accounting: self.live_accounting.clone(),
             protected_source_cache_keys: Rc::clone(&self.protected_source_cache_keys),
             source_cache_key: None,
+            source_cache_pin: None,
             event_context: ActiveReservationEventContext::from_request(request),
             semantics,
             lineage: self.lineage.clone(),
@@ -331,6 +339,7 @@ impl ActiveReservation {
         assert!(!self.released, "cannot relabel a released reservation");
         assert!(self.is_alias(), "cannot relabel a non-alias reservation as an alias");
         let source_cache_key = self.source_cache_key.take();
+        let source_cache_pin = self.source_cache_pin.take();
         let lineage = self.lineage.clone();
         self.released = true;
         Self {
@@ -339,6 +348,7 @@ impl ActiveReservation {
             live_accounting: self.live_accounting.clone(),
             protected_source_cache_keys: Rc::clone(&self.protected_source_cache_keys),
             source_cache_key,
+            source_cache_pin,
             event_context: ActiveReservationEventContext::from_request(request),
             semantics: ActiveReservationSemantics::Alias,
             lineage,
@@ -362,6 +372,7 @@ impl ActiveReservation {
                 }
             }
         }
+        self.source_cache_pin.take();
         if self.source_cache_key.is_none() {
             match (self.semantics, self.lineage.as_ref()) {
                 (ActiveReservationSemantics::Alias, Some(lineage)) => {
@@ -587,7 +598,9 @@ impl ReservationTracker {
         if let Some(cache) = context.local_parquet_source_cache() {
             let retained_bytes = cache.retained_device_bytes()?;
             if retained_bytes > 0 {
-                tracker.try_reserve_source_cache_baseline(retained_bytes, metrics)?;
+                if !cache.is_governor_backed() {
+                    tracker.try_reserve_source_cache_baseline(retained_bytes, metrics)?;
+                }
                 metrics.record_source_cache_retained_bytes(retained_bytes);
             }
         }
@@ -791,6 +804,7 @@ impl ReservationTracker {
             Rc::clone(&self.reserved_bytes),
             source.live_accounting.clone(),
             Rc::clone(&self.protected_source_cache_keys),
+            source.source_cache_pin.clone(),
             Rc::clone(source.lineage.as_ref().expect("generic alias requires a reservation lineage")),
             request.requested_bytes,
             &request,
@@ -849,6 +863,7 @@ impl ReservationTracker {
         &self,
         key: GpuLocalParquetSourceCacheKey,
         bytes: u64,
+        source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
         metrics: &mut QueryMetrics,
     ) -> ActiveReservation {
         let request = self.stamp_request(
@@ -870,6 +885,7 @@ impl ReservationTracker {
             Rc::clone(&self.reserved_bytes),
             Rc::clone(&self.protected_source_cache_keys),
             key,
+            source_cache_pin,
             bytes,
             &request,
         )
@@ -1015,6 +1031,16 @@ impl ReservationTracker {
         }
 
         let request = self.stamp_request(request, metrics);
+        if self.local_parquet_source_cache.as_ref().is_some_and(|cache| cache.is_governor_backed()) {
+            metrics.record_reservation_granted_timeline_event(
+                &request,
+                MemoryReservationEventAction::Reserve,
+                retained_bytes,
+                0,
+                self.raw_reserved_bytes(),
+            );
+            return Ok(());
+        }
         let additional_bytes = retained_bytes.saturating_sub(reservation.charged_bytes());
         let remaining = self.reservable_remaining_bytes()?;
         if additional_bytes > remaining {

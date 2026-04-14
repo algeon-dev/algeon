@@ -206,7 +206,7 @@ fn read_cacheable_local_parquet_source(
     cache: &std::sync::Arc<crate::exec::GpuLocalParquetSourceCache>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    if datafusion_order_tracking_enabled() {
+    if datafusion_order_tracking_enabled() || cache.is_governor_backed() {
         return read_local_parquet_source_uncached(context, source_node_id, source, metrics);
     }
 

@@ -281,7 +281,7 @@ pub mod reservation_contract_testing {
         let reserved_after_cache_insert = tracker.reserved_bytes();
         tracker.release(source, &mut metrics);
 
-        let borrowed = tracker.borrow_accounted_source_cache(key.clone(), 60, &mut metrics);
+        let borrowed = tracker.borrow_accounted_source_cache(key.clone(), 60, None, &mut metrics);
         let reserved_after_borrow = tracker.reserved_bytes();
         let protected_after_borrow = tracker.source_cache_protected_key_count(&key);
         let relabeled = tracker.relabel_alias_reservation(

@@ -454,10 +454,8 @@ impl QueryService {
             registry_config = registry_config.with_device_capacity_bytes(device_capacity_bytes);
         }
         let devices = super::DeviceRegistry::install(&super::CudfInventory, &registry_config)?;
-        let local_parquet_source_caches = local_parquet_source_caches_for_ordinals(
-            devices.device_ordinals(),
-            config.local_parquet_source_cache_max_retained_bytes,
-        );
+        let local_parquet_source_caches =
+            local_parquet_source_caches_for_devices(&devices, config.local_parquet_source_cache_max_retained_bytes)?;
         let resources = QueryServiceResources {
             devices,
             _governor_claim: None,
@@ -2126,6 +2124,26 @@ impl QueryService {
     }
 }
 
+fn local_parquet_source_caches_for_devices(
+    devices: &super::DeviceRegistry,
+    max_retained_bytes: Option<u64>,
+) -> Result<HashMap<usize, Arc<GpuLocalParquetSourceCache>>> {
+    let Some(max_retained_bytes) = max_retained_bytes else {
+        return Ok(HashMap::new());
+    };
+    let mut caches = HashMap::new();
+    for device in devices.contexts() {
+        let cache = Arc::new(GpuLocalParquetSourceCache::new_governor_backed(
+            max_retained_bytes,
+            device.memory_governor().clone(),
+        ));
+        GpuLocalParquetSourceCache::register_governor_pressure_observer(&cache)?;
+        caches.insert(device.device().ordinal(), cache);
+    }
+    Ok(caches)
+}
+
+#[cfg(test)]
 fn local_parquet_source_caches_for_ordinals(
     device_ordinals: &[usize],
     max_retained_bytes: Option<u64>,
