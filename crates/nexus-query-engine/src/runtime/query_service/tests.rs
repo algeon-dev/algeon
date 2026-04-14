@@ -620,6 +620,24 @@ fn query_service_rejects_zero_local_parquet_source_cache_capacity() {
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }
 
+#[cfg(feature = "cugraph")]
+#[test]
+fn query_service_rejects_zero_resident_graph_cache_capacity() {
+    let config =
+        QueryServiceConfig { resident_graph_cache_max_retained_bytes: Some(0), ..QueryServiceConfig::default() };
+
+    let error = QueryService::new_for_admission_tests(
+        config,
+        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("field"), Some("resident_graph_cache_max_retained_bytes"));
+    assert_eq!(error.fact_value("reason"), Some("zero"));
+}
+
 #[test]
 fn local_parquet_source_cache_resources_are_per_device() {
     let caches = local_parquet_source_caches_for_ordinals(&[0, 2], Some(4096));
@@ -631,6 +649,20 @@ fn local_parquet_source_cache_resources_are_per_device() {
     assert_eq!(device_2.max_retained_device_bytes(), 4096);
     assert!(!Arc::ptr_eq(device_0, device_2));
     assert!(local_parquet_source_caches_for_ordinals(&[0, 2], None).is_empty());
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn resident_graph_cache_resources_are_per_device() {
+    let caches = resident_graph_caches_for_ordinals(&[0, 2], Some(8192));
+
+    let device_0 = caches.get(&0).expect("device 0 cache should exist");
+    let device_2 = caches.get(&2).expect("device 2 cache should exist");
+    assert_eq!(caches.len(), 2);
+    assert_eq!(device_0.max_retained_device_bytes(), 8192);
+    assert_eq!(device_2.max_retained_device_bytes(), 8192);
+    assert!(!Arc::ptr_eq(device_0, device_2));
+    assert!(resident_graph_caches_for_ordinals(&[0, 2], None).is_empty());
 }
 
 #[test]

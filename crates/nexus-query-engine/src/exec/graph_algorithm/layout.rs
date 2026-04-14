@@ -25,6 +25,7 @@ pub(super) fn execute_force_atlas2(
         context,
         inputs.graph_memory_limit_bytes,
         spec,
+        None,
         edges,
         options,
         "datafusion_nexus_cugraph_force_atlas2",

@@ -7,6 +7,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Write,
+    marker::PhantomData,
     sync::{Arc, Mutex, Weak},
 };
 
@@ -21,7 +22,7 @@ use crate::{
     error::{QueryError, Result},
     exec::is_datafusion_order_column_name,
     metrics::QueryMetrics,
-    plan::{GraphResidencyDescriptor, HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
+    plan::{GraphResidencyDescriptor, HashJoinBuildArtifactId, JoinNullEquality, ResidentGraphKey, ResultSink},
     runtime::{
         DevicePlacement, ExecutionContext,
         gpu::governor::{EvictableMemoryPressure, MemoryGovernor, MemoryGrantLiveReservation},
@@ -882,6 +883,630 @@ impl GpuLocalParquetSourceCacheKey {
     /// Escaped textual fingerprint for diagnostics and tests.
     pub fn as_str(&self) -> &str {
         &self.diagnostic_fingerprint
+    }
+}
+
+/// Default bound on same-graph replicas retained across service stream-pool
+/// runtimes.
+#[cfg(feature = "cugraph")]
+pub const DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY: usize = 4;
+
+/// Result of inserting a parked resident graph.
+#[cfg(feature = "cugraph")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuResidentGraphCacheInsert {
+    /// The parked graph was retained by the cache.
+    Inserted,
+    /// An equivalent entry was already available for the same runtime.
+    AlreadyPresent,
+    /// The retained-byte cap could not admit this graph.
+    CapacitySkipped,
+    /// The per-resident-key replica cap would be exceeded.
+    CopyLimitSkipped,
+}
+
+#[cfg(feature = "cugraph")]
+pub(in crate::exec) enum GpuResidentGraphEntry {
+    Forward(cugraph::ParkedGraph<cugraph::Forward>),
+    Transposed(cugraph::ParkedGraph<cugraph::Transposed>),
+}
+
+#[cfg(feature = "cugraph")]
+pub(in crate::exec) trait GpuResidentGraphTransposition:
+    cugraph::Transposition + Send + Sized + 'static
+{
+    fn orientation() -> crate::plan::GraphResidencyOrientation;
+    fn into_entry(parked: cugraph::ParkedGraph<Self>) -> GpuResidentGraphEntry;
+    fn take_entry(entry: GpuResidentGraphEntry) -> Option<cugraph::ParkedGraph<Self>>;
+}
+
+#[cfg(feature = "cugraph")]
+impl GpuResidentGraphTransposition for cugraph::Forward {
+    fn orientation() -> crate::plan::GraphResidencyOrientation {
+        crate::plan::GraphResidencyOrientation::Forward
+    }
+
+    fn into_entry(parked: cugraph::ParkedGraph<Self>) -> GpuResidentGraphEntry {
+        GpuResidentGraphEntry::Forward(parked)
+    }
+
+    fn take_entry(entry: GpuResidentGraphEntry) -> Option<cugraph::ParkedGraph<Self>> {
+        match entry {
+            GpuResidentGraphEntry::Forward(parked) => Some(parked),
+            GpuResidentGraphEntry::Transposed(_) => None,
+        }
+    }
+}
+
+#[cfg(feature = "cugraph")]
+impl GpuResidentGraphTransposition for cugraph::Transposed {
+    fn orientation() -> crate::plan::GraphResidencyOrientation {
+        crate::plan::GraphResidencyOrientation::Transposed
+    }
+
+    fn into_entry(parked: cugraph::ParkedGraph<Self>) -> GpuResidentGraphEntry {
+        GpuResidentGraphEntry::Transposed(parked)
+    }
+
+    fn take_entry(entry: GpuResidentGraphEntry) -> Option<cugraph::ParkedGraph<Self>> {
+        match entry {
+            GpuResidentGraphEntry::Transposed(parked) => Some(parked),
+            GpuResidentGraphEntry::Forward(_) => None,
+        }
+    }
+}
+
+#[cfg(feature = "cugraph")]
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct GpuResidentGraphCacheEntryKey {
+    resident_key: ResidentGraphKey,
+    runtime_key: usize,
+}
+
+#[cfg(feature = "cugraph")]
+impl GpuResidentGraphCacheEntryKey {
+    fn for_context(resident_key: ResidentGraphKey, context: &ExecutionContext) -> Self {
+        let runtime = context.shared_runtime();
+        Self { resident_key, runtime_key: Arc::as_ptr(&runtime) as usize }
+    }
+}
+
+#[cfg(feature = "cugraph")]
+struct GpuResidentGraphCacheEntry {
+    graph: GpuResidentGraphEntry,
+    retained_device_bytes: u64,
+    last_access_epoch: u64,
+    runtime_owner: Weak<cudf::Runtime>,
+}
+
+#[cfg(feature = "cugraph")]
+#[derive(Default)]
+struct GpuResidentGraphCacheEviction {
+    entries: Vec<GpuResidentGraphCacheEntry>,
+    device_bytes: u64,
+}
+
+#[cfg(feature = "cugraph")]
+struct GpuResidentGraphCheckedOut {
+    retained_device_bytes: u64,
+    runtime_owner: Weak<cudf::Runtime>,
+}
+
+#[cfg(feature = "cugraph")]
+struct GpuResidentGraphCompanionRuntime {
+    pooled_runtime: Weak<cudf::Runtime>,
+    companion: Arc<cudf::Runtime>,
+}
+
+#[cfg(feature = "cugraph")]
+#[derive(Default)]
+struct GpuResidentGraphCacheState {
+    available: HashMap<GpuResidentGraphCacheEntryKey, GpuResidentGraphCacheEntry>,
+    checked_out: HashMap<GpuResidentGraphCacheEntryKey, GpuResidentGraphCheckedOut>,
+    companion_runtimes: HashMap<usize, GpuResidentGraphCompanionRuntime>,
+    retained_device_bytes: u64,
+    next_access_epoch: u64,
+}
+
+#[cfg(feature = "cugraph")]
+struct GpuResidentGraphCacheInner {
+    max_retained_device_bytes: u64,
+    max_copies_per_key: usize,
+    governor: Option<MemoryGovernor>,
+    state: Mutex<GpuResidentGraphCacheState>,
+}
+
+#[cfg(feature = "cugraph")]
+impl Drop for GpuResidentGraphCacheInner {
+    fn drop(&mut self) {
+        let Some(governor) = &self.governor else {
+            return;
+        };
+        let Ok(state) = self.state.get_mut() else {
+            return;
+        };
+        let retained_device_bytes = state.retained_device_bytes;
+        if retained_device_bytes > 0 {
+            let _ = governor.release_evictable_bytes(retained_device_bytes);
+            state.retained_device_bytes = 0;
+        }
+    }
+}
+
+/// Per-device cache for cuGraph graphs parked between query executions.
+///
+/// Entries are keyed by a device-agnostic [`ResidentGraphKey`] plus the
+/// service stream-pool runtime identity that owns the parked graph's cuDF
+/// runtime-bound handle leases. Checked-out graphs are exclusive: a hit moves
+/// the parked graph out of the available map until the caller parks it again
+/// or drops the checkout guard, at which point the governor evictable claim is
+/// released.
+#[cfg(feature = "cugraph")]
+pub struct GpuResidentGraphCache {
+    inner: Arc<GpuResidentGraphCacheInner>,
+}
+
+#[cfg(feature = "cugraph")]
+impl std::fmt::Debug for GpuResidentGraphCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self.inner.state.lock().ok();
+        f.debug_struct("GpuResidentGraphCache")
+            .field("max_retained_device_bytes", &self.inner.max_retained_device_bytes)
+            .field("max_copies_per_key", &self.inner.max_copies_per_key)
+            .field("governor_backed", &self.is_governor_backed())
+            .field("available_entry_count", &state.as_ref().map(|state| state.available.len()))
+            .field("checked_out_entry_count", &state.as_ref().map(|state| state.checked_out.len()))
+            .field("retained_device_bytes", &state.as_ref().map(|state| state.retained_device_bytes))
+            .finish()
+    }
+}
+
+#[cfg(feature = "cugraph")]
+impl GpuResidentGraphCache {
+    /// Create an empty resident graph cache with a retained-device-byte cap.
+    pub fn new(max_retained_device_bytes: u64) -> Self {
+        Self::new_with_governor(max_retained_device_bytes, DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY, None)
+    }
+
+    /// Create an empty resident graph cache charged to a device memory
+    /// governor's evictable ledger.
+    pub fn new_governor_backed(max_retained_device_bytes: u64, governor: MemoryGovernor) -> Self {
+        Self::new_with_governor(
+            max_retained_device_bytes,
+            DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY,
+            Some(governor),
+        )
+    }
+
+    /// Override the per-resident-key copy cap.
+    pub fn with_max_copies_per_key(self, max_copies_per_key: usize) -> Self {
+        Self::new_with_governor(self.inner.max_retained_device_bytes, max_copies_per_key, self.inner.governor.clone())
+    }
+
+    fn new_with_governor(
+        max_retained_device_bytes: u64,
+        max_copies_per_key: usize,
+        governor: Option<MemoryGovernor>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(GpuResidentGraphCacheInner {
+                max_retained_device_bytes,
+                max_copies_per_key,
+                governor,
+                state: Mutex::new(GpuResidentGraphCacheState::default()),
+            }),
+        }
+    }
+
+    /// Maximum retained device bytes allowed by this cache.
+    pub fn max_retained_device_bytes(&self) -> u64 {
+        self.inner.max_retained_device_bytes
+    }
+
+    /// Maximum same-graph replicas retained across runtime identities.
+    pub fn max_copies_per_key(&self) -> usize {
+        self.inner.max_copies_per_key
+    }
+
+    /// Whether retained bytes are charged to a memory governor.
+    pub fn is_governor_backed(&self) -> bool {
+        self.inner.governor.is_some()
+    }
+
+    /// Register this cache as a synchronous evictable-memory observer.
+    pub fn register_governor_pressure_observer(cache: &Arc<Self>) -> Result<()> {
+        let Some(governor) = cache.inner.governor.as_ref().cloned() else {
+            return Ok(());
+        };
+        let weak_cache: Weak<Self> = Arc::downgrade(cache);
+        governor.register_evictable_memory_observer(Arc::new(move |pressure| {
+            let Some(cache) = weak_cache.upgrade() else {
+                return Ok(0);
+            };
+            cache.handle_memory_pressure(pressure)
+        }))
+    }
+
+    /// Number of available parked graph entries.
+    pub fn len(&self) -> Result<usize> {
+        Ok(self.lock()?.available.len())
+    }
+
+    /// Number of graphs currently checked out by running queries.
+    pub fn checked_out_len(&self) -> Result<usize> {
+        Ok(self.lock()?.checked_out.len())
+    }
+
+    /// Retained device bytes across available and checked-out parked graphs.
+    pub fn retained_device_bytes(&self) -> Result<u64> {
+        Ok(self.lock()?.retained_device_bytes)
+    }
+
+    pub(in crate::exec) fn companion_runtime_for_context(
+        &self,
+        context: &ExecutionContext,
+        operation: &'static str,
+    ) -> Result<Arc<cudf::Runtime>> {
+        let pooled_runtime = context.shared_runtime();
+        let runtime_key = Arc::as_ptr(&pooled_runtime) as usize;
+        if let Some(companion) = self.lock()?.companion_runtimes.get(&runtime_key)
+            && runtime_owner_matches(&companion.pooled_runtime, &pooled_runtime)
+        {
+            return Ok(Arc::clone(&companion.companion));
+        }
+        let companion = Arc::new(
+            cudf::Runtime::builder()
+                .with_device(context.runtime().device())
+                .with_stream(context.runtime().stream().clone())
+                .with_device_memory_manager()
+                .build()
+                .map_err(|error| {
+                    QueryError::from_cudf(
+                        operation,
+                        "failed to build stable companion runtime for resident graph cache",
+                        error,
+                    )
+                    .with_fact("device_ordinal", context.runtime().device().ordinal())
+                })?,
+        );
+        let mut state = self.lock()?;
+        if let Some(existing) = state.companion_runtimes.get(&runtime_key)
+            && runtime_owner_matches(&existing.pooled_runtime, &pooled_runtime)
+        {
+            return Ok(Arc::clone(&existing.companion));
+        }
+        state.companion_runtimes.insert(
+            runtime_key,
+            GpuResidentGraphCompanionRuntime {
+                pooled_runtime: Arc::downgrade(&pooled_runtime),
+                companion: Arc::clone(&companion),
+            },
+        );
+        Ok(companion)
+    }
+
+    pub(in crate::exec) fn checkout<T>(
+        &self,
+        resident_key: &ResidentGraphKey,
+        context: &ExecutionContext,
+    ) -> Result<Option<GpuResidentGraphCheckout<T>>>
+    where
+        T: GpuResidentGraphTransposition,
+    {
+        let entry_key = GpuResidentGraphCacheEntryKey::for_context(resident_key.clone(), context);
+        let mut state = self.lock()?;
+        let Some(entry) = state.available.remove(&entry_key) else {
+            return Ok(None);
+        };
+        let context_runtime = context.shared_runtime();
+        let retained_device_bytes = entry.retained_device_bytes;
+        if !runtime_owner_matches(&entry.runtime_owner, &context_runtime) {
+            state.retained_device_bytes = state.retained_device_bytes.saturating_sub(retained_device_bytes);
+            drop(state);
+            let released = self.release_governor_evictable_bytes(retained_device_bytes);
+            drop(entry);
+            released?;
+            return Ok(None);
+        }
+        let Some(parked) = T::take_entry(entry.graph) else {
+            state.retained_device_bytes = state.retained_device_bytes.saturating_sub(retained_device_bytes);
+            drop(state);
+            self.release_governor_evictable_bytes(retained_device_bytes)?;
+            return Ok(None);
+        };
+        state.checked_out.insert(
+            entry_key.clone(),
+            GpuResidentGraphCheckedOut { retained_device_bytes, runtime_owner: entry.runtime_owner },
+        );
+        Ok(Some(GpuResidentGraphCheckout {
+            cache: Arc::clone(&self.inner),
+            entry_key,
+            retained_device_bytes,
+            parked: Some(parked),
+            completed: false,
+            _transposition: PhantomData,
+        }))
+    }
+
+    pub(in crate::exec) fn insert_if_absent<T>(
+        &self,
+        resident_key: ResidentGraphKey,
+        context: &ExecutionContext,
+        parked: cugraph::ParkedGraph<T>,
+        retained_device_bytes: u64,
+    ) -> Result<GpuResidentGraphCacheInsert>
+    where
+        T: GpuResidentGraphTransposition,
+    {
+        let context_runtime = context.shared_runtime();
+        let entry_key = GpuResidentGraphCacheEntryKey::for_context(resident_key, context);
+        if retained_device_bytes > self.inner.max_retained_device_bytes {
+            return Ok(GpuResidentGraphCacheInsert::CapacitySkipped);
+        }
+        let mut state = self.lock()?;
+        if state.available.contains_key(&entry_key) || state.checked_out.contains_key(&entry_key) {
+            return Ok(GpuResidentGraphCacheInsert::AlreadyPresent);
+        }
+        if state.copy_count_for_resident_key(&entry_key.resident_key) >= self.inner.max_copies_per_key {
+            return Ok(GpuResidentGraphCacheInsert::CopyLimitSkipped);
+        }
+        if !self.governor_can_admit_after_cache_eviction(&state, retained_device_bytes)? {
+            return Ok(GpuResidentGraphCacheInsert::CapacitySkipped);
+        }
+        let eviction = state.evict_until_fits(self.inner.max_retained_device_bytes, retained_device_bytes);
+        let evicted_device_bytes = eviction.device_bytes;
+        // These governor ledger calls must not notify eviction observers while
+        // holding the governor state lock; observers may call back into this
+        // cache and take the cache mutex.
+        if let Err(error) = self.release_governor_evictable_bytes(evicted_device_bytes) {
+            drop(state);
+            drop(eviction);
+            return Err(error);
+        }
+        if state.retained_device_bytes.saturating_add(retained_device_bytes) > self.inner.max_retained_device_bytes {
+            drop(state);
+            drop(eviction);
+            return Ok(GpuResidentGraphCacheInsert::CapacitySkipped);
+        }
+        let reserved = match self.reserve_governor_evictable_bytes(retained_device_bytes) {
+            Ok(reserved) => reserved,
+            Err(error) => {
+                drop(state);
+                drop(eviction);
+                return Err(error);
+            },
+        };
+        if !reserved {
+            drop(state);
+            drop(eviction);
+            return Ok(GpuResidentGraphCacheInsert::CapacitySkipped);
+        }
+        let last_access_epoch = state.next_epoch();
+        state.available.insert(
+            entry_key,
+            GpuResidentGraphCacheEntry {
+                graph: T::into_entry(parked),
+                retained_device_bytes,
+                last_access_epoch,
+                runtime_owner: Arc::downgrade(&context_runtime),
+            },
+        );
+        state.retained_device_bytes = state.retained_device_bytes.saturating_add(retained_device_bytes);
+        drop(state);
+        drop(eviction);
+        Ok(GpuResidentGraphCacheInsert::Inserted)
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, GpuResidentGraphCacheState>> {
+        self.inner.state.lock().map_err(|_| {
+            QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu_resident_graph_cache",
+                "native GPU resident graph cache lock was poisoned",
+            )
+        })
+    }
+
+    fn handle_memory_pressure(&self, pressure: EvictableMemoryPressure) -> Result<u64> {
+        let Some(governor) = &self.inner.governor else {
+            return Ok(0);
+        };
+        if pressure.device_ordinal != governor.device_ordinal() {
+            return Ok(0);
+        }
+        let mut state = self.lock()?;
+        let eviction = state.evict_at_least(pressure.requested_evict_bytes);
+        let evicted_device_bytes = eviction.device_bytes;
+        drop(state);
+        drop(eviction);
+        self.release_governor_evictable_bytes(evicted_device_bytes)?;
+        Ok(evicted_device_bytes)
+    }
+
+    fn governor_can_admit_after_cache_eviction(
+        &self,
+        state: &GpuResidentGraphCacheState,
+        retained_device_bytes: u64,
+    ) -> Result<bool> {
+        let Some(governor) = &self.inner.governor else {
+            return Ok(true);
+        };
+        let evictable_for_capacity =
+            state.evictable_bytes_until_fits(self.inner.max_retained_device_bytes, retained_device_bytes);
+        let free_bytes = governor.free_bytes()?;
+        Ok(free_bytes.saturating_add(evictable_for_capacity) >= retained_device_bytes)
+    }
+
+    fn reserve_governor_evictable_bytes(&self, retained_device_bytes: u64) -> Result<bool> {
+        let Some(governor) = &self.inner.governor else {
+            return Ok(true);
+        };
+        governor.try_reserve_evictable_bytes(retained_device_bytes)
+    }
+
+    fn release_governor_evictable_bytes(&self, released_device_bytes: u64) -> Result<u64> {
+        let Some(governor) = &self.inner.governor else {
+            return Ok(released_device_bytes);
+        };
+        governor.release_evictable_bytes(released_device_bytes)
+    }
+}
+
+#[cfg(feature = "cugraph")]
+impl GpuResidentGraphCacheState {
+    fn next_epoch(&mut self) -> u64 {
+        let epoch = self.next_access_epoch;
+        self.next_access_epoch = self.next_access_epoch.saturating_add(1);
+        epoch
+    }
+
+    fn copy_count_for_resident_key(&self, resident_key: &ResidentGraphKey) -> usize {
+        self.available.keys().filter(|key| &key.resident_key == resident_key).count()
+            + self.checked_out.keys().filter(|key| &key.resident_key == resident_key).count()
+    }
+
+    fn evict_until_fits(
+        &mut self,
+        max_retained_device_bytes: u64,
+        incoming_retained_device_bytes: u64,
+    ) -> GpuResidentGraphCacheEviction {
+        let mut eviction = GpuResidentGraphCacheEviction::default();
+        while self.retained_device_bytes.saturating_add(incoming_retained_device_bytes) > max_retained_device_bytes {
+            let Some(evict_key) = self.lru_available_key() else {
+                break;
+            };
+            if let Some(evicted) = self.available.remove(&evict_key) {
+                let retained_device_bytes = evicted.retained_device_bytes;
+                self.retained_device_bytes = self.retained_device_bytes.saturating_sub(retained_device_bytes);
+                eviction.device_bytes = eviction.device_bytes.saturating_add(retained_device_bytes);
+                eviction.entries.push(evicted);
+            }
+        }
+        eviction
+    }
+
+    fn evictable_bytes_until_fits(&self, max_retained_device_bytes: u64, incoming_retained_device_bytes: u64) -> u64 {
+        let mut retained_device_bytes = self.retained_device_bytes;
+        let mut evictable_device_bytes = 0u64;
+        let mut candidates = self
+            .available
+            .values()
+            .map(|entry| (entry.last_access_epoch, entry.retained_device_bytes))
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|(last_access_epoch, _bytes)| *last_access_epoch);
+        for (_last_access_epoch, candidate_bytes) in candidates {
+            if retained_device_bytes.saturating_add(incoming_retained_device_bytes) <= max_retained_device_bytes {
+                break;
+            }
+            retained_device_bytes = retained_device_bytes.saturating_sub(candidate_bytes);
+            evictable_device_bytes = evictable_device_bytes.saturating_add(candidate_bytes);
+        }
+        evictable_device_bytes
+    }
+
+    fn evict_at_least(&mut self, target_device_bytes: u64) -> GpuResidentGraphCacheEviction {
+        let mut eviction = GpuResidentGraphCacheEviction::default();
+        while eviction.device_bytes < target_device_bytes {
+            let Some(evict_key) = self.lru_available_key() else {
+                break;
+            };
+            if let Some(evicted) = self.available.remove(&evict_key) {
+                let retained_device_bytes = evicted.retained_device_bytes;
+                self.retained_device_bytes = self.retained_device_bytes.saturating_sub(retained_device_bytes);
+                eviction.device_bytes = eviction.device_bytes.saturating_add(retained_device_bytes);
+                eviction.entries.push(evicted);
+            }
+        }
+        eviction
+    }
+
+    fn lru_available_key(&self) -> Option<GpuResidentGraphCacheEntryKey> {
+        self.available.iter().min_by_key(|(_key, entry)| entry.last_access_epoch).map(|(key, _entry)| key.clone())
+    }
+}
+
+#[cfg(feature = "cugraph")]
+fn runtime_owner_matches(owner: &Weak<cudf::Runtime>, runtime: &Arc<cudf::Runtime>) -> bool {
+    owner.upgrade().is_some_and(|owner| Arc::ptr_eq(&owner, runtime))
+}
+
+/// Exclusive checked-out parked graph.
+#[cfg(feature = "cugraph")]
+pub(in crate::exec) struct GpuResidentGraphCheckout<T>
+where T: GpuResidentGraphTransposition
+{
+    cache: Arc<GpuResidentGraphCacheInner>,
+    entry_key: GpuResidentGraphCacheEntryKey,
+    retained_device_bytes: u64,
+    parked: Option<cugraph::ParkedGraph<T>>,
+    completed: bool,
+    _transposition: PhantomData<T>,
+}
+
+#[cfg(feature = "cugraph")]
+impl<T> GpuResidentGraphCheckout<T>
+where T: GpuResidentGraphTransposition
+{
+    pub(in crate::exec) fn retained_device_bytes(&self) -> u64 {
+        self.retained_device_bytes
+    }
+
+    pub(in crate::exec) fn take_parked(&mut self) -> cugraph::ParkedGraph<T> {
+        self.parked.take().expect("resident graph checkout already consumed")
+    }
+
+    pub(in crate::exec) fn return_parked(mut self, parked: cugraph::ParkedGraph<T>) -> Result<()> {
+        let mut state = self.cache.state.lock().map_err(|_| {
+            QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu_resident_graph_cache.return",
+                "native GPU resident graph cache lock was poisoned",
+            )
+        })?;
+        let Some(checked_out) = state.checked_out.remove(&self.entry_key) else {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu_resident_graph_cache.return",
+                "resident graph checkout was not registered",
+            ));
+        };
+        let last_access_epoch = state.next_epoch();
+        state.available.insert(
+            self.entry_key.clone(),
+            GpuResidentGraphCacheEntry {
+                graph: T::into_entry(parked),
+                retained_device_bytes: checked_out.retained_device_bytes,
+                last_access_epoch,
+                runtime_owner: checked_out.runtime_owner,
+            },
+        );
+        self.completed = true;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "cugraph")]
+impl<T> Drop for GpuResidentGraphCheckout<T>
+where T: GpuResidentGraphTransposition
+{
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let Ok(mut state) = self.cache.state.lock() else {
+            return;
+        };
+        let released =
+            state.checked_out.remove(&self.entry_key).map_or(0, |checked_out| checked_out.retained_device_bytes);
+        if released == 0 {
+            return;
+        }
+        state.retained_device_bytes = state.retained_device_bytes.saturating_sub(released);
+        let governor = self.cache.governor.clone();
+        drop(state);
+        if let Some(governor) = governor {
+            let _ = governor.release_evictable_bytes(released);
+        }
     }
 }
 

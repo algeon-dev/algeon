@@ -340,6 +340,8 @@ impl QueryHandle {
             adaptive_memory_history: Some(Arc::new(AdaptiveMemoryHistory::default())),
             hash_join_build_cache: None,
             local_parquet_source_cache: resources.local_parquet_source_cache_for_device(self.device_ordinal),
+            #[cfg(feature = "cugraph")]
+            resident_graph_cache: resources.resident_graph_cache_for_device(self.device_ordinal),
             stream_lease_guard: Some(stream_lease_guard),
             query_service_admitted: true,
         });

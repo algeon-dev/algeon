@@ -69,6 +69,8 @@ pub use source::{
     ResolvedRemoteParquetDatasourceProbe, probe_resolved_remote_parquet_datasource, read_gpu_resident_source,
     read_literal_batch_source, read_local_parquet_source, validate_local_parquet_source,
 };
+#[cfg(feature = "cugraph")]
+pub use types::{DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY, GpuResidentGraphCache, GpuResidentGraphCacheInsert};
 pub use types::{
     GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildCache, GpuHashJoinBuildHandle,
     GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey, GpuResidentInputMap,

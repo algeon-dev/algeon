@@ -65,6 +65,10 @@ pub mod prelude {
 
 /// DataFusion-free native IR contracts.
 pub mod ir {
+    #[cfg(feature = "cugraph")]
+    pub use crate::exec::{
+        DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY, GpuResidentGraphCache, GpuResidentGraphCacheInsert,
+    };
     pub use crate::{
         datatypes::{
             arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, diagnostic_arrow_type,
@@ -319,6 +323,8 @@ pub use exec::{
     strict_bounded_pipeline_rejection_projection,
     strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode, validate_local_parquet_source,
 };
+#[cfg(feature = "cugraph")]
+pub use exec::{DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY, GpuResidentGraphCache, GpuResidentGraphCacheInsert};
 #[cfg(feature = "cugraph")]
 #[doc(hidden)]
 pub use exec::{
