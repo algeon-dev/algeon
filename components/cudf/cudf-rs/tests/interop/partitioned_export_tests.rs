@@ -436,6 +436,7 @@ fn partitioned_dataframe_export_runtime_release_accepts_per_partition_release_wi
 
 #[test]
 fn partitioned_dataframe_export_runtime_release_import_and_release_remain_mutually_exclusive_per_partition() {
+    let _observation_lock = lock_event_observation();
     let left_runtime = Runtime::builder().build().unwrap();
     let right_runtime = Runtime::builder().build().unwrap();
     let left = left_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();

@@ -12,6 +12,7 @@ mod io;
 mod names;
 mod owned;
 mod reshape;
+mod row_predicate;
 mod select;
 mod table_view;
 

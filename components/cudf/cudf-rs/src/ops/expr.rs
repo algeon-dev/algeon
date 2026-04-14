@@ -85,7 +85,10 @@ enum LitValueInner {
 pub struct LitValue(Arc<LitValueInner>);
 
 impl LitValue {
-    fn to_scalar_in_domain(&self, domain: &Arc<crate::runtime::execution_domain::ExecutionDomain>) -> Result<Scalar> {
+    pub(crate) fn to_scalar_in_domain(
+        &self,
+        domain: &Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    ) -> Result<Scalar> {
         match &*self.0 {
             LitValueInner::Numeric(f) => f(domain),
             LitValueInner::String(s) => Scalar::from_str_in_domain(s, domain),
@@ -252,6 +255,11 @@ impl Expr {
     /// Element-wise absolute value.
     pub fn abs(self) -> Expr {
         Expr::UnaryOp { op: UnaryOperator::Abs, input: Box::new(self) }
+    }
+
+    /// Element-wise natural logarithm.
+    pub fn log(self) -> Expr {
+        Expr::UnaryOp { op: UnaryOperator::Log, input: Box::new(self) }
     }
 
     /// Element-wise square root.

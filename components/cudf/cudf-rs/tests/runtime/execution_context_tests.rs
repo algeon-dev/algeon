@@ -319,7 +319,7 @@ fn explicit_bool_series(name: &str, data: &[bool], identity: u64) -> cudf::Serie
 const TEST_POOL_MR_BYTES: usize = 16 * 1024 * 1024;
 
 fn pool_mr() -> DeviceMemoryResource {
-    DeviceMemoryResource::pool(TEST_POOL_MR_BYTES, 0).expect("failed to create pool MR")
+    DeviceMemoryResource::pool(TEST_POOL_MR_BYTES, None).expect("failed to create pool MR")
 }
 
 fn debug_ctx_with_stream<'a>(stream: &'a CudaStream) -> cudf::__DebugExecutionContext<'a> {
@@ -1187,7 +1187,7 @@ fn device_memory_resource_create_cuda() {
 /// DeviceMemoryResource can be created (pool variant).
 #[test]
 fn device_memory_resource_create_pool() {
-    let _mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
+    let _mr = DeviceMemoryResource::pool(16 * 1024 * 1024, None).unwrap();
 }
 
 /// `CudaStream::as_borrowed_sys` preserves the sys-handle identity.

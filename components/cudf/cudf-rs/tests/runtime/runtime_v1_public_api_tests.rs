@@ -6,7 +6,8 @@
 
 use cudf::{
     AggSpec, CsvReadOptions, CsvWriteOptions, DataFrame, DeviceId, ExecutionContext, GroupByAgg, JsonWriteOptions,
-    MergeOptions, ParquetReadOptions, ParquetWriteOptions, Runtime, Series, SortOptions, TypeId, runtime::CudaStream,
+    MergeOptions, ParquetReadOptions, ParquetWriteOptions, Runtime, Series, SortOptions, TypeId,
+    core::memory::DeviceMemoryResource, ops::expr::col, runtime::CudaStream,
 };
 use tempfile::TempDir;
 
@@ -156,6 +157,59 @@ fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
 }
 
 #[test]
+fn runtime_builder_pool_memory_resource_and_explicit_mr_setters_use_last_call_wins() {
+    let device = DeviceId::current().unwrap();
+
+    let owned_cuda_mr = DeviceMemoryResource::cuda_on(device).unwrap();
+    let runtime_from_pool = Runtime::builder()
+        .with_memory_resource(owned_cuda_mr.clone())
+        .with_pool_memory_resource(16 * 1024 * 1024, None)
+        .build()
+        .unwrap();
+    assert_eq!(runtime_from_pool.device(), device);
+    assert_eq!(runtime_from_pool.memory_resource().device(), device);
+    assert_ne!(
+        runtime_from_pool.memory_resource().__debug_raw_handle_value(),
+        owned_cuda_mr.__debug_raw_handle_value(),
+        "with_pool_memory_resource should override an earlier owned MR selection"
+    );
+
+    let owned_pool_mr = DeviceMemoryResource::pool_on(device, 16 * 1024 * 1024, None).unwrap();
+    let runtime_from_owned = Runtime::builder()
+        .with_pool_memory_resource(8 * 1024 * 1024, None)
+        .with_memory_resource(owned_pool_mr.clone())
+        .build()
+        .unwrap();
+    assert_eq!(runtime_from_owned.device(), device);
+    assert_eq!(runtime_from_owned.memory_resource().device(), device);
+    assert_eq!(
+        runtime_from_owned.memory_resource().__debug_raw_handle_value(),
+        owned_pool_mr.__debug_raw_handle_value(),
+        "with_memory_resource should override an earlier deferred pool selection"
+    );
+}
+
+#[test]
+fn device_memory_resource_explicit_device_constructors_report_requested_device() {
+    let device = DeviceId::current().unwrap();
+
+    let cuda_mr = DeviceMemoryResource::cuda_on(device).unwrap();
+    assert_eq!(cuda_mr.device(), device);
+
+    let pool_mr = DeviceMemoryResource::pool_on(device, 16 * 1024 * 1024, None).unwrap();
+    assert_eq!(pool_mr.device(), device);
+
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(pool_mr.clone()).build().unwrap();
+    assert_eq!(runtime.device(), device);
+    assert_eq!(runtime.memory_resource().device(), device);
+    assert_eq!(
+        runtime.memory_resource().__debug_raw_handle_value(),
+        pool_mr.__debug_raw_handle_value(),
+        "runtime should retain the caller-supplied explicit-device MR handle"
+    );
+}
+
+#[test]
 fn dataframe_in_context_routes_representative_operation_families_through_context_exec() {
     let data_rt = sample_runtime();
     let other_rt = sample_runtime();
@@ -207,6 +261,13 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
     assert_eq!(last_sync_stream_value(), df.__debug_execution_domain_stream_value());
     assert_frame_residency(&grouped, df.__debug_execution_domain_id(), ctx_stream, ctx_mr);
     assert_eq!(sorted_i32_i64_rows(&grouped, "id", "val_sum"), vec![(1, 10), (2, 60), (3, 30)]);
+
+    reset_exec_observation();
+    let filtered = df.in_context(&ctx).filter_expr(col("id").ge(2i32) & col("val").lt(35i32)).unwrap();
+    assert_eq!(last_exec_stream_value(), ctx_stream);
+    assert_eq!(last_exec_mr_value(), ctx_mr);
+    assert_frame_residency(&filtered, df.__debug_execution_domain_id(), ctx_stream, ctx_mr);
+    assert_eq!(sorted_i32_i32_rows(&filtered, "id", "val"), vec![(2, 20), (3, 30)]);
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! Tests for Column::factorize
 
-use cudf::TypeId;
+use cudf::{Series, TypeId};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, last_exec_stream_value, last_sync_stream_value,
@@ -13,7 +13,7 @@ fn test_factorize_i32_with_duplicates() {
     let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
 
-    let (codes, uniques) = view.factorize().unwrap();
+    let (codes, uniques) = view.factorize_parts().unwrap();
 
     let codes_view = codes.view().unwrap();
     let uniques_view = uniques.view().unwrap();
@@ -58,7 +58,7 @@ fn test_factorize_string_column() {
     let col = column_from_strs(strings).unwrap();
     let view = col.view().unwrap();
 
-    let (codes, uniques) = view.factorize().unwrap();
+    let (codes, uniques) = view.factorize_parts().unwrap();
 
     let codes_view = codes.view().unwrap();
     let uniques_view = uniques.view().unwrap();
@@ -90,7 +90,7 @@ fn test_factorize_with_nulls() {
     let col = column_from_slice_nullable(&data, &validity).unwrap();
     let view = col.view().unwrap();
 
-    let (codes, uniques) = view.factorize().unwrap();
+    let (codes, uniques) = view.factorize_parts().unwrap();
 
     let codes_view = codes.view().unwrap();
     let uniques_view = uniques.view().unwrap();
@@ -120,7 +120,7 @@ fn test_factorize_empty_column() {
     let col = column_from_slice::<i32>(&[]).unwrap();
     let view = col.view().unwrap();
 
-    let (codes, uniques) = view.factorize().unwrap();
+    let (codes, uniques) = view.factorize_parts().unwrap();
 
     let codes_view = codes.view().unwrap();
     let uniques_view = uniques.view().unwrap();
@@ -134,7 +134,7 @@ fn test_factorize_single_element() {
     let col = column_from_slice(&[42i32]).unwrap();
     let view = col.view().unwrap();
 
-    let (codes, uniques) = view.factorize().unwrap();
+    let (codes, uniques) = view.factorize_parts().unwrap();
 
     let codes_view = codes.view().unwrap();
     let uniques_view = uniques.view().unwrap();
@@ -155,7 +155,7 @@ fn test_factorize_already_unique() {
     let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
 
-    let (codes, uniques) = view.factorize().unwrap();
+    let (codes, uniques) = view.factorize_parts().unwrap();
 
     let codes_view = codes.view().unwrap();
     let uniques_view = uniques.view().unwrap();
@@ -178,7 +178,7 @@ fn test_factorize_f64_column() {
     let col = column_from_slice(&data).unwrap();
     let view = col.view().unwrap();
 
-    let (codes, uniques) = view.factorize().unwrap();
+    let (codes, uniques) = view.factorize_parts().unwrap();
 
     let codes_view = codes.view().unwrap();
     let uniques_view = uniques.view().unwrap();
@@ -211,7 +211,7 @@ fn test_factorize_codes_are_owned_independent_of_input() {
         let data = vec![1i32, 2, 1, 3, 2];
         let col = column_from_slice(&data).unwrap();
         let view = col.view().unwrap();
-        view.factorize().unwrap()
+        view.factorize_parts().unwrap()
         // col is dropped here
     };
 
@@ -230,13 +230,12 @@ fn test_dataframe_factorize_by_name() {
     let col = column_from_slice(&[10i32, 20, 10, 30, 20]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["values".to_string()], vec![col]).unwrap();
 
-    let (codes, uniques) = df.factorize("values").unwrap();
-
-    let codes_view = codes.as_column_view().unwrap();
-    let uniques_view = uniques.as_column_view().unwrap();
+    let factorized = df.factorize("values").unwrap();
+    let codes_view = factorized.row_codes().as_column_view().unwrap();
+    let keys_view = factorized.codebook().keys().as_column_view().unwrap();
 
     assert_eq!(codes_view.len().unwrap(), 5);
-    assert_eq!(uniques_view.len().unwrap(), 3);
+    assert_eq!(keys_view.len().unwrap(), 3);
 }
 
 #[test]
@@ -249,12 +248,64 @@ fn test_dataframe_factorize_missing_column() {
 }
 
 #[test]
+fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
+    let lookup_source = crate::common::series("lookup_source", &["b", "b", "a", "c"]).unwrap();
+    let factorized = lookup_source.factorize().unwrap();
+    let row_codes = factorized.row_codes();
+    let uniques = factorized.codebook().keys();
+    let query = crate::common::series("query", &["a", "b", "c"]).unwrap();
+
+    // This is the tempting but invalid pattern: slice row-aligned factorize
+    // codes down to uniques.len() and reuse them as if they were a stable
+    // key->code mapping for later map()/gather() calls.
+    let first_positions = crate::common::series("first_positions", &[0i32, 1, 2]).unwrap();
+    let wrong_lookup_values = row_codes.gather(&first_positions).unwrap();
+    assert_eq!(wrong_lookup_values.len(), uniques.len());
+
+    let wrong_encoded = query
+        .as_column_view()
+        .unwrap()
+        .map(&uniques.as_column_view().unwrap(), &wrong_lookup_values.as_column_view().unwrap())
+        .unwrap();
+    let wrong_encoded = Series::from_column(wrong_encoded).unwrap();
+    let wrong_decoded = uniques.gather(&wrong_encoded).unwrap();
+
+    assert_ne!(
+        wrong_decoded.as_column_view().unwrap().to_strings_lossy().unwrap(),
+        query.as_column_view().unwrap().to_strings_lossy().unwrap()
+    );
+}
+
+#[test]
+fn test_factorize_uniques_support_safe_positional_codebook_round_trip() {
+    let lookup_source = column_from_strs(&["b", "a", "c", "a"]).unwrap();
+    let (row_codes, uniques) = lookup_source.view().unwrap().factorize_parts().unwrap();
+    let _ = row_codes;
+    let uniques = Series::from_column(uniques).unwrap();
+
+    let positional = crate::common::series("codes", &[0i32, 1, 2]).unwrap();
+    let query = crate::common::series("query", &["a", "b", "c"]).unwrap();
+    let encoded = query
+        .as_column_view()
+        .unwrap()
+        .map(&uniques.as_column_view().unwrap(), &positional.as_column_view().unwrap())
+        .unwrap();
+    let encoded = Series::from_column(encoded).unwrap();
+    let decoded = uniques.gather(&encoded).unwrap();
+
+    assert_eq!(
+        decoded.as_column_view().unwrap().to_strings_lossy().unwrap(),
+        query.as_column_view().unwrap().to_strings_lossy().unwrap()
+    );
+}
+
+#[test]
 fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end() {
     let input = column_from_slice(&[9i32, 7, 9, 8]).unwrap().__debug_rebind_execution_domain_explicit(605).unwrap();
     let expected_stream = input.__debug_execution_domain_stream_value();
 
     reset_exec_observation();
-    let (codes, uniques) = input.view().unwrap().factorize().unwrap();
+    let (codes, uniques) = input.view().unwrap().factorize_parts().unwrap();
 
     assert_eq!(codes.__debug_execution_domain_id(), input.__debug_execution_domain_id());
     assert_eq!(uniques.__debug_execution_domain_id(), input.__debug_execution_domain_id());

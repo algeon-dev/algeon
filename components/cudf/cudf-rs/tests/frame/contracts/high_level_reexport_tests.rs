@@ -55,6 +55,21 @@ fn runtime_first_factories_smoke() {
 }
 
 #[test]
+fn factorization_surface_smoke() {
+    use cudf::{Codebook, EncodedSeries, Factorized};
+
+    fn assert_factorized_types(_: &Factorized, _: &Codebook, _: &EncodedSeries) {}
+
+    let series = crate::common::series("kind", &["a", "b", "a"]).unwrap();
+    let factorized = series.factorize().unwrap();
+    assert_factorized_types(&factorized, factorized.codebook(), factorized.row_codes());
+
+    let decoded = factorized.decode().unwrap();
+    assert_eq!(decoded.name(), Some("kind"));
+    assert_eq!(decoded.to_strings_strict().unwrap(), vec!["a", "b", "a"]);
+}
+
+#[test]
 fn scoped_control_plane_smoke() {
     use cudf::{AggSpec, DataFrame, ExecutionContext, GroupByAgg, Runtime, SortOptions, runtime::CudaStream};
 

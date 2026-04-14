@@ -451,6 +451,11 @@ fn output_name_propagates_through_unary_op() {
 }
 
 #[test]
+fn output_name_propagates_through_log() {
+    assert_output_name(col("x").log(), Some("x"));
+}
+
+#[test]
 fn with_columns_cast_no_alias_needed() {
     let df = xy_df();
     let df2 = df.with_columns([col("x").cast(TypeId::Float64)]).unwrap();
@@ -470,6 +475,18 @@ fn eval_unary_op_preserves_name() {
     let df = xy_df();
     let result = eval(col("x").abs(), &df);
     assert_eq!(result.name(), Some("x"));
+}
+
+#[test]
+fn log_expr() {
+    let df = f64_df("x", &[1.0, std::f64::consts::E, std::f64::consts::E * std::f64::consts::E]);
+    let result = eval(col("x").log().alias("ln_x"), &df);
+    let values = result.to_vec_strict::<f64>().unwrap();
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
+    assert!((values[0] - 0.0).abs() < 1e-10);
+    assert!((values[1] - 1.0).abs() < 1e-10);
+    assert!((values[2] - 2.0).abs() < 1e-10);
 }
 
 #[test]

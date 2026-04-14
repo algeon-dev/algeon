@@ -6,7 +6,7 @@ use std::{
 
 use cudf::{
     DataFrame, DeviceId, Error, ErrorKind, HostColumnData, Runtime, Series, TypeId,
-    core::{Column, CudfType, DeviceBuffer, Scalar, memory::DeviceMemoryResource},
+    core::{Column, CudfType, DeviceBuffer, Scalar},
     runtime::CudaStream,
 };
 use cudf_sys::{
@@ -184,6 +184,11 @@ pub fn reset_sync_observation() {
 }
 
 #[allow(dead_code)]
+pub fn reset_row_predicate_observation() {
+    unsafe { cudf_sys::cudf_test_row_predicate_reset_observation() };
+}
+
+#[allow(dead_code)]
 pub fn lock_event_observation() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     match LOCK.get_or_init(|| Mutex::new(())).lock() {
@@ -255,6 +260,38 @@ pub fn last_sync_stream_value() -> usize {
 }
 
 #[allow(dead_code)]
+pub fn last_row_predicate_filter_calls() -> i32 {
+    let mut out: i32 = -1;
+    let status = unsafe { cudf_sys::cudf_test_row_predicate_filter_call_count(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read row predicate filter call count");
+    out
+}
+
+#[allow(dead_code)]
+pub fn last_row_predicate_compute_mask_calls() -> i32 {
+    let mut out: i32 = -1;
+    let status = unsafe { cudf_sys::cudf_test_row_predicate_compute_mask_call_count(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read row predicate compute-mask call count");
+    out
+}
+
+#[allow(dead_code)]
+pub fn last_row_predicate_final_filter_calls() -> i32 {
+    let mut out: i32 = -1;
+    let status = unsafe { cudf_sys::cudf_test_row_predicate_final_filter_call_count(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read row predicate final-filter call count");
+    out
+}
+
+#[allow(dead_code)]
+pub fn last_row_predicate_mask_api_calls() -> i32 {
+    let mut out: i32 = -1;
+    let status = unsafe { cudf_sys::cudf_test_apply_boolean_mask_call_count(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read apply_boolean_mask call count");
+    out
+}
+
+#[allow(dead_code)]
 pub fn explicit_i32_column(data: &[i32], identity: u64) -> Column {
     column_from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap()
 }
@@ -277,8 +314,7 @@ pub fn explicit_bool_series(name: &str, data: &[bool], identity: u64) -> Series 
 #[allow(dead_code)]
 pub fn sample_runtime() -> Runtime {
     let stream = CudaStream::new().unwrap();
-    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
-    Runtime::builder().with_stream(stream).with_memory_resource(mr).build().unwrap()
+    Runtime::builder().with_stream(stream).with_pool_memory_resource(16 * 1024 * 1024, None).build().unwrap()
 }
 
 #[allow(dead_code)]

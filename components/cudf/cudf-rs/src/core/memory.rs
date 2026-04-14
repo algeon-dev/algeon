@@ -9,15 +9,21 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::core::memory::DeviceMemoryResource;
+//! use cudf::{DeviceId, Runtime, core::memory::DeviceMemoryResource};
 //!
-//! // Use the default CUDA allocator.
-//! let _mr = DeviceMemoryResource::cuda().unwrap();
+//! // Canonical runtime setup: let the builder create the pool after it has
+//! // resolved the runtime's target device.
+//! let _runtime = Runtime::builder()
+//!     .with_device(DeviceId::new(0).unwrap())
+//!     .with_pool_memory_resource(256 * 1024 * 1024, None)
+//!     .build()
+//!     .unwrap();
 //!
-//! // Or use a pool allocator for faster repeated allocations.
-//! let _pool = DeviceMemoryResource::pool(
+//! // Advanced explicit-handle setup: create an MR immediately on a chosen device.
+//! let _pool = DeviceMemoryResource::pool_on(
+//!     DeviceId::new(0).unwrap(),
 //!     256 * 1024 * 1024, // 256 MB initial pool
-//!     0,                 // 0 = unbounded maximum
+//!     None,              // None = unbounded maximum
 //! )
 //! .unwrap();
 //! ```
@@ -30,6 +36,7 @@ use std::{
 use crate::{
     DeviceId,
     core::error::{self, Result},
+    runtime::device_guard::DeviceGuard,
 };
 
 /// An owned device memory resource.
@@ -60,47 +67,69 @@ unsafe impl Send for DeviceMemoryResourceHandle {}
 unsafe impl Sync for DeviceMemoryResourceHandle {}
 
 impl DeviceMemoryResource {
+    fn raw_maximum_pool_size(maximum_pool_size: Option<usize>) -> usize {
+        maximum_pool_size.unwrap_or(0)
+    }
+
+    fn from_created_handle(handle: *mut std::ffi::c_void, device: DeviceId, constructor: &'static str) -> Self {
+        Self { handle: Arc::new(DeviceMemoryResourceHandle { raw: NonNull::new(handle).expect(constructor), device }) }
+    }
+
     /// Create a CUDA (default) memory resource handle on the calling thread's
     /// current device.
     pub fn cuda() -> Result<Self> {
-        let device = DeviceId::current()?;
+        Self::cuda_on(DeviceId::current()?)
+    }
+
+    /// Create a CUDA (default) memory resource handle on an explicit device.
+    ///
+    /// The resource is created immediately on `device`, and the calling
+    /// thread's previous ambient CUDA device is restored before this function
+    /// returns.
+    pub fn cuda_on(device: DeviceId) -> Result<Self> {
+        let _guard = DeviceGuard::new(device)?;
         let mut handle = ptr::null_mut();
         // SAFETY: handle is initialized to null and set by the C shim on success.
         error::check_status_in(
             unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut handle) },
-            "memory::device_memory_resource::cuda",
+            "memory::device_memory_resource::cuda_on",
         )?;
-        Ok(Self {
-            handle: Arc::new(DeviceMemoryResourceHandle {
-                raw: NonNull::new(handle).expect("cudf_memory_resource_create_cuda returned null on success"),
-                device,
-            }),
-        })
+        Ok(Self::from_created_handle(handle, device, "cudf_memory_resource_create_cuda returned null on success"))
     }
 
     /// Create a pool memory resource handle on the calling thread's current
     /// device.
     ///
     /// - `initial_pool_size`: initial pool allocation in bytes.
-    /// - `maximum_pool_size`: maximum pool size in bytes, or 0 for unbounded.
-    pub fn pool(initial_pool_size: usize, maximum_pool_size: usize) -> Result<Self> {
-        let device = DeviceId::current()?;
+    /// - `maximum_pool_size`: maximum pool size in bytes, or `None` for unbounded.
+    pub fn pool(initial_pool_size: usize, maximum_pool_size: Option<usize>) -> Result<Self> {
+        Self::pool_on(DeviceId::current()?, initial_pool_size, maximum_pool_size)
+    }
+
+    /// Create a pool memory resource handle on an explicit device.
+    ///
+    /// The resource is created immediately on `device`, and the calling
+    /// thread's previous ambient CUDA device is restored before this function
+    /// returns.
+    ///
+    /// - `initial_pool_size`: initial pool allocation in bytes.
+    /// - `maximum_pool_size`: maximum pool size in bytes, or `None` for unbounded.
+    pub fn pool_on(device: DeviceId, initial_pool_size: usize, maximum_pool_size: Option<usize>) -> Result<Self> {
+        let _guard = DeviceGuard::new(device)?;
+        let raw_maximum_pool_size = Self::raw_maximum_pool_size(maximum_pool_size);
         let mut handle = ptr::null_mut();
         // SAFETY: handle is initialized to null and set by the C shim on success.
         error::check_status_in_with(
-            unsafe { cudf_sys::cudf_memory_resource_create_pool(initial_pool_size, maximum_pool_size, &mut handle) },
-            "memory::device_memory_resource::pool",
+            unsafe {
+                cudf_sys::cudf_memory_resource_create_pool(initial_pool_size, raw_maximum_pool_size, &mut handle)
+            },
+            "memory::device_memory_resource::pool_on",
             [
                 ("initial_pool_size", initial_pool_size.to_string()),
-                ("maximum_pool_size", maximum_pool_size.to_string()),
+                ("maximum_pool_size", maximum_pool_size.map_or_else(|| "None".to_string(), |size| size.to_string())),
             ],
         )?;
-        Ok(Self {
-            handle: Arc::new(DeviceMemoryResourceHandle {
-                raw: NonNull::new(handle).expect("cudf_memory_resource_create_pool returned null on success"),
-                device,
-            }),
-        })
+        Ok(Self::from_created_handle(handle, device, "cudf_memory_resource_create_pool returned null on success"))
     }
 
     /// The CUDA device this memory resource was created on.

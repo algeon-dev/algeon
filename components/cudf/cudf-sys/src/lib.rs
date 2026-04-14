@@ -209,6 +209,32 @@ pub enum cudf_binary_operator_t {
 }
 
 // ---------------------------------------------------------------------------
+// Row-predicate filtering nodes
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_row_predicate_node_kind_t {
+    CUDF_ROW_PREDICATE_NODE_COLUMN_REF = 0,
+    CUDF_ROW_PREDICATE_NODE_LITERAL = 1,
+    CUDF_ROW_PREDICATE_NODE_BINARY_OP = 2,
+    CUDF_ROW_PREDICATE_NODE_UNARY_OP = 3,
+    CUDF_ROW_PREDICATE_NODE_IS_NULL = 4,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct cudf_row_predicate_node_t {
+    pub kind: cudf_row_predicate_node_kind_t,
+    pub lhs_index: i32,
+    pub rhs_index: i32,
+    pub column_index: i32,
+    pub binary_op: cudf_binary_operator_t,
+    pub unary_op: cudf_unary_operator_t,
+    pub literal: *mut c_void,
+}
+
+// ---------------------------------------------------------------------------
 // Reduction enums (mirrors cudf::scan_type, reduction aggregation kind)
 // ---------------------------------------------------------------------------
 
@@ -619,6 +645,21 @@ extern "C" {
         size: i32,
         null_mask: *const u8,
         null_count: i32,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_column_create_sequence(
+        init: cudf_scalar_handle,
+        step: cudf_scalar_handle,
+        size: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_column_create_sequence_ex(
+        init: cudf_scalar_handle,
+        step: cudf_scalar_handle,
+        size: i32,
         options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
@@ -1700,6 +1741,27 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    /// Evaluate a validated row predicate and filter the table once.
+    pub fn cudf_filter_rows_by_predicate(
+        input: cudf_table_view_handle,
+        nodes: *const cudf_row_predicate_node_t,
+        num_nodes: i32,
+        root_index: i32,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    /// Evaluate a validated row predicate with explicit execution context.
+    ///
+    /// When `options->mr` is non-null, it must outlive the returned table.
+    pub fn cudf_filter_rows_by_predicate_ex(
+        input: cudf_table_view_handle,
+        nodes: *const cudf_row_predicate_node_t,
+        num_nodes: i32,
+        root_index: i32,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     // -- GroupBy --------------------------------------------------------------
 
     pub fn cudf_aggregation_create(kind: cudf_aggregation_kind_t, out: *mut *mut c_void) -> cudf_status_t;
@@ -2438,6 +2500,21 @@ extern "C" {
     /// Return the raw pointer of the process-global current device memory
     /// resource.
     pub fn cudf_test_current_device_resource_raw(out: *mut *mut c_void) -> cudf_status_t;
+
+    /// Reset row-predicate/filter observation counters.
+    pub fn cudf_test_row_predicate_reset_observation();
+
+    /// Number of fused row-predicate filter invocations.
+    pub fn cudf_test_row_predicate_filter_call_count(out: *mut i32) -> cudf_status_t;
+
+    /// Number of predicate-mask computations performed by the fused path.
+    pub fn cudf_test_row_predicate_compute_mask_call_count(out: *mut i32) -> cudf_status_t;
+
+    /// Number of final table-filter applications performed by the fused path.
+    pub fn cudf_test_row_predicate_final_filter_call_count(out: *mut i32) -> cudf_status_t;
+
+    /// Number of direct `cudf_apply_boolean_mask[_ex]` API invocations.
+    pub fn cudf_test_apply_boolean_mask_call_count(out: *mut i32) -> cudf_status_t;
 
     /// Create a statistics-wrapped memory resource for allocator-sensitive
     /// integration tests.

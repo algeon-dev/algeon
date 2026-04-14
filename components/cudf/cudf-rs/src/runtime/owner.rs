@@ -49,11 +49,22 @@ impl std::fmt::Debug for Runtime {
 }
 
 /// Builder for [`Runtime`].
-#[derive(Default)]
 pub struct RuntimeBuilder {
     stream: Option<CudaStream>,
-    mr: Option<DeviceMemoryResource>,
+    mr_selection: MemoryResourceSelection,
     device: Option<DeviceId>,
+}
+
+enum MemoryResourceSelection {
+    DefaultCuda,
+    Owned(DeviceMemoryResource),
+    Pool { initial_pool_size: usize, maximum_pool_size: Option<usize> },
+}
+
+impl Default for RuntimeBuilder {
+    fn default() -> Self {
+        Self { stream: None, mr_selection: MemoryResourceSelection::DefaultCuda, device: None }
+    }
 }
 
 impl Runtime {
@@ -264,6 +275,15 @@ impl Runtime {
         Series::from_named_column(name, self.column_from_scalar(scalar, size)?)
     }
 
+    /// Create a fixed-width arithmetic sequence `Series` inside this runtime.
+    ///
+    /// The output is `[start, start + step, start + 2*step, ...]` with
+    /// `size` rows, generated directly on device via libcudf sequence
+    /// filling.
+    pub fn sequence<T: CudfType>(&self, name: impl Into<String>, start: T, step: T, size: usize) -> Result<Series> {
+        Series::from_named_column(name, Column::from_sequence_with_runtime(self, start, step, size)?)
+    }
+
     /// Create an empty `DataFrame` inside this runtime.
     pub fn empty_dataframe(&self) -> DataFrame {
         DataFrame::empty_in_domain(Arc::clone(self.execution_domain()))
@@ -297,7 +317,20 @@ impl RuntimeBuilder {
 
     /// Override the runtime's owned device memory resource.
     pub fn with_memory_resource(mut self, mr: DeviceMemoryResource) -> Self {
-        self.mr = Some(mr);
+        self.mr_selection = MemoryResourceSelection::Owned(mr);
+        self
+    }
+
+    /// Configure the runtime to build an owned pool memory resource during `build()`.
+    ///
+    /// The pool is created only after the runtime target device has been
+    /// resolved and entered, so this path does not depend on unrelated ambient
+    /// current-device state at call time.
+    ///
+    /// - `initial_pool_size`: initial pool allocation in bytes.
+    /// - `maximum_pool_size`: maximum pool size in bytes, or `None` for unbounded.
+    pub fn with_pool_memory_resource(mut self, initial_pool_size: usize, maximum_pool_size: Option<usize>) -> Self {
+        self.mr_selection = MemoryResourceSelection::Pool { initial_pool_size, maximum_pool_size };
         self
     }
 
@@ -316,18 +349,22 @@ impl RuntimeBuilder {
     ///   on different devices.
     pub fn build(self) -> Result<Runtime> {
         let device = self.resolve_device()?;
+        let RuntimeBuilder { stream, mr_selection, .. } = self;
 
         // Temporarily switch to the target device so that any auto-created
         // stream or memory resource lands on the correct GPU.
         let _guard = DeviceGuard::new(device)?;
 
-        let stream = match self.stream {
+        let stream = match stream {
             Some(stream) => stream,
             None => CudaStream::new()?,
         };
-        let mr = match self.mr {
-            Some(mr) => mr,
-            None => DeviceMemoryResource::cuda()?,
+        let mr = match mr_selection {
+            MemoryResourceSelection::DefaultCuda => DeviceMemoryResource::cuda_on(device)?,
+            MemoryResourceSelection::Owned(mr) => mr,
+            MemoryResourceSelection::Pool { initial_pool_size, maximum_pool_size } => {
+                DeviceMemoryResource::pool_on(device, initial_pool_size, maximum_pool_size)?
+            },
         };
         let domain = ExecutionDomain::from_handles_on_device(device, stream, mr)?;
         Ok(Runtime { domain })
@@ -350,7 +387,7 @@ impl RuntimeBuilder {
                     .with_context("stream_device", stream.device().ordinal().to_string()));
                 }
             }
-            if let Some(ref mr) = self.mr {
+            if let MemoryResourceSelection::Owned(ref mr) = self.mr_selection {
                 if mr.device() != target {
                     return Err(Error::new(
                         ErrorKind::InvalidOperation,
@@ -364,8 +401,8 @@ impl RuntimeBuilder {
             Ok(target)
         } else {
             // No explicit device — infer from handles.
-            match (&self.stream, &self.mr) {
-                (Some(stream), Some(mr)) => {
+            match (&self.stream, &self.mr_selection) {
+                (Some(stream), MemoryResourceSelection::Owned(mr)) => {
                     if stream.device() != mr.device() {
                         return Err(Error::new(
                             ErrorKind::InvalidOperation,
@@ -377,9 +414,11 @@ impl RuntimeBuilder {
                     }
                     Ok(stream.device())
                 },
-                (Some(stream), None) => Ok(stream.device()),
-                (None, Some(mr)) => Ok(mr.device()),
-                (None, None) => DeviceId::current(),
+                (Some(stream), _) => Ok(stream.device()),
+                (None, MemoryResourceSelection::Owned(mr)) => Ok(mr.device()),
+                (None, MemoryResourceSelection::DefaultCuda | MemoryResourceSelection::Pool { .. }) => {
+                    DeviceId::current()
+                },
             }
         }
     }

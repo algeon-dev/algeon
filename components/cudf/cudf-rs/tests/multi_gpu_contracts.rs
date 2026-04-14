@@ -228,7 +228,7 @@ fn memory_resource_drop_restores_previous_device() {
     let _device_guard = common::DeviceRestoreGuard::new();
     let (device0, device1) = first_two_test_devices();
     common::set_current_device(device0);
-    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
+    let mr = DeviceMemoryResource::pool(16 * 1024 * 1024, None).unwrap();
 
     common::set_current_device(device1);
     let before_drop = DeviceId::current().unwrap();
@@ -508,8 +508,7 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
 
     let current_device_after = DeviceId::current().unwrap();
     assert_eq!(
-        current_device_after,
-        device0,
+        current_device_after, device0,
         "filter paths should not leak runtime device state to the calling thread"
     );
 }
@@ -677,6 +676,73 @@ fn memory_resource_records_creation_device() {
     // Create an MR on the secondary device via RuntimeBuilder's DeviceGuard.
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     assert_eq!(rt1.memory_resource().device(), device1, "runtime MR should record the pinned device");
+}
+
+#[test]
+fn builder_pool_memory_resource_ignores_ambient_device_and_uses_runtime_device() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let _device_guard = common::DeviceRestoreGuard::new();
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+
+    let rt = Runtime::builder().with_device(device1).with_pool_memory_resource(16 * 1024 * 1024, None).build().unwrap();
+
+    assert_eq!(rt.device(), device1);
+    assert_eq!(rt.memory_resource().device(), device1);
+    assert_eq!(
+        DeviceId::current().unwrap(),
+        device0,
+        "runtime build should restore the prior ambient device after deferred pool creation"
+    );
+
+    common::reset_exec_observation();
+    let series = rt.series("x", &[1i32, 2, 3]).unwrap();
+    assert_eq!(common::last_exec_device(), device1.ordinal() as i32);
+    assert_eq!(series.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(
+        DeviceId::current().unwrap(),
+        device0,
+        "runtime execution should continue restoring the ambient device after operations"
+    );
+}
+
+#[test]
+fn explicit_device_memory_resource_constructors_ignore_ambient_device() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let _device_guard = common::DeviceRestoreGuard::new();
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+
+    let cuda_mr = DeviceMemoryResource::cuda_on(device1).unwrap();
+    assert_eq!(cuda_mr.device(), device1);
+    assert_eq!(
+        DeviceId::current().unwrap(),
+        device0,
+        "cuda_on should restore the calling thread's previous ambient device"
+    );
+
+    let pool_mr = DeviceMemoryResource::pool_on(device1, 16 * 1024 * 1024, None).unwrap();
+    assert_eq!(pool_mr.device(), device1);
+    assert_eq!(
+        DeviceId::current().unwrap(),
+        device0,
+        "pool_on should restore the calling thread's previous ambient device"
+    );
+
+    let rt = Runtime::builder().with_device(device1).with_memory_resource(pool_mr.clone()).build().unwrap();
+    assert_eq!(rt.device(), device1);
+    assert_eq!(rt.memory_resource().device(), device1);
+    assert_eq!(
+        rt.memory_resource().__debug_raw_handle_value(),
+        pool_mr.__debug_raw_handle_value(),
+        "builder should accept a pool_on handle for the matching device"
+    );
 }
 
 // ---------------------------------------------------------------------------

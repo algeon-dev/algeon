@@ -11,7 +11,7 @@ use crate::{
             CudfType, DataType, TypeId, count_nulls, cudf_null_mask_allocation_size_bytes, validity_to_ffi_bitmask,
         },
     },
-    ops::binary,
+    ops::{binary, unary},
     runtime::{Runtime, execution_domain::ExecutionDomain},
 };
 
@@ -60,6 +60,20 @@ impl Column {
         Ok(Self::from_handle_with_domain(handle, domain))
     }
 
+    fn create_empty_with_dtype_in_domain(
+        dtype: DataType,
+        domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let empty = Self::create_empty_in_domain(dtype.id(), Arc::clone(&domain), operation)?;
+        if !dtype.id().is_decimal() || dtype.scale() == 0 {
+            return Ok(empty);
+        }
+
+        let empty_view = empty.view()?;
+        unary::cast(&empty_view, &dtype).map_err(|error| error.with_operation(operation))
+    }
+
     fn from_handle_with_domain_and_owner(
         handle: *mut c_void,
         domain: Arc<ExecutionDomain>,
@@ -84,6 +98,14 @@ impl Column {
         operation: &'static str,
     ) -> Result<Self> {
         Self::create_empty_in_domain(type_id, domain, operation)
+    }
+
+    pub(crate) fn empty_with_dtype_in_domain(
+        dtype: DataType,
+        domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        Self::create_empty_with_dtype_in_domain(dtype, domain, operation)
     }
 
     /// Create an empty column of the given type inside the given explicit
@@ -505,6 +527,64 @@ impl Column {
 
         let runtime_scalar = scalar.copy_into_domain(runtime.execution_domain())?;
         Self::from_scalar(&runtime_scalar, size)
+    }
+
+    pub(crate) fn from_sequence_with_runtime<T: CudfType>(
+        runtime: &Runtime,
+        init: T,
+        step: T,
+        size: usize,
+    ) -> Result<Self> {
+        let size_i32 = i32::try_from(size).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "size exceeds i32::MAX")
+                .with_operation("column::from_sequence_with_runtime")
+        })?;
+        let init_scalar = runtime.scalar(init)?;
+        let step_scalar = runtime.scalar(step)?;
+        let mut handle = ptr::null_mut();
+        let exec_options =
+            runtime.execution_domain().explicit_exec_options_raw().expect("execution domain is always explicit");
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_create_sequence_ex(
+                    init_scalar.raw_handle(),
+                    step_scalar.raw_handle(),
+                    size_i32,
+                    &exec_options,
+                    &mut handle,
+                )
+            },
+            "column::from_sequence_with_runtime",
+        )?;
+        Ok(Self::from_handle_with_domain(handle, Arc::clone(runtime.execution_domain())))
+    }
+
+    pub(crate) fn from_sequence_in_domain<T: CudfType>(
+        init: T,
+        step: T,
+        size: usize,
+        domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let size_i32 = i32::try_from(size)
+            .map_err(|_| Error::new(ErrorKind::InvalidOperation, "size exceeds i32::MAX").with_operation(operation))?;
+        let init_scalar = Scalar::from_value_in_domain(init, &domain)?;
+        let step_scalar = Scalar::from_value_in_domain(step, &domain)?;
+        let mut handle = ptr::null_mut();
+        let exec_options = domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_create_sequence_ex(
+                    init_scalar.raw_handle(),
+                    step_scalar.raw_handle(),
+                    size_i32,
+                    &exec_options,
+                    &mut handle,
+                )
+            },
+            operation,
+        )?;
+        Ok(Self::from_handle_with_domain(handle, domain))
     }
 
     /// Create a nullable STRING type column from host string data and a validity mask.
