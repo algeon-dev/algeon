@@ -204,6 +204,8 @@ pub struct NexusGpuBackendBuilder {
     fallback_policy: GpuFallbackPolicy,
     memory_policy: NexusMemoryPolicy,
     admission_policy: NexusAdmissionPolicy,
+    #[cfg(feature = "cugraph")]
+    query_service_resident_graph_cache_max_retained_bytes: Option<u64>,
     tenant_id: TenantId,
 }
 
@@ -373,6 +375,8 @@ impl Default for NexusGpuBackendBuilder {
             fallback_policy: GpuFallbackPolicy::default(),
             memory_policy: NexusMemoryPolicy::default(),
             admission_policy: NexusAdmissionPolicy::default(),
+            #[cfg(feature = "cugraph")]
+            query_service_resident_graph_cache_max_retained_bytes: None,
             tenant_id: TenantId::new(DEFAULT_BACKEND_TENANT_ID),
         }
     }
@@ -394,6 +398,16 @@ impl NexusGpuBackendBuilder {
         self
     }
 
+    /// Configure the service-owned parked cuGraph cache for backend-created
+    /// query-service execution.
+    ///
+    /// `None` disables the cache. `Some(0)` is rejected during build.
+    #[cfg(feature = "cugraph")]
+    pub fn query_service_resident_graph_cache_max_retained_bytes(mut self, max_retained_bytes: Option<u64>) -> Self {
+        self.query_service_resident_graph_cache_max_retained_bytes = max_retained_bytes;
+        self
+    }
+
     pub fn tenant_id(mut self, tenant_id: impl Into<TenantId>) -> Self {
         self.tenant_id = tenant_id.into();
         self
@@ -409,7 +423,14 @@ impl NexusGpuBackendBuilder {
     }
 
     fn build_inner(self, admission_only: bool) -> Result<NexusGpuBackend> {
-        let resolved = ResolvedBackendMemoryPolicy::resolve(&self.memory_policy)?;
+        let mut resolved = ResolvedBackendMemoryPolicy::resolve(&self.memory_policy)?;
+        #[cfg(feature = "cugraph")]
+        {
+            resolved.execution_config =
+                resolved.execution_config.with_query_service_resident_graph_cache_max_retained_bytes(
+                    self.query_service_resident_graph_cache_max_retained_bytes,
+                );
+        }
         let optimizer_config = CudfOptimizerConfig::new(self.fallback_policy)
             .with_native_execution_config(resolved.execution_config.clone());
         NexusGpuBackend::build_bounded(
@@ -1006,6 +1027,54 @@ mod tests {
             true,
         )
         .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.fact_value("field"), Some("resident_graph_cache_max_retained_bytes"));
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn backend_builder_propagates_query_service_resident_graph_cache_capacity() {
+        let backend = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0, 1],
+                device_budget_bytes: 4096,
+                max_source_chunk_bytes: 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            })
+            .query_service_resident_graph_cache_max_retained_bytes(Some(2048))
+            .admission(NexusAdmissionPolicy::default().with_max_concurrent_queries(2))
+            .build_admission_only()
+            .unwrap();
+
+        assert_eq!(backend.query_service().config().resident_graph_cache_max_retained_bytes, Some(2048));
+        assert_eq!(
+            backend
+                .optimizer_config()
+                .native_execution_config()
+                .query_service_resident_graph_cache_max_retained_bytes(),
+            Some(2048)
+        );
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn backend_builder_rejects_zero_query_service_resident_graph_cache_capacity() {
+        let error = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0],
+                device_budget_bytes: 4096,
+                max_source_chunk_bytes: 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            })
+            .query_service_resident_graph_cache_max_retained_bytes(Some(0))
+            .admission(NexusAdmissionPolicy::default().with_max_concurrent_queries(1))
+            .build_admission_only()
+            .unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
         assert_eq!(error.fact_value("field"), Some("resident_graph_cache_max_retained_bytes"));

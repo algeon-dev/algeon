@@ -61,6 +61,7 @@ const ENV_BFS_SEED: &str = "CUDF_CUGRAPH_ADMISSION_BFS_SEED";
 const ENV_BATCH_SIZE: &str = "CUDF_CUGRAPH_ADMISSION_BATCH_SIZE";
 const ENV_PRINT_PLANNING: &str = "CUDF_CUGRAPH_ADMISSION_PRINT_PLANNING";
 const ENV_DEVICE_ORDINALS: &str = "CUDF_CUGRAPH_ADMISSION_DEVICE_ORDINALS";
+const ENV_GRAPH_CACHE_MAX_RETAINED_BYTES: &str = "CUDF_CUGRAPH_ADMISSION_GRAPH_CACHE_MAX_RETAINED_BYTES";
 
 /// Retained optimizer rules (diagnostic planning-report mode only).
 static PLANNING_RULES: Mutex<Vec<Arc<CudfNativePhysicalOptimizerRule>>> = Mutex::new(Vec::new());
@@ -162,6 +163,7 @@ struct HarnessConfig {
     bfs_seed: Option<i64>,
     batch_size: Option<usize>,
     device_ordinals: Vec<usize>,
+    graph_cache_max_retained_bytes: Option<u64>,
 }
 
 impl HarnessConfig {
@@ -197,6 +199,7 @@ impl HarnessConfig {
             bfs_seed: parse_optional_i64(ENV_BFS_SEED)?,
             batch_size: parse_optional_usize(ENV_BATCH_SIZE)?,
             device_ordinals: parse_device_ordinals(ENV_DEVICE_ORDINALS)?,
+            graph_cache_max_retained_bytes: parse_optional_u64(ENV_GRAPH_CACHE_MAX_RETAINED_BYTES)?,
         })
     }
 }
@@ -423,7 +426,11 @@ fn build_backend(config: &HarnessConfig) -> Result<NexusGpuBackend, Box<dyn Erro
     if let Some(want) = config.grant_want {
         admission = admission.with_grant_want(want);
     }
-    Ok(NexusGpuBackend::builder().memory_policy(memory_policy).admission(admission).build()?)
+    let mut builder = NexusGpuBackend::builder().memory_policy(memory_policy).admission(admission);
+    if let Some(max_retained_bytes) = config.graph_cache_max_retained_bytes {
+        builder = builder.query_service_resident_graph_cache_max_retained_bytes(Some(max_retained_bytes));
+    }
+    Ok(builder.build()?)
 }
 
 async fn build_session(
@@ -990,6 +997,7 @@ fn write_outputs(
             "requested_grant_bytes": config.requested_grant_bytes,
             "raw_input_edges": config.raw_input_edges,
             "query_timeout_ms": config.query_timeout_ms,
+            "graph_cache_max_retained_bytes": config.graph_cache_max_retained_bytes,
             "edges_parquet": config.edges_parquet,
         },
         "labels": label_stats.iter().map(|(label, (ok, failed, walls, waits))| {
@@ -1161,6 +1169,7 @@ mod tests {
             bfs_seed: None,
             batch_size: None,
             device_ordinals: vec![0],
+            graph_cache_max_retained_bytes: Some(2048),
         };
         let request = Request {
             task_index: 0,
@@ -1198,6 +1207,7 @@ mod tests {
             bfs_seed: None,
             batch_size: None,
             device_ordinals: vec![0],
+            graph_cache_max_retained_bytes: None,
         };
         let request = Request {
             task_index: 0,
