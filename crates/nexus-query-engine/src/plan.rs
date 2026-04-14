@@ -43,8 +43,10 @@ pub use graph_algorithm::{
     GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLayoutRequirement,
     GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOperationDefinition, GraphOutDegreesAllParams,
     GraphOutputSchemaKind, GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
-    GraphPredicateInput, GraphSccParams, GraphSourceVertexRequirement, GraphSpectralClusteringParams, GraphSsspParams,
-    GraphTriangleCountAllParams, GraphVertexIdTypeSupport, GraphWccParams, GraphWeightPolicy,
+    GraphPredicateInput, GraphResidencyDescriptor, GraphResidencyOrientation, GraphResidencyPlanAnalysis,
+    GraphSccParams, GraphSourceFingerprint, GraphSourceFingerprintBypassReason, GraphSourceVertexRequirement,
+    GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphVertexIdTypeSupport,
+    GraphWccParams, GraphWeightPolicy, ResidentGraphKey, graph_residency_descriptor_for_edge_plan,
     graph_result_schema_for_params, stable_graph_result_schema,
 };
 pub use join::{

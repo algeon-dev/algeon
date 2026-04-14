@@ -21,7 +21,7 @@ use crate::{
     error::{QueryError, Result},
     exec::is_datafusion_order_column_name,
     metrics::QueryMetrics,
-    plan::{HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
+    plan::{GraphResidencyDescriptor, HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
     runtime::{
         DevicePlacement, ExecutionContext,
         gpu::governor::{EvictableMemoryPressure, MemoryGovernor, MemoryGrantLiveReservation},
@@ -74,6 +74,7 @@ pub struct GpuDataFrame {
     placement: ExecutionPlacement,
     live_reservation: Option<MemoryGrantLiveReservation>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
+    graph_residency: Option<Arc<GraphResidencyDescriptor>>,
 }
 
 impl GpuDataFrame {
@@ -104,7 +105,7 @@ impl GpuDataFrame {
         source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     ) -> Self {
         let placement = frame.placement();
-        Self { frame, placement, live_reservation, source_cache_pin }
+        Self { frame, placement, live_reservation, source_cache_pin, graph_residency: None }
     }
 
     /// Borrow the underlying cuDF frame.
@@ -119,15 +120,31 @@ impl GpuDataFrame {
     }
 
     fn into_frame_and_live_reservation(self) -> (DataFrame, Option<MemoryGrantLiveReservation>) {
-        let (frame, live_reservation, _source_cache_pin) = self.into_frame_and_residency();
+        let (frame, live_reservation, _source_cache_pin, _graph_residency) = self.into_frame_and_residency();
         (frame, live_reservation)
     }
 
     fn into_frame_and_residency(
         self,
-    ) -> (DataFrame, Option<MemoryGrantLiveReservation>, Option<GpuLocalParquetSourceCachePin>) {
+    ) -> (
+        DataFrame,
+        Option<MemoryGrantLiveReservation>,
+        Option<GpuLocalParquetSourceCachePin>,
+        Option<Arc<GraphResidencyDescriptor>>,
+    ) {
         debug_assert_eq!(self.placement, self.frame.placement());
-        (self.frame, self.live_reservation, self.source_cache_pin)
+        (self.frame, self.live_reservation, self.source_cache_pin, self.graph_residency)
+    }
+
+    /// Attach graph source provenance to this GPU frame.
+    pub fn with_graph_residency(mut self, graph_residency: GraphResidencyDescriptor) -> Self {
+        self.graph_residency = Some(Arc::new(graph_residency));
+        self
+    }
+
+    /// Graph source provenance carried by this frame, when known.
+    pub fn graph_residency(&self) -> Option<&GraphResidencyDescriptor> {
+        self.graph_residency.as_deref()
     }
 
     /// Execution placement observed when the frame entered the engine.
@@ -184,6 +201,7 @@ pub struct GpuResultHandle {
     device_placement: DevicePlacement,
     live_reservation: Option<MemoryGrantLiveReservation>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
+    graph_residency: Option<Arc<GraphResidencyDescriptor>>,
 }
 
 impl GpuResultHandle {
@@ -211,7 +229,7 @@ impl GpuResultHandle {
             .with_fact("runtime_device", context.runtime().device().ordinal()));
         }
         let frame = strip_hidden_datafusion_order_columns(frame, &schema)?;
-        let (frame, frame_live_reservation, source_cache_pin) = frame.into_frame_and_residency();
+        let (frame, frame_live_reservation, source_cache_pin, graph_residency) = frame.into_frame_and_residency();
         let live_reservation = live_reservation.or(frame_live_reservation);
         let batch = GpuRecordBatch::new(frame, schema).map_err(|error| {
             QueryError::from_cudf(
@@ -226,6 +244,7 @@ impl GpuResultHandle {
             device_placement: context.device_placement(),
             live_reservation,
             source_cache_pin,
+            graph_residency,
         })
     }
 
@@ -236,8 +255,10 @@ impl GpuResultHandle {
 
     /// Consume the handle and return its GPU frame wrapper.
     pub fn into_gpu_frame(self) -> GpuDataFrame {
-        let Self { batch, runtime: _, device_placement: _, live_reservation, source_cache_pin } = self;
-        GpuDataFrame::new_with_residency(batch.into_frame(), live_reservation, source_cache_pin)
+        let Self { batch, runtime: _, device_placement: _, live_reservation, source_cache_pin, graph_residency } = self;
+        let mut frame = GpuDataFrame::new_with_residency(batch.into_frame(), live_reservation, source_cache_pin);
+        frame.graph_residency = graph_residency;
+        frame
     }
 
     /// Arrow schema bound to this result.
@@ -261,6 +282,11 @@ impl GpuResultHandle {
 
     pub(crate) fn has_source_cache_pin(&self) -> bool {
         self.source_cache_pin.is_some()
+    }
+
+    /// Graph source provenance carried by this handle, when known.
+    pub fn graph_residency(&self) -> Option<&GraphResidencyDescriptor> {
+        self.graph_residency.as_deref()
     }
 
     fn with_source_cache_pin(mut self, pin: GpuLocalParquetSourceCachePin) -> Self {
@@ -301,7 +327,7 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
         return Ok(frame);
     }
 
-    let (raw, live_reservation, source_cache_pin) = frame.into_frame_and_residency();
+    let (raw, live_reservation, source_cache_pin, graph_residency) = frame.into_frame_and_residency();
     let frame_names = raw.column_names();
     let expected_names = schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     let visible_prefix_matches =
@@ -316,10 +342,14 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
                 error,
             )
         })?;
-        return Ok(GpuDataFrame::new_with_residency(selected, live_reservation, source_cache_pin));
+        let mut frame = GpuDataFrame::new_with_residency(selected, live_reservation, source_cache_pin);
+        frame.graph_residency = graph_residency;
+        return Ok(frame);
     }
 
-    Ok(GpuDataFrame::new_with_residency(raw, live_reservation, source_cache_pin))
+    let mut frame = GpuDataFrame::new_with_residency(raw, live_reservation, source_cache_pin);
+    frame.graph_residency = graph_residency;
+    Ok(frame)
 }
 
 /// Reusable cuDF hash-join build artifact.
