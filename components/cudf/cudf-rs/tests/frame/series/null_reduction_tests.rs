@@ -234,8 +234,10 @@ fn test_all_with_false_and_null() {
 #[test]
 fn test_any_all_null() {
     let s = crate::common::nullable_series::<bool>("x", &[false, false], &[false, false]).unwrap();
-    let _result = s.any().unwrap();
+    let result = s.any().unwrap();
     // any of all-null with exclude-nulls: no elements, so false (identity)
+    assert!(result.is_valid().unwrap());
+    assert!(!result.value::<bool>().unwrap());
 }
 
 // ===========================================================================

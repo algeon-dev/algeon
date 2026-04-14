@@ -6,7 +6,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{ErrorKind, Series, SortOptions, TypeId};
+use cudf::{CodebookOptions, CodebookOrder, ErrorKind, Series, SortOptions, TypeId};
 
 use crate::common::{
     column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
@@ -355,6 +355,80 @@ fn test_nunique_all_unique() {
 // ===========================================================================
 
 #[test]
+fn test_lookup_exact_match() {
+    let input = crate::common::series("vertex", &["u2", "u1", "u3"]).unwrap();
+    let keys = crate::common::series("id", &["u1", "u2", "u3"]).unwrap();
+    let values = crate::common::series("label", &["alice", "bob", "carol"]).unwrap();
+
+    let looked_up = input.lookup(&keys, &values).unwrap();
+
+    assert_eq!(looked_up.name(), Some("label"));
+    assert_eq!(
+        looked_up.to_optional_strings().unwrap(),
+        vec![Some("bob".to_string()), Some("alice".to_string()), Some("carol".to_string())]
+    );
+}
+
+#[test]
+fn test_lookup_missing_key_produces_null() {
+    let input = crate::common::series("vertex", &["u2", "u9", "u1"]).unwrap();
+    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
+    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
+
+    let looked_up = input.lookup(&keys, &values).unwrap();
+
+    assert_eq!(
+        looked_up.to_optional_strings().unwrap(),
+        vec![Some("bob".to_string()), None, Some("alice".to_string())]
+    );
+}
+
+#[test]
+fn test_lookup_rejects_duplicate_keys() {
+    let input = crate::common::series("vertex", &["u1", "u2"]).unwrap();
+    let keys = crate::common::series("id", &["u1", "u1"]).unwrap();
+    let values = crate::common::series("label", &["alice", "alice-2"]).unwrap();
+
+    let err = input.lookup(&keys, &values).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_lookup_rejects_dtype_mismatch() {
+    let input = crate::common::series::<i32>("vertex", &[1, 2]).unwrap();
+    let keys = crate::common::series("id", &["1", "2"]).unwrap();
+    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
+
+    let err = input.lookup(&keys, &values).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_lookup_as_sets_requested_name() {
+    let input = crate::common::series("vertex", &["u2", "u1"]).unwrap();
+    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
+    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
+
+    let looked_up = input.lookup_as(&keys, &values, "owner").unwrap();
+
+    assert_eq!(looked_up.name(), Some("owner"));
+    assert_eq!(looked_up.to_optional_strings().unwrap(), vec![Some("bob".to_string()), Some("alice".to_string())]);
+}
+
+#[test]
+fn test_lookup_preserves_lookup_value_name_not_probe_name() {
+    let input = crate::common::series("vertex", &["u2", "u1"]).unwrap();
+    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
+    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
+
+    let looked_up = input.lookup(&keys, &values).unwrap();
+
+    assert_eq!(looked_up.name(), Some("label"));
+}
+
+#[test]
 fn test_factorize_basic() {
     let s = crate::common::series::<i32>("x", &[10, 20, 10, 30, 20]).unwrap();
     let factorized = s.factorize().unwrap();
@@ -435,6 +509,31 @@ fn test_codebook_can_encode_and_decode_new_queries() {
 }
 
 #[test]
+fn test_codebook_encode_as_renames_output() {
+    let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
+    let codebook = s.codebook().unwrap();
+    let query = crate::common::series("query", &["c", "a"]).unwrap();
+
+    let encoded = codebook.encode_as(&query, "vertex_id").unwrap();
+
+    assert_eq!(encoded.name(), Some("vertex_id"));
+    assert_eq!(encoded.to_vec_strict::<i32>().unwrap().len(), 2);
+}
+
+#[test]
+fn test_codebook_decode_as_renames_output() {
+    let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
+    let codebook = s.codebook().unwrap();
+    let query = crate::common::series("query", &["c", "a"]).unwrap();
+    let encoded = codebook.encode(&query).unwrap();
+
+    let decoded = codebook.decode_as(&encoded, "decoded_vertex").unwrap();
+
+    assert_eq!(decoded.name(), Some("decoded_vertex"));
+    assert_eq!(decoded.to_strings_strict().unwrap(), vec!["c", "a"]);
+}
+
+#[test]
 fn test_codebook_can_decode_plain_series_from_external_code_columns() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
@@ -444,6 +543,70 @@ fn test_codebook_can_decode_plain_series_from_external_code_columns() {
     let decoded = codebook.decode_series(&external_codes).unwrap();
     assert_eq!(decoded.name(), Some("x"));
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["a", "c"]);
+}
+
+#[test]
+fn test_codebook_decode_series_as_works_from_plain_series() {
+    let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
+    let codebook = s.codebook().unwrap();
+    let encoded = codebook.encode(&crate::common::series("vertex", &["a", "c"]).unwrap()).unwrap();
+    let external_codes = encoded.into_series().rename("vertex");
+
+    let decoded = codebook.decode_series_as(&external_codes, "vertex_label").unwrap();
+
+    assert_eq!(decoded.name(), Some("vertex_label"));
+    assert_eq!(decoded.to_strings_strict().unwrap(), vec!["a", "c"]);
+}
+
+#[test]
+fn test_codebook_first_seen_ordering() {
+    let s = crate::common::series("x", &["b", "a", "c", "a", "b"]).unwrap();
+
+    let codebook = s.codebook_with(CodebookOptions::new().order(CodebookOrder::FirstSeen)).unwrap();
+
+    assert_eq!(codebook.keys().to_strings_strict().unwrap(), vec!["b", "a", "c"]);
+}
+
+#[test]
+fn test_factorize_with_first_seen_ordering() {
+    let s = crate::common::series("x", &["b", "a", "c", "a", "b"]).unwrap();
+
+    let factorized = s.factorize_with(CodebookOptions::new().order(CodebookOrder::FirstSeen)).unwrap();
+
+    assert_eq!(factorized.codebook().keys().to_strings_strict().unwrap(), vec!["b", "a", "c"]);
+    assert_eq!(factorized.row_codes().to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 1, 0]);
+}
+
+#[test]
+fn test_codebook_from_keys_rejects_duplicate_keys() {
+    let keys = crate::common::series("lookup_keys", &["b", "a", "b"]).unwrap();
+
+    let err = match cudf::Codebook::from_keys(keys) {
+        Ok(_) => panic!("expected duplicate key series to be rejected"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(err.message().contains("unique") || err.message().contains("duplicate"), "unexpected error: {err}");
+}
+
+#[test]
+fn test_factorize_with_first_seen_ordering_avoids_temp_name_collisions() {
+    let s = crate::common::series("__cudf_first_seen_row_idx__", &["b", "a", "c", "a", "b"]).unwrap();
+
+    let factorized = s.factorize_with(CodebookOptions::new().order(CodebookOrder::FirstSeen)).unwrap();
+
+    assert_eq!(factorized.codebook().keys().to_strings_strict().unwrap(), vec!["b", "a", "c"]);
+    assert_eq!(factorized.row_codes().to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 1, 0]);
+}
+
+#[test]
+fn test_zero_argument_factorize_preserves_sorted_default_ordering() {
+    let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
+
+    let factorized = s.factorize().unwrap();
+
+    assert_eq!(factorized.codebook().keys().to_strings_strict().unwrap(), vec!["a", "b", "c"]);
 }
 
 // ===========================================================================

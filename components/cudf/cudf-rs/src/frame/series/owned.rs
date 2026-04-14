@@ -9,7 +9,7 @@ use crate::{
     },
     frame::{
         dataframe::{DataFrame, DropDuplicatesOptions, DropNaOptions},
-        factorization::{Codebook, EncodedSeries, Factorized},
+        factorization::{Codebook, CodebookOptions, CodebookOrder, EncodedSeries, Factorized},
     },
     internal::temp_table::TempTableView,
     ops::{
@@ -26,6 +26,21 @@ use crate::{
 pub(super) const SERIES_ROW_OP_FRAME_COLUMN_NAME: &str = "__cudf_series_value__";
 pub(super) const SERIES_VALUE_COUNTS_FALLBACK_NAME: &str = "value";
 pub(super) const SERIES_VALUE_COUNTS_COUNT_NAME: &str = "count";
+
+fn unique_temp_name(reserved: &str, base: &str) -> String {
+    if reserved != base {
+        return base.to_string();
+    }
+
+    let mut suffix = 1usize;
+    loop {
+        let candidate = format!("{base}{suffix}");
+        if candidate != reserved {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
 
 /// A named, reference-counted GPU column.
 ///
@@ -1010,6 +1025,56 @@ impl Series {
         self.build_codebook_in_domain(Arc::clone(self.column.execution_domain()), "series::codebook")
     }
 
+    fn first_seen_codebook(&self, operation: &'static str) -> Result<Codebook> {
+        const FIRST_SEEN_VALUE_NAME: &str = "__cudf_first_seen_value__";
+        const FIRST_SEEN_ROW_IDX_NAME: &str = "__cudf_first_seen_row_idx__";
+
+        let source = self.dropna().map_err(|e| e.with_operation(operation))?;
+        let value_name = source.name().unwrap_or(FIRST_SEEN_VALUE_NAME).to_string();
+        let row_idx_name = unique_temp_name(&value_name, FIRST_SEEN_ROW_IDX_NAME);
+        let source = match source.name() {
+            Some(_) => source,
+            None => source.rename(FIRST_SEEN_VALUE_NAME),
+        };
+
+        let row_idx = Series::from_column(Column::from_sequence_in_domain(
+            0i32,
+            1i32,
+            source.len(),
+            Arc::clone(self.column.execution_domain()),
+            operation,
+        )?)?
+        .rename(&row_idx_name);
+
+        let distinct = DataFrame::from_named_pairs([(value_name.clone(), source), (row_idx_name.clone(), row_idx)])
+            .map_err(|e| e.with_operation(operation))?
+            .drop_duplicates(
+                DropDuplicatesOptions::builder()
+                    .subset(&[value_name.as_str()])
+                    .keep(DuplicateKeepOption::KeepFirst)
+                    .build(),
+            )
+            .map_err(|e| e.with_operation(operation))?
+            .sort_values([row_idx_name.as_str()], SortOptions::new().with_stable(true))
+            .map_err(|e| e.with_operation(operation))?;
+
+        let keys = distinct.series(&value_name).map_err(|e| e.with_operation(operation))?;
+        let keys = match self.name() {
+            Some(name) => keys.rename(format!("{name}_keys")),
+            None => Series::from_column_arc(keys.into_inner()).map_err(|e| e.with_operation(operation))?,
+        };
+
+        Codebook::from_keys_with_fallback(keys, self.name().map(str::to_string))
+            .map_err(|e| e.with_operation(operation))
+    }
+
+    pub fn codebook_with(&self, options: CodebookOptions) -> Result<Codebook> {
+        match options.order_mode() {
+            CodebookOrder::Sorted => self.codebook(),
+            CodebookOrder::FirstSeen => self.first_seen_codebook("series::codebook_with"),
+        }
+    }
+
     /// Encode this series as row-aligned integer codes plus a reusable codebook.
     ///
     /// Unlike the old tuple API, this returns a typed [`Factorized`] result
@@ -1033,8 +1098,40 @@ impl Series {
         };
 
         let row_codes = EncodedSeries::new(row_codes, self.name().map(str::to_string));
-        let codebook = Codebook::from_keys(keys, self.name().map(str::to_string))?;
+        let codebook = Codebook::from_keys_with_fallback(keys, self.name().map(str::to_string))?;
         Ok(Factorized::new(row_codes, codebook))
+    }
+
+    pub fn factorize_with(&self, options: CodebookOptions) -> Result<Factorized> {
+        match options.order_mode() {
+            CodebookOrder::Sorted => self.factorize(),
+            CodebookOrder::FirstSeen => {
+                let operation = "series::factorize_with";
+                let codebook = self.first_seen_codebook(operation)?;
+                let row_codes = codebook.encode(self).map_err(|e| e.with_operation(operation))?;
+                Ok(Factorized::new(row_codes, codebook))
+            },
+        }
+    }
+
+    pub fn lookup(&self, keys: &Series, values: &Series) -> Result<Series> {
+        let result = self
+            .as_column_view()
+            .map_err(|e| e.with_operation("series::lookup"))?
+            .map(
+                &keys.as_column_view().map_err(|e| e.with_operation("series::lookup"))?,
+                &values.as_column_view().map_err(|e| e.with_operation("series::lookup"))?,
+            )
+            .map_err(|e| e.with_operation("series::lookup"))?;
+        let result = Series::from_column(result).map_err(|e| e.with_operation("series::lookup"))?;
+        Ok(match values.name() {
+            Some(name) => result.rename(name),
+            None => result,
+        })
+    }
+
+    pub fn lookup_as(&self, keys: &Series, values: &Series, output_name: &str) -> Result<Series> {
+        self.lookup(keys, values).map(|result| result.rename(output_name))
     }
 
     /// Sort the series according to the given options. Inherits the source

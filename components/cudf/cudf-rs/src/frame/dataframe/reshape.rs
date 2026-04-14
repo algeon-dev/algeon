@@ -122,6 +122,46 @@ impl MeltOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnOrder {
+    Left,
+    FirstSeen,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaAlignment {
+    Exact,
+    NullFill,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConcatByNameOptions {
+    alignment: SchemaAlignment,
+    column_order: ColumnOrder,
+}
+
+impl Default for ConcatByNameOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConcatByNameOptions {
+    pub fn new() -> Self {
+        Self { alignment: SchemaAlignment::NullFill, column_order: ColumnOrder::Left }
+    }
+
+    pub fn alignment(mut self, mode: SchemaAlignment) -> Self {
+        self.alignment = mode;
+        self
+    }
+
+    pub fn column_order(mut self, order: ColumnOrder) -> Self {
+        self.column_order = order;
+        self
+    }
+}
+
 use std::sync::Arc;
 
 use smallvec::SmallVec;
@@ -136,7 +176,7 @@ use crate::{
     },
     frame::series::{IntoSeries, Series},
     internal::{
-        hash::{FastHashSet, fast_index_map_with_capacity},
+        hash::{FastHashMap, FastHashSet, fast_hash_map_with_capacity, fast_index_map_with_capacity},
         resolve::{missing_column_error, resolve_column_names},
     },
     ops::{
@@ -151,6 +191,68 @@ use crate::{
 };
 
 const SORT_KEY_INLINE_CAPACITY: usize = 4;
+
+fn concat_by_name_output_order(self_df: &DataFrame, others: &[&DataFrame], _order: ColumnOrder) -> Vec<String> {
+    let mut seen: FastHashSet<String> = FastHashSet::default();
+    let mut ordered = Vec::new();
+
+    for frame in std::iter::once(self_df).chain(others.iter().copied()) {
+        for name in frame.column_names() {
+            if seen.insert(name.to_string()) {
+                ordered.push(name.to_string());
+            }
+        }
+    }
+
+    ordered
+}
+
+fn concat_by_name_schema(
+    self_df: &DataFrame,
+    others: &[&DataFrame],
+    output_names: &[String],
+    alignment: SchemaAlignment,
+    operation: &'static str,
+) -> Result<FastHashMap<String, DataType>> {
+    let mut dtypes: FastHashMap<String, DataType> = fast_hash_map_with_capacity(output_names.len());
+
+    for frame in std::iter::once(self_df).chain(others.iter().copied()) {
+        for name in output_names {
+            match frame.get(name).map_err(|e| e.with_operation(operation))? {
+                Some(series) => {
+                    let dtype = series.dtype().map_err(|e| e.with_operation(operation))?;
+                    if let Some(existing) = dtypes.get(name) {
+                        if *existing != dtype {
+                            return Err(Error::new(
+                                ErrorKind::InvalidOperation,
+                                format!("column '{name}' has incompatible dtypes for concat_by_name"),
+                            )
+                            .with_operation(operation)
+                            .with_context("column_name", name.clone())
+                            .with_context("left_type_id", format!("{:?}", existing.id()).to_lowercase())
+                            .with_context("right_type_id", format!("{:?}", dtype.id()).to_lowercase())
+                            .with_context("schema_alignment", format!("{alignment:?}").to_lowercase()));
+                        }
+                    } else {
+                        dtypes.insert(name.clone(), dtype);
+                    }
+                },
+                None if alignment == SchemaAlignment::Exact => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidOperation,
+                        format!("column '{name}' is missing under exact concat_by_name alignment"),
+                    )
+                    .with_operation(operation)
+                    .with_context("column_name", name.clone())
+                    .with_context("schema_alignment", format!("{alignment:?}").to_lowercase()));
+                },
+                None => {},
+            }
+        }
+    }
+
+    Ok(dtypes)
+}
 
 /// Trait for values that can be normalized into a `with_columns()` item.
 ///
@@ -177,6 +279,47 @@ where S: Into<String>
 }
 
 impl DataFrame {
+    fn align_for_concat_by_name(
+        &self,
+        output_names: &[String],
+        dtypes: &FastHashMap<String, DataType>,
+        alignment: SchemaAlignment,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let mut columns = Vec::with_capacity(output_names.len());
+
+        for name in output_names {
+            if let Some(series) = self.get(name).map_err(|e| e.with_operation(operation))? {
+                columns.push((name.clone(), series));
+                continue;
+            }
+
+            if alignment == SchemaAlignment::Exact {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("column '{name}' is missing under exact concat_by_name alignment"),
+                )
+                .with_operation(operation)
+                .with_context("column_name", name.clone())
+                .with_context("schema_alignment", format!("{alignment:?}").to_lowercase()));
+            }
+
+            let dtype = dtypes.get(name).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidOperation, "aligned concat_by_name is missing a planned dtype")
+                    .with_operation(operation)
+                    .with_context("column_name", name.clone())
+            })?;
+            let nulls = Column::nulls_in_domain(dtype.id(), self.row_count, &self.domain, operation)
+                .map_err(|e| e.with_operation(operation))?;
+            columns.push((
+                name.clone(),
+                Series::from_column(nulls).map_err(|e| e.with_operation(operation))?.rename(name),
+            ));
+        }
+
+        DataFrame::from_named_pairs(columns).map_err(|e| e.with_operation(operation))
+    }
+
     /// Sort using a borrowed per-operation execution override.
     pub(crate) fn sort_values_in_context<I, S>(
         &self,
@@ -689,6 +832,32 @@ impl DataFrame {
     /// (different names, count, order, or types).
     pub fn concat_many(&self, others: &[&DataFrame]) -> Result<Self> {
         self.concat_many_impl(others, None, None, "dataframe::concat_many")
+    }
+
+    pub fn concat_by_name(&self, other: &DataFrame, options: ConcatByNameOptions) -> Result<Self> {
+        self.concat_many_by_name(&[other], options)
+    }
+
+    pub fn concat_many_by_name(&self, others: &[&DataFrame], options: ConcatByNameOptions) -> Result<Self> {
+        let operation = "dataframe::concat_many_by_name";
+        if others.is_empty() {
+            return Ok(self.clone());
+        }
+
+        let output_names = concat_by_name_output_order(self, others, options.column_order);
+        if output_names.is_empty() {
+            return self.concat_many_impl(others, None, None, operation);
+        }
+
+        let dtypes = concat_by_name_schema(self, others, &output_names, options.alignment, operation)?;
+        let aligned_self = self.align_for_concat_by_name(&output_names, &dtypes, options.alignment, operation)?;
+        let aligned_others = others
+            .iter()
+            .map(|df| df.align_for_concat_by_name(&output_names, &dtypes, options.alignment, operation))
+            .collect::<Result<Vec<_>>>()?;
+        let aligned_other_refs: Vec<&DataFrame> = aligned_others.iter().collect();
+
+        aligned_self.concat_many_impl(&aligned_other_refs, None, None, operation)
     }
 
     /// Concatenate two DataFrames row-wise using a borrowed per-operation execution override.

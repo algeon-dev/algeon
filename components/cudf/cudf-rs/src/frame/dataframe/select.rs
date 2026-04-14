@@ -106,6 +106,74 @@ impl DataFrame {
             .factorize()
             .map_err(|e| e.with_operation("dataframe::factorize").with_context("column_name", column.to_string()))
     }
+
+    pub fn with_lookup(
+        &self,
+        output_name: &str,
+        input_column: &str,
+        lookup_keys: &Series,
+        lookup_values: &Series,
+    ) -> Result<Self> {
+        let looked_up = self
+            .series(input_column)
+            .map_err(|e| e.with_operation("dataframe::with_lookup"))?
+            .lookup(lookup_keys, lookup_values)
+            .map_err(|e| {
+                e.with_operation("dataframe::with_lookup").with_context("input_column", input_column.to_string())
+            })?;
+        self.with_column(output_name, looked_up).map_err(|e| {
+            e.with_operation("dataframe::with_lookup").with_context("output_name", output_name.to_string())
+        })
+    }
+
+    pub fn with_lookup_from(
+        &self,
+        output_name: &str,
+        input_column: &str,
+        lookup_df: &DataFrame,
+        key_column: &str,
+        value_column: &str,
+    ) -> Result<Self> {
+        let lookup_keys = lookup_df.series(key_column).map_err(|e| {
+            e.with_operation("dataframe::with_lookup_from").with_context("key_column", key_column.to_string())
+        })?;
+        let lookup_values = lookup_df.series(value_column).map_err(|e| {
+            e.with_operation("dataframe::with_lookup_from").with_context("value_column", value_column.to_string())
+        })?;
+        self.with_lookup(output_name, input_column, &lookup_keys, &lookup_values).map_err(|e| {
+            e.with_operation("dataframe::with_lookup_from")
+                .with_context("input_column", input_column.to_string())
+                .with_context("output_name", output_name.to_string())
+        })
+    }
+
+    pub fn with_encoded_column(&self, output_name: &str, input_column: &str, codebook: &Codebook) -> Result<Self> {
+        let encoded = codebook
+            .encode(&self.series(input_column).map_err(|e| e.with_operation("dataframe::with_encoded_column"))?)
+            .map_err(|e| {
+                e.with_operation("dataframe::with_encoded_column")
+                    .with_context("input_column", input_column.to_string())
+            })?;
+        self.with_column(output_name, encoded).map_err(|e| {
+            e.with_operation("dataframe::with_encoded_column")
+                .with_context("input_column", input_column.to_string())
+                .with_context("output_name", output_name.to_string())
+        })
+    }
+
+    pub fn with_decoded_column(&self, output_name: &str, input_column: &str, codebook: &Codebook) -> Result<Self> {
+        let decoded = codebook
+            .decode_series(&self.series(input_column).map_err(|e| e.with_operation("dataframe::with_decoded_column"))?)
+            .map_err(|e| {
+                e.with_operation("dataframe::with_decoded_column")
+                    .with_context("input_column", input_column.to_string())
+            })?;
+        self.with_column(output_name, decoded).map_err(|e| {
+            e.with_operation("dataframe::with_decoded_column")
+                .with_context("input_column", input_column.to_string())
+                .with_context("output_name", output_name.to_string())
+        })
+    }
     /// Return a new DataFrame containing only the specified columns.
     ///
     /// This is a schema-only operation. The columns appear in the order given

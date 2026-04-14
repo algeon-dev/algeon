@@ -293,6 +293,22 @@ cudf_status_t cudf_column_view_null_count(cudf_column_view_handle handle,
 /// Force the next column-view metadata read (`size` or `null_count`) to fail.
 void cudf_test_fail_next_column_view_metadata_read();
 
+/// Test-only helper that constructs a fixed-width column_view with a caller-
+/// controlled logical offset. The returned view is synthetic and must only be
+/// used for metadata/slicing regression tests.
+cudf_status_t cudf_test_column_view_create_synthetic_fixed_width(
+    cudf_type_id_t type_id,
+    int32_t size,
+    int32_t offset,
+    cudf_column_view_handle* out);
+
+/// Test-only helper that constructs a non-empty STRING column_view without an
+/// offsets child. The returned view is intentionally invalid and must only be
+/// used for layout-validation regression tests.
+cudf_status_t cudf_test_column_view_create_synthetic_string_without_children(
+    int32_t size,
+    cudf_column_view_handle* out);
+
 /// Check if the column_view has a null mask allocated.
 cudf_status_t cudf_column_view_nullable(cudf_column_view_handle handle,
                                         int32_t* out);

@@ -5,6 +5,7 @@
 #include "binary.h"
 #include "copying.h"
 #include "execution_context.h"
+#include "filter.h"
 #include "groupby.h"
 #include "join.h"
 #include "reduction.h"
@@ -71,6 +72,37 @@ static_assert(offsetof(cudf_exec_options_t, mr) > offsetof(cudf_exec_options_t, 
               "cudf_exec_options_t::mr must follow stream");
 static_assert(sizeof(((cudf_exec_options_t*)nullptr)->reserved) == sizeof(uint64_t) * 4,
               "cudf_exec_options_t::reserved must expose four 64-bit slots");
+static_assert(std::is_standard_layout_v<cudf_row_predicate_node_t>,
+              "cudf_row_predicate_node_t must be standard layout");
+static_assert(offsetof(cudf_row_predicate_node_t, kind) == 0,
+              "cudf_row_predicate_node_t::kind must be the first field");
+static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->lhs_index) == sizeof(int32_t),
+              "cudf_row_predicate_node_t::lhs_index must be 32-bit");
+static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->rhs_index) == sizeof(int32_t),
+              "cudf_row_predicate_node_t::rhs_index must be 32-bit");
+static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->column_index) == sizeof(int32_t),
+              "cudf_row_predicate_node_t::column_index must be 32-bit");
+static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->binary_op) == sizeof(int32_t),
+              "cudf_row_predicate_node_t::binary_op must be 32-bit");
+static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->unary_op) == sizeof(int32_t),
+              "cudf_row_predicate_node_t::unary_op must be 32-bit");
+static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->literal) == sizeof(cudf_scalar_handle),
+              "cudf_row_predicate_node_t::literal must match cudf_scalar_handle width");
+static_assert(offsetof(cudf_row_predicate_node_t, lhs_index) > offsetof(cudf_row_predicate_node_t, kind),
+              "cudf_row_predicate_node_t::lhs_index must follow kind");
+static_assert(offsetof(cudf_row_predicate_node_t, rhs_index) > offsetof(cudf_row_predicate_node_t, lhs_index),
+              "cudf_row_predicate_node_t::rhs_index must follow lhs_index");
+static_assert(
+    offsetof(cudf_row_predicate_node_t, column_index) > offsetof(cudf_row_predicate_node_t, rhs_index),
+    "cudf_row_predicate_node_t::column_index must follow rhs_index");
+static_assert(
+    offsetof(cudf_row_predicate_node_t, binary_op) > offsetof(cudf_row_predicate_node_t, column_index),
+    "cudf_row_predicate_node_t::binary_op must follow column_index");
+static_assert(
+    offsetof(cudf_row_predicate_node_t, unary_op) > offsetof(cudf_row_predicate_node_t, binary_op),
+    "cudf_row_predicate_node_t::unary_op must follow binary_op");
+static_assert(offsetof(cudf_row_predicate_node_t, literal) > offsetof(cudf_row_predicate_node_t, unary_op),
+              "cudf_row_predicate_node_t::literal must follow unary_op");
 
 static_assert(CUDF_SUCCESS == 0);
 static_assert(CUDF_ERROR_INVALID_OPERATION == 1);

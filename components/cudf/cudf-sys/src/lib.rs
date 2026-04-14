@@ -434,6 +434,10 @@ fn status_to_result(status: cudf_status_t) -> Result<(), cudf_status_t> {
 ///
 /// This wrapper is a typed, lifetime-bound view over a raw `cudf_stream_handle`.
 /// It does not own the underlying runtime resource and does not destroy it.
+///
+/// This type intentionally implements `Send` but not `Sync`: CUDA stream
+/// handles may be moved across threads, but concurrent shared-reference use
+/// still requires external synchronization by the owning layer.
 #[derive(Debug)]
 pub struct BorrowedStream<'a> {
     raw: cudf_stream_handle,
@@ -990,6 +994,9 @@ extern "C" {
     pub fn cudf_device_buffer_destroy(handle: cudf_device_buffer_handle);
 
     /// Get the device pointer from a buffer handle.
+    ///
+    /// For zero-size buffers this call still succeeds, but the returned
+    /// pointer may be null because there is no addressable device range.
     pub fn cudf_device_buffer_data(handle: cudf_device_buffer_handle, out: *mut *mut c_void) -> cudf_status_t;
 
     /// Get the size in bytes of a buffer.
@@ -2363,6 +2370,24 @@ extern "C" {
     /// Force the next column-view metadata read (`size` or `null_count`) to
     /// fail for panic-elimination regression testing.
     pub fn cudf_test_fail_next_column_view_metadata_read();
+
+    /// Construct a synthetic fixed-width column_view with a caller-controlled
+    /// logical offset. Intended only for regression tests that need edge-case
+    /// offset values without materializing massive backing buffers.
+    pub fn cudf_test_column_view_create_synthetic_fixed_width(
+        type_id: cudf_type_id_t,
+        size: i32,
+        offset: i32,
+        out: *mut cudf_column_view_handle,
+    ) -> cudf_status_t;
+
+    /// Construct a synthetic non-empty STRING column_view without an offsets
+    /// child. Intended only for regression tests that validate shim-side
+    /// layout checks before dereferencing string children.
+    pub fn cudf_test_column_view_create_synthetic_string_without_children(
+        size: i32,
+        out: *mut cudf_column_view_handle,
+    ) -> cudf_status_t;
 
     // -- String operations ---------------------------------------------------
 

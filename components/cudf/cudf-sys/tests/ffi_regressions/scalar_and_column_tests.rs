@@ -3,7 +3,10 @@ use std::{
     ptr,
 };
 
-use crate::{helpers::*, support::owned_string_value};
+use crate::{
+    helpers::*,
+    support::{last_error_message, owned_string_value},
+};
 
 #[test]
 fn test_scalar_string_value_round_trips_empty_and_non_empty_values() {
@@ -187,6 +190,62 @@ fn test_column_view_slice_nested_nullable_preserves_logical_offset_in_null_count
         cudf_sys::cudf_column_view_destroy(base_view);
         cudf_sys::cudf_column_destroy(col);
     }
+}
+
+#[test]
+fn test_column_view_slice_rejects_active_offset_overflow() {
+    let mut view: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_test_column_view_create_synthetic_fixed_width(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            2,
+            i32::MAX - 1,
+            &mut view,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!view.is_null());
+
+    let mut slice: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_view_slice(view, 1, 1, &mut slice) };
+
+    if !slice.is_null() {
+        unsafe { cudf_sys::cudf_column_view_destroy(slice) };
+    }
+    unsafe { cudf_sys::cudf_column_view_destroy(view) };
+
+    assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(slice.is_null());
+    assert!(crate::support::last_error_message().contains("slice range exceeds active column offset range"));
+}
+
+#[test]
+fn test_column_view_strings_to_host_ex_rejects_string_view_without_offsets_child() {
+    let mut view: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_test_column_view_create_synthetic_string_without_children(1, &mut view) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!view.is_null());
+
+    let mut offsets = vec![-1_i32; 2];
+    let mut total_chars = -1_i32;
+    let st = unsafe {
+        cudf_sys::cudf_column_view_strings_to_host_ex(
+            view,
+            offsets.as_mut_ptr(),
+            std::mem::size_of_val(offsets.as_slice()),
+            ptr::null_mut(),
+            0,
+            &mut total_chars,
+            ptr::null(),
+        )
+    };
+
+    unsafe { cudf_sys::cudf_column_view_destroy(view) };
+
+    assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert_eq!(offsets, vec![-1, -1]);
+    assert_eq!(total_chars, 0);
+    assert!(last_error_message().contains("string column view must expose an offsets child"));
 }
 
 #[test]

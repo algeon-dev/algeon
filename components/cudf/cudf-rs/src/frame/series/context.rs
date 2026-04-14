@@ -356,7 +356,7 @@ impl Series {
             Some(name) => keys.rename(format!("{name}_keys")),
             None => keys,
         };
-        Codebook::from_keys(keys, self.name().map(str::to_string))
+        Codebook::from_keys_with_fallback(keys, self.name().map(str::to_string))
     }
 
     fn codebook_in_context(&self, ctx: &ExecutionContext<'_>) -> Result<Codebook> {
@@ -382,7 +382,7 @@ impl Series {
             None => (row_codes, keys),
         };
         let row_codes = EncodedSeries::new(row_codes, self.name().map(str::to_string));
-        let codebook = Codebook::from_keys(keys, self.name().map(str::to_string))?;
+        let codebook = Codebook::from_keys_with_fallback(keys, self.name().map(str::to_string))?;
         Ok(Factorized::new(row_codes, codebook))
     }
 

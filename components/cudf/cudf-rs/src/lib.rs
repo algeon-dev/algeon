@@ -158,11 +158,12 @@ pub use core::{
 
 pub use frame::{
     dataframe::{
-        ColumnMemoryAccounting, CsvReadOptions, CsvWriteOptions, DataFrame, DataFrameColumnInfo, DataFrameInfo,
-        DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount, DropDuplicatesOptions, DropNaHow, DropNaOptions,
-        InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions, ParquetReadOptions, ParquetWriteOptions,
+        ColumnMemoryAccounting, ColumnOrder, ConcatByNameOptions, CsvReadOptions, CsvWriteOptions, DataFrame,
+        DataFrameColumnInfo, DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount,
+        DropDuplicatesOptions, DropNaHow, DropNaOptions, InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions,
+        ParquetReadOptions, ParquetWriteOptions, SchemaAlignment,
     },
-    factorization::{Codebook, EncodedSeries, Factorized},
+    factorization::{Codebook, CodebookOptions, CodebookOrder, EncodedSeries, Factorized},
     series::{HostColumnData, IntoSeries, Series},
 };
 // — High-level operations —
