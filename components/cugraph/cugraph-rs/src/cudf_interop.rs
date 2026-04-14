@@ -5,6 +5,12 @@
 //! Functions in this module differ in whether they copy data or create
 //! zero-copy views. The distinction matters for lifetime management:
 //!
+//! `GraphConstructionPolicy::PythonCugraph` adds one extra wrinkle: some
+//! ingress paths normalize edge data before raw graph construction. For
+//! borrowed and prepared compatibility inputs, that normalization may import
+//! the selected edge columns into owned cudf objects on the consumer device
+//! before building the graph.
+//!
 //! ## Primary shared-contract paths
 //!
 //! - [`graph_from_prepared_columns()`] — consumes single-GPU prepared-device
@@ -37,12 +43,12 @@
 //! | Function | Copy? | Lifetime constraint |
 //! |----------|-------|---------------------|
 //! | [`device_array_view_from_slice`] | No | View borrows slice |
-//! | [`graph_from_prepared_columns`] | No (input) | Producer export stays alive until explicit lease completion |
-//! | [`graph_from_prepared_table_export`] | No (input) | Producer export stays alive until explicit lease completion |
-//! | [`graph_from_borrowed_columns`] | No (input) | Borrowed descriptors must outlive build |
+//! | [`graph_from_prepared_columns`] | Depends on policy | Producer export stays alive until explicit lease completion |
+//! | [`graph_from_prepared_table_export`] | Depends on policy | Producer export stays alive until explicit lease completion |
+//! | [`graph_from_borrowed_columns`] | Depends on policy | Borrowed descriptors must outlive build |
 //! | [`graph_from_series`] | No (input) | Series must outlive build |
 //! | [`graph_from_dataframe`] | No (input) | DataFrame must outlive build |
-//! | [`graph_from_table_view`] | No (input) | Table must outlive build |
+//! | [`graph_from_table_view`] | Depends on policy | Table must outlive build |
 //! | [`IntoSeries::to_series`] | Yes (D2D) | Series is independent |
 //! | [`graph_from_parquet`] | Yes | [`LoadedGraph`] owns both |
 //!
@@ -72,7 +78,7 @@
 use std::{collections::BTreeSet, ffi::c_void};
 
 use cudf::{
-    Runtime, TypeId as CudfTypeId,
+    DropDuplicatesOptions, DuplicateKeepOption, Runtime, SortOptions, TypeId as CudfTypeId,
     core::{Column, DeviceSlice, Table, TableView},
     io::parquet,
 };
@@ -174,6 +180,28 @@ fn validate_runtime_result_device(
         .with_message(message)
         .with_context("runtime_device", runtime_device.to_string())
         .with_context("result_device", source_device.to_string()))
+}
+
+const NORMALIZED_SRC_COL: &str = "src";
+const NORMALIZED_DST_COL: &str = "dst";
+const NORMALIZED_WEIGHT_COL: &str = "weight";
+
+fn runtime_for_handle(handle: &ResourceHandle, operation: &'static str) -> Result<Runtime> {
+    Runtime::builder()
+        .with_device(cudf::DeviceId::new(handle.device() as usize).map_err(|error| {
+            Error::new(ErrorKind::InvalidInput, operation)
+                .with_message(format!("invalid handle device {}: {}", handle.device(), error))
+                .set_source(error)
+        })?)
+        .build()
+        .map_err(|error| {
+            map_cudf_error_with(
+                error,
+                operation,
+                format!("failed to create cudf runtime for device {}", handle.device()),
+                [("device", handle.device().to_string())],
+            )
+        })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -517,42 +545,18 @@ pub enum GraphConstructionPolicy {
     /// behave exactly like the lower-level [`GraphBuilder`] flags you specify.
     RawLibcugraph,
     /// Match Python `cugraph.Graph.from_cudf_edgelist(...)` semantics for
-    /// simple-graph workloads.
+    /// high-level cudf ingress workloads.
     ///
-    /// Today this means:
-    /// - directed simple graphs: no additional builder flags
-    /// - undirected simple graphs: enable `drop_multi_edges` and `symmetrize`
-    ///
-    /// Multigraph construction is intentionally rejected under this policy
-    /// until the Python multigraph contract is specified for these ingress
-    /// paths.
+    /// This policy normalizes ingress edge data before raw graph
+    /// construction:
+    /// - directed simple graphs: drop duplicate directed edges and keep the
+    ///   minimum edge value when weights exist
+    /// - directed multigraphs: preserve multiplicity
+    /// - undirected simple graphs: add reverse edges, then drop duplicate
+    ///   directed edges and keep the minimum edge value when weights exist
+    /// - undirected multigraphs: add reverse edges and preserve multiplicity
     #[default]
     PythonCugraph,
-}
-
-fn apply_graph_construction_policy<'a>(
-    mut builder: GraphBuilder<'a>,
-    properties: GraphProperties,
-    policy: GraphConstructionPolicy,
-    operation: &'static str,
-) -> Result<GraphBuilder<'a>> {
-    match policy {
-        GraphConstructionPolicy::RawLibcugraph => Ok(builder),
-        GraphConstructionPolicy::PythonCugraph => {
-            if properties.is_multigraph {
-                return Err(Error::new(ErrorKind::InvalidInput, operation).with_message(
-                    "GraphConstructionPolicy::PythonCugraph does not support multigraph properties; \
-                     use GraphConstructionPolicy::RawLibcugraph or GraphBuilder for raw libcugraph semantics",
-                ));
-            }
-
-            if properties.is_symmetric {
-                builder = builder.drop_multi_edges().symmetrize();
-            }
-
-            Ok(builder)
-        },
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1211,12 +1215,11 @@ fn fence_producer_streams(edge_list: &BorrowedEdgeList<'_>, operation: &'static 
     Ok(())
 }
 
-fn build_graph_from_borrowed_edge_list<'a, T: Transposition>(
+fn build_graph_from_borrowed_edge_list_raw<'a, T: Transposition>(
     handle: &ResourceHandle,
     edge_list: &BorrowedEdgeList<'a>,
     properties: GraphProperties,
     renumber: bool,
-    construction_policy: GraphConstructionPolicy,
     operation: &'static str,
 ) -> Result<Graph<T>> {
     validate_edge_list_policy(handle, edge_list, operation)?;
@@ -1225,12 +1228,7 @@ fn build_graph_from_borrowed_edge_list<'a, T: Transposition>(
     let wgt = edge_list.weights.as_ref().map(|column| borrowed_column_to_raw(column, "wgt", operation)).transpose()?;
     fence_producer_streams(edge_list, operation)?;
 
-    let mut builder = apply_graph_construction_policy(
-        GraphBuilder::from_raw_views(properties, &src, &dst)?.renumber_flag(renumber),
-        properties,
-        construction_policy,
-        operation,
-    )?;
+    let mut builder = GraphBuilder::from_raw_views(properties, &src, &dst)?.renumber_flag(renumber);
     if let Some(ref weights) = wgt {
         builder = builder.weights_raw(weights)?;
     }
@@ -1274,12 +1272,228 @@ fn finish_prepared_graph_result<T: Transposition>(
     }
 }
 
-fn build_graph_from_prepared_edge_list<'a, T: Transposition>(
+fn canonical_edge_dataframe_from_owned_series(
+    src: &cudf::Series,
+    dst: &cudf::Series,
+    weights: Option<&cudf::Series>,
+    operation: &'static str,
+) -> Result<cudf::DataFrame> {
+    let mut pairs = vec![
+        (NORMALIZED_SRC_COL.to_string(), src.rename(NORMALIZED_SRC_COL)),
+        (NORMALIZED_DST_COL.to_string(), dst.rename(NORMALIZED_DST_COL)),
+    ];
+    if let Some(weights) = weights {
+        pairs.push((NORMALIZED_WEIGHT_COL.to_string(), weights.rename(NORMALIZED_WEIGHT_COL)));
+    }
+
+    cudf::DataFrame::from_named_pairs(pairs).map_err(|error| {
+        map_cudf_error_with(
+            error,
+            operation,
+            "failed to assemble canonical cudf edge DataFrame for graph normalization",
+            std::iter::empty(),
+        )
+    })
+}
+
+fn validate_table_column_selection(
+    num_cols: usize,
+    options: &TableGraphOptions,
+    table_kind: &str,
+    operation: &'static str,
+) -> Result<()> {
+    let validate_col_index = |idx: usize, name: &str| -> Result<()> {
+        if idx >= num_cols {
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
+                .with_message(format!(
+                    "{} column index {} is out of bounds ({} has {} columns)",
+                    name, idx, table_kind, num_cols
+                ))
+                .with_context("column_name", name.to_string())
+                .with_context("column_index", idx.to_string())
+                .with_context("num_columns", num_cols.to_string()));
+        }
+        Ok(())
+    };
+
+    validate_col_index(options.src_col, "src")?;
+    validate_col_index(options.dst_col, "dst")?;
+    if let Some(weight_col) = options.weight_col {
+        validate_col_index(weight_col, "weight")?;
+    }
+
+    Ok(())
+}
+
+fn canonical_edge_dataframe_from_imported_table(
+    table: Table,
+    options: &TableGraphOptions,
+    operation: &'static str,
+) -> Result<cudf::DataFrame> {
+    let num_columns = table
+        .view()
+        .and_then(|view| view.num_columns())
+        .map_err(|error| map_cudf_error_with(error, operation, "failed to inspect imported cudf table schema", []))?;
+    validate_table_column_selection(num_columns, options, "imported table", operation)?;
+
+    let names = (0..num_columns).map(|index| format!("column_{index}")).collect::<Vec<_>>();
+    let imported = cudf::DataFrame::from_table(table, names.clone()).map_err(|error| {
+        map_cudf_error_with(
+            error,
+            operation,
+            "failed to wrap imported cudf table for graph normalization",
+            std::iter::empty(),
+        )
+    })?;
+
+    let src = imported.series(&names[options.src_col]).map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to select source column from imported cudf table", [])
+    })?;
+    let dst = imported.series(&names[options.dst_col]).map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to select destination column from imported cudf table", [])
+    })?;
+    let weights = options
+        .weight_col
+        .map(|index| {
+            imported.series(&names[index]).map_err(|error| {
+                map_cudf_error_with(error, operation, "failed to select weight column from imported cudf table", [])
+            })
+        })
+        .transpose()?;
+
+    canonical_edge_dataframe_from_owned_series(&src, &dst, weights.as_ref(), operation)
+}
+
+fn normalize_python_cugraph_dataframe(
+    df: &cudf::DataFrame,
+    has_weights: bool,
+    properties: GraphProperties,
+    operation: &'static str,
+) -> Result<cudf::DataFrame> {
+    let base = if properties.is_symmetric {
+        let reverse_weights = if has_weights {
+            Some(df.series(NORMALIZED_WEIGHT_COL).map_err(|error| {
+                map_cudf_error_with(error, operation, "failed to access weight column for reverse-edge expansion", [])
+            })?)
+        } else {
+            None
+        };
+        let reverse = canonical_edge_dataframe_from_owned_series(
+            &df.series(NORMALIZED_DST_COL).map_err(|error| {
+                map_cudf_error_with(
+                    error,
+                    operation,
+                    "failed to access destination column for reverse-edge expansion",
+                    [],
+                )
+            })?,
+            &df.series(NORMALIZED_SRC_COL).map_err(|error| {
+                map_cudf_error_with(error, operation, "failed to access source column for reverse-edge expansion", [])
+            })?,
+            reverse_weights.as_ref(),
+            operation,
+        )?;
+
+        df.concat(&reverse).map_err(|error| {
+            map_cudf_error_with(
+                error,
+                operation,
+                "failed to append reverse edges for Python-style graph normalization",
+                [],
+            )
+        })?
+    } else {
+        df.clone()
+    };
+
+    if properties.is_multigraph {
+        return Ok(base);
+    }
+
+    let mut sort_by = vec![NORMALIZED_SRC_COL, NORMALIZED_DST_COL];
+    if has_weights {
+        sort_by.push(NORMALIZED_WEIGHT_COL);
+    }
+
+    let sorted = base.sort_values(sort_by, SortOptions::new().with_stable(true)).map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to sort edges for Python-style graph normalization", [])
+    })?;
+    let deduped = sorted
+        .drop_duplicates(
+            DropDuplicatesOptions::builder()
+                .subset(&[NORMALIZED_SRC_COL, NORMALIZED_DST_COL][..])
+                .keep(DuplicateKeepOption::KeepFirst)
+                .build(),
+        )
+        .map_err(|error| {
+            map_cudf_error_with(
+                error,
+                operation,
+                "failed to collapse duplicate edges for Python-style graph normalization",
+                [],
+            )
+        })?;
+
+    if has_weights {
+        deduped.select([NORMALIZED_SRC_COL, NORMALIZED_DST_COL, NORMALIZED_WEIGHT_COL]).map_err(|error| {
+            map_cudf_error_with(
+                error,
+                operation,
+                "failed to project normalized weighted edge columns into canonical order",
+                [],
+            )
+        })
+    } else {
+        deduped.select([NORMALIZED_SRC_COL, NORMALIZED_DST_COL]).map_err(|error| {
+            map_cudf_error_with(error, operation, "failed to project normalized edge columns into canonical order", [])
+        })
+    }
+}
+
+fn build_graph_from_owned_dataframe_raw<T: Transposition>(
+    handle: &ResourceHandle,
+    df: &cudf::DataFrame,
+    properties: GraphProperties,
+    renumber: bool,
+    has_weights: bool,
+    operation: &'static str,
+) -> Result<Graph<T>> {
+    let export = df.try_prepare_device_table_export().map_err(|error| map_interop_error(error, operation))?;
+    let lease = export
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .map_err(|error| map_interop_error(error, operation))?;
+
+    let columns = lease.export().columns();
+    let bindings = lease.export().bindings();
+    let edge_list = PreparedEdgeList {
+        src: PreparedEdgeColumn { column: &columns[0], bindings },
+        dst: PreparedEdgeColumn { column: &columns[1], bindings },
+        weights: if has_weights { Some(PreparedEdgeColumn { column: &columns[2], bindings }) } else { None },
+    };
+
+    let graph_result = build_graph_from_prepared_edge_list_raw(handle, &edge_list, properties, renumber, operation);
+    let lease_complete = complete_prepared_lease(lease.complete(), operation);
+
+    finish_prepared_graph_result(graph_result, [lease_complete])
+}
+
+fn build_python_normalized_graph_from_dataframe<T: Transposition>(
+    handle: &ResourceHandle,
+    df: &cudf::DataFrame,
+    properties: GraphProperties,
+    renumber: bool,
+    has_weights: bool,
+    operation: &'static str,
+) -> Result<Graph<T>> {
+    let normalized = normalize_python_cugraph_dataframe(df, has_weights, properties, operation)?;
+    build_graph_from_owned_dataframe_raw(handle, &normalized, properties, renumber, has_weights, operation)
+}
+
+fn build_graph_from_prepared_edge_list_raw<'a, T: Transposition>(
     handle: &ResourceHandle,
     edge_list: &PreparedEdgeList<'a>,
     properties: GraphProperties,
     renumber: bool,
-    construction_policy: GraphConstructionPolicy,
     operation: &'static str,
 ) -> Result<Graph<T>> {
     validate_prepared_edge_list_policy(handle, edge_list, operation)?;
@@ -1288,16 +1502,58 @@ fn build_graph_from_prepared_edge_list<'a, T: Transposition>(
     let dst = prepared_column_to_raw(edge_list.dst, "dst", operation)?;
     let wgt = edge_list.weights.map(|column| prepared_column_to_raw(column, "wgt", operation)).transpose()?;
 
-    let mut builder = apply_graph_construction_policy(
-        GraphBuilder::from_raw_views(properties, &src, &dst)?.renumber_flag(renumber),
-        properties,
-        construction_policy,
-        operation,
-    )?;
+    let mut builder = GraphBuilder::from_raw_views(properties, &src, &dst)?.renumber_flag(renumber);
     if let Some(ref weights) = wgt {
         builder = builder.weights_raw(weights)?;
     }
     builder.build_inner(handle, T::store_transposed())
+}
+
+fn canonical_edge_dataframe_from_borrowed_edge_list(
+    handle: &ResourceHandle,
+    edge_list: &BorrowedEdgeList<'_>,
+    operation: &'static str,
+) -> Result<cudf::DataFrame> {
+    validate_edge_list_policy(handle, edge_list, operation)?;
+    fence_producer_streams(edge_list, operation)?;
+
+    let runtime = runtime_for_handle(handle, operation)?;
+    let src = cudf::Series::try_import_from_borrowed_column_view_into_runtime(&edge_list.src, &runtime)
+        .map_err(|error| map_interop_error(error, operation))?;
+    let dst = cudf::Series::try_import_from_borrowed_column_view_into_runtime(&edge_list.dst, &runtime)
+        .map_err(|error| map_interop_error(error, operation))?;
+    let weights = edge_list
+        .weights
+        .as_ref()
+        .map(|column| {
+            cudf::Series::try_import_from_borrowed_column_view_into_runtime(column, &runtime)
+                .map_err(|error| map_interop_error(error, operation))
+        })
+        .transpose()?;
+
+    canonical_edge_dataframe_from_owned_series(&src, &dst, weights.as_ref(), operation)
+}
+
+fn canonical_edge_dataframe_from_prepared_exports(
+    handle: &ResourceHandle,
+    src: &PreparedColumnExport<'_>,
+    dst: &PreparedColumnExport<'_>,
+    weights: Option<&PreparedColumnExport<'_>>,
+    operation: &'static str,
+) -> Result<cudf::DataFrame> {
+    let runtime = runtime_for_handle(handle, operation)?;
+    let src = cudf::Series::try_import_from_prepared_column_export_into_runtime(src, &runtime)
+        .map_err(|error| map_interop_error(error, operation))?;
+    let dst = cudf::Series::try_import_from_prepared_column_export_into_runtime(dst, &runtime)
+        .map_err(|error| map_interop_error(error, operation))?;
+    let weights = weights
+        .map(|column| {
+            cudf::Series::try_import_from_prepared_column_export_into_runtime(column, &runtime)
+                .map_err(|error| map_interop_error(error, operation))
+        })
+        .transpose()?;
+
+    canonical_edge_dataframe_from_owned_series(&src, &dst, weights.as_ref(), operation)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1312,13 +1568,26 @@ pub fn graph_from_borrowed_columns<T: Transposition>(
     weights: Option<&BorrowedColumnView<'_>>,
     options: &SeriesGraphOptions,
 ) -> Result<Graph<T>> {
+    if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
+        let edge_list = BorrowedEdgeList { src: src.clone(), dst: dst.clone(), weights: weights.cloned() };
+        let canonical =
+            canonical_edge_dataframe_from_borrowed_edge_list(handle, &edge_list, "graph_from_borrowed_columns")?;
+        return build_python_normalized_graph_from_dataframe(
+            handle,
+            &canonical,
+            options.properties,
+            options.renumber,
+            weights.is_some(),
+            "graph_from_borrowed_columns",
+        );
+    }
+
     let edge_list = BorrowedEdgeList { src: src.clone(), dst: dst.clone(), weights: weights.cloned() };
-    build_graph_from_borrowed_edge_list(
+    build_graph_from_borrowed_edge_list_raw(
         handle,
         &edge_list,
         options.properties,
         options.renumber,
-        options.construction_policy,
         "graph_from_borrowed_columns",
     )
 }
@@ -1331,14 +1600,19 @@ pub fn graph_from_borrowed_table_view<T: Transposition>(
 ) -> Result<Graph<T>> {
     let operation = "graph_from_borrowed_table_view";
     let edge_list = borrowed_table_to_edge_list(view, options, operation)?;
-    build_graph_from_borrowed_edge_list(
-        handle,
-        &edge_list,
-        options.properties,
-        options.renumber,
-        options.construction_policy,
-        operation,
-    )
+    if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
+        let canonical = canonical_edge_dataframe_from_borrowed_edge_list(handle, &edge_list, operation)?;
+        return build_python_normalized_graph_from_dataframe(
+            handle,
+            &canonical,
+            options.properties,
+            options.renumber,
+            options.weight_col.is_some(),
+            operation,
+        );
+    }
+
+    build_graph_from_borrowed_edge_list_raw(handle, &edge_list, options.properties, options.renumber, operation)
 }
 
 /// Build a cuGraph [`Graph`] directly from prepared-device RAPIDS column exports.
@@ -1346,6 +1620,10 @@ pub fn graph_from_borrowed_table_view<T: Transposition>(
 /// This is the primary single-GPU shared-contract path. The function activates
 /// one read lease per input export with conservative synchronous-by-return
 /// authorities, builds the graph, then completes the leases before returning.
+///
+/// When [`GraphConstructionPolicy::PythonCugraph`] is selected, this function
+/// may first import the edge columns into owned cudf objects on the consumer
+/// device so Python-style normalization can run before raw graph construction.
 pub fn graph_from_prepared_columns<T: Transposition>(
     handle: &ResourceHandle,
     src: &PreparedColumnExport<'_>,
@@ -1358,6 +1636,18 @@ pub fn graph_from_prepared_columns<T: Transposition>(
     prepared_profile_supported(dst.diagnostics().profile(), operation)?;
     if let Some(weights) = weights {
         prepared_profile_supported(weights.diagnostics().profile(), operation)?;
+    }
+
+    if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
+        let canonical = canonical_edge_dataframe_from_prepared_exports(handle, src, dst, weights, operation)?;
+        return build_python_normalized_graph_from_dataframe(
+            handle,
+            &canonical,
+            options.properties,
+            options.renumber,
+            weights.is_some(),
+            operation,
+        );
     }
 
     let read_start = ReadStartAuthority::SynchronousByReturn;
@@ -1394,14 +1684,7 @@ pub fn graph_from_prepared_columns<T: Transposition>(
             }),
         };
 
-        build_graph_from_prepared_edge_list(
-            handle,
-            &edge_list,
-            options.properties,
-            options.renumber,
-            options.construction_policy,
-            operation,
-        )
+        build_graph_from_prepared_edge_list_raw(handle, &edge_list, options.properties, options.renumber, operation)
     })();
 
     let src_complete =
@@ -1419,30 +1702,15 @@ fn validate_prepared_table_column_selection(
     options: &TableGraphOptions,
     operation: &'static str,
 ) -> Result<()> {
-    let validate_col_index = |idx: usize, name: &str| -> Result<()> {
-        if idx >= num_cols {
-            return Err(Error::new(ErrorKind::InvalidInput, operation)
-                .with_message(format!(
-                    "{} column index {} is out of bounds (prepared table export has {} columns)",
-                    name, idx, num_cols
-                ))
-                .with_context("column_name", name.to_string())
-                .with_context("column_index", idx.to_string())
-                .with_context("num_columns", num_cols.to_string()));
-        }
-        Ok(())
-    };
-
-    validate_col_index(options.src_col, "src")?;
-    validate_col_index(options.dst_col, "dst")?;
-    if let Some(weight_col) = options.weight_col {
-        validate_col_index(weight_col, "weight")?;
-    }
-
-    Ok(())
+    validate_table_column_selection(num_cols, options, "prepared table export", operation)
 }
 
 /// Build a cuGraph [`Graph`] directly from a prepared-device RAPIDS table export.
+///
+/// When [`GraphConstructionPolicy::PythonCugraph`] is selected, this function
+/// may first import the selected edge columns into owned cudf objects on the
+/// consumer device so Python-style normalization can run before raw graph
+/// construction.
 pub fn graph_from_prepared_table_export<T: Transposition>(
     handle: &ResourceHandle,
     export: &PreparedTableExport<'_>,
@@ -1451,6 +1719,21 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
     let operation = "graph_from_prepared_table_export";
     prepared_profile_supported(export.diagnostics().profile(), operation)?;
     validate_prepared_table_column_selection(export.columns().len(), options, operation)?;
+
+    if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
+        let runtime = runtime_for_handle(handle, operation)?;
+        let imported = Table::try_import_from_prepared_table_export_into_runtime(export, &runtime)
+            .map_err(|error| map_interop_error(error, operation))?;
+        let canonical = canonical_edge_dataframe_from_imported_table(imported, options, operation)?;
+        return build_python_normalized_graph_from_dataframe(
+            handle,
+            &canonical,
+            options.properties,
+            options.renumber,
+            options.weight_col.is_some(),
+            operation,
+        );
+    }
 
     let lease = export
         .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
@@ -1464,14 +1747,8 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
         weights: options.weight_col.map(|index| PreparedEdgeColumn { column: &columns[index], bindings }),
     };
 
-    let graph_result = build_graph_from_prepared_edge_list(
-        handle,
-        &edge_list,
-        options.properties,
-        options.renumber,
-        options.construction_policy,
-        operation,
-    );
+    let graph_result =
+        build_graph_from_prepared_edge_list_raw(handle, &edge_list, options.properties, options.renumber, operation);
     let lease_complete = complete_prepared_lease(lease.complete(), operation);
 
     finish_prepared_graph_result(graph_result, [lease_complete])
@@ -1489,9 +1766,13 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
 /// function remains the supported compatibility path for callers that already
 /// operate on borrowed descriptors or only have a cudf [`TableView`] available.
 ///
-/// **Zero-copy input**: cuGraph reads the edge data directly from the table's
-/// column device pointers and builds its own internal CSR/CSC representation.
-/// The returned [`Graph`] is independent of the input table.
+/// **Raw-policy input path**: under [`GraphConstructionPolicy::RawLibcugraph`],
+/// cuGraph reads the edge data directly from the table's column device pointers
+/// and builds its own internal CSR/CSC representation. Under
+/// [`GraphConstructionPolicy::PythonCugraph`], this function may first import
+/// the selected edge columns into owned cudf objects on the consumer device so
+/// Python-style normalization can run before raw graph construction. The
+/// returned [`Graph`] is independent of the input table.
 ///
 /// # Errors
 ///
@@ -1510,14 +1791,19 @@ pub fn graph_from_table_view<T: Transposition>(
     let operation = "graph_from_table_view";
     let borrowed = view.try_borrow_table_view().map_err(|error| map_interop_error(error, operation))?;
     let edge_list = borrowed_table_to_edge_list(&borrowed, options, operation)?;
-    build_graph_from_borrowed_edge_list(
-        handle,
-        &edge_list,
-        options.properties,
-        options.renumber,
-        options.construction_policy,
-        operation,
-    )
+    if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
+        let canonical = canonical_edge_dataframe_from_borrowed_edge_list(handle, &edge_list, operation)?;
+        return build_python_normalized_graph_from_dataframe(
+            handle,
+            &canonical,
+            options.properties,
+            options.renumber,
+            options.weight_col.is_some(),
+            operation,
+        );
+    }
+
+    build_graph_from_borrowed_edge_list_raw(handle, &edge_list, options.properties, options.renumber, operation)
 }
 
 /// Build a cuGraph [`Graph`] from a cudf [`DataFrame`] using column names.
@@ -1556,6 +1842,48 @@ pub fn graph_from_dataframe<T: Transposition>(
         renumber: options.renumber,
         construction_policy: options.construction_policy,
     };
+
+    if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
+        let src = df.series(options.src_col).map_err(|error| {
+            map_cudf_error_with(
+                error,
+                operation,
+                "failed to project source column for Python-style graph normalization",
+                [],
+            )
+        })?;
+        let dst = df.series(options.dst_col).map_err(|error| {
+            map_cudf_error_with(
+                error,
+                operation,
+                "failed to project destination column for Python-style graph normalization",
+                [],
+            )
+        })?;
+        let weights = options
+            .weight_col
+            .map(|name| {
+                df.series(name).map_err(|error| {
+                    map_cudf_error_with(
+                        error,
+                        operation,
+                        "failed to project weight column for Python-style graph normalization",
+                        [],
+                    )
+                })
+            })
+            .transpose()?;
+
+        let canonical = canonical_edge_dataframe_from_owned_series(&src, &dst, weights.as_ref(), operation)?;
+        return build_python_normalized_graph_from_dataframe(
+            handle,
+            &canonical,
+            options.properties,
+            options.renumber,
+            options.weight_col.is_some(),
+            operation,
+        );
+    }
 
     let export = df.try_prepare_device_table_export().map_err(|error| map_interop_error(error, operation))?;
     graph_from_prepared_table_export(handle, &export, &table_options)
@@ -1601,6 +1929,24 @@ pub fn graph_from_series<T: Transposition>(
     let wgt_export = weights
         .map(|column| column.try_prepare_device_column_export().map_err(|error| map_interop_error(error, operation)))
         .transpose()?;
+
+    if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
+        let canonical = canonical_edge_dataframe_from_prepared_exports(
+            handle,
+            &src_export,
+            &dst_export,
+            wgt_export.as_ref(),
+            operation,
+        )?;
+        return build_python_normalized_graph_from_dataframe(
+            handle,
+            &canonical,
+            options.properties,
+            options.renumber,
+            weights.is_some(),
+            operation,
+        );
+    }
 
     graph_from_prepared_columns(handle, &src_export, &dst_export, wgt_export.as_ref(), options)
 }
@@ -1662,21 +2008,7 @@ pub fn graph_from_parquet<T: Transposition>(
     options: &ParquetGraphOptions<'_>,
 ) -> Result<LoadedGraph<T>> {
     let operation = "graph_from_parquet";
-    let runtime = cudf::Runtime::builder()
-        .with_device(cudf::DeviceId::new(handle.device() as usize).map_err(|error| {
-            Error::new(ErrorKind::InvalidInput, operation)
-                .with_message(format!("invalid handle device {}: {}", handle.device(), error))
-                .set_source(error)
-        })?)
-        .build()
-        .map_err(|error| {
-            map_cudf_error_with(
-                error,
-                operation,
-                format!("failed to create cudf runtime for device {}", handle.device()),
-                [("device", handle.device().to_string())],
-            )
-        })?;
+    let runtime = runtime_for_handle(handle, operation)?;
 
     let reader_opts = parquet::ParquetTableReadOptions::builder().filepath(options.path).with_runtime(&runtime).build();
 
@@ -1691,8 +2023,6 @@ pub fn graph_from_parquet<T: Transposition>(
     let table = result.table;
 
     let graph = {
-        let export = table.try_prepare_device_table_export().map_err(|error| map_interop_error(error, operation))?;
-
         let table_opts = TableGraphOptions {
             src_col: options.src_col,
             dst_col: options.dst_col,
@@ -1701,7 +2031,32 @@ pub fn graph_from_parquet<T: Transposition>(
             renumber: options.renumber,
             construction_policy: options.construction_policy,
         };
-        graph_from_prepared_table_export::<T>(handle, &export, &table_opts)?
+        if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
+            let canonical = canonical_edge_dataframe_from_imported_table(
+                table.deep_copy().map_err(|error| {
+                    map_cudf_error_with(
+                        error,
+                        operation,
+                        "failed to deep-copy loaded cudf table for Python-style graph normalization",
+                        [],
+                    )
+                })?,
+                &table_opts,
+                operation,
+            )?;
+            build_python_normalized_graph_from_dataframe(
+                handle,
+                &canonical,
+                options.properties,
+                options.renumber,
+                options.weight_col.is_some(),
+                operation,
+            )?
+        } else {
+            let export =
+                table.try_prepare_device_table_export().map_err(|error| map_interop_error(error, operation))?;
+            graph_from_prepared_table_export::<T>(handle, &export, &table_opts)?
+        }
     };
 
     Ok(LoadedGraph { graph, table })
