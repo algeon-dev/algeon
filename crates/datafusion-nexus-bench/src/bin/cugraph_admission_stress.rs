@@ -115,6 +115,7 @@ const QUERY_COLUMNS: &[&str] = &[
     "graph_statistics_sum_out_degree",
     "graph_peak_bytes",
     "graph_reason",
+    "graph_cache",
     "graph_elapsed_ms",
     "graph_output_device_bytes",
     "output_rows",
@@ -654,6 +655,7 @@ struct QueryRow {
     graph_statistics_sum_out_degree: Option<usize>,
     graph_peak_bytes: Option<usize>,
     graph_reason: Option<String>,
+    graph_cache: Option<String>,
     graph_elapsed_ms: Option<f64>,
     graph_output_device_bytes: Option<usize>,
     output_rows: Option<usize>,
@@ -712,6 +714,7 @@ impl QueryRow {
             graph_statistics_sum_out_degree: None,
             graph_peak_bytes: None,
             graph_reason: None,
+            graph_cache: None,
             graph_elapsed_ms: None,
             graph_output_device_bytes: None,
             output_rows: None,
@@ -766,6 +769,7 @@ impl QueryRow {
             self.graph_elapsed_ms = Some(runtime.elapsed_ns as f64 / 1_000_000.0);
             self.graph_output_device_bytes = runtime.output_device_bytes;
             self.graph_peak_bytes = runtime.graph_peak_bytes;
+            self.graph_cache = graph_cache_metadata_value(&runtime.algorithm_metadata);
             if self.graph_algorithm.is_none() {
                 self.graph_algorithm = Some(runtime.algorithm.clone());
             }
@@ -837,6 +841,7 @@ impl QueryRow {
             fmt_opt(self.graph_statistics_sum_out_degree),
             fmt_opt(self.graph_peak_bytes),
             fmt_opt_str(&self.graph_reason),
+            fmt_opt_str(&self.graph_cache),
             self.graph_elapsed_ms.map_or_else(|| "none".to_string(), |value| format!("{value:.3}")),
             fmt_opt(self.graph_output_device_bytes),
             fmt_opt(self.output_rows),
@@ -1125,6 +1130,14 @@ fn fmt_opt_str(value: &Option<String>) -> String {
     value.clone().unwrap_or_else(|| "none".to_string())
 }
 
+fn graph_cache_metadata_value(metadata: &str) -> Option<String> {
+    metadata
+        .split(',')
+        .find_map(|part| part.trim().strip_prefix("graph_cache="))
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 fn tsv_field(value: &str) -> String {
     value.replace(['\t', '\n', '\r'], " ")
 }
@@ -1253,6 +1266,7 @@ mod tests {
                 algorithm: "triangle_count_all".into(),
                 elapsed_ns: 1_000_000,
                 graph_peak_bytes: Some(1024),
+                algorithm_metadata: "iterations=1,graph_cache=hit".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -1278,11 +1292,25 @@ mod tests {
         assert_eq!(field("graph_statistics_peak_chunk_min_degree_sum"), "45");
         assert_eq!(field("graph_statistics_sum_out_degree"), "90");
         assert_eq!(field("graph_peak_bytes"), "1024");
+        assert_eq!(field("graph_cache"), "hit");
     }
 
     #[test]
     fn workload_parsing_accepts_counts_and_bare_labels() {
         let parsed = parse_workload("pagerank:4, louvain:2 ,bfs").unwrap();
         assert_eq!(parsed, vec![("pagerank".into(), 4), ("louvain".into(), 2), ("bfs".into(), 1)]);
+    }
+
+    #[test]
+    fn graph_cache_metadata_value_extracts_optional_token() {
+        assert_eq!(graph_cache_metadata_value("graph_cache=miss_inserted"), Some("miss_inserted".into()));
+        assert_eq!(
+            graph_cache_metadata_value(
+                "depth_limit=3,graph_cache=hit;retained_device_bytes=1024,null_edge_rows_dropped=0"
+            ),
+            Some("hit;retained_device_bytes=1024".into())
+        );
+        assert_eq!(graph_cache_metadata_value("depth_limit=3"), None);
+        assert_eq!(graph_cache_metadata_value("graph_cache="), None);
     }
 }
