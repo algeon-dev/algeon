@@ -2185,7 +2185,10 @@ pub(super) fn resident_graph_key_for_input<T>(
 where
     T: GpuResidentGraphTransposition,
 {
-    input.graph_residency().map(|descriptor| descriptor.resident_key(spec, T::orientation()))
+    input.graph_residency().and_then(|descriptor| {
+        let key = crate::plan::planned_resident_graph_key(descriptor, spec)?;
+        (key.orientation == T::orientation()).then_some(key)
+    })
 }
 
 #[cfg(feature = "cugraph")]

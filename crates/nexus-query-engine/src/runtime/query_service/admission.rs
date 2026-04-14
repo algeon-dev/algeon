@@ -46,6 +46,7 @@ pub(super) struct AdmissionRequest {
     pub(super) tenant_id: TenantId,
     pub(super) grant_policy: TenantGrantPolicy,
     pub(super) qos: QueryQos,
+    pub(super) placement_hint: QueryPlacementHint,
     pub(super) deadline: Instant,
 }
 
@@ -178,6 +179,7 @@ impl QueryAdmissionWaiter {
                 self.request_id,
                 self.grant_policy,
                 state.queued[position].qos,
+                &state.queued[position].placement_hint,
                 Some(self.deadline),
                 state.active_queries,
                 &mut slot_notifications,

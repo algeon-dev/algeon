@@ -46,9 +46,9 @@ use nexus_query_engine::{
     GraphPredicateInput as NativeGraphPredicateInput, GraphResidencyDescriptor, GraphResidencyPlanAnalysis,
     GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams,
     LimitSpec, LiteralValue, MemoryControlPolicy, PlanNode, ProjectionOutput, QueryMetrics, QueryOutput,
-    QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
+    QueryPlacementHint, QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
     graph_edge_list_output_rows_for_plan, graph_memory_estimate_for_edge_list, graph_memory_reservation_required,
-    graph_residency_descriptor_for_edge_plan,
+    graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
 };
 
 use super::{
@@ -115,10 +115,13 @@ impl CugraphAlgoExec {
         let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
         let edge_normalize_inserted = cugraph_edge_normalize_inserted(&spec, &edge_source_canonical_facts);
         let graph_residency = cugraph_graph_residency_descriptor(&spec, edge_source.as_ref(), edge_normalize_inserted);
+        let placement_hint =
+            cugraph_graph_placement_hint(&spec, graph_residency.as_ref(), edge_normalize_inserted, &predicate_sources);
         let native_execution_config = cugraph_execution_config_with_graph_aware_ticket(
             &spec,
             edge_source.as_ref(),
             edge_normalize_inserted,
+            placement_hint,
             native_execution_config,
         )?;
         Ok(Self {
@@ -599,6 +602,7 @@ fn cugraph_execution_config_with_graph_aware_ticket(
     spec: &CugraphAlgorithmSpec,
     edge_source: &dyn ExecutionPlan,
     edge_normalize_inserted: bool,
+    placement_hint: QueryPlacementHint,
     execution_config: NativeCudfExecutionConfig,
 ) -> Result<NativeCudfExecutionConfig> {
     let graph_model_ask =
@@ -607,13 +611,28 @@ fn cugraph_execution_config_with_graph_aware_ticket(
         } else {
             cugraph_graph_model_ask_bytes(spec, edge_source, edge_normalize_inserted, &execution_config)?
         };
-    execution_config.with_graph_aware_plan_query_admission_ticket(graph_model_ask).map_err(|error| {
+    execution_config.with_graph_aware_plan_query_admission_ticket(graph_model_ask, placement_hint).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.graph_ticket_ask",
             "failed to compute cuGraph SQL graph-aware query admission ticket ask",
             error,
         ))
     })
+}
+
+fn cugraph_graph_placement_hint(
+    spec: &CugraphAlgorithmSpec,
+    graph_residency: Option<&GraphResidencyDescriptor>,
+    edge_normalize_inserted: bool,
+    predicate_sources: &[Arc<dyn ExecutionPlan>],
+) -> QueryPlacementHint {
+    let Some(graph_residency) = graph_residency else {
+        return QueryPlacementHint::default();
+    };
+    let native_spec = native_graph_spec_for_placement_hint(spec, edge_normalize_inserted, predicate_sources);
+    planned_resident_graph_key(graph_residency, &native_spec)
+        .map(QueryPlacementHint::for_resident_graph_key)
+        .unwrap_or_default()
 }
 
 fn cugraph_graph_model_ask_bytes(
@@ -915,7 +934,8 @@ mod tests {
     use super::*;
     use crate::{
         graph_sql::{
-            CugraphGraphOptions, CugraphTableReference, CugraphTriangleCountAllParams, result_schema_for_params,
+            CugraphGraphOptions, CugraphPageRankParams, CugraphTableReference, CugraphTriangleCountAllParams,
+            result_schema_for_params,
         },
         native_exec::{
             QueryAdmissionSource, task_context_with_query_admission_ticket, wrap_plan_with_query_admission_ticket,
@@ -1051,6 +1071,25 @@ mod tests {
         }
     }
 
+    fn pagerank_spec() -> CugraphAlgorithmSpec {
+        let params = CugraphAlgorithmParams::PageRank(CugraphPageRankParams::default());
+        CugraphAlgorithmSpec {
+            algorithm: CugraphAlgorithm::PageRank,
+            table_name: CugraphTableReference::parse("edges").unwrap(),
+            src_col: "src".to_string(),
+            dst_col: "dst".to_string(),
+            weight_col: Some("weight".to_string()),
+            edge_id_col: None,
+            graph_options: CugraphGraphOptions {
+                directed: true,
+                renumber: true,
+                construction_policy: CugraphGraphConstructionPolicy::RawLibcugraph,
+            },
+            output_schema: result_schema_for_params(CugraphAlgorithm::PageRank, &params),
+            params,
+        }
+    }
+
     #[test]
     fn cugraph_execution_config_creates_plan_ticket_for_backend_admission_source() {
         let source = admission_only_source();
@@ -1144,6 +1183,40 @@ mod tests {
             "Python-compatible edge normalization must keep weight in the source fingerprint even for algorithms \
              that do not consume weights directly",
         );
+    }
+
+    #[test]
+    fn cugraph_algo_exec_mints_graph_cache_placement_hint_for_keyable_native_edge_source() {
+        let source = admission_only_source();
+        let config = NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let edge_source = native_graph_residency_edge_source(&config);
+
+        let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
+            .expect("cuGraph exec should build for keyable native edge source");
+        let ticket =
+            exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
+        let resident_key = ticket
+            .placement_hint()
+            .resident_graph_key()
+            .expect("keyable cached graph query should carry a placement hint");
+
+        assert_eq!(resident_key.orientation, nexus_query_engine::GraphResidencyOrientation::Transposed);
+        assert_eq!(resident_key.source_column, "src");
+        assert_eq!(resident_key.destination_column, "dst");
+        assert_eq!(resident_key.weight_column.as_deref(), Some("weight"));
+    }
+
+    #[test]
+    fn cugraph_algo_exec_keeps_empty_graph_cache_placement_hint_for_unkeyable_edge_source() {
+        let source = admission_only_source();
+        let config = NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
+
+        let exec = CugraphAlgoExec::try_new(pagerank_spec(), memory_edge_source(100), vec![], None, None, config)
+            .expect("cuGraph exec should build for non-native edge source");
+        let ticket =
+            exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
+
+        assert!(ticket.placement_hint().is_empty());
     }
 
     #[test]
@@ -2729,6 +2802,25 @@ fn native_graph_spec(
         params,
         output_schema,
     )
+}
+
+fn native_graph_spec_for_placement_hint(
+    spec: &CugraphAlgorithmSpec,
+    edge_normalize_inserted: bool,
+    predicate_sources: &[Arc<dyn ExecutionPlan>],
+) -> GraphAlgorithmSpec {
+    let mut builder = QueryPlanBuilder::new();
+    let predicate_nodes = predicate_sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+                format!("__datafusion_nexus_cugraph_placement_hint_{index}"),
+                source.schema(),
+            )))
+        })
+        .collect::<Vec<_>>();
+    native_graph_spec(spec, edge_normalize_inserted, &predicate_nodes)
 }
 
 fn native_graph_spec_for_memory_estimate(

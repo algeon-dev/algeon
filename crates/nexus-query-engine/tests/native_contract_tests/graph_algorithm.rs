@@ -7,19 +7,19 @@ use nexus_query_engine::{
     GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm,
     GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBetweennessSeeds,
     GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs, GraphCalibrationSource, GraphConstructionOptions,
-    GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphLayoutRequirement,
-    GraphLouvainParams, GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput, GraphModelErrorRatio,
-    GraphOutputSchemaKind, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport,
-    GraphResidencyDescriptor, GraphResidencyOrientation, GraphResidencyPlanAnalysis, GraphSeedMode,
-    GraphSourceFingerprintBypassReason, GraphSourceVertexRequirement, GraphStatistics, GraphTriangleCountAllParams,
-    GraphVertexEstimate, GraphVertexEstimateSource, GraphVertexIdTypeSupport, GraphWeightPolicy, LiteralValue,
-    LocalParquetFile, LocalParquetSource, ParquetFieldIdReadBinding, ParquetPositionDeleteFile, PlanNode,
-    ProjectionOutput, QueryErrorCode, QueryPlan, QueryPlanBuilder, ResolvedParquetSource, SourceNode,
-    StrictBoundedContractReport, StrictBoundedExecutionMode,
+    GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEdgePredicateInput,
+    GraphLayoutRequirement, GraphLouvainParams, GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput,
+    GraphModelErrorRatio, GraphOutputSchemaKind, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome,
+    GraphReservationReport, GraphResidencyDescriptor, GraphResidencyOrientation, GraphResidencyPlanAnalysis,
+    GraphSeedMode, GraphSourceFingerprintBypassReason, GraphSourceVertexRequirement, GraphStatistics,
+    GraphTriangleCountAllParams, GraphVertexEstimate, GraphVertexEstimateSource, GraphVertexIdTypeSupport,
+    GraphWeightPolicy, LiteralValue, LocalParquetFile, LocalParquetSource, ParquetFieldIdReadBinding,
+    ParquetPositionDeleteFile, PlanNode, ProjectionOutput, QueryErrorCode, QueryPlan, QueryPlanBuilder,
+    ResolvedParquetSource, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     graph_memory_class, graph_memory_reservation_required, graph_residency_descriptor_for_edge_plan,
-    graph_runtime_statistics_probe_bytes, graph_vertex_estimate_probe_bytes, stable_graph_result_schema,
-    triangle_count_peak_chunk_min_degree_pricing_term,
+    graph_runtime_statistics_probe_bytes, graph_vertex_estimate_probe_bytes, planned_resident_graph_key,
+    stable_graph_result_schema, triangle_count_peak_chunk_min_degree_pricing_term,
 };
 
 #[test]
@@ -136,6 +136,54 @@ fn graph_residency_descriptor_includes_weight_used_by_python_normalization() {
     };
 
     assert_eq!(descriptor.weight_data_type, Some(DataType::Float64));
+}
+
+#[test]
+fn planned_resident_graph_key_matches_cached_execution_or_bypasses() {
+    let plan = graph_edge_source_plan(&["src", "dst", "weight"], Some(&["src", "dst", "weight"]));
+    let pagerank = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+    let pagerank_descriptor = graph_keyable_descriptor(&plan, &pagerank);
+    assert_eq!(
+        planned_resident_graph_key(&pagerank_descriptor, &pagerank),
+        Some(pagerank_descriptor.resident_key(&pagerank, GraphResidencyOrientation::Transposed))
+    );
+
+    let bfs = graph_residency_bfs_spec(GraphEdgeColumnBindings::new("src", "dst", None::<String>));
+    let bfs_descriptor =
+        graph_keyable_descriptor(&graph_edge_source_plan(&["src", "dst"], Some(&["src", "dst"])), &bfs);
+    assert_eq!(
+        planned_resident_graph_key(&bfs_descriptor, &bfs),
+        Some(bfs_descriptor.resident_key(&bfs, GraphResidencyOrientation::Forward))
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let include_edges =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("include_edges", Arc::new(Schema::empty()))));
+    let mut include_edges_params = GraphBfsParams::new(7, None);
+    include_edges_params.predicates.include_edges =
+        Some(GraphEdgePredicateInput::new(include_edges, "src", "dst", None::<String>));
+    let bfs_include_edges = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<String>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(include_edges_params)),
+    );
+    let include_edges_descriptor =
+        graph_keyable_descriptor(&graph_edge_source_plan(&["src", "dst"], Some(&["src", "dst"])), &bfs_include_edges);
+    assert!(planned_resident_graph_key(&include_edges_descriptor, &bfs_include_edges).is_none());
+
+    let bfs_edge_id =
+        graph_residency_bfs_spec(GraphEdgeColumnBindings::new("src", "dst", None::<String>).with_edge_id("edge_id"));
+    let edge_id_descriptor = graph_keyable_descriptor(
+        &graph_edge_source_plan(&["src", "dst", "edge_id"], Some(&["src", "dst", "edge_id"])),
+        &bfs_edge_id,
+    );
+    assert!(planned_resident_graph_key(&edge_id_descriptor, &bfs_edge_id).is_none());
 }
 
 #[test]
