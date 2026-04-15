@@ -61,6 +61,7 @@ const ENV_BFS_SEED: &str = "CUDF_CUGRAPH_ADMISSION_BFS_SEED";
 const ENV_BATCH_SIZE: &str = "CUDF_CUGRAPH_ADMISSION_BATCH_SIZE";
 const ENV_PRINT_PLANNING: &str = "CUDF_CUGRAPH_ADMISSION_PRINT_PLANNING";
 const ENV_DEVICE_ORDINALS: &str = "CUDF_CUGRAPH_ADMISSION_DEVICE_ORDINALS";
+const ENV_SOURCE_CACHE_MAX_RETAINED_BYTES: &str = "CUDF_CUGRAPH_ADMISSION_SOURCE_CACHE_MAX_RETAINED_BYTES";
 const ENV_GRAPH_CACHE_MAX_RETAINED_BYTES: &str = "CUDF_CUGRAPH_ADMISSION_GRAPH_CACHE_MAX_RETAINED_BYTES";
 
 /// Retained optimizer rules (diagnostic planning-report mode only).
@@ -121,6 +122,11 @@ const QUERY_COLUMNS: &[&str] = &[
     "output_rows",
     "native_lowered",
     "error",
+    "source_cache_hits",
+    "source_cache_misses",
+    "source_cache_inserts",
+    "source_cache_insert_skipped",
+    "source_cache_retained_bytes",
 ];
 
 const SAMPLE_COLUMNS: &[&str] = &[
@@ -164,6 +170,7 @@ struct HarnessConfig {
     bfs_seed: Option<i64>,
     batch_size: Option<usize>,
     device_ordinals: Vec<usize>,
+    source_cache_max_retained_bytes: Option<u64>,
     graph_cache_max_retained_bytes: Option<u64>,
 }
 
@@ -200,6 +207,7 @@ impl HarnessConfig {
             bfs_seed: parse_optional_i64(ENV_BFS_SEED)?,
             batch_size: parse_optional_usize(ENV_BATCH_SIZE)?,
             device_ordinals: parse_device_ordinals(ENV_DEVICE_ORDINALS)?,
+            source_cache_max_retained_bytes: parse_optional_u64(ENV_SOURCE_CACHE_MAX_RETAINED_BYTES)?,
             graph_cache_max_retained_bytes: parse_optional_u64(ENV_GRAPH_CACHE_MAX_RETAINED_BYTES)?,
         })
     }
@@ -428,6 +436,9 @@ fn build_backend(config: &HarnessConfig) -> Result<NexusGpuBackend, Box<dyn Erro
         admission = admission.with_grant_want(want);
     }
     let mut builder = NexusGpuBackend::builder().memory_policy(memory_policy).admission(admission);
+    if let Some(max_retained_bytes) = config.source_cache_max_retained_bytes {
+        builder = builder.query_service_local_parquet_source_cache_max_retained_bytes(Some(max_retained_bytes));
+    }
     if let Some(max_retained_bytes) = config.graph_cache_max_retained_bytes {
         builder = builder.query_service_resident_graph_cache_max_retained_bytes(Some(max_retained_bytes));
     }
@@ -626,6 +637,11 @@ struct QueryRow {
     allocator_high_water_bytes: Option<usize>,
     max_task_observed_peak_bytes: Option<usize>,
     max_task_reservation_bytes: usize,
+    source_cache_hits: usize,
+    source_cache_misses: usize,
+    source_cache_inserts: usize,
+    source_cache_insert_skipped: usize,
+    source_cache_retained_bytes: usize,
     graph_algorithm: Option<String>,
     graph_class: Option<String>,
     graph_outcome: Option<String>,
@@ -685,6 +701,11 @@ impl QueryRow {
             allocator_high_water_bytes: None,
             max_task_observed_peak_bytes: None,
             max_task_reservation_bytes: 0,
+            source_cache_hits: 0,
+            source_cache_misses: 0,
+            source_cache_inserts: 0,
+            source_cache_insert_skipped: 0,
+            source_cache_retained_bytes: 0,
             graph_algorithm: None,
             graph_class: None,
             graph_outcome: None,
@@ -735,6 +756,11 @@ impl QueryRow {
         self.allocator_high_water_bytes = metrics.allocator_high_water_bytes;
         self.max_task_observed_peak_bytes = metrics.max_task_observed_peak_bytes;
         self.max_task_reservation_bytes = metrics.max_task_reservation_bytes;
+        self.source_cache_hits = metrics.source_cache_hits;
+        self.source_cache_misses = metrics.source_cache_misses;
+        self.source_cache_inserts = metrics.source_cache_inserts;
+        self.source_cache_insert_skipped = metrics.source_cache_insert_skipped;
+        self.source_cache_retained_bytes = metrics.source_cache_retained_bytes;
         if let Some(reservation) = metrics.graph_reservation_rows.first() {
             self.graph_algorithm = Some(reservation.algorithm.clone());
             self.graph_class = Some(reservation.class.clone());
@@ -847,6 +873,11 @@ impl QueryRow {
             fmt_opt(self.output_rows),
             self.native_lowered.to_string(),
             self.error.as_deref().map(tsv_field).unwrap_or_else(|| "none".to_string()),
+            self.source_cache_hits.to_string(),
+            self.source_cache_misses.to_string(),
+            self.source_cache_inserts.to_string(),
+            self.source_cache_insert_skipped.to_string(),
+            self.source_cache_retained_bytes.to_string(),
         ];
         debug_assert_eq!(fields.len(), QUERY_COLUMNS.len());
         fields.join("\t")
@@ -1002,6 +1033,7 @@ fn write_outputs(
             "requested_grant_bytes": config.requested_grant_bytes,
             "raw_input_edges": config.raw_input_edges,
             "query_timeout_ms": config.query_timeout_ms,
+            "source_cache_max_retained_bytes": config.source_cache_max_retained_bytes,
             "graph_cache_max_retained_bytes": config.graph_cache_max_retained_bytes,
             "edges_parquet": config.edges_parquet,
         },
@@ -1182,6 +1214,7 @@ mod tests {
             bfs_seed: None,
             batch_size: None,
             device_ordinals: vec![0],
+            source_cache_max_retained_bytes: Some(1024),
             graph_cache_max_retained_bytes: Some(2048),
         };
         let request = Request {
@@ -1191,7 +1224,18 @@ mod tests {
         let row = QueryRow::new(&config, &request, 0, 0).finish_failed(Instant::now(), "x\ty".into());
         assert_eq!(row.to_tsv().split('\t').count(), QUERY_COLUMNS.len());
         assert_eq!(QUERY_COLUMNS.first(), Some(&"run_id"));
-        assert_eq!(QUERY_COLUMNS.last(), Some(&"error"));
+        assert!(QUERY_COLUMNS.contains(&"source_cache_hits"));
+        assert!(QUERY_COLUMNS.contains(&"source_cache_retained_bytes"));
+        let error_index = QUERY_COLUMNS.iter().position(|column| *column == "error").expect("error column is present");
+        let source_cache_index = QUERY_COLUMNS
+            .iter()
+            .position(|column| *column == "source_cache_hits")
+            .expect("source cache columns are present");
+        assert_eq!(QUERY_COLUMNS[error_index.saturating_sub(1)], "native_lowered");
+        assert!(
+            source_cache_index > error_index,
+            "new source-cache columns must append after the legacy query row columns"
+        );
     }
 
     #[test]
@@ -1220,6 +1264,7 @@ mod tests {
             bfs_seed: None,
             batch_size: None,
             device_ordinals: vec![0],
+            source_cache_max_retained_bytes: None,
             graph_cache_max_retained_bytes: None,
         };
         let request = Request {
@@ -1228,6 +1273,11 @@ mod tests {
         };
         let mut row = QueryRow::new(&config, &request, 0, 0);
         row.absorb_metrics(&NativeDataFusionExecutionMetrics {
+            source_cache_hits: 2,
+            source_cache_misses: 1,
+            source_cache_inserts: 1,
+            source_cache_insert_skipped: 0,
+            source_cache_retained_bytes: 8192,
             graph_reservation_rows: vec![NativeGraphReservationMetricRow {
                 node_id: "g0".into(),
                 algorithm: "triangle_count_all".into(),
@@ -1275,6 +1325,11 @@ mod tests {
         let tsv = row.to_tsv();
         let fields = tsv.split('\t').collect::<Vec<_>>();
         let field = |name: &str| fields[QUERY_COLUMNS.iter().position(|column| *column == name).unwrap()];
+        assert_eq!(field("source_cache_hits"), "2");
+        assert_eq!(field("source_cache_misses"), "1");
+        assert_eq!(field("source_cache_inserts"), "1");
+        assert_eq!(field("source_cache_insert_skipped"), "0");
+        assert_eq!(field("source_cache_retained_bytes"), "8192");
         assert_eq!(field("graph_raw_input_edges"), "45");
         assert_eq!(field("graph_vertex_width_bytes"), "8");
         assert_eq!(field("graph_weight_width_bytes"), "8");

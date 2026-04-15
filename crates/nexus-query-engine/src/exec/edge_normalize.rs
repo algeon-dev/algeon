@@ -17,7 +17,7 @@ pub(super) fn execute_edge_normalize(
         context,
         node_id,
         "graph_edge_null_filter",
-        input.into_frame(),
+        input.frame().clone(),
         &node.spec.edge_columns,
         null_filter_scope,
         metrics,
@@ -79,7 +79,7 @@ pub(super) fn execute_edge_normalize(
     }
 
     metrics.operator_time += timer.elapsed();
-    let output = GpuDataFrame::new(frame);
+    let output = GpuDataFrame::try_new_with_source_residency(frame, &input)?;
     Ok(match graph_residency {
         Some(graph_residency) => output.with_graph_residency(graph_residency),
         None => output,

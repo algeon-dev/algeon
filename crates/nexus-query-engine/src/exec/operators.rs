@@ -52,7 +52,7 @@ pub(super) fn execute_filter(
     input: GpuDataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let frame = input.into_frame();
+    let frame = input.frame().clone();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
     let output = if let Some((column, values)) = literal_in_list_filter_series(context, &node.predicate, &overrides)? {
@@ -70,7 +70,7 @@ pub(super) fn execute_filter(
         })?
     };
     metrics.operator_time += timer.elapsed();
-    Ok(GpuDataFrame::new(output))
+    GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
 pub(super) fn execute_filter_with_budget(
@@ -80,7 +80,7 @@ pub(super) fn execute_filter_with_budget(
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let frame = input.into_frame();
+    let frame = input.frame().clone();
     let overrides = token.execution_overrides();
     let timer = Instant::now();
     let output = if let Some((column, values)) = literal_in_list_filter_series(context, &node.predicate, &overrides)? {
@@ -108,7 +108,7 @@ pub(super) fn execute_filter_with_budget(
         })?
     };
     metrics.operator_time += timer.elapsed();
-    Ok(GpuDataFrame::new(output))
+    GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
 fn literal_in_list_filter_series(
@@ -198,7 +198,8 @@ pub(super) fn execute_sort(
     input: GpuDataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    execute_sort_on_frame(context, node, input.into_frame(), metrics)
+    let output = execute_sort_on_frame(context, node, input.frame().clone(), metrics)?;
+    GpuDataFrame::try_new_with_source_residency(output.into_frame(), &input)
 }
 
 pub(super) fn execute_sort_on_frame(
@@ -229,7 +230,8 @@ pub(super) fn execute_limit(
         return Ok(input);
     }
 
-    execute_limit_on_frame(context, node, input.into_frame(), metrics)
+    let output = execute_limit_on_frame(context, node, input.frame().clone(), metrics)?;
+    GpuDataFrame::try_new_with_source_residency(output.into_frame(), &input)
 }
 
 pub(super) fn execute_union(
@@ -238,7 +240,10 @@ pub(super) fn execute_union(
     inputs: Vec<GpuDataFrame>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let mut frames = inputs.into_iter().map(GpuDataFrame::into_frame).collect::<Vec<_>>();
+    if inputs.len() == 1 {
+        return Ok(inputs.into_iter().next().expect("single-input union has one frame"));
+    }
+    let mut frames = inputs.iter().map(|input| input.frame().clone()).collect::<Vec<_>>();
     if frames.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -246,9 +251,6 @@ pub(super) fn execute_union(
             "union execution requires at least one input",
         )
         .with_fact("node_id", node_id));
-    }
-    if frames.len() == 1 {
-        return Ok(GpuDataFrame::new(frames.remove(0)));
     }
 
     let input_count = frames.len();
@@ -281,7 +283,7 @@ pub(super) fn execute_window(
         ));
     }
 
-    let mut frame = input.into_frame();
+    let mut frame = input.frame().clone();
     if node.spec.functions.iter().any(|function| {
         matches!(function, crate::plan::WindowFunction::Aggregate { frame: WindowFrame::WholePartition, .. })
     }) {
@@ -330,7 +332,7 @@ pub(super) fn execute_window(
             error,
         )
     })?;
-    Ok(GpuDataFrame::new(output))
+    GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
 fn execute_partition_window_aggregate(

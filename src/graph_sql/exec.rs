@@ -199,19 +199,20 @@ impl CugraphAlgoExec {
             );
             let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
             let edge_schema = self.edge_source.schema();
-            let edge_frame =
+            let (edge_frame, mut source_metrics) =
                 execute_edge_source_to_gpu(native_context, Arc::clone(&self.edge_source), Arc::clone(&task_context))
                     .await?;
             let edge_frame =
                 attach_graph_residency(edge_frame, self.graph_residency.as_ref(), edge_schema.as_ref(), &self.spec);
-            let predicate_frames =
+            let (predicate_frames, predicate_source_metrics) =
                 execute_predicate_sources_to_gpu(native_context, &self.predicate_sources, Arc::clone(&task_context))
                     .await?;
+            source_metrics.merge_from(predicate_source_metrics);
             let path_target =
                 bfs_path_target_vertex(native_context, &self.spec, &predicate_frames)?.expect("path mode checked");
             let prepared =
                 prepare_bfs_logical_gpu_inputs(native_context, &self.spec, edge_schema, edge_frame, predicate_frames)?;
-            let (batch, query_metrics, path_residency_source) = if let Some(codebook) = prepared.logical_codebook {
+            let (batch, mut query_metrics, path_residency_source) = if let Some(codebook) = prepared.logical_codebook {
                 let (handle, query_metrics) = execute_cugraph_query_to_gpu_with_options(
                     native_context,
                     &prepared.execution_spec,
@@ -275,6 +276,7 @@ impl CugraphAlgoExec {
                     error,
                 ))
             })?;
+            query_metrics.merge_from(source_metrics);
             metrics.record_query_metrics(&query_metrics);
             return Ok((self.gpu_result_input_name.clone(), handle));
         }
@@ -285,17 +287,18 @@ impl CugraphAlgoExec {
         );
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
         let edge_schema = self.edge_source.schema();
-        let edge_frame =
+        let (edge_frame, mut source_metrics) =
             execute_edge_source_to_gpu(native_context, Arc::clone(&self.edge_source), Arc::clone(&task_context))
                 .await?;
         let edge_frame =
             attach_graph_residency(edge_frame, self.graph_residency.as_ref(), edge_schema.as_ref(), &self.spec);
-        let predicate_frames =
+        let (predicate_frames, predicate_source_metrics) =
             execute_predicate_sources_to_gpu(native_context, &self.predicate_sources, Arc::clone(&task_context))
                 .await?;
+        source_metrics.merge_from(predicate_source_metrics);
         let prepared =
             prepare_bfs_logical_gpu_inputs(native_context, &self.spec, edge_schema, edge_frame, predicate_frames)?;
-        let (handle, query_metrics) = execute_cugraph_query_to_gpu_with_options(
+        let (handle, mut query_metrics) = execute_cugraph_query_to_gpu_with_options(
             native_context,
             &prepared.execution_spec,
             prepared.edge_schema,
@@ -318,6 +321,7 @@ impl CugraphAlgoExec {
         } else {
             handle
         };
+        query_metrics.merge_from(source_metrics);
         metrics.record_query_metrics(&query_metrics);
         Ok((self.gpu_result_input_name.clone(), handle))
     }
@@ -475,16 +479,17 @@ impl ExecutionPlan for CugraphAlgoExec {
             let execution_task_context =
                 context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
             let edge_schema = edge_source.schema();
-            let edge_frame =
+            let (edge_frame, mut source_metrics) =
                 execute_edge_source_to_gpu(context, Arc::clone(&edge_source), Arc::clone(&execution_task_context))
                     .await?;
             let edge_frame = attach_graph_residency(edge_frame, graph_residency.as_ref(), edge_schema.as_ref(), &spec);
-            let predicate_frames =
+            let (predicate_frames, predicate_source_metrics) =
                 execute_predicate_sources_to_gpu(context, &predicate_sources, Arc::clone(&execution_task_context))
                     .await?;
+            source_metrics.merge_from(predicate_source_metrics);
             let path_target = bfs_path_target_vertex(context, &spec, &predicate_frames)?;
             let prepared = prepare_bfs_logical_gpu_inputs(context, &spec, edge_schema, edge_frame, predicate_frames)?;
-            let (batch, query_metrics) = if let Some(codebook) = prepared.logical_codebook {
+            let (batch, mut query_metrics) = if let Some(codebook) = prepared.logical_codebook {
                 let (handle, query_metrics) = execute_cugraph_query_to_gpu_with_options(
                     context,
                     &prepared.execution_spec,
@@ -529,6 +534,7 @@ impl ExecutionPlan for CugraphAlgoExec {
                 };
                 (batch, query_metrics)
             };
+            query_metrics.merge_from(source_metrics);
             metrics.record_query_metrics(&query_metrics);
             metrics.record_lakehouse_cache_fill_events(&context.drain_lakehouse_cache_fill_event_snapshots());
             Ok::<Option<RecordBatch>, DataFusionError>(Some(batch.record_output(&metrics.baseline)))
@@ -2004,7 +2010,7 @@ async fn execute_edge_source_to_gpu(
     context: &ExecutionContext,
     plan: Arc<dyn ExecutionPlan>,
     task_context: Arc<TaskContext>,
-) -> Result<GpuDataFrame> {
+) -> Result<(GpuDataFrame, QueryMetrics)> {
     if let Some(native) = as_native_cudf_exec(plan.as_ref()) {
         let native_plan = native.native_plan().clone_with_gpu_resident_sink();
         let result = execute_query_plan(context, &native_plan).map_err(|error| {
@@ -2014,7 +2020,7 @@ async fn execute_edge_source_to_gpu(
                 error,
             ))
         })?;
-        let (output, _) = result.into_parts();
+        let (output, metrics) = result.into_parts();
         let QueryOutput::GpuResident(handle) = output else {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -2023,7 +2029,7 @@ async fn execute_edge_source_to_gpu(
             )
             .into());
         };
-        return Ok(handle.into_gpu_frame());
+        return Ok((handle.into_gpu_frame(), metrics));
     }
     if let Some(native) = as_native_cudf_composed_exec(plan.as_ref()) {
         let native_plan = native.native_plan().clone_with_gpu_resident_sink();
@@ -2049,7 +2055,7 @@ async fn execute_edge_source_to_gpu(
                 error,
             ))
         })?;
-        let (output, _) = result.into_parts();
+        let (output, metrics) = result.into_parts();
         let QueryOutput::GpuResident(handle) = output else {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -2058,12 +2064,12 @@ async fn execute_edge_source_to_gpu(
             )
             .into());
         };
-        return Ok(handle.into_gpu_frame());
+        return Ok((handle.into_gpu_frame(), metrics));
     }
 
     let schema = plan.schema();
     let batches = collect(plan, task_context).await?;
-    record_batches_to_gpu(context, schema, &batches)
+    Ok((record_batches_to_gpu(context, schema, &batches)?, QueryMetrics::default()))
 }
 
 struct CugraphGpuFrame {
@@ -2075,14 +2081,17 @@ async fn execute_predicate_sources_to_gpu(
     context: &ExecutionContext,
     predicate_sources: &[Arc<dyn ExecutionPlan>],
     task_context: Arc<TaskContext>,
-) -> Result<Vec<CugraphGpuFrame>> {
+) -> Result<(Vec<CugraphGpuFrame>, QueryMetrics)> {
     let mut frames = Vec::with_capacity(predicate_sources.len());
+    let mut metrics = QueryMetrics::default();
     for source in predicate_sources {
         let schema = source.schema();
-        let frame = execute_edge_source_to_gpu(context, Arc::clone(source), Arc::clone(&task_context)).await?;
+        let (frame, source_metrics) =
+            execute_edge_source_to_gpu(context, Arc::clone(source), Arc::clone(&task_context)).await?;
+        metrics.merge_from(source_metrics);
         frames.push(CugraphGpuFrame { schema, frame });
     }
-    Ok(frames)
+    Ok((frames, metrics))
 }
 
 struct PreparedCugraphInputs {
@@ -2215,7 +2224,7 @@ fn retain_mapped_cugraph_frame(
     operation: &'static str,
     message: &'static str,
 ) -> Result<GpuDataFrame> {
-    GpuDataFrame::try_new_with_shared_residency(frame, source)
+    GpuDataFrame::try_new_with_source_residency(frame, source)
         .map_err(|error| DataFusionError::from(Error::from_native(operation, message, error)))
 }
 
@@ -2516,7 +2525,7 @@ fn decode_bfs_logical_gpu_output(
         columns.push(("target_distance", target_distance));
     }
     let frame = DataFrame::from_series(columns).map_err(cudf_logical_mapping_error)?;
-    let frame = GpuDataFrame::try_new_with_shared_residency(frame, &raw_frame).map_err(|error| {
+    let frame = GpuDataFrame::try_new_with_source_residency(frame, &raw_frame).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.logical_output",
             "failed to retain decoded cuGraph logical BFS output residency",

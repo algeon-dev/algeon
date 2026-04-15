@@ -15,13 +15,11 @@ use std::{
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use cudf::{
     DataFrame, DataFrameFilteredJoin, DataFrameHashJoin, DataType, ExecutionPlacement,
-    frame::dataframe::{GpuRecordBatch, InfoDetail},
+    frame::dataframe::{ColumnMemoryIdentity, GpuRecordBatch, InfoDetail},
 };
 
 #[cfg(feature = "cugraph")]
 use crate::plan::ResidentGraphKey;
-#[cfg(feature = "cugraph")]
-use crate::runtime::gpu::governor::MemoryGrant;
 use crate::{
     chunk::SourceChunk,
     error::{QueryError, Result},
@@ -30,7 +28,7 @@ use crate::{
     plan::{GraphResidencyDescriptor, HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
     runtime::{
         DevicePlacement, ExecutionContext,
-        gpu::governor::{EvictableMemoryPressure, MemoryGovernor, MemoryGrantLiveReservation},
+        gpu::governor::{EvictableMemoryPressure, MemoryGovernor, MemoryGrant, MemoryGrantLiveReservation},
     },
     source::{LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef},
     util::escape_kv_delimited,
@@ -89,16 +87,36 @@ impl GpuDataFrame {
         Self::new_with_live_reservation(frame, None)
     }
 
-    /// Wrap a derived cuDF frame while charging it to the same live-residency
-    /// lineage as `source`.
-    pub fn try_new_with_shared_residency(frame: DataFrame, source: &Self) -> Result<Self> {
-        let live_reservation = if let Some(source_live_reservation) = &source.live_reservation {
-            let observed_bytes = Self::new(frame.clone()).device_allocated_size_bytes()?;
-            source_live_reservation.retain_sibling_live_reservation(observed_bytes)?
-        } else {
-            None
+    /// Wrap a derived cuDF frame and retain source residency according to the
+    /// observed column-owner relationship with `source`.
+    pub fn try_new_with_source_residency(frame: DataFrame, source: &Self) -> Result<Self> {
+        if source.live_reservation.is_none() && source.source_cache_pin.is_none() {
+            return Ok(Self::new(frame));
+        }
+        let source_identities = source_column_memory_identities(&source.frame);
+        let output_identity = frame.memory_identity();
+        let aliased_output_columns =
+            output_identity.columns.iter().filter(|column| source_identities.contains(&column.identity)).count();
+        let aliases_source = aliased_output_columns > 0;
+        let all_output_columns_alias_source = aliases_source && aliased_output_columns == output_identity.columns.len();
+        let live_reservation = match &source.live_reservation {
+            Some(source_live_reservation) if all_output_columns_alias_source => {
+                // Pure aliases, including column subsets, keep the source
+                // reservation alive instead of remeasuring a partial owner set.
+                Some(source_live_reservation.clone())
+            },
+            Some(source_live_reservation) => {
+                // Mixed alias/fresh outputs need one retention handle to cover the
+                // whole escaping frame. This intentionally over-accounts aliased
+                // columns while the input is alive, but avoids under-accounting
+                // alias owners after the input wrapper drops.
+                let observed_bytes = Self::new(frame.clone()).device_allocated_size_bytes()?;
+                source_live_reservation.retain_derived_live_reservation(observed_bytes)?
+            },
+            None => None,
         };
-        Ok(Self::new_with_residency(frame, live_reservation, source.source_cache_pin.clone()))
+        let source_cache_pin = aliases_source.then(|| source.source_cache_pin.clone()).flatten();
+        Ok(Self::new_with_residency(frame, live_reservation, source_cache_pin))
     }
 
     fn new_with_live_reservation(frame: DataFrame, live_reservation: Option<MemoryGrantLiveReservation>) -> Self {
@@ -1669,6 +1687,11 @@ pub struct GpuLocalParquetSourceCache {
     inner: Arc<GpuLocalParquetSourceCacheInner>,
 }
 
+pub(in crate::exec) struct GpuLocalParquetSourceCachePinnedInsert {
+    pub(in crate::exec) outcome: GpuLocalParquetSourceCacheInsert,
+    pub(in crate::exec) handle: Option<GpuResultHandle>,
+}
+
 impl std::fmt::Debug for GpuLocalParquetSourceCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = self.inner.state.lock().ok();
@@ -1785,13 +1808,22 @@ impl GpuLocalParquetSourceCache {
         Ok(Some((handle, retained_device_bytes)))
     }
 
-    pub(crate) fn insert_if_absent(
+    pub(in crate::exec) fn insert_if_absent_from_grant_pinned(
         &self,
         key: GpuLocalParquetSourceCacheKey,
         handle: GpuResultHandle,
         retained_device_bytes: u64,
-    ) -> Result<GpuLocalParquetSourceCacheInsert> {
-        Ok(self.insert_if_absent_protecting(key, handle, retained_device_bytes, &HashSet::new())?.outcome)
+        memory_grant: Option<&MemoryGrant>,
+    ) -> Result<GpuLocalParquetSourceCachePinnedInsert> {
+        let (insert, handle) = self.insert_if_absent_protecting_internal(
+            key,
+            handle,
+            retained_device_bytes,
+            &HashSet::new(),
+            memory_grant,
+            true,
+        )?;
+        Ok(GpuLocalParquetSourceCachePinnedInsert { outcome: insert.outcome, handle })
     }
 
     pub(crate) fn insert_if_absent_protecting(
@@ -1800,16 +1832,66 @@ impl GpuLocalParquetSourceCache {
         handle: GpuResultHandle,
         retained_device_bytes: u64,
         protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
+        memory_grant: Option<&MemoryGrant>,
     ) -> Result<GpuLocalParquetSourceCacheInsertResult> {
+        Ok(self
+            .insert_if_absent_protecting_internal(
+                key,
+                handle,
+                retained_device_bytes,
+                protected_keys,
+                memory_grant,
+                false,
+            )?
+            .0)
+    }
+
+    fn insert_if_absent_protecting_internal(
+        &self,
+        key: GpuLocalParquetSourceCacheKey,
+        handle: GpuResultHandle,
+        retained_device_bytes: u64,
+        protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
+        memory_grant: Option<&MemoryGrant>,
+        pin_returned_handle: bool,
+    ) -> Result<(GpuLocalParquetSourceCacheInsertResult, Option<GpuResultHandle>)> {
         let entry_key = GpuLocalParquetSourceCacheEntryKey::for_handle(key, &handle);
         let mut state = self.lock()?;
         let retained_before = state.retained_device_bytes;
-        if state.cache.contains_key(&entry_key) {
-            return Ok(GpuLocalParquetSourceCacheInsertResult {
-                outcome: GpuLocalParquetSourceCacheInsert::AlreadyPresent,
-                evicted_device_bytes: 0,
-                retained_device_bytes: retained_before,
-            });
+        let access_epoch = state.next_epoch();
+        if let Some(entry) = state.cache.get_mut(&entry_key) {
+            let reusable = !pin_returned_handle || entry.handle.can_reuse_for_source_cache_handle(&handle)?;
+            if !reusable {
+                return Ok((
+                    GpuLocalParquetSourceCacheInsertResult {
+                        outcome: GpuLocalParquetSourceCacheInsert::AlreadyPresent,
+                        evicted_device_bytes: 0,
+                        retained_device_bytes: retained_before,
+                    },
+                    None,
+                ));
+            }
+            entry.last_access_epoch = access_epoch;
+            let handle = if pin_returned_handle {
+                entry.in_use_count = entry.in_use_count.saturating_add(1);
+                Some(entry.handle.clone().with_source_cache_pin(GpuLocalParquetSourceCachePin {
+                    _inner: Arc::new(GpuLocalParquetSourceCachePinInner {
+                        cache: Arc::clone(&self.inner),
+                        entry_key: entry_key.clone(),
+                        generation: entry.generation,
+                    }),
+                }))
+            } else {
+                None
+            };
+            return Ok((
+                GpuLocalParquetSourceCacheInsertResult {
+                    outcome: GpuLocalParquetSourceCacheInsert::AlreadyPresent,
+                    evicted_device_bytes: 0,
+                    retained_device_bytes: retained_before,
+                },
+                handle,
+            ));
         }
         if handle.has_live_reservation() {
             return Err(QueryError::new(
@@ -1828,54 +1910,76 @@ impl GpuLocalParquetSourceCache {
             .with_fact("reason", "source_cache_pin_in_cache_handle"));
         }
         if retained_device_bytes > self.inner.max_retained_device_bytes {
-            return Ok(GpuLocalParquetSourceCacheInsertResult {
-                outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
-                evicted_device_bytes: 0,
-                retained_device_bytes: retained_before,
-            });
+            return Ok((
+                GpuLocalParquetSourceCacheInsertResult {
+                    outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
+                    evicted_device_bytes: 0,
+                    retained_device_bytes: retained_before,
+                },
+                None,
+            ));
         }
-        if !self.governor_can_admit_after_cache_eviction(&state, retained_device_bytes, protected_keys)? {
-            return Ok(GpuLocalParquetSourceCacheInsertResult {
-                outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
-                evicted_device_bytes: 0,
-                retained_device_bytes: state.retained_device_bytes,
-            });
+        if !self.governor_can_admit_after_cache_eviction(&state, retained_device_bytes, protected_keys, memory_grant)? {
+            return Ok((
+                GpuLocalParquetSourceCacheInsertResult {
+                    outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
+                    evicted_device_bytes: 0,
+                    retained_device_bytes: state.retained_device_bytes,
+                },
+                None,
+            ));
         }
         let evicted_device_bytes =
             state.evict_until_fits(self.inner.max_retained_device_bytes, retained_device_bytes, protected_keys);
         self.release_governor_evictable_bytes(evicted_device_bytes)?;
         if state.retained_device_bytes.saturating_add(retained_device_bytes) > self.inner.max_retained_device_bytes {
-            return Ok(GpuLocalParquetSourceCacheInsertResult {
-                outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
-                evicted_device_bytes,
-                retained_device_bytes: state.retained_device_bytes,
-            });
+            return Ok((
+                GpuLocalParquetSourceCacheInsertResult {
+                    outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
+                    evicted_device_bytes,
+                    retained_device_bytes: state.retained_device_bytes,
+                },
+                None,
+            ));
         }
-        if !self.reserve_governor_evictable_bytes(retained_device_bytes)? {
-            return Ok(GpuLocalParquetSourceCacheInsertResult {
-                outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
-                evicted_device_bytes,
-                retained_device_bytes: state.retained_device_bytes,
-            });
+        if !self.reserve_governor_evictable_bytes(retained_device_bytes, memory_grant)? {
+            return Ok((
+                GpuLocalParquetSourceCacheInsertResult {
+                    outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
+                    evicted_device_bytes,
+                    retained_device_bytes: state.retained_device_bytes,
+                },
+                None,
+            ));
         }
-        let last_access_epoch = state.next_epoch();
         let generation = state.next_generation();
+        let pin = pin_returned_handle.then(|| GpuLocalParquetSourceCachePin {
+            _inner: Arc::new(GpuLocalParquetSourceCachePinInner {
+                cache: Arc::clone(&self.inner),
+                entry_key: entry_key.clone(),
+                generation,
+            }),
+        });
+        let returned_handle = pin.clone().map(|pin| handle.clone().with_source_cache_pin(pin));
         state.cache.insert(
             entry_key,
             GpuLocalParquetSourceCacheEntry {
                 handle,
                 retained_device_bytes,
-                last_access_epoch,
-                in_use_count: 0,
+                last_access_epoch: access_epoch,
+                in_use_count: if pin.is_some() { 1 } else { 0 },
                 generation,
             },
         );
         state.retained_device_bytes = state.retained_device_bytes.saturating_add(retained_device_bytes);
-        Ok(GpuLocalParquetSourceCacheInsertResult {
-            outcome: GpuLocalParquetSourceCacheInsert::Inserted,
-            evicted_device_bytes,
-            retained_device_bytes: state.retained_device_bytes,
-        })
+        Ok((
+            GpuLocalParquetSourceCacheInsertResult {
+                outcome: GpuLocalParquetSourceCacheInsert::Inserted,
+                evicted_device_bytes,
+                retained_device_bytes: state.retained_device_bytes,
+            },
+            returned_handle,
+        ))
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, GpuLocalParquetSourceCacheState>> {
@@ -1915,6 +2019,7 @@ impl GpuLocalParquetSourceCache {
         state: &GpuLocalParquetSourceCacheState,
         retained_device_bytes: u64,
         protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
+        memory_grant: Option<&MemoryGrant>,
     ) -> Result<bool> {
         let Some(governor) = &self.inner.governor else {
             return Ok(true);
@@ -1925,14 +2030,30 @@ impl GpuLocalParquetSourceCache {
             protected_keys,
         );
         let free_bytes = governor.free_bytes()?;
-        Ok(free_bytes.saturating_add(evictable_for_capacity) >= retained_device_bytes)
+        if free_bytes.saturating_add(evictable_for_capacity) >= retained_device_bytes {
+            return Ok(true);
+        }
+        match memory_grant {
+            Some(memory_grant) => governor.grant_can_cover_evictable_bytes(memory_grant, retained_device_bytes),
+            None => Ok(false),
+        }
     }
 
-    fn reserve_governor_evictable_bytes(&self, retained_device_bytes: u64) -> Result<bool> {
+    fn reserve_governor_evictable_bytes(
+        &self,
+        retained_device_bytes: u64,
+        memory_grant: Option<&MemoryGrant>,
+    ) -> Result<bool> {
         let Some(governor) = &self.inner.governor else {
             return Ok(true);
         };
-        governor.try_reserve_evictable_bytes(retained_device_bytes)
+        if governor.try_reserve_evictable_bytes(retained_device_bytes)? {
+            return Ok(true);
+        }
+        match memory_grant {
+            Some(memory_grant) => governor.try_reserve_evictable_bytes_from_grant(memory_grant, retained_device_bytes),
+            None => Ok(false),
+        }
     }
 
     fn release_governor_evictable_bytes(&self, released_device_bytes: u64) -> Result<u64> {
@@ -1941,6 +2062,10 @@ impl GpuLocalParquetSourceCache {
         };
         governor.release_evictable_bytes(released_device_bytes)
     }
+}
+
+fn source_column_memory_identities(frame: &DataFrame) -> HashSet<ColumnMemoryIdentity> {
+    frame.memory_identity().columns.into_iter().map(|column| column.identity).collect()
 }
 
 impl GpuLocalParquetSourceCacheState {
@@ -2056,6 +2181,28 @@ impl GpuResultHandle {
         }
         if self.device_placement() != context.device_placement()
             || self.placement().device != context.runtime().device()
+        {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn can_reuse_for_source_cache_handle(&self, requested: &Self) -> Result<bool> {
+        if self.schema().as_ref() != requested.schema().as_ref() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu_local_parquet_source_cache.reuse",
+                "cached local Parquet source schema does not match the requested source schema",
+            )
+            .with_fact("reason", "schema_mismatch")
+            .with_fact("cached_fields", self.schema().fields().len())
+            .with_fact("requested_fields", requested.schema().fields().len()));
+        }
+        if !Arc::ptr_eq(self.runtime(), requested.runtime()) {
+            return Ok(false);
+        }
+        if self.device_placement() != requested.device_placement()
+            || self.placement().device != requested.placement().device
         {
             return Ok(false);
         }
@@ -2524,5 +2671,101 @@ impl QueryExecutionResult {
     /// Consume the result into output and metrics.
     pub fn into_parts(self) -> (QueryOutput, QueryMetrics) {
         (self.output, self.metrics)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::{
+        array::Int32Array,
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use cudf::ops::expr::col;
+
+    use super::*;
+    use crate::runtime::gpu::governor::GrantRequest;
+
+    fn single_i32_frame(runtime: &Arc<cudf::Runtime>, name: &str, values: Vec<i32>) -> DataFrame {
+        let schema = Arc::new(Schema::new(vec![Field::new(name, DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(values))]).unwrap();
+        DataFrame::from_record_batch(runtime, &batch).unwrap()
+    }
+
+    fn frame_with_live_reservation(
+        runtime: &Arc<cudf::Runtime>,
+        grant: &MemoryGrant,
+        name: &str,
+        values: Vec<i32>,
+    ) -> (GpuDataFrame, u64) {
+        let frame = single_i32_frame(runtime, name, values);
+        let observed_bytes = GpuDataFrame::new(frame.clone()).device_allocated_size_bytes().unwrap();
+        let live_reservation = grant.retain_live_reservation(observed_bytes);
+        (GpuDataFrame::new_with_live_reservation(frame, live_reservation), observed_bytes)
+    }
+
+    #[test]
+    fn source_residency_clones_live_reservation_for_pure_alias_output() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let governor = MemoryGovernor::new(runtime.device().ordinal(), 128 * 1024 * 1024).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 64 * 1024 * 1024, 64 * 1024 * 1024)).unwrap().unwrap();
+        let (source, source_bytes) = frame_with_live_reservation(&runtime, &grant, "id", vec![1, 2, 3]);
+        assert!(source_bytes > 0);
+        assert_eq!(grant.live_reserved_bytes(), source_bytes);
+
+        let selected = source.frame().select(["id"]).unwrap();
+        let derived = GpuDataFrame::try_new_with_source_residency(selected, &source).unwrap();
+        assert_eq!(grant.live_reserved_bytes(), source_bytes);
+
+        drop(source);
+        assert_eq!(grant.live_reserved_bytes(), source_bytes);
+        drop(derived);
+        assert_eq!(grant.live_reserved_bytes(), 0);
+    }
+
+    #[test]
+    fn source_residency_retains_derived_live_reservation_for_fresh_output() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let governor = MemoryGovernor::new(runtime.device().ordinal(), 128 * 1024 * 1024).unwrap();
+        let grant = governor.try_request(GrantRequest::new(2, 64 * 1024 * 1024, 64 * 1024 * 1024)).unwrap().unwrap();
+        let (source, source_bytes) = frame_with_live_reservation(&runtime, &grant, "id", vec![1, 2, 3]);
+        let fresh = single_i32_frame(&runtime, "fresh", vec![10, 20, 30]);
+        let fresh_bytes = GpuDataFrame::new(fresh.clone()).device_allocated_size_bytes().unwrap();
+        assert!(fresh_bytes > 0);
+
+        let derived = GpuDataFrame::try_new_with_source_residency(fresh, &source).unwrap();
+        assert_eq!(grant.live_reserved_bytes(), source_bytes.saturating_add(fresh_bytes));
+
+        drop(source);
+        assert_eq!(grant.live_reserved_bytes(), fresh_bytes);
+        drop(derived);
+        assert_eq!(grant.live_reserved_bytes(), 0);
+    }
+
+    #[test]
+    fn source_residency_retains_full_output_for_mixed_alias_output() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let governor = MemoryGovernor::new(runtime.device().ordinal(), 128 * 1024 * 1024).unwrap();
+        let grant = governor.try_request(GrantRequest::new(3, 64 * 1024 * 1024, 64 * 1024 * 1024)).unwrap().unwrap();
+        let (source, source_bytes) = frame_with_live_reservation(&runtime, &grant, "id", vec![1, 2, 3]);
+        let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();
+        let fresh_only = mixed.select(["fresh"]).unwrap();
+        let fresh_bytes = GpuDataFrame::new(fresh_only).device_allocated_size_bytes().unwrap();
+        let mixed_bytes = GpuDataFrame::new(mixed.clone()).device_allocated_size_bytes().unwrap();
+        assert!(fresh_bytes > 0);
+        assert!(
+            mixed_bytes > fresh_bytes,
+            "mixed output should include both the aliased source column and the fresh derived column"
+        );
+
+        let derived = GpuDataFrame::try_new_with_source_residency(mixed, &source).unwrap();
+        assert_eq!(grant.live_reserved_bytes(), source_bytes.saturating_add(mixed_bytes));
+
+        drop(source);
+        assert_eq!(grant.live_reserved_bytes(), mixed_bytes);
+        drop(derived);
+        assert_eq!(grant.live_reserved_bytes(), 0);
     }
 }

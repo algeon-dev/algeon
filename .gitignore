@@ -46,6 +46,10 @@ __pycache__/
 # test data
 fixture/data/
 
+# Large local raw fixtures; derived/parquet fixture data belongs under
+# fixture/data/ or /opt/dlami/nvme/fixture/data/.
+/fixture/dblp.v12.json
+
 # website/ (Docusaurus) is tracked and deployed to GitHub Pages via
 # .github/workflows/deploy-website.yml. Its own build artefacts and
 # node_modules are ignored by website/.gitignore.
