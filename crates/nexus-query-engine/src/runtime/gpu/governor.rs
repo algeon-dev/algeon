@@ -154,6 +154,7 @@ struct MemoryGrantInner {
     qos: QueryQos,
     min_bytes: u64,
     budget_bytes: AtomicU64,
+    hard_cap_bytes: AtomicU64,
     live_reserved_bytes: AtomicU64,
     budget_change_sequence: AtomicU64,
     release_observers: Mutex<Vec<ReleaseObserver>>,
@@ -471,6 +472,7 @@ impl MemoryGovernor {
                 qos: request.qos,
                 min_bytes: request.min_bytes,
                 budget_bytes: AtomicU64::new(budget_bytes),
+                hard_cap_bytes: AtomicU64::new(0),
                 live_reserved_bytes: AtomicU64::new(0),
                 budget_change_sequence: AtomicU64::new(0),
                 release_observers: Mutex::new(Vec::new()),
@@ -608,6 +610,70 @@ impl MemoryGrant {
     /// Current grant budget.
     pub fn budget_bytes(&self) -> u64 {
         self.inner.budget_bytes.load(Ordering::Acquire)
+    }
+
+    /// Optional immutable ceiling above which adaptive growth must not move
+    /// this grant.
+    pub(crate) fn hard_cap_bytes(&self) -> Option<u64> {
+        let cap = self.inner.hard_cap_bytes.load(Ordering::Acquire);
+        (cap != 0).then_some(cap)
+    }
+
+    /// Computes and installs a hard growth ceiling under the governor lock.
+    ///
+    /// `compute` must be pure arithmetic over the current budget; it runs while
+    /// the governor state lock is held so the installed ceiling cannot be based
+    /// on a stale budget racing adaptive growth.
+    ///
+    /// The cap is intentionally one-way: callers set it when binding a native
+    /// allocator domain with an immutable driver ceiling. Repeated calls return
+    /// the existing effective ceiling so a context-acquisition retry cannot
+    /// wedge a grant after a partial lower-level setup failure.
+    pub(crate) fn install_hard_cap_bytes_for_current_budget(
+        &self,
+        compute: impl FnOnce(u64) -> Result<u64>,
+    ) -> Result<(u64, u64)> {
+        let state = self.inner.governor.state.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.gpu.memory_grant.install_hard_cap",
+                "memory governor mutex was poisoned",
+            )
+        })?;
+        let current_budget = state
+            .grants
+            .get(&self.inner.grant_id)
+            .map(|active| active.budget_bytes)
+            .unwrap_or_else(|| self.inner.budget_bytes.load(Ordering::Acquire));
+        let existing = self.inner.hard_cap_bytes.load(Ordering::Acquire);
+        if existing != 0 {
+            return Ok((current_budget, existing));
+        }
+
+        let hard_cap_bytes = compute(current_budget)?;
+        if hard_cap_bytes == 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.runtime.gpu.memory_grant.install_hard_cap",
+                "memory grant hard cap bytes must be greater than zero",
+            )
+            .with_fact("field", "hard_cap_bytes")
+            .with_fact("reason", "zero"));
+        }
+        if hard_cap_bytes < current_budget {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.runtime.gpu.memory_grant.install_hard_cap",
+                "memory grant hard cap cannot be below the current budget",
+            )
+            .with_fact("grant_id", self.grant_id())
+            .with_fact("query_id", self.query_id())
+            .with_fact("current_budget_bytes", current_budget)
+            .with_fact("requested_hard_cap_bytes", hard_cap_bytes)
+            .with_fact("reason", "hard_cap_below_current_budget"));
+        }
+        self.inner.hard_cap_bytes.store(hard_cap_bytes, Ordering::Release);
+        Ok((current_budget, hard_cap_bytes))
     }
 
     /// Device-resident bytes currently protected by all reservation trackers
@@ -796,6 +862,13 @@ impl MemoryGrant {
                 "memory governor mutex was poisoned",
             )
         })?;
+        let Some(current_budget) = state.grants.get(&self.inner.grant_id).map(|active| active.budget_bytes) else {
+            return Ok(false);
+        };
+        let additional_bytes = self.clamp_additional_growth(current_budget, additional_bytes);
+        if additional_bytes == 0 {
+            return Ok(false);
+        }
         let mut available = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, &state);
         if available < additional_bytes
             && let Some(pressure) = self.evictable_pressure_for_growth_locked(&state, additional_bytes)
@@ -811,6 +884,13 @@ impl MemoryGrant {
                 )
             })?;
             available = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, &state);
+        }
+        let Some(current_budget) = state.grants.get(&self.inner.grant_id).map(|active| active.budget_bytes) else {
+            return Ok(false);
+        };
+        let additional_bytes = self.clamp_additional_growth(current_budget, additional_bytes);
+        if additional_bytes == 0 {
+            return Ok(false);
         }
         if available < additional_bytes {
             return Ok(false);
@@ -837,6 +917,9 @@ impl MemoryGrant {
                 "memory governor mutex was poisoned",
             )
         })?;
+        if self.hard_cap_bytes().is_some_and(|cap| target_bytes > cap) {
+            return Ok(false);
+        }
         let Some(current_budget) = state.grants.get(&self.inner.grant_id).map(|active| active.budget_bytes) else {
             return Ok(false);
         };
@@ -860,6 +943,16 @@ impl MemoryGrant {
             })?;
             available = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, &state);
         }
+        if self.hard_cap_bytes().is_some_and(|cap| target_bytes > cap) {
+            return Ok(false);
+        }
+        let Some(current_budget) = state.grants.get(&self.inner.grant_id).map(|active| active.budget_bytes) else {
+            return Ok(false);
+        };
+        if target_bytes <= current_budget {
+            return Ok(true);
+        }
+        let additional_bytes = target_bytes - current_budget;
         if available < additional_bytes {
             return Ok(false);
         }
@@ -873,6 +966,13 @@ impl MemoryGrant {
         drop(state);
         self.notify_budget_change_observers(change);
         Ok(true)
+    }
+
+    fn clamp_additional_growth(&self, current_budget: u64, additional_bytes: u64) -> u64 {
+        match self.hard_cap_bytes() {
+            Some(cap) => cap.saturating_sub(current_budget).min(additional_bytes),
+            None => additional_bytes,
+        }
     }
 
     fn evictable_pressure_for_growth_locked(
@@ -1218,6 +1318,107 @@ mod tests {
         assert!(grant.try_grow(20).unwrap());
         assert_eq!(grant.budget_bytes(), 60);
         assert_eq!(governor.available_bytes().unwrap(), 40);
+    }
+
+    #[test]
+    fn hard_cap_rejects_current_budget_undercut() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 40, 60)).unwrap().unwrap();
+
+        let error = grant.install_hard_cap_bytes_for_current_budget(|_budget| Ok(50)).unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("reason"), Some("hard_cap_below_current_budget"));
+        assert_eq!(grant.hard_cap_bytes(), None);
+    }
+
+    #[test]
+    fn try_grow_clamps_to_hard_cap() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 40, 40)).unwrap().unwrap();
+
+        assert_eq!(grant.install_hard_cap_bytes_for_current_budget(|_budget| Ok(55)).unwrap(), (40, 55));
+        assert!(grant.try_grow(40).unwrap());
+        assert_eq!(grant.budget_bytes(), 55);
+        assert_eq!(governor.available_bytes().unwrap(), 45);
+        assert!(!grant.try_grow(1).unwrap());
+        assert_eq!(grant.budget_bytes(), 55);
+    }
+
+    #[test]
+    fn try_grow_to_returns_false_above_hard_cap() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 40, 40)).unwrap().unwrap();
+
+        assert_eq!(grant.install_hard_cap_bytes_for_current_budget(|_budget| Ok(60)).unwrap(), (40, 60));
+        assert!(!grant.try_grow_to(90).unwrap());
+        assert_eq!(grant.budget_bytes(), 40);
+        assert_eq!(governor.available_bytes().unwrap(), 60);
+        assert!(grant.try_grow_to(60).unwrap());
+        assert_eq!(grant.budget_bytes(), 60);
+        assert_eq!(governor.available_bytes().unwrap(), 40);
+    }
+
+    #[test]
+    fn hard_cap_install_returns_existing_effective_cap() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 40, 40)).unwrap().unwrap();
+
+        assert_eq!(grant.install_hard_cap_bytes_for_current_budget(|budget| Ok(budget * 2)).unwrap(), (40, 80));
+        assert!(grant.try_grow_to(60).unwrap());
+        assert_eq!(grant.install_hard_cap_bytes_for_current_budget(|budget| Ok(budget * 3)).unwrap(), (60, 80));
+        assert_eq!(grant.hard_cap_bytes(), Some(80));
+    }
+
+    #[test]
+    fn try_grow_to_rereads_budget_after_evictable_pressure_observer() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 40, 40)).unwrap().unwrap();
+        let other = governor.try_request(GrantRequest::new(2, 40, 40)).unwrap().unwrap();
+        assert!(governor.try_reserve_evictable_bytes(20).unwrap());
+
+        let other_slot = Arc::new(Mutex::new(Some(other)));
+        let observer_grant = grant.clone();
+        let observer_governor = governor.clone();
+        let observer_other_slot = Arc::clone(&other_slot);
+        let (sender, receiver) = mpsc::channel();
+        governor
+            .register_evictable_memory_observer(Arc::new(move |pressure| {
+                sender.send(pressure).unwrap();
+                drop(observer_other_slot.lock().unwrap().take());
+                observer_governor.release_evictable_bytes(pressure.requested_evict_bytes)?;
+                assert!(observer_grant.try_grow(30)?);
+                Ok(pressure.requested_evict_bytes)
+            }))
+            .unwrap();
+
+        assert!(grant.try_grow_to(60).unwrap());
+
+        let pressure = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(pressure.requested_evict_bytes, 20);
+        assert_eq!(grant.budget_bytes(), 70);
+        assert_eq!(governor.report().unwrap().outstanding_bytes, 70);
+    }
+
+    #[test]
+    fn retain_derived_live_reservation_fails_when_target_exceeds_hard_cap() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 40, 50)).unwrap().unwrap();
+        assert_eq!(grant.install_hard_cap_bytes_for_current_budget(|_budget| Ok(60)).unwrap(), (50, 60));
+        grant.record_live_reservation_delta(50);
+        let retained = grant.retain_live_reservation(50).unwrap();
+        grant.record_live_reservation_delta(-50);
+
+        let error = match retained.retain_derived_live_reservation(20) {
+            Ok(_) => panic!("derived retention above hard cap must fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+        assert_eq!(error.fact_value("target_budget_bytes"), Some("70"));
+        assert_eq!(error.fact_value("budget_bytes"), Some("50"));
+        assert_eq!(grant.budget_bytes(), 50);
+        assert_eq!(grant.live_reserved_bytes(), 50);
     }
 
     #[test]

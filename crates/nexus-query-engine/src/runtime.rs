@@ -66,9 +66,9 @@ pub use policy::{
     DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind, SourceChunkPlanningMode,
 };
 pub use query_service::{
-    QueryAdmissionRequest, QueryAdmissionWaiter, QueryGrantBand, QueryGrantRequest, QueryHandle, QueryService,
-    QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
-    TenantQueryContext, TenantQueueDepth,
+    QueryAdmissionRequest, QueryAdmissionWaiter, QueryGrantBand, QueryGrantRequest, QueryHandle,
+    QueryMemoryDomainPolicy, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig,
+    SlotGuarantee, TenantId, TenantQueryContext, TenantQueueDepth,
 };
 pub use reservation::{MemoryReservationRequest, RetryFacts};
 pub(crate) use service_stream::SourceReadStreamLease;
@@ -336,6 +336,8 @@ pub struct ExecutionContext {
     memory_grant: Option<MemoryGrant>,
     /// Optional native arena that mirrors the current grant budget.
     grant_reservation_arena: Option<Arc<cudf::ReservationArena>>,
+    /// Optional native query memory domain that mirrors the current grant budget.
+    grant_memory_domain: Option<Arc<cudf::QueryMemoryDomain>>,
     /// Execution boundary contract used by source reads, build/probe reuse, and
     /// result materialization.
     boundary_policy: ExecutionBoundaryPolicy,
@@ -431,6 +433,7 @@ struct ExecutionContextParts {
     memory_control_policy: MemoryControlPolicy,
     memory_grant: Option<MemoryGrant>,
     grant_reservation_arena: Option<Arc<cudf::ReservationArena>>,
+    grant_memory_domain: Option<Arc<cudf::QueryMemoryDomain>>,
     boundary_policy: ExecutionBoundaryPolicy,
     source_scheduler_policy: SourceSchedulerPolicy,
     source_chunk_planning_mode: SourceChunkPlanningMode,
@@ -493,6 +496,7 @@ impl ExecutionContext {
             memory_control_policy: MemoryControlPolicy::Unbounded,
             memory_grant: None,
             grant_reservation_arena: None,
+            grant_memory_domain: None,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
@@ -528,6 +532,10 @@ impl ExecutionContext {
     }
 
     fn from_parts(parts: ExecutionContextParts) -> Self {
+        debug_assert!(
+            parts.grant_reservation_arena.is_none() || parts.grant_memory_domain.is_none(),
+            "execution context cannot carry both grant reservation arena and query memory domain"
+        );
         Self {
             query_id: parts.query_id,
             trace_id: parts.trace_id,
@@ -536,6 +544,7 @@ impl ExecutionContext {
             memory_control_policy: parts.memory_control_policy,
             memory_grant: parts.memory_grant,
             grant_reservation_arena: parts.grant_reservation_arena,
+            grant_memory_domain: parts.grant_memory_domain,
             boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
             source_chunk_planning_mode: parts.source_chunk_planning_mode,
@@ -639,6 +648,7 @@ impl ExecutionContext {
             memory_control_policy: self.memory_control_policy,
             memory_grant: self.memory_grant.clone(),
             grant_reservation_arena: self.grant_reservation_arena.clone(),
+            grant_memory_domain: self.grant_memory_domain.clone(),
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
@@ -757,9 +767,14 @@ impl ExecutionContext {
         &self,
         request: cudf::ExecutionBudgetRequest,
     ) -> cudf::Result<cudf::ExecutionBudgetToken> {
-        match self.grant_reservation_arena.as_ref() {
-            Some(arena) => cudf::ExecutionBudgetToken::from_runtime_in_arena(self.runtime(), request, arena.as_ref()),
-            None => self.runtime().execution_budget_token(request),
+        match (self.grant_memory_domain.as_ref(), self.grant_reservation_arena.as_ref()) {
+            (Some(domain), None) | (Some(domain), Some(_)) => {
+                cudf::ExecutionBudgetToken::from_runtime_in_query_domain(self.runtime(), request, domain.as_ref())
+            },
+            (None, Some(arena)) => {
+                cudf::ExecutionBudgetToken::from_runtime_in_arena(self.runtime(), request, arena.as_ref())
+            },
+            _ => self.runtime().execution_budget_token(request),
         }
     }
 
@@ -1495,6 +1510,7 @@ impl ExecutionContextBuilder {
                 memory_control_policy: self.memory_control_policy,
                 memory_grant: self.memory_grant.clone(),
                 grant_reservation_arena,
+                grant_memory_domain: None,
                 boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
                 source_chunk_planning_mode: self.source_chunk_planning_mode,
@@ -1569,6 +1585,7 @@ impl ExecutionContextBuilder {
             memory_control_policy: self.memory_control_policy,
             memory_grant: self.memory_grant,
             grant_reservation_arena,
+            grant_memory_domain: None,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
@@ -1676,30 +1693,10 @@ fn create_grant_reservation_arena(
     })?;
     let arena = Arc::new(arena);
     let observer_arena = Arc::clone(&arena);
-    let observer_sequence = Arc::new(Mutex::new(0_u64));
-    let resize_observer: gpu::BudgetChangeObserver = Arc::new(move |change| {
-        let mut applied_sequence = match observer_sequence.lock() {
-            Ok(applied_sequence) => applied_sequence,
-            Err(_error) => {
-                eprintln!(
-                    "[nexus-query-engine] warning: failed to apply memory grant reservation arena resize after sequence mutex poison"
-                );
-                return;
-            },
-        };
-        if change.sequence < *applied_sequence {
-            return;
-        }
-        let Ok(limit_bytes) = usize::try_from(change.budget_bytes) else {
-            eprintln!(
-                "[nexus-query-engine] warning: memory grant budget exceeded platform usize range while resizing reservation arena"
-            );
-            return;
-        };
-        if let Err(error) = observer_arena.resize(limit_bytes) {
-            eprintln!("[nexus-query-engine] warning: failed to resize grant reservation arena: {error}");
-        }
-        *applied_sequence = change.sequence;
+    let resize_observer = sequenced_budget_resize_observer("grant reservation arena", move |budget_bytes| {
+        let limit_bytes = usize::try_from(budget_bytes)
+            .map_err(|_error| "memory grant budget exceeded platform usize range".to_owned())?;
+        observer_arena.resize(limit_bytes).map_err(|error| error.to_string())
     });
     let initial_budget = grant.notify_on_budget_change(Arc::clone(&resize_observer))?;
     registry.insert(grant_key, Arc::downgrade(&arena));
@@ -1707,8 +1704,133 @@ fn create_grant_reservation_arena(
     Ok(Some(arena))
 }
 
+fn create_grant_memory_domain(
+    runtime: &cudf::Runtime,
+    memory_grant: Option<&MemoryGrant>,
+    policy: Option<QueryMemoryDomainPolicy>,
+    device_capacity_bytes: u64,
+) -> Result<Option<Arc<cudf::QueryMemoryDomain>>> {
+    let (Some(grant), Some(policy)) = (memory_grant, policy) else {
+        return Ok(None);
+    };
+    let grant_key = grant.identity_key();
+    let mut registry = grant_memory_domain_registry().lock().map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            "nexus_query_engine.runtime.grant_memory_domain",
+            "grant query memory domain registry mutex was poisoned",
+        )
+    })?;
+    if let Some(domain) = registry.get(&grant_key).and_then(Weak::upgrade) {
+        if domain.device() != runtime.device() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.runtime.grant_memory_domain",
+                "memory grant query domain device does not match execution runtime device",
+            )
+            .with_fact("grant_id", grant.grant_id())
+            .with_fact("query_id", grant.query_id())
+            .with_fact("domain_device_ordinal", domain.device().ordinal())
+            .with_fact("runtime_device_ordinal", runtime.device().ordinal()));
+        }
+        return Ok(Some(domain));
+    }
+    registry.remove(&grant_key);
+
+    let (grant_bytes_u64, ceiling_bytes_u64) = grant.install_hard_cap_bytes_for_current_budget(|grant_bytes| {
+        policy.ceiling_bytes(grant_bytes, device_capacity_bytes)
+    })?;
+
+    let grant_bytes = usize::try_from(grant_bytes_u64).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.runtime.grant_memory_domain",
+            "memory grant budget exceeds platform usize range",
+        )
+        .with_fact("grant_id", grant.grant_id())
+        .with_fact("query_id", grant.query_id())
+        .with_fact("budget_bytes", grant_bytes_u64)
+    })?;
+    let ceiling_bytes = usize::try_from(ceiling_bytes_u64).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.runtime.grant_memory_domain",
+            "memory grant query domain ceiling exceeds platform usize range",
+        )
+        .with_fact("grant_id", grant.grant_id())
+        .with_fact("query_id", grant.query_id())
+        .with_fact("ceiling_bytes", ceiling_bytes_u64)
+    })?;
+    let manager = runtime.device_memory_manager().map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.runtime.grant_memory_domain",
+            "failed to resolve device memory manager for grant query memory domain",
+            error,
+        )
+        .with_fact("grant_id", grant.grant_id())
+        .with_fact("query_id", grant.query_id())
+    })?;
+    let domain = manager
+        .query_memory_domain(
+            grant.grant_id(),
+            cudf::QueryMemoryDomainOptions::new(grant_bytes).with_ceiling_bytes(ceiling_bytes),
+        )
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.runtime.grant_memory_domain",
+                "failed to create grant query memory domain",
+                error,
+            )
+            .with_fact("grant_id", grant.grant_id())
+            .with_fact("query_id", grant.query_id())
+            .with_fact("budget_bytes", grant_bytes_u64)
+            .with_fact("ceiling_bytes", ceiling_bytes_u64)
+        })?;
+    let domain = Arc::new(domain);
+    let observer_domain = Arc::clone(&domain);
+    let resize_observer = sequenced_budget_resize_observer("grant query memory domain", move |budget_bytes| {
+        let grant_bytes = usize::try_from(budget_bytes)
+            .map_err(|_error| "memory grant budget exceeded platform usize range".to_owned())?;
+        observer_domain.resize_grant(grant_bytes).map_err(|error| error.to_string())
+    });
+    let initial_budget = grant.notify_on_budget_change(Arc::clone(&resize_observer))?;
+    registry.insert(grant_key, Arc::downgrade(&domain));
+    resize_observer(initial_budget);
+    Ok(Some(domain))
+}
+
+fn sequenced_budget_resize_observer(
+    label: &'static str,
+    apply: impl Fn(u64) -> std::result::Result<(), String> + Send + Sync + 'static,
+) -> gpu::BudgetChangeObserver {
+    let observer_sequence = Arc::new(Mutex::new(0_u64));
+    Arc::new(move |change| {
+        let mut applied_sequence = match observer_sequence.lock() {
+            Ok(applied_sequence) => applied_sequence,
+            Err(_error) => {
+                eprintln!(
+                    "[nexus-query-engine] warning: failed to apply memory grant {label} resize after sequence mutex poison"
+                );
+                return;
+            },
+        };
+        if change.sequence < *applied_sequence {
+            return;
+        }
+        if let Err(error) = apply(change.budget_bytes) {
+            eprintln!("[nexus-query-engine] warning: failed to resize memory grant {label}: {error}");
+        }
+        *applied_sequence = change.sequence;
+    })
+}
+
 fn grant_reservation_arena_registry() -> &'static Mutex<HashMap<usize, Weak<cudf::ReservationArena>>> {
     static REGISTRY: OnceLock<Mutex<HashMap<usize, Weak<cudf::ReservationArena>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn grant_memory_domain_registry() -> &'static Mutex<HashMap<usize, Weak<cudf::QueryMemoryDomain>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<usize, Weak<cudf::QueryMemoryDomain>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 

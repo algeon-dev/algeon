@@ -620,6 +620,66 @@ fn query_service_rejects_zero_local_parquet_source_cache_capacity() {
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }
 
+#[test]
+fn query_service_query_memory_domain_policy_defaults_off_and_rejects_zero_multiplier() {
+    assert_eq!(QueryServiceConfig::default().query_memory_domain, None);
+    assert_eq!(QueryMemoryDomainPolicy::default().ceiling_multiplier, 2);
+
+    let config = QueryServiceConfig {
+        query_memory_domain: Some(QueryMemoryDomainPolicy::new().with_ceiling_multiplier(0)),
+        ..QueryServiceConfig::default()
+    };
+
+    let error = QueryService::new_for_admission_tests(
+        config,
+        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("field"), Some("query_memory_domain.ceiling_multiplier"));
+    assert_eq!(error.fact_value("reason"), Some("zero"));
+}
+
+#[test]
+fn query_service_rejects_query_memory_domain_with_durable_gpu_caches() {
+    let source_cache_config = QueryServiceConfig {
+        query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
+        local_parquet_source_cache_max_retained_bytes: Some(4096),
+        ..QueryServiceConfig::default()
+    };
+
+    let source_cache_error = QueryService::new_for_admission_tests(
+        source_cache_config,
+        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap_err();
+
+    assert_eq!(source_cache_error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(source_cache_error.fact_value("reason"), Some("query_memory_domain_incompatible_with_source_cache"));
+
+    #[cfg(feature = "cugraph")]
+    {
+        let graph_cache_config = QueryServiceConfig {
+            query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
+            resident_graph_cache_max_retained_bytes: Some(4096),
+            ..QueryServiceConfig::default()
+        };
+
+        let graph_cache_error = QueryService::new_for_admission_tests(
+            graph_cache_config,
+            vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+            non_gds_deployment(),
+        )
+        .unwrap_err();
+
+        assert_eq!(graph_cache_error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(graph_cache_error.fact_value("reason"), Some("query_memory_domain_incompatible_with_graph_cache"));
+    }
+}
+
 #[cfg(feature = "cugraph")]
 #[test]
 fn query_service_rejects_zero_resident_graph_cache_capacity() {
@@ -734,6 +794,91 @@ fn query_service_resources_use_independent_lakehouse_cache_fill_limits() {
     let other_handle = service.admit_query("tenant").unwrap();
     let other_tenant_context = other_handle.acquire_context().unwrap();
     assert!(other_tenant_context.context().lakehouse_cache_fill_event_snapshots().is_empty());
+}
+
+#[test]
+fn adaptive_query_service_context_uses_query_memory_domain_when_policy_enabled() {
+    let config = QueryServiceConfig {
+        native_pipeline_execution_mode: NativePipelineExecutionMode::Adaptive,
+        query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_deployment(
+        config,
+        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let handle = service.admit_query("tenant").unwrap();
+    let grant = handle.lifetime.memory_grant().unwrap();
+    let tenant_context = handle.acquire_context().unwrap();
+    let token = tenant_context
+        .context()
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("test_domain_policy"))
+        .unwrap();
+
+    assert_eq!(token.enforcement(), cudf::ExecutionBudgetEnforcement::QueryDomainMember);
+    assert_eq!(grant.hard_cap_bytes(), Some(16 * 1024 * 1024));
+}
+
+#[test]
+fn adaptive_query_memory_domain_follows_grant_growth() {
+    let config = QueryServiceConfig {
+        native_pipeline_execution_mode: NativePipelineExecutionMode::Adaptive,
+        query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_deployment(
+        config,
+        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let handle = service.admit_query("tenant").unwrap();
+    let grant = handle.lifetime.memory_grant().unwrap();
+    let tenant_context = handle.acquire_context().unwrap();
+    assert!(grant.try_grow_to(14 * 1024 * 1024).unwrap());
+
+    let token = tenant_context
+        .context()
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("test_domain_grow"))
+        .unwrap();
+    let outcome = tenant_context.context().runtime().series_from_value_with_budget(17i32, 3_000_000, &token).unwrap();
+
+    assert_eq!(token.enforcement(), cudf::ExecutionBudgetEnforcement::QueryDomainMember);
+    assert_eq!(grant.budget_bytes(), 14 * 1024 * 1024);
+    assert_eq!(outcome.value().len(), 3_000_000);
+}
+
+#[test]
+fn strict_query_service_context_keeps_reservation_arena_when_domain_policy_enabled() {
+    let config = QueryServiceConfig {
+        native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
+        query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_deployment(
+        config,
+        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let handle = service.admit_query("tenant").unwrap();
+    let grant = handle.lifetime.memory_grant().unwrap();
+    let tenant_context = handle.acquire_context().unwrap();
+    let token = tenant_context
+        .context()
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("test_strict_policy"))
+        .unwrap();
+
+    assert_eq!(token.enforcement(), cudf::ExecutionBudgetEnforcement::ReservationArenaMember);
+    assert_eq!(grant.hard_cap_bytes(), None);
 }
 
 #[test]
