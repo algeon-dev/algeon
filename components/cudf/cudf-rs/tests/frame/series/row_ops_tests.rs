@@ -121,3 +121,90 @@ fn test_value_counts_for_unnamed_series_uses_fallback_value_name() {
     rows.sort();
     assert_eq!(rows, vec![(5, 2), (7, 1)]);
 }
+
+// -- Semantic lock-down: stable across the column-primitive refactor --------
+
+#[test]
+fn test_head_on_empty_series_returns_empty_with_name() {
+    let s = crate::common::series::<i32>("x", &[]).unwrap();
+    let head = s.head(10).unwrap();
+
+    assert_eq!(head.name(), Some("x"));
+    assert_eq!(head.len(), 0);
+    assert_eq!(head.to_vec_strict::<i32>().unwrap(), Vec::<i32>::new());
+}
+
+#[test]
+fn test_slice_offset_beyond_len_returns_empty() {
+    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
+    let sliced = s.slice(10, 5).unwrap();
+
+    assert_eq!(sliced.name(), Some("x"));
+    assert_eq!(sliced.len(), 0);
+}
+
+#[test]
+fn test_gather_empty_index_returns_empty_with_name() {
+    let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
+    let idx = crate::common::series::<i32>("idx", &[]).unwrap();
+
+    let gathered = s.gather(&idx).unwrap();
+    assert_eq!(gathered.name(), Some("x"));
+    assert_eq!(gathered.len(), 0);
+}
+
+#[test]
+fn test_gather_operation_tag_on_dtype_error() {
+    let s = crate::common::series::<i32>("x", &[10, 20]).unwrap();
+    // Indices must be Int32; pass Float64 to trigger dtype error.
+    let bogus = crate::common::series::<f64>("idx", &[0.0, 1.0]).unwrap();
+
+    let err = s.gather(&bogus).unwrap_err();
+    assert_eq!(
+        err.operation(),
+        "series::gather",
+        "error should surface through the series op name, not the internal dataframe path"
+    );
+}
+
+#[test]
+fn test_filter_operation_tag_on_dtype_error() {
+    let s = crate::common::series::<i32>("x", &[10, 20]).unwrap();
+    // Mask must be BOOL8; pass Int32 to trigger dtype error.
+    let bogus = crate::common::series::<i32>("mask", &[1, 0]).unwrap();
+
+    let err = s.filter(&bogus).unwrap_err();
+    assert_eq!(err.operation(), "series::filter");
+}
+
+#[test]
+fn test_dropna_on_non_nullable_returns_same_values() {
+    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
+    let out = s.dropna().unwrap();
+
+    assert_eq!(out.name(), Some("x"));
+    assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+#[test]
+fn test_drop_duplicates_preserves_unnamed_series() {
+    let column = column_from_slice(&[2i32, 2, 3]).unwrap();
+    let s = Series::from_column(column).unwrap();
+    let deduped = s.drop_duplicates().unwrap();
+
+    assert_eq!(deduped.name(), None);
+    let mut host = deduped.to_vec_strict::<i32>().unwrap();
+    host.sort();
+    assert_eq!(host, vec![2, 3]);
+}
+
+#[test]
+fn test_value_counts_with_sentinel_collision_name() {
+    // The legacy implementation used the sentinel "__cudf_series_value__"
+    // as the internal column name. A series whose real name equals the
+    // sentinel must still produce a clean (sentinel, count) schema.
+    let values = crate::common::series::<i32>("__cudf_series_value__", &[1, 1, 2]).unwrap();
+
+    let counts = values.value_counts().unwrap();
+    assert_eq!(counts.column_names(), vec!["__cudf_series_value__", "count"]);
+}
