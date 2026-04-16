@@ -131,6 +131,40 @@ pub(super) fn execute_graph_algorithm(
     side_inputs: BTreeMap<NodeId, GpuDataFrame>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    execute_graph_algorithm_with_cache_requirement(context, node_id, node, input, side_inputs, None, metrics)
+}
+
+#[cfg(feature = "cugraph")]
+pub(super) fn execute_graph_algorithm_cache_hit(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &crate::plan::GraphAlgorithmNode,
+    input: GpuDataFrame,
+    side_inputs: BTreeMap<NodeId, GpuDataFrame>,
+    preparation_pin_id: u64,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    execute_graph_algorithm_with_cache_requirement(
+        context,
+        node_id,
+        node,
+        input,
+        side_inputs,
+        Some(preparation_pin_id),
+        metrics,
+    )
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_graph_algorithm_with_cache_requirement(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &crate::plan::GraphAlgorithmNode,
+    input: GpuDataFrame,
+    side_inputs: BTreeMap<NodeId, GpuDataFrame>,
+    preparation_pin_id: Option<u64>,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows() as u64;
     let input_columns = input.num_columns() as u64;
     let input_graph_residency = input.graph_residency().cloned();
@@ -172,6 +206,7 @@ pub(super) fn execute_graph_algorithm(
         input_rows,
         input_columns,
         null_edge_rows_dropped,
+        preparation_pin_id,
         metrics,
     )
 }
@@ -188,6 +223,7 @@ pub(super) fn execute_graph_algorithm_sanitized(
     input_rows: u64,
     input_columns: u64,
     null_edge_rows_dropped: u64,
+    preparation_pin_id: Option<u64>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let boundary_before = metrics.boundary.clone();
@@ -212,11 +248,13 @@ pub(super) fn execute_graph_algorithm_sanitized(
                 edge_list: input.clone(),
                 side_inputs: side_inputs.clone(),
                 graph_memory_limit_bytes,
+                preparation_pin_id,
             },
             batches,
         )
     });
-    let inputs = GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes };
+    let inputs =
+        GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes, preparation_pin_id };
     let result = match execute_graph_algorithm_attempt(context, spec, inputs, executor) {
         Ok(result) => result,
         Err(error) if should_retry_graph_resource_exhausted(context, &error, adaptive_retry_inputs.as_ref()) => {
@@ -674,6 +712,7 @@ fn execute_chunked_betweenness_retry(
             edge_list: inputs.edge_list.clone(),
             side_inputs: inputs.side_inputs.clone(),
             graph_memory_limit_bytes: inputs.graph_memory_limit_bytes,
+            preparation_pin_id: inputs.preparation_pin_id,
         };
         if FORCE_NEXT_GRAPH_ADAPTIVE_CHUNK_ATTEMPT_RESOURCE_EXHAUSTED.swap(false, Ordering::SeqCst) {
             let mut error = QueryError::new(
@@ -1292,6 +1331,7 @@ pub(super) struct GraphAlgorithmExecutionInputs {
     pub(super) edge_list: GpuDataFrame,
     pub(super) side_inputs: BTreeMap<NodeId, GpuDataFrame>,
     pub(super) graph_memory_limit_bytes: Option<u64>,
+    pub(super) preparation_pin_id: Option<u64>,
 }
 
 #[cfg(feature = "cugraph")]
@@ -1428,6 +1468,72 @@ where
         &mut cugraph::Graph<T>,
     ) -> Result<GraphAlgorithmExecutionResult>,
 {
+    run_with_cugraph_graph_mode(
+        context,
+        graph_memory_limit_bytes,
+        spec,
+        resident_graph_key,
+        edges,
+        options,
+        operation,
+        None,
+        f,
+    )
+}
+
+#[cfg(feature = "cugraph")]
+pub(super) fn run_with_cugraph_graph_cache_hit<T, F>(
+    context: &ExecutionContext,
+    graph_memory_limit_bytes: Option<u64>,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    resident_graph_key: Option<crate::plan::ResidentGraphKey>,
+    edges: DataFrame,
+    options: cugraph::cudf_interop::TableGraphOptions,
+    operation: &'static str,
+    preparation_pin_id: u64,
+    f: F,
+) -> Result<GraphAlgorithmExecutionResult>
+where
+    T: GpuResidentGraphTransposition,
+    F: FnOnce(
+        &cudf::Runtime,
+        &cugraph::EnteredContext<'_>,
+        &mut cugraph::Graph<T>,
+    ) -> Result<GraphAlgorithmExecutionResult>,
+{
+    run_with_cugraph_graph_mode(
+        context,
+        graph_memory_limit_bytes,
+        spec,
+        resident_graph_key,
+        edges,
+        options,
+        operation,
+        Some(preparation_pin_id),
+        f,
+    )
+}
+
+#[cfg(feature = "cugraph")]
+fn run_with_cugraph_graph_mode<T, F>(
+    context: &ExecutionContext,
+    graph_memory_limit_bytes: Option<u64>,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    resident_graph_key: Option<crate::plan::ResidentGraphKey>,
+    edges: DataFrame,
+    options: cugraph::cudf_interop::TableGraphOptions,
+    operation: &'static str,
+    preparation_pin_id: Option<u64>,
+    f: F,
+) -> Result<GraphAlgorithmExecutionResult>
+where
+    T: GpuResidentGraphTransposition,
+    F: FnOnce(
+        &cudf::Runtime,
+        &cugraph::EnteredContext<'_>,
+        &mut cugraph::Graph<T>,
+    ) -> Result<GraphAlgorithmExecutionResult>,
+{
     let resident_graph_cache = context.resident_graph_cache();
     if let (Some(cache), Some(resident_graph_key)) = (resident_graph_cache.as_ref(), resident_graph_key) {
         return run_with_cached_cugraph_graph::<T, F>(
@@ -1439,7 +1545,11 @@ where
             operation,
             f,
             std::sync::Arc::clone(cache),
+            preparation_pin_id,
         );
+    }
+    if preparation_pin_id.is_some() {
+        return Err(required_resident_graph_cache_hit_error(operation, "cache_or_resident_key_missing"));
     }
     let result =
         run_with_uncached_cugraph_graph::<T, F>(context, graph_memory_limit_bytes, edges, options, operation, f);
@@ -1546,6 +1656,7 @@ fn run_with_cached_cugraph_graph<T, F>(
     operation: &'static str,
     f: F,
     cache: std::sync::Arc<crate::exec::GpuResidentGraphCache>,
+    preparation_pin_id: Option<u64>,
 ) -> Result<GraphAlgorithmExecutionResult>
 where
     T: GpuResidentGraphTransposition,
@@ -1572,7 +1683,7 @@ where
         "failed to enter cuGraph resident graph cache execution context",
     ))?;
 
-    if let Some(mut checkout) = cache.checkout::<T>(&resident_graph_key, context)? {
+    if let Some(mut checkout) = cache.checkout::<T>(&resident_graph_key, context, preparation_pin_id)? {
         let retained_device_bytes = checkout.retained_device_bytes();
         let parked = checkout.take_parked();
         match parked.resume(&entered) {
@@ -1604,8 +1715,15 @@ where
                 // The cugraph-rs v1 contract consumes the parked graph on a
                 // resume error. Treat the cache entry as lost and continue with
                 // a cold build so cache corruption does not fail the query.
+                if preparation_pin_id.is_some() {
+                    return Err(required_resident_graph_cache_hit_error(operation, "parked_graph_resume_failed"));
+                }
             },
         }
+    }
+
+    if preparation_pin_id.is_some() {
+        return Err(required_resident_graph_cache_hit_error(operation, "exact_runtime_entry_missing"));
     }
 
     let export = edges.try_prepare_device_table_export().map_err(|error| {
@@ -1666,6 +1784,17 @@ where
         },
         Err(error) => Err(attach_graph_budget_error_facts(error, budget.token.as_ref(), operation)),
     }
+}
+
+#[cfg(feature = "cugraph")]
+fn required_resident_graph_cache_hit_error(operation: &'static str, reason: &'static str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::Internal,
+        "nexus_query_engine.graph_algorithm.required_resident_graph_cache_hit",
+        "resident graph cache entry disappeared after the preparation-bypass decision",
+    )
+    .with_fact("operation", operation)
+    .with_fact("reason", reason)
 }
 
 /// Build a cuGraph graph through `GraphBuilder` when the native edge list
@@ -2243,6 +2372,24 @@ where
         let key = crate::plan::planned_resident_graph_key(descriptor, spec)?;
         (key.orientation == T::orientation()).then_some(key)
     })
+}
+
+#[cfg(feature = "cugraph")]
+pub(super) fn resident_graph_cache_preparation_pin(
+    context: &ExecutionContext,
+    input: &GpuDataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+) -> Result<Option<super::types::GpuResidentGraphPreparationPin>> {
+    let Some(cache) = context.resident_graph_cache() else {
+        return Ok(None);
+    };
+    let Some(descriptor) = input.graph_residency() else {
+        return Ok(None);
+    };
+    let Some(key) = crate::plan::planned_resident_graph_key(descriptor, spec) else {
+        return Ok(None);
+    };
+    cache.try_pin_available_key_for_context(&key, context)
 }
 
 #[cfg(feature = "cugraph")]

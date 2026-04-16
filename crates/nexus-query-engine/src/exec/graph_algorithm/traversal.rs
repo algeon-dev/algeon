@@ -5,7 +5,8 @@ pub(super) fn execute_bfs(
     spec: &crate::plan::GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    let GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes } = inputs;
+    let GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes, preparation_pin_id } =
+        inputs;
     let crate::plan::GraphAlgorithmParams::Bfs(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -259,6 +260,18 @@ pub(super) fn execute_bfs(
             &edges,
             spec,
             "datafusion_nexus_cugraph_bfs",
+            run_bfs,
+        )
+    } else if let Some(preparation_pin_id) = preparation_pin_id {
+        run_with_cugraph_graph_cache_hit::<cugraph::Forward, _>(
+            context,
+            graph_memory_limit_bytes,
+            spec,
+            resident_graph_key,
+            edges,
+            options,
+            "datafusion_nexus_cugraph_bfs",
+            preparation_pin_id,
             run_bfs,
         )
     } else {

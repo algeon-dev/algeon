@@ -732,15 +732,38 @@ fn local_parquet_source_cache_resources_are_per_device() {
 #[cfg(feature = "cugraph")]
 #[test]
 fn resident_graph_cache_resources_are_per_device() {
-    let caches = resident_graph_caches_for_ordinals(&[0, 2], Some(8192));
+    let caches = resident_graph_caches_for_ordinals(&[0, 2], Some(8192), 8);
 
     let device_0 = caches.get(&0).expect("device 0 cache should exist");
     let device_2 = caches.get(&2).expect("device 2 cache should exist");
     assert_eq!(caches.len(), 2);
     assert_eq!(device_0.max_retained_device_bytes(), 8192);
     assert_eq!(device_2.max_retained_device_bytes(), 8192);
+    assert_eq!(device_0.max_copies_per_key(), 8);
+    assert_eq!(device_2.max_copies_per_key(), 8);
     assert!(!Arc::ptr_eq(device_0, device_2));
-    assert!(resident_graph_caches_for_ordinals(&[0, 2], None).is_empty());
+    assert!(resident_graph_caches_for_ordinals(&[0, 2], None, 8).is_empty());
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn resident_graph_cache_replica_limit_matches_per_device_admission_ceiling() {
+    let config = QueryServiceConfig { max_concurrent_queries: 16, ..QueryServiceConfig::default() };
+    assert_eq!(resident_graph_cache_max_copies_per_key(&config), 16);
+
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 16,
+        max_queries_per_device: Some(6),
+        ..QueryServiceConfig::default()
+    };
+    assert_eq!(resident_graph_cache_max_copies_per_key(&config), 6);
+
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 4,
+        max_queries_per_device: Some(6),
+        ..QueryServiceConfig::default()
+    };
+    assert_eq!(resident_graph_cache_max_copies_per_key(&config), 4);
 }
 
 #[test]

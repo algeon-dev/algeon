@@ -1026,9 +1026,11 @@ struct GpuResidentGraphCompanionRuntime {
 struct GpuResidentGraphCacheState {
     available: HashMap<GpuResidentGraphCacheEntryKey, GpuResidentGraphCacheEntry>,
     checked_out: HashMap<GpuResidentGraphCacheEntryKey, GpuResidentGraphCheckedOut>,
+    preparation_pins: HashMap<GpuResidentGraphCacheEntryKey, u64>,
     companion_runtimes: HashMap<usize, GpuResidentGraphCompanionRuntime>,
     retained_device_bytes: u64,
     next_access_epoch: u64,
+    next_preparation_pin_id: u64,
 }
 
 #[cfg(feature = "cugraph")]
@@ -1182,6 +1184,32 @@ impl GpuResidentGraphCache {
                 .any(|(key, entry)| &key.resident_key == resident_key && entry.runtime_owner.upgrade().is_some()))
     }
 
+    /// Pin an available graph for an imminent exact-runtime checkout.
+    ///
+    /// Unlike [`Self::contains_resident_key`], this is an exact-runtime lookup
+    /// used by execution to decide whether source-side graph preparation can be
+    /// skipped safely. Pressure eviction skips the pinned entry until checkout
+    /// consumes the pin or the returned guard drops.
+    pub(in crate::exec) fn try_pin_available_key_for_context(
+        &self,
+        resident_key: &ResidentGraphKey,
+        context: &ExecutionContext,
+    ) -> Result<Option<GpuResidentGraphPreparationPin>> {
+        let entry_key = GpuResidentGraphCacheEntryKey::for_context(resident_key.clone(), context);
+        let context_runtime = context.shared_runtime();
+        let mut state = self.lock()?;
+        let available = state
+            .available
+            .get(&entry_key)
+            .is_some_and(|entry| runtime_owner_matches(&entry.runtime_owner, &context_runtime));
+        if !available || state.preparation_pins.contains_key(&entry_key) {
+            return Ok(None);
+        }
+        let pin_id = state.next_preparation_pin_id();
+        state.preparation_pins.insert(entry_key.clone(), pin_id);
+        Ok(Some(GpuResidentGraphPreparationPin { cache: Arc::clone(&self.inner), entry_key, pin_id }))
+    }
+
     pub(in crate::exec) fn companion_runtime_for_context(
         &self,
         context: &ExecutionContext,
@@ -1229,14 +1257,20 @@ impl GpuResidentGraphCache {
         &self,
         resident_key: &ResidentGraphKey,
         context: &ExecutionContext,
+        preparation_pin_id: Option<u64>,
     ) -> Result<Option<GpuResidentGraphCheckout<T>>>
     where
         T: GpuResidentGraphTransposition,
     {
         let entry_key = GpuResidentGraphCacheEntryKey::for_context(resident_key.clone(), context);
         let mut state = self.lock()?;
-        let Some(entry) = state.available.remove(&entry_key) else {
+        if !state.available.contains_key(&entry_key)
+            || !state.consume_checkout_preparation_pin(&entry_key, preparation_pin_id)
+        {
             return Ok(None);
+        }
+        let Some(entry) = state.available.remove(&entry_key) else {
+            unreachable!("available resident graph entry checked immediately before removal")
         };
         let context_runtime = context.shared_runtime();
         let retained_device_bytes = entry.retained_device_bytes;
@@ -1448,8 +1482,9 @@ impl GpuResidentGraphCacheState {
         let mut evictable_device_bytes = 0u64;
         let mut candidates = self
             .available
-            .values()
-            .map(|entry| (entry.last_access_epoch, entry.retained_device_bytes))
+            .iter()
+            .filter(|(key, _entry)| !self.preparation_pins.contains_key(*key))
+            .map(|(_key, entry)| (entry.last_access_epoch, entry.retained_device_bytes))
             .collect::<Vec<_>>();
         candidates.sort_unstable_by_key(|(last_access_epoch, _bytes)| *last_access_epoch);
         for (_last_access_epoch, candidate_bytes) in candidates {
@@ -1479,13 +1514,65 @@ impl GpuResidentGraphCacheState {
     }
 
     fn lru_available_key(&self) -> Option<GpuResidentGraphCacheEntryKey> {
-        self.available.iter().min_by_key(|(_key, entry)| entry.last_access_epoch).map(|(key, _entry)| key.clone())
+        self.available
+            .iter()
+            .filter(|(key, _entry)| !self.preparation_pins.contains_key(*key))
+            .min_by_key(|(_key, entry)| entry.last_access_epoch)
+            .map(|(key, _entry)| key.clone())
+    }
+
+    fn next_preparation_pin_id(&mut self) -> u64 {
+        self.next_preparation_pin_id = self.next_preparation_pin_id.wrapping_add(1);
+        if self.next_preparation_pin_id == 0 {
+            self.next_preparation_pin_id = 1;
+        }
+        self.next_preparation_pin_id
+    }
+
+    fn consume_checkout_preparation_pin(
+        &mut self,
+        entry_key: &GpuResidentGraphCacheEntryKey,
+        preparation_pin_id: Option<u64>,
+    ) -> bool {
+        match (self.preparation_pins.get(entry_key).copied(), preparation_pin_id) {
+            (None, None) => true,
+            (Some(expected), Some(actual)) if expected == actual => {
+                self.preparation_pins.remove(entry_key);
+                true
+            },
+            _ => false,
+        }
     }
 }
 
 #[cfg(feature = "cugraph")]
 fn runtime_owner_matches(owner: &Weak<cudf::Runtime>, runtime: &Arc<cudf::Runtime>) -> bool {
     owner.upgrade().is_some_and(|owner| Arc::ptr_eq(&owner, runtime))
+}
+
+#[cfg(feature = "cugraph")]
+pub(in crate::exec) struct GpuResidentGraphPreparationPin {
+    cache: Arc<GpuResidentGraphCacheInner>,
+    entry_key: GpuResidentGraphCacheEntryKey,
+    pin_id: u64,
+}
+
+#[cfg(feature = "cugraph")]
+impl GpuResidentGraphPreparationPin {
+    pub(in crate::exec) fn pin_id(&self) -> u64 {
+        self.pin_id
+    }
+}
+
+#[cfg(feature = "cugraph")]
+impl Drop for GpuResidentGraphPreparationPin {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.cache.state.lock()
+            && state.preparation_pins.get(&self.entry_key) == Some(&self.pin_id)
+        {
+            state.preparation_pins.remove(&self.entry_key);
+        }
+    }
 }
 
 /// Exclusive checked-out parked graph.
@@ -2687,6 +2774,64 @@ mod tests {
 
     use super::*;
     use crate::runtime::gpu::governor::GrantRequest;
+    #[cfg(feature = "cugraph")]
+    use crate::{
+        plan::{
+            GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
+            GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyOrientation, GraphResidencyPlanAnalysis,
+            QueryPlanBuilder, graph_residency_descriptor_for_edge_plan,
+        },
+        source::{LocalParquetFile, LocalParquetSource, SourceNode},
+    };
+
+    #[cfg(feature = "cugraph")]
+    fn test_resident_graph_entry_key() -> GpuResidentGraphCacheEntryKey {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int32, false),
+            Field::new("dst", DataType::Int32, false),
+        ]));
+        let source = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/preparation-pin-edges.parquet")
+                    .with_file_size_bytes(1)
+                    .with_stable_id("local:/tmp/preparation-pin-edges.parquet:1:mtime=test"),
+            ],
+            schema,
+            vec!["src".to_string(), "dst".to_string()],
+        );
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        );
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let plan = builder.finish_with_host_sink(source);
+        let GraphResidencyPlanAnalysis::Keyable(descriptor) = graph_residency_descriptor_for_edge_plan(&plan, &spec)
+        else {
+            panic!("test edge source should produce a resident graph key")
+        };
+        GpuResidentGraphCacheEntryKey {
+            resident_key: descriptor.resident_key(&spec, GraphResidencyOrientation::Forward),
+            runtime_key: 1,
+        }
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn resident_graph_preparation_pin_reserves_checkout_for_its_owner() {
+        let entry_key = test_resident_graph_entry_key();
+        let mut state = GpuResidentGraphCacheState::default();
+        state.preparation_pins.insert(entry_key.clone(), 41);
+
+        assert!(!state.consume_checkout_preparation_pin(&entry_key, None));
+        assert_eq!(state.preparation_pins.get(&entry_key), Some(&41));
+        assert!(!state.consume_checkout_preparation_pin(&entry_key, Some(42)));
+        assert_eq!(state.preparation_pins.get(&entry_key), Some(&41));
+        assert!(state.consume_checkout_preparation_pin(&entry_key, Some(41)));
+        assert!(!state.preparation_pins.contains_key(&entry_key));
+    }
 
     fn single_i32_frame(runtime: &Arc<cudf::Runtime>, name: &str, values: Vec<i32>) -> DataFrame {
         let schema = Arc::new(Schema::new(vec![Field::new(name, DataType::Int32, false)]));

@@ -63,6 +63,8 @@ const ENV_PRINT_PLANNING: &str = "CUDF_CUGRAPH_ADMISSION_PRINT_PLANNING";
 const ENV_DEVICE_ORDINALS: &str = "CUDF_CUGRAPH_ADMISSION_DEVICE_ORDINALS";
 const ENV_SOURCE_CACHE_MAX_RETAINED_BYTES: &str = "CUDF_CUGRAPH_ADMISSION_SOURCE_CACHE_MAX_RETAINED_BYTES";
 const ENV_GRAPH_CACHE_MAX_RETAINED_BYTES: &str = "CUDF_CUGRAPH_ADMISSION_GRAPH_CACHE_MAX_RETAINED_BYTES";
+const ENV_WARMUP_ITERATIONS: &str = "CUDF_CUGRAPH_ADMISSION_WARMUP_ITERATIONS";
+const ENV_CUDA_PROFILER_CAPTURE: &str = "CUDF_CUGRAPH_ADMISSION_CUDA_PROFILER_CAPTURE";
 
 /// Retained optimizer rules (diagnostic planning-report mode only).
 static PLANNING_RULES: Mutex<Vec<Arc<CudfNativePhysicalOptimizerRule>>> = Mutex::new(Vec::new());
@@ -172,6 +174,8 @@ struct HarnessConfig {
     device_ordinals: Vec<usize>,
     source_cache_max_retained_bytes: Option<u64>,
     graph_cache_max_retained_bytes: Option<u64>,
+    warmup_iterations: usize,
+    cuda_profiler_capture: bool,
 }
 
 impl HarnessConfig {
@@ -209,7 +213,13 @@ impl HarnessConfig {
             device_ordinals: parse_device_ordinals(ENV_DEVICE_ORDINALS)?,
             source_cache_max_retained_bytes: parse_optional_u64(ENV_SOURCE_CACHE_MAX_RETAINED_BYTES)?,
             graph_cache_max_retained_bytes: parse_optional_u64(ENV_GRAPH_CACHE_MAX_RETAINED_BYTES)?,
+            warmup_iterations: env_parse(ENV_WARMUP_ITERATIONS, 0)?,
+            cuda_profiler_capture: env_bool(ENV_CUDA_PROFILER_CAPTURE, false)?,
         })
+    }
+
+    fn uses_phased_execution(&self) -> bool {
+        self.warmup_iterations > 0 || self.cuda_profiler_capture
     }
 }
 
@@ -375,39 +385,98 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let barrier = Arc::new(Barrier::new(workers.len()));
+    let profiler_active = Arc::new(AtomicBool::new(false));
+    let profiler_error = Arc::new(Mutex::new(None::<String>));
     let run_started = Instant::now();
     let mut tasks = Vec::with_capacity(workers.len());
     for (request, ctx) in workers {
         let barrier = Arc::clone(&barrier);
+        let profiler_active = Arc::clone(&profiler_active);
+        let profiler_error = Arc::clone(&profiler_error);
         let config = config.clone();
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
             if config.stagger_ms > 0 && request.task_index > 0 {
                 tokio::time::sleep(Duration::from_millis(config.stagger_ms * request.task_index as u64)).await;
             }
-            let mut rows = Vec::with_capacity(config.iterations);
-            for iteration in 0..config.iterations {
-                rows.push(run_one(&config, &ctx, &request, iteration).await);
+
+            if !config.uses_phased_execution() {
+                let mut rows = Vec::with_capacity(config.iterations);
+                for iteration in 0..config.iterations {
+                    rows.push(run_one(&config, &ctx, &request, iteration).await);
+                }
+                return WorkerRows { warmup: Vec::new(), measured: rows };
             }
-            rows
+
+            let mut warmup = Vec::with_capacity(config.warmup_iterations);
+            for iteration in 0..config.warmup_iterations {
+                if iteration > 0 {
+                    barrier.wait().await;
+                }
+                warmup.push(run_one(&config, &ctx, &request, iteration).await);
+            }
+
+            if barrier.wait().await.is_leader() && config.cuda_profiler_capture {
+                match cudf::runtime::cuda_profiler_start() {
+                    Ok(()) => profiler_active.store(true, Ordering::SeqCst),
+                    Err(error) => {
+                        *profiler_error.lock().unwrap() =
+                            Some(format!("failed to start CUDA profiler capture: {error}"));
+                    },
+                }
+            }
+            barrier.wait().await;
+
+            let mut measured = Vec::with_capacity(config.iterations);
+            for iteration in 0..config.iterations {
+                if iteration > 0 {
+                    barrier.wait().await;
+                }
+                measured.push(run_one(&config, &ctx, &request, iteration).await);
+            }
+
+            if barrier.wait().await.is_leader()
+                && profiler_active.swap(false, Ordering::SeqCst)
+                && let Err(error) = cudf::runtime::cuda_profiler_stop()
+            {
+                *profiler_error.lock().unwrap() = Some(format!("failed to stop CUDA profiler capture: {error}"));
+            }
+            barrier.wait().await;
+            WorkerRows { warmup, measured }
         }));
     }
 
     let mut query_rows = Vec::new();
+    let mut warmup_rows = Vec::new();
     for task in tasks {
         match task.await {
-            Ok(rows) => query_rows.extend(rows),
+            Ok(rows) => {
+                warmup_rows.extend(rows.warmup);
+                query_rows.extend(rows.measured);
+            },
             Err(join_error) => eprintln!("worker task panicked: {join_error}"),
         }
     }
-    let makespan_ms = duration_ms(run_started.elapsed());
+    let makespan_ms = if config.uses_phased_execution() {
+        query_rows_makespan_ms(&query_rows).unwrap_or_else(|| duration_ms(run_started.elapsed()))
+    } else {
+        duration_ms(run_started.elapsed())
+    };
 
     stop_flag.store(true, Ordering::SeqCst);
     let _ = sampler_handle.join();
 
-    write_outputs(&config, &query_rows, &samples.lock().unwrap(), makespan_ms)?;
+    write_outputs(&config, &warmup_rows, &query_rows, &samples.lock().unwrap(), makespan_ms)?;
+    if let Some(error) = profiler_error.lock().unwrap().take() {
+        return Err(error.into());
+    }
     eprintln!("# done run_id={} makespan_ms={makespan_ms:.1} rows={}", config.run_id, query_rows.len());
     Ok(())
+}
+
+struct WorkerRows {
+    warmup: Vec<QueryRow>,
+    measured: Vec<QueryRow>,
 }
 
 fn build_backend(config: &HarnessConfig) -> Result<NexusGpuBackend, Box<dyn Error>> {
@@ -983,15 +1052,15 @@ fn spawn_sampler(
 
 fn write_outputs(
     config: &HarnessConfig,
+    warmup_rows: &[QueryRow],
     query_rows: &[QueryRow],
     samples: &[SampleRow],
     makespan_ms: f64,
 ) -> Result<(), Box<dyn Error>> {
     let queries_path = config.out_dir.join("queries.tsv");
-    let mut queries_file = fs::File::create(&queries_path)?;
-    writeln!(queries_file, "{}", QUERY_COLUMNS.join("\t"))?;
-    for row in query_rows {
-        writeln!(queries_file, "{}", row.to_tsv())?;
+    write_query_rows(&queries_path, query_rows)?;
+    if !warmup_rows.is_empty() {
+        write_query_rows(&config.out_dir.join("warmup_queries.tsv"), warmup_rows)?;
     }
 
     let samples_path = config.out_dir.join("samples.tsv");
@@ -1020,7 +1089,9 @@ fn write_outputs(
         "makespan_ms": makespan_ms,
         "config": {
             "workload": config.workload.iter().map(|(label, count)| format!("{label}:{count}")).collect::<Vec<_>>(),
+            "warmup_iterations": config.warmup_iterations,
             "iterations": config.iterations,
+            "cuda_profiler_capture": config.cuda_profiler_capture,
             "stagger_ms": config.stagger_ms,
             "max_concurrent_queries": config.max_concurrent_queries,
             "slot_guarantee": format!("{:?}", config.slot_guarantee),
@@ -1060,6 +1131,21 @@ fn write_outputs(
     });
     fs::write(config.out_dir.join("summary.json"), serde_json::to_string_pretty(&summary)?)?;
     Ok(())
+}
+
+fn write_query_rows(path: &PathBuf, rows: &[QueryRow]) -> Result<(), Box<dyn Error>> {
+    let mut file = fs::File::create(path)?;
+    writeln!(file, "{}", QUERY_COLUMNS.join("\t"))?;
+    for row in rows {
+        writeln!(file, "{}", row.to_tsv())?;
+    }
+    Ok(())
+}
+
+fn query_rows_makespan_ms(rows: &[QueryRow]) -> Option<f64> {
+    let start = rows.iter().map(|row| row.start_epoch_ms).min()?;
+    let end = rows.iter().map(|row| row.end_epoch_ms).max()?;
+    Some(end.saturating_sub(start) as f64)
 }
 
 fn mean(values: &[f64]) -> f64 {
@@ -1116,6 +1202,17 @@ fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> Result<T, Box<dyn 
 where T::Err: Error + 'static {
     match std::env::var(name) {
         Ok(raw) => Ok(raw.trim().parse::<T>()?),
+        Err(_) => Ok(default),
+    }
+}
+
+fn env_bool(name: &str, default: bool) -> Result<bool, Box<dyn Error>> {
+    match std::env::var(name) {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            other => Err(format!("failed to parse {name} as bool: {other}").into()),
+        },
         Err(_) => Ok(default),
     }
 }
@@ -1216,6 +1313,8 @@ mod tests {
             device_ordinals: vec![0],
             source_cache_max_retained_bytes: Some(1024),
             graph_cache_max_retained_bytes: Some(2048),
+            warmup_iterations: 0,
+            cuda_profiler_capture: false,
         };
         let request = Request {
             task_index: 0,
@@ -1266,6 +1365,8 @@ mod tests {
             device_ordinals: vec![0],
             source_cache_max_retained_bytes: None,
             graph_cache_max_retained_bytes: None,
+            warmup_iterations: 0,
+            cuda_profiler_capture: false,
         };
         let request = Request {
             task_index: 0,
