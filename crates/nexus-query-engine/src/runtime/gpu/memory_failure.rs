@@ -203,6 +203,7 @@ mod tests {
         let action = callback(cudf::DeviceMemoryFailureInfo {
             device: cudf::DeviceId::DEFAULT,
             source: DeviceMemoryFailureSource::ReservationLimit,
+            allocation_domain: None,
             requested_bytes: 10,
             callback_attempt: 0,
             trim_retry_count: 0,
@@ -229,6 +230,7 @@ mod tests {
         let action = callback(cudf::DeviceMemoryFailureInfo {
             device: cudf::DeviceId::DEFAULT,
             source: DeviceMemoryFailureSource::Physical,
+            allocation_domain: None,
             requested_bytes: 10,
             callback_attempt: 0,
             trim_retry_count: 0,
