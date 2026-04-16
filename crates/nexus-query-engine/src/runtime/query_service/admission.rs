@@ -19,6 +19,11 @@ pub struct QueryAdmissionWaiter {
 #[derive(Debug, Default)]
 pub(super) struct AdmissionState {
     pub(super) active_queries: usize,
+    /// Query releases whose GPU-owned resources are still being destroyed.
+    ///
+    /// Grant callbacks must not wake admission while this is non-zero: the
+    /// released capacity is not reusable until cleanup drops the device slot.
+    pub(super) cleanup_in_progress: usize,
     pub(super) queued: VecDeque<AdmissionRequest>,
     pub(super) active_adaptive_grants: HashMap<u64, ActiveAdaptiveGrant>,
     pub(super) next_tenant_index: usize,

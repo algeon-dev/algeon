@@ -78,8 +78,9 @@ async fn main() -> DataFusionResult<()> {
     if config.run_overload_probe {
         rows.push(run_overload_probe(&config)?);
     }
-    rows.extend(run_stress(&config, expected_count).await?);
-    let report = StressReport { config, expected_count, rows };
+    let stress = run_stress(&config, expected_count).await?;
+    rows.extend(stress.rows);
+    let report = StressReport { config, expected_count, rows, effective_active_max: stress.effective_active_max };
     print!("{}", report.to_tsv());
     Ok(())
 }
@@ -219,6 +220,12 @@ struct StressReport {
     config: StressConfig,
     expected_count: Option<u64>,
     rows: Vec<StressRow>,
+    effective_active_max: usize,
+}
+
+struct StressRun {
+    rows: Vec<StressRow>,
+    effective_active_max: usize,
 }
 
 impl StressReport {
@@ -234,6 +241,7 @@ impl StressReport {
             self.expected_count.map(|count| count.to_string()).unwrap_or_else(|| "unknown".to_string())
         ));
         output.push_str(&format!("# tenant_budget_bytes={}\n", self.config.tenant_budget_bytes));
+        output.push_str(&format!("# effective_active_max={}\n", self.effective_active_max));
         for summary in tenant_summaries(&self.rows) {
             output.push_str(&format!(
                 "# tenant_summary tenant_id={} succeeded={} overloaded={} failed={} max_total_wall_ms={} p95_total_wall_ms={}\n",
@@ -330,7 +338,7 @@ async fn planned_table_row_count(config: &GlueIcebergTableConfig) -> DataFusionR
         .try_fold(0u64, |total, count| count.map(|count| total.saturating_add(count))))
 }
 
-async fn run_stress(config: &StressConfig, expected_count: Option<u64>) -> DataFusionResult<Vec<StressRow>> {
+async fn run_stress(config: &StressConfig, expected_count: Option<u64>) -> DataFusionResult<StressRun> {
     let service = Arc::new(
         QueryService::new(
             config.service_config(),
@@ -359,7 +367,8 @@ async fn run_stress(config: &StressConfig, expected_count: Option<u64>) -> DataF
         rows.push(task.await.map_err(|error| plan_error(format!("query service Iceberg task join failed: {error}")))??);
     }
     rows.sort_by_key(|row| row.request_index);
-    Ok(rows)
+    let effective_active_max = service.gpu_execution_query_report().peak_active_query_jobs;
+    Ok(StressRun { rows, effective_active_max })
 }
 
 async fn run_native_request(

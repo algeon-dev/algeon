@@ -197,6 +197,14 @@ pub(crate) struct QueryAdmissionExecutionRoundGuard {
     released: bool,
 }
 
+#[derive(Debug)]
+struct QueryAdmissionPendingContextGuard {
+    ticket: Arc<QueryAdmissionTicket>,
+    task_key: usize,
+    epoch: u64,
+    released: bool,
+}
+
 struct TicketAdmitResetGuard {
     ticket: Arc<QueryAdmissionTicket>,
     task_key: usize,
@@ -319,7 +327,9 @@ impl QueryAdmissionTicket {
 
             match action {
                 TicketAcquireAction::Reuse { handle, epoch } => {
-                    return self.acquire_from_handle(handle, task_key, epoch, Arc::clone(&task_context), cancellation);
+                    return self
+                        .acquire_from_handle(handle, task_key, epoch, Arc::clone(&task_context), cancellation)
+                        .await;
                 },
                 TicketAcquireAction::Wait => {
                     notified.await;
@@ -413,10 +423,10 @@ impl QueryAdmissionTicket {
             self.notify.notify_waiters();
             epoch
         };
-        self.acquire_from_handle(handle, task_key, epoch, task_context, cancellation)
+        self.acquire_from_handle(handle, task_key, epoch, task_context, cancellation).await
     }
 
-    fn acquire_from_handle(
+    async fn acquire_from_handle(
         self: &Arc<Self>,
         handle: Arc<QueryHandle>,
         task_key: usize,
@@ -424,18 +434,25 @@ impl QueryAdmissionTicket {
         task_context: Arc<TaskContext>,
         cancellation: ExecutionCancellation,
     ) -> nexus_query_engine::Result<TicketTenantQueryContext> {
-        match handle.acquire_context_with_cancellation(cancellation) {
-            Ok(tenant_context) => Ok(TicketTenantQueryContext {
-                tenant_context,
-                task_context,
-                admission_facts: QueryAdmissionFacts::from_handle(handle.as_ref()),
-                record_admission_facts: self.mark_admission_facts_recorded(task_key, epoch),
-                _guard: QueryAdmissionTicketContextGuard { ticket: Arc::clone(self), task_key, epoch, released: false },
-            }),
-            Err(error) => {
-                self.release_epoch_context(task_key, epoch, true);
-                Err(error)
+        let mut pending_guard =
+            QueryAdmissionPendingContextGuard { ticket: Arc::clone(self), task_key, epoch, released: false };
+        match handle.acquire_context_with_cancellation_async(cancellation).await {
+            Ok(tenant_context) => {
+                pending_guard.released = true;
+                Ok(TicketTenantQueryContext {
+                    tenant_context,
+                    task_context,
+                    admission_facts: QueryAdmissionFacts::from_handle(handle.as_ref()),
+                    record_admission_facts: self.mark_admission_facts_recorded(task_key, epoch),
+                    _guard: QueryAdmissionTicketContextGuard {
+                        ticket: Arc::clone(self),
+                        task_key,
+                        epoch,
+                        released: false,
+                    },
+                })
             },
+            Err(error) => Err(error),
         }
     }
 
@@ -535,6 +552,16 @@ impl Drop for QueryAdmissionTicketContextGuard {
         }
         self.released = true;
         self.ticket.release_epoch_context(self.task_key, self.epoch, false);
+    }
+}
+
+impl Drop for QueryAdmissionPendingContextGuard {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        self.ticket.release_epoch_context(self.task_key, self.epoch, true);
     }
 }
 
@@ -837,6 +864,32 @@ mod tests {
 
         ticket.release_epoch_context(task_key, 11, false);
         assert!(!ticket.state.lock().unwrap().rounds.contains_key(&task_key));
+    }
+
+    #[test]
+    fn cancelled_pending_context_acquire_releases_ticket_epoch_and_admission() {
+        let (ticket, service, tenant_id) = admission_only_ticket();
+        let task_context = Arc::new(TaskContext::default());
+        let task_key = QueryAdmissionTicket::task_key(&task_context);
+        let handle = service.admit_query(tenant_id).unwrap();
+        ticket.state.lock().unwrap().rounds.insert(
+            task_key,
+            TicketRound {
+                _task_context: Arc::clone(&task_context),
+                handle: Some(Arc::new(handle)),
+                active_contexts: 1,
+                active_streams: 0,
+                epoch: 13,
+                admission_facts_recorded: false,
+            },
+        );
+
+        let pending =
+            QueryAdmissionPendingContextGuard { ticket: Arc::clone(&ticket), task_key, epoch: 13, released: false };
+        drop(pending);
+
+        assert!(!ticket.state.lock().unwrap().rounds.contains_key(&task_key));
+        assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
     }
 
     #[test]

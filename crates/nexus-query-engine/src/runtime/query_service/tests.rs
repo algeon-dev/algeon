@@ -645,6 +645,18 @@ fn query_service_query_memory_domain_policy_defaults_off_and_rejects_zero_multip
 }
 
 #[test]
+fn gpu_execution_workers_follow_the_per_device_admission_ceiling() {
+    let mut config = QueryServiceConfig { max_concurrent_queries: 16, ..QueryServiceConfig::default() };
+    assert_eq!(gpu_execution_worker_count_per_device(&config), 16);
+
+    config.max_queries_per_device = Some(4);
+    assert_eq!(gpu_execution_worker_count_per_device(&config), 4);
+
+    config.max_queries_per_device = Some(32);
+    assert_eq!(gpu_execution_worker_count_per_device(&config), 16);
+}
+
+#[test]
 fn query_service_rejects_query_memory_domain_with_durable_gpu_caches() {
     let source_cache_config = QueryServiceConfig {
         query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
@@ -1072,7 +1084,7 @@ fn query_service_context_keeps_admission_until_context_drop() {
 
     assert!(service.try_admit_query("small").unwrap().is_none());
     drop(tenant_context);
-    assert!(service.try_admit_query("small").unwrap().is_some());
+    service.admit_query("small").expect("cleanup should wake the blocked admission");
 }
 
 #[test]

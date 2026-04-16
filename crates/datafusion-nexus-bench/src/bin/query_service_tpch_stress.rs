@@ -120,7 +120,8 @@ async fn main() -> DataFusionResult<()> {
         wait_for_service_stream_pools_idle(Arc::clone(&service), config.stream_idle_timeout).await?;
         profiler_capture.finish()?;
     }
-    let report = StressReport { config, dataset, rows, profile_measured_execution_ms };
+    let effective_active_max = service.gpu_execution_query_report().peak_active_query_jobs;
+    let report = StressReport { config, dataset, rows, profile_measured_execution_ms, effective_active_max };
     print!("{}", report.to_tsv());
     Ok(())
 }
@@ -535,6 +536,7 @@ struct StressReport {
     dataset: datafusion_nexus_bench::TpchDatasetMetadata,
     rows: Vec<StressRow>,
     profile_measured_execution_ms: Option<f64>,
+    effective_active_max: usize,
 }
 
 impl StressReport {
@@ -547,6 +549,7 @@ impl StressReport {
         output.push_str(&format!("# tenant_want_grant_bytes={}\n", self.config.tenant_want_grant_bytes));
         output.push_str(&format!("# slot_guarantee={}\n", slot_guarantee_name(self.config.slot_guarantee)));
         output.push_str(&format!("# max_concurrent_queries={}\n", self.config.max_concurrent_queries));
+        output.push_str(&format!("# effective_active_max={}\n", self.effective_active_max));
         output.push_str(&format!("# max_admission_queue_len={}\n", self.config.max_admission_queue_len));
         output.push_str(&format!("# max_source_chunk_bytes={}\n", self.config.max_source_chunk_bytes));
         output.push_str(&format!("# max_row_groups_per_chunk={}\n", self.config.max_row_groups_per_chunk));

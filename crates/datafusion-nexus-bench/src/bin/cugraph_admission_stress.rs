@@ -466,7 +466,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     stop_flag.store(true, Ordering::SeqCst);
     let _ = sampler_handle.join();
 
-    write_outputs(&config, &warmup_rows, &query_rows, &samples.lock().unwrap(), makespan_ms)?;
+    let effective_active_max = backend.query_service().gpu_execution_query_report().peak_active_query_jobs;
+    write_outputs(&config, &warmup_rows, &query_rows, &samples.lock().unwrap(), makespan_ms, effective_active_max)?;
     if let Some(error) = profiler_error.lock().unwrap().take() {
         return Err(error.into());
     }
@@ -1056,6 +1057,7 @@ fn write_outputs(
     query_rows: &[QueryRow],
     samples: &[SampleRow],
     makespan_ms: f64,
+    effective_active_max: usize,
 ) -> Result<(), Box<dyn Error>> {
     let queries_path = config.out_dir.join("queries.tsv");
     write_query_rows(&queries_path, query_rows)?;
@@ -1121,6 +1123,7 @@ fn write_outputs(
             })
         }).collect::<Vec<_>>(),
         "peaks": {
+            "gpu_execution_active_max": effective_active_max,
             "pool_used_high_bytes": samples.iter().map(|s| s.pool_used_high_bytes).max(),
             "pool_reserved_high_bytes": samples.iter().map(|s| s.pool_reserved_high_bytes).max(),
             "governor_outstanding_bytes_max": samples.iter().map(|s| s.governor_outstanding_bytes).max(),

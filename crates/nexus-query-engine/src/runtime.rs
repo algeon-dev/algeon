@@ -32,6 +32,7 @@ use crate::{
 mod boundary;
 mod bounded_join;
 pub mod gpu;
+mod gpu_execution_pool;
 mod io_capability;
 mod object_store;
 mod policy;
@@ -53,6 +54,10 @@ pub use gpu::{
     LeastLoadedPlacement, MemoryGovernor, MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant,
     PinnedDevicePlacement, Placement, PlacementPolicy, PlacementRequest, Priority, QueryPlacementHint,
     QueryPlacementPolicy, QueryQos, SingleDeviceComms, device_budget_bytes_from_facts,
+};
+pub use gpu_execution_pool::{
+    GpuExecutionJobKind, GpuExecutionPool, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot,
+    GpuExecutionQueryTracker,
 };
 pub use io_capability::{
     DEFAULT_GDS_LOCAL_MOUNT_ROOT, DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus,
@@ -320,6 +325,8 @@ pub struct ExecutionContext {
     /// stream, allocator, and device across query plans, or allow the builder to
     /// create a fresh runtime from the configured device/memory-resource policy.
     runtime: Arc<cudf::Runtime>,
+    /// Dedicated executor used for synchronous GPU work on this context's device.
+    gpu_execution_pool: GpuExecutionPool,
     /// Runtime allocator construction policy recorded for diagnostics.
     ///
     /// This does not replace the allocator owned by an injected runtime. When an
@@ -429,6 +436,7 @@ struct ExecutionContextParts {
     query_id: Option<QueryId>,
     trace_id: Option<TraceId>,
     runtime: Arc<cudf::Runtime>,
+    gpu_execution_pool: GpuExecutionPool,
     memory_policy: MemoryResourcePolicy,
     memory_control_policy: MemoryControlPolicy,
     memory_grant: Option<MemoryGrant>,
@@ -488,10 +496,13 @@ impl ExecutionContext {
             ServiceStreamPool::new(runtime.device(), default_service_stream_pool_size_for_device(runtime.device()))
                 .expect("default service stream pool size is non-zero");
         let source_fetch_config = SourceFetchConfig::default();
+        let gpu_execution_pool =
+            GpuExecutionPool::shared_for_device(runtime.device().ordinal(), service_stream_pool.pool_size())?;
         Ok(Self::from_parts(ExecutionContextParts {
             query_id: None,
             trace_id: None,
             runtime,
+            gpu_execution_pool,
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: MemoryControlPolicy::Unbounded,
             memory_grant: None,
@@ -540,6 +551,7 @@ impl ExecutionContext {
             query_id: parts.query_id,
             trace_id: parts.trace_id,
             runtime: parts.runtime,
+            gpu_execution_pool: parts.gpu_execution_pool,
             memory_policy: parts.memory_policy,
             memory_control_policy: parts.memory_control_policy,
             memory_grant: parts.memory_grant,
@@ -599,6 +611,11 @@ impl ExecutionContext {
         Arc::clone(&self.runtime)
     }
 
+    /// Returns the dedicated executor for synchronous GPU work on this context's device.
+    pub fn gpu_execution_pool(&self) -> GpuExecutionPool {
+        self.gpu_execution_pool.clone()
+    }
+
     /// Returns the query-wide diagnostic correlation id.
     pub fn query_id(&self) -> Option<&QueryId> {
         self.query_id.as_ref()
@@ -644,6 +661,7 @@ impl ExecutionContext {
             query_id: self.query_id.clone(),
             trace_id: self.trace_id.clone(),
             runtime: stream_lease.shared_runtime(),
+            gpu_execution_pool: self.gpu_execution_pool.clone(),
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy,
             memory_grant: self.memory_grant.clone(),
@@ -1150,6 +1168,8 @@ pub struct ExecutionContextBuilder {
     trace_id: Option<TraceId>,
     /// Prebuilt runtime to use instead of constructing one.
     runtime: Option<Arc<cudf::Runtime>>,
+    /// Optional caller-owned dedicated GPU execution pool.
+    gpu_execution_pool: Option<GpuExecutionPool>,
     /// CUDA device ordinal used only when this builder constructs the runtime.
     device_ordinal: Option<usize>,
     /// Memory resource used only when this builder constructs the runtime.
@@ -1232,6 +1252,12 @@ impl ExecutionContextBuilder {
     pub fn with_shared_runtime(mut self, runtime: Arc<cudf::Runtime>) -> Self {
         self.runtime = Some(runtime);
         self.memory_policy = MemoryResourcePolicy::ExternalRuntime;
+        self
+    }
+
+    /// Uses a caller-owned dedicated executor for synchronous GPU work.
+    pub fn with_gpu_execution_pool(mut self, pool: GpuExecutionPool) -> Self {
+        self.gpu_execution_pool = Some(pool);
         self
     }
 
@@ -1490,6 +1516,7 @@ impl ExecutionContextBuilder {
         let source_object_stores = Arc::new(SourceObjectStoreRegistry::with_profiles(self.source_storage_profiles)?);
         let query_id = self.query_id;
         let trace_id = self.trace_id;
+        let gpu_execution_pool = self.gpu_execution_pool;
         if let Some(runtime) = self.runtime {
             let service_stream_pool_size = self
                 .service_stream_pool_size
@@ -1501,11 +1528,14 @@ impl ExecutionContextBuilder {
                 },
                 None => ServiceStreamPool::for_device(runtime.device(), service_stream_pool_size)?,
             };
+            let gpu_execution_pool =
+                resolve_gpu_execution_pool(gpu_execution_pool, runtime.device(), service_stream_pool.pool_size())?;
             let grant_reservation_arena = create_grant_reservation_arena(runtime.as_ref(), self.memory_grant.as_ref())?;
             return Ok(ExecutionContext::from_parts(ExecutionContextParts {
                 query_id,
                 trace_id,
                 runtime,
+                gpu_execution_pool,
                 memory_policy: MemoryResourcePolicy::ExternalRuntime,
                 memory_control_policy: self.memory_control_policy,
                 memory_grant: self.memory_grant.clone(),
@@ -1575,12 +1605,15 @@ impl ExecutionContextBuilder {
             },
             None => ServiceStreamPool::for_device(runtime.device(), service_stream_pool_size)?,
         };
+        let gpu_execution_pool =
+            resolve_gpu_execution_pool(gpu_execution_pool, runtime.device(), service_stream_pool.pool_size())?;
         let runtime = Arc::new(runtime);
         let grant_reservation_arena = create_grant_reservation_arena(runtime.as_ref(), self.memory_grant.as_ref())?;
         Ok(ExecutionContext::from_parts(ExecutionContextParts {
             query_id,
             trace_id,
             runtime,
+            gpu_execution_pool,
             memory_policy,
             memory_control_policy: self.memory_control_policy,
             memory_grant: self.memory_grant,
@@ -1616,6 +1649,28 @@ impl ExecutionContextBuilder {
             query_service_admitted: false,
         }))
     }
+}
+
+fn resolve_gpu_execution_pool(
+    pool: Option<GpuExecutionPool>,
+    runtime_device: cudf::DeviceId,
+    default_worker_count: usize,
+) -> Result<GpuExecutionPool> {
+    let pool = match pool {
+        Some(pool) => pool,
+        None => GpuExecutionPool::shared_for_device(runtime_device.ordinal(), default_worker_count)?,
+    };
+    let snapshot = pool.snapshot();
+    if snapshot.device_ordinal != runtime_device.ordinal() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.gpu_execution_pool.device",
+            "GPU execution pool device must match the execution runtime device",
+        )
+        .with_fact("pool_device_ordinal", snapshot.device_ordinal)
+        .with_fact("runtime_device_ordinal", runtime_device.ordinal()));
+    }
+    Ok(pool)
 }
 
 fn validate_service_stream_pool_device(pool: &ServiceStreamPool, runtime_device: cudf::DeviceId) -> Result<()> {

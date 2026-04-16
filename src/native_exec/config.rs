@@ -15,12 +15,13 @@ use std::{
 use datafusion::execution::context::TaskContext;
 use nexus_query_engine::{
     AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, CudfInventory, DynamicFilterExecutionOptions,
-    ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache, GpuInventory,
-    GpuLocalParquetSourceCache, GraphMemoryCalibrationOverride, KeyedHashJoinStrategyOptions, MemoryControlPolicy,
-    MemoryResourcePolicy, NativePipelineExecutionMode, QueryGrantRequest, QueryHandle, QueryId,
-    QueryMemoryDomainPolicy, QueryPlacementHint, ServiceStreamPool, SourceChunkPlanningMode,
-    SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy, SourceStorageProfile,
-    StddevSampExecutionMode, TenantQueryContext, TraceId, device_budget_bytes_from_facts,
+    ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool,
+    GpuHashJoinBuildCache, GpuInventory, GpuLocalParquetSourceCache, GraphMemoryCalibrationOverride,
+    KeyedHashJoinStrategyOptions, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode,
+    QueryGrantRequest, QueryHandle, QueryId, QueryMemoryDomainPolicy, QueryPlacementHint, ServiceStreamPool,
+    SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy,
+    SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext, TraceId,
+    default_service_stream_pool_size_for_device, device_budget_bytes_from_facts,
 };
 
 use super::{
@@ -1185,7 +1186,90 @@ impl NativeCudfExecutionConfig {
                     )
                 });
         }
-        self.execution_context_with_standalone_owner(Some(Arc::as_ptr(&task_context) as usize))
+        if let Some(handle) = &self.query_service_handle {
+            let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
+            let admission_facts_recorded = self.query_admission_facts_recorded.clone();
+            return Arc::clone(handle)
+                .acquire_context_with_cancellation_async(self.cancellation.clone())
+                .await
+                .map(|tenant_context| {
+                    let record_admission_facts = admission_facts_recorded
+                        .as_ref()
+                        .is_some_and(|recorded| !recorded.swap(true, Ordering::AcqRel));
+                    NativeCudfExecutionContext::tenant_bound(tenant_context, admission_facts, record_admission_facts)
+                })
+                .map(|context| self.stamp_acquired_service_context(context))
+                .map_err(|error| {
+                    Error::from_native(
+                        "datafusion_nexus.native_exec.context",
+                        "failed to acquire query service native cudf execution context",
+                        self.stamp_native_error_correlation(error),
+                    )
+                });
+        }
+
+        let pool_config = self.clone();
+        let pool = tokio::task::spawn_blocking(move || pool_config.standalone_gpu_execution_pool()).await.map_err(
+            |error| {
+                let (code, reason) = if error.is_cancelled() {
+                    (crate::error::ErrorCode::Cancelled, "discovery_task_cancelled")
+                } else {
+                    (crate::error::ErrorCode::Internal, "discovery_task_panicked")
+                };
+                Error::new(
+                    code,
+                    "datafusion_nexus.native_exec.context_executor",
+                    "standalone GPU execution-pool discovery task failed",
+                )
+                .with_fact("reason", reason)
+                .with_source(error)
+            },
+        )??;
+        let config = self.clone();
+        let standalone_owner = Some(Arc::as_ptr(&task_context) as usize);
+        pool.run(GpuExecutionJobKind::ContextSetup, async move {
+            config.execution_context_with_standalone_owner(standalone_owner)
+        })
+        .await
+        .map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.native_exec.context_executor",
+                "failed to run native cudf context setup on the GPU execution pool",
+                self.stamp_native_error_correlation(error),
+            )
+        })?
+    }
+
+    fn standalone_gpu_execution_pool(&self) -> crate::error::Result<GpuExecutionPool> {
+        let device = match &self.runtime {
+            Some(runtime) => runtime.device(),
+            None => cudf::DeviceId::new(self.device_ordinal.unwrap_or(cudf::DeviceId::DEFAULT.ordinal())).map_err(
+                |error| {
+                    Error::from_native(
+                        "datafusion_nexus.native_exec.context_executor",
+                        "failed to resolve the standalone GPU execution-pool device",
+                        nexus_query_engine::QueryError::from_cudf(
+                            "datafusion_nexus.native_exec.context_executor",
+                            "failed to resolve the standalone GPU execution-pool device",
+                            error,
+                        ),
+                    )
+                },
+            )?,
+        };
+        let worker_count = self
+            .service_stream_pool
+            .as_ref()
+            .map(ServiceStreamPool::pool_size)
+            .or(self.service_stream_pool_size)
+            .unwrap_or_else(|| default_service_stream_pool_size_for_device(device));
+        GpuExecutionPool::shared_for_device(device.ordinal(), worker_count).map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.native_exec.context_executor",
+                "failed to resolve the standalone GPU execution pool",
+                self.stamp_native_error_correlation(error),
+            )
+        })
     }
 
     fn stamp_acquired_service_context(&self, mut context: NativeCudfExecutionContext) -> NativeCudfExecutionContext {

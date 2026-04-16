@@ -22,7 +22,7 @@ use super::{
     common::{
         NATIVE_CUDF_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, conservative_properties, mark_native_runtime_error,
         native_host_output_stream, native_plan_one_line, native_query_runtime_error, properties_with_equivalence,
-        write_native_plan_tree,
+        run_gpu_execution_task, write_native_plan_tree,
     },
     config::NativeCudfExecutionConfig,
     metrics::NativeCudfMetrics,
@@ -189,7 +189,6 @@ impl ExecutionPlan for NativeCudfExec {
             Arc::clone(&task_context),
             account_memory_pool,
             async move {
-                let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
                 // Context construction is the configuration/validation stage. Failures here happen
                 // before the native query starts.
                 let context_lease = execution_config
@@ -199,31 +198,40 @@ impl ExecutionPlan for NativeCudfExec {
                 if let Some(admission_facts) = context_lease.admission_facts() {
                     metrics.record_admission_facts(admission_facts);
                 }
-                // Once native execution starts there is no CPU fallback; errors are surfaced with stable
-                // facts by `native_query_runtime_error`.
-                let result = execute_query_plan(context_lease.context(), &plan).map_err(|error| {
-                    DataFusionError::from(native_query_runtime_error(
-                        "datafusion_nexus.native_exec.execute",
-                        "native cudf query execution failed",
-                        error,
-                    ))
-                })?;
-                let (output, query_metrics) = result.into_parts();
-                metrics.record_query_metrics(&query_metrics);
-                metrics.record_lakehouse_cache_fill_events(
-                    &context_lease.context().drain_lakehouse_cache_fill_event_snapshots(),
-                );
-                let QueryOutput::HostArrow(batch) = output else {
-                    return Err(DataFusionError::from(
-                        Error::new(
-                            ErrorCode::InvalidExecutionPlan,
-                            "datafusion_nexus.native_exec.execute",
-                            "native cudf execution produced a non-host result for DataFusion",
-                        )
-                        .with_fact("result_sink", "gpu_resident"),
-                    ));
-                };
-                Ok::<RecordBatch, DataFusionError>(batch.record_output(&metrics.baseline))
+                let gpu_execution_pool = context_lease.context().gpu_execution_pool();
+                run_gpu_execution_task(
+                    gpu_execution_pool,
+                    "datafusion_nexus.native_exec.gpu_execution_pool",
+                    async move {
+                        let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
+                        // Once native execution starts there is no CPU fallback; errors are surfaced with stable
+                        // facts by `native_query_runtime_error`.
+                        let result = execute_query_plan(context_lease.context(), &plan).map_err(|error| {
+                            DataFusionError::from(native_query_runtime_error(
+                                "datafusion_nexus.native_exec.execute",
+                                "native cudf query execution failed",
+                                error,
+                            ))
+                        })?;
+                        let (output, query_metrics) = result.into_parts();
+                        metrics.record_query_metrics(&query_metrics);
+                        metrics.record_lakehouse_cache_fill_events(
+                            &context_lease.context().drain_lakehouse_cache_fill_event_snapshots(),
+                        );
+                        let QueryOutput::HostArrow(batch) = output else {
+                            return Err(DataFusionError::from(
+                                Error::new(
+                                    ErrorCode::InvalidExecutionPlan,
+                                    "datafusion_nexus.native_exec.execute",
+                                    "native cudf execution produced a non-host result for DataFusion",
+                                )
+                                .with_fact("result_sink", "gpu_resident"),
+                            ));
+                        };
+                        Ok::<RecordBatch, DataFusionError>(batch.record_output(&metrics.baseline))
+                    },
+                )
+                .await
             },
         );
 
