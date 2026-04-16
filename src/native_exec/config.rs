@@ -17,9 +17,10 @@ use nexus_query_engine::{
     AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, CudfInventory, DynamicFilterExecutionOptions,
     ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache, GpuInventory,
     GpuLocalParquetSourceCache, GraphMemoryCalibrationOverride, KeyedHashJoinStrategyOptions, MemoryControlPolicy,
-    MemoryResourcePolicy, NativePipelineExecutionMode, QueryGrantRequest, QueryHandle, QueryId, QueryPlacementHint,
-    ServiceStreamPool, SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy,
-    SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext, TraceId, device_budget_bytes_from_facts,
+    MemoryResourcePolicy, NativePipelineExecutionMode, QueryGrantRequest, QueryHandle, QueryId,
+    QueryMemoryDomainPolicy, QueryPlacementHint, ServiceStreamPool, SourceChunkPlanningMode,
+    SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy, SourceStorageProfile,
+    StddevSampExecutionMode, TenantQueryContext, TraceId, device_budget_bytes_from_facts,
 };
 
 use super::{
@@ -69,6 +70,7 @@ pub struct NativeCudfExecutionConfig {
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
     query_service_local_parquet_source_cache_max_retained_bytes: Option<u64>,
     query_service_resident_graph_cache_max_retained_bytes: Option<u64>,
+    query_service_query_memory_domain: Option<QueryMemoryDomainPolicy>,
     source_storage_profiles: Vec<SourceStorageProfile>,
     query_service_handle: Option<Arc<QueryHandle>>,
     query_admission_facts_recorded: Option<Arc<AtomicBool>>,
@@ -296,6 +298,7 @@ impl NativeCudfExecutionConfig {
             local_parquet_source_cache: None,
             query_service_local_parquet_source_cache_max_retained_bytes: None,
             query_service_resident_graph_cache_max_retained_bytes: None,
+            query_service_query_memory_domain: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
             query_admission_facts_recorded: None,
@@ -410,6 +413,7 @@ impl NativeCudfExecutionConfig {
             local_parquet_source_cache: None,
             query_service_local_parquet_source_cache_max_retained_bytes: None,
             query_service_resident_graph_cache_max_retained_bytes: None,
+            query_service_query_memory_domain: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
             query_admission_facts_recorded: None,
@@ -708,6 +712,15 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Configure per-query allocator domains for backend/query-service execution.
+    ///
+    /// `None` preserves reservation arenas. The service validates incompatible
+    /// durable-cache combinations until cache-owned allocator routing lands.
+    pub fn with_query_service_query_memory_domain(mut self, policy: Option<QueryMemoryDomainPolicy>) -> Self {
+        self.query_service_query_memory_domain = policy;
+        self
+    }
+
     /// Source object-store profiles registered for native remote source
     /// fetches and local-cache miss fills.
     pub fn source_storage_profiles(&self) -> &[SourceStorageProfile] {
@@ -724,6 +737,11 @@ impl NativeCudfExecutionConfig {
     /// Per-device retained-byte cap for service-owned parked cuGraph caches.
     pub fn query_service_resident_graph_cache_max_retained_bytes(&self) -> Option<u64> {
         self.query_service_resident_graph_cache_max_retained_bytes
+    }
+
+    /// Per-query allocator-domain policy for backend/query-service execution.
+    pub fn query_service_query_memory_domain(&self) -> Option<QueryMemoryDomainPolicy> {
+        self.query_service_query_memory_domain
     }
 
     /// Register source object-store profiles used by native remote source

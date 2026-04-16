@@ -212,6 +212,13 @@ impl QueryAdmission {
                         .resident_graph_cache_max_retained_bytes
                         .map_or_else(|| "none".to_string(), |value| value.to_string())
                 );
+                let _ = writeln!(
+                    output,
+                    "# query_memory_domain_ceiling_multiplier={}",
+                    config
+                        .query_memory_domain
+                        .map_or_else(|| "none".to_string(), |policy| policy.ceiling_multiplier.to_string())
+                );
 
                 let snapshot = service
                     .admission_snapshot()

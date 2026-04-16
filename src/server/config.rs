@@ -3,8 +3,8 @@ use std::fmt;
 use std::{collections::BTreeMap, fs, net::SocketAddr, num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use nexus_query_engine::{
-    MemoryControlPolicy, NativePipelineExecutionMode, QueryPlacementPolicy, SlotGuarantee, SourceChunkPlanningMode,
-    SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
+    MemoryControlPolicy, NativePipelineExecutionMode, QueryMemoryDomainPolicy, QueryPlacementPolicy, SlotGuarantee,
+    SourceChunkPlanningMode, SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
 };
 use serde::Deserialize;
 
@@ -135,6 +135,10 @@ pub const NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV: &str =
 /// cache. Unset disables the service cache. Requires a `cugraph` build.
 pub const NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV: &str =
     "NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES";
+/// Enables per-query CUDA allocator domains and sets the immutable private-pool
+/// ceiling as a positive multiple of the initial admission grant.
+pub const NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV: &str =
+    "NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER";
 /// Native bounded-pipeline execution mode. Accepts `strict_bounded` or
 /// `adaptive`.
 pub const NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE";
@@ -277,6 +281,14 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
         scope: ServerNativeConfigScope::BoundedExecution,
         session_key: None,
         description: "Per-device retained-byte cap for the query-service parked cuGraph cache; requires the cugraph feature.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.query_memory_domain_ceiling_multiplier",
+        env_var: NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
+        value_type: "positive integer multiplier",
+        scope: ServerNativeConfigScope::BoundedExecution,
+        session_key: None,
+        description: "Enable per-query CUDA allocator domains with an immutable private-pool ceiling derived from the initial grant.",
     },
     NexusServerNativeConfigOption {
         toml_field: "native.pipeline_execution_mode",
@@ -483,6 +495,7 @@ struct ServerNativeFileConfig {
     host_fetch_acquire_timeout_secs: Option<u64>,
     source_cache_max_retained_bytes: Option<u64>,
     graph_cache_max_retained_bytes: Option<u64>,
+    query_memory_domain_ceiling_multiplier: Option<u64>,
     pipeline_execution_mode: Option<String>,
     statistical_aggregate_execution_mode: Option<String>,
 }
@@ -1306,6 +1319,12 @@ fn native_optimizer_config(
         "native.graph_cache_max_retained_bytes",
         if env_forces_unbounded { None } else { file.graph_cache_max_retained_bytes },
     )?;
+    let query_memory_domain_ceiling_multiplier = optional_native_u64(
+        values,
+        NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
+        "native.query_memory_domain_ceiling_multiplier",
+        if env_forces_unbounded { None } else { file.query_memory_domain_ceiling_multiplier },
+    )?;
     let native_pipeline_execution_mode = optional_native_string(
         values,
         NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
@@ -1337,6 +1356,7 @@ fn native_optimizer_config(
             || source_chunk_planning_mode.is_some()
             || source_cache_max_retained_bytes.is_some()
             || graph_cache_max_retained_bytes.is_some()
+            || query_memory_domain_ceiling_multiplier.is_some()
             || native_pipeline_execution_mode.is_some()
             || device_budget_fraction.is_some())
     {
@@ -1516,6 +1536,14 @@ fn native_optimizer_config(
             execution_config = execution_config
                 .with_query_service_resident_graph_cache_max_retained_bytes(Some(max_retained_bytes.value));
         }
+    }
+    if let Some(multiplier) = query_memory_domain_ceiling_multiplier {
+        if multiplier.value == 0 {
+            return Err(ServerError::invalid_config(multiplier.field, "must be greater than zero"));
+        }
+        execution_config = execution_config.with_query_service_query_memory_domain(Some(
+            QueryMemoryDomainPolicy::new().with_ceiling_multiplier(multiplier.value),
+        ));
     }
     if let Some(mode) = native_pipeline_execution_mode {
         execution_config = execution_config.with_native_pipeline_execution_mode(mode.value);

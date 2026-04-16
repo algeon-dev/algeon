@@ -5,8 +5,8 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use datafusion::execution::SessionStateBuilder;
 use nexus_query_engine::{
     DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, MemoryControlPolicy,
-    NativePipelineExecutionMode, NvidiaFsProbeStatus, QueryPlacementPolicy, QueryService, QueryServiceConfig,
-    QueryServiceTenantConfig, SlotGuarantee, TenantId,
+    NativePipelineExecutionMode, NvidiaFsProbeStatus, QueryMemoryDomainPolicy, QueryPlacementPolicy, QueryService,
+    QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
 };
 
 use crate::{
@@ -207,6 +207,7 @@ pub struct NexusGpuBackendBuilder {
     query_service_local_parquet_source_cache_max_retained_bytes: Option<u64>,
     #[cfg(feature = "cugraph")]
     query_service_resident_graph_cache_max_retained_bytes: Option<u64>,
+    query_service_query_memory_domain: Option<QueryMemoryDomainPolicy>,
     tenant_id: TenantId,
 }
 
@@ -379,6 +380,7 @@ impl Default for NexusGpuBackendBuilder {
             query_service_local_parquet_source_cache_max_retained_bytes: None,
             #[cfg(feature = "cugraph")]
             query_service_resident_graph_cache_max_retained_bytes: None,
+            query_service_query_memory_domain: None,
             tenant_id: TenantId::new(DEFAULT_BACKEND_TENANT_ID),
         }
     }
@@ -422,6 +424,16 @@ impl NexusGpuBackendBuilder {
         self
     }
 
+    /// Configure per-query allocator domains for backend-created query-service execution.
+    ///
+    /// `None` preserves reservation arenas. Durable source and graph caches
+    /// remain an explicit incompatible combination until their retained values
+    /// are moved to cache-owned allocator resources.
+    pub fn query_service_query_memory_domain(mut self, policy: Option<QueryMemoryDomainPolicy>) -> Self {
+        self.query_service_query_memory_domain = policy;
+        self
+    }
+
     pub fn tenant_id(mut self, tenant_id: impl Into<TenantId>) -> Self {
         self.tenant_id = tenant_id.into();
         self
@@ -449,6 +461,8 @@ impl NexusGpuBackendBuilder {
                     self.query_service_resident_graph_cache_max_retained_bytes,
                 );
         }
+        resolved.execution_config =
+            resolved.execution_config.with_query_service_query_memory_domain(self.query_service_query_memory_domain);
         let optimizer_config = CudfOptimizerConfig::new(self.fallback_policy)
             .with_native_execution_config(resolved.execution_config.clone());
         NexusGpuBackend::build_bounded(
@@ -607,7 +621,7 @@ fn backend_query_service_config(
             .query_service_local_parquet_source_cache_max_retained_bytes(),
         resident_graph_cache_max_retained_bytes: execution_config
             .query_service_resident_graph_cache_max_retained_bytes(),
-        query_memory_domain: None,
+        query_memory_domain: execution_config.query_service_query_memory_domain(),
         stream_pool_size: Some(backend_stream_pool_size(
             max_concurrent_queries,
             execution_config.source_scheduler_policy().max_source_reads_in_flight(),
@@ -1008,6 +1022,30 @@ mod tests {
                 .native_execution_config()
                 .query_service_local_parquet_source_cache_max_retained_bytes(),
             Some(2048)
+        );
+    }
+
+    #[test]
+    fn backend_builder_propagates_query_memory_domain_policy() {
+        let policy = QueryMemoryDomainPolicy::new().with_ceiling_multiplier(3);
+        let backend = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0, 1],
+                device_budget_bytes: 4096,
+                max_source_chunk_bytes: 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            })
+            .query_service_query_memory_domain(Some(policy))
+            .admission(NexusAdmissionPolicy::default().with_max_concurrent_queries(2))
+            .build_admission_only()
+            .unwrap();
+
+        assert_eq!(backend.query_service().config().query_memory_domain, Some(policy));
+        assert_eq!(
+            backend.optimizer_config().native_execution_config().query_service_query_memory_domain(),
+            Some(policy)
         );
     }
 

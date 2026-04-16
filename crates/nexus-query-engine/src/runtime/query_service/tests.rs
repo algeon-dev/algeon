@@ -1,3 +1,5 @@
+use std::sync::Barrier;
+
 use super::*;
 use crate::{
     graph_memory::GraphMemoryCalibrationOverride,
@@ -878,7 +880,7 @@ fn adaptive_query_memory_domain_follows_grant_growth() {
 }
 
 #[test]
-fn strict_query_service_context_keeps_reservation_arena_when_domain_policy_enabled() {
+fn strict_query_service_context_uses_hard_limited_query_domain_members() {
     let config = QueryServiceConfig {
         native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
         query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
@@ -900,8 +902,61 @@ fn strict_query_service_context_keeps_reservation_arena_when_domain_policy_enabl
         .execution_budget_token(cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("test_strict_policy"))
         .unwrap();
 
-    assert_eq!(token.enforcement(), cudf::ExecutionBudgetEnforcement::ReservationArenaMember);
-    assert_eq!(grant.hard_cap_bytes(), None);
+    assert_eq!(token.enforcement(), cudf::ExecutionBudgetEnforcement::QueryDomainMember);
+    assert_eq!(grant.hard_cap_bytes(), Some(16 * 1024 * 1024));
+}
+
+#[test]
+fn concurrent_runtimes_single_flight_query_memory_domain_creation() {
+    const CONTEXTS: usize = 8;
+    let config = QueryServiceConfig {
+        max_concurrent_queries: CONTEXTS,
+        native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
+        query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        stream_pool_size: Some(CONTEXTS * 3),
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_deployment(
+        config,
+        vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+    let handle = service.admit_query("tenant").unwrap();
+    let grant = handle.lifetime.memory_grant().unwrap();
+    let grant_key = grant.identity_key();
+    let device = service.inner.resources.as_ref().unwrap().devices.context_by_ordinal(handle.device_ordinal).unwrap();
+    let capacity_bytes = device.capacity_bytes();
+    let runtimes = (0..CONTEXTS)
+        .map(|_| device.stream_pool().acquire().unwrap())
+        .map(|lease| (lease.shared_runtime(), lease))
+        .collect::<Vec<_>>();
+    let barrier = Arc::new(Barrier::new(CONTEXTS));
+    let threads = runtimes
+        .into_iter()
+        .map(|(runtime, lease)| {
+            let grant = grant.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                let domain = super::super::create_grant_memory_domain(
+                    runtime.as_ref(),
+                    Some(&grant),
+                    Some(QueryMemoryDomainPolicy::default()),
+                    capacity_bytes,
+                )
+                .unwrap()
+                .unwrap();
+                drop(lease);
+                domain
+            })
+        })
+        .collect::<Vec<_>>();
+    let domains = threads.into_iter().map(|thread| thread.join().unwrap()).collect::<Vec<_>>();
+
+    assert!(domains.iter().all(|domain| Arc::ptr_eq(&domains[0], domain)));
+    assert!(!super::super::grant_memory_domain_creation_locks().lock().unwrap().contains_key(&grant_key));
 }
 
 #[test]

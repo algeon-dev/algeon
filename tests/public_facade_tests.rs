@@ -19,6 +19,9 @@ fn adapter_facade_modules_expose_intentional_contract_groups() {
     let _table_format = table_format_contracts::TableFormat::Iceberg;
     let _mode = engine_contracts::NativePipelineExecutionMode::StrictBounded;
     let _admission_config = admission_contracts::QueryServiceConfig::default();
+    let _admission_query_domain = admission_contracts::QueryMemoryDomainPolicy::new().with_ceiling_multiplier(3);
+    let _prelude_query_domain = prelude::QueryMemoryDomainPolicy::default();
+    let _root_query_domain = datafusion_nexus::QueryMemoryDomainPolicy::default();
     let _tenant = admission_contracts::QueryServiceTenantConfig::new("tenant", 1024);
     let _admission_error_code = admission_contracts::QueryErrorCode::ServiceOverloaded;
     let _coverage_sql_function: &str = coverage_contracts::NEXUS_EXPLAIN_COVERAGE_FUNCTION;
