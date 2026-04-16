@@ -14,7 +14,8 @@ pub(super) fn read_join_leaf_source_chunks_serial(
     min_retry_chunk_row_groups: usize,
     grow_source_to_observed: bool,
 ) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
-    let batches = join_leaf_source_chunk_batches(
+    let batches = cache_preserving_join_leaf_source_chunk_batches(
+        context,
         source,
         source_chunks,
         reader_dynamic_filters,

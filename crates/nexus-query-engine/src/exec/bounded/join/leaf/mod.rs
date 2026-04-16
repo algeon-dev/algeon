@@ -430,7 +430,7 @@ pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source<F>
 where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
-    if stream_has_multi_source_batches(&stream) {
+    if stream_has_multi_source_batches(context, &stream) {
         stream_join_leaf_source_chunks_serial(context, &stream, reservations, metrics, &mut consume)
     } else if context.source_scheduler_policy().enables_prefetch() && stream.chunks.len() > 1 {
         stream_join_leaf_source_chunks_with_scheduler(context, &stream, reservations, metrics, &mut consume)
@@ -503,8 +503,8 @@ fn read_join_leaf_source_stream_chunks(
         return Ok(vec![(empty.frame, empty.reservation)]);
     }
 
-    let grow_source_to_observed = stream.stages.is_empty();
-    let materialized_batches = materialized_source_chunk_batches(stream);
+    let grow_source_to_observed = retain_decoded_source_for_cache(context, stream);
+    let materialized_batches = cache_preserving_materialized_source_chunk_batches(context, stream);
     let mut chunks = if materialized_batches.iter().any(|batch| batch.chunk_count() > 1) {
         read_join_leaf_source_batches_serial(
             context,
@@ -584,6 +584,13 @@ fn read_join_leaf_source_stream_chunks(
         chunks = transformed;
     }
     Ok(chunks)
+}
+
+fn retain_decoded_source_for_cache(
+    context: &ExecutionContext,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+) -> bool {
+    context.local_parquet_source_cache().is_some() || stream.stages.is_empty()
 }
 
 fn empty_join_leaf_source_frame(
