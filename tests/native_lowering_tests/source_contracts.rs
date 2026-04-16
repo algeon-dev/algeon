@@ -557,7 +557,12 @@ fn full_file_byte_range_coalesces_to_native_source() {
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.file_count(), 1);
     assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
-    assert_eq!(source.files[0].stable_id, format!("local:{}:{}", path.display(), fs::metadata(&path).unwrap().len()));
+    let expected_stable_id_prefix = format!("local:{}:{}:mtime=", path.display(), fs::metadata(&path).unwrap().len());
+    assert!(
+        source.files[0].stable_id.starts_with(&expected_stable_id_prefix),
+        "stable id should include local path, size, and mtime: {}",
+        source.files[0].stable_id
+    );
     assert!(source.diagnostics.direct_device_read);
     assert_eq!(source.diagnostics.ranged_file_count, 1);
     assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "coalesced_full_files");
