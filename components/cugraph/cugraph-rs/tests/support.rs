@@ -8,7 +8,7 @@ mod bfs_graph;
 #[allow(unused_imports)]
 pub use bfs_graph::{
     BFS_GRAPH_DST_I32, BFS_GRAPH_SRC_I32, BFS_GRAPH_WEIGHT_F32, BFS_SOURCE_VERTEX_I32, bfs_graph_dataframe,
-    bfs_graph_table,
+    bfs_graph_table, write_bfs_graph_parquet,
 };
 use cugraph::{
     array::DeviceArray,

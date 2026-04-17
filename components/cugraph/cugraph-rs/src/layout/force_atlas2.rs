@@ -280,65 +280,6 @@ impl LayoutResult {
         }?;
         ScoreValues::from_raw(raw)
     }
-}
-
-impl LayoutResult {
-    /// Get the raw vertices view (for cudf interop).
-    pub(crate) fn vertices_raw(&self) -> crate::error::Result<crate::array::RawDeviceArrayView<'_>> {
-        // SAFETY: `self.raw` is a live layout result owned by this wrapper for
-        // the duration of the call.
-        let view_ptr = require_non_null(
-            unsafe { cugraph_layout_result_get_vertices(self.raw) },
-            "LayoutResult::vertices_raw",
-            "vertices",
-        )?;
-        // SAFETY: `view_ptr` belongs to the live layout result and was
-        // validated to be non-null above.
-        unsafe {
-            crate::array::RawDeviceArrayView::from_borrowed(
-                view_ptr,
-                Some(self.device),
-                "LayoutResult::vertices_raw",
-                "vertices",
-            )
-        }
-    }
-
-    /// Get the raw x-axis view (for cudf interop).
-    pub(crate) fn x_raw(&self) -> crate::error::Result<crate::array::RawDeviceArrayView<'_>> {
-        // SAFETY: `self.raw` is a live layout result owned by this wrapper for
-        // the duration of the call.
-        let view_ptr =
-            require_non_null(unsafe { cugraph_layout_result_get_x_axis(self.raw) }, "LayoutResult::x_raw", "x_axis")?;
-        // SAFETY: `view_ptr` belongs to the live layout result and was
-        // validated to be non-null above.
-        unsafe {
-            crate::array::RawDeviceArrayView::from_borrowed(
-                view_ptr,
-                Some(self.device),
-                "LayoutResult::x_raw",
-                "x_axis",
-            )
-        }
-    }
-
-    /// Get the raw y-axis view (for cudf interop).
-    pub(crate) fn y_raw(&self) -> crate::error::Result<crate::array::RawDeviceArrayView<'_>> {
-        // SAFETY: `self.raw` is a live layout result owned by this wrapper for
-        // the duration of the call.
-        let view_ptr =
-            require_non_null(unsafe { cugraph_layout_result_get_y_axis(self.raw) }, "LayoutResult::y_raw", "y_axis")?;
-        // SAFETY: `view_ptr` belongs to the live layout result and was
-        // validated to be non-null above.
-        unsafe {
-            crate::array::RawDeviceArrayView::from_borrowed(
-                view_ptr,
-                Some(self.device),
-                "LayoutResult::y_raw",
-                "y_axis",
-            )
-        }
-    }
 
     /// Convert this layout result to a cudf DataFrame.
     ///
@@ -358,7 +299,7 @@ impl LayoutResult {
 impl Drop for LayoutResult {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to(self.device, "LayoutResult::drop").ok();
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "LayoutResult::drop").ok();
             // SAFETY: `self.raw` is owned by this wrapper and has not been
             // freed yet.
             unsafe { cugraph_layout_result_free(self.raw) };

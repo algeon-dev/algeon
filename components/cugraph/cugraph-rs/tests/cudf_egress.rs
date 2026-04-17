@@ -46,7 +46,11 @@ fn layout_result_to_dataframe() {
         ..Default::default()
     };
 
-    let df = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2").to_dataframe(&runtime).expect("to_dataframe");
+    let result = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2");
+    let expected_vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertex copy");
+    let expected_x = result.x().expect("x").to_vec_f32(&handle).expect("x copy");
+    let expected_y = result.y().expect("y").to_vec_f32(&handle).expect("y copy");
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
 
     assert_eq!(df.num_columns(), 3);
     assert_eq!(df.column_names()[0], "vertex");
@@ -54,8 +58,12 @@ fn layout_result_to_dataframe() {
     assert_eq!(df.column_names()[2], "y");
     assert_eq!(df.num_rows(), 3);
 
+    let vertices: Vec<i32> = df.series("vertex").expect("vertex column").to_vec_strict().expect("vertex to_vec");
     let x_vals: Vec<f32> = df.series("x").expect("x column").to_vec_strict().expect("x to_vec");
     let y_vals: Vec<f32> = df.series("y").expect("y column").to_vec_strict().expect("y to_vec");
+    assert_eq!(vertices, expected_vertices);
+    assert_eq!(x_vals, expected_x);
+    assert_eq!(y_vals, expected_y);
     for (i, (&x, &y)) in x_vals.iter().zip(y_vals.iter()).enumerate() {
         assert!(x.is_finite(), "x[{i}] = {x} should be finite");
         assert!(y.is_finite(), "y[{i}] = {y} should be finite");
@@ -76,7 +84,16 @@ fn bfs_result_to_dataframe_with_predecessors() {
     let sources = DeviceArray::from_slice(&handle, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
     let params = BfsParams::default().with_predecessors();
     let sources_view = sources.view().expect("sources_view");
-    let df = graph.bfs(&handle, &sources_view, &params).expect("bfs").to_dataframe(&runtime).expect("to_dataframe");
+    let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
+    let expected_vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertex copy");
+    let expected_distances = result.distances().expect("distances").to_vec_i32(&handle).expect("distance copy");
+    let expected_predecessors = result
+        .predecessors()
+        .expect("predecessors")
+        .expect("predecessors should exist")
+        .to_vec_i32(&handle)
+        .expect("predecessor copy");
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
 
     assert_eq!(df.num_columns(), 3, "should have 3 columns with predecessors");
     assert_eq!(df.column_names()[0], "vertex");
@@ -85,6 +102,11 @@ fn bfs_result_to_dataframe_with_predecessors() {
 
     let vertices: Vec<i32> = df.series("vertex").expect("vertex column").to_vec_strict().expect("vertex to_vec");
     let distances: Vec<i32> = df.series("distance").expect("distance column").to_vec_strict().expect("distance to_vec");
+    let predecessors: Vec<i32> =
+        df.series("predecessor").expect("predecessor column").to_vec_strict().expect("predecessor to_vec");
+    assert_eq!(vertices, expected_vertices);
+    assert_eq!(distances, expected_distances);
+    assert_eq!(predecessors, expected_predecessors);
     let dist_map: HashMap<i32, i32> = vertices.into_iter().zip(distances).collect();
     assert_eq!(dist_map[&0], 0, "source vertex should have distance 0");
 }

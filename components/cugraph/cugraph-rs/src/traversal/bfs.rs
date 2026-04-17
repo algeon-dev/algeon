@@ -139,27 +139,32 @@ impl std::fmt::Debug for BfsResult {
     }
 }
 
+unsafe fn normalize_optional_raw_view<'a>(
+    view_ptr: *mut cugraph_sys::cugraph_type_erased_device_array_view_t,
+    device: i32,
+    operation: &'static str,
+    pointer_name: &'static str,
+) -> Result<Option<RawDeviceArrayView<'a>>> {
+    if view_ptr.is_null() {
+        return Ok(None);
+    }
+
+    // SAFETY: the caller guarantees that `view_ptr` belongs to a live cuGraph
+    // result for the requested lifetime.
+    let raw = unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(device), operation, pointer_name)? };
+    if raw.is_empty() { Ok(None) } else { Ok(Some(raw)) }
+}
+
 impl BfsResult {
-    fn normalized_predecessors_raw(&self) -> Option<RawDeviceArrayView<'_>> {
+    fn normalized_predecessors_raw(&self) -> Result<Option<RawDeviceArrayView<'_>>> {
         // SAFETY: `self.raw` is a live paths result owned by this wrapper for
         // the duration of the call.
         let view_ptr = unsafe { cugraph_paths_result_get_predecessors(self.raw) };
-        if view_ptr.is_null() {
-            return None;
-        }
-
         // SAFETY: `view_ptr` comes from the live cuGraph result object owned by
-        // `self`; null has already been handled above.
-        let raw = unsafe {
-            RawDeviceArrayView::from_borrowed(
-                view_ptr,
-                Some(self.device),
-                "BfsResult::normalized_predecessors_raw",
-                "predecessors",
-            )
+        // `self` for the duration of `&self`.
+        unsafe {
+            normalize_optional_raw_view(view_ptr, self.device, "BfsResult::normalized_predecessors_raw", "predecessors")
         }
-        .expect("predecessor view pointer was checked for null");
-        if raw.is_empty() { None } else { Some(raw) }
     }
 
     /// Get the vertex ids as a runtime-typed device array view.
@@ -167,7 +172,19 @@ impl BfsResult {
     /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
     /// graph's vertex type.
     pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
-        VertexIds::from_raw(self.vertices_raw()?)
+        // SAFETY: `self.raw` is a live paths result owned by this wrapper for
+        // the duration of the call.
+        let view_ptr = require_non_null(
+            unsafe { cugraph_paths_result_get_vertices(self.raw) },
+            "BfsResult::vertex_ids",
+            "vertices",
+        )?;
+        // SAFETY: `view_ptr` belongs to the live result object and was
+        // validated to be non-null above.
+        let raw = unsafe {
+            RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "BfsResult::vertex_ids", "vertices")
+        }?;
+        VertexIds::from_raw(raw)
     }
 
     /// Get the BFS distances as a runtime-typed device array view.
@@ -178,7 +195,19 @@ impl BfsResult {
     /// [`Distances::F64`] (float weighted distances) from the same
     /// `cugraph_paths_result_t` C API type.
     pub fn distances(&self) -> Result<Distances<'_>> {
-        Distances::from_raw(self.distances_raw()?)
+        // SAFETY: `self.raw` is a live paths result owned by this wrapper for
+        // the duration of the call.
+        let view_ptr = require_non_null(
+            unsafe { cugraph_paths_result_get_distances(self.raw) },
+            "BfsResult::distances",
+            "distances",
+        )?;
+        // SAFETY: `view_ptr` belongs to the live result object and was
+        // validated to be non-null above.
+        let raw = unsafe {
+            RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "BfsResult::distances", "distances")
+        }?;
+        Distances::from_raw(raw)
     }
 
     /// Get the predecessor vertices as a runtime-typed device array view.
@@ -189,45 +218,10 @@ impl BfsResult {
     /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
     /// graph's vertex type.
     pub fn predecessors(&self) -> Result<Option<VertexIds<'_>>> {
-        match self.normalized_predecessors_raw() {
+        match self.normalized_predecessors_raw()? {
             Some(raw) => VertexIds::from_raw(raw).map(Some),
             None => Ok(None),
         }
-    }
-
-    /// Get the raw vertices view.
-    pub(crate) fn vertices_raw(&self) -> Result<RawDeviceArrayView<'_>> {
-        // SAFETY: `self.raw` is a live paths result owned by this wrapper for
-        // the duration of the call.
-        let view_ptr = require_non_null(
-            unsafe { cugraph_paths_result_get_vertices(self.raw) },
-            "BfsResult::vertices_raw",
-            "vertices",
-        )?;
-        // SAFETY: `view_ptr` belongs to the live result object and was
-        // validated to be non-null above.
-        unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "BfsResult::vertices_raw", "vertices") }
-    }
-
-    /// Get the raw distances view.
-    pub(crate) fn distances_raw(&self) -> Result<RawDeviceArrayView<'_>> {
-        // SAFETY: `self.raw` is a live paths result owned by this wrapper for
-        // the duration of the call.
-        let view_ptr = require_non_null(
-            unsafe { cugraph_paths_result_get_distances(self.raw) },
-            "BfsResult::distances_raw",
-            "distances",
-        )?;
-        // SAFETY: `view_ptr` belongs to the live result object and was
-        // validated to be non-null above.
-        unsafe {
-            RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "BfsResult::distances_raw", "distances")
-        }
-    }
-
-    /// Get the raw predecessors view.
-    pub(crate) fn predecessors_raw(&self) -> Option<RawDeviceArrayView<'_>> {
-        self.normalized_predecessors_raw()
     }
 
     /// Convert this BFS result to a cudf DataFrame.
@@ -251,7 +245,7 @@ impl BfsResult {
 impl Drop for BfsResult {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to(self.device, "BfsResult::drop").ok();
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "BfsResult::drop").ok();
             // SAFETY: `self.raw` is owned by this wrapper and has not been
             // freed yet.
             unsafe { cugraph_paths_result_free(self.raw) };
@@ -373,5 +367,63 @@ mod tests {
         let params = BfsParams::default();
         let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
         assert!(result.predecessors().expect("predecessors").is_none(), "predecessors should be omitted");
+    }
+
+    #[test]
+    fn test_normalize_optional_raw_view_treats_null_as_none() {
+        // SAFETY: this validates the null-path contract and does not
+        // dereference the pointer.
+        let normalized = unsafe {
+            normalize_optional_raw_view(
+                std::ptr::null_mut(),
+                0,
+                "test_normalize_optional_raw_view_treats_null_as_none",
+                "predecessors",
+            )
+        }
+        .expect("null predecessor pointer should not error");
+        assert!(normalized.is_none());
+    }
+
+    #[test]
+    fn test_normalize_optional_raw_view_treats_empty_view_as_none() {
+        let handle = ResourceHandle::new().expect("handle");
+        let empty = DeviceArray::<i32>::new(&handle, 0).expect("empty");
+        let view_ptr = empty.view().expect("view").raw_view().as_ptr();
+
+        // SAFETY: `view_ptr` comes from a live empty device array view and
+        // remains valid while `empty` is alive.
+        let normalized = unsafe {
+            normalize_optional_raw_view(
+                view_ptr,
+                handle.device(),
+                "test_normalize_optional_raw_view_treats_empty_view_as_none",
+                "predecessors",
+            )
+        }
+        .expect("empty predecessor view should not error");
+        assert!(normalized.is_none());
+    }
+
+    #[test]
+    fn test_normalize_optional_raw_view_keeps_non_empty_view() {
+        let handle = ResourceHandle::new().expect("handle");
+        let preds = DeviceArray::from_slice(&handle, &[1i32, 2, 3]).expect("preds");
+        let view_ptr = preds.view().expect("view").raw_view().as_ptr();
+
+        // SAFETY: `view_ptr` comes from a live non-empty device array view and
+        // remains valid while `preds` is alive.
+        let normalized = unsafe {
+            normalize_optional_raw_view(
+                view_ptr,
+                handle.device(),
+                "test_normalize_optional_raw_view_keeps_non_empty_view",
+                "predecessors",
+            )
+        }
+        .expect("non-empty predecessor view should not error");
+
+        let raw = normalized.expect("non-empty view should be preserved");
+        assert_eq!(raw.len(), 3);
     }
 }

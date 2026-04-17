@@ -334,15 +334,6 @@ fn named_series_from_column_result(
     named_series_from_column(column?, name, operation)
 }
 
-fn named_series_from_raw_view(
-    view: &RawDeviceArrayView<'_>,
-    name: &str,
-    runtime: &Runtime,
-    operation: &'static str,
-) -> Result<cudf::Series> {
-    named_series_from_column_result(view.to_cudf_column(runtime), name, operation)
-}
-
 fn dataframe_from_named_series<const N: usize>(
     series: [cudf::Series; N],
     operation: &'static str,
@@ -461,32 +452,23 @@ pub(crate) fn louvain_result_to_dataframe(result: &LouvainResult, runtime: &Runt
 
 pub(crate) fn bfs_result_to_dataframe(result: &BfsResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "bfs_result_to_dataframe";
-    let vertices = result.vertices_raw()?;
-    let distances = result.distances_raw()?;
-    let expected_len = vertices.len();
+    let vertex_series = result.vertex_ids()?.to_series("vertex", runtime)?;
+    let distance_series = result.distances()?.to_series("distance", runtime)?;
 
-    let vertex_series = named_series_from_raw_view(&vertices, "vertex", runtime, operation)?;
-    let distance_series = named_series_from_raw_view(&distances, "distance", runtime, operation)?;
-
-    match result.predecessors_raw() {
-        Some(preds) if preds.len() == expected_len => {
-            let predecessor_series = named_series_from_raw_view(&preds, "predecessor", runtime, operation)?;
+    match result.predecessors()? {
+        Some(predecessors) => {
+            let predecessor_series = predecessors.to_series("predecessor", runtime)?;
             dataframe_from_named_series([vertex_series, distance_series, predecessor_series], operation)
         },
-        Some(preds) => Err(Error::new(ErrorKind::Unexpected, operation).with_message(format!(
-            "predecessor length {} does not match vertex length {}",
-            preds.len(),
-            expected_len
-        ))),
         None => dataframe_from_named_series([vertex_series, distance_series], operation),
     }
 }
 
 pub(crate) fn layout_result_to_dataframe(result: &LayoutResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "layout_result_to_dataframe";
-    let vertex_series = named_series_from_raw_view(&result.vertices_raw()?, "vertex", runtime, operation)?;
-    let x_series = named_series_from_raw_view(&result.x_raw()?, "x", runtime, operation)?;
-    let y_series = named_series_from_raw_view(&result.y_raw()?, "y", runtime, operation)?;
+    let vertex_series = result.vertex_ids()?.to_series("vertex", runtime)?;
+    let x_series = result.x()?.to_series("x", runtime)?;
+    let y_series = result.y()?.to_series("y", runtime)?;
 
     dataframe_from_named_series([vertex_series, x_series, y_series], operation)
 }
