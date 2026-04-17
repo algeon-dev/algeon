@@ -72,7 +72,7 @@ impl RngState {
 impl Drop for RngState {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to(self.device, "RngState::drop").ok();
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "RngState::drop").ok();
             // SAFETY: `self.raw` is owned by this wrapper and has not been
             // freed yet.
             unsafe { cugraph_rng_state_free(self.raw) };

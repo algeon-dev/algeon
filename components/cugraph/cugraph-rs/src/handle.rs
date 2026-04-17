@@ -47,6 +47,15 @@ impl fmt::Debug for ResourceHandle {
 }
 
 impl ResourceHandle {
+    fn current_device_ordinal(operation: &'static str) -> Result<i32> {
+        let device = DeviceId::current().map_err(|error| {
+            Error::new(ErrorKind::Unexpected, operation)
+                .with_message(format!("failed to query current CUDA device: {}", error))
+                .set_source(error)
+        })?;
+        Ok(device.ordinal() as i32)
+    }
+
     /// Create a new resource handle with default single-GPU cuGraph resources.
     ///
     /// Internal helper for source-local tests and implementation plumbing.
@@ -58,12 +67,7 @@ impl ResourceHandle {
     /// Create a new resource handle on the calling thread's current CUDA device.
     #[allow(dead_code)]
     pub(crate) fn for_current_device() -> Result<Self> {
-        let device = DeviceId::current().map_err(|error| {
-            Error::new(ErrorKind::Unexpected, "ResourceHandle::for_current_device")
-                .with_message(format!("failed to query current CUDA device: {}", error))
-                .set_source(error)
-        })?;
-        Self::new_on_device(device.ordinal() as i32)
+        Self::new_on_device(Self::current_device_ordinal("ResourceHandle::for_current_device")?)
     }
 
     /// Create a new resource handle on the same CUDA device as a cudf runtime.
@@ -111,33 +115,25 @@ impl ResourceHandle {
     /// per-thread `cugraph_resource_handle_t*` has already been created
     /// externally (for example by an MTMG or MPI-aware native layer). The
     /// returned wrapper does **not** own the handle — it will not be freed on
-    /// drop.
+    /// drop. The wrapped handle is assumed to belong to the calling thread's
+    /// current CUDA device at the moment this function is called.
     ///
     /// # Safety
     ///
     /// The caller must ensure:
     /// - `raw` is a valid, non-null pointer to a `cugraph_resource_handle_t`
     ///   created by cuGraph-compatible native code
-    /// - `device` is the CUDA device ordinal that this handle is bound to
+    /// - the calling thread's current CUDA device is the device that `raw` is
+    ///   bound to
     /// - the handle remains valid for the lifetime of this `ResourceHandle`
     /// - the handle is not freed externally while this wrapper exists
     /// - the calling thread obeys the external runtime's thread-affinity rules
-    pub unsafe fn from_raw_resource_handle(raw: *mut cugraph_resource_handle_t, device: i32) -> Result<Self> {
+    pub unsafe fn from_raw_resource_handle(raw: *mut cugraph_resource_handle_t) -> Result<Self> {
         if raw.is_null() {
             return Err(Error::new(ErrorKind::InvalidInput, "ResourceHandle::from_raw_resource_handle")
                 .with_message("resource handle pointer must not be null"));
         }
-
-        if device < 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "ResourceHandle::from_raw_resource_handle")
-                .with_message(format!("device ordinal must be >= 0, got {}", device)));
-        }
-
-        DeviceId::new(device as usize).map_err(|error| {
-            Error::new(ErrorKind::InvalidInput, "ResourceHandle::from_raw_resource_handle")
-                .with_message(format!("invalid CUDA device ordinal {}: {}", device, error))
-                .set_source(error)
-        })?;
+        let device = Self::current_device_ordinal("ResourceHandle::from_raw_resource_handle")?;
         Ok(Self { raw, device, owned: false, comm_metadata: CommMetadata::ExternalHandle, _nosend_nosync: PhantomData })
     }
 
@@ -147,6 +143,8 @@ impl ResourceHandle {
     /// allocate a fresh `cugraph_resource_handle_t*` for Rust and transfer
     /// destruction responsibility to Rust. The returned wrapper owns the
     /// handle and will free it on drop using `cugraph_free_resource_handle`.
+    /// The adopted handle is assumed to belong to the calling thread's
+    /// current CUDA device at the moment this function is called.
     ///
     /// # Safety
     ///
@@ -154,27 +152,18 @@ impl ResourceHandle {
     /// - `raw` is a valid, non-null pointer to a `cugraph_resource_handle_t`
     /// - ownership of `raw` is transferred exactly once to this wrapper
     /// - no other owner will free `raw` after this call succeeds
-    /// - `device` is the CUDA device ordinal that this handle is bound to
+    /// - the calling thread's current CUDA device is the device that `raw` is
+    ///   bound to
     /// - the calling thread obeys the external runtime's thread-affinity rules
     ///
     /// For a borrowed/non-owning wrapper, use
     /// [`from_raw_resource_handle`](Self::from_raw_resource_handle) instead.
-    pub unsafe fn adopt_raw_resource_handle(raw: *mut cugraph_resource_handle_t, device: i32) -> Result<Self> {
+    pub unsafe fn adopt_raw_resource_handle(raw: *mut cugraph_resource_handle_t) -> Result<Self> {
         if raw.is_null() {
             return Err(Error::new(ErrorKind::InvalidInput, "ResourceHandle::adopt_raw_resource_handle")
                 .with_message("resource handle pointer must not be null"));
         }
-
-        if device < 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "ResourceHandle::adopt_raw_resource_handle")
-                .with_message(format!("device ordinal must be >= 0, got {}", device)));
-        }
-
-        DeviceId::new(device as usize).map_err(|error| {
-            Error::new(ErrorKind::InvalidInput, "ResourceHandle::adopt_raw_resource_handle")
-                .with_message(format!("invalid CUDA device ordinal {}: {}", device, error))
-                .set_source(error)
-        })?;
+        let device = Self::current_device_ordinal("ResourceHandle::adopt_raw_resource_handle")?;
         Ok(Self { raw, device, owned: true, comm_metadata: CommMetadata::ExternalHandle, _nosend_nosync: PhantomData })
     }
 
@@ -188,12 +177,12 @@ impl ResourceHandle {
     /// Same safety requirements as
     /// [`from_raw_resource_handle`](Self::from_raw_resource_handle).
     #[deprecated(
-        note = "use ResourceHandle::from_raw_resource_handle(raw, device); this API wraps a cugraph_resource_handle_t*, not a raft::handle_t*"
+        note = "use ResourceHandle::from_raw_resource_handle(raw); this API wraps a cugraph_resource_handle_t*, not a raft::handle_t*"
     )]
-    pub unsafe fn from_raft_handle(raw: *mut cugraph_resource_handle_t, device: i32) -> Result<Self> {
+    pub unsafe fn from_raft_handle(raw: *mut cugraph_resource_handle_t) -> Result<Self> {
         // SAFETY: this deprecated alias forwards the exact same contract to
         // `from_raw_resource_handle`.
-        unsafe { Self::from_raw_resource_handle(raw, device) }
+        unsafe { Self::from_raw_resource_handle(raw) }
     }
 
     /// Get the raw C pointer. For internal use by other modules.
@@ -268,7 +257,7 @@ impl ResourceHandle {
 impl Drop for ResourceHandle {
     fn drop(&mut self) {
         if self.owned && !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to(self.device, "ResourceHandle::drop").ok();
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "ResourceHandle::drop").ok();
             // SAFETY: owned handles are freed exactly once here.
             unsafe { cugraph_free_resource_handle(self.raw) };
         }
@@ -306,48 +295,42 @@ mod tests {
     #[test]
     fn test_from_raw_resource_handle_rejects_null() {
         // SAFETY: this exercises input validation on a null pointer only.
-        let err =
-            unsafe { ResourceHandle::from_raw_resource_handle(ptr::null_mut(), 0) }.expect_err("should reject null");
+        let err = unsafe { ResourceHandle::from_raw_resource_handle(ptr::null_mut()) }.expect_err("should reject null");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "ResourceHandle::from_raw_resource_handle");
     }
 
     #[test]
-    fn test_from_raw_resource_handle_rejects_invalid_device() {
+    fn test_from_raw_resource_handle_uses_current_device() {
         let owned = ResourceHandle::new().expect("owned handle");
         let raw = owned.as_ptr();
+        let current = DeviceId::current().expect("current device");
 
         // SAFETY: `raw` comes from a live handle; the test only validates the
-        // device argument path.
-        let err =
-            unsafe { ResourceHandle::from_raw_resource_handle(raw, -1) }.expect_err("should reject invalid device");
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
-        assert_eq!(err.operation(), "ResourceHandle::from_raw_resource_handle");
+        // new current-device based constructor path.
+        let wrapped = unsafe { ResourceHandle::from_raw_resource_handle(raw) }.expect("from_raw_resource_handle");
+        assert_eq!(wrapped.device(), current.ordinal() as i32);
     }
 
     #[test]
     fn test_adopt_raw_resource_handle_rejects_null() {
         // SAFETY: this exercises input validation on a null pointer only.
         let err =
-            unsafe { ResourceHandle::adopt_raw_resource_handle(ptr::null_mut(), 0) }.expect_err("should reject null");
+            unsafe { ResourceHandle::adopt_raw_resource_handle(ptr::null_mut()) }.expect_err("should reject null");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "ResourceHandle::adopt_raw_resource_handle");
     }
 
     #[test]
-    fn test_adopt_raw_resource_handle_rejects_invalid_device() {
+    fn test_adopt_raw_resource_handle_uses_current_device() {
         // SAFETY: cuGraph returns a newly allocated raw handle or null.
         let raw = unsafe { cugraph_create_resource_handle(ptr::null_mut()) };
         assert!(!raw.is_null(), "native handle allocation should succeed");
+        let current = DeviceId::current().expect("current device");
 
-        // SAFETY: `raw` is live; the test only validates the device argument path.
-        let err =
-            unsafe { ResourceHandle::adopt_raw_resource_handle(raw, -1) }.expect_err("should reject invalid device");
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
-        assert_eq!(err.operation(), "ResourceHandle::adopt_raw_resource_handle");
-
-        // SAFETY: `raw` was allocated above and has not been freed yet.
-        unsafe { cugraph_free_resource_handle(raw) };
+        // SAFETY: ownership of `raw` is intentionally transferred to the wrapper.
+        let adopted = unsafe { ResourceHandle::adopt_raw_resource_handle(raw) }.expect("adopt_raw_resource_handle");
+        assert_eq!(adopted.device(), current.ordinal() as i32);
     }
 
     #[test]
@@ -360,8 +343,7 @@ mod tests {
 
         {
             // SAFETY: `raw` is valid for the lifetime of `owned`.
-            let borrowed = unsafe { ResourceHandle::from_raw_resource_handle(raw, owned.device()) }
-                .expect("from_raw_resource_handle");
+            let borrowed = unsafe { ResourceHandle::from_raw_resource_handle(raw) }.expect("from_raw_resource_handle");
             assert!(!borrowed.as_ptr().is_null());
             // `borrowed` drops here without freeing `raw`.
         }
@@ -377,7 +359,7 @@ mod tests {
         assert!(!raw.is_null(), "native handle allocation should succeed");
 
         // SAFETY: ownership of `raw` is intentionally transferred to the wrapper.
-        let adopted = unsafe { ResourceHandle::adopt_raw_resource_handle(raw, 0) }.expect("adopt_raw_resource_handle");
+        let adopted = unsafe { ResourceHandle::adopt_raw_resource_handle(raw) }.expect("adopt_raw_resource_handle");
         assert_eq!(adopted.as_ptr(), raw);
         assert!(adopted.owned, "adopted handle should transfer destruction to Rust");
     }

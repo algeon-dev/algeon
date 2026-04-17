@@ -88,7 +88,7 @@ impl HierarchicalClusteringResult {
 impl Drop for HierarchicalClusteringResult {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to(self.device, "HierarchicalClusteringResult::drop").ok();
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "HierarchicalClusteringResult::drop").ok();
             // SAFETY: `self.raw` is owned by this wrapper and has not been
             // freed yet.
             unsafe { cugraph_hierarchical_clustering_result_free(self.raw) };

@@ -94,7 +94,7 @@ impl CentralityResult {
 impl Drop for CentralityResult {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to(self.device, "CentralityResult::drop").ok();
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "CentralityResult::drop").ok();
             // SAFETY: `self.raw` is owned by this wrapper and has not been
             // freed yet.
             unsafe { cugraph_centrality_result_free(self.raw) };
