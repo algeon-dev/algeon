@@ -390,9 +390,13 @@ keep working; the new keys are additive:
 | Env | TOML | Backend field |
 | --- | --- | --- |
 | `NEXUS_SERVER_MAX_CONCURRENT_QUERIES` (alias: `NEXUS_SERVER_MAX_IN_FLIGHT`) | `admission.max_concurrent_queries` | `max_concurrent_queries` (default 2) |
+| `NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE` | `admission.workload_profile` | `balanced` (default) or `small_query` |
 | `NEXUS_SERVER_ADMISSION_GRANT_MIN` | `admission.grant_min` | `grant.min` — fraction (`0.125`) or bytes |
 | `NEXUS_SERVER_ADMISSION_GRANT_WANT` | `admission.grant_want` | `grant.want`; unset means policy-derived |
 | `NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE` | `admission.slot_guarantee` | `guaranteed_minimum` \| `optimistic` |
+| `NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY` | `admission.placement_policy` | `least_loaded` \| `best_fit` \| `pinned` |
+| `NEXUS_SERVER_ADMISSION_PINNED_DEVICE` | `admission.pinned_device_ordinal` | Required companion ordinal for `pinned` placement |
+| `NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE` | `admission.max_queries_per_device` | Optional per-device slot cap |
 | `NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS` | `admission.wait_timeout_ms` | Query-service admission wait timeout; default 60 s |
 | `NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS` | `fallback.max_concurrent_statements` | Host-side CPU fallback statement limit; default 2, `0` disables |
 | `NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS` | `fallback.wait_timeout_ms` | CPU fallback semaphore wait timeout; default 30 s, `0` waits indefinitely |
@@ -420,7 +424,9 @@ reports-not-printed-plans convention:
   `backend.query_service().admission_snapshot()` (queue depths, active
   queries, next tenant), `memory_governor_reports()` (per-grant rows,
   capacity, available bytes — a pool-shaped read surface), and
-  `device_memory_failure_reports()` (failure-callback counters, trim retries,
+  `device_admission_snapshots()` (process-wide active slots by ordinal),
+  `device_telemetry_snapshots()` (best-effort live CUDA/NVML memory and
+  utilization), and `device_memory_failure_reports()` (failure-callback counters, trim retries,
   last failed allocation bytes, and the latest observed async-pool
   reserved/used counters). The underlying cudf-rs manager also exposes
   async-pool reserved/used counters and an explicit trim hook for operator
@@ -458,3 +464,6 @@ from log archaeology.
   or refunds bytes. The native reservation arena mirrors the current grant and
   physically rejects over-limit allocations; keeping those two aligned is the
   invariant every elastic feature is measured against.
+- **Caches are evictable, not hidden grants.** Decoded-source and resident-graph
+  bytes are charged to the same per-device governor and can be reclaimed under
+  pressure. See [Cache Design and Use](./cache.mdx).

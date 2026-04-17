@@ -1,0 +1,90 @@
+---
+sidebar_position: 2
+slug: /reference/native-sql-support
+description: Native cuDF support boundaries for relational SQL operators, expressions, aggregates, windows, joins, and Parquet/Iceberg sources.
+---
+
+# Native SQL Support
+
+Nexus lowers supported DataFusion physical-plan fragments to cuDF. Support is
+capability-first: every operator, expression, type, source, and bounded-memory
+contract must be admitted for the exact physical plan. This page is a practical
+map, not a substitute for validating a production query with
+[`nexus_explain_coverage`](../integration/gpu-coverage-validation.mdx).
+
+## Relational plan shapes
+
+| Area | Native forms |
+| --- | --- |
+| Sources | Local Parquet and resolved Iceberg Parquet data files; projected columns, row-group selection, partition columns, reader predicates, scan limits, and position deletes when their contracts are supported. |
+| Row operations | Filters, projections, stable or unstable sorts, `LIMIT`/`OFFSET`, and schema-compatible `UNION ALL`. |
+| Aggregation | Global and grouped aggregation, admitted grouping sets, aggregate filters, and partial/final state when the state is explicitly modeled. |
+| Windows | `rank`, `row_number`, `lag`, `lead`, whole-partition aggregate windows, and cumulative `sum`/`min`/`max` over `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. `rank`, `lag`, and `lead` require `ORDER BY`; `row_number` does not. |
+| Joins | Equi joins and admitted residual/keyless forms for inner, outer, semi, anti, mark, and cross joins. Build side, output projection, key types, residual expressions, and bounded reservation evidence can narrow an otherwise supported join kind. |
+| Graph | cuGraph table functions are a separate GPU execution domain. See the [cuGraph SQL API](../cugraph/overview.mdx) for the function-level contract. |
+
+An unsupported CPU-readable fragment remains on DataFusion under
+`GpuPreferred`. An unsupported scan from the native GPU Iceberg providers is a
+planning error because those providers do not carry a CPU Arrow reader. The
+`iceberg-cpu` feature and server `cpu_fallback` profile instead install
+`IcebergStaticTableProvider` for CPU-readable Iceberg scans. Runtime errors
+after native execution starts do not fall back.
+
+## Expressions and scalar functions
+
+Native filter and projection expressions include columns and literals,
+arithmetic and comparisons, boolean logic, null tests, supported casts,
+case-sensitive `LIKE`, literal `IN` lists, `CASE`, and string-to-integer
+`TRY_CAST`.
+
+The supported DataFusion scalar-function names are:
+
+| Family | Functions and important limits |
+| --- | --- |
+| Strings | `substring`/`substr`, `lower`, `upper`, `trim`/`btrim`, `ltrim`, `rtrim`, `contains`, `starts_with`, `ends_with`, `character_length`/`length`, `regexp_replace`, and `concat`. A substring start and optional length must be literal integers with start >= 1 and length >= 0. Pattern, trim, and replacement arguments that define the other operations must be literals. |
+| Numeric | `abs`, `sqrt`, and `round`; `round` accepts an optional literal integer scale. |
+| Nulls | `nullif` for compatible native types. |
+| Temporal | `date_part`/`extract` for admitted date/timestamp fields, `date_trunc` for day through microsecond units on timezone-free timestamps, and `to_timestamp_seconds` for supported integer inputs. |
+
+Exact dtype rules still apply. In particular, timezone-aware timestamps and
+UTF-8 list columns are carry/projection types rather than general scalar or key
+types. See [Data Type Support](./data-type-support.md).
+
+## Aggregates
+
+Native aggregate functions are `sum`, `min`, `max`, `count`, `avg`, `median`,
+`stddev`/`stddev_samp`, `stddev_pop`,
+`var`/`variance`/`var_samp`/`var_sample`, and
+`var_pop`/`var_population`. `COUNT(DISTINCT expression)` is supported; other
+distinct aggregates are not. Ordered aggregate arguments are not supported.
+
+Aggregate mode matters. AVG uses explicit sum/count state for partial/final
+execution. Median is single-stage, and plans that mix median with floating
+statistical aggregates are rejected. Statistical execution also follows the
+configured exact-host or GPU-tolerant policy.
+
+## Source boundaries
+
+Parquet is the native data-file format. Iceberg planning may use REST or Glue
+catalogs, but data execution still resolves to Parquet source facts. Position
+deletes are applied natively; equality deletes and delete vectors are rejected.
+Schema evolution, field-id remapping, source credentials, and remote read
+capability are validated before execution.
+
+For ad-hoc SQL, validate against the same catalog and server configuration that
+will execute the query:
+
+```sql
+SELECT overall, cudf_native_coverage, fallback_reason_count, coverage_json
+FROM nexus_explain_coverage('
+  SELECT l_returnflag, sum(l_quantity)
+  FROM lineitem
+  WHERE l_shipdate >= DATE ''1996-01-01''
+  GROUP BY l_returnflag
+  ORDER BY l_returnflag
+');
+```
+
+`no_cpu_in_planned_path` is the strongest plan-time result. Read
+`runtime_caveats` too: admission, data-dependent memory, and device-side graph
+validation are execution-time contracts.

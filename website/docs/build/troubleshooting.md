@@ -122,11 +122,14 @@ submodule.
 `nvcc` rejects host compilers outside the range its CUDA toolkit supports —
 either an older toolkit against a newer gcc (e.g. an `rsqrt` `noexcept`
 mismatch on trivial `.cu` files), or a gcc newer than the toolkit allows.
-RAPIDS 26.06 pins **gcc 14**, which is in range across CUDA 12.2–13.2
-(CUDA 13.0 supports up to gcc 15). Confirm `CC`/`CXX`/`CUDAHOSTCXX` point at
-`gcc-14`/`g++-14` ([Environment](./environment.md)) and that
-`/usr/local/cuda` resolves to a supported toolkit
-(`readlink -f /usr/local/cuda`) before building the stack.
+RAPIDS 26.06 pins **gcc 14**, but it must be paired with a toolkit that
+supports it. The recommended pairing is
+CUDA 13.x plus gcc 14 (CUDA 13.0 supports up to gcc 15); CUDA 12.2 supports gcc
+only through 12.2. Confirm `CC`/`CXX`/`CUDAHOSTCXX` select a compiler accepted
+by the exact toolkit and that `/usr/local/cuda` resolves to that toolkit
+(`readlink -f /usr/local/cuda`) before building the stack. The standard
+[Environment](./environment.md) gcc-14 settings assume the recommended CUDA
+13.x pairing.
 
 ## Parquet fixture tests are flaky in parallel
 

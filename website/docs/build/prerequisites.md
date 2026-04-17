@@ -87,10 +87,14 @@ There is no need to change the system default compiler.
 ### CUDA and host-compiler compatibility
 
 `nvcc` rejects host compilers newer than the CUDA toolkit supports. CUDA 13.0
-added support up to gcc 15, so gcc 14 is comfortably in range across CUDA
-12.2–13.2. If several CUDA toolkits are installed, confirm
-which one `/usr/local/cuda` resolves to before building — a stale symlink to an
-older toolkit is a classic source of inscrutable `nvcc` errors.
+added support up to gcc 15, so the recommended website build pairing is CUDA
+13.x with gcc 14. The supported CUDA range does not imply that one host
+compiler works across every point release: CUDA 12.2, for example, supports
+gcc only through 12.2. If using CUDA 12.x, choose a host compiler from that
+toolkit's NVIDIA compatibility table and point `CC`, `CXX`, and `CUDAHOSTCXX`
+at it. If several CUDA toolkits are installed, confirm which one
+`/usr/local/cuda` resolves to before building — a stale symlink to an older
+toolkit is a classic source of inscrutable `nvcc` errors.
 
 ### CMake ≥ 3.30.4
 
@@ -114,8 +118,8 @@ cmake --version   # ≥ 3.30.4
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
-rustup toolchain install nightly   # rustfmt.toml uses unstable options
-cargo install cargo-nextest        # canonical test runner
+rustup toolchain install nightly      # rustfmt.toml uses unstable options
+cargo install --locked cargo-nextest  # canonical test runner
 ```
 
 The Rust crates declare an MSRV in `Cargo.toml`; any current stable satisfies
