@@ -97,6 +97,56 @@ fn server_config_small_query_admission_profile_sets_serving_defaults() {
 }
 
 #[test]
+fn server_config_accepts_small_query_when_one_minimum_grant_fits_device_capacity() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, "small_query".to_string()),
+        (NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, (2_u64 << 30).to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, (1_u64 << 30).to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+    ]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.max_in_flight, 8);
+    assert_eq!(config.admission_policy.grant().min, MemoryShare::Bytes(1 << 30));
+    assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::Optimistic);
+}
+
+#[test]
+fn server_config_rejects_profile_minimum_above_device_capacity_with_profile_facts() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, "small_query".to_string()),
+        (NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, (512_u64 << 20).to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, (256_u64 << 20).to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+    ]);
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert_eq!(error.fact_value("config_field"), Some(NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV));
+    assert_eq!(error.fact_value("reason"), Some("admission_grant_min_above_device_capacity"));
+    assert_eq!(error.fact_value("grant_min_bytes"), Some("1073741824"));
+    assert_eq!(error.fact_value("device_capacity_bytes"), Some("536870912"));
+}
+
+#[test]
+fn server_config_rejects_explicit_minimum_above_capacity_with_minimum_field() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, "small_query".to_string()),
+        (NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, (768_u64 << 20).to_string()),
+        (NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, (512_u64 << 20).to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, (256_u64 << 20).to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+    ]);
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert_eq!(error.fact_value("config_field"), Some(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV));
+    assert_eq!(error.fact_value("reason"), Some("admission_grant_min_above_device_capacity"));
+    assert_eq!(error.fact_value("grant_min_bytes"), Some("805306368"));
+}
+
+#[test]
 fn server_config_small_query_admission_profile_counts_only_pinned_device() {
     let env = BTreeMap::from([
         (NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, "small_query".to_string()),
@@ -399,6 +449,26 @@ slot_guarantee = "optimistic"
 }
 
 #[test]
+fn server_config_toml_profile_capacity_error_names_toml_profile_field() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[admission]
+workload_profile = "small_query"
+
+[native]
+device_budget_bytes = 536870912
+max_source_chunk_bytes = 268435456
+max_row_groups_per_chunk = 1
+"#,
+    );
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert_eq!(error.fact_value("config_field"), Some("admission.workload_profile"));
+    assert_eq!(error.fact_value("reason"), Some("admission_grant_min_above_device_capacity"));
+}
+
+#[test]
 fn server_config_env_overrides_toml_admission_policy() {
     let (_dir, mut env) = env_with_server_toml(
         r#"
@@ -490,6 +560,8 @@ fn server_config_rejects_pinned_placement_without_device() {
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV));
+    assert_eq!(error.fact_value("reason"), Some("pinned_placement_missing_device_ordinal"));
+    assert_eq!(error.fact_value("required_config_field"), Some(NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV));
 }
 
 #[test]
@@ -499,6 +571,33 @@ fn server_config_rejects_pinned_device_without_pinned_policy() {
 
     assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV));
     assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV));
+    assert_eq!(error.fact_value("reason"), Some("pinned_device_requires_pinned_placement"));
+    assert_eq!(error.fact_value("conflicting_config_field"), Some(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV));
+}
+
+#[test]
+fn server_config_toml_pinned_errors_name_toml_companion_fields() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[admission]
+placement_policy = "pinned"
+"#,
+    );
+    let missing_device = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    assert_eq!(missing_device.fact_value("config_field"), Some("admission.placement_policy"));
+    assert_eq!(missing_device.fact_value("required_config_field"), Some("admission.pinned_device_ordinal"));
+    assert!(!missing_device.to_string().contains(NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV));
+
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[admission]
+pinned_device_ordinal = 0
+"#,
+    );
+    let missing_policy = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    assert_eq!(missing_policy.fact_value("config_field"), Some("admission.pinned_device_ordinal"));
+    assert_eq!(missing_policy.fact_value("conflicting_config_field"), Some("admission.placement_policy"));
+    assert!(!missing_policy.to_string().contains(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV));
 }
 
 #[test]
@@ -919,6 +1018,62 @@ fn server_config_accepts_explicit_unbounded_native_profile() {
         config.native_optimizer_config.native_execution_config().memory_control_policy(),
         MemoryControlPolicy::Unbounded
     );
+}
+
+#[test]
+fn server_config_accepts_neutral_admission_defaults_with_unbounded_native_profile() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
+        (NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, "balanced".to_string()),
+        (NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, "least_loaded".to_string()),
+    ]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.max_in_flight, 1);
+    assert_eq!(config.admission_policy.placement_policy(), QueryPlacementPolicy::LeastLoaded);
+    assert_eq!(
+        config.native_optimizer_config.native_execution_config().memory_control_policy(),
+        MemoryControlPolicy::Unbounded
+    );
+}
+
+#[test]
+fn server_config_accepts_neutral_toml_admission_defaults_with_unbounded_native_profile() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[native]
+memory_policy = "unbounded"
+
+[admission]
+workload_profile = "balanced"
+placement_policy = "least_loaded"
+"#,
+    );
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.max_in_flight, 1);
+    assert_eq!(config.admission_policy.placement_policy(), QueryPlacementPolicy::LeastLoaded);
+}
+
+#[test]
+fn server_config_neutral_env_admission_values_shadow_non_neutral_toml_values() {
+    let (_dir, mut env) = env_with_server_toml(
+        r#"
+[admission]
+workload_profile = "small_query"
+placement_policy = "best_fit"
+"#,
+    );
+    env.insert(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string());
+    env.insert(NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, "balanced".to_string());
+    env.insert(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, "least_loaded".to_string());
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.max_in_flight, 1);
+    assert_eq!(config.admission_policy.placement_policy(), QueryPlacementPolicy::LeastLoaded);
 }
 
 #[test]

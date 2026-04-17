@@ -49,11 +49,12 @@ pub use bounded_join::{
     BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
 };
 pub use gpu::{
-    BestFitPlacement, CudfInventory, DeviceContext, DeviceFacts, DeviceMemoryFailureReport, DeviceRegistry,
-    DeviceRegistryConfig, EvictableMemoryObserver, EvictableMemoryPressure, GpuComms, GpuInventory, GrantRequest,
-    LeastLoadedPlacement, MemoryGovernor, MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant,
-    PinnedDevicePlacement, Placement, PlacementPolicy, PlacementRequest, Priority, QueryPlacementHint,
-    QueryPlacementPolicy, QueryQos, SingleDeviceComms, device_budget_bytes_from_facts,
+    BestFitPlacement, CudfInventory, CudfNvmlTelemetry, DeviceContext, DeviceFacts, DeviceMemoryFailureReport,
+    DeviceRegistry, DeviceRegistryConfig, DeviceTelemetrySnapshot, DeviceTelemetryStatus, EvictableMemoryObserver,
+    EvictableMemoryPressure, GpuComms, GpuInventory, GpuTelemetry, GrantRequest, LeastLoadedPlacement, MemoryGovernor,
+    MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant, PinnedDevicePlacement, Placement, PlacementPolicy,
+    PlacementRequest, Priority, QueryPlacementHint, QueryPlacementPolicy, QueryQos, SingleDeviceComms,
+    device_budget_bytes_from_facts,
 };
 pub use gpu_execution_pool::{
     GpuExecutionJobKind, GpuExecutionPool, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot,
@@ -72,8 +73,9 @@ pub use policy::{
 };
 pub use query_service::{
     QueryAdmissionRequest, QueryAdmissionWaiter, QueryGrantBand, QueryGrantRequest, QueryHandle,
-    QueryMemoryDomainPolicy, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig,
-    SlotGuarantee, TenantId, TenantQueryContext, TenantQueueDepth,
+    QueryMemoryDomainPolicy, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
+    QueryServiceDeviceAdmissionSnapshot, QueryServiceTenantConfig, SlotGuarantee, TenantId, TenantQueryContext,
+    TenantQueueDepth,
 };
 pub use reservation::{MemoryReservationRequest, RetryFacts};
 pub(crate) use service_stream::SourceReadStreamLease;

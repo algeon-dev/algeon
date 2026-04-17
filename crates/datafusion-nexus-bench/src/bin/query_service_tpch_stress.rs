@@ -21,7 +21,8 @@ use datafusion_nexus::{
 use datafusion_nexus_bench::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
     TpchQuery, default_tpch_parquet_root, describe_tpch_dataset, discover_tpch_table_layout,
-    register_tpch_table_layout, tpch_report_session_config, tpch_tuned_cpu_session_config,
+    register_tpch_table_layout, stress_harness::validate_synchronized_admission_queue, tpch_report_session_config,
+    tpch_tuned_cpu_session_config,
 };
 use nexus_query_engine::{
     NativePipelineExecutionMode, QueryError, QueryMemoryDomainPolicy, QueryService, QueryServiceConfig,
@@ -266,6 +267,14 @@ impl StressConfig {
         }
         validate_query_ids(&self.bulk_queries)?;
         validate_query_ids(&self.interactive_queries)?;
+        if self.profile.is_none() {
+            validate_synchronized_admission_queue(
+                MAX_ADMISSION_QUEUE_LEN_ENV,
+                self.max_admission_queue_len,
+                self.synchronized_request_count(),
+            )
+            .map_err(plan_error)?;
+        }
         if let Some(profile) = &self.profile {
             validate_nonzero(PROFILE_LANES_ENV, profile.lanes)?;
             validate_nonzero(PROFILE_WARMUP_ITERATIONS_ENV, profile.warmup_iterations)?;
@@ -286,6 +295,12 @@ impl StressConfig {
             validate_query_ids(std::slice::from_ref(&profile.query_id))?;
         }
         Ok(())
+    }
+
+    fn synchronized_request_count(&self) -> usize {
+        self.bulk_queries.len().saturating_mul(self.bulk_iterations).saturating_add(
+            self.interactive_queries.len().saturating_mul(self.interactive_iterations).saturating_mul(2),
+        )
     }
 
     fn service_config(&self) -> QueryServiceConfig {
@@ -1771,6 +1786,34 @@ fn plan_error(message: impl Into<String>) -> DataFusionError {
 mod tests {
     use super::*;
 
+    fn queue_test_config() -> StressConfig {
+        StressConfig {
+            dataset_root: PathBuf::new(),
+            bulk_queries: vec!["q01".to_string()],
+            interactive_queries: vec!["q06".to_string()],
+            bulk_iterations: 1,
+            interactive_iterations: 1,
+            device_capacity_bytes: 100,
+            tenant_min_grant_bytes: 25,
+            tenant_want_grant_bytes: 50,
+            slot_guarantee: SlotGuarantee::GuaranteedMinimum,
+            max_concurrent_queries: 2,
+            max_admission_queue_len: 2,
+            admission_wait_timeout: Duration::from_secs(1),
+            max_source_chunk_bytes: 1,
+            max_row_groups_per_chunk: 1,
+            source_cache_max_retained_bytes: None,
+            native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
+            query_memory_domain_ceiling_multiplier: None,
+            warmup_rounds: 0,
+            stream_idle_timeout: Duration::from_secs(1),
+            cuda_profiler_capture: false,
+            profile: None,
+            run_overload_probe: false,
+            device_ordinals: vec![0],
+        }
+    }
+
     #[test]
     fn percentile_uses_ceil_index_for_tail_latency() {
         assert_eq!(percentile(&[], 0.95), 0.0);
@@ -1810,6 +1853,31 @@ mod tests {
             error: StructuredFailure::default(),
         };
         assert_eq!(row.to_tsv_line().split('\t').count(), TSV_COLUMNS.len());
+    }
+
+    #[test]
+    fn stress_config_rejects_queue_smaller_than_synchronized_wave() {
+        let config = queue_test_config();
+
+        let error = config.validate().unwrap_err();
+
+        assert!(error.to_string().contains(MAX_ADMISSION_QUEUE_LEN_ENV));
+        assert!(error.to_string().contains("synchronized request count (3)"));
+    }
+
+    #[test]
+    fn profile_mode_does_not_apply_barrier_queue_preflight() {
+        let mut config = queue_test_config();
+        config.max_admission_queue_len = 1;
+        config.profile = Some(StressProfileConfig {
+            query_id: "q06".to_string(),
+            lanes: 1,
+            warmup_iterations: 1,
+            measured_iterations: 1,
+            evidence_path: PathBuf::from("profile.tsv"),
+        });
+
+        config.validate().unwrap();
     }
 
     #[test]

@@ -15,15 +15,16 @@ use tokio::{sync::Notify, time};
 #[cfg(feature = "cugraph")]
 use super::gpu::placement::rank_cache_affine_candidates;
 use super::{
-    CudfInventory, DeploymentIoCapability, DeviceMemoryFailureReport, ExecutionBoundaryPolicy, ExecutionCancellation,
-    ExecutionContext, ExecutionContextParts, GdsConcurrencyGate, GpuExecutionJobKind, GpuExecutionPool,
-    GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutionQueryTracker, GpuInventory, GrantRequest,
-    HostFetchBudget, LakehouseCacheFillEventSink, MemoryControlPolicy, MemoryGovernor, MemoryGovernorReport,
-    MemoryGrant, MemoryResourcePolicy, PlacementPolicy, PlacementRequest, Priority, QueryPlacementHint,
-    QueryPlacementPolicy, QueryQos, SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig,
-    SourceObjectStoreRegistry, SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes,
-    default_lakehouse_cache_fill_runtime, default_service_stream_pool_size_for_device, default_source_fetch_runtime,
-    gpu::DeviceActiveQuerySlot, validate_service_stream_pool_device,
+    CudfInventory, CudfNvmlTelemetry, DeploymentIoCapability, DeviceMemoryFailureReport, DeviceTelemetrySnapshot,
+    ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, ExecutionContextParts, GdsConcurrencyGate,
+    GpuExecutionJobKind, GpuExecutionPool, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot,
+    GpuExecutionQueryTracker, GpuInventory, GpuTelemetry, GrantRequest, HostFetchBudget, LakehouseCacheFillEventSink,
+    MemoryControlPolicy, MemoryGovernor, MemoryGovernorReport, MemoryGrant, MemoryResourcePolicy, PlacementPolicy,
+    PlacementRequest, Priority, QueryPlacementHint, QueryPlacementPolicy, QueryQos, SourceChunkPlanningMode,
+    SourceFetchConcurrencyGate, SourceFetchConfig, SourceObjectStoreRegistry, SourceSchedulerPolicy,
+    SourceStorageProfile, default_host_fetch_budget_bytes, default_lakehouse_cache_fill_runtime,
+    default_service_stream_pool_size_for_device, default_source_fetch_runtime, gpu::DeviceActiveQuerySlot,
+    validate_service_stream_pool_device,
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -75,6 +76,15 @@ pub struct QueryServiceAdmissionSnapshot {
     pub queued_by_tenant: Vec<TenantQueueDepth>,
     /// Tenant that will be considered first on the next admission decision.
     pub next_tenant_id: Option<TenantId>,
+}
+
+/// Process-wide active-query slots currently held on one service device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryServiceDeviceAdmissionSnapshot {
+    /// CUDA device ordinal.
+    pub device_ordinal: usize,
+    /// Slots held across every `QueryService` in this process.
+    pub process_active_query_slots: usize,
 }
 
 /// Per-tenant queue depth in a [`QueryServiceAdmissionSnapshot`].
@@ -2134,6 +2144,37 @@ impl QueryService {
             return Ok(vec![self.inner.fallback_memory_governor.report()?]);
         };
         resources.devices.contexts().map(|context| context.memory_governor().report()).collect()
+    }
+
+    /// Returns process-wide active-query slot counts for each service device.
+    pub fn device_admission_snapshots(&self) -> Vec<QueryServiceDeviceAdmissionSnapshot> {
+        let Some(resources) = &self.inner.resources else {
+            return Vec::new();
+        };
+        resources
+            .devices
+            .contexts()
+            .map(|context| QueryServiceDeviceAdmissionSnapshot {
+                device_ordinal: context.device().ordinal(),
+                process_active_query_slots: context.active_queries(),
+            })
+            .collect()
+    }
+
+    /// Samples current CUDA and optional NVML telemetry for each service device.
+    ///
+    /// Telemetry is observability-only and is never consulted by admission or
+    /// placement. A failed substrate is represented by status fields in each
+    /// snapshot rather than failing diagnostics as a whole.
+    pub fn device_telemetry_snapshots(&self) -> Vec<DeviceTelemetrySnapshot> {
+        self.device_telemetry_snapshots_with(&CudfNvmlTelemetry)
+    }
+
+    fn device_telemetry_snapshots_with(&self, telemetry: &dyn GpuTelemetry) -> Vec<DeviceTelemetrySnapshot> {
+        let Some(resources) = &self.inner.resources else {
+            return Vec::new();
+        };
+        super::gpu::inventory::device_telemetry_snapshots_for_ordinals(telemetry, resources.devices.device_ordinals())
     }
 
     /// Returns one device memory allocation-failure report for each installed service device.

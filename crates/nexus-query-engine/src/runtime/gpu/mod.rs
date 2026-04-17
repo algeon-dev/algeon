@@ -17,7 +17,10 @@ pub use governor::{
     EvictableMemoryObserver, EvictableMemoryPressure, GrantRequest, MemoryGovernor, MemoryGovernorGrantRow,
     MemoryGovernorReport, MemoryGrant,
 };
-pub use inventory::{CudfInventory, DeviceFacts, GpuInventory, device_budget_bytes_from_facts};
+pub use inventory::{
+    CudfInventory, CudfNvmlTelemetry, DeviceFacts, DeviceTelemetrySnapshot, DeviceTelemetryStatus, GpuInventory,
+    GpuTelemetry, device_budget_bytes_from_facts,
+};
 pub use memory_failure::{DeviceMemoryFailureReport, DeviceMemoryFailureTracker};
 pub use placement::{
     BestFitPlacement, LeastLoadedPlacement, PinnedDevicePlacement, PlacementPolicy, PlacementRequest,

@@ -8,6 +8,9 @@
 pub mod tpch_benchmark;
 pub mod workload;
 
+#[doc(hidden)]
+pub mod stress_harness;
+
 #[cfg(feature = "iceberg")]
 pub mod iceberg_smoke;
 

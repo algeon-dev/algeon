@@ -30,8 +30,8 @@
 #   - patchelf (recommended; rewrites RUNPATHs so the container is hermetic)
 #
 # Usage:
-#   bash docker/build.sh                       # server,iceberg,cugraph (full)
-#   FEATURES=server,iceberg bash docker/build.sh   # lean cudf-only (~1/3 size)
+#   bash docker/build.sh                       # server,iceberg,cugraph,nvml (full)
+#   FEATURES=server,iceberg,nvml bash docker/build.sh # lean cudf-only (~1/3 size)
 #   NO_STRIP=1 bash docker/build.sh            # keep debug symbols
 #   SKIP_CARGO_BUILD=1 bash docker/build.sh    # reuse existing target/release
 #
@@ -48,7 +48,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$SCRIPT_DIR/dist"
 TARGET_ROOT="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
-FEATURES="${FEATURES:-server,iceberg,cugraph}"
+FEATURES="${FEATURES:-server,iceberg,cugraph,nvml}"
 
 # Sibling forked-lib locations (override via env if your layout differs).
 CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR:-$REPO_ROOT/../cudf-rs/cudf-install}"

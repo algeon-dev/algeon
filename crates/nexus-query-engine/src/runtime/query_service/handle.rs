@@ -86,27 +86,9 @@ impl QueryHandleLifetime {
         if self.released.swap(true, Ordering::AcqRel) {
             return;
         }
-        let root_context = match self.root_context.lock() {
-            Ok(mut context) => context.take(),
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to take poisoned query service root context");
-                None
-            },
-        };
-        let memory_grant = match self.memory_grant.lock() {
-            Ok(mut memory_grant) => memory_grant.take(),
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to take poisoned query service memory grant");
-                None
-            },
-        };
-        let device_slot = match self.device_slot.lock() {
-            Ok(mut device_slot) => device_slot.take(),
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to take poisoned query service device slot");
-                None
-            },
-        };
+        let root_context = take_owned_for_cleanup(&self.root_context, "root context");
+        let memory_grant = take_owned_for_cleanup(&self.memory_grant, "memory grant");
+        let device_slot = take_owned_for_cleanup(&self.device_slot, "device slot");
         let release = QueryHandleRelease {
             service: Arc::clone(&self.service),
             query_id: self.query_id,
@@ -139,6 +121,16 @@ impl QueryHandleLifetime {
         .with_fact("tenant_id", self.tenant_id.as_str())
         .with_fact("query_id", self.query_id)
         .with_fact("reason", "query_handle_released")
+    }
+}
+
+fn take_owned_for_cleanup<T>(owned: &Mutex<Option<T>>, resource: &'static str) -> Option<T> {
+    match owned.lock() {
+        Ok(mut owned) => owned.take(),
+        Err(error) => {
+            eprintln!("[nexus-query-engine] warning: recovering poisoned query service {resource}");
+            error.into_inner().take()
+        },
     }
 }
 
@@ -463,5 +455,28 @@ impl TenantQueryContext {
     /// Native execution context for this tenant query.
     pub fn context(&self) -> &ExecutionContext {
         &self.context
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        sync::{Arc, Mutex},
+    };
+
+    use super::take_owned_for_cleanup;
+
+    #[test]
+    fn poisoned_owned_resource_is_recovered_for_ordered_cleanup() {
+        let owned = Arc::new(Mutex::new(Some(7_u8)));
+        let poison = Arc::clone(&owned);
+        let _ = catch_unwind(AssertUnwindSafe(move || {
+            let _guard = poison.lock().unwrap();
+            panic!("poison test resource");
+        }));
+
+        assert_eq!(take_owned_for_cleanup(owned.as_ref(), "test resource"), Some(7));
+        assert_eq!(take_owned_for_cleanup(owned.as_ref(), "test resource"), None);
     }
 }

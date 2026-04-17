@@ -154,6 +154,34 @@ impl QueryAdmission {
                 "failed to read query service memory governor report"
             ),
         }
+        for snapshot in service.device_admission_snapshots() {
+            tracing::info!(
+                query_id = query_id.unwrap_or(""),
+                event,
+                device_ordinal = snapshot.device_ordinal,
+                process_active_query_slots = snapshot.process_active_query_slots,
+                "query service device admission snapshot"
+            );
+        }
+        for snapshot in service.device_telemetry_snapshots() {
+            tracing::info!(
+                query_id = query_id.unwrap_or(""),
+                event,
+                sampled_at_unix_ms = snapshot.sampled_at_unix_ms,
+                device_ordinal = snapshot.device_ordinal,
+                cuda_status = snapshot.cuda_status.as_str(),
+                cuda_total_bytes = ?snapshot.cuda_total_bytes,
+                cuda_free_bytes = ?snapshot.cuda_free_bytes,
+                nvml_status = snapshot.nvml_status.as_str(),
+                nvml_total_bytes = ?snapshot.nvml_total_bytes,
+                nvml_reserved_bytes = ?snapshot.nvml_reserved_bytes,
+                nvml_used_bytes = ?snapshot.nvml_used_bytes,
+                nvml_free_bytes = ?snapshot.nvml_free_bytes,
+                gpu_utilization_pct = ?snapshot.gpu_utilization_pct,
+                memory_utilization_pct = ?snapshot.memory_utilization_pct,
+                "query service device telemetry snapshot"
+            );
+        }
         for report in service.device_memory_failure_reports() {
             tracing::info!(
                 query_id = query_id.unwrap_or(""),
@@ -325,6 +353,35 @@ impl QueryAdmission {
                         report.peak_active_query_jobs,
                     );
                 }
+
+                output.push_str("\n[device_admission_slots]\n");
+                output.push_str("device_ordinal\tprocess_active_query_slots\n");
+                for snapshot in service.device_admission_snapshots() {
+                    let _ = writeln!(output, "{}\t{}", snapshot.device_ordinal, snapshot.process_active_query_slots);
+                }
+
+                output.push_str("\n[device_telemetry]\n");
+                output.push_str(
+                    "sampled_at_unix_ms\tdevice_ordinal\tcuda_status\tcuda_total_bytes\tcuda_free_bytes\tnvml_status\tnvml_total_bytes\tnvml_reserved_bytes\tnvml_used_bytes\tnvml_free_bytes\tgpu_utilization_pct\tmemory_utilization_pct\n",
+                );
+                for snapshot in service.device_telemetry_snapshots() {
+                    let _ = writeln!(
+                        output,
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        snapshot.sampled_at_unix_ms,
+                        snapshot.device_ordinal,
+                        snapshot.cuda_status.as_str(),
+                        optional_payload_value(snapshot.cuda_total_bytes),
+                        optional_payload_value(snapshot.cuda_free_bytes),
+                        snapshot.nvml_status.as_str(),
+                        optional_payload_value(snapshot.nvml_total_bytes),
+                        optional_payload_value(snapshot.nvml_reserved_bytes),
+                        optional_payload_value(snapshot.nvml_used_bytes),
+                        optional_payload_value(snapshot.nvml_free_bytes),
+                        optional_payload_value(snapshot.gpu_utilization_pct),
+                        optional_payload_value(snapshot.memory_utilization_pct),
+                    );
+                }
             },
             QueryAdmissionBackend::Semaphore { permits } => {
                 let available_permits = permits.available_permits();
@@ -341,6 +398,10 @@ impl QueryAdmission {
         }
         Ok(output)
     }
+}
+
+fn optional_payload_value(value: Option<impl ToString>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
 
 #[cfg(test)]
@@ -587,6 +648,21 @@ mod tests {
         assert!(
             payload.find("[device_memory_failure_reports]").unwrap() < payload.find("[gpu_execution]").unwrap(),
             "new diagnostics sections must follow the pre-existing TSV section order: {payload}"
+        );
+        assert!(
+            payload.contains("[device_admission_slots]\ndevice_ordinal\tprocess_active_query_slots\n"),
+            "{payload}"
+        );
+        assert!(
+            payload.contains(
+                "[device_telemetry]\nsampled_at_unix_ms\tdevice_ordinal\tcuda_status\tcuda_total_bytes\tcuda_free_bytes\tnvml_status\tnvml_total_bytes\tnvml_reserved_bytes\tnvml_used_bytes\tnvml_free_bytes\tgpu_utilization_pct\tmemory_utilization_pct\n"
+            ),
+            "{payload}"
+        );
+        assert!(
+            payload.find("[gpu_execution_pools]").unwrap() < payload.find("[device_admission_slots]").unwrap()
+                && payload.find("[device_admission_slots]").unwrap() < payload.find("[device_telemetry]").unwrap(),
+            "appended diagnostics sections must follow every pre-existing section: {payload}"
         );
 
         drop(permit);

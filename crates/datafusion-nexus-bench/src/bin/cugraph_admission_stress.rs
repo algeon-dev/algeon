@@ -149,6 +149,27 @@ const SAMPLE_COLUMNS: &[&str] = &[
     "trim_retry_count",
 ];
 
+const DEVICE_SAMPLE_COLUMNS: &[&str] = &[
+    "epoch_ms",
+    "device_ordinal",
+    "governor_capacity_bytes",
+    "governor_outstanding_bytes",
+    "governor_available_bytes",
+    "active_grants",
+    "active_queries",
+    "queued_queries",
+    "gpu_execution_worker_count",
+    "gpu_execution_active_jobs",
+    "gpu_execution_queued_jobs",
+    "gpu_execution_active_query_jobs",
+    "pool_reserved_current_bytes",
+    "pool_reserved_high_bytes",
+    "pool_used_current_bytes",
+    "pool_used_high_bytes",
+    "allocation_failure_count",
+    "trim_retry_count",
+];
+
 #[derive(Debug, Clone)]
 struct HarnessConfig {
     edges_parquet: String,
@@ -395,7 +416,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Diagnostics sampler on a dedicated OS thread.
     let stop_flag = Arc::new(AtomicBool::new(false));
-    let samples = Arc::new(Mutex::new(Vec::<SampleRow>::new()));
+    let samples = Arc::new(Mutex::new(SampleCollection::default()));
     let sampler_handle = spawn_sampler(&backend, &config, Arc::clone(&stop_flag), Arc::clone(&samples));
 
     // Pre-build one session per worker task so registration cost is off the
@@ -498,11 +519,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let effective_active_max = backend.query_service().gpu_execution_query_report().peak_active_query_jobs;
     let bfs_singleflight = backend.cugraph_bfs_singleflight_snapshot();
+    let samples = samples.lock().unwrap();
     write_outputs(
         &config,
         &warmup_rows,
         &query_rows,
-        &samples.lock().unwrap(),
+        &samples.legacy,
+        &samples.by_device,
         makespan_ms,
         effective_active_max,
         bfs_singleflight,
@@ -1084,63 +1107,219 @@ impl SampleRow {
     }
 }
 
+#[derive(Debug, Default)]
+struct SampleCollection {
+    legacy: Vec<SampleRow>,
+    by_device: Vec<DeviceSampleRow>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DeviceSampleFacts {
+    governor_capacity_bytes: u64,
+    governor_outstanding_bytes: u64,
+    governor_available_bytes: u64,
+    active_grants: usize,
+    gpu_execution_worker_count: usize,
+    gpu_execution_active_jobs: usize,
+    gpu_execution_queued_jobs: usize,
+    gpu_execution_active_query_jobs: usize,
+    pool_reserved_current_bytes: u64,
+    pool_reserved_high_bytes: u64,
+    pool_used_current_bytes: u64,
+    pool_used_high_bytes: u64,
+    allocation_failure_count: u64,
+    trim_retry_count: u64,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceSampleRow {
+    epoch_ms: u128,
+    device_ordinal: usize,
+    active_queries: usize,
+    queued_queries: usize,
+    facts: DeviceSampleFacts,
+}
+
+impl DeviceSampleRow {
+    fn to_tsv(&self) -> String {
+        [
+            self.epoch_ms.to_string(),
+            self.device_ordinal.to_string(),
+            self.facts.governor_capacity_bytes.to_string(),
+            self.facts.governor_outstanding_bytes.to_string(),
+            self.facts.governor_available_bytes.to_string(),
+            self.facts.active_grants.to_string(),
+            self.active_queries.to_string(),
+            self.queued_queries.to_string(),
+            self.facts.gpu_execution_worker_count.to_string(),
+            self.facts.gpu_execution_active_jobs.to_string(),
+            self.facts.gpu_execution_queued_jobs.to_string(),
+            self.facts.gpu_execution_active_query_jobs.to_string(),
+            self.facts.pool_reserved_current_bytes.to_string(),
+            self.facts.pool_reserved_high_bytes.to_string(),
+            self.facts.pool_used_current_bytes.to_string(),
+            self.facts.pool_used_high_bytes.to_string(),
+            self.facts.allocation_failure_count.to_string(),
+            self.facts.trim_retry_count.to_string(),
+        ]
+        .join("\t")
+    }
+}
+
+fn device_sample_rows(
+    epoch_ms: u128,
+    device_ordinals: &[usize],
+    facts_by_device: &BTreeMap<usize, DeviceSampleFacts>,
+    active_queries: usize,
+    queued_queries: usize,
+) -> Vec<DeviceSampleRow> {
+    device_ordinals
+        .iter()
+        .map(|device_ordinal| DeviceSampleRow {
+            epoch_ms,
+            device_ordinal: *device_ordinal,
+            active_queries,
+            queued_queries,
+            facts: facts_by_device.get(device_ordinal).copied().unwrap_or_default(),
+        })
+        .collect()
+}
+
+fn collect_sample(
+    backend: &NexusGpuBackend,
+    device_ordinals: &[usize],
+    managers: &BTreeMap<usize, cudf::DeviceMemoryManager>,
+) -> (SampleRow, Vec<DeviceSampleRow>) {
+    let epoch_ms = epoch_ms();
+    let mut facts_by_device = device_ordinals
+        .iter()
+        .copied()
+        .map(|ordinal| (ordinal, DeviceSampleFacts::default()))
+        .collect::<BTreeMap<_, _>>();
+
+    if let Ok(reports) = backend.query_service().memory_governor_reports() {
+        for report in reports {
+            if let Some(facts) = facts_by_device.get_mut(&report.device_ordinal) {
+                facts.governor_capacity_bytes = report.capacity_bytes;
+                facts.governor_outstanding_bytes = report.outstanding_bytes;
+                facts.governor_available_bytes = report.available_bytes;
+                facts.active_grants = report.grants.len();
+            }
+        }
+    }
+
+    let (active_queries, queued_queries) = backend
+        .query_service()
+        .admission_snapshot()
+        .map(|snapshot| (snapshot.active_queries, snapshot.queued_queries))
+        .unwrap_or_default();
+
+    let mut allocation_failure_count = 0u64;
+    let mut trim_retry_count = 0u64;
+    for report in backend.query_service().device_memory_failure_reports() {
+        allocation_failure_count = allocation_failure_count.saturating_add(report.allocation_failure_count);
+        trim_retry_count = trim_retry_count.saturating_add(report.trim_retry_count);
+        if let Some(facts) = facts_by_device.get_mut(&report.device_ordinal) {
+            facts.allocation_failure_count = report.allocation_failure_count;
+            facts.trim_retry_count = report.trim_retry_count;
+        }
+    }
+
+    for report in backend.query_service().gpu_execution_pool_reports() {
+        if let Some(facts) = facts_by_device.get_mut(&report.device_ordinal) {
+            facts.gpu_execution_worker_count = report.worker_count;
+            facts.gpu_execution_active_jobs = report.active_jobs;
+            facts.gpu_execution_queued_jobs = report.queued_jobs;
+            facts.gpu_execution_active_query_jobs = report.active_query_jobs;
+        }
+    }
+
+    for (device_ordinal, manager) in managers {
+        if let Some(facts) = facts_by_device.get_mut(device_ordinal)
+            && let Ok(usage) = manager.pool_usage()
+        {
+            facts.pool_reserved_current_bytes = usage.reserved_current_bytes;
+            facts.pool_reserved_high_bytes = usage.reserved_high_bytes;
+            facts.pool_used_current_bytes = usage.used_current_bytes;
+            facts.pool_used_high_bytes = usage.used_high_bytes;
+        }
+    }
+
+    let primary_facts =
+        device_ordinals.first().and_then(|ordinal| facts_by_device.get(ordinal)).copied().unwrap_or_default();
+    let legacy = SampleRow {
+        epoch_ms,
+        governor_capacity_bytes: primary_facts.governor_capacity_bytes,
+        governor_outstanding_bytes: primary_facts.governor_outstanding_bytes,
+        governor_available_bytes: primary_facts.governor_available_bytes,
+        active_grants: primary_facts.active_grants,
+        active_queries,
+        queued_queries,
+        pool_reserved_current_bytes: primary_facts.pool_reserved_current_bytes,
+        pool_reserved_high_bytes: primary_facts.pool_reserved_high_bytes,
+        pool_used_current_bytes: primary_facts.pool_used_current_bytes,
+        pool_used_high_bytes: primary_facts.pool_used_high_bytes,
+        allocation_failure_count,
+        trim_retry_count,
+    };
+    let by_device = device_sample_rows(epoch_ms, device_ordinals, &facts_by_device, active_queries, queued_queries);
+    (legacy, by_device)
+}
+
 fn spawn_sampler(
     backend: &NexusGpuBackend,
     config: &HarnessConfig,
     stop_flag: Arc<AtomicBool>,
-    samples: Arc<Mutex<Vec<SampleRow>>>,
+    samples: Arc<Mutex<SampleCollection>>,
 ) -> std::thread::JoinHandle<()> {
     let backend = backend.clone();
     let interval = Duration::from_millis(config.sample_interval_ms);
+    let device_ordinals = config.device_ordinals.clone();
     std::thread::spawn(move || {
-        let manager = cudf::DeviceMemoryManager::install_for_device(
-            cudf::DeviceId::new(0).expect("device 0 must exist for sampling"),
-        )
-        .ok();
+        let managers = device_ordinals
+            .iter()
+            .filter_map(|ordinal| {
+                let device = cudf::DeviceId::new(*ordinal).ok()?;
+                cudf::DeviceMemoryManager::install_for_device(device).ok().map(|manager| (*ordinal, manager))
+            })
+            .collect::<BTreeMap<_, _>>();
         while !stop_flag.load(Ordering::SeqCst) {
-            let mut row = SampleRow {
-                epoch_ms: epoch_ms(),
-                governor_capacity_bytes: 0,
-                governor_outstanding_bytes: 0,
-                governor_available_bytes: 0,
-                active_grants: 0,
-                active_queries: 0,
-                queued_queries: 0,
-                pool_reserved_current_bytes: 0,
-                pool_reserved_high_bytes: 0,
-                pool_used_current_bytes: 0,
-                pool_used_high_bytes: 0,
-                allocation_failure_count: 0,
-                trim_retry_count: 0,
-            };
-            if let Ok(reports) = backend.query_service().memory_governor_reports()
-                && let Some(report) = reports.first()
-            {
-                row.governor_capacity_bytes = report.capacity_bytes;
-                row.governor_outstanding_bytes = report.outstanding_bytes;
-                row.governor_available_bytes = report.available_bytes;
-                row.active_grants = report.grants.len();
-            }
-            if let Ok(snapshot) = backend.query_service().admission_snapshot() {
-                row.active_queries = snapshot.active_queries;
-                row.queued_queries = snapshot.queued_queries;
-            }
-            for failure in backend.query_service().device_memory_failure_reports() {
-                row.allocation_failure_count += failure.allocation_failure_count;
-                row.trim_retry_count += failure.trim_retry_count;
-            }
-            if let Some(manager) = manager.as_ref()
-                && let Ok(usage) = manager.pool_usage()
-            {
-                row.pool_reserved_current_bytes = usage.reserved_current_bytes;
-                row.pool_reserved_high_bytes = usage.reserved_high_bytes;
-                row.pool_used_current_bytes = usage.used_current_bytes;
-                row.pool_used_high_bytes = usage.used_high_bytes;
-            }
-            samples.lock().unwrap().push(row);
+            let (legacy, by_device) = collect_sample(&backend, &device_ordinals, &managers);
+            let mut samples = samples.lock().unwrap();
+            samples.legacy.push(legacy);
+            samples.by_device.extend(by_device);
+            drop(samples);
             std::thread::sleep(interval);
         }
     })
+}
+
+fn device_peaks(device_ordinals: &[usize], device_samples: &[DeviceSampleRow]) -> BTreeMap<String, serde_json::Value> {
+    device_ordinals
+        .iter()
+        .map(|device_ordinal| {
+            let samples =
+                device_samples.iter().filter(|sample| sample.device_ordinal == *device_ordinal).collect::<Vec<_>>();
+            let peaks = serde_json::json!({
+                "pool_used_high_bytes": samples.iter().map(|sample| sample.facts.pool_used_high_bytes).max(),
+                "pool_reserved_high_bytes": samples
+                    .iter()
+                    .map(|sample| sample.facts.pool_reserved_high_bytes)
+                    .max(),
+                "governor_outstanding_bytes_max": samples
+                    .iter()
+                    .map(|sample| sample.facts.governor_outstanding_bytes)
+                    .max(),
+                "gpu_execution_active_query_jobs_max": samples
+                    .iter()
+                    .map(|sample| sample.facts.gpu_execution_active_query_jobs)
+                    .max(),
+                "allocation_failure_count_last": samples.last().map(|sample| sample.facts.allocation_failure_count),
+                "trim_retry_count_last": samples.last().map(|sample| sample.facts.trim_retry_count),
+            });
+            (device_ordinal.to_string(), peaks)
+        })
+        .collect()
 }
 
 fn write_outputs(
@@ -1148,6 +1327,7 @@ fn write_outputs(
     warmup_rows: &[QueryRow],
     query_rows: &[QueryRow],
     samples: &[SampleRow],
+    device_samples: &[DeviceSampleRow],
     makespan_ms: f64,
     effective_active_max: usize,
     bfs_singleflight: datafusion_nexus::graph_sql::CugraphBfsSingleflightSnapshot,
@@ -1163,6 +1343,13 @@ fn write_outputs(
     writeln!(samples_file, "{}", SAMPLE_COLUMNS.join("\t"))?;
     for row in samples {
         writeln!(samples_file, "{}", row.to_tsv())?;
+    }
+
+    let device_samples_path = config.out_dir.join("device_samples.tsv");
+    let mut device_samples_file = fs::File::create(&device_samples_path)?;
+    writeln!(device_samples_file, "{}", DEVICE_SAMPLE_COLUMNS.join("\t"))?;
+    for row in device_samples {
+        writeln!(device_samples_file, "{}", row.to_tsv())?;
     }
 
     let mut warmup_fingerprints = BTreeMap::<String, BTreeSet<String>>::new();
@@ -1189,6 +1376,7 @@ fn write_outputs(
             entry.1 += 1;
         }
     }
+    let peaks_by_device = device_peaks(&config.device_ordinals, device_samples);
     let summary = serde_json::json!({
         "run_id": config.run_id,
         "makespan_ms": makespan_ms,
@@ -1199,6 +1387,7 @@ fn write_outputs(
             "cuda_profiler_capture": config.cuda_profiler_capture,
             "stagger_ms": config.stagger_ms,
             "max_concurrent_queries": config.max_concurrent_queries,
+            "device_ordinals": config.device_ordinals,
             "slot_guarantee": format!("{:?}", config.slot_guarantee),
             "grant_min": config.grant_min.map(|share| format!("{share:?}")),
             "grant_want": config.grant_want.map(|share| format!("{share:?}")),
@@ -1233,13 +1422,17 @@ fn write_outputs(
         }).collect::<Vec<_>>(),
         "peaks": {
             "gpu_execution_active_max": effective_active_max,
-            "pool_used_high_bytes": samples.iter().map(|s| s.pool_used_high_bytes).max(),
-            "pool_reserved_high_bytes": samples.iter().map(|s| s.pool_reserved_high_bytes).max(),
-            "governor_outstanding_bytes_max": samples.iter().map(|s| s.governor_outstanding_bytes).max(),
+            "pool_used_high_bytes": device_samples.iter().map(|s| s.facts.pool_used_high_bytes).max(),
+            "pool_reserved_high_bytes": device_samples.iter().map(|s| s.facts.pool_reserved_high_bytes).max(),
+            "governor_outstanding_bytes_max": device_samples
+                .iter()
+                .map(|s| s.facts.governor_outstanding_bytes)
+                .max(),
             "active_queries_max": samples.iter().map(|s| s.active_queries).max(),
             "queued_queries_max": samples.iter().map(|s| s.queued_queries).max(),
             "allocation_failure_count_last": samples.last().map(|s| s.allocation_failure_count),
         },
+        "peaks_by_device": peaks_by_device,
         "bfs_singleflight": {
             "eligible_requests": bfs_singleflight.eligible_requests,
             "physical_traversals": bfs_singleflight.physical_traversals,
@@ -1476,6 +1669,114 @@ mod tests {
             source_cache_index > error_index,
             "new source-cache columns must append after the legacy query row columns"
         );
+    }
+
+    #[test]
+    fn legacy_sample_tsv_schema_and_order_are_unchanged() {
+        assert_eq!(
+            SAMPLE_COLUMNS,
+            &[
+                "epoch_ms",
+                "governor_capacity_bytes",
+                "governor_outstanding_bytes",
+                "governor_available_bytes",
+                "active_grants",
+                "active_queries",
+                "queued_queries",
+                "pool_reserved_current_bytes",
+                "pool_reserved_high_bytes",
+                "pool_used_current_bytes",
+                "pool_used_high_bytes",
+                "allocation_failure_count",
+                "trim_retry_count",
+            ]
+        );
+        let row = SampleRow {
+            epoch_ms: 1,
+            governor_capacity_bytes: 2,
+            governor_outstanding_bytes: 3,
+            governor_available_bytes: 4,
+            active_grants: 5,
+            active_queries: 6,
+            queued_queries: 7,
+            pool_reserved_current_bytes: 8,
+            pool_reserved_high_bytes: 9,
+            pool_used_current_bytes: 10,
+            pool_used_high_bytes: 11,
+            allocation_failure_count: 12,
+            trim_retry_count: 13,
+        };
+        assert_eq!(row.to_tsv().split('\t').count(), SAMPLE_COLUMNS.len());
+    }
+
+    #[test]
+    fn device_samples_cover_every_configured_ordinal_by_identity() {
+        let facts = BTreeMap::from([
+            (
+                3,
+                DeviceSampleFacts {
+                    governor_capacity_bytes: 300,
+                    pool_used_high_bytes: 30,
+                    gpu_execution_active_query_jobs: 3,
+                    ..Default::default()
+                },
+            ),
+            (
+                1,
+                DeviceSampleFacts {
+                    governor_capacity_bytes: 100,
+                    pool_used_high_bytes: 10,
+                    gpu_execution_active_query_jobs: 1,
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        let rows = device_sample_rows(42, &[3, 1], &facts, 4, 2);
+
+        assert_eq!(rows.iter().map(|row| row.device_ordinal).collect::<Vec<_>>(), vec![3, 1]);
+        assert!(rows.iter().all(|row| row.epoch_ms == 42));
+        assert!(rows.iter().all(|row| row.active_queries == 4 && row.queued_queries == 2));
+        assert_eq!(rows[0].facts.governor_capacity_bytes, 300);
+        assert_eq!(rows[1].facts.governor_capacity_bytes, 100);
+        assert!(rows.iter().all(|row| row.to_tsv().split('\t').count() == DEVICE_SAMPLE_COLUMNS.len()));
+    }
+
+    #[test]
+    fn device_peaks_are_reported_separately_per_ordinal() {
+        let facts = |pool_used_high_bytes, active_query_jobs| DeviceSampleFacts {
+            pool_used_high_bytes,
+            gpu_execution_active_query_jobs: active_query_jobs,
+            ..Default::default()
+        };
+        let rows = vec![
+            DeviceSampleRow {
+                epoch_ms: 1,
+                device_ordinal: 0,
+                active_queries: 2,
+                queued_queries: 0,
+                facts: facts(10, 1),
+            },
+            DeviceSampleRow {
+                epoch_ms: 2,
+                device_ordinal: 0,
+                active_queries: 2,
+                queued_queries: 0,
+                facts: facts(20, 2),
+            },
+            DeviceSampleRow {
+                epoch_ms: 2,
+                device_ordinal: 2,
+                active_queries: 2,
+                queued_queries: 0,
+                facts: facts(40, 3),
+            },
+        ];
+
+        let peaks = device_peaks(&[0, 2], &rows);
+
+        assert_eq!(peaks.get("0").unwrap()["pool_used_high_bytes"], serde_json::json!(20));
+        assert_eq!(peaks.get("2").unwrap()["gpu_execution_active_query_jobs_max"], serde_json::json!(3));
     }
 
     #[test]
