@@ -265,6 +265,18 @@ impl NexusGpuBackend {
         &self.optimizer_config
     }
 
+    /// Exact-request BFS coalescing counters shared by sessions from this backend.
+    #[cfg(feature = "cugraph")]
+    pub fn cugraph_bfs_singleflight_snapshot(&self) -> crate::graph_sql::CugraphBfsSingleflightSnapshot {
+        self.optimizer_config.native_execution_config().cugraph_bfs_singleflight_snapshot()
+    }
+
+    /// Enables or disables exact-request BFS coalescing for subsequent executions.
+    #[cfg(feature = "cugraph")]
+    pub fn set_cugraph_bfs_singleflight_enabled(&self, enabled: bool) {
+        self.optimizer_config.native_execution_config().set_cugraph_bfs_singleflight_enabled(enabled);
+    }
+
     pub fn device_ordinals(&self) -> &[usize] {
         &self.device_ordinals
     }

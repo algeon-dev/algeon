@@ -33,6 +33,8 @@ use super::{
     unbounded_native::UnboundedNativeExecutionLimiter,
 };
 use crate::error::Error;
+#[cfg(feature = "cugraph")]
+use crate::graph_sql::{CugraphBfsSingleflight, CugraphBfsSingleflightSnapshot};
 
 const GRAPH_TICKET_ASK_SAFETY_NUMERATOR: u64 = 6;
 const GRAPH_TICKET_ASK_SAFETY_DENOMINATOR: u64 = 5;
@@ -84,6 +86,8 @@ pub struct NativeCudfExecutionConfig {
     trace_id: Option<TraceId>,
     plan_task_mapping_datafusion_shape: Option<String>,
     metrics_capture: Option<NativeMetricsCapture>,
+    #[cfg(feature = "cugraph")]
+    cugraph_bfs_singleflight: CugraphBfsSingleflight,
 }
 
 /// Native execution context plus any service leases that must outlive execution.
@@ -312,6 +316,8 @@ impl NativeCudfExecutionConfig {
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
             metrics_capture: None,
+            #[cfg(feature = "cugraph")]
+            cugraph_bfs_singleflight: CugraphBfsSingleflight::default(),
         }
     }
 
@@ -427,6 +433,8 @@ impl NativeCudfExecutionConfig {
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
             metrics_capture: None,
+            #[cfg(feature = "cugraph")]
+            cugraph_bfs_singleflight: CugraphBfsSingleflight::default(),
         }
     }
 
@@ -738,6 +746,26 @@ impl NativeCudfExecutionConfig {
     /// Per-device retained-byte cap for service-owned parked cuGraph caches.
     pub fn query_service_resident_graph_cache_max_retained_bytes(&self) -> Option<u64> {
         self.query_service_resident_graph_cache_max_retained_bytes
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn cugraph_bfs_singleflight(&self) -> CugraphBfsSingleflight {
+        self.cugraph_bfs_singleflight.clone()
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn cugraph_bfs_singleflight_snapshot(&self) -> CugraphBfsSingleflightSnapshot {
+        self.cugraph_bfs_singleflight.snapshot()
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn set_cugraph_bfs_singleflight_enabled(&self, enabled: bool) {
+        self.cugraph_bfs_singleflight.set_enabled(enabled);
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn cugraph_bfs_singleflight_enabled(&self) -> bool {
+        self.cugraph_bfs_singleflight.is_enabled()
     }
 
     /// Per-query allocator-domain policy for backend/query-service execution.
