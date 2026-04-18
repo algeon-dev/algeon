@@ -475,7 +475,7 @@ impl Series {
     fn gather_in_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Series> {
         let operation = "series::in_context::gather";
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
-        let idx_cv = indices.as_column_view().map_err(|e| e.with_operation(operation))?;
+        let idx_cv = indices.view().map_err(|e| e.with_operation(operation))?;
         ExecutionDomain::require_same_device_for_mixed_inputs(
             self.column.execution_domain(),
             idx_cv.execution_domain(),
@@ -511,7 +511,7 @@ impl Series {
     fn filter_in_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Series> {
         let operation = "series::in_context::filter";
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
-        let mask_cv = mask.as_column_view().map_err(|e| e.with_operation(operation))?;
+        let mask_cv = mask.view().map_err(|e| e.with_operation(operation))?;
 
         let mask_dtype = mask_cv.data_type()?;
         if mask_dtype.id() != TypeId::Bool8 {

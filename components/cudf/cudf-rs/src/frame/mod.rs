@@ -6,7 +6,7 @@ pub mod series;
 
 pub use dataframe::{
     ColumnMemoryAccounting, ColumnOrder, ConcatByNameOptions, CsvReadOptions, CsvWriteOptions, DataFrame,
-    DataFrameColumnInfo, DataFrameInfo, DataFrameJoinResult, DataFrameMemoryAccounting, DataTypeCount,
+    DataFrameColumnInfo, DataFrameInfo, DataFrameJoinSides, DataFrameMemoryAccounting, DataTypeCount,
     DropDuplicatesOptions, DropNaHow, DropNaOptions, InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions,
     ParquetReadOptions, ParquetWriteOptions, SchemaAlignment,
 };

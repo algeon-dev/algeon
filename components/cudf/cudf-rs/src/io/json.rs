@@ -14,7 +14,7 @@ use crate::{
         error::{self, Error, ErrorKind, Result},
         table::{Table, TableView},
     },
-    io::IoTableResult,
+    io::TableReadOutput,
     runtime::Runtime,
 };
 
@@ -45,7 +45,7 @@ impl JsonTableReadOptions {
 }
 
 /// Read a JSON file into a low-level table result.
-pub fn read_json_table(options: &JsonTableReadOptions) -> Result<IoTableResult> {
+pub fn read_json_table(options: &JsonTableReadOptions) -> Result<TableReadOutput> {
     const OPERATION: &str = "io::json::read_json_table";
     let filepath = super::path_to_cstring(&options.filepath, OPERATION)?;
     super::validate_input_path(&options.filepath, OPERATION)?;
@@ -82,7 +82,7 @@ pub fn read_json_table(options: &JsonTableReadOptions) -> Result<IoTableResult> 
         names?
     };
 
-    Ok(IoTableResult { table, column_names: if num_names == 0 { None } else { Some(column_names) } })
+    Ok(TableReadOutput { table, column_names: if num_names == 0 { None } else { Some(column_names) } })
 }
 
 /// Options for writing a low-level [`Table`] to a JSON file.

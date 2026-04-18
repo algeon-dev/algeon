@@ -103,7 +103,7 @@ impl fmt::Debug for RuntimeCompletionAuthority<'_> {
 
 /// CUDA-backed compatibility witness for the shared completion contract.
 ///
-/// Shared leases complete into [`CompletionWitness`]. The `Runtime*`
+/// Shared leases complete into [`CompletionWitness`](crate::interop::prepared::CompletionWitness). The `Runtime*`
 /// compatibility surface keeps returning a producer-owned [`CudaEvent`] so
 /// existing `cudf-rs` runtime-oriented callers can inspect readiness and
 /// synchronize through owned runtime handles while still following the same

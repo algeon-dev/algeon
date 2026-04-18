@@ -43,6 +43,3 @@ impl<'a> ExecutionContext<'a> {
         )
     }
 }
-
-#[doc(hidden)]
-pub type __DebugExecutionContext<'a> = ExecutionContext<'a>;

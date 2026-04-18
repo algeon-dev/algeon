@@ -14,7 +14,7 @@ use crate::{
         error::{self, Error, ErrorKind, Result},
         table::{Table, TableView},
     },
-    io::IoTableResult,
+    io::TableReadOutput,
     runtime::Runtime,
 };
 
@@ -23,7 +23,7 @@ use crate::{
 /// **Advanced.** Most users should prefer [`DataFrame::read_csv`](crate::DataFrame::read_csv).
 ///
 /// This type controls CSV parsing only. Truthful schema names, when available
-/// from a header row, are returned through [`IoTableResult`].
+/// from a header row, are returned through [`TableReadOutput`].
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct CsvTableReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
@@ -37,7 +37,7 @@ pub struct CsvTableReadOptions {
 }
 
 /// Read a CSV file into a low-level table result.
-pub fn read_csv(options: &CsvTableReadOptions) -> Result<IoTableResult> {
+pub fn read_csv(options: &CsvTableReadOptions) -> Result<TableReadOutput> {
     let operation = "io::csv::read_csv";
     let filepath = super::path_to_cstring(&options.filepath, operation)?;
     super::validate_input_path(&options.filepath, operation)?;
@@ -73,7 +73,7 @@ pub fn read_csv(options: &CsvTableReadOptions) -> Result<IoTableResult> {
         None
     };
 
-    Ok(IoTableResult { table, column_names })
+    Ok(TableReadOutput { table, column_names })
 }
 
 /// Options for writing a low-level [`Table`] to a CSV file.

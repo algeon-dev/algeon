@@ -2,7 +2,7 @@
 //!
 //! **Advanced/Core.** Most users should prefer
 //! [`DataFrame::merge`](crate::DataFrame::merge) with
-//! [`MergeOptions`](crate::MergeOptions).
+//! [`MergeOptions`].
 //!
 //! # Example
 //!
@@ -46,8 +46,8 @@ use crate::{
     runtime::execution_domain::ExecutionDomain,
 };
 
-/// Result of a join operation.
-pub struct JoinResult {
+/// Split output of a low-level join operation.
+pub struct JoinSides {
     /// The left-side result table (keys + payload for matching rows).
     pub left: Table,
     /// The right-side result table (keys + payload for matching rows).
@@ -64,7 +64,7 @@ pub(crate) fn join_impl(
     output_domain: &std::sync::Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
-) -> Result<JoinResult> {
+) -> Result<JoinSides> {
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
     let null_eq_ffi = null_equality.to_join_raw();
@@ -149,7 +149,7 @@ pub(crate) fn join_impl(
         ],
     )?;
 
-    Ok(JoinResult {
+    Ok(JoinSides {
         left: unsafe { Table::from_raw_with_domain(out_left, std::sync::Arc::clone(output_domain)) },
         right: unsafe { Table::from_raw_with_domain(out_right, std::sync::Arc::clone(output_domain)) },
     })
@@ -189,7 +189,7 @@ pub fn inner_join(
     left_payload: &TableView<'_>,
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
-) -> Result<JoinResult> {
+) -> Result<JoinSides> {
     let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::inner_join")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(
@@ -213,7 +213,7 @@ pub fn left_join(
     left_payload: &TableView<'_>,
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
-) -> Result<JoinResult> {
+) -> Result<JoinSides> {
     let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::left_join")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(
@@ -241,7 +241,7 @@ pub fn full_join(
     left_payload: &TableView<'_>,
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
-) -> Result<JoinResult> {
+) -> Result<JoinSides> {
     let output_domain = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::full_join")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     join_impl(

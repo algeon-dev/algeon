@@ -99,14 +99,10 @@ impl CudaEvent {
         )?;
         Ok(out)
     }
-
-    #[doc(hidden)]
-    pub fn __debug_raw_handle_value(&self) -> usize {
+    pub(crate) fn __debug_raw_handle_value(&self) -> usize {
         self.handle.raw.as_ptr() as usize
     }
-
-    #[doc(hidden)]
-    pub fn __debug_interop_raw_handle_value(&self) -> usize {
+    pub(crate) fn __debug_interop_raw_handle_value(&self) -> usize {
         self.interop_raw_handle()
             .expect("event::__debug_interop_raw_handle_value should resolve the borrowed CUDA event pointer")
             as usize

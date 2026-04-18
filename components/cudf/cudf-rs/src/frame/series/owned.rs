@@ -181,7 +181,7 @@ impl Series {
     /// Use this when you need to call core-layer column operations
     /// (e.g. `device_data_ptr()`, `nullable()`, `validity()`) that are
     /// not exposed on `Series`.
-    pub fn as_column_view(&self) -> Result<ColumnView<'_>> {
+    pub fn view(&self) -> Result<ColumnView<'_>> {
         self.column.view()
     }
 
@@ -285,7 +285,7 @@ impl Series {
     /// null rows in the result.
     pub fn gather(&self, indices: &Series) -> Result<Series> {
         let operation = "series::gather";
-        let idx_cv = indices.as_column_view().map_err(|e| e.with_operation(operation))?;
+        let idx_cv = indices.view().map_err(|e| e.with_operation(operation))?;
         let domain = Arc::clone(self.column.execution_domain());
         ExecutionDomain::require_same_device_for_mixed_inputs(&domain, idx_cv.execution_domain(), operation)?;
         if !ExecutionDomain::same_provenance(idx_cv.execution_domain(), &domain) {
@@ -318,7 +318,7 @@ impl Series {
     /// dropped.
     pub fn filter(&self, mask: &Series) -> Result<Series> {
         let operation = "series::filter";
-        let mask_cv = mask.as_column_view().map_err(|e| e.with_operation(operation))?;
+        let mask_cv = mask.view().map_err(|e| e.with_operation(operation))?;
         let mask_dtype = mask_cv.data_type()?;
         if mask_dtype.id() != TypeId::Bool8 {
             return Err(Error::new(
@@ -1244,11 +1244,11 @@ impl Series {
 
     pub fn lookup(&self, keys: &Series, values: &Series) -> Result<Series> {
         let result = self
-            .as_column_view()
+            .view()
             .map_err(|e| e.with_operation("series::lookup"))?
             .map(
-                &keys.as_column_view().map_err(|e| e.with_operation("series::lookup"))?,
-                &values.as_column_view().map_err(|e| e.with_operation("series::lookup"))?,
+                &keys.view().map_err(|e| e.with_operation("series::lookup"))?,
+                &values.view().map_err(|e| e.with_operation("series::lookup"))?,
             )
             .map_err(|e| e.with_operation("series::lookup"))?;
         let result = Series::from_column(result).map_err(|e| e.with_operation("series::lookup"))?;

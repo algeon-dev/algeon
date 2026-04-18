@@ -638,29 +638,19 @@ impl Column {
         self.domain = domain;
         self
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_kind(&self) -> &'static str {
+    pub(crate) fn __debug_execution_domain_kind(&self) -> &'static str {
         self.domain.debug_kind()
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_id(&self) -> u64 {
+    pub(crate) fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_stream_value(&self) -> usize {
+    pub(crate) fn __debug_execution_domain_stream_value(&self) -> usize {
         self.domain.debug_stream_value()
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_mr_value(&self) -> usize {
+    pub(crate) fn __debug_execution_domain_mr_value(&self) -> usize {
         self.domain.debug_mr_value()
     }
-
-    #[doc(hidden)]
-    pub fn __debug_rebind_execution_domain_explicit(mut self, identity: u64) -> Result<Self> {
+    pub(crate) fn __debug_rebind_execution_domain_explicit(mut self, identity: u64) -> Result<Self> {
         self.domain = ExecutionDomain::debug_explicit(identity)?;
         Ok(self)
     }

@@ -391,7 +391,7 @@ impl NullEquality {
     }
 }
 
-/// Timestamp resolution for convenience cast methods like [`Series::to_datetime`].
+/// Timestamp resolution for convenience cast methods like [`Series::to_datetime`](crate::Series::to_datetime).
 ///
 /// Maps to the corresponding [`TypeId`] timestamp variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

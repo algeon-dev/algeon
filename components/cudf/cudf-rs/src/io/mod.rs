@@ -9,15 +9,15 @@
 //! # Module Shape
 //!
 //! - [`csv`], [`json`], and [`parquet`] expose file-format readers and writers
-//!   over low-level [`Table`](crate::core::table::Table) and
+//!   over low-level [`Table`] and
 //!   [`TableView`](crate::core::table::TableView) values.
 //! - [`arrow`] exposes Arrow conversion helpers for [`crate::DataFrame`].
 //!   That path is host-copy interop, not zero-copy external GPU interop.
 //!
 //! # Naming and Ownership
 //!
-//! Low-level file readers return [`IoTableResult`] instead of a bare
-//! [`Table`](crate::core::table::Table) because `Table` itself is unnamed.
+//! Low-level file readers return [`TableReadOutput`] instead of a bare
+//! [`Table`] because `Table` itself is unnamed.
 //! When a format can report schema names, they are returned separately via
 //! `column_names` so callers can decide whether to rebuild a named
 //! [`crate::DataFrame`] or keep working at the low-level table boundary.
@@ -51,8 +51,8 @@ pub mod csv;
 pub mod json;
 pub mod parquet;
 
-/// Shared result envelope for low-level table readers.
-pub struct IoTableResult {
+/// Shared output envelope for low-level table readers.
+pub struct TableReadOutput {
     pub table: Table,
     pub column_names: Option<Vec<String>>,
 }

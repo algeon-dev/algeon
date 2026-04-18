@@ -56,9 +56,7 @@ impl DataFrame {
             "dataframe::in_context::sort_values",
         )
     }
-
-    #[doc(hidden)]
-    pub fn __debug_sort_values_in_context<I, S>(
+    pub(crate) fn __debug_sort_values_in_context<I, S>(
         &self,
         by: I,
         options: SortOptions,

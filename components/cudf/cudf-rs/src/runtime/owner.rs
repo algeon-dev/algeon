@@ -292,9 +292,7 @@ impl Runtime {
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
         &self.domain
     }
-
-    #[doc(hidden)]
-    pub fn __debug_execution_domain_id(&self) -> u64 {
+    pub(crate) fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
     }
 }

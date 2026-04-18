@@ -1,7 +1,8 @@
 //! A named, `Arc`-shared GPU column — the primary user-facing column type.
 //!
 //! `Series` wraps an `Arc<Column>` with an optional name. It is the
-//! high-level counterpart to the low-level [`Column`] / [`ColumnView`] types.
+//! high-level counterpart to the low-level [`Column`](crate::core::Column) /
+//! [`ColumnView`](crate::core::ColumnView) types.
 //!
 //! Clone is cheap: it bumps the `Arc` reference count — no GPU data is copied.
 

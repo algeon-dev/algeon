@@ -175,9 +175,7 @@ impl<'a> GroupBy<'a> {
             "groupby::GroupBy::in_context::agg",
         )
     }
-
-    #[doc(hidden)]
-    pub fn __debug_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
+    pub(crate) fn __debug_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionContext<'_>) -> Result<DataFrame> {
         self.agg_in_context(specs, ctx)
     }
 

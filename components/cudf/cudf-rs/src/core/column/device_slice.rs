@@ -11,21 +11,23 @@ use crate::core::types::TypeId;
 ///
 /// This is a low-level raw-pointer helper, not the preferred cross-crate GPU
 /// interop contract. For external borrowed interop, prefer
-/// [`crate::interop::BorrowedColumnView`] and
-/// [`crate::interop::TryBorrowColumnView`], which also carry null-mask
+/// [`crate::interop::borrowed::BorrowedColumnView`] and
+/// [`crate::interop::borrowed::TryBorrowColumnView`], which also carry null-mask
 /// semantics, base-pointer-plus-offset behavior, and execution provenance.
 ///
-/// Create a `DeviceSlice` from a [`ColumnView`] via
-/// [`device_slice()`](ColumnView::device_slice). Use [`split_at()`](Self::split_at)
-/// to partition it into sub-regions (e.g., source and destination vertex IDs).
+/// Create a `DeviceSlice` from a [`ColumnView`](crate::core::ColumnView) via
+/// [`device_slice()`](crate::core::ColumnView::device_slice). Use
+/// [`split_at()`](Self::split_at) to partition it into sub-regions
+/// (e.g., source and destination vertex IDs).
 ///
 /// `DeviceSlice` is `Send + Sync` because the underlying data lives on the GPU
 /// and is not host-dereferenceable. The safe public API exposes only `*const`
 /// pointers via [`as_ptr()`](Self::as_ptr); mutable access requires `&mut self`
 /// via [`as_mut_ptr()`](Self::as_mut_ptr), which upholds Rust's aliasing rules.
 ///
-/// The lifetime `'a` ties this slice to the [`ColumnView`] (or [`Column`]) that
-/// produced it, preventing the slice from outliving the GPU memory it points to.
+/// The lifetime `'a` ties this slice to the [`ColumnView`](crate::core::ColumnView)
+/// (or [`Column`](crate::core::Column)) that produced it, preventing the slice
+/// from outliving the GPU memory it points to.
 #[derive(Debug)]
 pub struct DeviceSlice<'a> {
     pub(crate) ptr: *mut c_void,

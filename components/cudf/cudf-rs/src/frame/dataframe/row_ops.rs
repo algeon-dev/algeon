@@ -16,7 +16,7 @@ impl DataFrame {
     /// Gather rows using a borrowed per-operation execution override.
     pub(crate) fn gather_in_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        let cv = indices.as_column_view()?;
+        let cv = indices.view()?;
         self.gather_by_column_view_impl(
             &cv,
             output_domain.explicit_exec_options_raw(),
@@ -24,9 +24,7 @@ impl DataFrame {
             "dataframe::in_context::gather",
         )
     }
-
-    #[doc(hidden)]
-    pub fn __debug_gather_in_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn __debug_gather_in_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
         self.gather_in_context(indices, ctx)
     }
 
@@ -41,9 +39,7 @@ impl DataFrame {
             "dataframe::in_context::filter",
         )
     }
-
-    #[doc(hidden)]
-    pub fn __debug_filter_in_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn __debug_filter_in_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
         self.filter_in_context(mask, ctx)
     }
 
@@ -92,7 +88,7 @@ impl DataFrame {
 
     /// Gather (select) rows by an index `Series`.
     pub fn gather(&self, indices: &Series) -> Result<Self> {
-        let cv = indices.as_column_view()?;
+        let cv = indices.view()?;
         let output_domain = Arc::clone(&self.domain);
         self.gather_by_column_view_impl(
             &cv,
@@ -117,7 +113,7 @@ impl DataFrame {
     /// Filter rows to those where `column` values appear in a `Series`.
     pub fn filter_isin(&self, column: &str, values: &Series) -> Result<Self> {
         let operation = "dataframe::filter_isin";
-        let cv = values.as_column_view()?;
+        let cv = values.view()?;
         let col = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
         let col_view = col.view()?;
         let output_domain = Arc::clone(&self.domain);
@@ -132,7 +128,7 @@ impl DataFrame {
     }
 
     fn validate_series_mask<'a>(&self, mask: &'a Series) -> Result<ColumnView<'a>> {
-        let mask_view = mask.as_column_view()?;
+        let mask_view = mask.view()?;
         self.validate_mask_view(&mask_view, "dataframe::filter")?;
         Ok(mask_view)
     }

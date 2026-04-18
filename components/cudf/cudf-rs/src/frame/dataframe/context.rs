@@ -1,4 +1,4 @@
-use super::{DataFrame, DataFrameJoinResult, DropDuplicatesOptions, DropNaOptions};
+use super::{DataFrame, DataFrameJoinSides, DropDuplicatesOptions, DropNaOptions};
 use crate::{
     Expr, Result,
     frame::series::Series,
@@ -93,7 +93,7 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         fn merge(right: &DataFrame, options: MergeOptions) -> Result<DataFrame> => merge_in_context;
 
         /// Merge-split with another frame using the borrowed execution override.
-        fn merge_split(right: &DataFrame, options: MergeOptions) -> Result<DataFrameJoinResult> => merge_split_in_context;
+        fn merge_split(right: &DataFrame, options: MergeOptions) -> Result<DataFrameJoinSides> => merge_split_in_context;
 
         /// Drop rows containing null values using the borrowed execution override.
         fn dropna(opts: DropNaOptions) -> Result<DataFrame> => dropna_in_context;

@@ -2,7 +2,7 @@
 //!
 //! **Advanced/Core.** Most users should prefer
 //! [`DataFrame::sort_values`](crate::DataFrame::sort_values) with
-//! [`SortOptions`](crate::SortOptions).
+//! [`SortOptions`].
 //!
 //! # Example
 //!

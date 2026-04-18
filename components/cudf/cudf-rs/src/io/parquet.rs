@@ -15,7 +15,7 @@ use crate::{
         error::{self, Error, ErrorKind, Result},
         table::{Table, TableView},
     },
-    io::IoTableResult,
+    io::TableReadOutput,
     runtime::Runtime,
 };
 
@@ -65,7 +65,7 @@ fn checked_i64_from_usize(value: usize, field: &'static str, operation: &'static
 /// Returns the table data and the column names stored in the Parquet file's
 /// schema. This avoids having to hardcode column indices when working with
 /// Parquet files.
-pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<IoTableResult> {
+pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<TableReadOutput> {
     const OPERATION: &str = "io::parquet::read_parquet_table";
     let filepath = super::path_to_cstring(&options.filepath, OPERATION)?;
     super::validate_input_path(&options.filepath, OPERATION)?;
@@ -158,7 +158,7 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<IoTableRe
         names?
     };
 
-    Ok(IoTableResult { table, column_names: Some(column_names) })
+    Ok(TableReadOutput { table, column_names: Some(column_names) })
 }
 
 /// Options for writing a Parquet file.

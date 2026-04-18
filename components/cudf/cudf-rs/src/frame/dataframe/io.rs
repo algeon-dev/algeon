@@ -9,7 +9,7 @@ use super::owned::DataFrame;
 use crate::{
     core::error::{Error, ErrorKind, Result},
     io::{
-        IoTableResult,
+        TableReadOutput,
         csv::{self, CsvTableReadOptions, CsvTableWriteOptions},
         json::{self, JsonTableReadOptions, JsonTableWriteOptions},
         parquet::{self, ParquetTableReadOptions, ParquetTableWriteOptions},
@@ -149,7 +149,7 @@ impl JsonReadOptions {
     }
 }
 
-fn resolve_csv_column_names(options: &CsvReadOptions, result: &IoTableResult) -> Result<Vec<String>> {
+fn resolve_csv_column_names(options: &CsvReadOptions, result: &TableReadOutput) -> Result<Vec<String>> {
     let operation = "dataframe::read_csv_with_options";
     let num_columns = {
         let view = result.table.view()?;
@@ -208,7 +208,7 @@ impl DataFrame {
     /// Read a CSV file into a `DataFrame`.
     ///
     /// If the caller does not provide explicit names through
-    /// [`CsvReadOptions::column_names`], names come from the header
+    /// `CsvReadOptions::column_names`, names come from the header
     /// row when `has_header == true`, or fall back to generated names such as
     /// `"column_0"` when reading headerless CSV.
     ///
