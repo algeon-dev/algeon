@@ -22,6 +22,7 @@ RUN_REST=1
 RUN_GLUE=1
 RUN_SERVER=1
 RUN_REMOTE_DIRECT=0
+RUN_SERVER_REST_MULTIGPU=0
 GPU_PARITY=0
 
 REST_URI="${NEXUS_ICEBERG_REST_URI:-${DEFAULT_REST_URI}}"
@@ -64,6 +65,10 @@ Options:
                          E2E (GPU required; serialized via flock /tmp/cudf-gpu.lock;
                          loads Glue tables unless --no-load)
   --remote-direct-only   Run only the credentialless remote-direct server E2E
+  --server-rest-multigpu Run the production release Flight SQL acceptance with
+                         one Tokio worker and GPUs 0,1,2,3 against REST/RustFS
+  --server-rest-multigpu-only
+                         Run only that production REST/RustFS multi-GPU acceptance
   --gpu-parity           Enable NEXUS_ICEBERG_REST_E2E_GPU_PARITY=1 for REST E2E
   --rest-table NAME      REST table used for scan/planning checks (default: nation)
   --rest-group-col NAME  REST group column for planning checks (default: n_regionkey)
@@ -247,6 +252,7 @@ while [[ $# -gt 0 ]]; do
       RUN_GLUE=0
       RUN_SERVER=0
       RUN_REMOTE_DIRECT=0
+      RUN_SERVER_REST_MULTIGPU=0
       shift
       ;;
     --glue-only)
@@ -254,6 +260,7 @@ while [[ $# -gt 0 ]]; do
       RUN_GLUE=1
       RUN_SERVER=0
       RUN_REMOTE_DIRECT=0
+      RUN_SERVER_REST_MULTIGPU=0
       shift
       ;;
     --server-only)
@@ -261,6 +268,7 @@ while [[ $# -gt 0 ]]; do
       RUN_GLUE=0
       RUN_SERVER=1
       RUN_REMOTE_DIRECT=0
+      RUN_SERVER_REST_MULTIGPU=0
       shift
       ;;
     --no-server)
@@ -276,6 +284,19 @@ while [[ $# -gt 0 ]]; do
       RUN_GLUE=0
       RUN_SERVER=0
       RUN_REMOTE_DIRECT=1
+      RUN_SERVER_REST_MULTIGPU=0
+      shift
+      ;;
+    --server-rest-multigpu)
+      RUN_SERVER_REST_MULTIGPU=1
+      shift
+      ;;
+    --server-rest-multigpu-only)
+      RUN_REST=0
+      RUN_GLUE=0
+      RUN_SERVER=0
+      RUN_REMOTE_DIRECT=0
+      RUN_SERVER_REST_MULTIGPU=1
       shift
       ;;
     --gpu-parity)
@@ -327,6 +348,7 @@ if [[ "${WORKLOAD}" == "equality_delete" ]]; then
   RUN_GLUE=0
   RUN_SERVER=0
   RUN_REMOTE_DIRECT=0
+  RUN_SERVER_REST_MULTIGPU=0
   LOAD_GLUE=0
   if [[ "${REST_TABLE}" == "nation" && -z "${NEXUS_ICEBERG_REST_E2E_TABLE:-}" ]]; then
     REST_TABLE="eq_deletes"
@@ -339,8 +361,12 @@ if [[ "${WORKLOAD}" == "equality_delete" ]]; then
   fi
 fi
 
-if [[ "${RUN_REST}" != "1" && "${RUN_GLUE}" != "1" && "${RUN_SERVER}" != "1" && "${RUN_REMOTE_DIRECT}" != "1" ]]; then
+if [[ "${RUN_REST}" != "1" && "${RUN_GLUE}" != "1" && "${RUN_SERVER}" != "1" && "${RUN_REMOTE_DIRECT}" != "1" && "${RUN_SERVER_REST_MULTIGPU}" != "1" ]]; then
   die "no E2E runners selected"
+fi
+
+if [[ "${RUN_SERVER_REST_MULTIGPU}" == "1" && ("${WORKLOAD}" != "tpch" || "${SCALE}" != "1") ]]; then
+  die "--server-rest-multigpu requires --workload tpch --scale 1"
 fi
 
 # The remote-direct runner queries a loaded data-bearing Glue namespace.
@@ -374,7 +400,7 @@ fi
 
 wait_s3_endpoint "RustFS/S3" "${S3_ENDPOINT}/"
 validate_s3_bucket
-if [[ "${RUN_REST}" == "1" ]]; then
+if [[ "${RUN_REST}" == "1" || "${RUN_SERVER_REST_MULTIGPU}" == "1" ]]; then
   wait_url "Iceberg REST" "${REST_URI}/v1/config" 1
 fi
 if [[ "${RUN_GLUE}" == "1" || "${RUN_SERVER}" == "1" || "${RUN_REMOTE_DIRECT}" == "1" || "${LOAD_GLUE}" == "1" ]]; then
@@ -386,7 +412,7 @@ if [[ "${REUSE_PARQUET}" == "1" ]]; then
   load_args+=(--reuse-parquet)
 fi
 
-if [[ "${RUN_REST}" == "1" && "${NO_LOAD}" != "1" ]]; then
+if [[ ("${RUN_REST}" == "1" || "${RUN_SERVER_REST_MULTIGPU}" == "1") && "${NO_LOAD}" != "1" ]]; then
   step "loading ${WORKLOAD} sf${SCALE} into local Iceberg REST catalog"
   env \
     REST_ENDPOINT="${REST_URI}" \
@@ -503,6 +529,29 @@ if [[ "${RUN_REMOTE_DIRECT}" == "1" ]]; then
     NEXUS_ICEBERG_S3_SESSION_TOKEN= \
     flock /tmp/cudf-gpu.lock \
     cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-remote-direct-e2e
+fi
+
+if [[ "${RUN_SERVER_REST_MULTIGPU}" == "1" ]]; then
+  step "running production Flight SQL + REST/RustFS four-GPU acceptance (flock /tmp/cudf-gpu.lock)"
+  (
+    flock 9
+    cargo build --release --bin datafusion_nexus_server --features server,iceberg,nvml
+    env \
+      NEXUS_ICEBERG_SERVER_REST_MULTIGPU_E2E=1 \
+      NEXUS_SERVER_BINARY="${REPO_ROOT}/target/release/datafusion_nexus_server" \
+      NEXUS_ICEBERG_REST_URI="${REST_URI}" \
+      NEXUS_ICEBERG_WAREHOUSE="${WAREHOUSE}" \
+      NEXUS_ICEBERG_S3_ENDPOINT="${S3_ENDPOINT}" \
+      NEXUS_ICEBERG_S3_PATH_STYLE=true \
+      NEXUS_ICEBERG_S3_REGION="${S3_REGION}" \
+      NEXUS_ICEBERG_S3_ACCESS_KEY_ID="${S3_ACCESS_KEY}" \
+      NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY="${S3_SECRET_KEY}" \
+      NEXUS_ICEBERG_S3_SESSION_TOKEN= \
+      AWS_SESSION_TOKEN= \
+      AWS_SECURITY_TOKEN= \
+      NEXUS_ICEBERG_NAMESPACE="${namespace}" \
+      cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-rest-multigpu-e2e
+  ) 9>/tmp/cudf-gpu.lock
 fi
 
 step "iceberg-local E2E suite passed"
