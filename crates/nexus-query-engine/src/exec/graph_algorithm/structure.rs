@@ -294,7 +294,7 @@ pub(super) fn execute_core_number(
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
     let cn_params = cugraph::structure::CoreNumberParams {
-        degree_type: degree_type_to_cugraph(params.degree_type),
+        degree_type: degree_type_to_cugraph(params.degree_type, spec.graph_options.directed),
         do_expensive_check: false,
     };
 
@@ -342,7 +342,7 @@ pub(super) fn execute_k_core(
     let input = input.into_frame();
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
-    let kc_params = k_core_params(params)?;
+    let kc_params = k_core_params(params, spec.graph_options.directed)?;
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,

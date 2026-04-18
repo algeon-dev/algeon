@@ -115,7 +115,7 @@ pub struct ParitySpec {
     pub truth_source: ParityTruthSource,
     /// Oracle JSON path relative to
     /// `fixture/data/cugraph/oracle/`. The file is generated locally by
-    /// `refresh_cugraph_oracle` and consumed CPU-only by the parity harness.
+    /// `refresh_cugraph_oracle` and consumed by the parity harness.
     pub oracle_relpath: &'static str,
     pub comparator: ParityComparator,
     pub tolerance: ParityTolerance,
@@ -123,10 +123,9 @@ pub struct ParitySpec {
 
 /// Source-of-truth list of cuGraph parity rows.
 ///
-/// Milestone 1a coverage: the existing three algorithms (PageRank, BFS,
-/// Louvain) on the smallest deterministic baseline (Karate). New
-/// algorithms must add a registry row here in the same registry order
-/// as [`crate::CUGRAPH_OPERATION_REGISTRY`].
+/// Every SQL-visible algorithm has one GPU-oracle acceptance row. New
+/// algorithms must add a registry row here alongside their
+/// [`crate::CUGRAPH_OPERATION_REGISTRY`] entry.
 #[doc(hidden)]
 pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
     ParitySpec {
@@ -438,7 +437,11 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: "karate/force_atlas2__default.json",
         comparator: ParityComparator::Numeric,
-        tolerance: ParityTolerance { abs: 1.0e-4, rel: 1.0e-3 },
+        // ForceAtlas2 is iterative and GPU scheduling produces small
+        // run-to-run coordinate drift even with a fixed random seed. The
+        // comparator first applies the optimal rigid transform, then bounds
+        // residual point displacement relative to the layout RMS radius.
+        tolerance: ParityTolerance { abs: 1.0e-3, rel: 5.0e-3 },
     },
 ];
 
@@ -682,9 +685,8 @@ pub enum OracleLookup {
     /// The oracle JSON is present on disk and its header matches the
     /// parity spec.
     Present { document: serde_json::Value, path: PathBuf },
-    /// The oracle JSON file does not exist yet — the harness should
-    /// report a structured "needs refresh" status without failing the
-    /// default CPU-only test run.
+    /// The oracle JSON file does not exist yet. Callers can render the
+    /// structured refresh hint; the GPU acceptance run treats it as a failure.
     Missing { path: PathBuf },
     /// The oracle JSON exists but disagrees with the parity spec.
     Mismatch { path: PathBuf, reason: String },

@@ -433,11 +433,14 @@ impl GraphOperationDefinition {
         let mut options = defaults.clone();
         if matches!(
             self.algorithm,
-            GraphAlgorithm::WeaklyConnectedComponents
+            GraphAlgorithm::Louvain
+                | GraphAlgorithm::WeaklyConnectedComponents
                 | GraphAlgorithm::TriangleCountAll
                 | GraphAlgorithm::CoreNumber
                 | GraphAlgorithm::KCore
                 | GraphAlgorithm::MinimumSpanningTree
+                | GraphAlgorithm::Leiden
+                | GraphAlgorithm::Ecg
                 | GraphAlgorithm::SpectralModularityMaximization
                 | GraphAlgorithm::BalancedCutClustering
                 | GraphAlgorithm::ForceAtlas2

@@ -1,11 +1,9 @@
 //! Registry-driven cuGraph parity harness.
 //!
-//! Default `cargo test --features cugraph` exercises the CPU-only path:
-//! local dataset SHA-256 verification, parity spec shape, and oracle JSON
-//! header validation when a generated file is present. The actual GPU
-//! parity comparisons are landed alongside Python cuGraph availability
-//! and run under `--include-ignored` with the GPU lock held; that work
-//! is left as a follow-up. See
+//! The CPU tests validate local dataset SHA-256 values and oracle headers.
+//! The registry-driven GPU test executes every advertised algorithm through
+//! its public SQL table function and compares Arrow results with the pinned
+//! Python cuGraph oracle (or the curated Katz reference CSV). See
 //! `docs/plan/2026-05-20-cugraph-rs-full-api-support-plan.md` (Testing
 //! redesign section) for the full design.
 
@@ -16,10 +14,24 @@ mod datasets;
 #[path = "cugraph_parity/oracle.rs"]
 mod oracle;
 
+use std::{collections::BTreeSet, sync::Arc};
+
+use arrow::{
+    array::{ArrayRef, Float32Array, Int32Array},
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
+use datafusion::{
+    datasource::MemTable,
+    execution::SessionStateBuilder,
+    prelude::{CsvReadOptions, SessionConfig, SessionContext},
+};
 use datafusion_nexus::{
-    CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm,
+    CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig, GpuFallbackPolicy, NexusAdmissionPolicy,
+    NexusGpuBackend, SlotGuarantee,
     graph_sql::parity::{CUGRAPH_PARITY_SPECS, OracleLookup, ParityTruthSource, data_root, load_ref_csv_vertex_list},
 };
+use serde_json::{Map, Value};
 
 #[test]
 fn parity_manifest_loads_and_dataset_checksums_match() {
@@ -48,7 +60,7 @@ fn parity_specs_reference_existing_datasets() {
 }
 
 #[test]
-fn parity_specs_cover_baseline_algorithms() {
+fn parity_specs_cover_all_registered_algorithms() {
     let mut algorithms: Vec<_> = CUGRAPH_PARITY_SPECS.iter().map(|spec| spec.algorithm).collect();
     algorithms.sort();
     algorithms.dedup();
@@ -57,13 +69,13 @@ fn parity_specs_cover_baseline_algorithms() {
     sorted_registered.sort();
     assert_eq!(
         algorithms, sorted_registered,
-        "Milestone 1a parity registry must cover every currently registered cuGraph algorithm exactly once",
+        "parity registry must cover every currently registered cuGraph algorithm exactly once",
     );
     assert!(
         CUGRAPH_PARITY_SPECS
             .iter()
             .any(|spec| spec.algorithm == CugraphAlgorithm::PageRank && spec.dataset == "karate"),
-        "Milestone 1a must keep at least the karate PageRank entry as the canonical baseline",
+        "the registry must keep at least the karate PageRank entry as the canonical baseline",
     );
 }
 
@@ -124,11 +136,9 @@ fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
     }
     assert!(mismatches.is_empty(), "local oracle JSON disagrees with parity spec:\n{}", mismatches.join("\n"),);
     if !missing.is_empty() {
-        // Milestone 1a lands the infrastructure ahead of running Python
-        // cuGraph against the local datasets. The harness reports a
-        // structured "needs refresh" message rather than failing the
-        // default CPU-only run, but emits it on stderr so refreshes
-        // are visible in CI logs.
+        // The CPU lookup test reports a structured refresh command rather
+        // than failing so fixture preparation remains diagnosable. The GPU
+        // acceptance test above requires every oracle to be present.
         eprintln!(
             "cuGraph parity harness: {} oracle JSON file(s) need refresh; {} present.\n{}",
             missing.len(),
@@ -149,4 +159,151 @@ fn parity_data_root_lives_under_workspace_fixture_dir() {
     let root = data_root();
     let suffix = std::path::Path::new("fixture").join("data").join("cugraph");
     assert!(root.ends_with(suffix), "parity data root unexpected: {}", root.display());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_registered_algorithms_execute_on_gpu_and_match_oracles() {
+    let loaded = datasets::load_and_verify().expect("the committed cuGraph parity fixture must be available");
+    let state = parity_session_state();
+    let ctx = SessionContext::new_with_state(state);
+    register_datasets(&ctx, &loaded).await;
+    register_personalization_table(&ctx);
+
+    let mut executed = BTreeSet::new();
+    for spec in CUGRAPH_PARITY_SPECS {
+        let document = match oracle::lookup(&loaded.data_root, &loaded.manifest, spec) {
+            OracleLookup::Present { document, .. } => document,
+            OracleLookup::Missing { path } => panic!(
+                "{}: oracle missing at {}\n{}",
+                spec.label,
+                path.display(),
+                oracle::refresh_hint(&loaded.data_root, spec)
+            ),
+            OracleLookup::Invalid { path, reason } | OracleLookup::Mismatch { path, reason } => {
+                panic!("{}: oracle at {} rejected: {reason}", spec.label, path.display())
+            },
+        };
+        let sql = parity_sql(spec);
+        let df = ctx
+            .sql(&sql)
+            .await
+            .unwrap_or_else(|error| panic!("{}: SQL planning failed for {sql}: {error}", spec.label));
+        let plan = df
+            .create_physical_plan()
+            .await
+            .unwrap_or_else(|error| panic!("{}: physical planning failed for {sql}: {error}", spec.label));
+        assert!(
+            plan_contains_cugraph_exec(plan.as_ref()),
+            "{}: parity query did not plan a CugraphAlgoExec:\n{}",
+            spec.label,
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(false)
+        );
+        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+            .await
+            .unwrap_or_else(|error| panic!("{}: GPU execution failed for {sql}: {error}", spec.label));
+        let reference_vertices = match spec.truth_source {
+            ParityTruthSource::RefCsv { path } => Some(
+                load_ref_csv_vertex_list(&loaded.data_root, path)
+                    .unwrap_or_else(|error| panic!("{}: reference CSV failed: {error}", spec.label)),
+            ),
+            ParityTruthSource::OracleJson => None,
+        };
+        let dataset = loaded.manifest.dataset(spec.dataset).expect("parity spec dataset was validated");
+        let edges = datasets::load_edges(&loaded.data_root, dataset)
+            .unwrap_or_else(|error| panic!("{}: dataset edge load failed: {error}", spec.label));
+        compare::compare(spec, &batches, &document, reference_vertices.as_deref(), &edges)
+            .unwrap_or_else(|reason| panic!("{}: GPU/oracle parity failed: {reason}\nSQL: {sql}", spec.label));
+        assert!(executed.insert(spec.algorithm), "algorithm {:?} executed more than once", spec.algorithm);
+    }
+
+    let registered = CUGRAPH_OPERATION_REGISTRY.iter().map(|definition| definition.algorithm).collect();
+    assert_eq!(executed, registered, "the GPU parity run must execute every registered algorithm exactly once");
+}
+
+fn parity_session_state() -> datafusion::execution::SessionState {
+    let config = SessionConfig::new()
+        .with_target_partitions(1)
+        .with_repartition_file_scans(false)
+        .with_repartition_aggregations(false)
+        .with_repartition_sorts(false);
+    let backend = NexusGpuBackend::builder()
+        .fallback_policy(GpuFallbackPolicy::GpuPreferred)
+        .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic))
+        .build()
+        .expect("parity backend must build");
+    backend
+        .install_on_with_cugraph_sql(
+            SessionStateBuilder::new().with_config(config).with_default_features(),
+            CugraphSqlConfig::default(),
+        )
+        .expect("cuGraph SQL must install")
+        .build()
+}
+
+async fn register_datasets(ctx: &SessionContext, loaded: &datasets::LoadedDatasets) {
+    let schema = Schema::new(vec![
+        Field::new("dst", DataType::Int32, false),
+        Field::new("src", DataType::Int32, false),
+        Field::new("weight", DataType::Float32, false),
+    ]);
+    for dataset in &loaded.manifest.datasets {
+        assert_eq!(dataset.format, "space_separated_edges", "unsupported parity dataset format");
+        assert_eq!(dataset.edge_columns, ["dst", "src", "weight"], "unexpected parity dataset columns");
+        let table_name = dataset_table_name(&dataset.id);
+        ctx.register_csv(
+            &table_name,
+            loaded.data_root.join(&dataset.path).to_str().expect("fixture path must be UTF-8"),
+            CsvReadOptions::new().schema(&schema).has_header(false).delimiter(b' '),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("failed to register parity dataset '{}': {error}", dataset.id));
+    }
+}
+
+fn register_personalization_table(ctx: &SessionContext) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Int32, false),
+        Field::new("value", DataType::Float32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![0])) as ArrayRef, Arc::new(Float32Array::from(vec![1.0])) as ArrayRef],
+    )
+    .expect("personalization batch must build");
+    let table = MemTable::try_new(schema, vec![vec![batch]]).expect("personalization table must build");
+    ctx.register_table("ppr_seeds", Arc::new(table)).expect("personalization table must register");
+}
+
+fn parity_sql(spec: &datafusion_nexus::graph_sql::parity::ParitySpec) -> String {
+    let mut options = serde_json::from_str::<Map<String, Value>>(spec.params_json)
+        .unwrap_or_else(|error| panic!("{} has invalid params JSON: {error}", spec.label));
+    let source = options.remove("source_vertex").and_then(|value| value.as_i64());
+    options.remove("personalization_vertices");
+    options.remove("personalization_values");
+    let options = serde_json::to_string(&options).expect("parity options must serialize");
+    let table = dataset_table_name(spec.dataset);
+    let args = if matches!(spec.algorithm, CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp) {
+        format!(
+            "'{table}', {}, 'src', 'dst', 'weight', '{}'",
+            source.unwrap_or_else(|| panic!("{} is missing source_vertex", spec.label)),
+            options.replace('\'', "''")
+        )
+    } else {
+        format!("'{table}', 'src', 'dst', 'weight', '{}'", options.replace('\'', "''"))
+    };
+    let order_by = match spec.algorithm {
+        CugraphAlgorithm::EdgeBetweennessCentrality => "source, destination",
+        CugraphAlgorithm::KCore | CugraphAlgorithm::MinimumSpanningTree => "src, dst",
+        _ => "vertex",
+    };
+    format!("SELECT * FROM {}({args}) ORDER BY {order_by}", spec.algorithm.function_name())
+}
+
+fn dataset_table_name(dataset: &str) -> String {
+    format!("parity_{dataset}")
+}
+
+fn plan_contains_cugraph_exec(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> bool {
+    plan.name() == "CugraphAlgoExec"
+        || plan.children().into_iter().any(|child| plan_contains_cugraph_exec(child.as_ref()))
 }
