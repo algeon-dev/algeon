@@ -2,6 +2,7 @@
 #define CUDF_RUST_MEMORY_RESOURCE_H
 
 #include "error.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -26,51 +27,46 @@ cudf_status_t cudf_memory_resource_create_cuda(cudf_memory_resource_handle* out)
 ///
 /// This does not change the allocator used by unrelated `cudf-sys` APIs.
 cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
-                                                size_t maximum_pool_size,
-                                                cudf_memory_resource_handle* out);
+                                               size_t maximum_pool_size,
+                                               cudf_memory_resource_handle* out);
 
 /// Destroy a memory resource handle on the CUDA device that owns it.
 ///
 /// The shim temporarily switches the calling thread to `device`, destroys the
 /// resource, then restores the previous device before returning.
-cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle,
-                                           int32_t device);
+cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle, int32_t device);
 
 /// Borrow the underlying `device_memory_resource*` from an owning memory
 /// resource handle.
 ///
 /// This does not transfer ownership. `*out` is valid only while `handle`
 /// remains alive.
-cudf_status_t cudf_memory_resource_raw(
-    cudf_memory_resource_handle handle, void** out);
+cudf_status_t cudf_memory_resource_raw(cudf_memory_resource_handle handle, void** out);
 
 /// Create a statistics-wrapped memory resource for allocator-sensitive tests.
 ///
 /// Test-only hook. The returned handle owns an RMM statistics adaptor and can
 /// be inspected with `cudf_test_memory_resource_allocation_count`.
-cudf_status_t cudf_test_memory_resource_create_stats(
-    cudf_memory_resource_handle* out);
+cudf_status_t cudf_test_memory_resource_create_stats(cudf_memory_resource_handle* out);
 
 /// Read the cumulative allocation count from a statistics memory resource.
 ///
 /// Test-only hook. Fails if `handle` does not refer to a statistics-enabled
 /// memory resource created by `cudf_test_memory_resource_create_stats`.
-cudf_status_t cudf_test_memory_resource_allocation_count(
-    cudf_memory_resource_handle handle, int64_t* out);
+cudf_status_t cudf_test_memory_resource_allocation_count(cudf_memory_resource_handle handle,
+                                                         int64_t* out);
 
 /// Resolve a memory-resource handle to its underlying `device_memory_resource*`.
 ///
 /// Test-only hook for debug assertions that need the exact pointer recorded by
 /// `cudf_resolve_exec_options`.
-cudf_status_t cudf_test_memory_resource_raw(
-    cudf_memory_resource_handle handle, void** out);
+cudf_status_t cudf_test_memory_resource_raw(cudf_memory_resource_handle handle, void** out);
 
 /// Install the memory resource owned by `handle` as the process-global current
 /// device resource.
 ///
 /// Test-only hook for allocator-sensitive integration tests.
-cudf_status_t cudf_test_memory_resource_set_current(
-    cudf_memory_resource_handle handle);
+cudf_status_t cudf_test_memory_resource_set_current(cudf_memory_resource_handle handle);
 
 /// Install `raw_mr` as the process-global current device resource.
 ///

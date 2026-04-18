@@ -1,10 +1,11 @@
 #ifndef CUDF_RUST_UNARY_H
 #define CUDF_RUST_UNARY_H
 
-#include "error.h"
 #include "column.h"
+#include "error.h"
 #include "execution_context.h"
 #include "types.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -52,8 +53,7 @@ cudf_status_t cudf_unary_operation_ex(cudf_column_view_handle input,
                                       const cudf_exec_options_t* options);
 
 /// Return a boolean column: true where elements are null.
-cudf_status_t cudf_is_null(cudf_column_view_handle input,
-                           cudf_column_handle* out);
+cudf_status_t cudf_is_null(cudf_column_view_handle input, cudf_column_handle* out);
 
 /// Return a boolean column: true where elements are null with explicit execution context.
 /// When `options->mr` is non-NULL, it must outlive the returned column.
@@ -62,8 +62,7 @@ cudf_status_t cudf_is_null_ex(cudf_column_view_handle input,
                               const cudf_exec_options_t* options);
 
 /// Return a boolean column: true where elements are valid (non-null).
-cudf_status_t cudf_is_valid(cudf_column_view_handle input,
-                            cudf_column_handle* out);
+cudf_status_t cudf_is_valid(cudf_column_view_handle input, cudf_column_handle* out);
 
 /// Return a boolean column: true where elements are valid with explicit execution context.
 /// When `options->mr` is non-NULL, it must outlive the returned column.
@@ -89,8 +88,7 @@ cudf_status_t cudf_is_supported_cast(cudf_data_type_handle from_type,
                                      int32_t* out);
 
 /// Return a boolean column: true where elements are NaN.
-cudf_status_t cudf_is_nan(cudf_column_view_handle input,
-                          cudf_column_handle* out);
+cudf_status_t cudf_is_nan(cudf_column_view_handle input, cudf_column_handle* out);
 
 /// Return a boolean column: true where elements are NaN with explicit execution context.
 /// When `options->mr` is non-NULL, it must outlive the returned column.
@@ -99,8 +97,7 @@ cudf_status_t cudf_is_nan_ex(cudf_column_view_handle input,
                              const cudf_exec_options_t* options);
 
 /// Return a boolean column: true where elements are not NaN.
-cudf_status_t cudf_is_not_nan(cudf_column_view_handle input,
-                              cudf_column_handle* out);
+cudf_status_t cudf_is_not_nan(cudf_column_view_handle input, cudf_column_handle* out);
 
 /// Return a boolean column: true where elements are not NaN with explicit execution context.
 /// When `options->mr` is non-NULL, it must outlive the returned column.

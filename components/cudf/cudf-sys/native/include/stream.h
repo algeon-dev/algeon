@@ -2,6 +2,7 @@
 #define CUDF_RUST_STREAM_H
 
 #include "error.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus

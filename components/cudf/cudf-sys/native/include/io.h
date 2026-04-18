@@ -4,6 +4,7 @@
 #include "error.h"
 #include "execution_context.h"
 #include "table.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -33,7 +34,8 @@ extern "C" {
 cudf_status_t cudf_io_read_parquet(const char* filepath,
                                    const char** columns,
                                    int32_t num_columns,
-                                   int64_t skip_rows, int64_t num_rows,
+                                   int64_t skip_rows,
+                                   int64_t num_rows,
                                    const int32_t* row_groups,
                                    int32_t num_row_groups,
                                    cudf_table_handle* out);
@@ -44,13 +46,14 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
 /// NULL, uses cuDF's default stream and current device memory resource.
 /// When `options->mr` is non-NULL, it must outlive the returned table.
 cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
-                                       const char** columns,
-                                       int32_t num_columns,
-                                       int64_t skip_rows, int64_t num_rows,
-                                       const int32_t* row_groups,
-                                       int32_t num_row_groups,
-                                       cudf_table_handle* out,
-                                       const cudf_exec_options_t* options);
+                                      const char** columns,
+                                      int32_t num_columns,
+                                      int64_t skip_rows,
+                                      int64_t num_rows,
+                                      const int32_t* row_groups,
+                                      int32_t num_row_groups,
+                                      cudf_table_handle* out,
+                                      const cudf_exec_options_t* options);
 
 /// Read a Parquet file, returning the table and column names.
 /// `out_names` is populated with `out_num_names` null-terminated strings.
@@ -66,33 +69,33 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
 /// - `num_rows` must be >= -1 (`-1` means read all remaining rows)
 /// - if `num_row_groups > 0`, `row_groups` must be non-NULL
 /// - if `num_row_groups > 0`, `skip_rows` must be 0 and `num_rows` must be -1
-cudf_status_t cudf_io_read_parquet_with_metadata(
-    const char* filepath,
-    const char** columns,
-    int32_t num_columns,
-    int64_t skip_rows, int64_t num_rows,
-    const int32_t* row_groups,
-    int32_t num_row_groups,
-    cudf_table_handle* out_table,
-    char*** out_names,
-    int32_t* out_num_names);
+cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
+                                                 const char** columns,
+                                                 int32_t num_columns,
+                                                 int64_t skip_rows,
+                                                 int64_t num_rows,
+                                                 const int32_t* row_groups,
+                                                 int32_t num_row_groups,
+                                                 cudf_table_handle* out_table,
+                                                 char*** out_names,
+                                                 int32_t* out_num_names);
 
 /// Read Parquet with metadata and explicit execution context.
 ///
 /// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
 /// NULL, uses cuDF's default stream and current device memory resource.
 /// When `options->mr` is non-NULL, it must outlive the returned table.
-cudf_status_t cudf_io_read_parquet_with_metadata_ex(
-    const char* filepath,
-    const char** columns,
-    int32_t num_columns,
-    int64_t skip_rows, int64_t num_rows,
-    const int32_t* row_groups,
-    int32_t num_row_groups,
-    cudf_table_handle* out_table,
-    char*** out_names,
-    int32_t* out_num_names,
-    const cudf_exec_options_t* options);
+cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
+                                                    const char** columns,
+                                                    int32_t num_columns,
+                                                    int64_t skip_rows,
+                                                    int64_t num_rows,
+                                                    const int32_t* row_groups,
+                                                    int32_t num_row_groups,
+                                                    cudf_table_handle* out_table,
+                                                    char*** out_names,
+                                                    int32_t* out_num_names,
+                                                    const cudf_exec_options_t* options);
 
 /// Free column name array returned by `cudf_io_read_parquet_with_metadata`.
 void cudf_io_free_column_names(char** names, int32_t num_names);
@@ -115,26 +118,29 @@ cudf_status_t cudf_io_write_parquet(cudf_table_view_handle table,
 /// NOTE: libcudf's write_parquet only accepts stream, not mr.
 /// The mr field in options is ignored for writes.
 cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
-                                        const char* filepath,
-                                        const char** column_names,
-                                        int32_t num_columns,
-                                        int32_t row_group_size_rows,
-                                        const cudf_exec_options_t* options);
+                                       const char* filepath,
+                                       const char** column_names,
+                                       int32_t num_columns,
+                                       int32_t row_group_size_rows,
+                                       const cudf_exec_options_t* options);
 
 // ---------------------------------------------------------------------------
 // CSV
 // ---------------------------------------------------------------------------
 
 /// Read a CSV file into a table.
-cudf_status_t cudf_io_read_csv(const char* filepath, char delimiter,
-                               int32_t has_header, cudf_table_handle* out);
+cudf_status_t cudf_io_read_csv(const char* filepath,
+                               char delimiter,
+                               int32_t has_header,
+                               cudf_table_handle* out);
 
 /// Read a CSV file into a table with explicit execution context.
 ///
 /// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
 /// NULL, uses cuDF's default stream and current device memory resource.
 /// When `options->mr` is non-NULL, it must outlive the returned table.
-cudf_status_t cudf_io_read_csv_ex(const char* filepath, char delimiter,
+cudf_status_t cudf_io_read_csv_ex(const char* filepath,
+                                  char delimiter,
                                   int32_t has_header,
                                   cudf_table_handle* out,
                                   const cudf_exec_options_t* options);
@@ -148,7 +154,8 @@ cudf_status_t cudf_io_read_csv_ex(const char* filepath, char delimiter,
 cudf_status_t cudf_io_write_csv(cudf_table_view_handle table,
                                 const char* filepath,
                                 const char** column_names,
-                                int32_t num_columns, char delimiter,
+                                int32_t num_columns,
+                                char delimiter,
                                 int32_t include_header);
 
 /// Write a table to a CSV file with explicit execution context.
@@ -169,28 +176,30 @@ cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
 
 /// Read a JSON file into a table.
 /// `lines`: 1 for JSON Lines (NDJSON), 0 for standard JSON.
-cudf_status_t cudf_io_read_json(const char* filepath, int32_t lines,
-                                cudf_table_handle* out);
+cudf_status_t cudf_io_read_json(const char* filepath, int32_t lines, cudf_table_handle* out);
 
 /// Read JSON with explicit execution context.
-cudf_status_t cudf_io_read_json_ex(const char* filepath, int32_t lines,
+cudf_status_t cudf_io_read_json_ex(const char* filepath,
+                                   int32_t lines,
                                    cudf_table_handle* out,
                                    const cudf_exec_options_t* options);
 
 /// Read a JSON file, returning the table and column names.
 /// `out_names` is populated with `out_num_names` null-terminated strings.
 /// The caller must free the names with `cudf_io_free_column_names()`.
-cudf_status_t cudf_io_read_json_with_metadata(
-    const char* filepath, int32_t lines,
-    cudf_table_handle* out_table,
-    char*** out_names, int32_t* out_num_names);
+cudf_status_t cudf_io_read_json_with_metadata(const char* filepath,
+                                              int32_t lines,
+                                              cudf_table_handle* out_table,
+                                              char*** out_names,
+                                              int32_t* out_num_names);
 
 /// Read JSON with metadata and explicit execution context.
-cudf_status_t cudf_io_read_json_with_metadata_ex(
-    const char* filepath, int32_t lines,
-    cudf_table_handle* out_table,
-    char*** out_names, int32_t* out_num_names,
-    const cudf_exec_options_t* options);
+cudf_status_t cudf_io_read_json_with_metadata_ex(const char* filepath,
+                                                 int32_t lines,
+                                                 cudf_table_handle* out_table,
+                                                 char*** out_names,
+                                                 int32_t* out_num_names,
+                                                 const cudf_exec_options_t* options);
 
 /// Write a table to a JSON file.
 /// `lines`: 1 for JSON Lines (NDJSON), 0 for standard JSON.
@@ -203,14 +212,16 @@ cudf_status_t cudf_io_write_json(cudf_table_view_handle table,
                                  const char* filepath,
                                  const char** column_names,
                                  int32_t num_columns,
-                                 int32_t lines, int32_t include_nulls);
+                                 int32_t lines,
+                                 int32_t include_nulls);
 
 /// Write JSON with explicit execution context.
 cudf_status_t cudf_io_write_json_ex(cudf_table_view_handle table,
                                     const char* filepath,
                                     const char** column_names,
                                     int32_t num_columns,
-                                    int32_t lines, int32_t include_nulls,
+                                    int32_t lines,
+                                    int32_t include_nulls,
                                     const cudf_exec_options_t* options);
 
 #ifdef __cplusplus

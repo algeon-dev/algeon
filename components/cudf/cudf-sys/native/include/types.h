@@ -2,6 +2,7 @@
 #define CUDF_RUST_TYPES_H
 
 #include "error.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -47,8 +48,7 @@ typedef enum {
 typedef void* cudf_data_type_handle;
 
 /// Create a data_type from type id (scale=0).
-cudf_status_t cudf_data_type_create(cudf_type_id_t type_id,
-                                    cudf_data_type_handle* out);
+cudf_status_t cudf_data_type_create(cudf_type_id_t type_id, cudf_data_type_handle* out);
 
 /// Create a data_type with explicit scale (for DECIMAL types).
 cudf_status_t cudf_data_type_create_fixed_point(cudf_type_id_t type_id,
@@ -59,8 +59,7 @@ cudf_status_t cudf_data_type_create_fixed_point(cudf_type_id_t type_id,
 void cudf_data_type_destroy(cudf_data_type_handle handle);
 
 /// Get the type_id from a data_type.
-cudf_status_t cudf_data_type_id(cudf_data_type_handle handle,
-                                cudf_type_id_t* out);
+cudf_status_t cudf_data_type_id(cudf_data_type_handle handle, cudf_type_id_t* out);
 
 /// Get the scale from a data_type.
 cudf_status_t cudf_data_type_scale(cudf_data_type_handle handle, int32_t* out);

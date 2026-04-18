@@ -27,6 +27,43 @@ option(CUDF_USE_PER_THREAD_DEFAULT_STREAM "Build with per-thread default stream"
 option(CUDA_STATIC_RUNTIME "Statically link the CUDA runtime" OFF)
 
 # ##################################################################################################
+# * lint configuration ----------------------------------------------------------------------------
+
+set(CUDF_RUST_CLANG_TIDY_EXE
+    "${CUDF_RUST_CLANG_TIDY_EXE}"
+    CACHE FILEPATH "Path to clang-tidy executable used for cudf-sys/native"
+)
+if(NOT CUDF_RUST_CLANG_TIDY_EXE)
+  find_program(
+    CUDF_RUST_CLANG_TIDY_EXE
+    NAMES "clang-tidy"
+    DOC "Path to clang-tidy executable used for cudf-sys/native" REQUIRED
+  )
+endif()
+
+if(NOT CUDF_RUST_CLANG_TIDY_CONFIG_FILE)
+  set(CUDF_RUST_CLANG_TIDY_CONFIG_FILE "${PROJECT_SOURCE_DIR}/.clang-tidy")
+endif()
+set(CUDF_RUST_CLANG_TIDY_CONFIG_FILE
+    "${CUDF_RUST_CLANG_TIDY_CONFIG_FILE}"
+    CACHE FILEPATH "Path to the cudf-sys/native clang-tidy configuration"
+)
+if(NOT EXISTS "${CUDF_RUST_CLANG_TIDY_CONFIG_FILE}")
+  message(
+    FATAL_ERROR
+      "cudf-sys/native requires a clang-tidy config file at ${CUDF_RUST_CLANG_TIDY_CONFIG_FILE}"
+  )
+endif()
+
+function(enable_clang_tidy target)
+  set_target_properties(
+    ${target}
+    PROPERTIES CXX_CLANG_TIDY
+                 "${CUDF_RUST_CLANG_TIDY_EXE};--config-file=${CUDF_RUST_CLANG_TIDY_CONFIG_FILE};--extra-arg=-Qunused-arguments"
+  )
+endfunction()
+
+# ##################################################################################################
 # * compiler options ------------------------------------------------------------------------------
 
 rapids_find_package(CUDAToolkit REQUIRED)
@@ -123,6 +160,7 @@ add_library(
   src/abi_checks.cpp
   src/c_header_smoke.c
 )
+enable_clang_tidy(cudf_rust)
 
 target_include_directories(
   cudf_rust PUBLIC "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/src"

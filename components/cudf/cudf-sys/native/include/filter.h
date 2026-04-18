@@ -33,10 +33,10 @@ cudf_status_t cudf_apply_boolean_mask_ex(cudf_table_view_handle input,
 /// Node kinds for a validated row-predicate AST.
 typedef enum {
   CUDF_ROW_PREDICATE_NODE_COLUMN_REF = 0,
-  CUDF_ROW_PREDICATE_NODE_LITERAL = 1,
-  CUDF_ROW_PREDICATE_NODE_BINARY_OP = 2,
-  CUDF_ROW_PREDICATE_NODE_UNARY_OP = 3,
-  CUDF_ROW_PREDICATE_NODE_IS_NULL = 4,
+  CUDF_ROW_PREDICATE_NODE_LITERAL    = 1,
+  CUDF_ROW_PREDICATE_NODE_BINARY_OP  = 2,
+  CUDF_ROW_PREDICATE_NODE_UNARY_OP   = 3,
+  CUDF_ROW_PREDICATE_NODE_IS_NULL    = 4,
 } cudf_row_predicate_node_kind_t;
 
 /// One lowered row-predicate AST node.

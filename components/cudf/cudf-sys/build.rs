@@ -3,6 +3,7 @@ mod build_support;
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 fn emit_runtime_search_path(path: &Path) {
@@ -26,13 +27,60 @@ fn rerun_if_changed_recursive(dir: &Path) {
     }
 }
 
+fn ensure_file_exists(path: &Path, description: &str) {
+    if path.is_file() {
+        return;
+    }
+
+    panic!("required {description} was not found at {}", path.display());
+}
+
+fn run_clang_format_check(clang_format: &Path, config_path: &Path, lint_files: &[PathBuf]) {
+    let mut command = Command::new(clang_format);
+    command.arg("--dry-run").arg("--Werror");
+    command.arg(format!("--style=file:{}", config_path.display()));
+    for file in lint_files {
+        command.arg(file);
+    }
+
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run clang-format from {}: {error}", clang_format.display()));
+    if output.status.success() {
+        return;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    panic!(
+        "clang-format check failed for cudf-sys/native using config {}.\nstdout:\n{}\nstderr:\n{}",
+        config_path.display(),
+        stdout,
+        stderr
+    );
+}
+
 fn main() {
     let target_os =
         env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|error| panic!("failed to read CARGO_CFG_TARGET_OS: {error}"));
     build_support::ensure_supported_target_os(&target_os).unwrap_or_else(|error| panic!("{error}"));
 
-    let native_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("native");
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let native_dir = build_support::native_dir(&manifest_dir);
+    let clang_format =
+        build_support::find_required_executable("clang-format").unwrap_or_else(|error| panic!("{error}"));
+    let clang_tidy = build_support::find_required_executable("clang-tidy").unwrap_or_else(|error| panic!("{error}"));
+    let clang_format_config = build_support::clang_format_config_path(&manifest_dir);
+    let clang_tidy_config = build_support::clang_tidy_config_path(&manifest_dir);
+    ensure_file_exists(&clang_format_config, "clang-format config");
+    ensure_file_exists(&clang_tidy_config, "clang-tidy config");
+    let lint_files =
+        build_support::collect_native_clang_lint_files(&manifest_dir).unwrap_or_else(|error| panic!("{error}"));
+    run_clang_format_check(&clang_format, &clang_format_config, &lint_files);
+
     let mut config = cmake::Config::new(&native_dir);
+    config.define("CUDF_RUST_CLANG_TIDY_EXE", &clang_tidy);
+    config.define("CUDF_RUST_CLANG_TIDY_CONFIG_FILE", &clang_tidy_config);
 
     if let Some(cuda_static_runtime) =
         build_support::normalized_cmake_bool_from_env("CUDA_STATIC_RUNTIME").unwrap_or_else(|error| panic!("{error}"))
@@ -55,6 +103,8 @@ fn main() {
     rerun_if_changed_recursive(&native_dir.join("src"));
     rerun_if_changed_recursive(&native_dir.join("include"));
     println!("cargo:rerun-if-changed={}", native_dir.join("CMakeLists.txt").display());
+    println!("cargo:rerun-if-changed={}", native_dir.join(".clang-tidy").display());
+    println!("cargo:rerun-if-changed={}", clang_format_config.display());
     println!("cargo:rerun-if-changed=build_support.rs");
     println!("cargo:rerun-if-changed=native/cmake/cargo-link.txt.in");
     println!("cargo:rerun-if-env-changed=CUDF_INSTALL_DIR");
@@ -62,4 +112,5 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=CUDA_STATIC_RUNTIME");
+    println!("cargo:rerun-if-env-changed=PATH");
 }

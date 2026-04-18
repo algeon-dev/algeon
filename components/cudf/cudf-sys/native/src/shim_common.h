@@ -4,7 +4,9 @@
 #include "error.h"
 #include "owning_handle_fwd.hpp"
 #include "types.h"
+
 #include <cudf/types.hpp>
+
 #include <cstdint>
 #include <string>
 
@@ -19,36 +21,33 @@ cudf_status_t translate_io_exception();
 // Allocation failures must always surface as CUDF_ERROR_OUT_OF_MEMORY.
 // Most shim code relies on exception translation for this, but explicit OOM
 // checks are also allowed when they provide clearer context to Rust callers.
-#define CUDF_RUST_TRY  \
-  cudf_clear_error();  \
+#define CUDF_RUST_TRY \
+  cudf_clear_error(); \
   try
 
-#define CUDF_RUST_CATCH                  \
-  catch (...) {                          \
-    return translate_exception();        \
-  }
+#define CUDF_RUST_CATCH \
+  catch (...) { return translate_exception(); }
 
-#define CUDF_RUST_IO_CATCH               \
-  catch (...) {                          \
-    return translate_io_exception();     \
-  }
+#define CUDF_RUST_IO_CATCH \
+  catch (...) { return translate_io_exception(); }
 
 // Null-check macro that sets error and returns.
 //
 // Project rule for C-shim output parameters:
 // once an output pointer itself has been validated, initialize it immediately
 // so any later failure leaves caller-visible outputs in a predictable state.
-#define CUDF_RUST_NULL_CHECK(ptr, msg)            \
-  do {                                            \
-    if ((ptr) == nullptr) {                       \
-      set_error(msg);                             \
-      return CUDF_ERROR_NULL;                     \
-    }                                             \
+#define CUDF_RUST_NULL_CHECK(ptr, msg) \
+  do {                                 \
+    if ((ptr) == nullptr) {            \
+      set_error(msg);                  \
+      return CUDF_ERROR_NULL;          \
+    }                                  \
   } while (0)
 
 inline cudf_status_t validate_c_string_array(char const* const* values,
                                              int32_t count,
-                                             char const* arg_name) {
+                                             char const* arg_name)
+{
   for (int32_t i = 0; i < count; ++i) {
     if (values[i] == nullptr) {
       set_error(std::string(arg_name) + " entry is null");
@@ -59,8 +58,6 @@ inline cudf_status_t validate_c_string_array(char const* const* values,
 }
 
 // Convert C enum to C++ cudf::type_id.
-inline cudf::type_id to_cudf_type_id(cudf_type_id_t id) {
-  return static_cast<cudf::type_id>(id);
-}
+inline cudf::type_id to_cudf_type_id(cudf_type_id_t id) { return static_cast<cudf::type_id>(id); }
 
 #endif  // CUDF_RUST_SHIM_COMMON_H

@@ -16,15 +16,15 @@
 #include "unary.h"
 
 #include <cudf/binaryop.hpp>
-#include <cudf/strings/side_type.hpp>
 #include <cudf/copying.hpp>
 #include <cudf/reduction.hpp>
 #include <cudf/stream_compaction.hpp>
+#include <cudf/strings/side_type.hpp>
 #include <cudf/types.hpp>
 #include <cudf/unary.hpp>
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <type_traits>
 
 static_assert(sizeof(cudf_status_t) == sizeof(int32_t), "cudf_status_t must be 32-bit");
@@ -33,8 +33,7 @@ static_assert(sizeof(cudf_order_t) == sizeof(int32_t), "cudf_order_t must be 32-
 static_assert(sizeof(cudf_null_order_t) == sizeof(int32_t), "cudf_null_order_t must be 32-bit");
 static_assert(sizeof(cudf_aggregation_kind_t) == sizeof(int32_t),
               "cudf_aggregation_kind_t must be 32-bit");
-static_assert(sizeof(cudf_null_policy_t) == sizeof(int32_t),
-              "cudf_null_policy_t must be 32-bit");
+static_assert(sizeof(cudf_null_policy_t) == sizeof(int32_t), "cudf_null_policy_t must be 32-bit");
 static_assert(sizeof(cudf_null_equality_t) == sizeof(int32_t),
               "cudf_null_equality_t must be 32-bit");
 static_assert(sizeof(cudf_unary_operator_t) == sizeof(int32_t),
@@ -52,8 +51,7 @@ static_assert(sizeof(cudf_stream_compaction_null_equality_t) == sizeof(int32_t),
               "cudf_stream_compaction_null_equality_t must be 32-bit");
 static_assert(sizeof(cudf_stream_compaction_nan_equality_t) == sizeof(int32_t),
               "cudf_stream_compaction_nan_equality_t must be 32-bit");
-static_assert(sizeof(cudf_strip_side_t) == sizeof(int32_t),
-              "cudf_strip_side_t must be 32-bit");
+static_assert(sizeof(cudf_strip_side_t) == sizeof(int32_t), "cudf_strip_side_t must be 32-bit");
 static_assert(std::is_standard_layout_v<cudf_exec_options_t>,
               "cudf_exec_options_t must be standard layout");
 static_assert(offsetof(cudf_exec_options_t, struct_size) == 0,
@@ -88,20 +86,23 @@ static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->unary_op) == sizeof(
               "cudf_row_predicate_node_t::unary_op must be 32-bit");
 static_assert(sizeof(((cudf_row_predicate_node_t*)nullptr)->literal) == sizeof(cudf_scalar_handle),
               "cudf_row_predicate_node_t::literal must match cudf_scalar_handle width");
-static_assert(offsetof(cudf_row_predicate_node_t, lhs_index) > offsetof(cudf_row_predicate_node_t, kind),
+static_assert(offsetof(cudf_row_predicate_node_t, lhs_index) >
+                offsetof(cudf_row_predicate_node_t, kind),
               "cudf_row_predicate_node_t::lhs_index must follow kind");
-static_assert(offsetof(cudf_row_predicate_node_t, rhs_index) > offsetof(cudf_row_predicate_node_t, lhs_index),
+static_assert(offsetof(cudf_row_predicate_node_t, rhs_index) >
+                offsetof(cudf_row_predicate_node_t, lhs_index),
               "cudf_row_predicate_node_t::rhs_index must follow lhs_index");
-static_assert(
-    offsetof(cudf_row_predicate_node_t, column_index) > offsetof(cudf_row_predicate_node_t, rhs_index),
-    "cudf_row_predicate_node_t::column_index must follow rhs_index");
-static_assert(
-    offsetof(cudf_row_predicate_node_t, binary_op) > offsetof(cudf_row_predicate_node_t, column_index),
-    "cudf_row_predicate_node_t::binary_op must follow column_index");
-static_assert(
-    offsetof(cudf_row_predicate_node_t, unary_op) > offsetof(cudf_row_predicate_node_t, binary_op),
-    "cudf_row_predicate_node_t::unary_op must follow binary_op");
-static_assert(offsetof(cudf_row_predicate_node_t, literal) > offsetof(cudf_row_predicate_node_t, unary_op),
+static_assert(offsetof(cudf_row_predicate_node_t, column_index) >
+                offsetof(cudf_row_predicate_node_t, rhs_index),
+              "cudf_row_predicate_node_t::column_index must follow rhs_index");
+static_assert(offsetof(cudf_row_predicate_node_t, binary_op) >
+                offsetof(cudf_row_predicate_node_t, column_index),
+              "cudf_row_predicate_node_t::binary_op must follow column_index");
+static_assert(offsetof(cudf_row_predicate_node_t, unary_op) >
+                offsetof(cudf_row_predicate_node_t, binary_op),
+              "cudf_row_predicate_node_t::unary_op must follow binary_op");
+static_assert(offsetof(cudf_row_predicate_node_t, literal) >
+                offsetof(cudf_row_predicate_node_t, unary_op),
               "cudf_row_predicate_node_t::literal must follow unary_op");
 
 static_assert(CUDF_SUCCESS == 0);
@@ -130,14 +131,20 @@ static_assert(CUDF_TYPE_FLOAT64 == static_cast<int>(cudf::type_id::FLOAT64));
 static_assert(CUDF_TYPE_BOOL8 == static_cast<int>(cudf::type_id::BOOL8));
 static_assert(CUDF_TYPE_TIMESTAMP_DAYS == static_cast<int>(cudf::type_id::TIMESTAMP_DAYS));
 static_assert(CUDF_TYPE_TIMESTAMP_SECONDS == static_cast<int>(cudf::type_id::TIMESTAMP_SECONDS));
-static_assert(CUDF_TYPE_TIMESTAMP_MILLISECONDS == static_cast<int>(cudf::type_id::TIMESTAMP_MILLISECONDS));
-static_assert(CUDF_TYPE_TIMESTAMP_MICROSECONDS == static_cast<int>(cudf::type_id::TIMESTAMP_MICROSECONDS));
-static_assert(CUDF_TYPE_TIMESTAMP_NANOSECONDS == static_cast<int>(cudf::type_id::TIMESTAMP_NANOSECONDS));
+static_assert(CUDF_TYPE_TIMESTAMP_MILLISECONDS ==
+              static_cast<int>(cudf::type_id::TIMESTAMP_MILLISECONDS));
+static_assert(CUDF_TYPE_TIMESTAMP_MICROSECONDS ==
+              static_cast<int>(cudf::type_id::TIMESTAMP_MICROSECONDS));
+static_assert(CUDF_TYPE_TIMESTAMP_NANOSECONDS ==
+              static_cast<int>(cudf::type_id::TIMESTAMP_NANOSECONDS));
 static_assert(CUDF_TYPE_DURATION_DAYS == static_cast<int>(cudf::type_id::DURATION_DAYS));
 static_assert(CUDF_TYPE_DURATION_SECONDS == static_cast<int>(cudf::type_id::DURATION_SECONDS));
-static_assert(CUDF_TYPE_DURATION_MILLISECONDS == static_cast<int>(cudf::type_id::DURATION_MILLISECONDS));
-static_assert(CUDF_TYPE_DURATION_MICROSECONDS == static_cast<int>(cudf::type_id::DURATION_MICROSECONDS));
-static_assert(CUDF_TYPE_DURATION_NANOSECONDS == static_cast<int>(cudf::type_id::DURATION_NANOSECONDS));
+static_assert(CUDF_TYPE_DURATION_MILLISECONDS ==
+              static_cast<int>(cudf::type_id::DURATION_MILLISECONDS));
+static_assert(CUDF_TYPE_DURATION_MICROSECONDS ==
+              static_cast<int>(cudf::type_id::DURATION_MICROSECONDS));
+static_assert(CUDF_TYPE_DURATION_NANOSECONDS ==
+              static_cast<int>(cudf::type_id::DURATION_NANOSECONDS));
 static_assert(CUDF_TYPE_DICTIONARY32 == static_cast<int>(cudf::type_id::DICTIONARY32));
 static_assert(CUDF_TYPE_STRING == static_cast<int>(cudf::type_id::STRING));
 static_assert(CUDF_TYPE_LIST == static_cast<int>(cudf::type_id::LIST));
@@ -239,7 +246,8 @@ static_assert(CUDF_BINARY_GREATER == static_cast<int>(cudf::binary_operator::GRE
 static_assert(CUDF_BINARY_LESS_EQUAL == static_cast<int>(cudf::binary_operator::LESS_EQUAL));
 static_assert(CUDF_BINARY_GREATER_EQUAL == static_cast<int>(cudf::binary_operator::GREATER_EQUAL));
 static_assert(CUDF_BINARY_NULL_EQUALS == static_cast<int>(cudf::binary_operator::NULL_EQUALS));
-static_assert(CUDF_BINARY_NULL_NOT_EQUALS == static_cast<int>(cudf::binary_operator::NULL_NOT_EQUALS));
+static_assert(CUDF_BINARY_NULL_NOT_EQUALS ==
+              static_cast<int>(cudf::binary_operator::NULL_NOT_EQUALS));
 static_assert(CUDF_BINARY_NULL_MAX == static_cast<int>(cudf::binary_operator::NULL_MAX));
 static_assert(CUDF_BINARY_NULL_MIN == static_cast<int>(cudf::binary_operator::NULL_MIN));
 

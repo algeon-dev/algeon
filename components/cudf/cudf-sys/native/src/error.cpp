@@ -11,26 +11,28 @@
 static thread_local std::string g_last_error_message;
 static thread_local bool g_has_error = false;
 
-void set_error(const std::string& msg) {
+void set_error(const std::string& msg)
+{
   g_last_error_message = msg;
-  g_has_error = true;
+  g_has_error          = true;
 }
 
-void set_error(const char* msg) {
+void set_error(const char* msg)
+{
   g_last_error_message = msg;
-  g_has_error = true;
+  g_has_error          = true;
 }
 
 extern "C" {
 
-const char* cudf_last_error_message(void) {
-  if (g_has_error) {
-    return g_last_error_message.c_str();
-  }
+const char* cudf_last_error_message(void)
+{
+  if (g_has_error) { return g_last_error_message.c_str(); }
   return nullptr;
 }
 
-void cudf_clear_error(void) {
+void cudf_clear_error(void)
+{
   g_has_error = false;
   g_last_error_message.clear();
 }
@@ -39,7 +41,8 @@ void cudf_clear_error(void) {
 
 namespace {
 
-cudf_status_t translate_exception_impl(cudf_status_t runtime_error_status) {
+cudf_status_t translate_exception_impl(cudf_status_t runtime_error_status)
+{
   try {
     throw;  // re-throw current exception
   } catch (cudf::fatal_cuda_error const& e) {
@@ -82,42 +85,38 @@ cudf_status_t translate_exception_impl(cudf_status_t runtime_error_status) {
 
 // Exception-catching helper used by all C shim functions.
 // Returns the appropriate cudf_status_t for the caught exception.
-cudf_status_t translate_exception() {
-  return translate_exception_impl(CUDF_ERROR_UNKNOWN);
-}
+cudf_status_t translate_exception() { return translate_exception_impl(CUDF_ERROR_UNKNOWN); }
 
-cudf_status_t translate_io_exception() {
-  return translate_exception_impl(CUDF_ERROR_IO);
-}
+cudf_status_t translate_io_exception() { return translate_exception_impl(CUDF_ERROR_IO); }
 
 extern "C" {
 
-cudf_status_t cudf_test_throw_runtime_error() {
+cudf_status_t cudf_test_throw_runtime_error()
+{
   cudf_clear_error();
   try {
     throw std::runtime_error("non-io runtime failure");
-  }
-  catch (...) {
+  } catch (...) {
     return translate_exception();
   }
 }
 
-cudf_status_t cudf_test_throw_bad_alloc() {
+cudf_status_t cudf_test_throw_bad_alloc()
+{
   cudf_clear_error();
   try {
     throw std::bad_alloc();
-  }
-  catch (...) {
+  } catch (...) {
     return translate_exception();
   }
 }
 
-cudf_status_t cudf_test_throw_invalid_argument() {
+cudf_status_t cudf_test_throw_invalid_argument()
+{
   cudf_clear_error();
   try {
     throw std::invalid_argument("invalid argument from test shim");
-  }
-  catch (...) {
+  } catch (...) {
     return translate_exception();
   }
 }
