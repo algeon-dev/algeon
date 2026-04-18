@@ -16,10 +16,17 @@ use crate::{
     runtime::execution_domain::ExecutionDomain,
 };
 
+#[allow(dead_code)]
+enum TableViewBacking<'a> {
+    None,
+    ColumnViews(Vec<ColumnView<'a>>),
+}
+
 /// A non-owning, immutable view of a GPU table.
 pub struct TableView<'a> {
     handle: NonNull<c_void>,
     domain: Arc<ExecutionDomain>,
+    _backing: TableViewBacking<'a>,
     _lifetime: PhantomData<&'a ()>,
 }
 
@@ -32,8 +39,21 @@ impl<'a> TableView<'a> {
         .with_operation(operation)
     }
 
+    fn from_raw_handle_with_backing(
+        handle: *mut c_void,
+        domain: Arc<ExecutionDomain>,
+        backing: TableViewBacking<'a>,
+    ) -> Self {
+        Self {
+            handle: NonNull::new(handle).expect("null handle on success"),
+            domain,
+            _backing: backing,
+            _lifetime: PhantomData,
+        }
+    }
+
     pub(crate) fn from_raw_handle(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
-        Self { handle: NonNull::new(handle).expect("null handle on success"), domain, _lifetime: PhantomData }
+        Self::from_raw_handle_with_backing(handle, domain, TableViewBacking::None)
     }
 
     /// Returns the number of columns.
@@ -142,8 +162,8 @@ impl<'a> TableView<'a> {
         Ok(Self::from_raw_handle(out, Arc::clone(&self.domain)))
     }
 
-    pub(crate) fn from_column_views_in_domain(
-        views: &[&ColumnView<'a>],
+    pub(crate) fn from_borrowed_column_views_in_domain(
+        views: Vec<ColumnView<'a>>,
         authoritative_domain: Option<Arc<ExecutionDomain>>,
         operation: &'static str,
     ) -> Result<Self> {
@@ -193,7 +213,17 @@ impl<'a> TableView<'a> {
             operation,
         )?;
 
-        Ok(Self::from_raw_handle(out, domain))
+        Ok(Self::from_raw_handle_with_backing(out, domain, TableViewBacking::ColumnViews(views)))
+    }
+
+    pub(crate) fn from_column_views_in_domain(
+        views: &[&ColumnView<'a>],
+        authoritative_domain: Option<Arc<ExecutionDomain>>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let retained_views: Vec<ColumnView<'a>> =
+            views.iter().map(|view| view.duplicate_with_operation(operation)).collect::<Result<Vec<_>>>()?;
+        Self::from_borrowed_column_views_in_domain(retained_views, authoritative_domain, operation)
     }
 
     /// Construct a `TableView` from a slice of `ColumnView`s.

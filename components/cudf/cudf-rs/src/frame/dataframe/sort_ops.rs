@@ -109,7 +109,7 @@ impl DataFrame {
         let result_table = if all_in_order {
             if let Some(exec_options) = exec_options.as_ref() {
                 sorting::sort_table_impl(
-                    tv.table(),
+                    &tv,
                     Some(&orders),
                     null_order_ref,
                     options.stable,
@@ -119,13 +119,13 @@ impl DataFrame {
                 )?
             } else {
                 let sort_fn = if options.stable { sorting::stable_sort } else { sorting::sort };
-                sort_fn(tv.table(), Some(&orders), null_order_ref)?
+                sort_fn(&tv, Some(&orders), null_order_ref)?
             }
         } else {
-            let keys_table = tv.table().select_columns(&key_indices)?;
+            let keys_table = tv.select_columns(&key_indices)?;
             if let Some(exec_options) = exec_options.as_ref() {
                 sorting::sort_by_key_impl(
-                    tv.table(),
+                    &tv,
                     &keys_table,
                     Some(&orders),
                     null_order_ref,
@@ -136,7 +136,7 @@ impl DataFrame {
                 )?
             } else {
                 let sort_by_key_fn = if options.stable { sorting::stable_sort_by_key } else { sorting::sort_by_key };
-                sort_by_key_fn(tv.table(), &keys_table, Some(&orders), null_order_ref)?
+                sort_by_key_fn(&tv, &keys_table, Some(&orders), null_order_ref)?
             }
         }
         .with_execution_domain(output_domain);

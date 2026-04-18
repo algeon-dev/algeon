@@ -2,7 +2,7 @@
 //!
 //! These tests protect user-visible behavior for the high-level APIs that take
 //! `Series` or plain Rust values, while keeping one low-level smoke path
-//! through `table_view()` plus `cudf::ops::*`.
+//! through `view()` plus `cudf::ops::*`.
 
 use cudf::{
     DataFrame, TypeId,
@@ -218,15 +218,15 @@ fn test_with_encoded_and_decoded_column_workflows() {
 }
 
 // ===========================================================================
-// 5. Advanced gather uses table_view() + low-level ops::copying
+// 5. Advanced gather uses view() + low-level ops::copying
 // ===========================================================================
 
 #[test]
-fn test_advanced_gather_still_works_via_table_view_and_ops() {
+fn test_advanced_gather_still_works_via_view_and_ops() {
     let df = sample_df(); // id: 10,20,30,40,50
     let indices = column_from_slice(&[0i32, 2, 4]).unwrap();
-    let table_view = df.table_view().unwrap();
-    let result = copying::gather(table_view.table(), &indices.view().unwrap()).unwrap();
+    let table_view = df.view().unwrap();
+    let result = copying::gather(&table_view, &indices.view().unwrap()).unwrap();
     let result = DataFrame::from_table(result, vec!["id".to_string(), "score".to_string()]).unwrap();
 
     assert_eq!(result.num_rows(), 3);
@@ -241,11 +241,11 @@ fn test_advanced_gather_still_works_via_table_view_and_ops() {
 }
 
 // ===========================================================================
-// 6. Advanced filter_isin uses table_view() + low-level ops
+// 6. Advanced filter_isin uses view() + low-level ops
 // ===========================================================================
 
 #[test]
-fn test_advanced_filter_isin_still_works_via_table_view_and_ops() {
+fn test_advanced_filter_isin_still_works_via_view_and_ops() {
     let df = sample_df(); // id: 10,20,30,40,50
     let values = column_from_slice(&[10i32, 30, 50]).unwrap();
     let values_view = values.view().unwrap();
@@ -253,8 +253,8 @@ fn test_advanced_filter_isin_still_works_via_table_view_and_ops() {
     let ids_view = ids.as_column_view().unwrap();
     let mask = search::contains(&values_view, &ids_view).unwrap();
     let mask_view = mask.view().unwrap();
-    let table_view = df.table_view().unwrap();
-    let result = low_level_filter::apply_boolean_mask(table_view.table(), &mask_view).unwrap();
+    let table_view = df.view().unwrap();
+    let result = low_level_filter::apply_boolean_mask(&table_view, &mask_view).unwrap();
     let result = DataFrame::from_table(result, vec!["id".to_string(), "score".to_string()]).unwrap();
 
     assert_eq!(result.num_rows(), 3);

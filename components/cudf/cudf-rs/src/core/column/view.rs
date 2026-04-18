@@ -46,6 +46,24 @@ impl<'a> ColumnView<'a> {
         &self.domain
     }
 
+    pub(crate) fn duplicate_with_operation(&self, operation: &'static str) -> Result<Self> {
+        let len = i32::try_from(self.len()?).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "column view length exceeds i32::MAX").with_operation(operation)
+        })?;
+
+        let mut duplicated = ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view_slice(self.handle.as_ptr(), 0, len, &mut duplicated) },
+            operation,
+        )?;
+
+        Ok(Self {
+            handle: NonNull::new(duplicated).expect("null duplicated column view handle on success"),
+            domain: Arc::clone(&self.domain),
+            _lifetime: PhantomData,
+        })
+    }
+
     #[doc(hidden)]
     pub fn __debug_execution_domain_kind(&self) -> &'static str {
         self.domain.debug_kind()

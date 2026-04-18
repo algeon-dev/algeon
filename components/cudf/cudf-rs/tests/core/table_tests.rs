@@ -165,6 +165,23 @@ fn test_table_view_from_column_views_single_column() {
 }
 
 #[test]
+fn test_table_view_from_column_views_retains_backing_after_source_views_drop() {
+    let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = column_from_slice(&[4i32, 5, 6]).unwrap();
+
+    let table_view = {
+        let v1 = c1.view().unwrap();
+        let v2 = c2.view().unwrap();
+        TableView::from_column_views(&[&v1, &v2]).unwrap()
+    };
+
+    assert_eq!(table_view.num_columns().unwrap(), 2);
+    assert_eq!(table_view.num_rows().unwrap(), 3);
+    assert_eq!(table_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(table_view.column(1).unwrap().to_vec::<i32>().unwrap(), vec![4, 5, 6]);
+}
+
+#[test]
 fn test_table_view_from_column_views_empty() {
     let err = TableView::from_column_views(&[]).unwrap_err();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);

@@ -128,7 +128,7 @@ impl DataFrame {
         let exec_options = output_domain.explicit_exec_options_raw();
         let tv = self.build_table_view()?;
         let result_table = filter::apply_row_predicate_impl(
-            tv.table(),
+            &tv,
             &lowered.nodes,
             lowered.root_index,
             &lowered.scalars,

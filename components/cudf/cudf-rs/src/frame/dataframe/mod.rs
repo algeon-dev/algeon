@@ -19,7 +19,6 @@ mod row_ops;
 mod row_predicate;
 mod select;
 mod sort_ops;
-mod table_view;
 
 #[doc(hidden)]
 pub use column_ops::IntoWithColumnExpr;
@@ -35,4 +34,3 @@ pub use io::{
 pub use owned::{DataFrame, DataFrameJoinResult};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
 pub use reshape::MeltOptions;
-pub use table_view::DataFrameTableView;

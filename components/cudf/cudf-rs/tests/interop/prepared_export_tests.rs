@@ -864,8 +864,8 @@ mod device_export_contracts {
         let expected_stream = frame.__debug_execution_domain_stream_value();
 
         let frame_export = frame.try_prepare_device_table_export().unwrap();
-        let table_view = frame.table_view().unwrap();
-        let table_export = table_view.table().try_prepare_device_table_export().unwrap();
+        let table_view = frame.view().unwrap();
+        let table_export = table_view.try_prepare_device_table_export().unwrap();
 
         assert_eq!(frame_export.table().num_rows(), 3);
         assert_eq!(frame_export.table().names().unwrap(), expected_names(&["id", "value"]).as_slice());
