@@ -1,4 +1,6 @@
 //! Integration tests for DataFrame metadata snapshots via `info()`.
+use cudf::testing::prelude::*;
+
 
 use cudf::{DataFrame, DataFrameInfo, DataType, DataTypeCount, InfoDetail, Series, TypeId, ops::dictionary};
 use cudf_sys::{cudf_test_exec_last_stream_value, cudf_test_exec_reset_observation};
@@ -171,7 +173,7 @@ fn test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_
 #[test]
 fn test_info_payload_and_device_allocated_memory_for_dictionary_column() {
     let plain = crate::common::series("plain", &["beta", "alpha", "beta", "gamma"]).unwrap();
-    let dict = dictionary::encode(&plain.as_column_view().unwrap(), TypeId::Int32).unwrap();
+    let dict = dictionary::encode(&plain.view().unwrap(), TypeId::Int32).unwrap();
     let category = Series::from_column(dict).unwrap().rename("category");
     let df = DataFrame::from_series([category]).unwrap();
 
@@ -221,7 +223,7 @@ fn test_info_empty_dataframe_returns_valid_empty_snapshot() {
 #[test]
 fn test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_stream() {
     let rt = sample_runtime();
-    let expected_stream = rt.stream().__debug_raw_handle_value();
+    let expected_stream = rt.stream().testing_raw_handle_value();
     let df = DataFrame::from_series([rt.series("names", &["ab", "cde", ""]).unwrap()]).unwrap();
 
     obs_reset();

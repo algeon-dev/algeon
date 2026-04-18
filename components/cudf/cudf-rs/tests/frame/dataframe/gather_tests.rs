@@ -40,7 +40,7 @@ fn test_gather_out_of_bounds_nullify() {
 
     assert_eq!(result.num_rows(), 3);
     let view = result.series("x").unwrap();
-    let validity = view.as_column_view().unwrap().validity().unwrap().unwrap();
+    let validity = view.view().unwrap().validity().unwrap().unwrap();
     assert!(validity[0]);
     assert!(!validity[1]); // OOB → null
     assert!(validity[2]);

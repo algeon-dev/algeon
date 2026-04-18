@@ -15,6 +15,8 @@
 //! 4. **Default-context fallback** — existing APIs still use the default stream.
 //! 5. **Allocator context** — explicit memory resource is passed through.
 //! 6. **cudf-rs type contracts** — CudaStream, DeviceMemoryResource are Send+Sync.
+use cudf::testing::prelude::*;
+
 
 use std::{ffi::c_void, ptr};
 
@@ -294,7 +296,7 @@ fn create_single_column_table_raw(data: &[i32]) -> cudf_sys::cudf_table_handle {
 
 fn explicit_i32_series(name: &str, data: &[i32], identity: u64) -> cudf::Series {
     cudf::Series::from_column(
-        column_from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
+        column_from_slice(data).unwrap().testing_rebind_execution_domain_explicit(identity).unwrap(),
     )
     .unwrap()
     .rename(name)
@@ -302,7 +304,7 @@ fn explicit_i32_series(name: &str, data: &[i32], identity: u64) -> cudf::Series 
 
 fn explicit_i64_series(name: &str, data: &[i64], identity: u64) -> cudf::Series {
     cudf::Series::from_column(
-        column_from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
+        column_from_slice(data).unwrap().testing_rebind_execution_domain_explicit(identity).unwrap(),
     )
     .unwrap()
     .rename(name)
@@ -310,7 +312,7 @@ fn explicit_i64_series(name: &str, data: &[i64], identity: u64) -> cudf::Series 
 
 fn explicit_bool_series(name: &str, data: &[bool], identity: u64) -> cudf::Series {
     cudf::Series::from_column(
-        column_from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
+        column_from_slice(data).unwrap().testing_rebind_execution_domain_explicit(identity).unwrap(),
     )
     .unwrap()
     .rename(name)
@@ -322,12 +324,12 @@ fn pool_mr() -> DeviceMemoryResource {
     DeviceMemoryResource::pool(TEST_POOL_MR_BYTES, None).expect("failed to create pool MR")
 }
 
-fn debug_ctx_with_stream<'a>(stream: &'a CudaStream) -> cudf::__DebugExecutionContext<'a> {
-    cudf::__DebugExecutionContext::new().with_stream(stream)
+fn debug_ctx_with_stream<'a>(stream: &'a CudaStream) -> cudf::ExecutionContext<'a> {
+    cudf::ExecutionContext::new().with_stream(stream)
 }
 
-fn debug_ctx_with_mr<'a>(mr: &'a DeviceMemoryResource) -> cudf::__DebugExecutionContext<'a> {
-    cudf::__DebugExecutionContext::new().with_memory_resource(mr)
+fn debug_ctx_with_mr<'a>(mr: &'a DeviceMemoryResource) -> cudf::ExecutionContext<'a> {
+    cudf::ExecutionContext::new().with_memory_resource(mr)
 }
 
 fn assert_observed_stream(explicit_stream: usize) {
@@ -349,17 +351,17 @@ fn assert_observed_non_default_mr(default_mr: *mut c_void) {
 }
 
 fn assert_dataframe_stream_override(df: &cudf::DataFrame, expected_domain: u64, expected_stream: usize) {
-    assert_eq!(df.__debug_execution_domain_id(), expected_domain);
-    assert_eq!(df.__debug_execution_domain_stream_value(), expected_stream);
+    assert_eq!(df.testing_execution_domain_id(), expected_domain);
+    assert_eq!(df.testing_execution_domain_stream_value(), expected_stream);
 }
 
 fn assert_dataframe_mr_override(df: &cudf::DataFrame, expected_domain: u64, expected_mr: usize) {
-    assert_eq!(df.__debug_execution_domain_id(), expected_domain);
-    assert_eq!(df.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(df.testing_execution_domain_id(), expected_domain);
+    assert_eq!(df.testing_execution_domain_mr_value(), expected_mr);
 }
 
 fn assert_dataframe_i32_values(df: &cudf::DataFrame, column: &str, expected: &[i32]) {
-    let values: Vec<i32> = df.series(column).unwrap().as_column_view().unwrap().to_vec().unwrap();
+    let values: Vec<i32> = df.series(column).unwrap().view().unwrap().to_vec().unwrap();
     assert_eq!(values.as_slice(), expected);
 }
 
@@ -475,7 +477,7 @@ fn column_copy_ex_uses_explicit_stream() {
     let borrowed = stream.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
 
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     assert_ne!(
         explicit_stream,
         obs_default_stream(),
@@ -507,7 +509,7 @@ fn column_to_host_ex_uses_explicit_stream() {
     let borrowed = stream.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
 
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
 
     obs_reset();
     let mut host_buf = [0i32; 3];
@@ -538,7 +540,7 @@ fn column_from_device_data_ex_uses_explicit_stream() {
     let borrowed = stream.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
 
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -588,7 +590,7 @@ fn replace_nulls_scalar_ex_uses_explicit_stream() {
     let stream = CudaStream::new().expect("failed to create stream");
     let borrowed = stream.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -618,7 +620,7 @@ fn replace_nulls_column_ex_uses_explicit_stream() {
     let stream = CudaStream::new().expect("failed to create stream");
     let borrowed = stream.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed);
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -651,7 +653,7 @@ fn gather_ex_uses_explicit_stream_and_mr() {
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = mr.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let default_mr = obs_current_device_resource();
 
     obs_reset();
@@ -693,7 +695,7 @@ fn apply_boolean_mask_ex_uses_explicit_stream_and_mr() {
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = mr.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let default_mr = obs_current_device_resource();
 
     obs_reset();
@@ -786,7 +788,7 @@ fn column_copy_from_view_ex_uses_explicit_stream_and_mr() {
     let stream = CudaStream::new().expect("failed to create stream");
     let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
     let default_mr = obs_current_device_resource();
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = mr.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
@@ -811,7 +813,7 @@ fn table_copy_ex_uses_explicit_stream_and_mr() {
     let stream = CudaStream::new().expect("failed to create stream");
     let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
     let default_mr = obs_current_device_resource();
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let borrowed_stream = stream.as_borrowed_sys();
     let borrowed_mr = mr.as_borrowed_sys();
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
@@ -841,11 +843,11 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retai
     let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 501)]).unwrap();
 
     let stream = CudaStream::new().unwrap();
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let sorted = df.__debug_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
+    let sorted = df.testing_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
 
     assert_observed_stream(explicit_stream);
     assert_dataframe_stream_override(&sorted, 501, explicit_stream);
@@ -861,13 +863,13 @@ fn sort_with_execution_context_accepts_runtime_seeded_inputs() {
     let df = cudf::DataFrame::from_series([ids]).unwrap();
 
     let stream = CudaStream::new().unwrap();
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let sorted = df.__debug_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
+    let sorted = df.testing_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
     assert_observed_stream(explicit_stream);
-    assert_eq!(sorted.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(sorted.testing_execution_domain_kind(), "explicit");
     assert_dataframe_i32_values(&sorted, "id", &[1, 2, 3]);
 }
 
@@ -876,12 +878,12 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource(
     let df = cudf::DataFrame::from_series([explicit_i32_series("id", &[3, 1, 2], 502)]).unwrap();
 
     let mr = pool_mr();
-    let explicit_mr = mr.__debug_raw_handle_value();
+    let explicit_mr = mr.testing_raw_handle_value();
     let ctx = debug_ctx_with_mr(&mr);
     let default_mr = obs_current_device_resource() as usize;
 
     obs_reset();
-    let sorted = df.__debug_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
+    let sorted = df.testing_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
 
     assert_ne!(obs_last_mr() as usize, default_mr);
     assert_dataframe_mr_override(&sorted, 502, explicit_mr);
@@ -901,11 +903,11 @@ fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
     .unwrap();
 
     let stream = CudaStream::new().unwrap();
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let joined = left.__debug_merge_in_context(&right, cudf::MergeOptions::new().how_inner().on(["id"]), &ctx).unwrap();
+    let joined = left.testing_merge_in_context(&right, cudf::MergeOptions::new().how_inner().on(["id"]), &ctx).unwrap();
 
     assert_observed_stream(explicit_stream);
     assert_eq!(joined.num_rows(), 2);
@@ -921,12 +923,12 @@ fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
     .unwrap();
 
     let stream = CudaStream::new().unwrap();
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
     let result =
-        df.groupby(["key"]).__debug_agg_in_context(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)], &ctx).unwrap();
+        df.groupby(["key"]).testing_agg_in_context(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)], &ctx).unwrap();
 
     assert_observed_stream(explicit_stream);
     assert_eq!(result.num_rows(), 2);
@@ -939,11 +941,11 @@ fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
     let indices = explicit_i32_series("gather", &[2, 0], 505);
 
     let stream = CudaStream::new().unwrap();
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let gathered = df.__debug_gather_in_context(&indices, &ctx).unwrap();
+    let gathered = df.testing_gather_in_context(&indices, &ctx).unwrap();
 
     assert_observed_stream(explicit_stream);
     assert_dataframe_stream_override(&gathered, 505, explicit_stream);
@@ -960,13 +962,13 @@ fn gather_with_execution_context_accepts_runtime_seeded_inputs() {
     let indices = crate::common::series::<i32>("gather", &[2, 0]).unwrap();
 
     let stream = CudaStream::new().unwrap();
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let gathered = df.__debug_gather_in_context(&indices, &ctx).unwrap();
+    let gathered = df.testing_gather_in_context(&indices, &ctx).unwrap();
     assert_observed_stream(explicit_stream);
-    assert_eq!(gathered.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(gathered.testing_execution_domain_kind(), "explicit");
     assert_dataframe_i32_values(&gathered, "id", &[2, 3]);
 }
 
@@ -976,11 +978,11 @@ fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
     let mask = explicit_bool_series("mask", &[true, false, true], 506);
 
     let stream = CudaStream::new().unwrap();
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let filtered = df.__debug_filter_in_context(&mask, &ctx).unwrap();
+    let filtered = df.testing_filter_in_context(&mask, &ctx).unwrap();
 
     assert_observed_stream(explicit_stream);
     assert_dataframe_stream_override(&filtered, 506, explicit_stream);
@@ -997,13 +999,13 @@ fn filter_with_execution_context_accepts_runtime_seeded_inputs() {
     let mask = crate::common::series::<bool>("mask", &[true, false, true]).unwrap();
 
     let stream = CudaStream::new().unwrap();
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let filtered = df.__debug_filter_in_context(&mask, &ctx).unwrap();
+    let filtered = df.testing_filter_in_context(&mask, &ctx).unwrap();
     assert_observed_stream(explicit_stream);
-    assert_eq!(filtered.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(filtered.testing_execution_domain_kind(), "explicit");
     assert_dataframe_i32_values(&filtered, "id", &[3, 2]);
 }
 
@@ -1019,7 +1021,7 @@ fn filter_with_execution_context_accepts_runtime_seeded_inputs() {
 #[test]
 fn column_deep_copy_uses_source_runtime_stream_without_override() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let source_stream = col.__debug_execution_domain_stream_value();
+    let source_stream = col.testing_execution_domain_stream_value();
 
     obs_reset();
     let _copy = col.deep_copy().unwrap();
@@ -1039,7 +1041,7 @@ fn sort_values_default_produces_correct_results() {
     let sorted = df.sort_values(["id"], cudf::SortOptions::default()).unwrap();
 
     let col = sorted.series("id").unwrap();
-    let host: Vec<i32> = col.as_column_view().unwrap().to_vec().unwrap();
+    let host: Vec<i32> = col.view().unwrap().to_vec().unwrap();
     assert_eq!(host, vec![1, 2, 3], "sort_values result should be correct");
 }
 
@@ -1119,7 +1121,7 @@ fn column_copy_ex_stream_and_mr_combined() {
 
     let ctx = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
 
-    let explicit_stream = stream.__debug_raw_handle_value();
+    let explicit_stream = stream.testing_raw_handle_value();
     let default_mr = obs_current_device_resource();
 
     obs_reset();
@@ -1174,7 +1176,7 @@ fn device_memory_resource_create_pool() {
 fn cuda_stream_as_borrowed_sys_preserves_handle() {
     let stream = CudaStream::new().unwrap();
     let borrowed = stream.as_borrowed_sys();
-    assert_eq!(stream.__debug_raw_handle_value(), obs_stream_handle_value(borrowed.as_raw()));
+    assert_eq!(stream.testing_raw_handle_value(), obs_stream_handle_value(borrowed.as_raw()));
 }
 
 /// `CudaEvent::as_borrowed_sys` preserves the sys-handle identity.
@@ -1185,7 +1187,7 @@ fn cuda_event_as_borrowed_sys_preserves_handle() {
     event.record(&stream).unwrap();
 
     let borrowed = event.as_borrowed_sys();
-    assert_eq!(event.__debug_raw_handle_value(), borrowed.as_raw() as usize);
+    assert_eq!(event.testing_raw_handle_value(), borrowed.as_raw() as usize);
 }
 
 /// `DeviceMemoryResource::as_borrowed_sys` preserves the sys-handle identity.
@@ -1196,7 +1198,7 @@ fn device_memory_resource_as_borrowed_sys_preserves_handle() {
     let mut underlying = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_test_memory_resource_raw(borrowed.as_raw(), &mut underlying) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(mr.__debug_raw_handle_value(), underlying as usize);
+    assert_eq!(mr.testing_raw_handle_value(), underlying as usize);
 }
 
 // ===========================================================================

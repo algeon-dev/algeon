@@ -4,6 +4,8 @@
 //! host vs device export profiles, metadata preservation, and recursive nested
 //! projections without repeating the same matrix for every shared/runtime and
 //! column/table permutation.
+use cudf::testing::prelude::*;
+
 
 use std::sync::{
     Arc,
@@ -86,7 +88,7 @@ fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
 fn shared_same_device_completion(stream: &CudaStream) -> CompletionAuthority<'static> {
     CompletionAuthority::SameDeviceStream {
         stream: CudaStreamHandle::from_raw_on_device(
-            stream.__debug_raw_handle_value() as *mut std::ffi::c_void,
+            stream.testing_raw_handle_value() as *mut std::ffi::c_void,
             stream.device().ordinal() as i32,
         )
         .unwrap(),
@@ -96,7 +98,7 @@ fn shared_same_device_completion(stream: &CudaStream) -> CompletionAuthority<'st
 fn shared_stream_read_start(stream: &CudaStream) -> ReadStartAuthority<'static> {
     ReadStartAuthority::ConsumerStream {
         stream: CudaStreamHandle::from_raw_on_device(
-            stream.__debug_raw_handle_value() as *mut std::ffi::c_void,
+            stream.testing_raw_handle_value() as *mut std::ffi::c_void,
             stream.device().ordinal() as i32,
         )
         .unwrap(),
@@ -106,7 +108,7 @@ fn shared_stream_read_start(stream: &CudaStream) -> ReadStartAuthority<'static> 
 fn shared_cross_device_completion(event: &CudaEvent) -> CompletionAuthority<'static> {
     CompletionAuthority::CrossDeviceEvent {
         event: CudaEventHandle::from_raw_on_device(
-            event.__debug_interop_raw_handle_value() as *mut std::ffi::c_void,
+            event.testing_interop_raw_handle_value() as *mut std::ffi::c_void,
             event.device().ordinal() as i32,
         )
         .unwrap(),
@@ -235,7 +237,7 @@ fn recursive_supported_frame() -> DataFrame {
     let nested = frame.series("nested").unwrap();
     let point = frame.series("point").unwrap();
     let id = frame.series("id").unwrap();
-    let encoded = dictionary::encode(&category.as_column_view().unwrap(), TypeId::Int32).unwrap();
+    let encoded = dictionary::encode(&category.view().unwrap(), TypeId::Int32).unwrap();
     let category = cudf::Series::from_column(encoded).unwrap().rename("category");
     DataFrame::from_series([category, nested, point, id]).unwrap()
 }
@@ -269,7 +271,7 @@ mod lease_contracts {
         let invalid_device = (device_count + 7) as i32;
         let completion = CompletionAuthority::CrossDeviceEvent {
             event: CudaEventHandle::from_raw_on_device(
-                producer_event.__debug_interop_raw_handle_value() as *mut std::ffi::c_void,
+                producer_event.testing_interop_raw_handle_value() as *mut std::ffi::c_void,
                 invalid_device,
             )
             .unwrap(),
@@ -317,8 +319,8 @@ mod lease_contracts {
             .with_stream(consumer_stream.clone())
             .build()
             .unwrap();
-        let producer_stream_raw = producer_stream.__debug_raw_handle_value();
-        let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
+        let producer_stream_raw = producer_stream.testing_raw_handle_value();
+        let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
 
         reset_event_observation();
         let baseline_producer_record = observed_raw_record_call_count_for_stream_raw(producer_stream_raw);
@@ -362,9 +364,9 @@ mod lease_contracts {
             .with_stream(consumer_stream.clone())
             .build()
             .unwrap();
-        let producer_stream_raw = producer_stream.__debug_raw_handle_value();
-        let producer_event_raw = producer_ready.__debug_interop_raw_handle_value();
-        let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
+        let producer_stream_raw = producer_stream.testing_raw_handle_value();
+        let producer_event_raw = producer_ready.testing_interop_raw_handle_value();
+        let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
 
         reset_event_observation();
         let baseline_producer_event_wait = observed_stream_wait_call_count_for_event_raw(producer_event_raw);
@@ -469,7 +471,7 @@ mod lease_contracts {
             .with_stream(consumer_stream.clone())
             .build()
             .unwrap();
-        let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
+        let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
 
         let lease = export
             .try_activate_read_lease(
@@ -503,7 +505,7 @@ mod lease_contracts {
             .with_stream(consumer_stream.clone())
             .build()
             .unwrap();
-        let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
+        let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
 
         let lease = export
             .try_activate_runtime_read_lease(
@@ -598,7 +600,7 @@ mod lease_contracts {
             .with_stream(consumer_stream.clone())
             .build()
             .unwrap();
-        let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
+        let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
 
         let lease = export
             .try_activate_runtime_read_lease(
@@ -689,8 +691,8 @@ mod lease_contracts {
         let _consumer_work = consumer_runtime.series("tmp", &[7i32, 8, 9]).unwrap();
         let consumer_event = CudaEvent::new().unwrap();
         consumer_event.record(&consumer_stream).unwrap();
-        let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
-        let consumer_event_raw = consumer_event.__debug_interop_raw_handle_value();
+        let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
+        let consumer_event_raw = consumer_event.testing_interop_raw_handle_value();
 
         common::set_current_device(device0);
         reset_event_observation();
@@ -738,8 +740,8 @@ mod lease_contracts {
         let _consumer_work = consumer_runtime.series("tmp", &[7i32, 8, 9]).unwrap();
         let consumer_event = CudaEvent::new().unwrap();
         consumer_event.record(&consumer_stream).unwrap();
-        let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
-        let consumer_event_raw = consumer_event.__debug_interop_raw_handle_value();
+        let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
+        let consumer_event_raw = consumer_event.testing_interop_raw_handle_value();
 
         common::set_current_device(device0);
         reset_event_observation();
@@ -775,7 +777,7 @@ mod device_export_contracts {
             assert_eq!(column_export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
             assert_device_stream_readiness(
                 column_export.readiness(),
-                runtime.stream().__debug_raw_handle_value(),
+                runtime.stream().testing_raw_handle_value(),
                 runtime.device(),
             );
 
@@ -787,7 +789,7 @@ mod device_export_contracts {
             assert_eq!(frame_export.table().names().unwrap(), expected_names(&["id", "value"]).as_slice());
             assert_device_stream_readiness(
                 frame_export.readiness(),
-                runtime.stream().__debug_raw_handle_value(),
+                runtime.stream().testing_raw_handle_value(),
                 runtime.device(),
             );
         });
@@ -800,9 +802,9 @@ mod device_export_contracts {
         let rt0 = Runtime::builder().with_device(device0).build().unwrap();
         let rt1 = Runtime::builder().with_device(device1).build().unwrap();
         let left =
-            rt0.column_from_slice(&[1i32, 2, 3]).unwrap().__debug_rebind_execution_domain_explicit(9001).unwrap();
+            rt0.column_from_slice(&[1i32, 2, 3]).unwrap().testing_rebind_execution_domain_explicit(9001).unwrap();
         let right =
-            rt1.column_from_slice(&[4i32, 5, 6]).unwrap().__debug_rebind_execution_domain_explicit(9001).unwrap();
+            rt1.column_from_slice(&[4i32, 5, 6]).unwrap().testing_rebind_execution_domain_explicit(9001).unwrap();
         let frame =
             crate::common::dataframe_from_columns(vec!["left".into(), "right".into()], vec![left, right]).unwrap();
 
@@ -815,7 +817,7 @@ mod device_export_contracts {
         let runtime = Runtime::builder().build().unwrap();
         let nullable = runtime.column_from_slice_nullable(&[10i32, 20, 30], &[true, false, true]).unwrap();
         let nullable_view = nullable.view().unwrap();
-        let expected_stream = nullable.__debug_execution_domain_stream_value();
+        let expected_stream = nullable.testing_execution_domain_stream_value();
         let nullable_export = nullable_view.try_prepare_device_column_export().unwrap();
 
         assert_eq!(nullable_export.column().data_type().id(), InteropTypeId::Int32);
@@ -861,7 +863,7 @@ mod device_export_contracts {
         let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
         let vals = runtime.nullable_series("value", &[10i64, 0, 30], &[true, false, true]).unwrap();
         let frame = DataFrame::from_series([ids, vals]).unwrap();
-        let expected_stream = frame.__debug_execution_domain_stream_value();
+        let expected_stream = frame.testing_execution_domain_stream_value();
 
         let frame_export = frame.try_prepare_device_table_export().unwrap();
         let table_view = frame.view().unwrap();
@@ -883,7 +885,7 @@ mod device_export_contracts {
         let strings = runtime.column_from_strs(&["alice", "bob"]).unwrap();
         let strings_view = strings.view().unwrap();
         let offsets_view = strings_view.child(0).unwrap();
-        let expected_stream = strings.__debug_execution_domain_stream_value();
+        let expected_stream = strings.testing_execution_domain_stream_value();
         let export = strings_view.try_prepare_device_column_export().unwrap();
 
         assert_eq!(export.column().data_type().id(), InteropTypeId::String);

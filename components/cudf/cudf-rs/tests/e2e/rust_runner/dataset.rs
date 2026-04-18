@@ -73,7 +73,7 @@ fn apply_dictionary_columns(frame: DataFrame, dataset: &Dataset) -> cudf::Result
         .map(|name| {
             let series = frame.series(name)?;
             if dictionary_columns.contains(*name) {
-                let encoded = dictionary::encode(&series.as_column_view()?, TypeId::Int32)?;
+                let encoded = dictionary::encode(&series.view()?, TypeId::Int32)?;
                 Ok(Series::from_column(encoded)?.rename(*name))
             } else {
                 Ok(series)

@@ -3,6 +3,8 @@
 //! These tests run by default on hosts with 2+ visible GPUs and skip cleanly
 //! on single-GPU hosts. Set `CUDF_SKIP_MULTI_GPU=1` to disable them
 //! explicitly.
+use cudf::testing::prelude::*;
+
 
 mod common;
 
@@ -773,8 +775,8 @@ fn explicit_device_memory_resource_constructors_ignore_ambient_device() {
     assert_eq!(rt.device(), device1);
     assert_eq!(rt.memory_resource().device(), device1);
     assert_eq!(
-        rt.memory_resource().__debug_raw_handle_value(),
-        pool_mr.__debug_raw_handle_value(),
+        rt.memory_resource().testing_raw_handle_value(),
+        pool_mr.testing_raw_handle_value(),
         "builder should accept a pool_on handle for the matching device"
     );
 }
@@ -1028,7 +1030,7 @@ fn strings_contains_without_relocation_rejects_cross_device_runtime_inputs() {
     let input = input_rt.series("input", &["alpha", "beta", "alphabet"]).unwrap();
     let scalar = scalar_rt.series("seed", &["alpha"]).unwrap().min().unwrap();
 
-    let err = match strings::str_contains(&input.as_column_view().unwrap(), &scalar) {
+    let err = match strings::str_contains(&input.view().unwrap(), &scalar) {
         Ok(_) => panic!("cross-device strings::contains should fail until inputs are explicitly relocated"),
         Err(err) => err,
     };
@@ -1167,7 +1169,7 @@ fn runtime_column_map_regression() {
 
     common::reset_exec_observation();
     let result =
-        match input.as_column_view().unwrap().map(&keys.as_column_view().unwrap(), &values.as_column_view().unwrap()) {
+        match input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()) {
             Ok(result) => result,
             Err(err) => panic!("ColumnView::map() should succeed when all logical inputs are runtime-pinned: {err:?}"),
         };

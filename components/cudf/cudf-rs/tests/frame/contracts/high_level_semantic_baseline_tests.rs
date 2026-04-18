@@ -47,8 +47,8 @@ fn df_series_returns_owned_with_name() {
 #[test]
 fn df_series_shares_device_pointer() {
     let df = sample_df();
-    let ptr1 = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
-    let ptr2 = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+    let ptr1 = df.series("id").unwrap().view().unwrap().device_data_ptr().unwrap();
+    let ptr2 = df.series("id").unwrap().view().unwrap().device_data_ptr().unwrap();
 
     assert_eq!(ptr1, ptr2);
 }
@@ -64,7 +64,7 @@ fn df_series_outlives_dataframe() {
     };
     // Series is still usable
     assert_eq!(s.len(), 3);
-    assert_eq!(s.as_column_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(s.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 /// Two `series()` calls for the same column produce Series with the
@@ -76,8 +76,8 @@ fn df_series_two_calls_share_arc() {
     let s2 = df.series("id").unwrap();
 
     // Same device pointer proves same underlying Column
-    let ptr1 = s1.as_column_view().unwrap().device_data_ptr().unwrap();
-    let ptr2 = s2.as_column_view().unwrap().device_data_ptr().unwrap();
+    let ptr1 = s1.view().unwrap().device_data_ptr().unwrap();
+    let ptr2 = s2.view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr1, ptr2);
 }
 
@@ -142,8 +142,8 @@ fn df_iter_series_preserves_schema_order_and_shares_gpu_data() {
     assert_eq!(items[0].to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(items[1].to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 
-    let iter_ptr = items[0].as_column_view().unwrap().device_data_ptr().unwrap();
-    let direct_ptr = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+    let iter_ptr = items[0].view().unwrap().device_data_ptr().unwrap();
+    let direct_ptr = df.series("id").unwrap().view().unwrap().device_data_ptr().unwrap();
     assert_eq!(iter_ptr, direct_ptr);
 }
 
@@ -227,7 +227,7 @@ fn df_into_table_shared_columns_deep_copies() {
 
     // Create an external reference to keep the Arc refcount > 1.
     let external_series = df.series("id").unwrap();
-    let external_ptr = external_series.as_column_view().unwrap().device_data_ptr().unwrap();
+    let external_ptr = external_series.view().unwrap().device_data_ptr().unwrap();
 
     let original_ptr = device_ptr(&df, "id");
     assert_eq!(original_ptr, external_ptr, "series shares same Arc");
@@ -241,7 +241,7 @@ fn df_into_table_shared_columns_deep_copies() {
     assert_ne!(table_ptr, external_ptr, "into_table() with shared Arc must deep-copy; pointers should differ");
 
     // External series is still valid (Arc keeps it alive).
-    assert_eq!(external_series.as_column_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(external_series.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 /// `into_table()` consumes the DataFrame — data values are preserved.
@@ -316,12 +316,12 @@ fn rename_column_shares_arc() {
 // 6. Series accessor semantics
 // ===========================================================================
 
-/// `Series::as_column_view()` returns a `ColumnView` that points to the
+/// `Series::view()` returns a `ColumnView` that points to the
 /// same device data as the underlying Column.
 #[test]
 fn series_column_view_same_device_ptr_as_column() {
     let s = crate::common::series::<i32>("x", &[1, 2]).unwrap();
-    let cv = s.as_column_view().unwrap();
+    let cv = s.view().unwrap();
     let col_cv = s.as_column().view().unwrap();
 
     assert_eq!(cv.device_data_ptr().unwrap(), col_cv.device_data_ptr().unwrap());
@@ -377,8 +377,8 @@ fn series_clone_shares_gpu_data() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let cloned = s.clone();
 
-    let ptr1 = s.as_column_view().unwrap().device_data_ptr().unwrap();
-    let ptr2 = cloned.as_column_view().unwrap().device_data_ptr().unwrap();
+    let ptr1 = s.view().unwrap().device_data_ptr().unwrap();
+    let ptr2 = cloned.view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr1, ptr2);
     assert_eq!(cloned.name(), Some("x"));
 }
@@ -390,8 +390,8 @@ fn series_rename_shares_gpu_data() {
     let s = crate::common::series::<i32>("old", &[1, 2, 3]).unwrap();
     let renamed = s.rename("new");
 
-    let ptr1 = s.as_column_view().unwrap().device_data_ptr().unwrap();
-    let ptr2 = renamed.as_column_view().unwrap().device_data_ptr().unwrap();
+    let ptr1 = s.view().unwrap().device_data_ptr().unwrap();
+    let ptr2 = renamed.view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr1, ptr2);
     assert_eq!(renamed.name(), Some("new"));
     assert_eq!(s.name(), Some("old"));
@@ -435,13 +435,13 @@ fn df_slicing_ops_gpu_allocate() {
 #[test]
 fn series_ops_gpu_allocate() {
     let s = crate::common::series::<i32>("v", &[1, 2, 3]).unwrap();
-    let original_ptr = s.as_column_view().unwrap().device_data_ptr().unwrap();
+    let original_ptr = s.view().unwrap().device_data_ptr().unwrap();
 
     let mask = s.gt_scalar(1i32).unwrap();
-    let mask_ptr = mask.as_column_view().unwrap().device_data_ptr().unwrap();
+    let mask_ptr = mask.view().unwrap().device_data_ptr().unwrap();
     assert_ne!(original_ptr, mask_ptr, "gt_scalar must allocate new column");
 
     let added = s.add_scalar(10i32).unwrap();
-    let add_ptr = added.as_column_view().unwrap().device_data_ptr().unwrap();
+    let add_ptr = added.view().unwrap().device_data_ptr().unwrap();
     assert_ne!(original_ptr, add_ptr, "add_scalar must allocate new column");
 }

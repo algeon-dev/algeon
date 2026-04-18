@@ -104,8 +104,8 @@ fn test_rename_shares_arc() {
     let renamed = s.rename("b");
 
     // Both should point to the same GPU data (Arc sharing).
-    let ptr_orig = s.as_column_view().unwrap().device_data_ptr().unwrap();
-    let ptr_renamed = renamed.as_column_view().unwrap().device_data_ptr().unwrap();
+    let ptr_orig = s.view().unwrap().device_data_ptr().unwrap();
+    let ptr_renamed = renamed.view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr_orig, ptr_renamed);
 }
 
@@ -118,8 +118,8 @@ fn test_clone_shares_gpu_data() {
     let s = crate::common::series::<f64>("vals", &[10.0, 20.0]).unwrap();
     let cloned = s.clone();
 
-    let ptr_s = s.as_column_view().unwrap().device_data_ptr().unwrap();
-    let ptr_cloned = cloned.as_column_view().unwrap().device_data_ptr().unwrap();
+    let ptr_s = s.view().unwrap().device_data_ptr().unwrap();
+    let ptr_cloned = cloned.view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr_s, ptr_cloned);
 
     // Both are independently usable.
@@ -153,7 +153,7 @@ fn test_from_column_shares_data() {
     let s = Series::from_column(col).unwrap();
 
     // The Series should share the same device pointer.
-    let ptr_series = s.as_column_view().unwrap().device_data_ptr().unwrap();
+    let ptr_series = s.view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr_orig, ptr_series);
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int64);
@@ -167,7 +167,7 @@ fn test_from_column_shares_data() {
 #[test]
 fn test_view_matches_column_data() {
     let s = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap();
-    let view = s.as_column_view().unwrap();
+    let view = s.view().unwrap();
 
     assert_eq!(view.len().unwrap(), 3);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![100, 200, 300]);

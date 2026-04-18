@@ -175,3 +175,14 @@ fn core_and_runtime_modules_keep_explicit_compatibility_surface() {
     let _ = NullPolicy::Include;
     let _ = TimestampResolution::Milliseconds;
 }
+
+#[test]
+fn hidden_internal_reexports_are_not_publicly_importable() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/public_api/ui/no_debug_execution_context.rs");
+    t.compile_fail("tests/public_api/ui/no_into_with_column_expr.rs");
+    t.compile_fail("tests/public_api/ui/no_root_debug_validity_helper.rs");
+    t.compile_fail("tests/public_api/ui/no_arrow_debug_triggers.rs");
+    t.compile_fail("tests/public_api/ui/no_series_as_column_view.rs");
+    t.compile_fail("tests/public_api/ui/no_legacy_result_type_names.rs");
+}

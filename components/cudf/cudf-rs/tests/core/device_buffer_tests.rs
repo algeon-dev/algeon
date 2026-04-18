@@ -1,4 +1,6 @@
 //! Integration tests for DeviceBuffer and zero-copy Column adoption.
+use cudf::testing::prelude::*;
+
 
 use cudf::{ErrorKind, Runtime, TypeId};
 
@@ -122,9 +124,9 @@ fn runtime_adopt_i32_roundtrip_seeds_explicit_residency_without_copy() {
     assert_eq!(view.len().unwrap(), 3);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
     assert_eq!(view.device_data_ptr().unwrap(), original_ptr as *const _);
-    assert_eq!(col.__debug_execution_domain_kind(), "explicit");
-    assert_eq!(col.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(col.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
+    assert_eq!(col.testing_execution_domain_kind(), "explicit");
+    assert_eq!(col.testing_execution_domain_id(), rt.testing_execution_domain_id());
+    assert_eq!(col.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
 }
 
 #[test]
@@ -210,9 +212,9 @@ fn runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy() {
     assert_eq!(view.null_count().unwrap(), 2);
     assert_eq!(view.validity().unwrap().unwrap(), vec![true, false, true, false]);
     assert_eq!(view.device_data_ptr().unwrap(), original_ptr as *const _);
-    assert_eq!(col.__debug_execution_domain_kind(), "explicit");
-    assert_eq!(col.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(col.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
+    assert_eq!(col.testing_execution_domain_kind(), "explicit");
+    assert_eq!(col.testing_execution_domain_id(), rt.testing_execution_domain_id());
+    assert_eq!(col.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
 }
 
 #[test]

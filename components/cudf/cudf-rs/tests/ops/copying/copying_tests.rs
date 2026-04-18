@@ -1,4 +1,6 @@
 //! Tests for CU-7: gather (take) and conditional copy.
+use cudf::testing::prelude::*;
+
 
 use cudf::{core::Table, ops::copying};
 
@@ -126,14 +128,14 @@ fn test_gather_unchecked_basic() {
 fn test_gather_succeeds_with_mixed_domains_and_uses_input_provenance() {
     let table = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 930)]).unwrap();
     let gather_map = explicit_i32_column(&[2, 0], 931);
-    let expected_stream = table.__debug_execution_domain_stream_value();
-    let expected_mr = table.__debug_execution_domain_mr_value();
+    let expected_stream = table.testing_execution_domain_stream_value();
+    let expected_mr = table.testing_execution_domain_mr_value();
 
     reset_exec_observation();
     let result = copying::gather(&table.view().unwrap(), &gather_map.view().unwrap()).unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), table.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.testing_execution_domain_id(), table.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 
@@ -167,14 +169,14 @@ fn test_copy_if_else_succeeds_with_mixed_domains_and_uses_lhs_provenance() {
     let lhs = explicit_i32_column(&[10, 20, 30], 940);
     let rhs = explicit_i32_column(&[1, 2, 3], 941);
     let mask = explicit_bool_column(&[true, false, true], 942);
-    let expected_stream = lhs.__debug_execution_domain_stream_value();
-    let expected_mr = lhs.__debug_execution_domain_mr_value();
+    let expected_stream = lhs.testing_execution_domain_stream_value();
+    let expected_mr = lhs.testing_execution_domain_mr_value();
 
     reset_exec_observation();
     let result = copying::copy_if_else(&lhs.view().unwrap(), &rhs.view().unwrap(), &mask.view().unwrap()).unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), lhs.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.testing_execution_domain_id(), lhs.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 

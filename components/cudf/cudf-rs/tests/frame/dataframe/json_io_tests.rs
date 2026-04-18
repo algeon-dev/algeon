@@ -1,6 +1,8 @@
 //! Tests for DataFrame-level JSON I/O methods.
 //!
 //! All tests require a GPU.
+use cudf::testing::prelude::*;
+
 
 use cudf::{DataFrame, ErrorKind, JsonReadOptions, JsonWriteOptions};
 use tempfile::TempDir;
@@ -27,8 +29,8 @@ fn test_dataframe_json_roundtrip_convenience() {
     assert_eq!(read_df.num_columns(), 2);
     assert!(read_df.contains("ids"));
     assert!(read_df.contains("values"));
-    assert_eq!(read_df.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(read_df.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
+    assert_eq!(read_df.testing_execution_domain_id(), rt.testing_execution_domain_id());
+    assert_eq!(read_df.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
 }
 
 #[test]

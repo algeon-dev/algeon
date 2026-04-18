@@ -1,4 +1,6 @@
 //! Tests for high-level fused row-predicate filtering entry points.
+use cudf::testing::prelude::*;
+
 
 use cudf::{DataFrame, DataType, ErrorKind, TypeId, ops::expr::col};
 
@@ -163,7 +165,7 @@ fn test_filter_all_empty_returns_clone_without_materializing_new_table() {
 
     assert_eq!(filtered.num_rows(), df.num_rows());
     assert_eq!(filtered.column_names(), df.column_names());
-    assert_eq!(filtered.__debug_execution_domain_id(), df.__debug_execution_domain_id());
+    assert_eq!(filtered.testing_execution_domain_id(), df.testing_execution_domain_id());
     assert_eq!(dataframe_device_ptr(&filtered, "weight"), original_ptr);
 }
 

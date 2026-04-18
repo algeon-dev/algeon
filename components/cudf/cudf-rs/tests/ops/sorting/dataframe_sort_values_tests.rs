@@ -222,7 +222,7 @@ fn test_sort_values_default_places_nulls_last() {
 
     assert_eq!(id_vals[0], Some(1));
     assert_eq!(id_vals[1], Some(2));
-    assert_eq!(id_col.as_column_view().unwrap().validity().unwrap().unwrap(), vec![true, true, false, false]);
+    assert_eq!(id_col.view().unwrap().validity().unwrap().unwrap(), vec![true, true, false, false]);
 }
 
 // ---------------------------------------------------------------------------

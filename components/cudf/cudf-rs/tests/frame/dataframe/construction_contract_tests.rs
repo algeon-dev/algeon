@@ -3,6 +3,8 @@
 //! These cases protect how schema names are sourced during construction:
 //! `DataFrame::from_series` uses `Series` names, while
 //! `DataFrame::from_named_pairs` applies explicit schema names.
+use cudf::testing::prelude::*;
+
 
 use cudf::{DataFrame, ErrorKind, Runtime, Series};
 
@@ -64,8 +66,8 @@ fn test_runtime_empty_dataframe_creates_explicit_zero_by_zero_frame() {
     let df = rt.empty_dataframe();
     assert_eq!(df.num_columns(), 0);
     assert_eq!(df.num_rows(), 0);
-    assert_eq!(df.__debug_execution_domain_kind(), "explicit");
-    assert_eq!(df.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(df.testing_execution_domain_kind(), "explicit");
+    assert_eq!(df.testing_execution_domain_id(), rt.testing_execution_domain_id());
 }
 
 #[test]

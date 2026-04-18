@@ -1,3 +1,5 @@
+use cudf::testing::prelude::*;
+
 use std::{
     ffi::c_void,
     sync::{
@@ -708,7 +710,7 @@ fn assert_foreign_column_snapshot_round_trip(
 ) {
     let imported = Column::try_import_from_owned_device_column_transfer_into_runtime(transfer, runtime).unwrap();
     value_assertion(&imported);
-    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(imported.testing_execution_domain_kind(), "explicit");
     assert_column_export_matches_snapshot(snapshot, &imported);
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
@@ -719,7 +721,7 @@ fn column_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes
         let runtime = Runtime::builder().build().unwrap();
         let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
         let expected_ptr = column.view().unwrap().device_data_ptr().unwrap();
-        let expected_stream = column.__debug_execution_domain_stream_value();
+        let expected_stream = column.testing_execution_domain_stream_value();
         let expected_device = runtime.device().ordinal() as i32;
 
         let (transfer, releaser) = take_owned_column_transfer(column, mode);
@@ -750,8 +752,8 @@ fn series_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes
     for mode in owned_transfer_modes() {
         let runtime = Runtime::builder().build().unwrap();
         let series = runtime.series("numbers", &[1i32, 2, 3]).unwrap();
-        let expected_ptr = series.as_column_view().unwrap().device_data_ptr().unwrap();
-        let expected_stream = series.as_column().__debug_execution_domain_stream_value();
+        let expected_ptr = series.view().unwrap().device_data_ptr().unwrap();
+        let expected_stream = series.as_column().testing_execution_domain_stream_value();
         let expected_device = runtime.device().ordinal() as i32;
 
         let (transfer, releaser) = take_owned_series_transfer(series, mode);
@@ -767,7 +769,7 @@ fn series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared(
     let runtime = Runtime::builder().build().unwrap();
     let series = runtime.series("numbers", &[7i32, 8, 9]).unwrap();
     let shared = series.clone();
-    let original_ptr = shared.as_column_view().unwrap().device_data_ptr().unwrap();
+    let original_ptr = shared.view().unwrap().device_data_ptr().unwrap();
     let destination_runtime = Runtime::builder().build().unwrap();
 
     let transfer = series.try_into_owned_transfer().unwrap();
@@ -777,9 +779,9 @@ fn series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared(
 
     assert_eq!(imported.view().unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
     assert_ne!(imported_ptr, original_ptr);
-    assert_eq!(imported.__debug_execution_domain_id(), destination_runtime.__debug_execution_domain_id());
+    assert_eq!(imported.testing_execution_domain_id(), destination_runtime.testing_execution_domain_id());
     assert_eq!(shared.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
-    assert_eq!(shared.as_column_view().unwrap().device_data_ptr().unwrap(), original_ptr);
+    assert_eq!(shared.view().unwrap().device_data_ptr().unwrap(), original_ptr);
 }
 
 #[test]
@@ -807,7 +809,7 @@ fn runtime_release_owned_column_transfer_release_waits_on_same_device_stream() {
     drop(transfer);
 
     let consumer_stream = CudaStream::new().unwrap();
-    let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
+    let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
 
     reset_event_observation();
     let _sync_block = EventSynchronizeBlockGuard::new();
@@ -841,7 +843,7 @@ fn runtime_release_owned_column_transfer_release_waits_on_consumer_event() {
     let consumer_stream = CudaStream::new().unwrap();
     let consumer_event = CudaEvent::new().unwrap();
     consumer_event.record(&consumer_stream).unwrap();
-    let consumer_event_raw = consumer_event.__debug_interop_raw_handle_value();
+    let consumer_event_raw = consumer_event.testing_interop_raw_handle_value();
 
     reset_event_observation();
     let _sync_block = EventSynchronizeBlockGuard::new();
@@ -887,7 +889,7 @@ fn runtime_release_owned_column_transfer_with_may_synchronize_internally_blocks_
     drop(transfer);
 
     let consumer_stream = CudaStream::new().unwrap();
-    let consumer_stream_raw = consumer_stream.__debug_raw_handle_value();
+    let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
 
     reset_event_observation();
     let sync_block = EventSynchronizeBlockGuard::new();
@@ -960,7 +962,7 @@ fn runtime_release_owned_column_transfer_import_claims_native_ownership_and_inva
 
     assert_eq!(imported.view().unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
     assert_eq!(imported.view().unwrap().device_data_ptr().unwrap(), expected_ptr);
-    assert_eq!(imported.__debug_execution_domain_id(), destination_runtime.__debug_execution_domain_id());
+    assert_eq!(imported.testing_execution_domain_id(), destination_runtime.testing_execution_domain_id());
 
     drop(imported);
 
@@ -1003,24 +1005,24 @@ fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_a
     let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_series([ids, values]).unwrap();
     let shared = frame.clone();
-    let original_id_ptr = shared.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
-    let original_value_ptr = shared.series("value").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+    let original_id_ptr = shared.series("id").unwrap().view().unwrap().device_data_ptr().unwrap();
+    let original_value_ptr = shared.series("value").unwrap().view().unwrap().device_data_ptr().unwrap();
     let destination_runtime = Runtime::builder().build().unwrap();
 
     let transfer = frame.try_into_owned_transfer().unwrap();
     let imported =
         DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, &destination_runtime).unwrap();
-    let imported_id_ptr = imported.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
-    let imported_value_ptr = imported.series("value").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
+    let imported_id_ptr = imported.series("id").unwrap().view().unwrap().device_data_ptr().unwrap();
+    let imported_value_ptr = imported.series("value").unwrap().view().unwrap().device_data_ptr().unwrap();
 
     assert_eq!(imported.column_names(), vec!["id", "value"]);
     assert_eq!(imported.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(imported.series("value").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30]);
     assert_ne!(imported_id_ptr, original_id_ptr);
     assert_ne!(imported_value_ptr, original_value_ptr);
-    assert_eq!(shared.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap(), original_id_ptr);
+    assert_eq!(shared.series("id").unwrap().view().unwrap().device_data_ptr().unwrap(), original_id_ptr);
     assert_eq!(
-        shared.series("value").unwrap().as_column_view().unwrap().device_data_ptr().unwrap(),
+        shared.series("value").unwrap().view().unwrap().device_data_ptr().unwrap(),
         original_value_ptr
     );
 }
@@ -1038,7 +1040,7 @@ fn owned_column_transfer_import_round_trips_original_column_without_copy() {
 
     assert_eq!(imported.view().unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
     assert_eq!(imported.view().unwrap().device_data_ptr().unwrap(), expected_ptr);
-    assert_eq!(imported.__debug_execution_domain_id(), destination_runtime.__debug_execution_domain_id());
+    assert_eq!(imported.testing_execution_domain_id(), destination_runtime.testing_execution_domain_id());
 }
 
 #[test]
@@ -1060,7 +1062,7 @@ fn owned_table_transfer_import_round_trips_original_table_without_copy() {
     assert_eq!(imported_view.column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
     assert_eq!(imported_view.column(0).unwrap().device_data_ptr().unwrap(), expected_first_ptr);
     assert_eq!(imported_view.column(1).unwrap().device_data_ptr().unwrap(), expected_second_ptr);
-    assert_eq!(imported.__debug_execution_domain_id(), destination_runtime.__debug_execution_domain_id());
+    assert_eq!(imported.testing_execution_domain_id(), destination_runtime.testing_execution_domain_id());
 }
 
 #[test]
@@ -1079,7 +1081,7 @@ fn owned_column_transfer_import_accepts_foreign_owner_state_zero_copy() {
 
     assert_eq!(imported_view.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
     assert_eq!(imported_view.device_data_ptr().unwrap(), expected_ptr);
-    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(imported.testing_execution_domain_kind(), "explicit");
     assert!(
         reexport.bindings().iter().any(|binding| binding.bytes().base_ptr() == expected_ptr),
         "prepared export must preserve the foreign device address",
@@ -1129,7 +1131,7 @@ fn owned_table_transfer_import_accepts_foreign_owner_state_and_round_trips_colum
         assert_eq!(imported_view.column(0).unwrap().device_data_ptr().unwrap(), expected_ptrs[0]);
         assert_eq!(imported_view.column(1).unwrap().device_data_ptr().unwrap(), expected_ptrs[1]);
     }
-    assert_eq!(imported.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(imported.testing_execution_domain_kind(), "explicit");
     assert!(
         reexport.bindings().iter().any(|binding| binding.bytes().base_ptr() == expected_ptrs[0]),
         "prepared export must preserve the first foreign device address",
@@ -1265,7 +1267,7 @@ fn owned_table_transfer_import_accepts_foreign_nested_columns_zero_copy() {
     let released = imported.into_columns().unwrap();
     let rebuilt = Table::from_columns(released).unwrap();
 
-    assert_eq!(rebuilt.__debug_execution_domain_kind(), "explicit");
+    assert_eq!(rebuilt.testing_execution_domain_kind(), "explicit");
     assert_table_export_matches_snapshot(&snapshot, &rebuilt);
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
@@ -1297,7 +1299,7 @@ fn helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe
 
         let column = column_from_slice(&[1i32, 2, 3]).unwrap();
         let column_ptr = column.view().unwrap().device_data_ptr().unwrap();
-        let column_stream = column.__debug_execution_domain_stream_value();
+        let column_stream = column.testing_execution_domain_stream_value();
         let column_transfer = column.try_into_owned_transfer().unwrap();
         assert_owned_column_transfer_contract(
             &column_transfer,
@@ -1309,8 +1311,8 @@ fn helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe
         );
 
         let series = crate::common::series("values", &[1i32, 2, 3]).unwrap();
-        let series_ptr = series.as_column_view().unwrap().device_data_ptr().unwrap();
-        let series_stream = series.as_column().__debug_execution_domain_stream_value();
+        let series_ptr = series.view().unwrap().device_data_ptr().unwrap();
+        let series_stream = series.as_column().testing_execution_domain_stream_value();
         let series_transfer = series.try_into_owned_transfer().unwrap();
         assert_owned_column_transfer_contract(
             &series_transfer,

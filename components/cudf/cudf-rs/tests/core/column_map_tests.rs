@@ -1,4 +1,6 @@
 //! Tests for ColumnView::map() — value mapping via left join.
+use cudf::testing::prelude::*;
+
 
 use cudf::TypeId;
 
@@ -61,9 +63,9 @@ fn test_map_empty_input_preserves_explicit_input_provenance() {
 
     let result = input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()).unwrap();
 
-    assert_eq!(result.__debug_execution_domain_kind(), "explicit");
-    assert_eq!(result.__debug_execution_domain_id(), input.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_stream_value(), input.__debug_execution_domain_stream_value());
+    assert_eq!(result.testing_execution_domain_kind(), "explicit");
+    assert_eq!(result.testing_execution_domain_id(), input.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_stream_value(), input.testing_execution_domain_stream_value());
     assert_eq!(result.view().unwrap().len().unwrap(), 0);
 }
 

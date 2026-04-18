@@ -10,6 +10,8 @@
 //!   own runtime-owned working set
 //! - result handoff remains explicit and goes back through the same shared
 //!   prepared-export boundary
+use cudf::testing::prelude::*;
+
 
 use std::{collections::HashMap, ffi::c_void};
 
@@ -129,7 +131,7 @@ fn single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_resu
 
     let consumer_runtime = common::sample_runtime();
     let imported = DataFrame::try_import_from_prepared_table_export_into_runtime(&export, &consumer_runtime).unwrap();
-    assert_eq!(imported.__debug_execution_domain_stream_value(), consumer_runtime.stream().__debug_raw_handle_value());
+    assert_eq!(imported.testing_execution_domain_stream_value(), consumer_runtime.stream().testing_raw_handle_value());
     assert_eq!(imported.column_names(), vec!["src", "dst"]);
 
     let out_degree = imported
@@ -138,8 +140,8 @@ fn single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_resu
         .unwrap();
 
     assert_eq!(
-        out_degree.__debug_execution_domain_stream_value(),
-        consumer_runtime.stream().__debug_raw_handle_value()
+        out_degree.testing_execution_domain_stream_value(),
+        consumer_runtime.stream().testing_raw_handle_value()
     );
     assert_eq!(sorted_out_degree_rows(&out_degree), vec![(1, 2), (2, 2), (3, 1)]);
 
@@ -156,5 +158,5 @@ fn single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_resu
 
     assert_eq!(handed_off.column_names(), vec!["src", "out_degree"]);
     assert_eq!(sorted_out_degree_rows(&handed_off), vec![(1, 2), (2, 2), (3, 1)]);
-    assert_eq!(handed_off.__debug_execution_domain_stream_value(), handoff_runtime.stream().__debug_raw_handle_value());
+    assert_eq!(handed_off.testing_execution_domain_stream_value(), handoff_runtime.stream().testing_raw_handle_value());
 }

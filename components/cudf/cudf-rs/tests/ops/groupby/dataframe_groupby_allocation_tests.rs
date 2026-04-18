@@ -36,13 +36,13 @@ fn groupby_agg_allocates_no_more_than_low_level_borrowed_primitive() {
 
     let low_level_allocations = allocation_count_delta(|| {
         let key_series = df.series("key").unwrap();
-        let key_cv = key_series.as_column_view().unwrap();
+        let key_cv = key_series.view().unwrap();
         let key_table = TableView::from_column_views(&[&key_cv]).unwrap();
 
         let a_series = df.series("a").unwrap();
         let b_series = df.series("b").unwrap();
-        let a_cv = a_series.as_column_view().unwrap();
-        let b_cv = b_series.as_column_view().unwrap();
+        let a_cv = a_series.view().unwrap();
+        let b_cv = b_series.view().unwrap();
         let a_aggs = [GroupByAgg::Sum, GroupByAgg::Min];
         let b_aggs = [GroupByAgg::Sum];
         let requests = [

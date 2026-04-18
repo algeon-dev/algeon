@@ -7,6 +7,8 @@
 //! - `Series::fillna_with_series` — v2: mixed-domain default path succeeds
 //! - `Runtime::empty_column` — retains explicit domain
 //! - `Runtime::column_from_device_ptr` — uses `_ex` FFI, retains explicit domain
+use cudf::testing::prelude::*;
+
 
 use std::{ffi::c_void, ptr};
 
@@ -72,10 +74,10 @@ fn df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     obs_reset();
     let result = df.fillna_with_series("val", &fill).unwrap();
 
-    assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
-    assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());
-    assert_eq!(result.__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
-    assert_eq!(result.__debug_execution_domain_mr_value(), target_rt.memory_resource().__debug_raw_handle_value());
+    assert_eq!(obs_last_stream(), target_rt.stream().testing_raw_handle_value());
+    assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().testing_raw_handle_value());
+    assert_eq!(result.testing_execution_domain_id(), target_rt.testing_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_mr_value(), target_rt.memory_resource().testing_raw_handle_value());
     assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
@@ -94,17 +96,17 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     .unwrap();
 
     let fill = rt_b.series("fill", &[99i32, 99, 99]).unwrap();
-    let expected_mr = df.__debug_execution_domain_mr_value();
+    let expected_mr = df.testing_execution_domain_mr_value();
 
     // Without runtime, mixed domains now succeed under v2.
     obs_reset();
     let result = df.fillna_with_series("val", &fill).unwrap();
 
     // Output provenance inherits from the input DataFrame.
-    assert_eq!(result.__debug_execution_domain_id(), rt_a.__debug_execution_domain_id());
-    assert_eq!(obs_last_stream(), rt_a.stream().__debug_raw_handle_value());
+    assert_eq!(result.testing_execution_domain_id(), rt_a.testing_execution_domain_id());
+    assert_eq!(obs_last_stream(), rt_a.stream().testing_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, expected_mr);
-    assert_eq!(result.__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
@@ -123,7 +125,7 @@ fn df_fillna_after_copy_into_runtime_same_domain_works() {
     let result =
         df.copy_into_runtime(&rt).unwrap().fillna_with_series("val", &fill.copy_into_runtime(&rt).unwrap()).unwrap();
 
-    assert_eq!(result.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
+    assert_eq!(result.testing_execution_domain_id(), rt.testing_execution_domain_id());
     assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
@@ -148,12 +150,12 @@ fn series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     obs_reset();
     let result = series.fillna_with_series(&fill).unwrap();
 
-    assert_eq!(obs_last_stream(), target_rt.stream().__debug_raw_handle_value());
-    assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().__debug_raw_handle_value());
-    assert_eq!(result.as_column().__debug_execution_domain_id(), target_rt.__debug_execution_domain_id());
+    assert_eq!(obs_last_stream(), target_rt.stream().testing_raw_handle_value());
+    assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().testing_raw_handle_value());
+    assert_eq!(result.as_column().testing_execution_domain_id(), target_rt.testing_execution_domain_id());
     assert_eq!(
-        result.as_column().__debug_execution_domain_mr_value(),
-        target_rt.memory_resource().__debug_raw_handle_value()
+        result.as_column().testing_execution_domain_mr_value(),
+        target_rt.memory_resource().testing_raw_handle_value()
     );
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
@@ -168,17 +170,17 @@ fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 
     let series = rt_a.nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap();
     let fill = rt_b.series("fill", &[99i32, 99, 99]).unwrap();
-    let expected_mr = series.as_column().__debug_execution_domain_mr_value();
+    let expected_mr = series.as_column().testing_execution_domain_mr_value();
 
     // Without runtime, mixed domains now succeed under v2.
     obs_reset();
     let result = series.fillna_with_series(&fill).unwrap();
 
     // Output provenance inherits from the input series.
-    assert_eq!(result.as_column().__debug_execution_domain_id(), rt_a.__debug_execution_domain_id());
-    assert_eq!(obs_last_stream(), rt_a.stream().__debug_raw_handle_value());
+    assert_eq!(result.as_column().testing_execution_domain_id(), rt_a.testing_execution_domain_id());
+    assert_eq!(obs_last_stream(), rt_a.stream().testing_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, expected_mr);
-    assert_eq!(result.as_column().__debug_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.as_column().testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
@@ -193,9 +195,9 @@ fn runtime_empty_column_retains_explicit_domain() {
     let rt = sample_runtime();
     let col = rt.empty_column(TypeId::Int32).unwrap();
 
-    assert_eq!(col.__debug_execution_domain_kind(), "explicit");
-    assert_eq!(col.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(col.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
+    assert_eq!(col.testing_execution_domain_kind(), "explicit");
+    assert_eq!(col.testing_execution_domain_id(), rt.testing_execution_domain_id());
+    assert_eq!(col.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
 }
 
 /// A `Runtime::empty_column` result can be added to an explicit-domain
@@ -224,14 +226,14 @@ fn runtime_column_from_device_ptr_retains_explicit_domain() {
 
     // Allocate some device memory via a Series (easiest way to get a device ptr).
     let source = rt.series("src", &[10i32, 20, 30]).unwrap();
-    let device_ptr = source.as_column_view().unwrap().device_data_ptr().unwrap();
+    let device_ptr = source.view().unwrap().device_data_ptr().unwrap();
 
     obs_reset();
     let col = unsafe { rt.column_from_device_ptr(device_ptr, 3, TypeId::Int32).unwrap() };
 
-    assert_eq!(col.__debug_execution_domain_kind(), "explicit");
-    assert_eq!(col.__debug_execution_domain_id(), rt.__debug_execution_domain_id());
-    assert_eq!(col.__debug_execution_domain_stream_value(), rt.stream().__debug_raw_handle_value());
+    assert_eq!(col.testing_execution_domain_kind(), "explicit");
+    assert_eq!(col.testing_execution_domain_id(), rt.testing_execution_domain_id());
+    assert_eq!(col.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
 }
 
 /// `Runtime::column_from_device_ptr` routes through the `_ex` FFI shim,
@@ -239,12 +241,12 @@ fn runtime_column_from_device_ptr_retains_explicit_domain() {
 #[test]
 fn runtime_column_from_device_ptr_uses_ex_ffi() {
     let rt = sample_runtime();
-    let expected_stream = rt.stream().__debug_raw_handle_value();
+    let expected_stream = rt.stream().testing_raw_handle_value();
     let default_mr = obs_current_device_resource() as usize;
 
     // Allocate source data in the runtime's domain.
     let source = rt.series("src", &[1i64, 2, 3, 4]).unwrap();
-    let device_ptr = source.as_column_view().unwrap().device_data_ptr().unwrap();
+    let device_ptr = source.view().unwrap().device_data_ptr().unwrap();
 
     obs_reset();
     let col = unsafe { rt.column_from_device_ptr(device_ptr, 4, TypeId::Int64).unwrap() };
@@ -253,5 +255,5 @@ fn runtime_column_from_device_ptr_uses_ex_ffi() {
     assert_eq!(obs_last_stream(), expected_stream);
     // The observation hook should have recorded the runtime's MR (not default).
     assert_ne!(obs_last_mr() as usize, default_mr);
-    assert_eq!(col.__debug_execution_domain_mr_value(), rt.memory_resource().__debug_raw_handle_value());
+    assert_eq!(col.testing_execution_domain_mr_value(), rt.memory_resource().testing_raw_handle_value());
 }
