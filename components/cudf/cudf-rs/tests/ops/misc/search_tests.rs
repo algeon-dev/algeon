@@ -1,8 +1,5 @@
 //! Tests for CU-2: contains (isin) and ColumnView::isin.
-use cudf::testing::prelude::*;
-
-
-use cudf::{ErrorKind, ops::search};
+use cudf::{ErrorKind, ops::search, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, explicit_i32_column, last_exec_mr_value,

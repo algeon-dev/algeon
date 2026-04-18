@@ -1,10 +1,8 @@
 //! Tests for Table and TableView.
-use cudf::testing::prelude::*;
-
-
 use cudf::{
     Runtime, TypeId,
     core::{Table, TableView},
+    testing::prelude::*,
 };
 
 use crate::common::{column_from_slice, column_from_slice_nullable};

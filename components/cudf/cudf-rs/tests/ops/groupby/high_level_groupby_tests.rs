@@ -635,7 +635,8 @@ fn groupby_domain_module_exports_documented_surface() {
     let aggs = [GroupByAgg::Sum];
     let requests = [AggregationRequest { values: &value_view, aggregations: &aggs }];
 
-    let result: GroupByAggregationOutput = groupby_aggregate(&keys.view().unwrap(), &requests, NullPolicy::Exclude).unwrap();
+    let result: GroupByAggregationOutput =
+        groupby_aggregate(&keys.view().unwrap(), &requests, NullPolicy::Exclude).unwrap();
 
     assert_eq!(result.keys.view().unwrap().num_rows().unwrap(), 2);
     assert_eq!(result.results.len(), 1);

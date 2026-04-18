@@ -15,15 +15,13 @@
 //! 4. **Default-context fallback** — existing APIs still use the default stream.
 //! 5. **Allocator context** — explicit memory resource is passed through.
 //! 6. **cudf-rs type contracts** — CudaStream, DeviceMemoryResource are Send+Sync.
-use cudf::testing::prelude::*;
-
-
 use std::{ffi::c_void, ptr};
 
 use cudf::{
     DeviceId,
     core::memory::DeviceMemoryResource,
     runtime::{CudaEvent, CudaStream},
+    testing::prelude::*,
 };
 use cudf_sys::{
     cudf_test_current_device_resource_raw, cudf_test_default_stream_value, cudf_test_exec_last_device,

@@ -7,8 +7,8 @@
 //! The returned indices are row-aligned with the encoded input. They are not,
 //! by themselves, a reusable key-to-code dictionary for some separately
 //! deduplicated key set. If you need a stable lookup mapping for later
-//! `map()`/`gather()` calls, pair [`keys`] with an explicit positional code
-//! column `0..keys.len()`.
+//! lookup/gather calls, pair [`keys`] with an explicit positional code column
+//! `0..keys.len()`.
 //!
 //! # Example
 //!

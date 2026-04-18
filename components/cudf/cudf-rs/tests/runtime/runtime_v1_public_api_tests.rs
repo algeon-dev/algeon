@@ -3,13 +3,10 @@
 //! This suite keeps representative coverage for runtime seeding, explicit
 //! execution overrides, copy-into-runtime placement, and mixed-domain
 //! semantics. It intentionally avoids one near-identical test per public API.
-use cudf::testing::prelude::*;
-
-
 use cudf::{
     AggSpec, CsvReadOptions, CsvWriteOptions, DataFrame, DeviceId, ExecutionContext, GroupByAgg, JsonWriteOptions,
     MergeOptions, ParquetReadOptions, ParquetWriteOptions, Runtime, Series, SortOptions, TypeId,
-    core::memory::DeviceMemoryResource, ops::expr::col, runtime::CudaStream,
+    core::memory::DeviceMemoryResource, ops::expr::col, runtime::CudaStream, testing::prelude::*,
 };
 use tempfile::TempDir;
 

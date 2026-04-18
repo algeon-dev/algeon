@@ -1,8 +1,5 @@
 //! Tests for `DataFrame::merge_split`.
-use cudf::testing::prelude::*;
-
-
-use cudf::{DataFrame, DataFrameJoinSides, ExecutionContext, MergeOptions, NullEquality};
+use cudf::{DataFrame, DataFrameJoinSides, ExecutionContext, MergeOptions, NullEquality, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,

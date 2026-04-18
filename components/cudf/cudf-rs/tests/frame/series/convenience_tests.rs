@@ -5,10 +5,7 @@
 //! `log`.
 //!
 //! All tests require a GPU.
-use cudf::testing::prelude::*;
-
-
-use cudf::{CodebookOptions, CodebookOrder, ErrorKind, Series, SortOptions, TypeId};
+use cudf::{CodebookOptions, CodebookOrder, ErrorKind, Series, SortOptions, TypeId, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
@@ -408,6 +405,19 @@ fn test_lookup_rejects_dtype_mismatch() {
 }
 
 #[test]
+fn test_lookup_rejects_mapping_length_mismatch_with_series_operation() {
+    let input = crate::common::series("vertex", &["u1", "u2"]).unwrap();
+    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
+    let values = crate::common::series("label", &["alice"]).unwrap();
+
+    let err = input.lookup(&keys, &values).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "series::lookup");
+    assert!(err.message().contains("same length"));
+}
+
+#[test]
 fn test_lookup_as_sets_requested_name() {
     let input = crate::common::series("vertex", &["u2", "u1"]).unwrap();
     let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
@@ -508,6 +518,21 @@ fn test_codebook_can_encode_and_decode_new_queries() {
     let decoded = codebook.decode(&encoded).unwrap();
     assert_eq!(decoded.name(), Some("query"));
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["c", "a"]);
+}
+
+#[test]
+fn test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation() {
+    let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
+    let codebook = s.codebook().unwrap();
+    let query = crate::common::series("query", &[1i32, 2]).unwrap();
+
+    let err = match codebook.encode(&query) {
+        Ok(_) => panic!("expected codebook encode dtype mismatch to be rejected"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "codebook::encode");
 }
 
 #[test]

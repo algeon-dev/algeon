@@ -8,12 +8,12 @@
 //! user-facing API contract. They may change or disappear at any time.
 
 use crate::{
+    AggSpec, MergeOptions, SortOptions,
     core::{Column, ColumnView, DeviceMemoryResource, Result, Scalar, Table, TableView},
     frame::DataFrame,
     io::arrow,
     ops::groupby::GroupBy,
     runtime::{CudaEvent, CudaStream, ExecutionContext, Runtime},
-    AggSpec, MergeOptions, SortOptions,
 };
 
 /// Trait imports for the testing support surface.

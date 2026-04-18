@@ -1,5 +1,3 @@
-#[path = "../core/column_map_tests.rs"]
-mod column_map_tests;
 #[path = "../core/column_ops_tests.rs"]
 mod column_ops_tests;
 #[path = "../core/column_string_tests.rs"]

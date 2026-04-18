@@ -17,6 +17,9 @@ typedef enum {
   CUDF_NULL_EQUALITY_UNEQUAL = 1,
 } cudf_null_equality_t;
 
+/// Opaque handle to a reusable libcudf distinct-hash-join build artifact.
+typedef void* cudf_distinct_hash_join_handle;
+
 /// Inner join. Returns materialized left and right result tables.
 /// The left result contains left_keys columns + left_payload columns for
 /// matching rows. Similarly for the right result.
@@ -88,6 +91,47 @@ cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
                                 cudf_table_handle* out_left,
                                 cudf_table_handle* out_right,
                                 const cudf_exec_options_t* options);
+
+/// Build a reusable distinct-hash-join artifact from a build-key table.
+///
+/// The build table must contain distinct rows. The returned handle borrows the
+/// underlying build-column device memory, so the owning columns must outlive
+/// the join handle.
+cudf_status_t cudf_distinct_hash_join_create(cudf_table_view_handle build,
+                                             cudf_null_equality_t null_equality,
+                                             cudf_distinct_hash_join_handle* out);
+
+/// Build a reusable distinct-hash-join artifact with explicit execution
+/// context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` NULL, uses cuDF's
+/// default stream. `options->mr` is accepted for ABI consistency but the
+/// distinct-hash-join build path does not expose an allocator override in the
+/// underlying libcudf constructor.
+cudf_status_t cudf_distinct_hash_join_create_ex(cudf_table_view_handle build,
+                                                cudf_null_equality_t null_equality,
+                                                cudf_distinct_hash_join_handle* out,
+                                                const cudf_exec_options_t* options);
+
+/// Destroy a reusable distinct-hash-join handle.
+void cudf_distinct_hash_join_destroy(cudf_distinct_hash_join_handle handle);
+
+/// Probe a reusable distinct-hash-join artifact and return build-row indices.
+///
+/// The returned INT32 column is row-aligned with `probe`. Matching rows contain
+/// the matched build-row index; misses contain libcudf's `JoinNoMatch`
+/// sentinel. Callers typically feed this column into gather with NULLIFY.
+cudf_status_t cudf_distinct_hash_join_left_join(cudf_distinct_hash_join_handle join,
+                                                cudf_table_view_handle probe,
+                                                cudf_column_handle* out);
+
+/// Probe a reusable distinct-hash-join artifact with explicit execution
+/// context. The returned indices column is allocated using `options->mr` when
+/// provided.
+cudf_status_t cudf_distinct_hash_join_left_join_ex(cudf_distinct_hash_join_handle join,
+                                                   cudf_table_view_handle probe,
+                                                   cudf_column_handle* out,
+                                                   const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

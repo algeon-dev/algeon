@@ -10,9 +10,6 @@
 //!   own runtime-owned working set
 //! - result handoff remains explicit and goes back through the same shared
 //!   prepared-export boundary
-use cudf::testing::prelude::*;
-
-
 use std::{collections::HashMap, ffi::c_void};
 
 use cudf::{
@@ -24,6 +21,7 @@ use cudf::{
             ReadStartAuthority,
         },
     },
+    testing::prelude::*,
 };
 
 use crate::common;

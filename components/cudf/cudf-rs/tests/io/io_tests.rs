@@ -1,13 +1,11 @@
 //! Tests for Parquet and CSV I/O.
-use cudf::testing::prelude::*;
-
-
 use std::process::Command;
 
 use cudf::{
     ErrorKind,
     core::Table,
     io::{csv, parquet},
+    testing::prelude::*,
 };
 use tempfile::TempDir;
 

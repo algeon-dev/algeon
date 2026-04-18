@@ -535,6 +535,57 @@ fn test_column_view_strings_to_host_ex_sync_contract() {
 }
 
 #[test]
+fn test_column_view_string_chars_ptr_and_size_empty_reports_zero_bytes_without_shim_sync() {
+    let _shim_state = lock_shim_state();
+    let col = make_string_column(&[]);
+    let view = make_column_view(col);
+    let default_stream = default_stream_value();
+    let mut chars_ptr: *const c_void = ptr::null();
+    let mut chars_size: usize = usize::MAX;
+
+    reset_exec_observation();
+    let st = unsafe { cudf_sys::cudf_column_view_string_chars_ptr_and_size(view, &mut chars_ptr, &mut chars_size) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(last_exec_stream_value(), default_stream);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
+    assert!(chars_ptr.is_null());
+    assert_eq!(chars_size, 0);
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_column_view_string_chars_ptr_and_size_ex_uses_explicit_stream_without_shim_sync() {
+    let _shim_state = lock_shim_state();
+    let col = make_string_column(&["ab", "", "cde"]);
+    let view = make_column_view(col);
+    let stream = OwnedStream::new();
+    let explicit_stream = stream_value(stream.as_raw());
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
+    let mut chars_ptr: *const c_void = ptr::null();
+    let mut chars_size: usize = 0;
+
+    reset_exec_observation();
+    let st = unsafe {
+        cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(view, exec.as_raw(), &mut chars_ptr, &mut chars_size)
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(last_exec_stream_value(), explicit_stream);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
+    assert!(!chars_ptr.is_null());
+    assert_eq!(chars_size, 5);
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
 fn test_scalar_is_valid_ex_uses_explicit_stream_without_extra_shim_sync() {
     let _shim_state = lock_shim_state();
     let scalar = make_i32_scalar(42);

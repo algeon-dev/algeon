@@ -1,6 +1,6 @@
-use cudf::testing::prelude::*;
-
 use std::{ffi::c_void, ptr, sync::Mutex};
+
+use cudf::testing::prelude::*;
 
 /// Serializes test-only swaps of the process-global current device resource.
 static CURRENT_DEVICE_RESOURCE_LOCK: Mutex<()> = Mutex::new(());

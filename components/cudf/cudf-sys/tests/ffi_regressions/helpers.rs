@@ -78,6 +78,18 @@ extern "C" {
         out_left: *mut *mut c_void,
         out_right: *mut *mut c_void,
     ) -> i32;
+    #[link_name = "cudf_distinct_hash_join_create"]
+    pub(crate) fn cudf_distinct_hash_join_create_raw(
+        build: *mut c_void,
+        null_equality: i32,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_distinct_hash_join_left_join"]
+    pub(crate) fn cudf_distinct_hash_join_left_join_raw(
+        join: *mut c_void,
+        probe: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
     #[link_name = "cudf_scan_aggregation_create"]
     pub(crate) fn cudf_scan_aggregation_create_raw(kind: i32, out: *mut *mut c_void) -> i32;
     #[link_name = "cudf_scan"]
@@ -289,6 +301,15 @@ pub(crate) fn make_table_view(tbl: *mut c_void) -> *mut c_void {
     let st = unsafe { cudf_sys::cudf_table_view(tbl, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
+    out
+}
+
+pub(crate) fn make_table_from_columns(mut columns: Vec<*mut c_void>) -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_table_create(columns.as_mut_ptr(), columns.len() as i32, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert!(columns.iter().all(|handle| handle.is_null()));
     out
 }
 

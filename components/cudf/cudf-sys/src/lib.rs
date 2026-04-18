@@ -318,6 +318,7 @@ pub type cudf_column_view_handle = *mut c_void;
 pub type cudf_table_handle = *mut c_void;
 pub type cudf_table_view_handle = *mut c_void;
 pub type cudf_scalar_handle = *mut c_void;
+pub type cudf_distinct_hash_join_handle = *mut c_void;
 pub type cudf_device_buffer_handle = *mut c_void;
 pub type cudf_stream_handle = *mut c_void;
 pub type cudf_event_handle = *mut c_void;
@@ -1958,6 +1959,8 @@ extern "C" {
 
     pub fn cudf_reduce_aggregation_create_std(ddof: i32, out: *mut *mut c_void) -> cudf_status_t;
 
+    pub fn cudf_reduce_aggregation_create_nunique(null_policy: i32, out: *mut *mut c_void) -> cudf_status_t;
+
     pub fn cudf_reduce_aggregation_destroy(handle: *mut c_void);
 
     pub fn cudf_scan_aggregation_create(kind: cudf_reduce_aggregation_kind_t, out: *mut *mut c_void) -> cudf_status_t;
@@ -2212,6 +2215,34 @@ extern "C" {
         null_equality: cudf_null_equality_t,
         out_left: *mut cudf_table_handle,
         out_right: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_distinct_hash_join_create(
+        build: cudf_table_view_handle,
+        null_equality: cudf_null_equality_t,
+        out: *mut cudf_distinct_hash_join_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_distinct_hash_join_create_ex(
+        build: cudf_table_view_handle,
+        null_equality: cudf_null_equality_t,
+        out: *mut cudf_distinct_hash_join_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_distinct_hash_join_destroy(handle: cudf_distinct_hash_join_handle);
+
+    pub fn cudf_distinct_hash_join_left_join(
+        join: cudf_distinct_hash_join_handle,
+        probe: cudf_table_view_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_distinct_hash_join_left_join_ex(
+        join: cudf_distinct_hash_join_handle,
+        probe: cudf_table_view_handle,
+        out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 

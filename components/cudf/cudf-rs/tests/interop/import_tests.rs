@@ -1,5 +1,3 @@
-use cudf::testing::prelude::*;
-
 use std::collections::HashMap;
 
 use cudf::{
@@ -13,6 +11,7 @@ use cudf::{
         transfer::OwnedTableTransfer,
     },
     ops::dictionary,
+    testing::prelude::*,
 };
 use tempfile::TempDir;
 

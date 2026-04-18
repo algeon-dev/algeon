@@ -1,5 +1,3 @@
-use cudf::testing::prelude::*;
-
 use std::thread;
 
 use cudf::{
@@ -18,6 +16,7 @@ use cudf::{
         },
     },
     runtime::{CudaEvent, CudaStream},
+    testing::prelude::*,
 };
 use static_assertions::{assert_impl_all, assert_not_impl_any};
 

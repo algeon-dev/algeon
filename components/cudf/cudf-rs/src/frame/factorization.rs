@@ -6,6 +6,7 @@ use crate::{
         error::{Error, ErrorKind, Result},
     },
     frame::series::{IntoSeries, Series},
+    ops::lookup,
     runtime::execution_domain::ExecutionDomain,
 };
 
@@ -165,7 +166,8 @@ impl Codebook {
     }
 
     pub fn encode(&self, values: &Series) -> Result<EncodedSeries> {
-        let encoded = values.view()?.map(&self.keys.view()?, &self.codes.view()?)?;
+        let encoded =
+            lookup::probe_prevalidated(&values.view()?, &self.keys.view()?, &self.codes.view()?, "codebook::encode")?;
         let encoded = Series::from_column(encoded)?;
         let encoded = match values.name() {
             Some(name) => encoded.rename(format!("{name}_codes")),

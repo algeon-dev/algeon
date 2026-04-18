@@ -1,8 +1,5 @@
 //! Tests for CU-7: gather (take) and conditional copy.
-use cudf::testing::prelude::*;
-
-
-use cudf::{core::Table, ops::copying};
+use cudf::{core::Table, ops::copying, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, explicit_bool_column, explicit_i32_column, last_exec_mr_value,

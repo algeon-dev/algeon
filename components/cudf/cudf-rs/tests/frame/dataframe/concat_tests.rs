@@ -1,8 +1,5 @@
 //! Tests for DataFrame concat, copy, rename, select.
-use cudf::testing::prelude::*;
-
-
-use cudf::{ColumnOrder, ConcatByNameOptions, DataFrame, ErrorKind, SchemaAlignment};
+use cudf::{ColumnOrder, ConcatByNameOptions, DataFrame, ErrorKind, SchemaAlignment, testing::prelude::*};
 
 use crate::common::{
     assert_missing_column_error, column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,

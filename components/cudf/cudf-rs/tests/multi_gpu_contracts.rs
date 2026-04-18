@@ -5,7 +5,6 @@
 //! explicitly.
 use cudf::testing::prelude::*;
 
-
 mod common;
 
 use cudf::{
@@ -1153,7 +1152,7 @@ fn runtime_melt_regression() {
 }
 
 #[test]
-fn runtime_column_map_regression() {
+fn runtime_lookup_regression() {
     if !should_run_multi_gpu_test() {
         return;
     }
@@ -1168,12 +1167,44 @@ fn runtime_column_map_regression() {
     let values = rt1.series("values", &[100, 200, 300]).unwrap();
 
     common::reset_exec_observation();
-    let result =
-        match input.view().unwrap().map(&keys.view().unwrap(), &values.view().unwrap()) {
-            Ok(result) => result,
-            Err(err) => panic!("ColumnView::map() should succeed when all logical inputs are runtime-pinned: {err:?}"),
-        };
+    let result = match cudf::ops::lookup::probe(&input.view().unwrap(), &keys.view().unwrap(), &values.view().unwrap())
+    {
+        Ok(result) => result,
+        Err(err) => panic!("lookup::probe() should succeed when all logical inputs are runtime-pinned: {err:?}"),
+    };
     assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300, 100]);
+}
+
+#[test]
+fn runtime_lookup_table_regression() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let _device_guard = common::DeviceRestoreGuard::new();
+    let (device0, device1) = first_two_test_devices();
+    common::set_current_device(device0);
+
+    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
+    let keys = rt1.series("keys", &[1, 2, 3]).unwrap();
+    let values = rt1.series("values", &[100, 200, 300]).unwrap();
+    let table = cudf::LookupTable::new(keys, values).unwrap();
+    let input = rt1.series("input", &[1, 4, 2, 3]).unwrap();
+
+    common::reset_exec_observation();
+    let result = match table.probe(&input) {
+        Ok(result) => result,
+        Err(err) => panic!("LookupTable::probe() should succeed when all logical inputs are runtime-pinned: {err:?}"),
+    };
+
+    assert_eq!(
+        common::last_exec_device(),
+        device1.ordinal() as i32,
+        "LookupTable::probe() should execute on device {}, observed device {}",
+        device1.ordinal(),
+        common::last_exec_device()
+    );
+    assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![Some(100), None, Some(200), Some(300)]);
 }
 
 #[test]

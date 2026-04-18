@@ -1,8 +1,5 @@
 //! Tests for filter operations.
-use cudf::testing::prelude::*;
-
-
-use cudf::{core::Table, ops::filter};
+use cudf::{core::Table, ops::filter, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, explicit_bool_column, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,

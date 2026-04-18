@@ -1,13 +1,11 @@
 //! Tests for JSON / JSON Lines (NDJSON) I/O.
 //!
 //! All tests require a GPU.
-use cudf::testing::prelude::*;
-
-
 use cudf::{
     ErrorKind,
     core::Table,
     io::json::{self, JsonTableReadOptions, JsonTableWriteOptions},
+    testing::prelude::*,
 };
 use tempfile::TempDir;
 

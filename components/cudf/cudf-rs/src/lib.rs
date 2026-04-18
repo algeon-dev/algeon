@@ -51,6 +51,8 @@
 //! - [`GroupBy`] / [`DataFrame::groupby`] — GPU-accelerated groupby aggregation.
 //! - [`Series::factorize`] / [`Series::codebook`] — typed categorical encoding
 //!   and reusable value↔code mappings.
+//! - [`LookupTable`] / [`Series::lookup`] / [`DataFrame::with_lookup`] —
+//!   row-aligned lookup operators and reusable mappings.
 //! - [`Series::sum_value`], [`Series::mean_value`], [`Series::minmax_values`]
 //!   — high-level reductions that return host values directly.
 //!
@@ -181,6 +183,7 @@ pub use ops::Expr;
 pub use ops::{
     groupby::{AggSpec, GroupBy, GroupByAgg, GroupByOptions},
     join::{JoinType, MergeOptions},
+    lookup::LookupTable,
     replace::FillPolicy,
     sorting::SortOptions,
     stream_compaction::DuplicateKeepOption,

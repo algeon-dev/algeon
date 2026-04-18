@@ -1,8 +1,5 @@
 //! Tests for the high-level `DataFrame::filter` that accepts `&Series` masks.
-use cudf::testing::prelude::*;
-
-
-use cudf::{DataFrame, ErrorKind, ops::filter as low_level_filter};
+use cudf::{DataFrame, ErrorKind, ops::filter as low_level_filter, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,

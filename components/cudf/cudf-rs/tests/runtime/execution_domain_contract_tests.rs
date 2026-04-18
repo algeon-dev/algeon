@@ -3,9 +3,6 @@
 //! This suite intentionally keeps one representative test per operation
 //! family. The goal is to protect provenance, execution, and synchronization
 //! contracts without locking the library into an API-by-API matrix.
-use cudf::testing::prelude::*;
-
-
 use cudf::{
     DataFrame, DataType, ErrorKind, GroupByAgg, Series, SortOptions, TypeId,
     core::{Column, Table},
@@ -18,6 +15,7 @@ use cudf::{
         search, sorting,
         unary::{self, UnaryOperator},
     },
+    testing::prelude::*,
 };
 use tempfile::TempDir;
 

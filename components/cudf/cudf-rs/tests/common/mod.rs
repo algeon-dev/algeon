@@ -1,5 +1,3 @@
-use cudf::testing::prelude::*;
-
 use std::{
     ffi::c_void,
     ptr,
@@ -10,6 +8,7 @@ use cudf::{
     DataFrame, DeviceId, Error, ErrorKind, HostColumnData, Runtime, Series, TypeId,
     core::{Column, CudfType, DeviceBuffer, Scalar},
     runtime::CudaStream,
+    testing::prelude::*,
 };
 use cudf_sys::{
     CUDF_SUCCESS, cudf_cuda_get_device, cudf_cuda_set_device, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,

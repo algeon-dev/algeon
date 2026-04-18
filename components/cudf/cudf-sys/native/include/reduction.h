@@ -48,6 +48,10 @@ cudf_status_t cudf_reduce_aggregation_create_variance(int32_t ddof,
 /// Create a STD reduce aggregation with ddof.
 cudf_status_t cudf_reduce_aggregation_create_std(int32_t ddof, cudf_reduce_aggregation_handle* out);
 
+/// Create a NUNIQUE reduce aggregation with explicit null handling.
+cudf_status_t cudf_reduce_aggregation_create_nunique(int32_t null_policy,
+                                                     cudf_reduce_aggregation_handle* out);
+
 /// Destroy a reduce aggregation handle.
 void cudf_reduce_aggregation_destroy(cudf_reduce_aggregation_handle handle);
 
