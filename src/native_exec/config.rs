@@ -1236,23 +1236,27 @@ impl NativeCudfExecutionConfig {
                 });
         }
 
-        let pool_config = self.clone();
-        let pool = tokio::task::spawn_blocking(move || pool_config.standalone_gpu_execution_pool()).await.map_err(
-            |error| {
-                let (code, reason) = if error.is_cancelled() {
-                    (crate::error::ErrorCode::Cancelled, "discovery_task_cancelled")
-                } else {
-                    (crate::error::ErrorCode::Internal, "discovery_task_panicked")
-                };
-                Error::new(
-                    code,
-                    "datafusion_nexus.native_exec.context_executor",
-                    "standalone GPU execution-pool discovery task failed",
-                )
-                .with_fact("reason", reason)
-                .with_source(error)
-            },
-        )??;
+        let pool = if tokio::runtime::Handle::try_current().is_ok() {
+            let pool_config = self.clone();
+            tokio::task::spawn_blocking(move || pool_config.standalone_gpu_execution_pool()).await.map_err(
+                |error| {
+                    let (code, reason) = if error.is_cancelled() {
+                        (crate::error::ErrorCode::Cancelled, "discovery_task_cancelled")
+                    } else {
+                        (crate::error::ErrorCode::Internal, "discovery_task_panicked")
+                    };
+                    Error::new(
+                        code,
+                        "datafusion_nexus.native_exec.context_executor",
+                        "standalone GPU execution-pool discovery task failed",
+                    )
+                    .with_fact("reason", reason)
+                    .with_source(error)
+                },
+            )??
+        } else {
+            self.standalone_gpu_execution_pool()?
+        };
         let config = self.clone();
         let standalone_owner = Some(Arc::as_ptr(&task_context) as usize);
         pool.run(GpuExecutionJobKind::ContextSetup, async move {

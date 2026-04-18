@@ -309,7 +309,7 @@ fn query_services_on_same_device_share_memory_governor_ledger() {
     assert_eq!(second_service.memory_governor_reports().unwrap()[0].outstanding_bytes, first.device_budget_bytes());
 
     drop(first);
-    assert!(second_service.try_admit_query("tenant").unwrap().is_some());
+    let _second = second_service.admit_query("tenant").expect("ordered cleanup should wake memory admission");
 }
 
 #[test]
@@ -349,7 +349,7 @@ fn max_queries_per_device_cap_is_shared_across_services_on_same_device() {
     assert!(second_service.try_admit_query("tenant").unwrap().is_none());
 
     drop(first);
-    assert!(second_service.try_admit_query("tenant").unwrap().is_some());
+    let _second = second_service.admit_query("tenant").expect("ordered cleanup should wake per-device admission");
 }
 
 #[test]
@@ -438,7 +438,7 @@ fn max_queries_per_device_releases_with_handle_even_when_context_retains_grant()
     drop(tenant_context);
     first.finish();
 
-    let second = service.try_admit_query("tenant").unwrap().expect("released handle should free per-device cap");
+    let second = service.admit_query("tenant").expect("ordered cleanup should free per-device cap");
     assert_eq!(second.device_ordinal(), 0);
     drop(retained_context);
 }
@@ -580,7 +580,7 @@ fn query_service_treats_transient_device_capacity_exhaustion_as_busy_not_rejecte
 
     assert!(service.try_admit_query("tenant").unwrap().is_none());
     drop(first);
-    assert!(service.try_admit_query("tenant").unwrap().is_some());
+    let _second = service.admit_query("tenant").expect("ordered cleanup should wake capacity admission");
 }
 
 #[test]
