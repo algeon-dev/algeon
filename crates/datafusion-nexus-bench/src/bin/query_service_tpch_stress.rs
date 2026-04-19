@@ -79,6 +79,7 @@ const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_ADMISSION_W
 const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_SOURCE_CHUNK_BYTES";
 const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_ROW_GROUPS_PER_CHUNK";
 const SOURCE_CACHE_MAX_RETAINED_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_SOURCE_CACHE_MAX_RETAINED_BYTES";
+const MEMORY_MANAGER_POOL_INITIAL_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MEMORY_MANAGER_POOL_INITIAL_BYTES";
 const NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_NATIVE_PIPELINE_EXECUTION_MODE";
 const QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV: &str =
     "CUDF_QUERY_SERVICE_TPCH_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER";
@@ -144,6 +145,7 @@ struct StressConfig {
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
     source_cache_max_retained_bytes: Option<u64>,
+    memory_manager_pool_initial_bytes: Option<u64>,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     query_memory_domain_ceiling_multiplier: Option<u64>,
     warmup_rounds: usize,
@@ -207,6 +209,7 @@ impl StressConfig {
             max_source_chunk_bytes: env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, 64 * 1024 * 1024)?,
             max_row_groups_per_chunk: env_usize(MAX_ROW_GROUPS_PER_CHUNK_ENV, 1)?,
             source_cache_max_retained_bytes: optional_env_u64(SOURCE_CACHE_MAX_RETAINED_BYTES_ENV)?,
+            memory_manager_pool_initial_bytes: optional_env_u64(MEMORY_MANAGER_POOL_INITIAL_BYTES_ENV)?,
             native_pipeline_execution_mode: env_native_pipeline_execution_mode(
                 NATIVE_PIPELINE_EXECUTION_MODE_ENV,
                 NativePipelineExecutionMode::StrictBounded,
@@ -255,6 +258,19 @@ impl StressConfig {
         validate_nonzero(MAX_ROW_GROUPS_PER_CHUNK_ENV, self.max_row_groups_per_chunk)?;
         if let Some(max_retained_bytes) = self.source_cache_max_retained_bytes {
             validate_nonzero(SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, max_retained_bytes)?;
+        }
+        if let Some(initial_pool_bytes) = self.memory_manager_pool_initial_bytes {
+            validate_nonzero(MEMORY_MANAGER_POOL_INITIAL_BYTES_ENV, initial_pool_bytes)?;
+            if initial_pool_bytes > self.device_capacity_bytes {
+                return Err(plan_error(format!(
+                    "{MEMORY_MANAGER_POOL_INITIAL_BYTES_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}"
+                )));
+            }
+            usize::try_from(initial_pool_bytes).map_err(|_| {
+                plan_error(format!("{MEMORY_MANAGER_POOL_INITIAL_BYTES_ENV} exceeds the platform usize range"))
+            })?;
+            usize::try_from(self.device_capacity_bytes)
+                .map_err(|_| plan_error(format!("{DEVICE_CAPACITY_BYTES_ENV} exceeds the platform usize range")))?;
         }
         if let Some(multiplier) = self.query_memory_domain_ceiling_multiplier {
             validate_nonzero(QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV, multiplier)?;
@@ -317,6 +333,16 @@ impl StressConfig {
             query_memory_domain: self
                 .query_memory_domain_ceiling_multiplier
                 .map(|multiplier| QueryMemoryDomainPolicy::new().with_ceiling_multiplier(multiplier)),
+            device_memory_manager_base: self.memory_manager_pool_initial_bytes.map_or_else(
+                cudf::DeviceMemoryManagerBase::default,
+                |initial_pool_bytes| cudf::DeviceMemoryManagerBase::Pool {
+                    initial_pool_size: usize::try_from(initial_pool_bytes)
+                        .expect("validated pool initial bytes fit usize"),
+                    maximum_pool_size: Some(
+                        usize::try_from(self.device_capacity_bytes).expect("validated device capacity fits usize"),
+                    ),
+                },
+            ),
             ..QueryServiceConfig::default()
         }
     }
@@ -571,6 +597,10 @@ impl StressReport {
         output.push_str(&format!(
             "# source_cache_max_retained_bytes={}\n",
             self.config.source_cache_max_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string())
+        ));
+        output.push_str(&format!(
+            "# memory_manager_pool_initial_bytes={}\n",
+            self.config.memory_manager_pool_initial_bytes.map_or_else(|| "none".to_string(), |value| value.to_string())
         ));
         output.push_str(&format!(
             "# native_pipeline_execution_mode={}\n",
@@ -1803,6 +1833,7 @@ mod tests {
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
             source_cache_max_retained_bytes: None,
+            memory_manager_pool_initial_bytes: None,
             native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
             query_memory_domain_ceiling_multiplier: None,
             warmup_rounds: 0,
@@ -1898,6 +1929,7 @@ mod tests {
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
             source_cache_max_retained_bytes: None,
+            memory_manager_pool_initial_bytes: None,
             native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
             query_memory_domain_ceiling_multiplier: None,
             warmup_rounds: 0,

@@ -32,6 +32,7 @@ GPU_LANE="
 nexus-query-engine
 nexus-query-engine::native_execution_tests
 nexus-query-engine::native_contract_tests
+nexus-query-engine::query_service_allocator_lifecycle
 datafusion-nexus::cugraph_tests
 datafusion-nexus::iceberg_tests
 datafusion-nexus::native_exec_tests

@@ -245,7 +245,18 @@ impl SourceObjectStoreRegistry {
     }
 
     pub(super) fn with_profiles(profiles: impl IntoIterator<Item = SourceStorageProfile>) -> Result<Self> {
-        let mut by_id = HashMap::new();
+        let profiles = profiles.into_iter().collect::<Vec<_>>();
+        Self::validate_profiles(&profiles)?;
+        let by_id = profiles.into_iter().map(|profile| (profile.id().to_string(), profile)).collect();
+        Ok(Self {
+            profiles: by_id,
+            stores: Mutex::new(HashMap::new()),
+            resolved_credentials: Mutex::new(HashMap::new()),
+        })
+    }
+
+    pub(super) fn validate_profiles(profiles: &[SourceStorageProfile]) -> Result<()> {
+        let mut profile_ids = std::collections::HashSet::with_capacity(profiles.len());
         for profile in profiles {
             if profile.id().trim().is_empty() {
                 return Err(QueryError::new(
@@ -255,22 +266,17 @@ impl SourceObjectStoreRegistry {
                 )
                 .with_fact("reason", "empty_profile_id"));
             }
-            let id = profile.id().to_string();
-            if by_id.insert(id.clone(), profile).is_some() {
+            if !profile_ids.insert(profile.id()) {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
                     "nexus_query_engine.source_object_store.profile",
                     "source storage profile ids must be unique",
                 )
-                .with_fact("storage_profile_id", id)
+                .with_fact("storage_profile_id", profile.id())
                 .with_fact("reason", "duplicate_profile_id"));
             }
         }
-        Ok(Self {
-            profiles: by_id,
-            stores: Mutex::new(HashMap::new()),
-            resolved_credentials: Mutex::new(HashMap::new()),
-        })
+        Ok(())
     }
 
     pub(super) fn s3_store(&self, key: S3ObjectStoreKey) -> Result<Arc<dyn object_store::ObjectStore>> {

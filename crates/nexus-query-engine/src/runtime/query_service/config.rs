@@ -235,6 +235,11 @@ pub struct QueryServiceConfig {
     /// enabled, strict and adaptive contexts both use hard-limited query-domain
     /// members for their boundary budget tokens.
     pub query_memory_domain: Option<QueryMemoryDomainPolicy>,
+    /// Process-lifetime physical allocator installed on each service device.
+    ///
+    /// The RMM pool form amortizes CUDA allocator calls for cache-backed
+    /// serving, but cannot be combined with private query memory domains.
+    pub device_memory_manager_base: cudf::DeviceMemoryManagerBase,
     /// Optional service stream pool size. `None` uses the SM-aware default.
     pub stream_pool_size: Option<usize>,
     /// Soft memory-governor capacity for the configured CUDA device.
@@ -289,8 +294,34 @@ impl QueryServiceConfig {
                 .with_fact("reason", "cugraph_feature_disabled"));
             }
         }
+        if let cudf::DeviceMemoryManagerBase::Pool { initial_pool_size, maximum_pool_size } =
+            self.device_memory_manager_base
+        {
+            validate_nonzero_config_field("device_memory_manager_base.initial_pool_size", initial_pool_size == 0)?;
+            if maximum_pool_size.is_some_and(|maximum| maximum < initial_pool_size) {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.query_service.config.validate",
+                    "device memory manager pool maximum must be at least its initial size",
+                )
+                .with_fact("field", "device_memory_manager_base.maximum_pool_size")
+                .with_fact("initial_pool_size", initial_pool_size)
+                .with_fact("maximum_pool_size", maximum_pool_size.unwrap_or_default())
+                .with_fact("reason", "pool_maximum_below_initial"));
+            }
+        }
         if let Some(policy) = self.query_memory_domain {
             policy.validate()?;
+            if matches!(self.device_memory_manager_base, cudf::DeviceMemoryManagerBase::Pool { .. }) {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.query_service.config.validate",
+                    "query memory domains require the CUDA async device memory manager base",
+                )
+                .with_fact("field", "query_memory_domain")
+                .with_fact("conflicting_field", "device_memory_manager_base")
+                .with_fact("reason", "query_memory_domain_requires_cuda_async_manager"));
+            }
             if self.local_parquet_source_cache_max_retained_bytes.is_some() {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
@@ -384,6 +415,7 @@ impl Default for QueryServiceConfig {
             local_parquet_source_cache_max_retained_bytes: None,
             resident_graph_cache_max_retained_bytes: None,
             query_memory_domain: None,
+            device_memory_manager_base: cudf::DeviceMemoryManagerBase::default(),
             stream_pool_size: None,
             device_capacity_bytes: None,
             max_concurrent_queries: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
