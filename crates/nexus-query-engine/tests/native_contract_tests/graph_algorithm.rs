@@ -1574,7 +1574,6 @@ fn graph_operation_registry_pins_baseline_inventory() {
                 "spectral_modularity_maximization",
                 GraphLayoutRequirement::Forward,
             ),
-            (GraphAlgorithm::BalancedCutClustering, "balanced_cut_clustering", GraphLayoutRequirement::Forward),
             (GraphAlgorithm::ForceAtlas2, "force_atlas2", GraphLayoutRequirement::Any),
         ],
         "graph operation registry order is part of the public surface; \
@@ -1822,13 +1821,6 @@ fn graph_operation_registry_pins_descriptor_contracts() {
                 false,
             ),
             (
-                GraphAlgorithm::BalancedCutClustering,
-                GraphSourceVertexRequirement::None,
-                GraphWeightPolicy::Ignored,
-                GraphOutputSchemaKind::Fixed,
-                false,
-            ),
-            (
                 GraphAlgorithm::ForceAtlas2,
                 GraphSourceVertexRequirement::None,
                 GraphWeightPolicy::Optional,
@@ -1926,7 +1918,6 @@ fn graph_algorithm_capability_rejects_int64_for_legacy_int32_only_algorithms() {
             GraphAlgorithm::SpectralModularityMaximization,
             GraphAlgorithmParams::SpectralModularityMaximization(Default::default()),
         ),
-        (GraphAlgorithm::BalancedCutClustering, GraphAlgorithmParams::BalancedCutClustering(Default::default())),
     ] {
         assert_eq!(algorithm.vertex_id_type_support(), GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType);
         let graph_options = algorithm.definition().default_graph_options(&GraphConstructionOptions::default());
@@ -1987,7 +1978,6 @@ fn graph_algorithm_capability_rejects_incompatible_directedness() {
             GraphAlgorithm::SpectralModularityMaximization,
             GraphAlgorithmParams::SpectralModularityMaximization(Default::default()),
         ),
-        (GraphAlgorithm::BalancedCutClustering, GraphAlgorithmParams::BalancedCutClustering(Default::default())),
     ] {
         let plan = graph_plan_with_options(
             algorithm,
@@ -2222,7 +2212,6 @@ const CUGRAPH_RS_METHOD_TO_REGISTRY: &[(&str, &str)] = &[
     ("leiden", "leiden"),
     ("ecg", "ecg"),
     ("spectral_modularity_maximization", "spectral_modularity_maximization"),
-    ("balanced_cut_clustering", "balanced_cut_clustering"),
     ("force_atlas2", "force_atlas2"),
 ];
 

@@ -1368,7 +1368,6 @@ const GRAPH_ALGORITHM_EXECUTORS: &[(crate::plan::GraphAlgorithm, GraphAlgorithmE
     (crate::plan::GraphAlgorithm::Leiden, execute_leiden),
     (crate::plan::GraphAlgorithm::Ecg, execute_ecg),
     (crate::plan::GraphAlgorithm::SpectralModularityMaximization, execute_spectral_modularity_maximization),
-    (crate::plan::GraphAlgorithm::BalancedCutClustering, execute_balanced_cut_clustering),
     (crate::plan::GraphAlgorithm::ForceAtlas2, execute_force_atlas2),
 ];
 
@@ -3408,17 +3407,6 @@ fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmParams) -> Str
             params.min_weight, params.ensemble_size, params.max_level, params.threshold, params.resolution, params.seed,
         ),
         crate::plan::GraphAlgorithmParams::SpectralModularityMaximization(params) => format!(
-            "n_clusters={},n_eigenvectors={},evs_tolerance={},evs_max_iterations={},\
-             k_means_tolerance={},k_means_max_iterations={},seed={}",
-            params.n_clusters,
-            params.n_eigenvectors,
-            params.evs_tolerance,
-            params.evs_max_iterations,
-            params.k_means_tolerance,
-            params.k_means_max_iterations,
-            params.seed,
-        ),
-        crate::plan::GraphAlgorithmParams::BalancedCutClustering(params) => format!(
             "n_clusters={},n_eigenvectors={},evs_tolerance={},evs_max_iterations={},\
              k_means_tolerance={},k_means_max_iterations={},seed={}",
             params.n_clusters,

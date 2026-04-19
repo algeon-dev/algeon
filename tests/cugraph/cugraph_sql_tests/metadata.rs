@@ -843,7 +843,6 @@ async fn cugraph_validate_call_rejects_int64_for_legacy_int32_only_algorithms() 
     for (function, call_json) in [
         ("cugraph_minimum_spanning_tree", r#"{"src_col":"src","dst_col":"dst","weight_col":"weight"}"#),
         ("cugraph_spectral_modularity_maximization", r#"{"src_col":"src","dst_col":"dst"}"#),
-        ("cugraph_balanced_cut_clustering", r#"{"src_col":"src","dst_col":"dst"}"#),
     ] {
         let escaped = call_json.replace('\'', "''");
         let rejected = ctx
@@ -896,11 +895,6 @@ async fn cugraph_validate_call_rejects_directed_true_for_undirected_only_algorit
             r#"{"src_col":"src","dst_col":"dst","options":{"directed":true}}"#,
             "cugraph_spectral_modularity_maximization requires directed=false",
         ),
-        (
-            "cugraph_balanced_cut_clustering",
-            r#"{"src_col":"src","dst_col":"dst","options":{"directed":true}}"#,
-            "cugraph_balanced_cut_clustering requires directed=false",
-        ),
     ] {
         let escaped = call_json.replace('\'', "''");
         let batches = ctx
@@ -927,18 +921,11 @@ async fn cugraph_validate_call_rejects_spectral_iteration_counts_above_libcugrap
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "edges", DataType::Int32, DataType::Int32, DataType::Float64);
 
-    for (function, option, message) in [
-        (
-            "cugraph_spectral_modularity_maximization",
-            "evs_max_iterations",
-            "evs_max_iterations must be at most i32::MAX",
-        ),
-        (
-            "cugraph_balanced_cut_clustering",
-            "k_means_max_iterations",
-            "k_means_max_iterations must be at most i32::MAX",
-        ),
-    ] {
+    for (function, option, message) in [(
+        "cugraph_spectral_modularity_maximization",
+        "evs_max_iterations",
+        "evs_max_iterations must be at most i32::MAX",
+    )] {
         let batch = validate_call_batch(
             &ctx,
             function,

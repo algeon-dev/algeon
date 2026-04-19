@@ -80,6 +80,32 @@ fn parity_specs_cover_all_registered_algorithms() {
 }
 
 #[test]
+fn parity_oracle_inventory_exactly_matches_specs() {
+    fn collect_json_files(root: &std::path::Path, current: &std::path::Path, files: &mut BTreeSet<String>) {
+        for entry in std::fs::read_dir(current)
+            .unwrap_or_else(|error| panic!("failed to read oracle directory {}: {error}", current.display()))
+        {
+            let path = entry.expect("oracle directory entry must be readable").path();
+            if path.is_dir() {
+                collect_json_files(root, &path, files);
+            } else if path.extension().is_some_and(|extension| extension == "json") {
+                let relative = path.strip_prefix(root).expect("oracle file must be below oracle root");
+                files.insert(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+
+    let Some(loaded) = datasets::load_and_verify_optional() else {
+        return;
+    };
+    let oracle_root = loaded.data_root.join("oracle");
+    let expected = CUGRAPH_PARITY_SPECS.iter().map(|spec| spec.oracle_relpath.to_string()).collect::<BTreeSet<_>>();
+    let mut actual = BTreeSet::new();
+    collect_json_files(&oracle_root, &oracle_root, &mut actual);
+    assert_eq!(actual, expected, "oracle files must exactly match the registry-driven parity specs");
+}
+
+#[test]
 fn parity_specs_declare_a_comparator_family() {
     for spec in CUGRAPH_PARITY_SPECS {
         let label = compare::family_label(spec.comparator);

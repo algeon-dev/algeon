@@ -26,13 +26,7 @@ pub(super) fn strip_arrow_schema_metadata(schema: Schema) -> Schema {
 
 pub(super) fn strip_arrow_field_metadata(field: &FieldRef) -> Field {
     let stripped_type = strip_arrow_data_type_metadata(field.data_type());
-    #[allow(deprecated)]
-    let mut stripped = if let Some(dict_id) = field.dict_id() {
-        #[allow(deprecated)]
-        Field::new_dict(field.name(), stripped_type, field.is_nullable(), dict_id, false)
-    } else {
-        Field::new(field.name(), stripped_type, field.is_nullable())
-    };
+    let mut stripped = Field::new(field.name(), stripped_type, field.is_nullable());
     if let Some(dict_is_ordered) = field.dict_is_ordered() {
         stripped = stripped.with_dict_is_ordered(dict_is_ordered);
     }
@@ -88,4 +82,46 @@ pub(super) fn iceberg_type_to_arrow_data_type(field_type: &Type) -> Result<DataT
         .with_source(error)
     })?;
     Ok(strip_arrow_data_type_metadata(&data_type))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    #[test]
+    fn strip_arrow_schema_metadata_recurses_and_preserves_dictionary_ordering() {
+        let dictionary = Arc::new(
+            Field::new("dictionary", DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)), true)
+                .with_dict_is_ordered(true)
+                .with_metadata(HashMap::from([("PARQUET:field_id".to_string(), "3".to_string())])),
+        );
+        let item = Arc::new(
+            Field::new("item", DataType::Struct(Fields::from(vec![dictionary])), true)
+                .with_metadata(HashMap::from([("PARQUET:field_id".to_string(), "2".to_string())])),
+        );
+        let schema = Schema::new_with_metadata(
+            vec![
+                Field::new("items", DataType::List(item), false)
+                    .with_metadata(HashMap::from([("PARQUET:field_id".to_string(), "1".to_string())])),
+            ],
+            HashMap::from([("iceberg.schema".to_string(), "metadata".to_string())]),
+        );
+
+        let stripped = strip_arrow_schema_metadata(schema);
+        assert!(stripped.metadata().is_empty());
+        let items = stripped.field(0);
+        assert!(items.metadata().is_empty());
+        let DataType::List(item) = items.data_type() else {
+            panic!("items field must remain a list");
+        };
+        assert!(item.metadata().is_empty());
+        let DataType::Struct(fields) = item.data_type() else {
+            panic!("list item must remain a struct");
+        };
+        let (_, dictionary) = fields.find("dictionary").expect("nested dictionary field must remain present");
+        assert!(dictionary.metadata().is_empty());
+        assert_eq!(dictionary.dict_is_ordered(), Some(true));
+    }
 }

@@ -58,9 +58,8 @@ pub fn parse_cugraph_algorithm_spec(
     //   undirected; libcugraph accepts directed but produces different
     //   (non-comparable) results, so the adapter default aligns with the
     //   Python oracle to keep parity meaningful.
-    // - minimum_spanning_tree / spectral_modularity_maximization /
-    //   balanced_cut_clustering: cuGraph requires an undirected/symmetric
-    //   graph for these legacy algorithms.
+    // - minimum_spanning_tree / spectral_modularity_maximization: cuGraph
+    //   requires an undirected/symmetric graph for these legacy algorithms.
     graph_options = algorithm.effective_default_graph_options(&graph_options);
     let mut params = default_params(algorithm, source.clone());
     let has_options_json = args.len() > next;
@@ -201,9 +200,6 @@ fn validate_graph_directedness(algorithm: CugraphAlgorithm, graph_options: &Cugr
         },
         (CugraphAlgorithm::SpectralModularityMaximization, false) => {
             "cugraph_spectral_modularity_maximization requires directed=false so cuGraph receives an undirected graph"
-        },
-        (CugraphAlgorithm::BalancedCutClustering, false) => {
-            "cugraph_balanced_cut_clustering requires directed=false so cuGraph receives an undirected graph"
         },
         _ if required => "cuGraph algorithm requires directed=true",
         _ => "cuGraph algorithm requires directed=false",
@@ -544,7 +540,6 @@ fn parse_options_json(
                 if algorithm == CugraphAlgorithm::Leiden
                     || algorithm == CugraphAlgorithm::Ecg
                     || algorithm == CugraphAlgorithm::SpectralModularityMaximization
-                    || algorithm == CugraphAlgorithm::BalancedCutClustering
                     || algorithm == CugraphAlgorithm::ForceAtlas2 =>
             {
                 let seed = json_u64(value, key)?;
@@ -552,7 +547,6 @@ fn parse_options_json(
                     CugraphAlgorithmParams::Leiden(params) => params.seed = seed,
                     CugraphAlgorithmParams::Ecg(params) => params.seed = seed,
                     CugraphAlgorithmParams::SpectralModularityMaximization(params) => params.seed = seed,
-                    CugraphAlgorithmParams::BalancedCutClustering(params) => params.seed = seed,
                     CugraphAlgorithmParams::ForceAtlas2(params) => params.seed = seed,
                     _ => {},
                 }
@@ -594,57 +588,35 @@ fn parse_options_json(
                     params.threshold = threshold;
                 }
             },
-            // SpectralModularityMaximization and BalancedCutClustering share the same options.
-            "n_clusters"
-                if algorithm == CugraphAlgorithm::SpectralModularityMaximization
-                    || algorithm == CugraphAlgorithm::BalancedCutClustering =>
-            {
+            // SpectralModularityMaximization options.
+            "n_clusters" if algorithm == CugraphAlgorithm::SpectralModularityMaximization => {
                 let n_clusters = json_u32(value, key)?;
                 if n_clusters < 1 {
                     return Err(plan_error("n_clusters must be at least 1"));
                 }
-                match params {
-                    CugraphAlgorithmParams::SpectralModularityMaximization(params) => params.n_clusters = n_clusters,
-                    CugraphAlgorithmParams::BalancedCutClustering(params) => params.n_clusters = n_clusters,
-                    _ => {},
+                if let CugraphAlgorithmParams::SpectralModularityMaximization(params) = params {
+                    params.n_clusters = n_clusters;
                 }
             },
-            "n_eigenvectors"
-                if algorithm == CugraphAlgorithm::SpectralModularityMaximization
-                    || algorithm == CugraphAlgorithm::BalancedCutClustering =>
-            {
+            "n_eigenvectors" if algorithm == CugraphAlgorithm::SpectralModularityMaximization => {
                 let n_eigenvectors = json_u32(value, key)?;
                 if n_eigenvectors < 1 {
                     return Err(plan_error("n_eigenvectors must be at least 1"));
                 }
-                match params {
-                    CugraphAlgorithmParams::SpectralModularityMaximization(params) => {
-                        params.n_eigenvectors = n_eigenvectors
-                    },
-                    CugraphAlgorithmParams::BalancedCutClustering(params) => params.n_eigenvectors = n_eigenvectors,
-                    _ => {},
+                if let CugraphAlgorithmParams::SpectralModularityMaximization(params) = params {
+                    params.n_eigenvectors = n_eigenvectors;
                 }
             },
-            "evs_tolerance"
-                if algorithm == CugraphAlgorithm::SpectralModularityMaximization
-                    || algorithm == CugraphAlgorithm::BalancedCutClustering =>
-            {
+            "evs_tolerance" if algorithm == CugraphAlgorithm::SpectralModularityMaximization => {
                 let evs_tolerance = json_f64(value, key)?;
                 if evs_tolerance < 0.0 {
                     return Err(plan_error("evs_tolerance must be non-negative"));
                 }
-                match params {
-                    CugraphAlgorithmParams::SpectralModularityMaximization(params) => {
-                        params.evs_tolerance = evs_tolerance
-                    },
-                    CugraphAlgorithmParams::BalancedCutClustering(params) => params.evs_tolerance = evs_tolerance,
-                    _ => {},
+                if let CugraphAlgorithmParams::SpectralModularityMaximization(params) = params {
+                    params.evs_tolerance = evs_tolerance;
                 }
             },
-            "evs_max_iterations"
-                if algorithm == CugraphAlgorithm::SpectralModularityMaximization
-                    || algorithm == CugraphAlgorithm::BalancedCutClustering =>
-            {
+            "evs_max_iterations" if algorithm == CugraphAlgorithm::SpectralModularityMaximization => {
                 let evs_max_iterations = json_u32(value, key)?;
                 if evs_max_iterations < 1 {
                     return Err(plan_error("evs_max_iterations must be at least 1"));
@@ -652,38 +624,20 @@ fn parse_options_json(
                 if evs_max_iterations > i32::MAX as u32 {
                     return Err(plan_error("evs_max_iterations must be at most i32::MAX"));
                 }
-                match params {
-                    CugraphAlgorithmParams::SpectralModularityMaximization(params) => {
-                        params.evs_max_iterations = evs_max_iterations
-                    },
-                    CugraphAlgorithmParams::BalancedCutClustering(params) => {
-                        params.evs_max_iterations = evs_max_iterations
-                    },
-                    _ => {},
+                if let CugraphAlgorithmParams::SpectralModularityMaximization(params) = params {
+                    params.evs_max_iterations = evs_max_iterations;
                 }
             },
-            "k_means_tolerance"
-                if algorithm == CugraphAlgorithm::SpectralModularityMaximization
-                    || algorithm == CugraphAlgorithm::BalancedCutClustering =>
-            {
+            "k_means_tolerance" if algorithm == CugraphAlgorithm::SpectralModularityMaximization => {
                 let k_means_tolerance = json_f64(value, key)?;
                 if k_means_tolerance < 0.0 {
                     return Err(plan_error("k_means_tolerance must be non-negative"));
                 }
-                match params {
-                    CugraphAlgorithmParams::SpectralModularityMaximization(params) => {
-                        params.k_means_tolerance = k_means_tolerance
-                    },
-                    CugraphAlgorithmParams::BalancedCutClustering(params) => {
-                        params.k_means_tolerance = k_means_tolerance
-                    },
-                    _ => {},
+                if let CugraphAlgorithmParams::SpectralModularityMaximization(params) = params {
+                    params.k_means_tolerance = k_means_tolerance;
                 }
             },
-            "k_means_max_iterations"
-                if algorithm == CugraphAlgorithm::SpectralModularityMaximization
-                    || algorithm == CugraphAlgorithm::BalancedCutClustering =>
-            {
+            "k_means_max_iterations" if algorithm == CugraphAlgorithm::SpectralModularityMaximization => {
                 let k_means_max_iterations = json_u32(value, key)?;
                 if k_means_max_iterations < 1 {
                     return Err(plan_error("k_means_max_iterations must be at least 1"));
@@ -691,14 +645,8 @@ fn parse_options_json(
                 if k_means_max_iterations > i32::MAX as u32 {
                     return Err(plan_error("k_means_max_iterations must be at most i32::MAX"));
                 }
-                match params {
-                    CugraphAlgorithmParams::SpectralModularityMaximization(params) => {
-                        params.k_means_max_iterations = k_means_max_iterations
-                    },
-                    CugraphAlgorithmParams::BalancedCutClustering(params) => {
-                        params.k_means_max_iterations = k_means_max_iterations
-                    },
-                    _ => {},
+                if let CugraphAlgorithmParams::SpectralModularityMaximization(params) = params {
+                    params.k_means_max_iterations = k_means_max_iterations;
                 }
             },
             "max_iter" if algorithm == CugraphAlgorithm::ForceAtlas2 => {

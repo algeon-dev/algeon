@@ -637,35 +637,6 @@ def _spectral_modularity_maximization(cugraph_mod, graph, params: Dict[str, Any]
     }
 
 
-def _balanced_cut_clustering(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
-    # Python cuGraph uses `spectralBalancedCutClustering` (not `balancedCutClustering`).
-    # Same signature as spectralModularityMaximizationClustering.
-    n_clusters = int(params.get("n_clusters", 2))
-    n_eigenvectors = int(params.get("n_eigenvectors", 2))
-    evs_tolerance = float(params.get("evs_tolerance", 0.01))
-    evs_max_iterations = int(params.get("evs_max_iterations", 500))
-    k_means_tolerance = float(params.get("k_means_tolerance", 0.001))
-    k_means_max_iterations = int(params.get("k_means_max_iterations", 100))
-    random_state = int(params.get("seed", 0))
-    df = cugraph_mod.spectralBalancedCutClustering(
-        graph,
-        n_clusters,
-        num_eigen_vects=n_eigenvectors,
-        evs_tolerance=evs_tolerance,
-        evs_max_iter=evs_max_iterations,
-        kmean_tolerance=k_means_tolerance,
-        kmean_max_iter=k_means_max_iterations,
-        random_state=random_state,
-    )
-    df = df.sort_values("vertex").reset_index(drop=True)
-    if "cluster" in df.columns and "partition" not in df.columns:
-        df = df.rename(columns={"cluster": "partition"})
-    return {
-        "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
-        "partition": [int(v) for v in df["partition"].to_pandas().tolist()],
-    }
-
-
 def _force_atlas2(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     # Pass every option explicitly: Python cuGraph defaults differ from
     # cugraph-rs for a few ForceAtlas2 knobs, while the adapter mirrors
@@ -800,7 +771,7 @@ ALGORITHMS = {
         "directed": True,
         "run": _personalized_pagerank,
     },
-    # Leiden/ECG/spectral/balanced-cut require undirected graphs.
+    # Leiden, ECG, and spectral modularity maximization require undirected graphs.
     "leiden": {
         "layout": "forward",
         "directed": False,
@@ -815,11 +786,6 @@ ALGORITHMS = {
         "layout": "forward",
         "directed": False,
         "run": _spectral_modularity_maximization,
-    },
-    "balanced_cut_clustering": {
-        "layout": "forward",
-        "directed": False,
-        "run": _balanced_cut_clustering,
     },
     "force_atlas2": {
         "layout": "forward",

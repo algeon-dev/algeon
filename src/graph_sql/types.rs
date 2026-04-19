@@ -34,7 +34,6 @@ pub const CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION: &str = "cugraph_minimum_spanni
 pub const CUGRAPH_LEIDEN_FUNCTION: &str = "cugraph_leiden";
 pub const CUGRAPH_ECG_FUNCTION: &str = "cugraph_ecg";
 pub const CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION: &str = "cugraph_spectral_modularity_maximization";
-pub const CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION: &str = "cugraph_balanced_cut_clustering";
 pub const CUGRAPH_FORCE_ATLAS2_FUNCTION: &str = "cugraph_force_atlas2";
 pub const CUGRAPH_LIST_ALGORITHMS_FUNCTION: &str = "cugraph_list_algorithms";
 pub const CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION: &str = "cugraph_describe_algorithm";
@@ -97,7 +96,6 @@ pub enum CugraphAlgorithm {
     Leiden,
     Ecg,
     SpectralModularityMaximization,
-    BalancedCutClustering,
     ForceAtlas2,
 }
 
@@ -271,11 +269,6 @@ pub const CUGRAPH_OPERATION_REGISTRY: &[CugraphOperationDefinition] = &[
         sql_function_name: CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION,
     },
     CugraphOperationDefinition {
-        algorithm: CugraphAlgorithm::BalancedCutClustering,
-        native_algorithm: NativeGraphAlgorithm::BalancedCutClustering,
-        sql_function_name: CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION,
-    },
-    CugraphOperationDefinition {
         algorithm: CugraphAlgorithm::ForceAtlas2,
         native_algorithm: NativeGraphAlgorithm::ForceAtlas2,
         sql_function_name: CUGRAPH_FORCE_ATLAS2_FUNCTION,
@@ -416,7 +409,6 @@ pub enum CugraphAlgorithmParams {
     Leiden(CugraphLeidenParams),
     Ecg(CugraphEcgParams),
     SpectralModularityMaximization(CugraphSpectralClusteringParams),
-    BalancedCutClustering(CugraphSpectralClusteringParams),
     ForceAtlas2(CugraphForceAtlas2Params),
 }
 
@@ -524,17 +516,6 @@ impl CugraphAlgorithmParams {
             }),
             NativeGraphAlgorithmParams::SpectralModularityMaximization(params) => {
                 Self::SpectralModularityMaximization(CugraphSpectralClusteringParams {
-                    n_clusters: params.n_clusters,
-                    n_eigenvectors: params.n_eigenvectors,
-                    evs_tolerance: params.evs_tolerance,
-                    evs_max_iterations: params.evs_max_iterations,
-                    k_means_tolerance: params.k_means_tolerance,
-                    k_means_max_iterations: params.k_means_max_iterations,
-                    seed: params.seed,
-                })
-            },
-            NativeGraphAlgorithmParams::BalancedCutClustering(params) => {
-                Self::BalancedCutClustering(CugraphSpectralClusteringParams {
                     n_clusters: params.n_clusters,
                     n_eigenvectors: params.n_eigenvectors,
                     evs_tolerance: params.evs_tolerance,
@@ -1201,7 +1182,7 @@ impl Default for CugraphEcgParams {
     }
 }
 
-/// Parameters for spectral modularity maximization and balanced-cut clustering.
+/// Parameters for spectral modularity maximization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CugraphSpectralClusteringParams {
     /// Desired number of clusters. Must be >= 1.

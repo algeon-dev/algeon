@@ -745,7 +745,6 @@ pub const fn graph_memory_class(algorithm: GraphAlgorithm) -> GraphMemoryClass {
         | GraphAlgorithm::StronglyConnectedComponents => GraphMemoryClass::MultiArray,
         GraphAlgorithm::TriangleCountAll
         | GraphAlgorithm::SpectralModularityMaximization
-        | GraphAlgorithm::BalancedCutClustering
         | GraphAlgorithm::ForceAtlas2 => GraphMemoryClass::WorkspaceHeavyDataDependent,
         GraphAlgorithm::BetweennessCentrality | GraphAlgorithm::EdgeBetweennessCentrality => {
             GraphMemoryClass::WorkspaceHeavySeedDependent
@@ -781,7 +780,6 @@ pub const fn graph_memory_reservation_required(algorithm: GraphAlgorithm) -> boo
         | GraphAlgorithm::Leiden
         | GraphAlgorithm::Ecg
         | GraphAlgorithm::SpectralModularityMaximization
-        | GraphAlgorithm::BalancedCutClustering
         | GraphAlgorithm::ForceAtlas2 => true,
     }
 }

@@ -89,8 +89,8 @@ the reproducible path for the website examples.
 
 ## Int32 renumbering for the legacy algorithms
 
-Three legacy cuGraph algorithms (`cugraph_spectral_modularity_maximization`,
-`cugraph_balanced_cut_clustering`, `cugraph_minimum_spanning_tree`) require
+Two legacy cuGraph algorithms (`cugraph_spectral_modularity_maximization`,
+`cugraph_minimum_spanning_tree`) require
 **Int32 vertex columns**. AMiner paper ids do not fit: 42% of them exceed
 2,147,483,647 (the maximum id is 3,009,038,462), so a plain `CAST` overflows.
 The examples renumber in SQL instead — materialize a dense mapping once, then

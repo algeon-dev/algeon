@@ -1150,7 +1150,6 @@ mod tests {
                 GraphAlgorithm::SpectralModularityMaximization,
                 GraphAlgorithmParams::SpectralModularityMaximization(Default::default()),
             ),
-            (GraphAlgorithm::BalancedCutClustering, GraphAlgorithmParams::BalancedCutClustering(Default::default())),
         ] {
             let int64_plan = graph_algorithm_validation_plan(
                 algorithm,

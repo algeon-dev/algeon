@@ -450,17 +450,6 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             params.k_means_max_iterations,
             params.seed,
         ),
-        super::GraphAlgorithmParams::BalancedCutClustering(params) => format!(
-            "n_clusters={}:n_eigenvectors={}:evs_tolerance={}:evs_max_iterations={}:\
-             k_means_tolerance={}:k_means_max_iterations={}:seed={}",
-            params.n_clusters,
-            params.n_eigenvectors,
-            params.evs_tolerance,
-            params.evs_max_iterations,
-            params.k_means_tolerance,
-            params.k_means_max_iterations,
-            params.seed,
-        ),
         super::GraphAlgorithmParams::ForceAtlas2(params) => format!(
             "max_iter={}:outbound_attraction_distribution={}:lin_log_mode={}:prevent_overlapping={}:\
              overlap_scaling_ratio={}:edge_weight_influence={}:jitter_tolerance={}:barnes_hut_optimize={}:\

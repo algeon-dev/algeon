@@ -206,7 +206,6 @@ fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
         CugraphAlgorithm::KCore,
         CugraphAlgorithm::MinimumSpanningTree,
         CugraphAlgorithm::SpectralModularityMaximization,
-        CugraphAlgorithm::BalancedCutClustering,
         CugraphAlgorithm::ForceAtlas2,
     ] {
         let args = if algorithm == CugraphAlgorithm::MinimumSpanningTree {
@@ -260,7 +259,6 @@ fn cugraph_sql_planning_rejects_incompatible_directedness_options() {
             CugraphAlgorithm::SpectralModularityMaximization,
             "cugraph_spectral_modularity_maximization requires directed=false",
         ),
-        (CugraphAlgorithm::BalancedCutClustering, "cugraph_balanced_cut_clustering requires directed=false"),
     ] {
         let args = if algorithm == CugraphAlgorithm::MinimumSpanningTree {
             vec![lit("graph_edges"), lit("src"), lit("dst"), lit("weight"), lit(r#"{"directed":true}"#)]
@@ -1053,42 +1051,6 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             &config,
         ),
         "evs_max_iterations must be at most i32::MAX",
-    );
-
-    // BalancedCutClustering: same params struct as SpectralModularityMaximization.
-    let spec = parse_cugraph_algorithm_spec(
-        CugraphAlgorithm::BalancedCutClustering,
-        &[
-            lit("graph_edges"),
-            lit("src"),
-            lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
-            lit(r#"{"n_clusters":3,"seed":11}"#),
-        ],
-        &config,
-    )
-    .unwrap();
-    assert_eq!(
-        spec.params,
-        CugraphAlgorithmParams::BalancedCutClustering(datafusion_nexus::CugraphSpectralClusteringParams {
-            n_clusters: 3,
-            seed: 11,
-            ..Default::default()
-        }),
-    );
-    assert_error_contains(
-        parse_cugraph_algorithm_spec(
-            CugraphAlgorithm::BalancedCutClustering,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"k_means_max_iterations":2147483648}"#),
-            ],
-            &config,
-        ),
-        "k_means_max_iterations must be at most i32::MAX",
     );
 
     let spec = parse_cugraph_algorithm_spec(
