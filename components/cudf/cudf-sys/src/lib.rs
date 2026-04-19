@@ -323,6 +323,13 @@ pub type cudf_device_buffer_handle = *mut c_void;
 pub type cudf_stream_handle = *mut c_void;
 pub type cudf_event_handle = *mut c_void;
 pub type cudf_memory_resource_handle = *mut c_void;
+pub type cudf_arrow_schema_handle = *mut c_void;
+pub type cudf_arrow_device_array_handle = *mut c_void;
+
+pub const CUDF_ARROW_DEVICE_TYPE_CPU: i32 = 1;
+pub const CUDF_ARROW_DEVICE_TYPE_CUDA: i32 = 2;
+pub const CUDF_ARROW_DEVICE_TYPE_CUDA_HOST: i32 = 3;
+pub const CUDF_ARROW_DEVICE_TYPE_CUDA_MANAGED: i32 = 13;
 
 // ---------------------------------------------------------------------------
 // Execution options and typed handle wrappers
@@ -425,6 +432,20 @@ pub struct cudf_interop_semantic_table_t {
     pub num_rows: i32,
     pub column_ids: *const u32,
     pub num_columns: i32,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_arrow_device_export_materialization_t {
+    CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW = 0,
+    CUDF_ARROW_DEVICE_EXPORT_BRIDGE_OWNED_DEVICE_COPY = 1,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_arrow_device_import_materialization_t {
+    CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW = 0,
+    CUDF_ARROW_DEVICE_IMPORT_BRIDGE_OWNED_DEVICE_COPY = 1,
 }
 
 fn status_to_result(status: cudf_status_t) -> Result<(), cudf_status_t> {
@@ -982,6 +1003,83 @@ extern "C" {
         chars_buf_size: usize,
         total_chars_bytes: *mut i32,
         options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    // -- Arrow Device Column Bridge -----------------------------------------
+
+    pub fn cudf_arrow_device_column_export(
+        view: cudf_column_view_handle,
+        options: *const cudf_exec_options_t,
+        out_schema: *mut cudf_arrow_schema_handle,
+        out_array: *mut cudf_arrow_device_array_handle,
+        out_materialization: *mut cudf_arrow_device_export_materialization_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_arrow_device_table_export(
+        view: cudf_table_view_handle,
+        options: *const cudf_exec_options_t,
+        column_names: *const *const c_char,
+        num_column_names: i32,
+        out_schema: *mut cudf_arrow_schema_handle,
+        out_array: *mut cudf_arrow_device_array_handle,
+        out_materialization: *mut cudf_arrow_device_export_materialization_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_arrow_device_column_import(
+        schema: cudf_arrow_schema_handle,
+        array: cudf_arrow_device_array_handle,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+        out_materialization: *mut cudf_arrow_device_import_materialization_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_arrow_device_table_import(
+        schema: cudf_arrow_schema_handle,
+        array: cudf_arrow_device_array_handle,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_table_handle,
+        out_materialization: *mut cudf_arrow_device_import_materialization_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_arrow_device_schema_destroy(schema: cudf_arrow_schema_handle);
+
+    pub fn cudf_arrow_device_array_destroy(array: cudf_arrow_device_array_handle);
+
+    pub fn cudf_arrow_device_array_device_id(array: cudf_arrow_device_array_handle, out: *mut i64) -> cudf_status_t;
+
+    pub fn cudf_arrow_device_array_device_type(array: cudf_arrow_device_array_handle, out: *mut i32) -> cudf_status_t;
+
+    pub fn cudf_arrow_device_array_has_sync_event(
+        array: cudf_arrow_device_array_handle,
+        out: *mut i32,
+    ) -> cudf_status_t;
+
+    pub fn cudf_arrow_device_array_sync_event_raw(
+        array: cudf_arrow_device_array_handle,
+        out: *mut *mut c_void,
+    ) -> cudf_status_t;
+
+    pub fn cudf_test_arrow_device_array_set_device_type(array: cudf_arrow_device_array_handle, device_type: i32);
+
+    pub fn cudf_arrow_device_column_fixed_width_values_ptr(
+        schema: cudf_arrow_schema_handle,
+        array: cudf_arrow_device_array_handle,
+        out: *mut *const c_void,
+    ) -> cudf_status_t;
+
+    pub fn cudf_arrow_device_table_num_columns(schema: cudf_arrow_schema_handle, out: *mut i64) -> cudf_status_t;
+
+    pub fn cudf_arrow_device_table_column_name(
+        schema: cudf_arrow_schema_handle,
+        index: i64,
+        out: *mut *const c_char,
+    ) -> cudf_status_t;
+
+    pub fn cudf_arrow_device_table_fixed_width_values_ptr(
+        schema: cudf_arrow_schema_handle,
+        array: cudf_arrow_device_array_handle,
+        index: i64,
+        out: *mut *const c_void,
     ) -> cudf_status_t;
 
     // -- DeviceBuffer (owned GPU memory) -------------------------------------

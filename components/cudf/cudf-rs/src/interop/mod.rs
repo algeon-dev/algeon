@@ -111,6 +111,7 @@
 //! removed `DataFrame` operation-specific `_with_runtime` methods (Slice 4),
 //! which hid placement as a side effect of a compute operation.
 
+pub mod arrow_device;
 pub mod borrowed;
 mod column;
 mod consumer_import;

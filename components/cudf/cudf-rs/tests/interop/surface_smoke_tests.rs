@@ -11,6 +11,7 @@ use cudf::{
     core::{Column, Table},
     interop::{
         PartitionedLocalTableResults,
+        arrow_device::DeviceArrowColumnExport,
         borrowed::{BorrowedColumnView, BorrowedTableView},
         cuda_explicit_completion_required_lease_backend,
         frame::PartitionedDataFrameExport,
@@ -161,6 +162,11 @@ fn interop_low_level_adapter_surface_smoke() {
         _f: for<'a> fn(&'a Column) -> std::result::Result<BorrowedColumnView<'a>, InteropError>,
     ) {
     }
+    fn assert_column_device_arrow_export(_f: fn(Column) -> std::result::Result<DeviceArrowColumnExport, cudf::Error>) {}
+    fn assert_column_device_arrow_export_with_deep_copy(
+        _f: for<'a> fn(&'a Column) -> std::result::Result<DeviceArrowColumnExport, cudf::Error>,
+    ) {
+    }
     fn assert_column_owned_import(_f: fn(OwnedColumnTransfer, &Runtime) -> std::result::Result<Column, InteropError>) {}
     fn assert_table_borrowed_import(
         _f: for<'a, 'b> fn(&'a BorrowedTableView<'b>, &'a Runtime) -> std::result::Result<Table, InteropError>,
@@ -170,9 +176,19 @@ fn interop_low_level_adapter_surface_smoke() {
         _f: for<'a> fn(&'a Table) -> std::result::Result<PreparedTableExport<'a>, InteropError>,
     ) {
     }
+    fn assert_table_device_arrow_export_with_deep_copy(
+        _f: for<'a> fn(
+            &'a Table,
+        )
+            -> std::result::Result<cudf::interop::arrow_device::DeviceArrowTableExport, cudf::Error>,
+    ) {
+    }
 
     assert_column_borrowed_export(Column::try_borrow_column_view);
+    assert_column_device_arrow_export(Column::try_prepare_device_arrow_export);
+    assert_column_device_arrow_export_with_deep_copy(Column::try_prepare_device_arrow_export_with_deep_copy);
     assert_column_owned_import(Column::try_import_from_owned_device_column_transfer_into_runtime);
     assert_table_borrowed_import(Table::try_import_from_borrowed_table_view_into_runtime);
     assert_table_prepared_export(Table::try_prepare_device_table_export);
+    assert_table_device_arrow_export_with_deep_copy(Table::try_prepare_device_arrow_export_with_deep_copy);
 }

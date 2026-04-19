@@ -23,7 +23,10 @@
 //! assert_eq!(df2.num_columns(), 2);
 //! ```
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use arrow::{array::*, datatypes::DataType as ArrowDataType, record_batch::RecordBatch};
 
@@ -37,6 +40,9 @@ use crate::{
     internal::{hash::fast_index_map, resolve::missing_column_error},
     runtime::Runtime,
 };
+
+static HOST_ARROW_EXPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static HOST_ARROW_IMPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 impl DataFrame {
     /// Convert this GPU DataFrame to an Arrow [`RecordBatch`] via host copy.
@@ -57,6 +63,7 @@ impl DataFrame {
     /// Returns an error if any column has an unsupported type, or if the
     /// underlying GPU-to-host copy fails.
     pub fn to_record_batch(&self) -> Result<RecordBatch> {
+        HOST_ARROW_EXPORT_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
         let names = self.column_names();
 
         let col_map = self.columns_map();
@@ -131,6 +138,7 @@ impl Runtime {
 /// Returns an error if any column has an unsupported Arrow type, or if
 /// the host-to-GPU copy fails.
 pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Result<DataFrame> {
+    HOST_ARROW_IMPORT_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
     let schema = batch.schema();
     let num_cols = schema.fields().len();
 
@@ -284,6 +292,19 @@ pub(crate) fn __debug_trigger_record_batch_error_for_test() -> Result<()> {
         ("right".to_string(), Arc::new(Int32Array::from(vec![10])) as Arc<dyn Array>, false),
     ];
     RecordBatch::try_from_iter_with_nullable(columns).map(|_| ()).map_err(map_record_batch_error)
+}
+
+pub(crate) fn __test_reset_host_interop_observation() {
+    HOST_ARROW_EXPORT_CALL_COUNT.store(0, Ordering::Relaxed);
+    HOST_ARROW_IMPORT_CALL_COUNT.store(0, Ordering::Relaxed);
+}
+
+pub(crate) fn __test_host_export_call_count() -> usize {
+    HOST_ARROW_EXPORT_CALL_COUNT.load(Ordering::Relaxed)
+}
+
+pub(crate) fn __test_host_import_call_count() -> usize {
+    HOST_ARROW_IMPORT_CALL_COUNT.load(Ordering::Relaxed)
 }
 
 /// Convert a Bool8 column to an Arrow BooleanArray.

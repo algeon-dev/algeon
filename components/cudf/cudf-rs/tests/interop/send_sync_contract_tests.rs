@@ -4,6 +4,10 @@ use cudf::{
     DataFrame, DeviceId, Runtime,
     core::{Column, column::DeviceSlice},
     interop::{
+        arrow_device::{
+            DeviceArrowColumnExport, DeviceArrowColumnOwnedAbiParts, DeviceArrowColumnRawParts, DeviceArrowTableExport,
+            DeviceArrowTableOwnedAbiParts, DeviceArrowTableRawParts, ForeignDeviceArrowColumn, ForeignDeviceArrowTable,
+        },
         borrowed::{BorrowedColumnView, BorrowedTableView},
         prepared::{
             CompletionAuthority, CompletionWitnessKind, LeaseCompletionResult, PreparedColumnExport,
@@ -32,6 +36,14 @@ assert_impl_all!(OwnedTableTransferReleaser: Send, Sync);
 assert_impl_all!(PartitionedOwnedTableTransferReleaser: Send, Sync);
 assert_impl_all!(PreparedColumnExport<'static>: Send, Sync);
 assert_impl_all!(PreparedTableExport<'static>: Send, Sync);
+assert_impl_all!(DeviceArrowColumnExport: Send, Sync);
+assert_impl_all!(DeviceArrowColumnRawParts: Send, Sync);
+assert_impl_all!(DeviceArrowColumnOwnedAbiParts: Send, Sync);
+assert_impl_all!(ForeignDeviceArrowColumn: Send, Sync);
+assert_impl_all!(DeviceArrowTableExport: Send, Sync);
+assert_impl_all!(DeviceArrowTableRawParts: Send, Sync);
+assert_impl_all!(DeviceArrowTableOwnedAbiParts: Send, Sync);
+assert_impl_all!(ForeignDeviceArrowTable: Send, Sync);
 
 assert_not_impl_any!(BorrowedColumnView<'static>: Send, Sync);
 assert_not_impl_any!(BorrowedTableView<'static>: Send, Sync);
