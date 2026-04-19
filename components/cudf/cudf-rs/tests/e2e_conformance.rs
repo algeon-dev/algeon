@@ -80,15 +80,18 @@ fn check_python_environment() {
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
             panic!(
-                "Python cuDF import failed (exit {}).\n\
-                 E2E conformance requires Python cuDF.\n\
+                "Python cuDF import failed (exit {}).
+\
+                 E2E conformance requires Python cuDF.
+\
                  stderr: {}",
                 o.status, stderr
             );
         },
         Err(e) => {
             panic!(
-                "Failed to invoke Python interpreter '{}': {}\n\
+                "Failed to invoke Python interpreter '{}': {}
+\
                  E2E conformance requires Python cuDF.",
                 python, e
             );
@@ -112,12 +115,20 @@ fn run_python_case(fixture_path: &Path, case_id: &str) -> NormalizedResult {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("Python runner failed for case '{}' (exit {}):\n{}", case_id, output.status, stderr);
+        panic!(
+            "Python runner failed for case '{}' (exit {}):
+{}",
+            case_id, output.status, stderr
+        );
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!("cannot parse Python runner output for case '{}': {}\nstdout: {}", case_id, e, stdout)
+        panic!(
+            "cannot parse Python runner output for case '{}': {}
+stdout: {}",
+            case_id, e, stdout
+        )
     })
 }
 
@@ -134,12 +145,21 @@ fn run_python_selftest(args: &[&str]) -> serde_json::Value {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("Python runner self-test {:?} failed (exit {}):\n{}", args, output.status, stderr);
+        panic!(
+            "Python runner self-test {:?} failed (exit {}):
+{}",
+            args, output.status, stderr
+        );
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("cannot parse Python runner self-test output {:?}: {}\nstdout: {}", args, e, stdout))
+    serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "cannot parse Python runner self-test output {:?}: {}
+stdout: {}",
+            args, e, stdout
+        )
+    })
 }
 
 #[test]
@@ -337,9 +357,15 @@ fn e2e_conformance() {
 
     // 4. Report mismatches
     if !all_mismatches.is_empty() {
-        let report: String = all_mismatches.iter().map(|m| m.display()).collect::<Vec<_>>().join("\n\n");
+        let report: String = all_mismatches.iter().map(|m| m.display()).collect::<Vec<_>>().join(
+            "
+
+",
+        );
         panic!(
-            "E2E conformance failures ({} mismatches across {} cases):\n\n{}",
+            "E2E conformance failures ({} mismatches across {} cases):
+
+{}",
             all_mismatches.len(),
             cases_run,
             report

@@ -26,7 +26,11 @@ fn sample_info_frame() -> DataFrame {
     let maybe = crate::common::nullable_series::<i32>("maybe", &[10, 0, 30], &[true, false, true]).unwrap();
     let names = crate::common::series("names", &["ab", "cde", ""]).unwrap();
 
-    DataFrame::from_series([ids, maybe, names]).unwrap()
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, maybe, names]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap()
 }
 
 #[test]
@@ -172,9 +176,13 @@ fn test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_
 #[test]
 fn test_info_payload_and_device_allocated_memory_for_dictionary_column() {
     let plain = crate::common::series("plain", &["beta", "alpha", "beta", "gamma"]).unwrap();
-    let dict = dictionary::encode(&plain.view().unwrap(), TypeId::Int32).unwrap();
+    let dict = dictionary::encode(&plain.testing_view().unwrap(), TypeId::Int32).unwrap();
     let category = Series::from_column(dict).unwrap().rename("category");
-    let df = DataFrame::from_series([category]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([category]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let info = df.info_with(InfoDetail::COLUMNS | InfoDetail::MEMORY).unwrap();
 
@@ -223,7 +231,13 @@ fn test_info_empty_dataframe_returns_valid_empty_snapshot() {
 fn test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_stream() {
     let rt = sample_runtime();
     let expected_stream = rt.stream().testing_raw_handle_value();
-    let df = DataFrame::from_series([rt.series("names", &["ab", "cde", ""]).unwrap()]).unwrap();
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([rt.series("names", &["ab", "cde", ""]).unwrap()]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
+    .unwrap();
 
     obs_reset();
     let info = df.info_with(InfoDetail::COLUMNS | InfoDetail::PAYLOAD_BYTES).unwrap();

@@ -3,8 +3,8 @@
 //! Verifies that the six generic scalar-compare methods (`eq`, `ne`, `gt`,
 //! `lt`, `ge`, `le`) accept both numeric primitives (via `CudfType`) and
 //! string slices (`&str`) through the `IntoRuntimeScalar` conversion trait,
-//! and that the borrowed `Series::in_context()` API stays in sync with the
-//! owned `Series` API.
+//! and that the explicit `Series::*_in(..., &ExecutionOverrides)` API stays in
+//! sync with the owned `Series` API.
 //!
 //! All tests require a GPU.
 
@@ -125,14 +125,14 @@ fn eq_scalar_accepts_owned_string() {
 }
 
 // ===========================================================================
-// Borrowed execution-scope path stays in sync with the owned API
+// Explicit execution-context path stays in sync with the owned API
 // ===========================================================================
 
 #[test]
-fn in_context_eq_scalar_accepts_str_literal() {
+fn eq_scalar_in_accepts_str_literal() {
     let s = crate::common::series("status", &["active", "inactive", "active"]).unwrap();
-    let ctx = cudf::ExecutionContext::new();
-    let mask = s.in_context(&ctx).eq_scalar("active").unwrap();
+    let ctx = cudf::ExecutionOverrides::new();
+    let mask = s.eq_scalar_in("active", &ctx).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.name(), Some("status"));
@@ -140,29 +140,29 @@ fn in_context_eq_scalar_accepts_str_literal() {
 }
 
 #[test]
-fn in_context_eq_scalar_accepts_owned_string() {
+fn eq_scalar_in_accepts_owned_string() {
     let s = crate::common::series("status", &["active", "inactive", "active"]).unwrap();
-    let ctx = cudf::ExecutionContext::new();
+    let ctx = cudf::ExecutionOverrides::new();
     let needle = String::from("active");
 
-    let mask = s.in_context(&ctx).eq_scalar(needle).unwrap();
+    let mask = s.eq_scalar_in(needle, &ctx).unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]
-fn in_context_gt_scalar_accepts_str_literal() {
+fn gt_scalar_in_accepts_str_literal() {
     let s = crate::common::series("name", &["alpha", "beta", "gamma"]).unwrap();
-    let ctx = cudf::ExecutionContext::new();
-    let mask = s.in_context(&ctx).gt_scalar("beta").unwrap();
+    let ctx = cudf::ExecutionOverrides::new();
+    let mask = s.gt_scalar_in("beta", &ctx).unwrap();
 
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, false, true]);
 }
 
 #[test]
-fn in_context_eq_scalar_accepts_primitive() {
+fn eq_scalar_in_accepts_primitive() {
     let s = crate::common::series::<i32>("z", &[1, 2, 2, 3]).unwrap();
-    let ctx = cudf::ExecutionContext::new();
-    let mask = s.in_context(&ctx).eq_scalar(2i32).unwrap();
+    let ctx = cudf::ExecutionOverrides::new();
+    let mask = s.eq_scalar_in(2i32, &ctx).unwrap();
 
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true, false]);
 }

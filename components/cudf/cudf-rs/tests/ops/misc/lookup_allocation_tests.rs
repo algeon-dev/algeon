@@ -1,4 +1,4 @@
-use cudf::{LookupTable, ops::lookup};
+use cudf::{LookupTable, ops::lookup, testing::prelude::*};
 
 use crate::{
     allocation::allocation_count_delta,
@@ -12,8 +12,16 @@ fn lookup_probe_allocates_no_more_than_explicit_lookup_table_build_and_probe() {
     let values = explicit_i32_series("label", &[10, 20, 30], 931);
 
     let one_shot_allocations = allocation_count_delta(|| {
-        let result = lookup::probe(&input.view().unwrap(), &keys.view().unwrap(), &values.view().unwrap()).unwrap();
-        assert_eq!(result.view().unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(20), None, Some(10), Some(20)]);
+        let result = lookup::probe(
+            &input.testing_view().unwrap(),
+            &keys.testing_view().unwrap(),
+            &values.testing_view().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            result.testing_view().unwrap().to_optional_vec::<i32>().unwrap(),
+            vec![Some(20), None, Some(10), Some(20)]
+        );
         result
     });
 

@@ -5,7 +5,7 @@
 
 use std::{collections::HashSet, io::Write};
 
-use cudf::{DataFrame, JsonReadOptions, Runtime, Series, TypeId, ops::dictionary};
+use cudf::{DataFrame, JsonReadOptions, Runtime, Series, TypeId, ops::dictionary, testing::prelude::*};
 use tempfile::NamedTempFile;
 
 use super::manifest::Dataset;
@@ -39,7 +39,10 @@ fn build_column_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
         .map(|col| build_series(&runtime, &col.name, &col.dtype, &col.values))
         .collect::<cudf::Result<Vec<_>>>()?;
 
-    DataFrame::from_series(columns)
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter(columns).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
 }
 
 fn build_json_lines_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
@@ -73,7 +76,7 @@ fn apply_dictionary_columns(frame: DataFrame, dataset: &Dataset) -> cudf::Result
         .map(|name| {
             let series = frame.series(name)?;
             if dictionary_columns.contains(*name) {
-                let encoded = dictionary::encode(&series.view()?, TypeId::Int32)?;
+                let encoded = dictionary::encode(&series.testing_view()?, TypeId::Int32)?;
                 Ok(Series::from_column(encoded)?.rename(*name))
             } else {
                 Ok(series)
@@ -81,7 +84,10 @@ fn apply_dictionary_columns(frame: DataFrame, dataset: &Dataset) -> cudf::Result
         })
         .collect::<cudf::Result<Vec<_>>>()?;
 
-    DataFrame::from_series(columns)
+    DataFrame::from_columns(::std::iter::IntoIterator::into_iter(columns).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
 }
 
 /// Build a single `Series` from a column name, dtype string, and JSON values.

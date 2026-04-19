@@ -1,6 +1,6 @@
 //! Tests for the DataFrame wrapper.
 
-use cudf::{DataFrame, ErrorKind, core::Table};
+use cudf::{DataFrame, ErrorKind, core::Table, testing::prelude::*};
 
 use crate::common::{assert_missing_column_error, column_from_slice};
 
@@ -163,7 +163,7 @@ fn test_into_table() {
     let (table, names) = df.try_into_table().unwrap();
     assert_eq!(names, vec!["x", "y"]);
 
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
     assert_eq!(view.num_columns().unwrap(), 2);
     assert_eq!(view.num_rows().unwrap(), 2);
 }

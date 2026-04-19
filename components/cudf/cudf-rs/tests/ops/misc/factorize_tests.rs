@@ -6,16 +6,20 @@ use crate::common::{
     reset_exec_observation, reset_sync_observation,
 };
 
+fn factorize_column(column: cudf::core::Column) -> (Series, Series) {
+    let series = Series::from_column(column).unwrap();
+    let factorized = series.factorize().unwrap();
+    (factorized.row_codes().as_series().clone(), factorized.codebook().keys().clone())
+}
+
 #[test]
 fn test_factorize_i32_with_duplicates() {
     let data = vec![429i32, 111, 213, 111, 213, 429, 213];
     let col = column_from_slice(&data).unwrap();
-    let view = col.view().unwrap();
+    let (codes, uniques) = factorize_column(col);
 
-    let (codes, uniques) = view.factorize_parts().unwrap();
-
-    let codes_view = codes.view().unwrap();
-    let uniques_view = uniques.view().unwrap();
+    let codes_view = codes.testing_view().unwrap();
+    let uniques_view = uniques.testing_view().unwrap();
 
     // Codes should be Int32.
     assert_eq!(codes_view.data_type().unwrap().id(), TypeId::Int32);
@@ -55,12 +59,10 @@ fn test_factorize_i32_with_duplicates() {
 fn test_factorize_string_column() {
     let strings: &[&str] = &["banana", "apple", "cherry", "apple", "banana"];
     let col = column_from_strs(strings).unwrap();
-    let view = col.view().unwrap();
+    let (codes, uniques) = factorize_column(col);
 
-    let (codes, uniques) = view.factorize_parts().unwrap();
-
-    let codes_view = codes.view().unwrap();
-    let uniques_view = uniques.view().unwrap();
+    let codes_view = codes.testing_view().unwrap();
+    let uniques_view = uniques.testing_view().unwrap();
 
     assert_eq!(codes_view.data_type().unwrap().id(), TypeId::Int32);
     assert_eq!(uniques_view.data_type().unwrap().id(), TypeId::String);
@@ -87,17 +89,15 @@ fn test_factorize_with_nulls() {
     let data = vec![10i32, 20, 30, 20, 10];
     let validity = vec![true, false, true, true, false];
     let col = column_from_slice_nullable(&data, &validity).unwrap();
-    let view = col.view().unwrap();
+    let (codes, uniques) = factorize_column(col);
 
-    let (codes, uniques) = view.factorize_parts().unwrap();
-
-    let codes_view = codes.view().unwrap();
-    let uniques_view = uniques.view().unwrap();
+    let codes_view = codes.testing_view().unwrap();
+    let uniques_view = uniques.testing_view().unwrap();
 
     assert_eq!(codes_view.len().unwrap(), 5);
 
     // Null positions in input should produce null codes.
-    let codes_validity = codes_view.validity().unwrap();
+    let codes_validity = codes_view.to_host_validity().unwrap();
     assert!(codes_validity.is_some(), "codes should have a null mask");
     let codes_mask = codes_validity.unwrap();
     // Indices 1 and 4 were null in the input.
@@ -117,12 +117,10 @@ fn test_factorize_with_nulls() {
 #[test]
 fn test_factorize_empty_column() {
     let col = column_from_slice::<i32>(&[]).unwrap();
-    let view = col.view().unwrap();
+    let (codes, uniques) = factorize_column(col);
 
-    let (codes, uniques) = view.factorize_parts().unwrap();
-
-    let codes_view = codes.view().unwrap();
-    let uniques_view = uniques.view().unwrap();
+    let codes_view = codes.testing_view().unwrap();
+    let uniques_view = uniques.testing_view().unwrap();
 
     assert_eq!(codes_view.len().unwrap(), 0);
     assert_eq!(uniques_view.len().unwrap(), 0);
@@ -131,12 +129,10 @@ fn test_factorize_empty_column() {
 #[test]
 fn test_factorize_single_element() {
     let col = column_from_slice(&[42i32]).unwrap();
-    let view = col.view().unwrap();
+    let (codes, uniques) = factorize_column(col);
 
-    let (codes, uniques) = view.factorize_parts().unwrap();
-
-    let codes_view = codes.view().unwrap();
-    let uniques_view = uniques.view().unwrap();
+    let codes_view = codes.testing_view().unwrap();
+    let uniques_view = uniques.testing_view().unwrap();
 
     assert_eq!(codes_view.len().unwrap(), 1);
     assert_eq!(uniques_view.len().unwrap(), 1);
@@ -152,12 +148,10 @@ fn test_factorize_single_element() {
 fn test_factorize_already_unique() {
     let data = vec![10i32, 20, 30, 40, 50];
     let col = column_from_slice(&data).unwrap();
-    let view = col.view().unwrap();
+    let (codes, uniques) = factorize_column(col);
 
-    let (codes, uniques) = view.factorize_parts().unwrap();
-
-    let codes_view = codes.view().unwrap();
-    let uniques_view = uniques.view().unwrap();
+    let codes_view = codes.testing_view().unwrap();
+    let uniques_view = uniques.testing_view().unwrap();
 
     // All values are unique so uniques == sorted input.
     assert_eq!(uniques_view.len().unwrap(), 5);
@@ -175,12 +169,10 @@ fn test_factorize_already_unique() {
 fn test_factorize_f64_column() {
     let data = vec![3.25f64, 2.75, 3.25, 1.5, 2.75];
     let col = column_from_slice(&data).unwrap();
-    let view = col.view().unwrap();
+    let (codes, uniques) = factorize_column(col);
 
-    let (codes, uniques) = view.factorize_parts().unwrap();
-
-    let codes_view = codes.view().unwrap();
-    let uniques_view = uniques.view().unwrap();
+    let codes_view = codes.testing_view().unwrap();
+    let uniques_view = uniques.testing_view().unwrap();
 
     assert_eq!(codes_view.data_type().unwrap().id(), TypeId::Int32);
     assert_eq!(uniques_view.data_type().unwrap().id(), TypeId::Float64);
@@ -209,14 +201,13 @@ fn test_factorize_codes_are_owned_independent_of_input() {
     let (codes, uniques) = {
         let data = vec![1i32, 2, 1, 3, 2];
         let col = column_from_slice(&data).unwrap();
-        let view = col.view().unwrap();
-        view.factorize_parts().unwrap()
+        factorize_column(col)
         // col is dropped here
     };
 
     // Should still be readable after input is dropped.
-    let codes_host = codes.view().unwrap().to_vec::<i32>().unwrap();
-    let uniques_host = uniques.view().unwrap().to_vec::<i32>().unwrap();
+    let codes_host = codes.testing_view().unwrap().to_vec::<i32>().unwrap();
+    let uniques_host = uniques.testing_view().unwrap().to_vec::<i32>().unwrap();
 
     assert_eq!(codes_host.len(), 5);
     assert_eq!(uniques_host.len(), 3);
@@ -230,8 +221,8 @@ fn test_dataframe_factorize_by_name() {
     let df = crate::common::dataframe_from_columns(vec!["values".to_string()], vec![col]).unwrap();
 
     let factorized = df.factorize("values").unwrap();
-    let codes_view = factorized.row_codes().view().unwrap();
-    let keys_view = factorized.codebook().keys().view().unwrap();
+    let codes_view = factorized.row_codes().testing_view().unwrap();
+    let keys_view = factorized.codebook().keys().testing_view().unwrap();
 
     assert_eq!(codes_view.len().unwrap(), 5);
     assert_eq!(keys_view.len().unwrap(), 3);
@@ -265,43 +256,50 @@ fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
     let wrong_decoded = uniques.gather(&wrong_encoded).unwrap();
 
     assert_ne!(
-        wrong_decoded.view().unwrap().to_strings_lossy().unwrap(),
-        query.view().unwrap().to_strings_lossy().unwrap()
+        wrong_decoded.testing_view().unwrap().to_strings_lossy().unwrap(),
+        query.testing_view().unwrap().to_strings_lossy().unwrap()
     );
 }
 
 #[test]
 fn test_factorize_uniques_support_safe_positional_codebook_round_trip() {
-    let lookup_source = column_from_strs(&["b", "a", "c", "a"]).unwrap();
-    let (row_codes, uniques) = lookup_source.view().unwrap().factorize_parts().unwrap();
-    let _ = row_codes;
-    let uniques = Series::from_column(uniques).unwrap();
+    let lookup_source = Series::from_column(column_from_strs(&["b", "a", "c", "a"]).unwrap()).unwrap();
+    let factorized = lookup_source.factorize().unwrap();
+    let _ = factorized.row_codes();
+    let uniques = factorized.codebook().keys().clone();
 
     let positional = crate::common::series("codes", &[0i32, 1, 2]).unwrap();
     let query = crate::common::series("query", &["a", "b", "c"]).unwrap();
     let encoded = query.lookup(&uniques, &positional).unwrap();
     let decoded = uniques.gather(&encoded).unwrap();
 
-    assert_eq!(decoded.view().unwrap().to_strings_lossy().unwrap(), query.view().unwrap().to_strings_lossy().unwrap());
+    assert_eq!(
+        decoded.testing_view().unwrap().to_strings_lossy().unwrap(),
+        query.testing_view().unwrap().to_strings_lossy().unwrap()
+    );
 }
 
 #[test]
 fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end() {
     let input = column_from_slice(&[9i32, 7, 9, 8]).unwrap().testing_rebind_execution_domain_explicit(605).unwrap();
     let expected_stream = input.testing_execution_domain_stream_value();
+    let expected_domain = input.testing_execution_domain_id();
+    let input = Series::from_column(input).unwrap();
 
     reset_exec_observation();
-    let (codes, uniques) = input.view().unwrap().factorize_parts().unwrap();
+    let factorized = input.factorize().unwrap();
+    let codes = factorized.row_codes().as_series().clone();
+    let uniques = factorized.codebook().keys().clone();
 
-    assert_eq!(codes.testing_execution_domain_id(), input.testing_execution_domain_id());
-    assert_eq!(uniques.testing_execution_domain_id(), input.testing_execution_domain_id());
-    assert_eq!(codes.testing_execution_domain_stream_value(), expected_stream);
-    assert_eq!(uniques.testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(codes.as_column().testing_execution_domain_id(), expected_domain);
+    assert_eq!(uniques.as_column().testing_execution_domain_id(), expected_domain);
+    assert_eq!(codes.as_column().testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(uniques.as_column().testing_execution_domain_stream_value(), expected_stream);
     assert_eq!(last_exec_stream_value(), expected_stream);
 
     reset_sync_observation();
-    let codes_host = codes.view().unwrap().to_vec::<i32>().unwrap();
-    let mut uniques_host = uniques.view().unwrap().to_vec::<i32>().unwrap();
+    let codes_host = codes.testing_view().unwrap().to_vec::<i32>().unwrap();
+    let mut uniques_host = uniques.testing_view().unwrap().to_vec::<i32>().unwrap();
     uniques_host.sort_unstable();
     assert_eq!(codes_host.len(), 4);
     assert_eq!(uniques_host, vec![7, 8, 9]);

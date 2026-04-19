@@ -352,7 +352,7 @@ fn test_logical_and_preserves_nulls() {
     let a = crate::common::nullable_series::<bool>("lhs", &[true, false, true], &[true, false, true]).unwrap();
     let b = crate::common::series::<bool>("rhs", &[true, true, false]).unwrap();
 
-    let result = (&a & &b).unwrap();
+    let result = a.logical_and(&b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
@@ -362,7 +362,7 @@ fn test_logical_or_preserves_nulls() {
     let a = crate::common::nullable_series::<bool>("lhs", &[true, false, true], &[true, false, true]).unwrap();
     let b = crate::common::series::<bool>("rhs", &[false, true, false]).unwrap();
 
-    let result = (&a | &b).unwrap();
+    let result = a.logical_or(&b).unwrap();
     let vals = result.to_optional_vec::<bool>().unwrap();
     assert_eq!(vals, vec![Some(true), None, Some(true)]);
 }

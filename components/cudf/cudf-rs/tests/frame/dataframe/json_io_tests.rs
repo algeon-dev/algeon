@@ -18,7 +18,11 @@ fn test_dataframe_json_roundtrip_convenience() {
 
     let s1 = crate::common::series("ids", &[1i32, 2, 3]).unwrap();
     let s2 = crate::common::series("values", &[10.0f64, 20.0, 30.0]).unwrap();
-    let df = DataFrame::from_series([s1, s2]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s1, s2]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     df.write_json(&path).unwrap();
 
     let read_df = DataFrame::read_json(&rt, &path).unwrap();
@@ -39,7 +43,11 @@ fn test_dataframe_json_preserves_column_names() {
     let s1 = crate::common::series("alpha", &[100i64]).unwrap();
     let s2 = crate::common::series("beta", &[200i64]).unwrap();
     let s3 = crate::common::series("gamma", &[300i64]).unwrap();
-    let df = DataFrame::from_series([s1, s2, s3]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s1, s2, s3]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     df.write_json(&path).unwrap();
 
     let read_df = DataFrame::read_json(&rt, &path).unwrap();
@@ -60,7 +68,11 @@ fn test_dataframe_json_roundtrip_with_options() {
     let rt = sample_runtime();
 
     let s1 = crate::common::series("x", &[42i32]).unwrap();
-    let df = DataFrame::from_series([s1]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s1]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let write_opts = JsonWriteOptions::builder().filepath(&path).build();
     df.write_json_with_options(write_opts).unwrap();
@@ -78,7 +90,11 @@ fn test_dataframe_json_write_no_nulls_option() {
     let rt = sample_runtime();
 
     let s1 = crate::common::series("a", &[1i32, 2]).unwrap();
-    let df = DataFrame::from_series([s1]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s1]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let write_opts = JsonWriteOptions::builder().filepath(&path).include_nulls(false).build();
     df.write_json_with_options(write_opts).unwrap();
@@ -97,7 +113,13 @@ fn test_dataframe_json_read_hand_written_ndjson() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("hand.jsonl");
     let rt = sample_runtime();
-    std::fs::write(&path, "{\"name\":\"alice\",\"age\":30}\n{\"name\":\"bob\",\"age\":25}\n").unwrap();
+    std::fs::write(
+        &path,
+        "{\"name\":\"alice\",\"age\":30}
+{\"name\":\"bob\",\"age\":25}
+",
+    )
+    .unwrap();
 
     let df = DataFrame::read_json(&rt, &path).unwrap();
     assert_eq!(df.num_rows(), 2);

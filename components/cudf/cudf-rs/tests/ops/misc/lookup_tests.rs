@@ -16,9 +16,11 @@ fn test_lookup_probe_string_to_int() {
     let keys = column_from_strs(&["a", "b", "c"]).unwrap();
     let values = column_from_slice(&[1i32, 2, 3]).unwrap();
 
-    let result = lookup::probe(&input.view().unwrap(), &keys.view().unwrap(), &values.view().unwrap()).unwrap();
+    let result =
+        lookup::probe(&input.testing_view().unwrap(), &keys.testing_view().unwrap(), &values.testing_view().unwrap())
+            .unwrap();
 
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Int32);
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![1, 2, 3, 1]);
 }
@@ -29,12 +31,14 @@ fn test_lookup_probe_missing_keys_become_null() {
     let keys = column_from_slice(&[1i32, 2]).unwrap();
     let values = column_from_slice(&[10i32, 20]).unwrap();
 
-    let result = lookup::probe(&input.view().unwrap(), &keys.view().unwrap(), &values.view().unwrap()).unwrap();
+    let result =
+        lookup::probe(&input.testing_view().unwrap(), &keys.testing_view().unwrap(), &values.testing_view().unwrap())
+            .unwrap();
 
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.len().unwrap(), 4);
 
-    let validity = rv.validity().unwrap().unwrap();
+    let validity = rv.to_host_validity().unwrap().unwrap();
     assert!(validity[0]);
     assert!(validity[1]);
     assert!(!validity[2]);
@@ -53,12 +57,14 @@ fn test_lookup_probe_empty_input_preserves_explicit_input_provenance() {
     let keys = runtime.column_from_strs(&["a"]).unwrap();
     let values = runtime.column_from_slice(&[1i32]).unwrap();
 
-    let result = lookup::probe(&input.view().unwrap(), &keys.view().unwrap(), &values.view().unwrap()).unwrap();
+    let result =
+        lookup::probe(&input.testing_view().unwrap(), &keys.testing_view().unwrap(), &values.testing_view().unwrap())
+            .unwrap();
 
     assert_eq!(result.testing_execution_domain_kind(), "explicit");
     assert_eq!(result.testing_execution_domain_id(), input.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_stream_value(), input.testing_execution_domain_stream_value());
-    assert_eq!(result.view().unwrap().len().unwrap(), 0);
+    assert_eq!(result.testing_view().unwrap().len().unwrap(), 0);
 }
 
 #[test]
@@ -67,9 +73,11 @@ fn test_lookup_probe_preserves_output_type() {
     let keys = column_from_slice(&[1i32, 2]).unwrap();
     let values = column_from_slice(&[1.5f64, 2.5]).unwrap();
 
-    let result = lookup::probe(&input.view().unwrap(), &keys.view().unwrap(), &values.view().unwrap()).unwrap();
+    let result =
+        lookup::probe(&input.testing_view().unwrap(), &keys.testing_view().unwrap(), &values.testing_view().unwrap())
+            .unwrap();
 
-    let rv = result.view().unwrap();
+    let rv = result.testing_view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Float64);
     assert_eq!(rv.to_vec::<f64>().unwrap(), vec![1.5, 2.5]);
 }
@@ -80,7 +88,9 @@ fn test_lookup_probe_rejects_duplicate_keys() {
     let keys = column_from_slice(&[1i32, 1, 2]).unwrap();
     let values = column_from_slice(&[10i32, 11, 20]).unwrap();
 
-    let err = lookup::probe(&input.view().unwrap(), &keys.view().unwrap(), &values.view().unwrap()).unwrap_err();
+    let err =
+        lookup::probe(&input.testing_view().unwrap(), &keys.testing_view().unwrap(), &values.testing_view().unwrap())
+            .unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert_eq!(err.operation(), "lookup::probe");
@@ -92,7 +102,9 @@ fn test_lookup_probe_rejects_mapping_length_mismatch() {
     let keys = column_from_slice(&[1i32, 2]).unwrap();
     let values = column_from_slice(&[10i32]).unwrap();
 
-    let err = lookup::probe(&input.view().unwrap(), &keys.view().unwrap(), &values.view().unwrap()).unwrap_err();
+    let err =
+        lookup::probe(&input.testing_view().unwrap(), &keys.testing_view().unwrap(), &values.testing_view().unwrap())
+            .unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
     assert_eq!(err.operation(), "lookup::probe");
@@ -111,7 +123,9 @@ fn test_lookup_probe_succeeds_with_mixed_domains_and_uses_input_provenance() {
 
     reset_sync_observation();
     reset_exec_observation();
-    let result = lookup::probe(&input.view().unwrap(), &keys.view().unwrap(), &values.view().unwrap()).unwrap();
+    let result =
+        lookup::probe(&input.testing_view().unwrap(), &keys.testing_view().unwrap(), &values.testing_view().unwrap())
+            .unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), input.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
@@ -120,7 +134,7 @@ fn test_lookup_probe_succeeds_with_mixed_domains_and_uses_input_provenance() {
     assert_eq!(last_sync_stream_value(), expected_sync_stream);
 
     reset_sync_observation();
-    assert_eq!(result.view().unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(20), None, Some(10)]);
+    assert_eq!(result.testing_view().unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(20), None, Some(10)]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 

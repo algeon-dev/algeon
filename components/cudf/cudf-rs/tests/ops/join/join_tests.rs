@@ -16,10 +16,10 @@ fn empty_payload() -> Table {
 }
 
 fn nullable_i32_table_column(table: &Table, index: usize) -> Vec<Option<i32>> {
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
     let column = view.column(index).unwrap();
     let values = column.to_vec::<i32>().unwrap();
-    let validity = column.validity().unwrap().unwrap_or_else(|| vec![true; values.len()]);
+    let validity = column.to_host_validity().unwrap().unwrap_or_else(|| vec![true; values.len()]);
 
     values.into_iter().zip(validity).map(|(value, valid)| if valid { Some(value) } else { None }).collect()
 }
@@ -39,15 +39,15 @@ fn test_inner_join() {
     let rk_table = Table::from_columns(vec![rk]).unwrap();
     let rp_table = Table::from_columns(vec![rp]).unwrap();
 
-    let lkv = lk_table.view().unwrap();
-    let lpv = lp_table.view().unwrap();
-    let rkv = rk_table.view().unwrap();
-    let rpv = rp_table.view().unwrap();
+    let lkv = lk_table.testing_view().unwrap();
+    let lpv = lp_table.testing_view().unwrap();
+    let rkv = rk_table.testing_view().unwrap();
+    let rpv = rp_table.testing_view().unwrap();
 
     let result = join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
 
-    let lv = result.left.view().unwrap();
-    let rv = result.right.view().unwrap();
+    let lv = result.left.testing_view().unwrap();
+    let rv = result.right.testing_view().unwrap();
 
     // Inner join should have 2 rows.
     assert_eq!(lv.num_rows().unwrap(), 2);
@@ -81,15 +81,15 @@ fn test_left_join() {
     let lp = empty_payload();
     let rp = empty_payload();
 
-    let lkv = lk_table.view().unwrap();
-    let rkv = rk_table.view().unwrap();
-    let lpv = lp.view().unwrap();
-    let rpv = rp.view().unwrap();
+    let lkv = lk_table.testing_view().unwrap();
+    let rkv = rk_table.testing_view().unwrap();
+    let lpv = lp.testing_view().unwrap();
+    let rpv = rp.testing_view().unwrap();
 
     let result = join::left_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
 
-    let lv = result.left.view().unwrap();
-    let rv = result.right.view().unwrap();
+    let lv = result.left.testing_view().unwrap();
+    let rv = result.right.testing_view().unwrap();
     // Left join: all 3 left rows should be present.
     assert_eq!(lv.num_rows().unwrap(), 3);
     assert_eq!(rv.num_rows().unwrap(), 3);
@@ -117,15 +117,15 @@ fn test_full_join() {
     let lp = empty_payload();
     let rp = empty_payload();
 
-    let lkv = lk_table.view().unwrap();
-    let rkv = rk_table.view().unwrap();
-    let lpv = lp.view().unwrap();
-    let rpv = rp.view().unwrap();
+    let lkv = lk_table.testing_view().unwrap();
+    let rkv = rk_table.testing_view().unwrap();
+    let lpv = lp.testing_view().unwrap();
+    let rpv = rp.testing_view().unwrap();
 
     let result = join::full_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
 
-    let lv = result.left.view().unwrap();
-    let rv = result.right.view().unwrap();
+    let lv = result.left.testing_view().unwrap();
+    let rv = result.right.testing_view().unwrap();
     // Full join should have 3 rows (1, 2, 3).
     assert_eq!(lv.num_rows().unwrap(), 3);
     assert_eq!(rv.num_rows().unwrap(), 3);
@@ -153,10 +153,10 @@ fn test_join_error_contains_operation_context() {
     let lp_bad = Table::from_columns(vec![column_from_slice(&[10i32]).unwrap()]).unwrap();
     let rp = empty_payload();
 
-    let lkv = lk_table.view().unwrap();
-    let rkv = rk_table.view().unwrap();
-    let lpv = lp_bad.view().unwrap();
-    let rpv = rp.view().unwrap();
+    let lkv = lk_table.testing_view().unwrap();
+    let rkv = rk_table.testing_view().unwrap();
+    let lpv = lp_bad.testing_view().unwrap();
+    let rpv = rp.testing_view().unwrap();
 
     let err = match join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal) {
         Ok(_) => panic!("expected error"),
@@ -179,15 +179,15 @@ fn test_inner_join_multi_column_keys() {
     let lp = empty_payload();
     let rp = empty_payload();
 
-    let lkv = lk_table.view().unwrap();
-    let rkv = rk_table.view().unwrap();
-    let lpv = lp.view().unwrap();
-    let rpv = rp.view().unwrap();
+    let lkv = lk_table.testing_view().unwrap();
+    let rkv = rk_table.testing_view().unwrap();
+    let lpv = lp.testing_view().unwrap();
+    let rpv = rp.testing_view().unwrap();
 
     let result = join::inner_join(&lkv, &rkv, &lpv, &rpv, NullEquality::Equal).unwrap();
 
-    let lv = result.left.view().unwrap();
-    let rv = result.right.view().unwrap();
+    let lv = result.left.testing_view().unwrap();
+    let rv = result.right.testing_view().unwrap();
     // Matches: (1,10) and (2,10) → 2 rows.
     assert_eq!(lv.num_rows().unwrap(), 2);
     assert_eq!(rv.num_rows().unwrap(), 2);
@@ -222,34 +222,34 @@ fn test_join_domain_module_exports_documented_surface() {
     let right_payload = empty_payload();
 
     let inner: JoinSides = inner_join(
-        &left_keys.view().unwrap(),
-        &right_keys.view().unwrap(),
-        &left_payload.view().unwrap(),
-        &right_payload.view().unwrap(),
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        &left_payload.testing_view().unwrap(),
+        &right_payload.testing_view().unwrap(),
         NullEquality::Equal,
     )
     .unwrap();
-    assert_eq!(inner.left.view().unwrap().num_rows().unwrap(), 2);
+    assert_eq!(inner.left.testing_view().unwrap().num_rows().unwrap(), 2);
 
     let left = left_join(
-        &left_keys.view().unwrap(),
-        &right_keys.view().unwrap(),
-        &left_payload.view().unwrap(),
-        &right_payload.view().unwrap(),
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        &left_payload.testing_view().unwrap(),
+        &right_payload.testing_view().unwrap(),
         NullEquality::Equal,
     )
     .unwrap();
-    assert_eq!(left.left.view().unwrap().num_rows().unwrap(), 3);
+    assert_eq!(left.left.testing_view().unwrap().num_rows().unwrap(), 3);
 
     let full = full_join(
-        &left_keys.view().unwrap(),
-        &right_keys.view().unwrap(),
-        &left_payload.view().unwrap(),
-        &right_payload.view().unwrap(),
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        &left_payload.testing_view().unwrap(),
+        &right_payload.testing_view().unwrap(),
         NullEquality::Equal,
     )
     .unwrap();
-    assert_eq!(full.left.view().unwrap().num_rows().unwrap(), 4);
+    assert_eq!(full.left.testing_view().unwrap().num_rows().unwrap(), 4);
 
     let opts = MergeOptions::new().on(["id"]).how(JoinType::Left);
     assert_eq!(opts.join_type(), JoinType::Left);
@@ -266,10 +266,10 @@ fn test_inner_join_succeeds_with_mixed_domains_and_uses_left_provenance() {
 
     reset_exec_observation();
     let result = join::inner_join(
-        &left_keys.view().unwrap(),
-        &right_keys.view().unwrap(),
-        &left_payload.view().unwrap(),
-        &right_payload.view().unwrap(),
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        &left_payload.testing_view().unwrap(),
+        &right_payload.testing_view().unwrap(),
         NullEquality::Equal,
     )
     .unwrap();
@@ -284,25 +284,25 @@ fn test_inner_join_succeeds_with_mixed_domains_and_uses_left_provenance() {
     reset_sync_observation();
     let left_rows: Vec<(i32, i32)> = result
         .left
-        .view()
+        .testing_view()
         .unwrap()
         .column(0)
         .unwrap()
         .to_vec::<i32>()
         .unwrap()
         .into_iter()
-        .zip(result.left.view().unwrap().column(1).unwrap().to_vec::<i32>().unwrap())
+        .zip(result.left.testing_view().unwrap().column(1).unwrap().to_vec::<i32>().unwrap())
         .collect();
     let right_rows: Vec<(i32, i32)> = result
         .right
-        .view()
+        .testing_view()
         .unwrap()
         .column(0)
         .unwrap()
         .to_vec::<i32>()
         .unwrap()
         .into_iter()
-        .zip(result.right.view().unwrap().column(1).unwrap().to_vec::<i32>().unwrap())
+        .zip(result.right.testing_view().unwrap().column(1).unwrap().to_vec::<i32>().unwrap())
         .collect();
     assert_eq!(left_rows, vec![(2, 20), (3, 30)]);
     assert_eq!(right_rows, vec![(2, 200), (3, 300)]);

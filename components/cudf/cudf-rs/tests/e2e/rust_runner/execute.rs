@@ -3,7 +3,10 @@
 //! Executes manifest operations through `cudf-rs` and normalizes results
 //! into the shared result schema for comparison with Python cuDF output.
 
-use cudf::{DataFrame, DropNaOptions, InfoDetail, SortOptions, TypeId};
+use cudf::{
+    DataFrame, DropNaOptions, InfoDetail, SortOptions, TypeId,
+    testing::{ColumnView, prelude::*},
+};
 
 use super::{
     manifest::{Operation, canonical_dtype},
@@ -285,8 +288,8 @@ pub fn normalize_dataframe(df: &DataFrame) -> Result<NormalizedDataFrame, Execut
 
 /// Materialize a column's values to a Vec of JSON values, respecting nulls.
 fn materialize_column_values(series: &cudf::Series, type_id: TypeId) -> Result<Vec<serde_json::Value>, ExecutionError> {
-    let cv = series.view()?;
-    let validity = cv.validity()?;
+    let cv = series.testing_view()?;
+    let validity = cv.to_host_validity()?;
 
     match type_id {
         TypeId::Int32 => materialize_numeric::<i32>(&cv, &validity, serde_json::Value::from),
@@ -312,7 +315,7 @@ fn materialize_column_values(series: &cudf::Series, type_id: TypeId) -> Result<V
 
 /// Materialize a fixed-width numeric column with null support.
 fn materialize_numeric<T: cudf::CudfType>(
-    cv: &cudf::core::ColumnView<'_>,
+    cv: &ColumnView<'_>,
     validity: &Option<Vec<bool>>,
     to_json: impl Fn(T) -> serde_json::Value,
 ) -> Result<Vec<serde_json::Value>, ExecutionError> {

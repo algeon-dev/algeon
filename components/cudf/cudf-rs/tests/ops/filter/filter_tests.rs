@@ -10,14 +10,14 @@ use crate::common::{
 fn test_boolean_mask_basic() {
     let col = column_from_slice(&[10i32, 20, 30, 40]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
 
     // Keep rows 0 and 2.
     let mask = column_from_slice(&[true, false, true, false]).unwrap();
-    let mask_view = mask.view().unwrap();
+    let mask_view = mask.testing_view().unwrap();
 
     let filtered = filter::apply_boolean_mask(&view, &mask_view).unwrap();
-    let fv = filtered.view().unwrap();
+    let fv = filtered.testing_view().unwrap();
     assert_eq!(fv.num_rows().unwrap(), 2);
     let result = fv.column(0).unwrap().to_vec::<i32>().unwrap();
     assert_eq!(result, vec![10, 30]);
@@ -27,13 +27,13 @@ fn test_boolean_mask_basic() {
 fn test_boolean_mask_all_false() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
 
     let mask = column_from_slice(&[false, false, false]).unwrap();
-    let mask_view = mask.view().unwrap();
+    let mask_view = mask.testing_view().unwrap();
 
     let filtered = filter::apply_boolean_mask(&view, &mask_view).unwrap();
-    let fv = filtered.view().unwrap();
+    let fv = filtered.testing_view().unwrap();
     assert_eq!(fv.num_rows().unwrap(), 0);
 }
 
@@ -41,13 +41,13 @@ fn test_boolean_mask_all_false() {
 fn test_boolean_mask_all_true() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
 
     let mask = column_from_slice(&[true, true, true]).unwrap();
-    let mask_view = mask.view().unwrap();
+    let mask_view = mask.testing_view().unwrap();
 
     let filtered = filter::apply_boolean_mask(&view, &mask_view).unwrap();
-    let fv = filtered.view().unwrap();
+    let fv = filtered.testing_view().unwrap();
     assert_eq!(fv.num_rows().unwrap(), 3);
     let result = fv.column(0).unwrap().to_vec::<i32>().unwrap();
     assert_eq!(result, vec![1, 2, 3]);
@@ -58,13 +58,13 @@ fn test_boolean_mask_multi_column() {
     let c0 = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
     let c1 = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
     let table = Table::from_columns(vec![c0, c1]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
 
     let mask = column_from_slice(&[false, true, false, true]).unwrap();
-    let mask_view = mask.view().unwrap();
+    let mask_view = mask.testing_view().unwrap();
 
     let filtered = filter::apply_boolean_mask(&view, &mask_view).unwrap();
-    let fv = filtered.view().unwrap();
+    let fv = filtered.testing_view().unwrap();
     assert_eq!(fv.num_columns().unwrap(), 2);
     assert_eq!(fv.num_rows().unwrap(), 2);
 
@@ -82,7 +82,7 @@ fn test_boolean_mask_succeeds_with_mixed_domains_and_uses_input_provenance() {
     let expected_mr = table.testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let filtered = filter::apply_boolean_mask(&table.view().unwrap(), &mask.view().unwrap()).unwrap();
+    let filtered = filter::apply_boolean_mask(&table.testing_view().unwrap(), &mask.testing_view().unwrap()).unwrap();
 
     assert_eq!(filtered.testing_execution_domain_id(), table.testing_execution_domain_id());
     assert_eq!(filtered.testing_execution_domain_mr_value(), expected_mr);
@@ -90,7 +90,7 @@ fn test_boolean_mask_succeeds_with_mixed_domains_and_uses_input_provenance() {
     assert_eq!(last_exec_mr_value(), expected_mr);
 
     reset_sync_observation();
-    let host = filtered.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    let host = filtered.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
     assert_eq!(host, vec![10, 30]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }

@@ -16,7 +16,7 @@ fn sample_df() -> DataFrame {
     let scores = crate::common::series::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
     let flags = crate::common::series::<i32>("flags", &[100, 200, 300]).unwrap();
 
-    DataFrame::from_named_pairs([("id", ids), ("score", scores), ("flag", flags)]).unwrap()
+    DataFrame::from_columns([("id", ids), ("score", scores), ("flag", flags)]).unwrap()
 }
 
 // ===========================================================================
@@ -203,7 +203,7 @@ fn test_select_wide_projection_reorders_columns_without_copying() {
             (format!("c{idx}"), crate::common::series::<i32>(format!("source_{idx}"), &[idx, idx + 100]).unwrap())
         })
         .collect();
-    let df = DataFrame::from_named_pairs(pairs).unwrap();
+    let df = DataFrame::from_columns(pairs).unwrap();
 
     let selected = df.select(["c15", "c0", "c7", "c3"]).unwrap();
 

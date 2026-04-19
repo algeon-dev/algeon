@@ -156,17 +156,17 @@ pub fn dataframe_from_columns(names: Vec<String>, columns: Vec<Column>) -> cudf:
         })
         .collect::<cudf::Result<Vec<_>>>()?;
 
-    DataFrame::from_named_pairs(pairs).map_err(|e| e.with_operation(operation))
+    DataFrame::from_columns(pairs).map_err(|e| e.with_operation(operation))
 }
 
 #[allow(dead_code)]
 pub fn dataframe_device_ptr(df: &DataFrame, name: &str) -> *const c_void {
-    df.series(name).unwrap().view().unwrap().device_data_ptr().unwrap()
+    df.series(name).unwrap().as_column().device_data_ptr().unwrap()
 }
 
 #[allow(dead_code)]
 pub fn series_device_ptr(series: &Series) -> *const c_void {
-    series.view().unwrap().device_data_ptr().unwrap()
+    series.as_column().device_data_ptr().unwrap()
 }
 
 #[allow(dead_code)]

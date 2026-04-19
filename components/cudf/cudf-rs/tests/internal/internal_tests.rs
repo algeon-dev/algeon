@@ -20,7 +20,7 @@ fn filter_preserves_row_and_column_counts() {
     // filter internally uses build_table_view / TempTableView infrastructure.
     let ids = crate::common::series::<i32>("ids", &[1, 2, 3, 4, 5]).unwrap();
     let vals = crate::common::series::<f64>("vals", &[10.0, 20.0, 30.0, 40.0, 50.0]).unwrap();
-    let df = DataFrame::from_named_pairs([("id", ids), ("val", vals)]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("val", vals)]).unwrap();
 
     // Boolean mask: keep rows 0, 2, 4.
     let mask = crate::common::series::<bool>("mask", &[true, false, true, false, true]).unwrap();
@@ -36,7 +36,11 @@ fn sort_preserves_schema_names_and_lengths() {
     // sort internally resolves column names and builds table views.
     let names_col = crate::common::series::<i32>("a", &[3, 1, 2]).unwrap();
     let vals_col = crate::common::series::<i64>("b", &[30, 10, 20]).unwrap();
-    let df = DataFrame::from_series([names_col, vals_col]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([names_col, vals_col]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let sorted = df.sort_values(["a"], cudf::SortOptions::new()).unwrap();
 
@@ -55,7 +59,11 @@ fn reassembly_after_drop_duplicates_preserves_schema() {
     // drop_duplicates internally uses resolve + reassemble helpers.
     let a = crate::common::series::<i32>("x", &[1, 1, 2, 2, 3]).unwrap();
     let b = crate::common::series::<i64>("y", &[10, 10, 20, 20, 30]).unwrap();
-    let df = DataFrame::from_series([a, b]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a, b]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let distinct = df
         .drop_duplicates(
@@ -76,7 +84,11 @@ fn reassembly_after_drop_duplicates_preserves_schema() {
 fn sort_with_missing_column_returns_error() {
     // resolve_column_names should produce a clear error for unknown columns.
     let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([a]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let err = df.sort_values(["nonexistent"], cudf::SortOptions::new()).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
@@ -91,11 +103,19 @@ fn join_reassembly_preserves_schema_names() {
     // join internally uses reassembly helpers to rebuild DataFrames.
     let left_key = crate::common::series::<i32>("key", &[1, 2, 3]).unwrap();
     let left_val = crate::common::series::<f64>("lval", &[10.0, 20.0, 30.0]).unwrap();
-    let left = DataFrame::from_series([left_key, left_val]).unwrap();
+    let left = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([left_key, left_val]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let right_key = crate::common::series::<i32>("key", &[2, 3, 4]).unwrap();
     let right_val = crate::common::series::<f64>("rval", &[200.0, 300.0, 400.0]).unwrap();
-    let right = DataFrame::from_series([right_key, right_val]).unwrap();
+    let right = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([right_key, right_val]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let opts = cudf::MergeOptions::new().on(["key"]).how_inner();
     let joined = left.merge(&right, opts).unwrap();
@@ -111,11 +131,11 @@ fn join_reassembly_preserves_schema_names() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn from_named_pairs_rejects_duplicate_names() {
+fn from_columns_rejects_duplicate_names() {
     let a = crate::common::series::<i32>("a", &[1]).unwrap();
     let b = crate::common::series::<i32>("b", &[2]).unwrap();
 
-    let err = DataFrame::from_named_pairs(vec![("x".to_string(), a), ("x".to_string(), b)]).unwrap_err();
+    let err = DataFrame::from_columns(vec![("x".to_string(), a), ("x".to_string(), b)]).unwrap_err();
     assert_duplicate_name_error(&err, "x");
 }
 

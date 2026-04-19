@@ -1,5 +1,5 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
-use cudf::{DataFrame, ErrorKind, ExecutionContext, JoinType, MergeOptions, testing::prelude::*};
+use cudf::{DataFrame, ErrorKind, ExecutionOverrides, JoinType, MergeOptions, testing::prelude::*};
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,
@@ -121,15 +121,27 @@ fn test_inner_merge_same_key() {
 fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let left = DataFrame::from_series([
-        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
-        left_rt.series("score", &[10i32, 20, 30]).unwrap(),
-    ])
+    let left = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            left_rt.series("id", &[1i32, 2, 3]).unwrap(),
+            left_rt.series("score", &[10i32, 20, 30]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
-    let right = DataFrame::from_series([
-        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
-        right_rt.series("value", &[200i32, 300, 400]).unwrap(),
-    ])
+    let right = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            right_rt.series("id", &[2i32, 3, 4]).unwrap(),
+            right_rt.series("value", &[200i32, 300, 400]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
@@ -285,15 +297,27 @@ fn test_full_merge() {
 fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenance() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let left = DataFrame::from_series([
-        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
-        left_rt.series("score", &[10i32, 20, 30]).unwrap(),
-    ])
+    let left = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            left_rt.series("id", &[1i32, 2, 3]).unwrap(),
+            left_rt.series("score", &[10i32, 20, 30]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
-    let right = DataFrame::from_series([
-        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
-        right_rt.series("value", &[200i32, 300, 400]).unwrap(),
-    ])
+    let right = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            right_rt.series("id", &[2i32, 3, 4]).unwrap(),
+            right_rt.series("value", &[200i32, 300, 400]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
@@ -349,23 +373,36 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
-    let left = DataFrame::from_series([
-        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
-        left_rt.series("score", &[10i32, 20, 30]).unwrap(),
-    ])
+    let left = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            left_rt.series("id", &[1i32, 2, 3]).unwrap(),
+            left_rt.series("score", &[10i32, 20, 30]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
-    let right = DataFrame::from_series([
-        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
-        right_rt.series("value", &[200i32, 300, 400]).unwrap(),
-    ])
+    let right = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            right_rt.series("id", &[2i32, 3, 4]).unwrap(),
+            right_rt.series("value", &[200i32, 300, 400]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
-    let ctx = ExecutionContext::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
+    let ctx =
+        ExecutionOverrides::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
     let expected_exec_stream = target_rt.stream().testing_raw_handle_value();
     let expected_exec_mr = target_rt.memory_resource().testing_raw_handle_value();
     let expected_presync_stream = right.testing_execution_domain_stream_value();
 
     reset_exec_observation();
-    let result = left.in_context(&ctx).merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
+    let result = left.with_execution(&ctx).merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), left.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_stream_value(), expected_exec_stream);

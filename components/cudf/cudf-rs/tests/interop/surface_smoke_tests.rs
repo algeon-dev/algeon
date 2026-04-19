@@ -12,18 +12,19 @@ use cudf::{
     interop::{
         PartitionedLocalTableResults,
         borrowed::{BorrowedColumnView, BorrowedTableView},
+        cuda_explicit_completion_required_lease_backend,
         frame::PartitionedDataFrameExport,
         prepared::{
-            ActiveLeaseActivation, ActiveLeaseBackend, CompletionBinding, IncompleteDropBehavior, InteropError,
-            LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext, LeaseReadiness,
-            PreparedColumnExport, PreparedTableExport, ReadStartBinding,
+            ActiveLeaseActivation, ActiveLeaseBackend, CompletionAuthority, CompletionBinding, IncompleteDropBehavior,
+            InteropError, LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext, LeaseReadiness,
+            PreparedColumnExport, PreparedTableExport, ReadStartAuthority, ReadStartBinding,
         },
-        runtime::cuda_explicit_completion_required_lease_backend,
         transfer::{
-            OwnedColumnTransfer, OwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser,
-            ReleaseSynchronization, RuntimeOwnedTableTransferReleaser,
+            OwnedColumnTransfer, OwnedTableTransfer, OwnedTableTransferReleaser, PartitionedOwnedTableTransferReleaser,
+            ReleaseSynchronization,
         },
     },
+    runtime::{CudaEvent, CudaStream},
 };
 
 struct TestActivation;
@@ -88,25 +89,19 @@ fn interop_lease_backend_surface_smoke() {
 }
 
 #[test]
-fn interop_runtime_authority_surface_smoke() {
-    use cudf::{
-        interop::runtime::{
-            RuntimeCompletionAuthority, RuntimeLeaseCompletionResult, RuntimeReadStartAuthority,
-            cuda_explicit_completion_required_lease_backend as namespaced_cuda_explicit_completion_required_lease_backend,
-        },
-        runtime::{CudaEvent, CudaStream},
-    };
-
+fn interop_shared_authority_surface_smoke() {
     let stream = CudaStream::new().unwrap();
     let event = CudaEvent::new().unwrap();
 
-    let _read_start = RuntimeReadStartAuthority::consumer_stream(&stream);
-    let _completion = RuntimeCompletionAuthority::cross_device_event(&event);
-    let _result = RuntimeLeaseCompletionResult::FallbackSynchronized;
+    let _read_start =
+        ReadStartAuthority::ConsumerStream { stream: cudf::interop::cuda_stream_handle(&stream).unwrap() };
+    let _completion =
+        CompletionAuthority::CrossDeviceEvent { event: cudf::interop::cuda_event_handle(&event).unwrap() };
+    let _result = LeaseCompletionResult::FallbackSynchronized;
 
     assert_eq!(
         cuda_explicit_completion_required_lease_backend().incomplete_drop_behavior(),
-        namespaced_cuda_explicit_completion_required_lease_backend().incomplete_drop_behavior()
+        IncompleteDropBehavior::ExplicitCompletionRequired
     );
 }
 
@@ -128,7 +123,7 @@ fn interop_high_level_adapter_surface_smoke() {
         _f: fn(
             DataFrame,
             ReleaseSynchronization,
-        ) -> std::result::Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError>,
+        ) -> std::result::Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError>,
     ) {
     }
     fn assert_partitioned_owned_producer(
@@ -136,7 +131,7 @@ fn interop_high_level_adapter_surface_smoke() {
             PartitionedDataFrameExport,
             ReleaseSynchronization,
         ) -> std::result::Result<
-            (rapids_interop::PartitionedOwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser),
+            (rapids_interop::PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferReleaser),
             InteropError,
         >,
     ) {

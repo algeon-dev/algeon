@@ -44,6 +44,8 @@ mod null_reduction_tests;
 mod series_concat_tests;
 #[path = "../frame/series/series_constructor_tests.rs"]
 mod series_constructor_tests;
+#[path = "../frame/series/context_delegation_tests.rs"]
+mod series_context_delegation_tests;
 #[path = "../frame/series/convenience_tests.rs"]
 mod series_convenience_tests;
 #[path = "../frame/series/host_materialization_tests.rs"]

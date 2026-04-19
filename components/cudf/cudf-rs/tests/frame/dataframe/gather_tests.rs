@@ -1,5 +1,7 @@
 //! Tests for DataFrame::gather().
 
+use cudf::testing::prelude::*;
+
 use crate::common::{column_from_slice, column_from_strs};
 
 #[test]
@@ -40,7 +42,7 @@ fn test_gather_out_of_bounds_nullify() {
 
     assert_eq!(result.num_rows(), 3);
     let view = result.series("x").unwrap();
-    let validity = view.view().unwrap().validity().unwrap().unwrap();
+    let validity = view.testing_view().unwrap().to_host_validity().unwrap().unwrap();
     assert!(validity[0]);
     assert!(!validity[1]); // OOB → null
     assert!(validity[2]);

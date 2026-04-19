@@ -28,10 +28,16 @@ fn test_filter_series_mask_basic() {
 fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
     let df_rt = sample_runtime();
     let mask_rt = sample_runtime();
-    let df = cudf::DataFrame::from_series([
-        df_rt.series("id", &[3i32, 1, 4, 1, 5]).unwrap(),
-        df_rt.series("score", &[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap(),
-    ])
+    let df = cudf::DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            df_rt.series("id", &[3i32, 1, 4, 1, 5]).unwrap(),
+            df_rt.series("score", &[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
     let mask = mask_rt.series("mask", &[true, false, true, false, true]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();
@@ -157,8 +163,8 @@ fn test_filter_series_with_le_scalar_mask() {
 fn test_advanced_low_level_filter_still_works_via_view() {
     let df = sample_df();
     let mask_col = column_from_slice(&[true, false, true, false, true]).unwrap();
-    let mask_view = mask_col.view().unwrap();
-    let table_view = df.view().unwrap();
+    let mask_view = mask_col.testing_view().unwrap();
+    let table_view = df.testing_view().unwrap();
 
     let filtered = low_level_filter::apply_boolean_mask(&table_view, &mask_view).unwrap();
     let filtered = DataFrame::from_table(filtered, vec!["id".to_string(), "score".to_string()]).unwrap();
@@ -171,8 +177,8 @@ fn test_advanced_low_level_filter_still_works_via_view() {
 fn test_advanced_low_level_filter_rejects_non_bool_mask() {
     let df = sample_df();
     let mask_col = column_from_slice(&[1i32, 0, 1, 0, 1]).unwrap();
-    let mask_view = mask_col.view().unwrap();
-    let table_view = df.view().unwrap();
+    let mask_view = mask_col.testing_view().unwrap();
+    let table_view = df.testing_view().unwrap();
 
     let err = match low_level_filter::apply_boolean_mask(&table_view, &mask_view) {
         Ok(_) => panic!("expected non-bool mask to be rejected"),
@@ -186,8 +192,8 @@ fn test_advanced_low_level_filter_rejects_non_bool_mask() {
 fn test_advanced_low_level_filter_rejects_wrong_length_mask() {
     let df = sample_df();
     let mask_col = column_from_slice(&[true, false]).unwrap();
-    let mask_view = mask_col.view().unwrap();
-    let table_view = df.view().unwrap();
+    let mask_view = mask_col.testing_view().unwrap();
+    let table_view = df.testing_view().unwrap();
 
     let err = match low_level_filter::apply_boolean_mask(&table_view, &mask_view) {
         Ok(_) => panic!("expected wrong-length mask to be rejected"),

@@ -1,8 +1,8 @@
 //! Tests for Table and TableView.
 use cudf::{
     Runtime, TypeId,
-    core::{Table, TableView},
-    testing::prelude::*,
+    core::Table,
+    testing::{TableView, prelude::*},
 };
 
 use crate::common::{column_from_slice, column_from_slice_nullable};
@@ -13,7 +13,7 @@ fn test_create_table_from_columns() {
     let c2 = column_from_slice(&[4.0f64, 5.0, 6.0]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
 
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
     assert_eq!(view.num_columns().unwrap(), 2);
     assert_eq!(view.num_rows().unwrap(), 3);
 }
@@ -23,7 +23,7 @@ fn test_table_column_access() {
     let c1 = column_from_slice(&[10i32, 20, 30]).unwrap();
     let c2 = column_from_slice(&[1.5f64, 2.5, 3.5]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
 
     let col0 = view.column(0).unwrap();
     assert_eq!(col0.data_type().unwrap().id(), TypeId::Int32);
@@ -40,7 +40,7 @@ fn test_table_deep_copy() {
     let table = Table::from_columns(vec![c1]).unwrap();
     let copy = table.deep_copy().unwrap();
 
-    let view = copy.view().unwrap();
+    let view = copy.testing_view().unwrap();
     assert_eq!(view.num_columns().unwrap(), 1);
     assert_eq!(view.num_rows().unwrap(), 2);
 
@@ -58,16 +58,16 @@ fn test_table_from_columns_into_columns_preserves_input_order() {
     let columns = table.into_columns().unwrap();
 
     assert_eq!(columns.len(), 3);
-    assert_eq!(columns[0].view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(columns[1].view().unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
-    assert_eq!(columns[2].view().unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300]);
+    assert_eq!(columns[0].testing_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(columns[1].testing_view().unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(columns[2].testing_view().unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300]);
 }
 
 #[test]
 fn test_empty_table() {
     let rt = Runtime::new().unwrap();
     let table = rt.empty_table().unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
     assert_eq!(view.num_columns().unwrap(), 0);
     assert_eq!(view.num_rows().unwrap(), 0);
     assert_eq!(table.testing_execution_domain_kind(), "explicit");
@@ -87,7 +87,7 @@ fn test_table_with_nullable_columns() {
     let c1 = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
 
     assert_eq!(view.num_columns().unwrap(), 2);
     assert_eq!(view.num_rows().unwrap(), 3);
@@ -112,7 +112,7 @@ fn test_table_from_columns_mismatched_rows_rejected() {
 fn test_table_view_column_rejects_out_of_bounds_index() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
 
     let err = view.column(1).expect_err("expected out-of-bounds column access to fail");
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
@@ -123,7 +123,7 @@ fn test_table_view_column_rejects_out_of_bounds_index() {
 fn test_table_view_column_rejects_usize_indices_outside_i32_range() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
 
     let err = view.column(usize::MAX).expect_err("expected oversized column index to fail");
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
@@ -134,8 +134,8 @@ fn test_table_view_column_rejects_usize_indices_outside_i32_range() {
 fn test_table_view_from_column_views() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[4.0f64, 5.0, 6.0]).unwrap();
-    let v1 = c1.view().unwrap();
-    let v2 = c2.view().unwrap();
+    let v1 = c1.testing_view().unwrap();
+    let v2 = c2.testing_view().unwrap();
 
     let table_view = TableView::from_column_views(&[&v1, &v2]).unwrap();
     assert_eq!(table_view.num_columns().unwrap(), 2);
@@ -154,7 +154,7 @@ fn test_table_view_from_column_views() {
 #[test]
 fn test_table_view_from_column_views_single_column() {
     let c1 = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let v1 = c1.view().unwrap();
+    let v1 = c1.testing_view().unwrap();
 
     let table_view = TableView::from_column_views(&[&v1]).unwrap();
     assert_eq!(table_view.num_columns().unwrap(), 1);
@@ -170,8 +170,8 @@ fn test_table_view_from_column_views_retains_backing_after_source_views_drop() {
     let c2 = column_from_slice(&[4i32, 5, 6]).unwrap();
 
     let table_view = {
-        let v1 = c1.view().unwrap();
-        let v2 = c2.view().unwrap();
+        let v1 = c1.testing_view().unwrap();
+        let v2 = c2.testing_view().unwrap();
         TableView::from_column_views(&[&v1, &v2]).unwrap()
     };
 
@@ -195,7 +195,7 @@ fn test_table_view_select_columns() {
     let c2 = column_from_slice(&[10i32, 20, 30]).unwrap();
     let c3 = column_from_slice(&[100i32, 200, 300]).unwrap();
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
 
     let projected = view.select_columns(&[2, 0]).unwrap();
     assert_eq!(projected.num_columns().unwrap(), 2);
@@ -208,7 +208,7 @@ fn test_table_view_select_columns() {
 fn test_table_view_select_columns_rejects_out_of_bounds_index() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
 
     let err = view.select_columns(&[1]).expect_err("expected out-of-bounds error");
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);

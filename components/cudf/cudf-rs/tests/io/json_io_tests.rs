@@ -25,15 +25,14 @@ fn test_json_lines_roundtrip_i32() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
-    let view = table.view().unwrap();
 
     let write_opts = JsonTableWriteOptions::builder().filepath(&path).column_names(&["ids", "values"]).build();
-    json::write_json(&view, &write_opts).unwrap();
+    json::write_json(&table, &write_opts).unwrap();
 
     // Read back through the shared low-level result envelope.
     let read_opts = JsonTableReadOptions::builder().filepath(&path).with_runtime(&rt).build();
     let result = json::read_json_table(&read_opts).unwrap();
-    let read_view = result.table.view().unwrap();
+    let read_view = result.table.testing_view().unwrap();
 
     assert_eq!(read_view.num_columns().unwrap(), 2);
     assert_eq!(read_view.num_rows().unwrap(), 3);
@@ -52,11 +51,17 @@ fn test_json_lines_roundtrip_strings() {
     let rt = sample_runtime();
 
     // Write a NDJSON file manually
-    std::fs::write(&path, "{\"name\":\"alice\",\"age\":30}\n{\"name\":\"bob\",\"age\":25}\n").unwrap();
+    std::fs::write(
+        &path,
+        "{\"name\":\"alice\",\"age\":30}
+{\"name\":\"bob\",\"age\":25}
+",
+    )
+    .unwrap();
 
     let read_opts = JsonTableReadOptions::builder().filepath(&path).with_runtime(&rt).build();
     let result = json::read_json_table(&read_opts).unwrap();
-    let read_view = result.table.view().unwrap();
+    let read_view = result.table.testing_view().unwrap();
 
     assert_eq!(read_view.num_rows().unwrap(), 2);
     let names = result.column_names.expect("json object keys should be exposed as schema metadata");
@@ -79,7 +84,7 @@ fn test_json_lines_empty_file() {
     let read_opts = JsonTableReadOptions::builder().filepath(&path).with_runtime(&rt).build();
     let result = json::read_json_table(&read_opts).unwrap();
 
-    assert_eq!(result.table.view().unwrap().num_rows().unwrap(), 0);
+    assert_eq!(result.table.testing_view().unwrap().num_rows().unwrap(), 0);
 }
 
 // ===========================================================================
@@ -93,10 +98,9 @@ fn test_json_lines_write_defaults_to_ndjson() {
 
     let c1 = column_from_slice(&[1i32]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
-    let view = table.view().unwrap();
 
     let write_opts = JsonTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
-    json::write_json(&view, &write_opts).unwrap();
+    json::write_json(&table, &write_opts).unwrap();
 
     // NDJSON: each line should be a JSON object
     let content = std::fs::read_to_string(&path).unwrap();
@@ -110,10 +114,9 @@ fn test_json_write_rejects_column_name_with_nul_byte() {
 
     let c1 = column_from_slice(&[1i32]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
-    let view = table.view().unwrap();
 
     let write_opts = JsonTableWriteOptions::builder().filepath(&path).column_names(&["bad\0name"]).build();
-    let err = json::write_json(&view, &write_opts).unwrap_err();
+    let err = json::write_json(&table, &write_opts).unwrap_err();
 
     assert!(err.to_string().contains("null byte"), "unexpected error: {err}");
 }

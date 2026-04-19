@@ -62,7 +62,11 @@ fn helper_constructors_seed_explicit_runtime_domain() {
     assert_eq!(table.testing_execution_domain_id(), expected_id);
 
     let series = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([series]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([series]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     assert_eq!(df.testing_execution_domain_kind(), "explicit");
     assert_eq!(df.testing_execution_domain_id(), expected_id);
     assert_eq!(df.series("id").unwrap().as_column().testing_execution_domain_id(), expected_id);
@@ -126,10 +130,16 @@ fn dataframe_and_table_construction_reject_mixed_domain_columns() {
 
 #[test]
 fn representative_high_level_ops_preserve_explicit_domain_identity() {
-    let df = DataFrame::from_series([
-        explicit_i32_series("id", &[3, 1, 2], 55),
-        explicit_i32_series("value", &[30, 10, 20], 55),
-    ])
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            explicit_i32_series("id", &[3, 1, 2], 55),
+            explicit_i32_series("value", &[30, 10, 20], 55),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
 
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
@@ -161,7 +171,11 @@ fn host_materialization_and_io_paths_sync_retained_stream() {
 
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("execution_domain.parquet");
-    let df = DataFrame::from_series([numeric.clone()]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([numeric.clone()]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     reset_sync_observation();
     df.write_parquet(&path).unwrap();
     assert_eq!(last_sync_stream_value(), df.testing_execution_domain_stream_value());
@@ -174,20 +188,20 @@ fn unary_binary_and_reduction_families_use_primary_input_exec_contract() {
     let input_mr = input.testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let abs = unary::unary_operation(&input.view().unwrap(), UnaryOperator::Abs).unwrap();
+    let abs = unary::unary_operation(&input.testing_view().unwrap(), UnaryOperator::Abs).unwrap();
     assert_eq!(last_exec_stream_value(), input_stream);
     assert_eq!(last_exec_mr_value(), input_mr);
     assert_column_exec_contract(&abs, 140, input_stream, input_mr);
     reset_sync_observation();
-    assert_eq!(abs.view().unwrap().to_vec::<i32>().unwrap(), vec![3, 0, 5]);
+    assert_eq!(abs.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![3, 0, 5]);
     assert_eq!(last_sync_stream_value(), input_stream);
 
     let rhs = explicit_i32_column(&[10, 20, 30], 141);
     reset_sync_observation();
     reset_exec_observation();
     let added = binary::binary_operation_vv(
-        &input.view().unwrap(),
-        &rhs.view().unwrap(),
+        &input.testing_view().unwrap(),
+        &rhs.testing_view().unwrap(),
         BinaryOperator::Add,
         &DataType::new(TypeId::Int32),
     )
@@ -197,11 +211,12 @@ fn unary_binary_and_reduction_families_use_primary_input_exec_contract() {
     assert_eq!(last_sync_stream_value(), rhs.testing_execution_domain_stream_value());
     assert_column_exec_contract(&added, 140, input_stream, input_mr);
     reset_sync_observation();
-    assert_eq!(added.view().unwrap().to_vec::<i32>().unwrap(), vec![7, 20, 35]);
+    assert_eq!(added.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![7, 20, 35]);
     assert_eq!(last_sync_stream_value(), input_stream);
 
     reset_exec_observation();
-    let reduced = reduction::reduce(&input.view().unwrap(), &ReduceAgg::Sum, &DataType::new(TypeId::Int64)).unwrap();
+    let reduced =
+        reduction::reduce(&input.testing_view().unwrap(), &ReduceAgg::Sum, &DataType::new(TypeId::Int64)).unwrap();
     assert_eq!(last_exec_stream_value(), input_stream);
     assert_eq!(last_exec_mr_value(), input_mr);
     assert_eq!(reduced.testing_execution_domain_id(), 140);
@@ -218,32 +233,33 @@ fn sort_filter_and_gather_families_use_data_provenance_for_mixed_domains() {
     let values_mr = values.testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let sorted = sorting::sort_by_key(&values.view().unwrap(), &keys.view().unwrap(), None, None).unwrap();
+    let sorted =
+        sorting::sort_by_key(&values.testing_view().unwrap(), &keys.testing_view().unwrap(), None, None).unwrap();
     assert_eq!(last_exec_stream_value(), values_stream);
     assert_eq!(last_exec_mr_value(), values_mr);
     assert_eq!(sorted.testing_execution_domain_id(), 150);
     reset_sync_observation();
-    assert_eq!(sorted.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(sorted.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
     assert_eq!(last_sync_stream_value(), values_stream);
 
     let mask = column_from_slice(&[true, false, true]).unwrap().testing_rebind_execution_domain_explicit(152).unwrap();
     reset_exec_observation();
-    let filtered = filter::apply_boolean_mask(&values.view().unwrap(), &mask.view().unwrap()).unwrap();
+    let filtered = filter::apply_boolean_mask(&values.testing_view().unwrap(), &mask.testing_view().unwrap()).unwrap();
     assert_eq!(last_exec_stream_value(), values_stream);
     assert_eq!(last_exec_mr_value(), values_mr);
     assert_eq!(filtered.testing_execution_domain_id(), 150);
     reset_sync_observation();
-    assert_eq!(filtered.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![30, 20]);
+    assert_eq!(filtered.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![30, 20]);
     assert_eq!(last_sync_stream_value(), values_stream);
 
     let gather_map = explicit_i32_column(&[2, 0], 153);
     reset_exec_observation();
-    let gathered = copying::gather(&values.view().unwrap(), &gather_map.view().unwrap()).unwrap();
+    let gathered = copying::gather(&values.testing_view().unwrap(), &gather_map.testing_view().unwrap()).unwrap();
     assert_eq!(last_exec_stream_value(), values_stream);
     assert_eq!(last_exec_mr_value(), values_mr);
     assert_eq!(gathered.testing_execution_domain_id(), 150);
     reset_sync_observation();
-    assert_eq!(gathered.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
+    assert_eq!(gathered.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![20, 30]);
     assert_eq!(last_sync_stream_value(), values_stream);
 }
 
@@ -255,12 +271,13 @@ fn concatenate_join_and_groupby_families_use_first_or_keys_provenance() {
     let first_mr = first.testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let concatenated = concatenate::concatenate_tables(&[&first.view().unwrap(), &second.view().unwrap()]).unwrap();
+    let concatenated =
+        concatenate::concatenate_tables(&[&first.testing_view().unwrap(), &second.testing_view().unwrap()]).unwrap();
     assert_eq!(last_exec_stream_value(), first_stream);
     assert_eq!(last_exec_mr_value(), first_mr);
     assert_eq!(concatenated.testing_execution_domain_id(), 170);
     reset_sync_observation();
-    assert_eq!(concatenated.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(concatenated.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 4]);
     assert_eq!(last_sync_stream_value(), first_stream);
 
     let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3], 180)]).unwrap();
@@ -273,10 +290,10 @@ fn concatenate_join_and_groupby_families_use_first_or_keys_provenance() {
     reset_sync_observation();
     reset_exec_observation();
     let joined = join::inner_join(
-        &left_keys.view().unwrap(),
-        &right_keys.view().unwrap(),
-        &left_payload.view().unwrap(),
-        &right_payload.view().unwrap(),
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        &left_payload.testing_view().unwrap(),
+        &right_payload.testing_view().unwrap(),
         join::NullEquality::Equal,
     )
     .unwrap();
@@ -286,29 +303,30 @@ fn concatenate_join_and_groupby_families_use_first_or_keys_provenance() {
     assert_eq!(joined.left.testing_execution_domain_id(), 180);
     assert_eq!(joined.right.testing_execution_domain_id(), 180);
     reset_sync_observation();
-    assert_eq!(joined.left.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![2, 3]);
-    assert_eq!(joined.right.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![2, 3]);
+    assert_eq!(joined.left.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![2, 3]);
+    assert_eq!(joined.right.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![2, 3]);
     assert_eq!(last_sync_stream_value(), left_stream);
 
     let keys = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 2], 190)]).unwrap();
     let values = explicit_i32_column(&[10, 20, 30, 40], 191);
     let aggregations = [GroupByAgg::Sum];
-    let values_view = values.view().unwrap();
+    let values_view = values.testing_view().unwrap();
     let requests = [AggregationRequest { values: &values_view, aggregations: &aggregations }];
     let keys_stream = keys.testing_execution_domain_stream_value();
     let keys_mr = keys.testing_execution_domain_mr_value();
 
     reset_sync_observation();
     reset_exec_observation();
-    let grouped = groupby::groupby_aggregate(&keys.view().unwrap(), &requests, groupby::NullPolicy::Exclude).unwrap();
+    let grouped =
+        groupby::groupby_aggregate(&keys.testing_view().unwrap(), &requests, groupby::NullPolicy::Exclude).unwrap();
     assert_eq!(last_exec_stream_value(), keys_stream);
     assert_eq!(last_exec_mr_value(), keys_mr);
     assert_eq!(last_sync_stream_value(), values.testing_execution_domain_stream_value());
     assert_eq!(grouped.keys.testing_execution_domain_id(), 190);
     assert_eq!(grouped.results[0][0].testing_execution_domain_id(), 190);
     reset_sync_observation();
-    assert_eq!(grouped.keys.view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2]);
-    assert_eq!(grouped.results[0][0].view().unwrap().to_vec::<i64>().unwrap(), vec![30, 70]);
+    assert_eq!(grouped.keys.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2]);
+    assert_eq!(grouped.results[0][0].testing_view().unwrap().to_vec::<i64>().unwrap(), vec![30, 70]);
     assert_eq!(last_sync_stream_value(), keys_stream);
 }
 
@@ -321,12 +339,12 @@ fn dictionary_and_search_families_keep_primary_domain_contract() {
     let haystack_mr = haystack.testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let contains = search::contains(&haystack.view().unwrap(), &needles.view().unwrap()).unwrap();
+    let contains = search::contains(&haystack.testing_view().unwrap(), &needles.testing_view().unwrap()).unwrap();
     assert_eq!(last_exec_stream_value(), haystack_stream);
     assert_eq!(last_exec_mr_value(), haystack_mr);
     assert_eq!(contains.testing_execution_domain_id(), haystack.testing_execution_domain_id());
     reset_sync_observation();
-    assert_eq!(contains.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(contains.testing_view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
     assert_eq!(last_sync_stream_value(), haystack_stream);
 
     let dict_source = explicit_i32_column(&[429, 111, 213, 111], 210);
@@ -334,13 +352,13 @@ fn dictionary_and_search_families_keep_primary_domain_contract() {
     let dict_mr = dict_source.testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let dict = dictionary::encode(&dict_source.view().unwrap(), TypeId::Int32).unwrap();
+    let dict = dictionary::encode(&dict_source.testing_view().unwrap(), TypeId::Int32).unwrap();
     assert_eq!(last_exec_stream_value(), dict_stream);
     assert_eq!(last_exec_mr_value(), dict_mr);
     assert_eq!(dict.testing_execution_domain_id(), 210);
 
     reset_sync_observation();
-    let mut keys = dictionary::keys(&dict.view().unwrap()).unwrap().to_vec::<i32>().unwrap();
+    let mut keys = dictionary::keys(&dict.testing_view().unwrap()).unwrap().to_vec::<i32>().unwrap();
     keys.sort_unstable();
     assert_eq!(keys, vec![111, 213, 429]);
     assert_eq!(last_sync_stream_value(), dict_stream);

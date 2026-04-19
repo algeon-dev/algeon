@@ -1,6 +1,6 @@
 //! Tests for Table::into_columns.
 
-use cudf::{Runtime, TypeId, core::Table};
+use cudf::{Runtime, TypeId, core::Table, testing::prelude::*};
 
 use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs};
 
@@ -12,7 +12,7 @@ fn test_into_columns_single_column() {
     let columns = table.into_columns().unwrap();
     assert_eq!(columns.len(), 1);
 
-    let view = columns[0].view().unwrap();
+    let view = columns[0].testing_view().unwrap();
     assert_eq!(view.data_type().unwrap().id(), TypeId::Int32);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
@@ -27,15 +27,15 @@ fn test_into_columns_multiple_columns() {
     let columns = table.into_columns().unwrap();
     assert_eq!(columns.len(), 3);
 
-    let v0 = columns[0].view().unwrap();
+    let v0 = columns[0].testing_view().unwrap();
     assert_eq!(v0.data_type().unwrap().id(), TypeId::Int32);
     assert_eq!(v0.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 
-    let v1 = columns[1].view().unwrap();
+    let v1 = columns[1].testing_view().unwrap();
     assert_eq!(v1.data_type().unwrap().id(), TypeId::Float64);
     assert_eq!(v1.to_vec::<f64>().unwrap(), vec![4.0, 5.0, 6.0]);
 
-    let v2 = columns[2].view().unwrap();
+    let v2 = columns[2].testing_view().unwrap();
     assert_eq!(v2.data_type().unwrap().id(), TypeId::Int64);
     assert_eq!(v2.to_vec::<i64>().unwrap(), vec![7, 8, 9]);
 }
@@ -57,9 +57,9 @@ fn test_into_columns_preserves_column_order() {
     let columns = table.into_columns().unwrap();
     assert_eq!(columns.len(), 3);
 
-    assert_eq!(columns[0].view().unwrap().data_type().unwrap().id(), TypeId::Int32);
-    assert_eq!(columns[1].view().unwrap().data_type().unwrap().id(), TypeId::Int64);
-    assert_eq!(columns[2].view().unwrap().data_type().unwrap().id(), TypeId::Float32);
+    assert_eq!(columns[0].testing_view().unwrap().data_type().unwrap().id(), TypeId::Int32);
+    assert_eq!(columns[1].testing_view().unwrap().data_type().unwrap().id(), TypeId::Int64);
+    assert_eq!(columns[2].testing_view().unwrap().data_type().unwrap().id(), TypeId::Float32);
 }
 
 #[test]
@@ -70,13 +70,13 @@ fn test_into_columns_nullable_column() {
     let columns = table.into_columns().unwrap();
     assert_eq!(columns.len(), 1);
 
-    let view = columns[0].view().unwrap();
+    let view = columns[0].testing_view().unwrap();
     assert_eq!(view.to_vec::<i32>().unwrap()[0], 1);
     assert_eq!(view.to_vec::<i32>().unwrap()[2], 3);
     assert!(view.nullable().unwrap());
     assert_eq!(view.null_count().unwrap(), 1);
 
-    let validity = view.validity().unwrap().unwrap();
+    let validity = view.to_host_validity().unwrap().unwrap();
     assert_eq!(validity, vec![true, false, true]);
 }
 
@@ -92,7 +92,7 @@ fn test_into_columns_roundtrip() {
 
     // Re-assemble into a new table.
     let table2 = Table::from_columns(columns).unwrap();
-    let view = table2.view().unwrap();
+    let view = table2.testing_view().unwrap();
     assert_eq!(view.num_columns().unwrap(), 2);
     assert_eq!(view.num_rows().unwrap(), 2);
 
@@ -111,7 +111,7 @@ fn test_into_columns_with_string_column() {
     let columns = table.into_columns().unwrap();
     assert_eq!(columns.len(), 1);
 
-    let view = columns[0].view().unwrap();
+    let view = columns[0].testing_view().unwrap();
     assert_eq!(view.data_type().unwrap().id(), TypeId::String);
     assert_eq!(view.to_strings_lossy().unwrap(), vec!["hello", "world"]);
 }
@@ -126,11 +126,11 @@ fn test_into_columns_with_empty_rows() {
     let columns = table.into_columns().unwrap();
     assert_eq!(columns.len(), 2);
 
-    let v0 = columns[0].view().unwrap();
+    let v0 = columns[0].testing_view().unwrap();
     assert_eq!(v0.len().unwrap(), 0);
     assert_eq!(v0.data_type().unwrap().id(), TypeId::Int32);
 
-    let v1 = columns[1].view().unwrap();
+    let v1 = columns[1].testing_view().unwrap();
     assert_eq!(v1.len().unwrap(), 0);
     assert_eq!(v1.data_type().unwrap().id(), TypeId::Float64);
 }

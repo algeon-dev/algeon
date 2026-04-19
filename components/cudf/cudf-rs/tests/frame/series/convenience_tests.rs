@@ -5,7 +5,10 @@
 //! `log`.
 //!
 //! All tests require a GPU.
-use cudf::{CodebookOptions, CodebookOrder, ErrorKind, Series, SortOptions, TypeId, testing::prelude::*};
+use cudf::{
+    DictionaryEncodingOptions, DictionaryKeyOrder, ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId,
+    testing::prelude::*,
+};
 
 use crate::common::{
     column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
@@ -349,6 +352,23 @@ fn test_nunique_all_unique() {
     assert_eq!(s.nunique().unwrap(), 4);
 }
 
+#[test]
+fn test_nunique_counts_nan_as_distinct_non_null_value() {
+    let s = crate::common::series::<f64>("x", &[1.0, f64::NAN, 1.0, f64::NAN, 2.0]).unwrap();
+    assert_eq!(s.nunique().unwrap(), 3);
+}
+
+#[test]
+fn test_nunique_excludes_null_but_keeps_nan_distinctness() {
+    let s = crate::common::nullable_series::<f64>(
+        "x",
+        &[1.0, f64::NAN, 0.0, f64::NAN, 1.0],
+        &[true, true, false, true, true],
+    )
+    .unwrap();
+    assert_eq!(s.nunique().unwrap(), 2);
+}
+
 // ===========================================================================
 // factorize
 // ===========================================================================
@@ -589,7 +609,7 @@ fn test_codebook_decode_series_as_works_from_plain_series() {
 fn test_codebook_first_seen_ordering() {
     let s = crate::common::series("x", &["b", "a", "c", "a", "b"]).unwrap();
 
-    let codebook = s.codebook_with(CodebookOptions::new().order(CodebookOrder::FirstSeen)).unwrap();
+    let codebook = s.codebook_with(DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen)).unwrap();
 
     assert_eq!(codebook.keys().to_strings_strict().unwrap(), vec!["b", "a", "c"]);
 }
@@ -598,10 +618,22 @@ fn test_codebook_first_seen_ordering() {
 fn test_factorize_with_first_seen_ordering() {
     let s = crate::common::series("x", &["b", "a", "c", "a", "b"]).unwrap();
 
-    let factorized = s.factorize_with(CodebookOptions::new().order(CodebookOrder::FirstSeen)).unwrap();
+    let factorized =
+        s.factorize_with(DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen)).unwrap();
 
     assert_eq!(factorized.codebook().keys().to_strings_strict().unwrap(), vec!["b", "a", "c"]);
     assert_eq!(factorized.row_codes().to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 1, 0]);
+}
+
+#[test]
+fn test_factorize_with_first_seen_ordering_preserves_row_nulls_and_excludes_null_from_codebook() {
+    let s = crate::common::nullable_series("x", &["b", "", "a", "b", ""], &[true, false, true, true, false]).unwrap();
+
+    let factorized =
+        s.factorize_with(DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen)).unwrap();
+
+    assert_eq!(factorized.codebook().keys().to_strings_strict().unwrap(), vec!["b", "a"]);
+    assert_eq!(factorized.row_codes().to_optional_vec::<i32>().unwrap(), vec![Some(0), None, Some(1), Some(0), None]);
 }
 
 #[test]
@@ -621,7 +653,20 @@ fn test_codebook_from_keys_rejects_duplicate_keys() {
 fn test_factorize_with_first_seen_ordering_avoids_temp_name_collisions() {
     let s = crate::common::series("__cudf_first_seen_row_idx__", &["b", "a", "c", "a", "b"]).unwrap();
 
-    let factorized = s.factorize_with(CodebookOptions::new().order(CodebookOrder::FirstSeen)).unwrap();
+    let factorized =
+        s.factorize_with(DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen)).unwrap();
+
+    assert_eq!(factorized.codebook().keys().to_strings_strict().unwrap(), vec!["b", "a", "c"]);
+    assert_eq!(factorized.row_codes().to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 1, 0]);
+}
+
+#[test]
+fn test_factorize_with_in_first_seen_ordering_uses_the_same_contract() {
+    let s = crate::common::series("x", &["b", "a", "c", "a", "b"]).unwrap();
+    let ctx = ExecutionOverrides::new();
+
+    let factorized =
+        s.factorize_with_in(DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen), &ctx).unwrap();
 
     assert_eq!(factorized.codebook().keys().to_strings_strict().unwrap(), vec!["b", "a", "c"]);
     assert_eq!(factorized.row_codes().to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 1, 0]);
@@ -688,14 +733,14 @@ fn test_sort_values_with_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[30, 0, 10], &[true, false, true]).unwrap();
     // Default: ascending, nulls last
     let sorted = s.sort_values(SortOptions::new()).unwrap();
-    let view = sorted.view().unwrap();
+    let view = sorted.testing_view().unwrap();
 
     assert_eq!(sorted.len(), 3);
     // The valid values should sort ascending, with the null row moved to the end.
     let vals = view.to_vec::<i32>().unwrap();
     assert_eq!(vals[0], 10);
     assert_eq!(vals[1], 30);
-    assert_eq!(view.validity().unwrap().unwrap(), vec![true, true, false]);
+    assert_eq!(view.to_host_validity().unwrap().unwrap(), vec![true, true, false]);
     assert_eq!(sorted.null_count(), 1);
 }
 
@@ -703,13 +748,13 @@ fn test_sort_values_with_nulls() {
 fn test_sort_values_nulls_first() {
     let s = crate::common::nullable_series::<i32>("x", &[30, 0, 10], &[true, false, true]).unwrap();
     let sorted = s.sort_values(SortOptions::new().with_nulls_first(vec![true])).unwrap();
-    let view = sorted.view().unwrap();
+    let view = sorted.testing_view().unwrap();
 
     assert_eq!(sorted.len(), 3);
     assert_eq!(sorted.null_count(), 1);
     // Null should be first, then 10, 30
     let vals = view.to_vec::<i32>().unwrap();
-    assert_eq!(view.validity().unwrap().unwrap(), vec![false, true, true]);
+    assert_eq!(view.to_host_validity().unwrap().unwrap(), vec![false, true, true]);
     assert_eq!(vals[1], 10);
     assert_eq!(vals[2], 30);
 }

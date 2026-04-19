@@ -27,7 +27,7 @@ fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
 fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
-    let view = column.view().unwrap();
+    let view = column.testing_view().unwrap();
     let expected_stream = column.testing_execution_domain_stream_value();
     let expected_mr = column.testing_execution_domain_mr_value();
 
@@ -50,7 +50,7 @@ fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
 fn nullable_column_distinguishes_present_mask_with_zero_null_count() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice_nullable(&[10i32, 20, 30], &[false, true, true]).unwrap();
-    let view = column.slice_view(1, 2).unwrap();
+    let view = column.testing_slice_view(1, 2).unwrap();
     let borrowed = view.try_borrow_column_view().unwrap();
 
     match borrowed.null_mask().kind() {
@@ -67,8 +67,8 @@ fn nullable_column_distinguishes_present_mask_with_zero_null_count() {
 fn sliced_column_view_preserves_offset_semantics() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[11i32, 22, 33, 44]).unwrap();
-    let base = column.view().unwrap();
-    let sliced = column.slice_view(1, 2).unwrap();
+    let base = column.testing_view().unwrap();
+    let sliced = column.testing_slice_view(1, 2).unwrap();
 
     let borrowed = sliced.try_borrow_column_view().unwrap();
 
@@ -84,7 +84,7 @@ fn table_view_borrow_preserves_shape_and_explicit_execution_binding() {
     let a = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = runtime.column_from_slice(&[4i32, 5, 6]).unwrap();
     let table = Table::from_columns(vec![a, b]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
     let expected_stream = table.testing_execution_domain_stream_value();
     let expected_mr = table.testing_execution_domain_mr_value();
 
@@ -104,7 +104,7 @@ fn table_view_borrow_preserves_shape_and_explicit_execution_binding() {
 fn owned_column_borrow_matches_underlying_column_view_projection() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[5i32, 6, 7]).unwrap();
-    let view = column.view().unwrap();
+    let view = column.testing_view().unwrap();
 
     let borrowed_from_column = column.try_borrow_column_view().unwrap();
     let borrowed_from_view = view.try_borrow_column_view().unwrap();
@@ -118,7 +118,7 @@ fn owned_table_borrow_matches_underlying_table_view_projection() {
     let a = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = runtime.column_from_slice(&[4i32, 5, 6]).unwrap();
     let table = Table::from_columns(vec![a, b]).unwrap();
-    let view = table.view().unwrap();
+    let view = table.testing_view().unwrap();
 
     let borrowed_from_table = table.try_borrow_table_view().unwrap();
     let borrowed_from_view = view.try_borrow_table_view().unwrap();
@@ -131,7 +131,12 @@ fn series_and_dataframe_convenience_producers_match_underlying_low_level_views()
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
     let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_series([ids.clone(), vals.clone()]).unwrap();
+    let frame =
+        DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids.clone(), vals.clone()]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap();
 
     let series_borrowed = ids.try_borrow_column_view().unwrap();
     let frame_borrowed = frame.try_borrow_table_view().unwrap();
@@ -146,7 +151,7 @@ fn series_and_dataframe_convenience_producers_match_underlying_low_level_views()
 fn helper_built_column_view_borrow_uses_explicit_test_runtime_binding() {
     crate::common::with_test_runtime(|runtime| {
         let column = column_from_slice(&[1i32, 2, 3]).unwrap();
-        let view = column.view().unwrap();
+        let view = column.testing_view().unwrap();
         let borrowed = view.try_borrow_column_view().unwrap();
 
         assert_eq!(column.testing_execution_domain_kind(), "explicit");
@@ -164,7 +169,11 @@ fn helper_built_dataframe_borrow_uses_explicit_test_runtime_binding() {
     crate::common::with_test_runtime(|runtime| {
         let ids = crate::common::series("id", &[1i32, 2, 3]).unwrap();
         let vals = crate::common::series("value", &[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_series([ids, vals]).unwrap();
+        let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap();
         let borrowed = frame.try_borrow_table_view().unwrap();
 
         assert_eq!(frame.testing_execution_domain_kind(), "explicit");
@@ -181,7 +190,7 @@ fn helper_built_dataframe_borrow_uses_explicit_test_runtime_binding() {
 fn string_columns_borrow_as_binary_like_layouts() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_strs_nullable(&["zero", "one", "two"], &[true, false, true]).unwrap();
-    let sliced = column.slice_view(1, 2).unwrap();
+    let sliced = column.testing_slice_view(1, 2).unwrap();
     let borrowed = sliced.try_borrow_column_view().unwrap();
 
     assert_eq!(borrowed.type_id(), InteropTypeId::String);
@@ -205,8 +214,8 @@ fn string_columns_borrow_as_binary_like_layouts() {
 fn dictionary_columns_borrow_with_recursive_string_keys() {
     let runtime = Runtime::builder().build().unwrap();
     let base = runtime.column_from_strs(&["beta", "alpha", "beta", "gamma"]).unwrap();
-    let dict = dictionary::encode(&base.view().unwrap(), TypeId::Int32).unwrap();
-    let dict_view = dict.view().unwrap();
+    let dict = dictionary::encode(&base.testing_view().unwrap(), TypeId::Int32).unwrap();
+    let dict_view = dict.testing_view().unwrap();
     let borrowed = dict_view.try_borrow_column_view().unwrap();
 
     assert_eq!(borrowed.type_id(), InteropTypeId::Dictionary32);
@@ -230,9 +239,12 @@ fn dictionary_columns_borrow_with_recursive_string_keys() {
 fn list_columns_borrow_as_recursive_list_layouts() {
     let frame = read_json_dataframe(
         "borrowed_lists.jsonl",
-        "{\"nested\":[[1,2],[3]]}\n\
-         {\"nested\":[[],[4,5]]}\n\
-         {\"nested\":[[6]]}\n",
+        "{\"nested\":[[1,2],[3]]}
+\
+         {\"nested\":[[],[4,5]]}
+\
+         {\"nested\":[[6]]}
+",
     );
     let series = frame.series("nested").unwrap();
 
@@ -266,9 +278,12 @@ fn list_columns_borrow_as_recursive_list_layouts() {
 fn struct_columns_borrow_as_recursive_struct_layouts() {
     let frame = read_json_dataframe(
         "borrowed_structs.jsonl",
-        "{\"point\":{\"coords\":[1,2],\"label\":\"one\"}}\n\
-         {\"point\":{\"coords\":[],\"label\":\"two\"}}\n\
-         {\"point\":{\"coords\":[3],\"label\":\"three\"}}\n",
+        "{\"point\":{\"coords\":[1,2],\"label\":\"one\"}}
+\
+         {\"point\":{\"coords\":[],\"label\":\"two\"}}
+\
+         {\"point\":{\"coords\":[3],\"label\":\"three\"}}
+",
     );
     let series = frame.series("point").unwrap();
 
@@ -278,7 +293,7 @@ fn struct_columns_borrow_as_recursive_struct_layouts() {
     assert_eq!(borrowed.data_ptr(), std::ptr::null());
 
     let children = match borrowed.column().unwrap().layout() {
-        ColumnLayout::Struct { children } => children.clone(),
+        ColumnLayout::Struct { children } => children.to_vec(),
         layout => panic!("expected struct layout, got {layout:?}"),
     };
     assert_eq!(children.len(), 2);
@@ -302,9 +317,12 @@ fn struct_columns_borrow_as_recursive_struct_layouts() {
 fn dataframe_borrow_supports_list_and_struct_columns() {
     let frame = read_json_dataframe(
         "borrowed_nested_frame.jsonl",
-        "{\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}\n\
-         {\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}\n\
-         {\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}\n",
+        "{\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}
+\
+         {\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}
+\
+         {\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}
+",
     );
 
     let borrowed = frame.try_borrow_table_view().unwrap();

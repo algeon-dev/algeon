@@ -1,7 +1,7 @@
 //! Integration tests for `Series` arithmetic operator overloads.
 //!
 //! Validates the `Result<Series>`-returning operator contract for:
-//! - `Series op Series` (all value/ref combos)
+//! - `Series op Series` (all value/ref combos for arithmetic operators)
 //! - `Series op scalar` (all arithmetic numeric `CudfType`s)
 //! - `scalar op Series` (all arithmetic numeric `CudfType`s)
 //!
@@ -542,74 +542,6 @@ fn test_series_not_inherits_name() {
 
     let result = (!&s).unwrap();
     assert_eq!(result.name(), Some("flags"));
-}
-
-// ===========================================================================
-// BitAnd / BitOr operators — boolean mask composition for Bool8
-// ===========================================================================
-
-#[test]
-fn test_series_bitand_operator_bool() {
-    let a = crate::common::series::<bool>("lhs", &[true, true, false, false]).unwrap();
-    let b = crate::common::series::<bool>("rhs", &[true, false, true, false]).unwrap();
-
-    let result: cudf::Result<Series> = &a & &b;
-    let out = result.unwrap();
-
-    assert_eq!(out.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(out.name(), None);
-    assert_eq!(out.to_vec_strict::<bool>().unwrap(), vec![true, false, false, false]);
-}
-
-#[test]
-fn test_series_bitor_operator_bool() {
-    let a = crate::common::series::<bool>("lhs", &[true, true, false, false]).unwrap();
-    let b = crate::common::series::<bool>("rhs", &[true, false, true, false]).unwrap();
-
-    let result: cudf::Result<Series> = &a | &b;
-    let out = result.unwrap();
-
-    assert_eq!(out.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(out.name(), None);
-    assert_eq!(out.to_vec_strict::<bool>().unwrap(), vec![true, true, true, false]);
-}
-
-#[test]
-fn test_series_bitand_owned_owned() {
-    let a = crate::common::series::<bool>("lhs", &[true, false]).unwrap();
-    let b = crate::common::series::<bool>("rhs", &[true, true]).unwrap();
-
-    let result: cudf::Result<Series> = a & b;
-    assert_eq!(result.unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false]);
-}
-
-#[test]
-fn test_series_bitor_owned_ref() {
-    let a = crate::common::series::<bool>("lhs", &[true, false]).unwrap();
-    let b = crate::common::series::<bool>("rhs", &[false, true]).unwrap();
-
-    let result: cudf::Result<Series> = a | &b;
-    assert_eq!(result.unwrap().to_vec_strict::<bool>().unwrap(), vec![true, true]);
-}
-
-#[test]
-fn test_series_bitand_rejects_non_bool_operands() {
-    let a = crate::common::series::<i32>("lhs", &[1, 0, 1]).unwrap();
-    let b = crate::common::series::<i32>("rhs", &[1, 1, 0]).unwrap();
-
-    let err = (&a & &b).unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidArgument);
-    assert_eq!(err.operation(), "series::logical_and");
-}
-
-#[test]
-fn test_series_bitor_rejects_non_bool_operands() {
-    let a = crate::common::series::<i32>("lhs", &[1, 0, 1]).unwrap();
-    let b = crate::common::series::<i32>("rhs", &[1, 1, 0]).unwrap();
-
-    let err = (&a | &b).unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidArgument);
-    assert_eq!(err.operation(), "series::logical_or");
 }
 
 #[test]

@@ -1,6 +1,7 @@
 use cudf::{
     DataFrame, SortOptions,
     ops::sorting::{self, NullOrder, Order},
+    testing::prelude::*,
 };
 
 use crate::{allocation::allocation_count_delta, common::column_from_slice};
@@ -31,7 +32,7 @@ fn subset_key_sort_values_allocates_no_more_than_low_level_borrowed_sort_by_key(
     });
 
     let low_level_allocations = allocation_count_delta(|| {
-        let values = df.view().unwrap();
+        let values = df.testing_view().unwrap();
         let keys = values.select_columns(&[0, 1]).unwrap();
 
         let result_table = sorting::sort_by_key(

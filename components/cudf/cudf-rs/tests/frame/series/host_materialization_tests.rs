@@ -5,7 +5,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{ErrorKind, TypeId};
+use cudf::{ErrorKind, TypeId, testing::prelude::*};
 
 // ===========================================================================
 // to_vec_strict<T> — numeric host materialization (rejects nullable)
@@ -208,6 +208,16 @@ fn test_to_strings_lossy_non_nullable() {
     let s = crate::common::series("x", &["a", "b"]).unwrap();
     let vals = s.to_strings_lossy().unwrap();
     assert_eq!(vals, vec!["a".to_string(), "b".to_string()]);
+}
+
+#[test]
+fn test_series_to_strings_lossy_matches_column_view_lossy_materialization() {
+    let s = crate::common::nullable_series("x", &["", "b", ""], &[true, false, true]).unwrap();
+
+    let series_vals = s.to_strings_lossy().unwrap();
+    let view_vals = s.testing_view().unwrap().to_strings_lossy().unwrap();
+
+    assert_eq!(series_vals, view_vals);
 }
 
 // ===========================================================================

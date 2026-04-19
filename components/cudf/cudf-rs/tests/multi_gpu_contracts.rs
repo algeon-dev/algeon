@@ -8,7 +8,7 @@ use cudf::testing::prelude::*;
 mod common;
 
 use cudf::{
-    DataFrame, DeviceId, ErrorKind, ExecutionContext, MeltOptions, MergeOptions, ParquetWriteOptions, Runtime,
+    DataFrame, DeviceId, ErrorKind, ExecutionOverrides, MeltOptions, MergeOptions, ParquetWriteOptions, Runtime,
     SortOptions, TypeId,
     core::memory::DeviceMemoryResource,
     ops::{
@@ -85,14 +85,44 @@ fn assert_cross_device_relocation_error_any_operation(err: cudf::Error, operatio
     );
 }
 
+fn assert_constructor_mixed_provenance_error(
+    err: cudf::Error,
+    operation: &'static str,
+    expected_column_name: &'static str,
+) {
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), operation);
+    assert!(
+        err.message().contains("share one retained provenance"),
+        "expected constructor provenance guidance, got {:?}",
+        err
+    );
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")),
+        "expected explicit relocation remedy in error context, got {:?}",
+        err.context()
+    );
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "column_name" && value == expected_column_name),
+        "expected failing column_name context, got {:?}",
+        err.context()
+    );
+}
+
 fn cross_device_write_dataframe() -> (Runtime, Runtime, DataFrame) {
     let (device0, device1) = first_two_test_devices();
     let data_rt = Runtime::builder().with_device(device0).build().unwrap();
     let target_rt = Runtime::builder().with_device(device1).build().unwrap();
-    let df = DataFrame::from_series([
-        data_rt.series("id", &[4i32, 5, 6]).unwrap(),
-        data_rt.series("value", &[40i32, 50, 60]).unwrap(),
-    ])
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            data_rt.series("id", &[4i32, 5, 6]).unwrap(),
+            data_rt.series("value", &[40i32, 50, 60]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
     (data_rt, target_rt, df)
 }
@@ -173,7 +203,11 @@ fn runtime_operations_on_different_devices_produce_correct_results() {
 
     let rt0 = Runtime::builder().with_device(device0).build().unwrap();
     let s0 = rt0.series("id", &[3, 1, 4]).unwrap();
-    let df0 = DataFrame::from_series([s0]).unwrap();
+    let df0 = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s0]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     common::reset_exec_observation();
     let sorted0 = df0.sort_values(["id"], SortOptions::new()).unwrap();
     assert_eq!(
@@ -187,7 +221,11 @@ fn runtime_operations_on_different_devices_produce_correct_results() {
 
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let s1 = rt1.series("id", &[8, 2, 5]).unwrap();
-    let df1 = DataFrame::from_series([s1]).unwrap();
+    let df1 = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s1]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
     common::reset_exec_observation();
     let sorted1 = df1.sort_values(["id"], SortOptions::new()).unwrap();
     assert_eq!(
@@ -207,7 +245,13 @@ fn with_column_requires_explicit_relocation_for_cross_device_series() {
     }
 
     let (left_rt, right_rt) = first_two_test_runtimes();
-    let df = DataFrame::from_series([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).unwrap();
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
+    .unwrap();
     let foreign = right_rt.series("value", &[10i32, 20, 30]).unwrap();
 
     assert_cross_device_result(
@@ -224,7 +268,13 @@ fn assign_requires_explicit_relocation_for_cross_device_series() {
     }
 
     let (left_rt, right_rt) = first_two_test_runtimes();
-    let df = DataFrame::from_series([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).unwrap();
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([left_rt.series("id", &[1i32, 2, 3]).unwrap()]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
+    .unwrap();
     let foreign = right_rt.series("value", &[10i32, 20, 30]).unwrap();
 
     assert_cross_device_result(
@@ -307,7 +357,10 @@ fn columns_from_different_devices_have_different_domains() {
     );
 
     // Mixing columns from different devices into one DataFrame must fail.
-    let result = DataFrame::from_series([s0, s1]);
+    let result = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s0, s1]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }));
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
 }
 
@@ -486,7 +539,11 @@ fn runtime_device_flows_through_sort() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
 
     let ids = rt1.series("id", &[3, 1, 4]).unwrap();
-    let df = DataFrame::from_series([ids]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     common::reset_exec_observation();
     let _sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
@@ -514,7 +571,11 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
     let ids = rt1.series("id", &[3, 1, 4]).unwrap();
     let scores = rt1.series("score", &[30.0, 10.0, 40.0]).unwrap();
     let mask = rt1.series("mask", &[true, false, true]).unwrap();
-    let df = DataFrame::from_series([ids, scores]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, scores]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     common::reset_exec_observation();
     let filtered = df.filter(&mask).unwrap();
@@ -528,13 +589,13 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
     let filtered_ids: Vec<i32> = filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(filtered_ids, vec![3, 4]);
 
-    let ctx = ExecutionContext::new().with_stream(rt1.stream()).with_memory_resource(rt1.memory_resource());
+    let ctx = ExecutionOverrides::new().with_stream(rt1.stream()).with_memory_resource(rt1.memory_resource());
     common::reset_exec_observation();
-    let filtered_with_ctx = df.in_context(&ctx).filter(&mask).unwrap();
+    let filtered_with_ctx = df.with_execution(&ctx).filter(&mask).unwrap();
     assert_eq!(
         common::last_exec_device(),
         device1.ordinal() as i32,
-        "in_context().filter should execute on device {}, observed device {}",
+        "with_execution().filter should execute on device {}, observed device {}",
         device1.ordinal(),
         common::last_exec_device()
     );
@@ -561,7 +622,11 @@ fn runtime_gt_scalar_mask_filter_regression() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let ids = rt1.series("id", &[3, 1, 4]).unwrap();
     let scores = rt1.series("score", &[30.0, 10.0, 40.0]).unwrap();
-    let df = DataFrame::from_series([ids, scores]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, scores]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     common::reset_exec_observation();
     let mask = df.series("score").unwrap().gt_scalar(20.0f64).unwrap();
@@ -576,9 +641,9 @@ fn runtime_gt_scalar_mask_filter_regression() {
     let plain = df.filter(&mask);
     assert!(plain.is_ok(), "filter() with gt_scalar-derived mask should succeed: {plain:?}");
 
-    let ctx = ExecutionContext::new().with_stream(rt1.stream()).with_memory_resource(rt1.memory_resource());
-    let with_ctx = df.in_context(&ctx).filter(&mask);
-    assert!(with_ctx.is_ok(), "in_context().filter() with gt_scalar-derived mask should succeed: {with_ctx:?}");
+    let ctx = ExecutionOverrides::new().with_stream(rt1.stream()).with_memory_resource(rt1.memory_resource());
+    let with_ctx = df.with_execution(&ctx).filter(&mask);
+    assert!(with_ctx.is_ok(), "with_execution().filter() with gt_scalar-derived mask should succeed: {with_ctx:?}");
 }
 
 #[test]
@@ -888,8 +953,36 @@ fn same_provenance_differs_by_device() {
     let s1 = rt1.series("y", &[3, 4]).unwrap();
 
     // Attempting to build a DataFrame from columns on different devices should fail.
-    let result = DataFrame::from_series([s0, s1]);
+    let result = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s0, s1]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }));
     assert!(result.is_err(), "mixing columns from different devices should fail provenance check");
+}
+
+#[test]
+fn dataframe_constructors_share_mixed_provenance_rejection_contract() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (device0, device1) = first_two_test_devices();
+    let rt0 = Runtime::builder().with_device(device0).build().unwrap();
+    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
+
+    let left = rt0.series("left", &[1i32, 2]).unwrap();
+    let right = rt1.series("right", &[3i32, 4]).unwrap();
+
+    let from_columns_err =
+        DataFrame::from_columns(::std::iter::IntoIterator::into_iter([left.clone(), right.clone()]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }))
+        .unwrap_err();
+    let explicit_columns_err = DataFrame::from_columns([("x", left), ("y", right)]).unwrap_err();
+
+    assert_constructor_mixed_provenance_error(from_columns_err, "dataframe::from_columns", "right");
+    assert_constructor_mixed_provenance_error(explicit_columns_err, "dataframe::from_columns", "y");
 }
 
 #[test]
@@ -900,27 +993,39 @@ fn merge_without_relocation_rejects_cross_device_runtime_inputs() {
 
     let (left_rt, right_rt) = first_two_test_runtimes();
 
-    let left = DataFrame::from_series([
-        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
-        left_rt.series("val", &[10i32, 20, 30]).unwrap(),
-    ])
+    let left = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            left_rt.series("id", &[1i32, 2, 3]).unwrap(),
+            left_rt.series("val", &[10i32, 20, 30]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
-    let right = DataFrame::from_series([
-        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
-        right_rt.series("score", &[200i32, 300, 400]).unwrap(),
-    ])
+    let right = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            right_rt.series("id", &[2i32, 3, 4]).unwrap(),
+            right_rt.series("score", &[200i32, 300, 400]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
 
     assert_cross_device_result_any_operation(
         left.merge(&right, MergeOptions::new().how_inner().on(["id"])),
-        &["dataframe::merge", "dataframe::in_context::merge"],
+        &["dataframe::merge", "dataframe::with_execution::merge"],
         "cross-device merge should fail until inputs are explicitly relocated",
     );
 
-    let ctx = ExecutionContext::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
+    let ctx = ExecutionOverrides::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
     assert_cross_device_result_any_operation(
-        left.in_context(&ctx).merge(&right, MergeOptions::new().how_inner().on(["id"])),
-        &["dataframe::merge", "dataframe::in_context::merge"],
+        left.with_execution(&ctx).merge(&right, MergeOptions::new().how_inner().on(["id"])),
+        &["dataframe::merge", "dataframe::with_execution::merge"],
         "borrowed context override must not repair cross-device merge",
     );
 }
@@ -933,7 +1038,13 @@ fn gather_without_relocation_rejects_cross_device_runtime_inputs() {
 
     let (data_rt, indices_rt) = first_two_test_runtimes();
 
-    let df = DataFrame::from_series([data_rt.series("id", &[10i32, 20, 30]).unwrap()]).unwrap();
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([data_rt.series("id", &[10i32, 20, 30]).unwrap()]).map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
+    .unwrap();
     let indices = indices_rt.series("idx", &[2i32, 0]).unwrap();
 
     assert_cross_device_result(
@@ -969,8 +1080,16 @@ fn dataframe_fillna_with_scalar_without_relocation_rejects_cross_device_runtime_
 
     let (df_rt, scalar_rt) = first_two_test_runtimes();
 
-    let df =
-        DataFrame::from_series([df_rt.nullable_series("value", &[1i32, 0, 3], &[true, false, true]).unwrap()]).unwrap();
+    let df = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([df_rt
+            .nullable_series("value", &[1i32, 0, 3], &[true, false, true])
+            .unwrap()])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
+    .unwrap();
     let scalar = scalar_rt.series("seed", &[99i32]).unwrap().sum().unwrap();
 
     assert_cross_device_result(
@@ -1006,10 +1125,10 @@ fn low_level_join_without_relocation_rejects_cross_device_runtime_inputs() {
     .unwrap();
 
     let err = match join::inner_join(
-        &left_keys.view().unwrap(),
-        &right_keys.view().unwrap(),
-        &left_payload.view().unwrap(),
-        &right_payload.view().unwrap(),
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        &left_payload.testing_view().unwrap(),
+        &right_payload.testing_view().unwrap(),
         join::NullEquality::Equal,
     ) {
         Ok(_) => panic!("cross-device low-level join should fail until inputs are explicitly relocated"),
@@ -1029,7 +1148,7 @@ fn strings_contains_without_relocation_rejects_cross_device_runtime_inputs() {
     let input = input_rt.series("input", &["alpha", "beta", "alphabet"]).unwrap();
     let scalar = scalar_rt.series("seed", &["alpha"]).unwrap().min().unwrap();
 
-    let err = match strings::str_contains(&input.view().unwrap(), &scalar) {
+    let err = match strings::str_contains(&input.testing_view().unwrap(), &scalar) {
         Ok(_) => panic!("cross-device strings::contains should fail until inputs are explicitly relocated"),
         Err(err) => err,
     };
@@ -1053,7 +1172,11 @@ fn runtime_expr_literal_with_columns_regression() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let x = rt1.series("x", &[10, 20, 30]).unwrap();
     let y = rt1.series("y", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_series([x, y]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([x, y]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     common::reset_exec_observation();
     let result = match df.with_columns([(col("x") + lit(1i32)).alias("x1"), (col("y") * lit(10i32)).alias("y10")]) {
@@ -1084,7 +1207,11 @@ fn runtime_head_tail_slice_regression() {
     let rt1 = Runtime::builder().with_device(device1).build().unwrap();
     let ids = rt1.series("id", &[10, 20, 30, 40]).unwrap();
     let scores = rt1.series("score", &[1, 2, 3, 4]).unwrap();
-    let df = DataFrame::from_series([ids, scores]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, scores]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     common::reset_exec_observation();
     let head = match df.head(2) {
@@ -1134,7 +1261,11 @@ fn runtime_melt_regression() {
     let a = rt1.series("A", &["a", "b", "c"]).unwrap();
     let b = rt1.series("B", &[1, 3, 5]).unwrap();
     let c = rt1.series("C", &[2, 4, 6]).unwrap();
-    let df = DataFrame::from_series(vec![a, b, c]).unwrap();
+    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![a, b, c]).map(|series| {
+        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+        (name, series)
+    }))
+    .unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B", "C"]).build();
     common::reset_exec_observation();
@@ -1167,12 +1298,15 @@ fn runtime_lookup_regression() {
     let values = rt1.series("values", &[100, 200, 300]).unwrap();
 
     common::reset_exec_observation();
-    let result = match cudf::ops::lookup::probe(&input.view().unwrap(), &keys.view().unwrap(), &values.view().unwrap())
-    {
+    let result = match cudf::ops::lookup::probe(
+        &input.testing_view().unwrap(),
+        &keys.testing_view().unwrap(),
+        &values.testing_view().unwrap(),
+    ) {
         Ok(result) => result,
         Err(err) => panic!("lookup::probe() should succeed when all logical inputs are runtime-pinned: {err:?}"),
     };
-    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300, 100]);
+    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300, 100]);
 }
 
 #[test]
@@ -1292,7 +1426,7 @@ fn runtime_column_from_scalar_executes_on_target_device() {
     common::reset_exec_observation();
     let column = rt1.column_from_scalar(&scalar, 4).unwrap();
 
-    assert_eq!(column.view().unwrap().to_vec::<i32>().unwrap(), vec![13, 13, 13, 13]);
+    assert_eq!(column.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![13, 13, 13, 13]);
     assert_eq!(
         common::last_exec_device(),
         device1.ordinal() as i32,

@@ -1,5 +1,5 @@
 //! Tests for `DataFrame::merge_split`.
-use cudf::{DataFrame, DataFrameJoinSides, ExecutionContext, MergeOptions, NullEquality, testing::prelude::*};
+use cudf::{DataFrame, DataFrameJoinSides, ExecutionOverrides, MergeOptions, NullEquality, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
@@ -181,22 +181,35 @@ fn test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resour
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
 
-    let left = DataFrame::from_series([
-        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
-        left_rt.series("score", &[10i32, 20, 30]).unwrap(),
-    ])
+    let left = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            left_rt.series("id", &[1i32, 2, 3]).unwrap(),
+            left_rt.series("score", &[10i32, 20, 30]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
-    let right = DataFrame::from_series([
-        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
-        right_rt.series("value", &[200i32, 300, 400]).unwrap(),
-    ])
+    let right = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            right_rt.series("id", &[2i32, 3, 4]).unwrap(),
+            right_rt.series("value", &[200i32, 300, 400]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
-    let ctx = ExecutionContext::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
+    let ctx =
+        ExecutionOverrides::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
     let expected_stream = target_rt.stream().testing_raw_handle_value();
     let expected_mr = target_rt.memory_resource().testing_raw_handle_value();
 
     reset_exec_observation();
-    let split = left.in_context(&ctx).merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
+    let split = left.with_execution(&ctx).merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
 
     assert_eq!(split.left.testing_execution_domain_id(), left.testing_execution_domain_id());
     assert_eq!(split.right.testing_execution_domain_id(), left.testing_execution_domain_id());
@@ -223,15 +236,27 @@ fn test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resour
 fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let left = DataFrame::from_series([
-        left_rt.series("id", &[1i32, 2, 3]).unwrap(),
-        left_rt.series("score", &[10i32, 20, 30]).unwrap(),
-    ])
+    let left = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            left_rt.series("id", &[1i32, 2, 3]).unwrap(),
+            left_rt.series("score", &[10i32, 20, 30]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
-    let right = DataFrame::from_series([
-        right_rt.series("id", &[2i32, 3, 4]).unwrap(),
-        right_rt.series("value", &[200i32, 300, 400]).unwrap(),
-    ])
+    let right = DataFrame::from_columns(
+        ::std::iter::IntoIterator::into_iter([
+            right_rt.series("id", &[2i32, 3, 4]).unwrap(),
+            right_rt.series("value", &[200i32, 300, 400]).unwrap(),
+        ])
+        .map(|series| {
+            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
+            (name, series)
+        }),
+    )
     .unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
