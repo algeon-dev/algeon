@@ -464,6 +464,15 @@ pub struct GraphMemoryEstimate {
     pub seed_count: Option<u64>,
     pub seed_mode: Option<GraphSeedMode>,
     pub data_dependent: bool,
+    /// Bytes needed to construct and retain the native graph representation.
+    ///
+    /// Warm cache admission may omit this term only when query-service
+    /// admission has reserved an exact-runtime resident graph entry.
+    pub construction_bytes: u64,
+    /// Algorithm output and workspace bytes that remain necessary on both
+    /// cold and warm executions.
+    pub execution_bytes: u64,
+    /// Cold execution price: construction plus output and workspace.
     pub requested_bytes: u64,
 }
 
@@ -666,6 +675,7 @@ impl GraphMemoryModel {
         let seed_count = seed_input.map(|seed_input| seed_input.requested_count);
         let seed_mode = seed_input.map(|seed_input| seed_input.mode);
         let workspace_bytes = workspace_bytes_for_algorithm(spec.algorithm, class, input, vertex_estimate, seed_input);
+        let execution_bytes = output_bytes.saturating_add(workspace_bytes).max(1);
         let requested_bytes = construction_bytes.saturating_add(output_bytes).saturating_add(workspace_bytes).max(1);
         let calibration_source = graph_calibration_source(input);
 
@@ -688,6 +698,8 @@ impl GraphMemoryModel {
             seed_count,
             seed_mode,
             data_dependent: class.is_data_dependent(),
+            construction_bytes,
+            execution_bytes,
             requested_bytes,
         })
     }
@@ -1085,9 +1097,6 @@ pub fn graph_memory_estimates_for_plan(
         let PlanNode::GraphAlgorithm(graph) = &node.kind else {
             continue;
         };
-        if !graph_memory_reservation_required(graph.spec.algorithm) {
-            continue;
-        }
         let Some(mut input) = graph_memory_model_input_for_plan_node(plan, graph, calibration_override)? else {
             continue;
         };
@@ -1435,6 +1444,9 @@ mod tests {
         assert_eq!(estimate.weight_width_bytes, None);
         assert!(estimate.edge_normalize_inserted);
         assert_eq!(estimate.calibration_source, GraphCalibrationSource::RawInputEdges);
+        assert_eq!(estimate.requested_bytes, estimate.construction_bytes.saturating_add(estimate.execution_bytes));
+        assert!(estimate.construction_bytes > 0);
+        assert!(estimate.execution_bytes < estimate.requested_bytes);
     }
 
     #[test]

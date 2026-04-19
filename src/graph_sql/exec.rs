@@ -49,7 +49,7 @@ use nexus_query_engine::{
     GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, MemoryControlPolicy, PlanNode,
     ProjectionOutput, QueryMetrics, QueryOutput, QueryPlacementHint, QueryPlanBuilder, SourceNode, execute_query_plan,
     execute_query_plan_with_gpu_inputs, graph_edge_list_output_rows_for_plan, graph_memory_estimate_for_edge_list,
-    graph_memory_reservation_required, graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
+    graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
 };
 
 use super::{
@@ -60,10 +60,10 @@ use super::{
 use crate::{
     error::{Error, ErrorCode},
     native_exec::{
-        GpuResidentProducerExec, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
-        NativeCudfGpuProducerExec, NativeCudfMetrics, admission::task_context_with_query_admission_ticket,
-        gpu_resident_producer as native_gpu_resident_producer, query_admission_ticket_from_task_context,
-        run_gpu_execution_task,
+        GpuResidentProducerExec, GraphAdmissionModelAsk, NativeCudfComposedExec, NativeCudfExec,
+        NativeCudfExecutionConfig, NativeCudfGpuProducerExec, NativeCudfMetrics,
+        admission::task_context_with_query_admission_ticket, gpu_resident_producer as native_gpu_resident_producer,
+        query_admission_ticket_from_task_context, run_gpu_execution_task,
     },
 };
 
@@ -152,12 +152,21 @@ impl CugraphAlgoExec {
         cugraph_edge_normalize_inserted(&self.spec, &self.edge_source_canonical_facts)
     }
 
-    pub(crate) fn graph_model_ask_bytes_for_admission_ticket(&self) -> Result<Option<u64>> {
+    pub(crate) fn graph_model_ask_bytes_for_admission_ticket(&self) -> Result<Option<GraphAdmissionModelAsk>> {
         cugraph_graph_model_ask_bytes(
             &self.spec,
             self.edge_source.as_ref(),
             self.edge_normalize_inserted(),
             &self.native_execution_config,
+        )
+    }
+
+    pub(crate) fn graph_placement_hint_for_admission_ticket(&self) -> QueryPlacementHint {
+        cugraph_graph_placement_hint(
+            &self.spec,
+            self.graph_residency.as_ref(),
+            self.edge_normalize_inserted(),
+            &self.predicate_sources,
         )
     }
 
@@ -914,11 +923,7 @@ fn cugraph_graph_model_ask_bytes(
     edge_source: &dyn ExecutionPlan,
     edge_normalize_inserted: bool,
     execution_config: &NativeCudfExecutionConfig,
-) -> Result<Option<u64>> {
-    let algorithm = native_algorithm(spec.algorithm);
-    if !graph_memory_reservation_required(algorithm) {
-        return Ok(None);
-    }
+) -> Result<Option<GraphAdmissionModelAsk>> {
     let Some(native_spec) = native_graph_spec_for_memory_estimate(spec, edge_normalize_inserted) else {
         return Ok(None);
     };
@@ -948,7 +953,7 @@ fn cugraph_graph_model_ask_bytes(
             error,
         ))
     })?;
-    Ok(Some(estimate.requested_bytes))
+    Ok(Some(GraphAdmissionModelAsk { cold_bytes: estimate.requested_bytes, warm_bytes: estimate.execution_bytes }))
 }
 
 fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result<Option<u64>> {
@@ -1704,9 +1709,13 @@ mod tests {
         let ticket =
             exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
         let requested = ticket.requested_grant_bytes().expect("known edge rows should produce graph-aware ask");
+        let warm_requested = ticket
+            .warm_graph_requested_grant_bytes()
+            .expect("known cacheable graph should carry an exact-hit warm ask");
 
         assert!(requested >= min);
         assert!(requested < want, "small graph ask should not default to tenant want");
+        assert!(warm_requested < requested, "warm ask must omit graph construction bytes");
     }
 
     #[test]
@@ -1727,6 +1736,7 @@ mod tests {
                 .expect("exact rows should win over stale override");
 
         assert_eq!(stale_override_ask, exact_ask);
+        assert!(exact_ask.warm_bytes < exact_ask.cold_bytes);
     }
 
     #[test]

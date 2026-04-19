@@ -191,13 +191,13 @@ pub mod runtime_contracts {
             Placement, PlacementPolicy, PlacementRequest, Priority, ProbeExecutionBoundary, QueryAdmissionRequest,
             QueryAdmissionWaiter, QueryGrantBand, QueryGrantRequest, QueryHandle, QueryMemoryDomainPolicy,
             QueryPlacementHint, QueryPlacementPolicy, QueryQos, QueryService, QueryServiceAdmissionSnapshot,
-            QueryServiceConfig, QueryServiceDeviceAdmissionSnapshot, QueryServiceTenantConfig, ReservationKind,
-            ResultMaterializationBoundary, RetryFacts, S3SourceStorageCredential, S3SourceStorageProfile,
-            ServiceStreamPool, SingleDeviceComms, SlotGuarantee, SourceChunkPlanningMode, SourceFetchConfig,
-            SourceFetchStrategy, SourceFetchStrategyDecision, SourceFetchStrategyReason, SourceFetchSubstrate,
-            SourceGdsEligibility, SourceReadBoundary, SourceSchedulerPolicy, SourceStorageProfile, StreamLease,
-            TenantId, TenantQueryContext, TenantQueueDepth, device_budget_bytes_from_facts, source_gds_eligibility,
-            source_gds_eligibility_with_default_mounts,
+            QueryServiceConfig, QueryServiceDeviceAdmissionSnapshot, QueryServiceGraphCacheSnapshot,
+            QueryServiceTenantConfig, ReservationKind, ResultMaterializationBoundary, RetryFacts,
+            S3SourceStorageCredential, S3SourceStorageProfile, ServiceStreamPool, SingleDeviceComms, SlotGuarantee,
+            SourceChunkPlanningMode, SourceFetchConfig, SourceFetchStrategy, SourceFetchStrategyDecision,
+            SourceFetchStrategyReason, SourceFetchSubstrate, SourceGdsEligibility, SourceReadBoundary,
+            SourceSchedulerPolicy, SourceStorageProfile, StreamLease, TenantId, TenantQueryContext, TenantQueueDepth,
+            device_budget_bytes_from_facts, source_gds_eligibility, source_gds_eligibility_with_default_mounts,
         },
     };
 }
@@ -327,7 +327,10 @@ pub use exec::{
     strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode, validate_local_parquet_source,
 };
 #[cfg(feature = "cugraph")]
-pub use exec::{DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY, GpuResidentGraphCache, GpuResidentGraphCacheInsert};
+pub use exec::{
+    DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY, GpuResidentGraphCache, GpuResidentGraphCacheInsert,
+    GpuResidentGraphCacheSnapshot,
+};
 #[cfg(feature = "cugraph")]
 #[doc(hidden)]
 pub use exec::{
@@ -440,12 +443,13 @@ pub use runtime::{
     PlacementRequest, Priority, ProbeExecutionBoundary, QueryAdmissionRequest, QueryAdmissionWaiter, QueryGrantBand,
     QueryGrantRequest, QueryHandle, QueryMemoryDomainPolicy, QueryPlacementHint, QueryPlacementPolicy, QueryQos,
     QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceDeviceAdmissionSnapshot,
-    QueryServiceTenantConfig, ReservationKind, ResultMaterializationBoundary, RetryFacts, S3SourceStorageCredential,
-    S3SourceStorageProfile, ServiceStreamPool, SingleDeviceComms, SlotGuarantee, SourceChunkPlanningMode,
-    SourceFetchConfig, SourceFetchStrategy, SourceFetchStrategyDecision, SourceFetchStrategyReason,
-    SourceFetchSubstrate, SourceGdsEligibility, SourceReadBoundary, SourceSchedulerPolicy, SourceStorageProfile,
-    StreamLease, TenantId, TenantQueryContext, TenantQueueDepth, default_service_stream_pool_size_for_device,
-    device_budget_bytes_from_facts, source_gds_eligibility, source_gds_eligibility_with_default_mounts,
+    QueryServiceGraphCacheSnapshot, QueryServiceTenantConfig, ReservationKind, ResultMaterializationBoundary,
+    RetryFacts, S3SourceStorageCredential, S3SourceStorageProfile, ServiceStreamPool, SingleDeviceComms, SlotGuarantee,
+    SourceChunkPlanningMode, SourceFetchConfig, SourceFetchStrategy, SourceFetchStrategyDecision,
+    SourceFetchStrategyReason, SourceFetchSubstrate, SourceGdsEligibility, SourceReadBoundary, SourceSchedulerPolicy,
+    SourceStorageProfile, StreamLease, TenantId, TenantQueryContext, TenantQueueDepth,
+    default_service_stream_pool_size_for_device, device_budget_bytes_from_facts, source_gds_eligibility,
+    source_gds_eligibility_with_default_mounts,
 };
 pub use source::{
     ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,

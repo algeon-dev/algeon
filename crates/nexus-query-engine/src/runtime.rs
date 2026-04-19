@@ -74,8 +74,8 @@ pub use policy::{
 pub use query_service::{
     QueryAdmissionRequest, QueryAdmissionWaiter, QueryGrantBand, QueryGrantRequest, QueryHandle,
     QueryMemoryDomainPolicy, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
-    QueryServiceDeviceAdmissionSnapshot, QueryServiceTenantConfig, SlotGuarantee, TenantId, TenantQueryContext,
-    TenantQueueDepth,
+    QueryServiceDeviceAdmissionSnapshot, QueryServiceGraphCacheSnapshot, QueryServiceTenantConfig, SlotGuarantee,
+    TenantId, TenantQueryContext, TenantQueueDepth,
 };
 pub use reservation::{MemoryReservationRequest, RetryFacts};
 pub(crate) use service_stream::SourceReadStreamLease;
@@ -406,6 +406,9 @@ pub struct ExecutionContext {
     /// Optional durable GPU resident graph cache.
     #[cfg(feature = "cugraph")]
     resident_graph_cache: Option<Arc<crate::exec::GpuResidentGraphCache>>,
+    /// Exact-runtime graph entry reserved during warm-priced admission.
+    #[cfg(feature = "cugraph")]
+    reserved_resident_graph_hit: Option<Arc<ReservedResidentGraphHit>>,
     /// Optional owned stream lease kept alive by contexts derived from it.
     stream_lease_guard: Option<Arc<StreamLease>>,
     /// Whether this context was created from a QueryService admission handle.
@@ -470,8 +473,33 @@ struct ExecutionContextParts {
     local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
     #[cfg(feature = "cugraph")]
     resident_graph_cache: Option<Arc<crate::exec::GpuResidentGraphCache>>,
+    #[cfg(feature = "cugraph")]
+    reserved_resident_graph_hit: Option<Arc<ReservedResidentGraphHit>>,
     stream_lease_guard: Option<Arc<StreamLease>>,
     query_service_admitted: bool,
+}
+
+#[cfg(feature = "cugraph")]
+struct ReservedResidentGraphHit {
+    resident_key: crate::plan::ResidentGraphKey,
+    preparation_pin: Mutex<Option<crate::exec::GpuResidentGraphPreparationPin>>,
+}
+
+#[cfg(feature = "cugraph")]
+impl std::fmt::Debug for ReservedResidentGraphHit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReservedResidentGraphHit").field("resident_key", &self.resident_key).finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "cugraph")]
+impl ReservedResidentGraphHit {
+    fn new(preparation_pin: crate::exec::GpuResidentGraphPreparationPin) -> Self {
+        Self {
+            resident_key: preparation_pin.resident_key().clone(),
+            preparation_pin: Mutex::new(Some(preparation_pin)),
+        }
+    }
 }
 
 impl ExecutionContext {
@@ -539,6 +567,8 @@ impl ExecutionContext {
             local_parquet_source_cache: None,
             #[cfg(feature = "cugraph")]
             resident_graph_cache: None,
+            #[cfg(feature = "cugraph")]
+            reserved_resident_graph_hit: None,
             stream_lease_guard: None,
             query_service_admitted: false,
         }))
@@ -585,6 +615,8 @@ impl ExecutionContext {
             local_parquet_source_cache: parts.local_parquet_source_cache,
             #[cfg(feature = "cugraph")]
             resident_graph_cache: parts.resident_graph_cache,
+            #[cfg(feature = "cugraph")]
+            reserved_resident_graph_hit: parts.reserved_resident_graph_hit,
             stream_lease_guard: parts.stream_lease_guard,
             query_service_admitted: parts.query_service_admitted,
         }
@@ -695,6 +727,10 @@ impl ExecutionContext {
             local_parquet_source_cache: self.local_parquet_source_cache.as_ref().map(Arc::clone),
             #[cfg(feature = "cugraph")]
             resident_graph_cache: self.resident_graph_cache.as_ref().map(Arc::clone),
+            // Source-read worker runtimes cannot consume a root-runtime graph
+            // reservation. Keep it only on the admitted root context.
+            #[cfg(feature = "cugraph")]
+            reserved_resident_graph_hit: None,
             stream_lease_guard: None,
             query_service_admitted: self.query_service_admitted,
         }))
@@ -1153,6 +1189,50 @@ impl ExecutionContext {
     pub fn resident_graph_cache(&self) -> Option<Arc<crate::exec::GpuResidentGraphCache>> {
         self.resident_graph_cache.as_ref().map(Arc::clone)
     }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn has_reserved_resident_graph_price(&self) -> bool {
+        self.reserved_resident_graph_hit.is_some()
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn reject_unmatched_reserved_resident_graph_price(&self, reason: &'static str) -> Result<()> {
+        if self.has_reserved_resident_graph_price() {
+            return Err(warm_graph_reservation_error(reason));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn take_reserved_resident_graph_pin(
+        &self,
+        resident_key: &crate::plan::ResidentGraphKey,
+    ) -> Result<Option<crate::exec::GpuResidentGraphPreparationPin>> {
+        let Some(reservation) = &self.reserved_resident_graph_hit else {
+            return Ok(None);
+        };
+        if &reservation.resident_key != resident_key {
+            return Err(warm_graph_reservation_error("resident_graph_key_mismatch")
+                .with_fact("reserved_resident_graph_key", format!("{:?}", reservation.resident_key))
+                .with_fact("requested_resident_graph_key", format!("{resident_key:?}")));
+        }
+        let mut pin = reservation
+            .preparation_pin
+            .lock()
+            .map_err(|_error| warm_graph_reservation_error("preparation_pin_lock_poisoned"))?;
+        pin.take().map(Some).ok_or_else(|| warm_graph_reservation_error("preparation_pin_already_consumed"))
+    }
+}
+
+#[cfg(feature = "cugraph")]
+pub(super) fn warm_graph_reservation_error(reason: &'static str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ServiceOverloaded,
+        "nexus_query_engine.query_service.warm_graph_reservation",
+        "warm-priced resident graph reservation is no longer available",
+    )
+    .with_fact("reason", reason)
+    .with_fact("retry_action", "readmit_query")
 }
 
 /// Builder for [`ExecutionContext`].
@@ -1569,6 +1649,8 @@ impl ExecutionContextBuilder {
                 local_parquet_source_cache: self.local_parquet_source_cache,
                 #[cfg(feature = "cugraph")]
                 resident_graph_cache: self.resident_graph_cache,
+                #[cfg(feature = "cugraph")]
+                reserved_resident_graph_hit: None,
                 stream_lease_guard: None,
                 query_service_admitted: false,
             }));
@@ -1647,6 +1729,8 @@ impl ExecutionContextBuilder {
             local_parquet_source_cache: self.local_parquet_source_cache,
             #[cfg(feature = "cugraph")]
             resident_graph_cache: self.resident_graph_cache,
+            #[cfg(feature = "cugraph")]
+            reserved_resident_graph_hit: None,
             stream_lease_guard: None,
             query_service_admitted: false,
         }))

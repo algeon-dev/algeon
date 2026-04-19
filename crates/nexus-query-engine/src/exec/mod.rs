@@ -38,6 +38,8 @@ mod order;
 mod retry;
 mod source;
 mod types;
+#[cfg(feature = "cugraph")]
+pub(crate) use types::GpuResidentGraphPreparationPin;
 mod util;
 mod validate;
 
@@ -70,7 +72,10 @@ pub use source::{
     read_literal_batch_source, read_local_parquet_source, validate_local_parquet_source,
 };
 #[cfg(feature = "cugraph")]
-pub use types::{DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY, GpuResidentGraphCache, GpuResidentGraphCacheInsert};
+pub use types::{
+    DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY, GpuResidentGraphCache, GpuResidentGraphCacheInsert,
+    GpuResidentGraphCacheSnapshot,
+};
 pub use types::{
     GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildCache, GpuHashJoinBuildHandle,
     GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey, GpuResidentInputMap,
@@ -610,7 +615,7 @@ fn execute_node(
         },
         PlanNode::GraphAlgorithm(graph) => {
             #[cfg(feature = "cugraph")]
-            let (input, preparation_pin) = if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
+            let (input, mut preparation_pin) = if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
                 let raw_input = execute_node(context, plan, raw_input_id, gpu_inputs, scratch, metrics)?;
                 if let Some(pin) = resident_graph_cache_preparation_pin(context, &raw_input, &graph.spec)? {
                     (raw_input, Some(pin))
@@ -620,6 +625,10 @@ fn execute_node(
             } else {
                 (execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?, None)
             };
+            #[cfg(feature = "cugraph")]
+            if preparation_pin.is_none() {
+                preparation_pin = resident_graph_cache_preparation_pin(context, &input, &graph.spec)?;
+            }
             #[cfg(not(feature = "cugraph"))]
             let input = execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?;
             let side_inputs = graph

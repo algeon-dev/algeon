@@ -11,6 +11,11 @@ use std::{
     fmt::Write,
     sync::{Arc, Mutex, Weak},
 };
+#[cfg(feature = "cugraph")]
+use std::{
+    sync::Condvar,
+    time::{Duration, Instant},
+};
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use cudf::{
@@ -18,6 +23,8 @@ use cudf::{
     frame::dataframe::{ColumnMemoryIdentity, GpuRecordBatch, InfoDetail},
 };
 
+#[cfg(feature = "cugraph")]
+use crate::error::QueryErrorCode;
 #[cfg(feature = "cugraph")]
 use crate::plan::ResidentGraphKey;
 use crate::{
@@ -914,6 +921,28 @@ impl GpuLocalParquetSourceCacheKey {
 #[cfg(feature = "cugraph")]
 pub const DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY: usize = 4;
 
+/// Point-in-time resident graph cache state and monotonic activity counters.
+#[cfg(feature = "cugraph")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GpuResidentGraphCacheSnapshot {
+    /// Available plus checked-out entries.
+    pub entries: usize,
+    /// Device bytes retained across all entries.
+    pub resident_bytes: u64,
+    /// Device bytes held by checked-out entries.
+    pub in_use_bytes: u64,
+    /// Successful exact-runtime checkouts since cache creation.
+    pub hits: u64,
+    /// Cold graph executions elected since cache creation.
+    pub misses: u64,
+    /// Available entries removed under capacity or governor pressure.
+    pub evictions: u64,
+    /// Graph-build generations currently in flight.
+    pub builds_in_flight: usize,
+    /// Follower waits joined since cache creation.
+    pub build_waits: u64,
+}
+
 /// Result of inserting a parked resident graph.
 #[cfg(feature = "cugraph")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1022,15 +1051,33 @@ struct GpuResidentGraphCompanionRuntime {
 }
 
 #[cfg(feature = "cugraph")]
+#[derive(Debug, Default)]
+struct GpuResidentGraphBuildFlightState {
+    finished: bool,
+}
+
+#[cfg(feature = "cugraph")]
+#[derive(Debug, Default)]
+struct GpuResidentGraphBuildFlight {
+    state: Mutex<GpuResidentGraphBuildFlightState>,
+    changed: Condvar,
+}
+
+#[cfg(feature = "cugraph")]
 #[derive(Default)]
 struct GpuResidentGraphCacheState {
     available: HashMap<GpuResidentGraphCacheEntryKey, GpuResidentGraphCacheEntry>,
     checked_out: HashMap<GpuResidentGraphCacheEntryKey, GpuResidentGraphCheckedOut>,
     preparation_pins: HashMap<GpuResidentGraphCacheEntryKey, u64>,
     companion_runtimes: HashMap<usize, GpuResidentGraphCompanionRuntime>,
+    builds: HashMap<ResidentGraphKey, Arc<GpuResidentGraphBuildFlight>>,
     retained_device_bytes: u64,
     next_access_epoch: u64,
     next_preparation_pin_id: u64,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+    build_waits: u64,
 }
 
 #[cfg(feature = "cugraph")]
@@ -1157,6 +1204,11 @@ impl GpuResidentGraphCache {
         Ok(self.lock()?.available.len())
     }
 
+    /// Whether no parked graph entry is currently available.
+    pub fn is_empty(&self) -> Result<bool> {
+        Ok(self.lock()?.available.is_empty())
+    }
+
     /// Number of graphs currently checked out by running queries.
     pub fn checked_out_len(&self) -> Result<usize> {
         Ok(self.lock()?.checked_out.len())
@@ -1165,6 +1217,25 @@ impl GpuResidentGraphCache {
     /// Retained device bytes across available and checked-out parked graphs.
     pub fn retained_device_bytes(&self) -> Result<u64> {
         Ok(self.lock()?.retained_device_bytes)
+    }
+
+    /// Returns current state and monotonic cache activity counters.
+    pub fn snapshot(&self) -> Result<GpuResidentGraphCacheSnapshot> {
+        let state = self.lock()?;
+        Ok(GpuResidentGraphCacheSnapshot {
+            entries: state.available.len().saturating_add(state.checked_out.len()),
+            resident_bytes: state.retained_device_bytes,
+            in_use_bytes: state
+                .checked_out
+                .values()
+                .map(|entry| entry.retained_device_bytes)
+                .fold(0u64, u64::saturating_add),
+            hits: state.hits,
+            misses: state.misses,
+            evictions: state.evictions,
+            builds_in_flight: state.builds.len(),
+            build_waits: state.build_waits,
+        })
     }
 
     /// Whether this device cache currently has a live copy for `resident_key`.
@@ -1195,19 +1266,45 @@ impl GpuResidentGraphCache {
         resident_key: &ResidentGraphKey,
         context: &ExecutionContext,
     ) -> Result<Option<GpuResidentGraphPreparationPin>> {
-        let entry_key = GpuResidentGraphCacheEntryKey::for_context(resident_key.clone(), context);
         let context_runtime = context.shared_runtime();
+        self.try_pin_available_key_for_runtime(resident_key, &context_runtime)
+    }
+
+    pub(crate) fn try_pin_available_key_for_runtime(
+        &self,
+        resident_key: &ResidentGraphKey,
+        runtime: &Arc<cudf::Runtime>,
+    ) -> Result<Option<GpuResidentGraphPreparationPin>> {
+        let entry_key = GpuResidentGraphCacheEntryKey {
+            resident_key: resident_key.clone(),
+            runtime_key: Arc::as_ptr(runtime) as usize,
+        };
         let mut state = self.lock()?;
-        let available = state
-            .available
-            .get(&entry_key)
-            .is_some_and(|entry| runtime_owner_matches(&entry.runtime_owner, &context_runtime));
+        let available =
+            state.available.get(&entry_key).is_some_and(|entry| runtime_owner_matches(&entry.runtime_owner, runtime));
         if !available || state.preparation_pins.contains_key(&entry_key) {
             return Ok(None);
         }
         let pin_id = state.next_preparation_pin_id();
         state.preparation_pins.insert(entry_key.clone(), pin_id);
         Ok(Some(GpuResidentGraphPreparationPin { cache: Arc::clone(&self.inner), entry_key, pin_id }))
+    }
+
+    pub(crate) fn join_build(&self, resident_key: &ResidentGraphKey) -> Result<GpuResidentGraphBuildJoin> {
+        let mut state = self.lock()?;
+        if let Some(flight) = state.builds.get(resident_key).cloned() {
+            state.build_waits = state.build_waits.saturating_add(1);
+            return Ok(GpuResidentGraphBuildJoin::Follower(GpuResidentGraphBuildFollower { flight }));
+        }
+        let flight = Arc::new(GpuResidentGraphBuildFlight::default());
+        state.builds.insert(resident_key.clone(), Arc::clone(&flight));
+        state.misses = state.misses.saturating_add(1);
+        Ok(GpuResidentGraphBuildJoin::Leader(Box::new(GpuResidentGraphBuildLeader {
+            cache: Arc::clone(&self.inner),
+            resident_key: resident_key.clone(),
+            flight,
+            finished: false,
+        })))
     }
 
     pub(in crate::exec) fn companion_runtime_for_context(
@@ -1292,6 +1389,7 @@ impl GpuResidentGraphCache {
             entry_key.clone(),
             GpuResidentGraphCheckedOut { retained_device_bytes, runtime_owner: entry.runtime_owner },
         );
+        state.hits = state.hits.saturating_add(1);
         Ok(Some(GpuResidentGraphCheckout {
             cache: Arc::clone(&self.inner),
             entry_key,
@@ -1472,6 +1570,7 @@ impl GpuResidentGraphCacheState {
                 self.retained_device_bytes = self.retained_device_bytes.saturating_sub(retained_device_bytes);
                 eviction.device_bytes = eviction.device_bytes.saturating_add(retained_device_bytes);
                 eviction.entries.push(evicted);
+                self.evictions = self.evictions.saturating_add(1);
             }
         }
         eviction
@@ -1508,6 +1607,7 @@ impl GpuResidentGraphCacheState {
                 self.retained_device_bytes = self.retained_device_bytes.saturating_sub(retained_device_bytes);
                 eviction.device_bytes = eviction.device_bytes.saturating_add(retained_device_bytes);
                 eviction.entries.push(evicted);
+                self.evictions = self.evictions.saturating_add(1);
             }
         }
         eviction
@@ -1551,7 +1651,7 @@ fn runtime_owner_matches(owner: &Weak<cudf::Runtime>, runtime: &Arc<cudf::Runtim
 }
 
 #[cfg(feature = "cugraph")]
-pub(in crate::exec) struct GpuResidentGraphPreparationPin {
+pub(crate) struct GpuResidentGraphPreparationPin {
     cache: Arc<GpuResidentGraphCacheInner>,
     entry_key: GpuResidentGraphCacheEntryKey,
     pin_id: u64,
@@ -1559,8 +1659,91 @@ pub(in crate::exec) struct GpuResidentGraphPreparationPin {
 
 #[cfg(feature = "cugraph")]
 impl GpuResidentGraphPreparationPin {
-    pub(in crate::exec) fn pin_id(&self) -> u64 {
+    pub(crate) fn pin_id(&self) -> u64 {
         self.pin_id
+    }
+
+    pub(crate) fn resident_key(&self) -> &ResidentGraphKey {
+        &self.entry_key.resident_key
+    }
+}
+
+#[cfg(feature = "cugraph")]
+pub(crate) enum GpuResidentGraphBuildJoin {
+    Leader(Box<GpuResidentGraphBuildLeader>),
+    Follower(GpuResidentGraphBuildFollower),
+}
+
+#[cfg(feature = "cugraph")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GpuResidentGraphBuildWait {
+    LeaderFinished,
+    DeadlineExpired,
+}
+
+#[cfg(feature = "cugraph")]
+pub(crate) struct GpuResidentGraphBuildLeader {
+    cache: Arc<GpuResidentGraphCacheInner>,
+    resident_key: ResidentGraphKey,
+    flight: Arc<GpuResidentGraphBuildFlight>,
+    finished: bool,
+}
+
+#[cfg(feature = "cugraph")]
+impl GpuResidentGraphBuildLeader {
+    fn finish_inner(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        if let Ok(mut state) = self.cache.state.lock()
+            && state.builds.get(&self.resident_key).is_some_and(|flight| Arc::ptr_eq(flight, &self.flight))
+        {
+            state.builds.remove(&self.resident_key);
+        }
+        if let Ok(mut state) = self.flight.state.lock() {
+            state.finished = true;
+            self.flight.changed.notify_all();
+        }
+    }
+}
+
+#[cfg(feature = "cugraph")]
+impl Drop for GpuResidentGraphBuildLeader {
+    fn drop(&mut self) {
+        self.finish_inner();
+    }
+}
+
+#[cfg(feature = "cugraph")]
+pub(crate) struct GpuResidentGraphBuildFollower {
+    flight: Arc<GpuResidentGraphBuildFlight>,
+}
+
+#[cfg(feature = "cugraph")]
+impl GpuResidentGraphBuildFollower {
+    pub(crate) fn wait(
+        self,
+        cancellation: &crate::runtime::ExecutionCancellation,
+        deadline: Instant,
+        operation: &'static str,
+    ) -> Result<GpuResidentGraphBuildWait> {
+        const POLL: Duration = Duration::from_millis(10);
+        let mut state = self.flight.state.lock().map_err(|_error| {
+            QueryError::new(QueryErrorCode::Internal, operation, "resident graph build flight mutex was poisoned")
+        })?;
+        while !state.finished {
+            cancellation.check(operation)?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(GpuResidentGraphBuildWait::DeadlineExpired);
+            }
+            let (next, _timeout) = self.flight.changed.wait_timeout(state, remaining.min(POLL)).map_err(|_error| {
+                QueryError::new(QueryErrorCode::Internal, operation, "resident graph build flight mutex was poisoned")
+            })?;
+            state = next;
+        }
+        Ok(GpuResidentGraphBuildWait::LeaderFinished)
     }
 }
 
@@ -2831,6 +3014,92 @@ mod tests {
         assert_eq!(state.preparation_pins.get(&entry_key), Some(&41));
         assert!(state.consume_checkout_preparation_pin(&entry_key, Some(41)));
         assert!(!state.preparation_pins.contains_key(&entry_key));
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn resident_graph_build_leader_failure_wakes_followers_and_reconciles_counters() {
+        let resident_key = test_resident_graph_entry_key().resident_key;
+        let cache = GpuResidentGraphCache::new(1);
+        let leader = match cache.join_build(&resident_key).unwrap() {
+            GpuResidentGraphBuildJoin::Leader(leader) => leader,
+            GpuResidentGraphBuildJoin::Follower(_) => panic!("first join must lead"),
+        };
+        let follower = match cache.join_build(&resident_key).unwrap() {
+            GpuResidentGraphBuildJoin::Follower(follower) => follower,
+            GpuResidentGraphBuildJoin::Leader(_) => panic!("second simultaneous join must follow"),
+        };
+        let cancellation = crate::runtime::ExecutionCancellation::new();
+        let waiter = std::thread::spawn(move || {
+            follower.wait(
+                &cancellation,
+                Instant::now() + Duration::from_secs(1),
+                "nexus_query_engine.graph_cache.test_build_wait",
+            )
+        });
+
+        drop(leader);
+        waiter.join().unwrap().unwrap();
+
+        let snapshot = cache.snapshot().unwrap();
+        assert_eq!(snapshot.misses, 1);
+        assert_eq!(snapshot.build_waits, 1);
+        assert_eq!(snapshot.builds_in_flight, 0);
+        assert!(matches!(cache.join_build(&resident_key).unwrap(), GpuResidentGraphBuildJoin::Leader(_)));
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn resident_graph_build_follower_observes_cancellation() {
+        let resident_key = test_resident_graph_entry_key().resident_key;
+        let cache = GpuResidentGraphCache::new(1);
+        let _leader = match cache.join_build(&resident_key).unwrap() {
+            GpuResidentGraphBuildJoin::Leader(leader) => leader,
+            GpuResidentGraphBuildJoin::Follower(_) => panic!("first join must lead"),
+        };
+        let follower = match cache.join_build(&resident_key).unwrap() {
+            GpuResidentGraphBuildJoin::Follower(follower) => follower,
+            GpuResidentGraphBuildJoin::Leader(_) => panic!("second simultaneous join must follow"),
+        };
+        let cancellation = crate::runtime::ExecutionCancellation::new();
+        cancellation.cancel();
+
+        let error = follower
+            .wait(
+                &cancellation,
+                Instant::now() + Duration::from_secs(1),
+                "nexus_query_engine.graph_cache.test_build_cancel",
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::Cancelled);
+        assert_eq!(cache.snapshot().unwrap().build_waits, 1);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn resident_graph_build_follower_observes_deadline() {
+        let resident_key = test_resident_graph_entry_key().resident_key;
+        let cache = GpuResidentGraphCache::new(1);
+        let _leader = match cache.join_build(&resident_key).unwrap() {
+            GpuResidentGraphBuildJoin::Leader(leader) => leader,
+            GpuResidentGraphBuildJoin::Follower(_) => panic!("first join must lead"),
+        };
+        let follower = match cache.join_build(&resident_key).unwrap() {
+            GpuResidentGraphBuildJoin::Follower(follower) => follower,
+            GpuResidentGraphBuildJoin::Leader(_) => panic!("second simultaneous join must follow"),
+        };
+
+        let outcome = follower
+            .wait(
+                &crate::runtime::ExecutionCancellation::new(),
+                Instant::now(),
+                "nexus_query_engine.graph_cache.test_build_deadline",
+            )
+            .unwrap();
+
+        assert_eq!(outcome, GpuResidentGraphBuildWait::DeadlineExpired);
+        assert_eq!(cache.snapshot().unwrap().build_waits, 1);
     }
 
     fn single_i32_frame(runtime: &Arc<cudf::Runtime>, name: &str, values: Vec<i32>) -> DataFrame {

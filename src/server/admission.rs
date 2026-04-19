@@ -382,6 +382,30 @@ impl QueryAdmission {
                         optional_payload_value(snapshot.memory_utilization_pct),
                     );
                 }
+
+                output.push_str("\n[graph_cache]\n");
+                output.push_str(
+                    "device_ordinal\tenabled\tentries\tresident_bytes\tin_use_bytes\thits\tmisses\tevictions\tbuilds_in_flight\tbuild_waits\n",
+                );
+                for snapshot in service
+                    .resident_graph_cache_snapshots()
+                    .map_err(|error| ServerError::session("failed to read resident graph cache snapshots", error))?
+                {
+                    let _ = writeln!(
+                        output,
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        snapshot.device_ordinal,
+                        snapshot.enabled,
+                        snapshot.entries,
+                        snapshot.resident_bytes,
+                        snapshot.in_use_bytes,
+                        snapshot.hits,
+                        snapshot.misses,
+                        snapshot.evictions,
+                        snapshot.builds_in_flight,
+                        snapshot.build_waits,
+                    );
+                }
             },
             QueryAdmissionBackend::Semaphore { permits } => {
                 let available_permits = permits.available_permits();
@@ -661,9 +685,20 @@ mod tests {
         );
         assert!(
             payload.find("[gpu_execution_pools]").unwrap() < payload.find("[device_admission_slots]").unwrap()
-                && payload.find("[device_admission_slots]").unwrap() < payload.find("[device_telemetry]").unwrap(),
+                && payload.find("[device_admission_slots]").unwrap() < payload.find("[device_telemetry]").unwrap()
+                && payload.find("[device_telemetry]").unwrap() < payload.find("[graph_cache]").unwrap(),
             "appended diagnostics sections must follow every pre-existing section: {payload}"
         );
+        assert!(
+            payload.contains(
+                "[graph_cache]\ndevice_ordinal\tenabled\tentries\tresident_bytes\tin_use_bytes\thits\tmisses\tevictions\tbuilds_in_flight\tbuild_waits\n"
+            ),
+            "{payload}"
+        );
+        #[cfg(feature = "cugraph")]
+        assert!(payload.contains("\n0\ttrue\t0\t0\t0\t0\t0\t0\t0\t0\n"), "{payload}");
+        #[cfg(not(feature = "cugraph"))]
+        assert!(payload.contains("\n0\tfalse\t0\t0\t0\t0\t0\t0\t0\t0\n"), "{payload}");
 
         drop(permit);
     }
