@@ -17,8 +17,8 @@
 //! let ids = rt.series("id", &[1i32, 2, 3]).unwrap();
 //! let scores = rt.series("score", &[10.0f64, 20.0, 30.0]).unwrap();
 //!
-//! // Build a DataFrame from Series — names come from the Series.
-//! let df = DataFrame::from_series([ids, scores]).unwrap();
+//! // Build a DataFrame with explicit schema names.
+//! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 //!
 //! assert_eq!(df.num_columns(), 2);
 //! assert_eq!(df.num_rows(), 3);
@@ -58,22 +58,21 @@
 //!
 //! # Advanced Usage
 //!
-//! The `core` types give direct control over GPU memory layout and lifetimes.
-//! Most users should not need these.
+//! The `core` types give direct control over owned GPU objects, device-memory
+//! descriptors, and import/export boundaries. Most users should not need these.
 //! Use [`Runtime`] to own default execution resources plus retained provenance
-//! for a pipeline, and [`ExecutionContext`] when you need a borrowed
-//! per-operation override.
+//! for a pipeline, and [`ExecutionOverrides`] when you need a borrowed
+//! per-operation override. For `Series`, prefer explicit methods such as
+//! `series.sum_in(&ctx)` or `series.str().contains_in("x", &ctx)`; for
+//! higher-level table-style flows, use scoped surfaces such as
+//! [`DataFrame::with_execution`].
 //!
 //! - [`core::Column`] — An owned GPU column (analogous to `cudf::column`).
-//! - [`core::ColumnView`] — A non-owning borrow of a column, tied by lifetime.
 //! - [`core::Table`] — An owned GPU table (collection of columns).
-//! - [`core::TableView`] — A non-owning borrow of a table.
 //! - [`core::Scalar`] — A single value on the GPU. Most high-level reduction
 //!   workflows can stay on [`Series`] via `*_value` helpers and only drop to
 //!   `Scalar` when you need explicit device-resident scalar behavior.
-//! - [`Runtime`] / [`ExecutionContext`] — explicit stream and allocator control.
-//! - [`DataFrame::view`] — zero-copy bridge from high-level
-//!   `DataFrame` into low-level [`core::TableView`] workflows.
+//! - [`Runtime`] / [`ExecutionOverrides`] — explicit stream and allocator control.
 //! - [`interop`] — the preferred external interop boundary for the shared
 //!   borrowed compatibility profile, producer-rooted prepared exports, and
 //!   activated read-lease APIs.
@@ -85,10 +84,10 @@
 //! helper and does not carry null-mask, offset-base, readiness, completion,
 //! or execution-provenance semantics.
 //!
-//! For new interop APIs, prefer the shared names in [`interop`]. The
-//! `interop::Runtime*` names remain available as CUDA-specific compatibility
-//! wrappers over the same shared completion and liveness contract; they are not
-//! a separate interop model.
+//! Interop activation uses the shared names in [`interop`]. If you already have
+//! `cudf-rs` runtime handles, use [`interop::cuda_stream_handle`] and
+//! [`interop::cuda_event_handle`] to project them into the shared contract
+//! explicitly.
 //!
 //! # Stream Synchronization Strategy
 //!
@@ -175,7 +174,7 @@ pub use frame::{
         DropDuplicatesOptions, DropNaHow, DropNaOptions, InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions,
         ParquetReadOptions, ParquetWriteOptions, SchemaAlignment,
     },
-    factorization::{Codebook, CodebookOptions, CodebookOrder, EncodedSeries, Factorized},
+    factorization::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized},
     series::{HostColumnData, IntoSeries, Series},
 };
 // — High-level operations —
@@ -189,4 +188,4 @@ pub use ops::{
     stream_compaction::DuplicateKeepOption,
     strings::StripSide,
 };
-pub use runtime::{DeviceId, ExecutionContext, Runtime, RuntimeBuilder};
+pub use runtime::{DeviceId, ExecutionOverrides, Runtime, RuntimeBuilder};

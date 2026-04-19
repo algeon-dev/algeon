@@ -3,19 +3,9 @@
 //! Computes hash values for each row in a table. Useful for hash-based
 //! partitioning, deduplication, and fingerprinting.
 //!
-//! # Example
-//!
-//! ```no_run
-//! use cudf::{Runtime, core::Table, ops::hashing};
-//!
-//! let rt = Runtime::new().unwrap();
-//! let col = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
-//! let table = Table::from_columns(vec![col]).unwrap();
-//! let view = table.view().unwrap();
-//!
-//! let hashes = hashing::murmurhash3_x86_32(&view, 0).unwrap();
-//! // hashes is a UINT32 column with one hash per row.
-//! ```
+//! This module currently exposes low-level `TableView`-based primitives.
+//! Most users should stay on the higher-level `DataFrame` workflows unless
+//! they explicitly need row-hash columns from the core surface.
 
 use std::ptr;
 

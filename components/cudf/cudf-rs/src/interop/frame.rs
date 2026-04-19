@@ -185,7 +185,7 @@ impl PartitionedDataFrameExport {
     /// later native import of that same partition fail.
     pub fn try_into_owned_transfer_with_release(
         self,
-    ) -> Result<(PartitionedOwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser), InteropError> {
+    ) -> Result<(PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferReleaser), InteropError> {
         transfer_partitioned_owned_table_from_columns_with_runtime_release(
             self,
             "interop::PartitionedDataFrameExport::try_into_owned_transfer_with_release",
@@ -207,7 +207,7 @@ impl PartitionedDataFrameExport {
     pub fn try_into_owned_transfer_with_release_synchronization(
         self,
         synchronization: ReleaseSynchronization,
-    ) -> Result<(PartitionedOwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser), InteropError> {
+    ) -> Result<(PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferReleaser), InteropError> {
         transfer_partitioned_owned_table_from_columns_with_runtime_release_synchronization(
             self,
             synchronization,
@@ -307,7 +307,7 @@ impl Series {
     /// the caller thread.
     pub fn try_into_owned_transfer_with_release(
         self,
-    ) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {
+    ) -> Result<(OwnedColumnTransfer, OwnedColumnTransferReleaser), InteropError> {
         let operation = "interop::Series::try_into_owned_transfer_with_release";
         let column = into_owned_column_for_transfer(self, operation)?;
         transfer_from_owned_column_with_runtime_release(column, operation)
@@ -320,7 +320,7 @@ impl Series {
     pub fn try_into_owned_transfer_with_release_synchronization(
         self,
         synchronization: ReleaseSynchronization,
-    ) -> Result<(OwnedColumnTransfer, RuntimeOwnedColumnTransferReleaser), InteropError> {
+    ) -> Result<(OwnedColumnTransfer, OwnedColumnTransferReleaser), InteropError> {
         let operation = "interop::Series::try_into_owned_transfer_with_release_synchronization";
         let column = into_owned_column_for_transfer(self, operation)?;
         transfer_from_owned_column_with_runtime_release_synchronization(column, synchronization, operation)
@@ -498,7 +498,7 @@ impl DataFrame {
     /// the caller thread.
     pub fn try_into_owned_transfer_with_release(
         self,
-    ) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+    ) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
         let operation = "interop::DataFrame::try_into_owned_transfer_with_release";
         let (table, names) = into_owned_table_for_transfer(self, operation)?;
         transfer_from_owned_table_with_names_and_runtime_release(table, Some(names), operation)
@@ -511,7 +511,7 @@ impl DataFrame {
     pub fn try_into_owned_transfer_with_release_synchronization(
         self,
         synchronization: ReleaseSynchronization,
-    ) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+    ) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
         let operation = "interop::DataFrame::try_into_owned_transfer_with_release_synchronization";
         let (table, names) = into_owned_table_for_transfer(self, operation)?;
         transfer_from_owned_table_with_names_and_runtime_release_synchronization(

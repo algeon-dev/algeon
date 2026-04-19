@@ -12,7 +12,7 @@ use typed_builder::TypedBuilder;
 use crate::{
     core::{
         error::{self, Error, ErrorKind, Result},
-        table::{Table, TableView},
+        table::Table,
     },
     io::TableReadOutput,
     runtime::Runtime,
@@ -103,14 +103,15 @@ impl CsvTableWriteOptions {
 }
 
 /// Write a table to a CSV file.
-pub fn write_csv(table: &TableView<'_>, options: &CsvTableWriteOptions) -> Result<()> {
+pub fn write_csv(table: &Table, options: &CsvTableWriteOptions) -> Result<()> {
     let exec_options =
         options.runtime.as_ref().and_then(|runtime| runtime.execution_domain().explicit_exec_options_raw());
-    write_csv_with_exec(table, options, exec_options.as_ref())
+    let table_view = table.view()?;
+    write_csv_with_exec(&table_view, options, exec_options.as_ref())
 }
 
 pub(crate) fn write_csv_with_exec(
-    table: &TableView<'_>,
+    table: &crate::core::TableView<'_>,
     options: &CsvTableWriteOptions,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<()> {

@@ -9,7 +9,7 @@ use crate::{
     },
     internal::resolve::missing_column_error,
     ops::{Expr, binary::BinaryOperator, expr::LitValue, filter, unary::UnaryOperator},
-    runtime::{ExecutionContext, execution_domain::ExecutionDomain},
+    runtime::{ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
 struct LoweredRowPredicate {
@@ -83,12 +83,12 @@ impl DataFrame {
         self.filter_expr_with_domain(combined, Arc::clone(&self.domain), "dataframe::filter_any")
     }
 
-    pub(crate) fn filter_expr_in_context(&self, predicate: Expr, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn filter_expr_in_context(&self, predicate: Expr, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.filter_expr_with_domain(predicate, output_domain, "dataframe::in_context::filter_expr")
+        self.filter_expr_with_domain(predicate, output_domain, "dataframe::with_execution::filter_expr")
     }
 
-    pub(crate) fn filter_all_in_context<I>(&self, predicates: I, ctx: &ExecutionContext<'_>) -> Result<Self>
+    pub(crate) fn filter_all_in_context<I>(&self, predicates: I, ctx: &ExecutionOverrides<'_>) -> Result<Self>
     where I: IntoIterator<Item = Expr> {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
@@ -98,10 +98,10 @@ impl DataFrame {
             combined = combined & predicate;
         }
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.filter_expr_with_domain(combined, output_domain, "dataframe::in_context::filter_all")
+        self.filter_expr_with_domain(combined, output_domain, "dataframe::with_execution::filter_all")
     }
 
-    pub(crate) fn filter_any_in_context<I>(&self, predicates: I, ctx: &ExecutionContext<'_>) -> Result<Self>
+    pub(crate) fn filter_any_in_context<I>(&self, predicates: I, ctx: &ExecutionOverrides<'_>) -> Result<Self>
     where I: IntoIterator<Item = Expr> {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
@@ -112,7 +112,7 @@ impl DataFrame {
             combined = combined | predicate;
         }
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.filter_expr_with_domain(combined, output_domain, "dataframe::in_context::filter_any")
+        self.filter_expr_with_domain(combined, output_domain, "dataframe::with_execution::filter_any")
     }
 
     fn filter_expr_with_domain(

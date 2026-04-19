@@ -7,19 +7,18 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{Runtime, core::Table, ops::sorting};
+//! use cudf::{Runtime, SortOptions};
 //!
 //! let rt = Runtime::new().unwrap();
-//! let col = rt.column_from_slice(&[30i32, 10, 20]).unwrap();
-//! let table = Table::from_columns(vec![col]).unwrap();
-//!
-//! let sorted = sorting::sort(
-//!     &table.view().unwrap(),
-//!     Some(&[sorting::Order::Ascending]),
-//!     None,
-//! )
+//! let df = cudf::dataframe! {
+//!     "value" => rt.series("value", &[30i32, 10, 20]).unwrap(),
+//! }
 //! .unwrap();
-//! // sorted: [10, 20, 30]
+//! let sorted = df.sort_values(["value"], SortOptions::new()).unwrap();
+//! assert_eq!(
+//!     sorted.series("value").unwrap().to_vec_strict::<i32>().unwrap(),
+//!     vec![10, 20, 30]
+//! );
 //! ```
 
 use std::ptr;

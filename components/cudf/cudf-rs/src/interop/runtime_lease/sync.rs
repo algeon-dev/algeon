@@ -2,11 +2,10 @@ use std::{ffi::c_void, sync::Arc};
 
 use rapids_interop::{CompletionWitness, CompletionWitnessKind, InteropError, InteropErrorKind};
 
-use super::authorities::{
-    ProducerReadinessBinding, RuntimeCompletionAuthority, SharedCudaCompletionWitnessState, create_producer_owned_event,
-};
+use super::authorities::{ProducerReadinessBinding, SharedCudaCompletionWitnessState, create_producer_owned_event};
 use crate::{
     core::error::{self, Result},
+    interop::transfer::TransferCompletionAuthority,
     runtime::{CudaEvent, CudaStream, DeviceId, device_guard::DeviceGuard},
 };
 
@@ -345,18 +344,18 @@ pub(super) fn synchronize_producer_readiness(
 }
 
 pub(crate) fn synchronize_completion_fallback(
-    completion: RuntimeCompletionAuthority<'_>,
+    completion: TransferCompletionAuthority<'_>,
     operation: &'static str,
 ) -> Result<()> {
     match completion {
-        RuntimeCompletionAuthority::SynchronousByReturn => Ok(()),
-        RuntimeCompletionAuthority::SameDeviceStream { stream } => {
+        TransferCompletionAuthority::SynchronousByReturn => Ok(()),
+        TransferCompletionAuthority::SameDeviceStream { stream } => {
             let _guard = DeviceGuard::new(stream.device())?;
             stream
                 .synchronize()
                 .map_err(|error| error.with_operation(operation).with_context("completion", "same_device_stream"))
         },
-        RuntimeCompletionAuthority::CrossDeviceEvent { event } => {
+        TransferCompletionAuthority::CrossDeviceEvent { event } => {
             let _guard = DeviceGuard::new(event.device())?;
             event
                 .synchronize()
@@ -366,19 +365,19 @@ pub(crate) fn synchronize_completion_fallback(
 }
 
 pub(crate) fn synchronize_runtime_release_completion(
-    completion: RuntimeCompletionAuthority<'_>,
+    completion: TransferCompletionAuthority<'_>,
     release_device: i32,
     operation: &'static str,
 ) -> std::result::Result<(), InteropError> {
     match completion {
-        RuntimeCompletionAuthority::SynchronousByReturn => Err(InteropError::new(
+        TransferCompletionAuthority::SynchronousByReturn => Err(InteropError::new(
             InteropErrorKind::ProfileUnsupported,
             "runtime-backed owned-transfer release requires a consumer signal completion authority",
         )
         .with_context("operation", operation)
         .with_context("completion", "synchronous_by_return")
         .with_context("release_device", release_device.to_string())),
-        RuntimeCompletionAuthority::SameDeviceStream { stream } => {
+        TransferCompletionAuthority::SameDeviceStream { stream } => {
             let stream_device = stream.device().ordinal_raw();
             if stream_device != release_device {
                 return Err(InteropError::new(
@@ -396,7 +395,7 @@ pub(crate) fn synchronize_runtime_release_completion(
             synchronize_same_device_stream_raw(raw, stream.device(), operation)
                 .map_err(|error| super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))
         },
-        RuntimeCompletionAuthority::CrossDeviceEvent { event } => {
+        TransferCompletionAuthority::CrossDeviceEvent { event } => {
             let raw = event.interop_raw_handle().map_err(|error| {
                 super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error)
             })?;

@@ -31,6 +31,7 @@ pub mod concatenate;
 pub mod copying;
 pub mod dictionary;
 pub mod expr;
+pub(crate) mod factorization;
 pub mod filter;
 pub mod groupby;
 pub mod hashing;

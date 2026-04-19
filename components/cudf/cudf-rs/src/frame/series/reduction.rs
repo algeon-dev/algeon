@@ -4,7 +4,7 @@
 //! high-level workflow. They preserve cuDF/libcudf reduction semantics while
 //! avoiding an explicit drop into [`Scalar`](crate::core::Scalar).
 
-use super::owned::Series;
+use super::{context::default_execution_context, owned::Series};
 use crate::{
     core::{
         error::{Error, ErrorKind, Result},
@@ -12,9 +12,10 @@ use crate::{
         types::{CudfType, DataType, NullPolicy, TypeId},
     },
     ops::{
-        reduction::{self, ReduceAgg, ScanAgg, ScanType},
-        unary::{self, UnaryOperator},
+        reduction::{ReduceAgg, ScanAgg, ScanType},
+        unary::UnaryOperator,
     },
+    runtime::ExecutionOverrides,
 };
 
 /// Infer the output `DataType` for a reduction aggregation, matching cuDF
@@ -22,7 +23,7 @@ use crate::{
 ///
 /// Accepts `&DataType` (not bare `TypeId`) so that fixed-point scale is
 /// preserved for pass-through arms (min, max, product, decimal sum).
-pub(crate) fn infer_reduce_output_type(input: &DataType, agg: &ReduceAgg) -> Result<DataType> {
+pub(crate) fn infer_reduce_output_type(input: &DataType, agg: &ReduceAgg, operation: &'static str) -> Result<DataType> {
     match agg {
         // sum: int types → Int64, float → same float, Bool8 → Int64,
         //       decimal → same decimal (preserves scale), rest → error
@@ -40,7 +41,7 @@ pub(crate) fn infer_reduce_output_type(input: &DataType, agg: &ReduceAgg) -> Res
             TypeId::Float64 => Ok(DataType::new(TypeId::Float64)),
             id if id.is_decimal() => Ok(*input),
             _ => Err(Error::new(ErrorKind::TypeError, "unsupported type for sum reduction")
-                .with_operation("series::sum")
+                .with_operation(operation)
                 .with_context("input_type", format!("{:?}", input.id()))),
         },
 
@@ -54,6 +55,9 @@ pub(crate) fn infer_reduce_output_type(input: &DataType, agg: &ReduceAgg) -> Res
 
         // any / all: always Bool8
         ReduceAgg::Any | ReduceAgg::All => Ok(DataType::new(TypeId::Bool8)),
+
+        // nunique: libcudf size_type (int32)
+        ReduceAgg::NUnique { .. } => Ok(DataType::new(TypeId::Int32)),
     }
 }
 
@@ -65,7 +69,25 @@ pub(crate) fn scalar_to_optional_value<T: CudfType>(scalar: Scalar) -> Result<Op
     scalar.value::<T>().map(Some)
 }
 
+fn scalar_to_usize_count(scalar: Scalar, operation: &'static str) -> Result<usize> {
+    if !scalar.is_valid().map_err(|e| e.with_operation(operation))? {
+        return Ok(0);
+    }
+
+    let count = scalar.value::<i32>().map_err(|e| e.with_operation(operation))?;
+    usize::try_from(count).map_err(|_| {
+        Error::new(ErrorKind::InvalidOperation, "distinct count must be >= 0")
+            .with_operation(operation)
+            .with_context("distinct_count", count.to_string())
+    })
+}
+
 impl Series {
+    pub(super) fn nunique_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<usize> {
+        let scalar = self.reduce_in_context(ReduceAgg::NUnique { null_policy: NullPolicy::Exclude }, ctx, operation)?;
+        scalar_to_usize_count(scalar, operation)
+    }
+
     // -- Scalar reductions ---------------------------------------------------
 
     /// Reduce the series to a single scalar: sum of all elements.
@@ -76,10 +98,7 @@ impl Series {
     /// # Cost
     /// GPU computation (synchronizes to return host-accessible scalar).
     pub fn sum(&self) -> Result<Scalar> {
-        let cv = self.column.view()?;
-        let dt = self.dtype()?;
-        let out_type = infer_reduce_output_type(&dt, &ReduceAgg::Sum)?;
-        reduction::reduce(&cv, &ReduceAgg::Sum, &out_type)
+        self.reduce_in_context(ReduceAgg::Sum, &default_execution_context(), "series::sum")
     }
 
     /// Reduce the series to a host value: sum of all elements.
@@ -107,10 +126,7 @@ impl Series {
     ///
     /// Output type: same as input. Nulls are excluded.
     pub fn min(&self) -> Result<Scalar> {
-        let cv = self.column.view()?;
-        let dt = self.dtype()?;
-        let out_type = infer_reduce_output_type(&dt, &ReduceAgg::Min)?;
-        reduction::reduce(&cv, &ReduceAgg::Min, &out_type)
+        self.reduce_in_context(ReduceAgg::Min, &default_execution_context(), "series::min")
     }
 
     /// Reduce the series to a host minimum value.
@@ -135,10 +151,7 @@ impl Series {
     ///
     /// Output type: same as input. Nulls are excluded.
     pub fn max(&self) -> Result<Scalar> {
-        let cv = self.column.view()?;
-        let dt = self.dtype()?;
-        let out_type = infer_reduce_output_type(&dt, &ReduceAgg::Max)?;
-        reduction::reduce(&cv, &ReduceAgg::Max, &out_type)
+        self.reduce_in_context(ReduceAgg::Max, &default_execution_context(), "series::max")
     }
 
     /// Reduce the series to a host maximum value.
@@ -152,9 +165,7 @@ impl Series {
     ///
     /// Nulls are excluded.
     pub fn mean(&self) -> Result<Scalar> {
-        let cv = self.column.view()?;
-        let out_type = DataType::new(TypeId::Float64);
-        reduction::reduce(&cv, &ReduceAgg::Mean, &out_type)
+        self.reduce_in_context(ReduceAgg::Mean, &default_execution_context(), "series::mean")
     }
 
     /// Reduce the series to a host mean value.
@@ -178,9 +189,7 @@ impl Series {
     ///
     /// Nulls are excluded.
     pub fn median(&self) -> Result<Scalar> {
-        let cv = self.column.view()?;
-        let out_type = DataType::new(TypeId::Float64);
-        reduction::reduce(&cv, &ReduceAgg::Median, &out_type)
+        self.reduce_in_context(ReduceAgg::Median, &default_execution_context(), "series::median")
     }
 
     /// Reduce the series to a host median value.
@@ -195,9 +204,7 @@ impl Series {
     /// `ddof = 1` gives the sample standard deviation (default in cuDF Python).
     /// Always returns `Float64`. Nulls are excluded.
     pub fn std(&self, ddof: u32) -> Result<Scalar> {
-        let cv = self.column.view()?;
-        let out_type = DataType::new(TypeId::Float64);
-        reduction::reduce(&cv, &ReduceAgg::Std { ddof }, &out_type)
+        self.reduce_in_context(ReduceAgg::Std { ddof }, &default_execution_context(), "series::std")
     }
 
     /// Reduce the series to a host standard deviation value.
@@ -212,9 +219,7 @@ impl Series {
     /// `ddof = 1` gives the sample variance. Always returns `Float64`.
     /// Nulls are excluded.
     pub fn var(&self, ddof: u32) -> Result<Scalar> {
-        let cv = self.column.view()?;
-        let out_type = DataType::new(TypeId::Float64);
-        reduction::reduce(&cv, &ReduceAgg::Variance { ddof }, &out_type)
+        self.reduce_in_context(ReduceAgg::Variance { ddof }, &default_execution_context(), "series::var")
     }
 
     /// Reduce the series to a host variance value.
@@ -228,9 +233,7 @@ impl Series {
     ///
     /// Nulls are excluded.
     pub fn any(&self) -> Result<Scalar> {
-        let cv = self.column.view()?;
-        let out_type = DataType::new(TypeId::Bool8);
-        reduction::reduce(&cv, &ReduceAgg::Any, &out_type)
+        self.reduce_in_context(ReduceAgg::Any, &default_execution_context(), "series::any")
     }
 
     /// Reduce the series to a host `bool`: `true` if any element is truthy.
@@ -245,9 +248,7 @@ impl Series {
     ///
     /// Nulls are excluded.
     pub fn all(&self) -> Result<Scalar> {
-        let cv = self.column.view()?;
-        let out_type = DataType::new(TypeId::Bool8);
-        reduction::reduce(&cv, &ReduceAgg::All, &out_type)
+        self.reduce_in_context(ReduceAgg::All, &default_execution_context(), "series::all")
     }
 
     /// Reduce the series to a host `bool`: `true` if all elements are truthy.
@@ -262,10 +263,7 @@ impl Series {
     ///
     /// Nulls are excluded.
     pub fn product(&self) -> Result<Scalar> {
-        let cv = self.column.view()?;
-        let dt = self.dtype()?;
-        let out_type = infer_reduce_output_type(&dt, &ReduceAgg::Product)?;
-        reduction::reduce(&cv, &ReduceAgg::Product, &out_type)
+        self.reduce_in_context(ReduceAgg::Product, &default_execution_context(), "series::product")
     }
 
     /// Reduce the series to a host product value.
@@ -279,8 +277,7 @@ impl Series {
     ///
     /// Returns `(min_scalar, max_scalar)`.
     pub fn minmax(&self) -> Result<(Scalar, Scalar)> {
-        let cv = self.column.view()?;
-        reduction::minmax(&cv)
+        self.minmax_with_context(&default_execution_context(), "series::minmax")
     }
 
     /// Reduce the series to host minimum and maximum values in one pass.
@@ -311,30 +308,46 @@ impl Series {
     /// # Cost
     /// GPU-allocating: produces a new column.
     pub fn cumsum(&self) -> Result<Series> {
-        let cv = self.column.view()?;
-        let col = reduction::scan(&cv, ScanAgg::Sum, ScanType::Inclusive, NullPolicy::Exclude)?;
-        self.with_inherited_name(col)
+        self.scan_with_context(
+            ScanAgg::Sum,
+            ScanType::Inclusive,
+            NullPolicy::Exclude,
+            &default_execution_context(),
+            "series::cumsum",
+        )
     }
 
     /// Inclusive cumulative minimum. Inherits the source Series' name.
     pub fn cummin(&self) -> Result<Series> {
-        let cv = self.column.view()?;
-        let col = reduction::scan(&cv, ScanAgg::Min, ScanType::Inclusive, NullPolicy::Exclude)?;
-        self.with_inherited_name(col)
+        self.scan_with_context(
+            ScanAgg::Min,
+            ScanType::Inclusive,
+            NullPolicy::Exclude,
+            &default_execution_context(),
+            "series::cummin",
+        )
     }
 
     /// Inclusive cumulative maximum. Inherits the source Series' name.
     pub fn cummax(&self) -> Result<Series> {
-        let cv = self.column.view()?;
-        let col = reduction::scan(&cv, ScanAgg::Max, ScanType::Inclusive, NullPolicy::Exclude)?;
-        self.with_inherited_name(col)
+        self.scan_with_context(
+            ScanAgg::Max,
+            ScanType::Inclusive,
+            NullPolicy::Exclude,
+            &default_execution_context(),
+            "series::cummax",
+        )
     }
 
     /// Inclusive cumulative product. Inherits the source Series' name.
     pub fn cumprod(&self) -> Result<Series> {
-        let cv = self.column.view()?;
-        let col = reduction::scan(&cv, ScanAgg::Product, ScanType::Inclusive, NullPolicy::Exclude)?;
-        self.with_inherited_name(col)
+        self.scan_with_context(
+            ScanAgg::Product,
+            ScanType::Inclusive,
+            NullPolicy::Exclude,
+            &default_execution_context(),
+            "series::cumprod",
+        )
     }
 
     // -- Unary operations ----------------------------------------------------
@@ -346,16 +359,12 @@ impl Series {
     /// # Cost
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn is_nan(&self) -> Result<Series> {
-        let cv = self.column.view()?;
-        let col = unary::is_nan(&cv)?;
-        self.with_inherited_name(col)
+        self.is_nan_with_context(&default_execution_context(), "series::is_nan")
     }
 
     /// Element-wise not-NaN check. Returns a `BOOL8` mask. Inherits name.
     pub fn is_not_nan(&self) -> Result<Series> {
-        let cv = self.column.view()?;
-        let col = unary::is_not_nan(&cv)?;
-        self.with_inherited_name(col)
+        self.is_not_nan_with_context(&default_execution_context(), "series::is_not_nan")
     }
 
     /// Element-wise absolute value. Inherits the source Series' name.
@@ -363,9 +372,7 @@ impl Series {
     /// # Cost
     /// GPU-allocating: produces a new column.
     pub fn abs(&self) -> Result<Series> {
-        let cv = self.column.view()?;
-        let col = unary::unary_operation(&cv, UnaryOperator::Abs)?;
-        self.with_inherited_name(col)
+        self.unary_with_context(UnaryOperator::Abs, &default_execution_context(), "series::abs")
     }
 
     /// Element-wise arithmetic negation. Inherits the source Series' name.
@@ -373,9 +380,7 @@ impl Series {
     /// # Cost
     /// GPU-allocating: produces a new column.
     pub fn neg(&self) -> Result<Series> {
-        let cv = self.column.view()?;
-        let col = unary::unary_operation(&cv, UnaryOperator::Negate)?;
-        self.with_inherited_name(col)
+        self.unary_with_context(UnaryOperator::Negate, &default_execution_context(), "series::neg")
     }
 
     /// Element-wise logical NOT for `Bool8` columns. Inherits the source
@@ -384,8 +389,6 @@ impl Series {
     /// # Cost
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn logical_not(&self) -> Result<Series> {
-        let cv = self.column.view()?;
-        let col = unary::logical_not(&cv)?;
-        self.with_inherited_name(col)
+        self.logical_not_with_context(&default_execution_context(), "series::logical_not")
     }
 }

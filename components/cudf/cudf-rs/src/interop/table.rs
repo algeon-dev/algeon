@@ -338,7 +338,7 @@ impl Table {
     /// the caller thread.
     pub fn try_into_owned_transfer_with_release(
         self,
-    ) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+    ) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
         transfer_from_owned_table_with_runtime_release(self, "interop::Table::try_into_owned_transfer_with_release")
     }
 
@@ -356,7 +356,7 @@ impl Table {
     pub fn try_into_owned_transfer_with_release_synchronization(
         self,
         synchronization: ReleaseSynchronization,
-    ) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+    ) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
         transfer_from_owned_table_with_runtime_release_synchronization(
             self,
             synchronization,

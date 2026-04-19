@@ -46,15 +46,13 @@ pub(crate) fn contains_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Runtime, ops::search};
+/// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
-/// let haystack = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
-/// let needles = rt.column_from_slice(&[20i32, 40]).unwrap();
-/// let result =
-///     search::contains(&haystack.view().unwrap(), &needles.view().unwrap())
-///         .unwrap();
-/// // result: [true, false]
+/// let haystack = rt.series("haystack", &[10i32, 20, 30]).unwrap();
+/// let needles = rt.series("needles", &[20i32, 40]).unwrap();
+/// let result = needles.isin(&haystack).unwrap();
+/// assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false]);
 /// ```
 pub fn contains(haystack: &ColumnView<'_>, needles: &ColumnView<'_>) -> Result<Column> {
     let output_domain = Arc::clone(haystack.execution_domain());

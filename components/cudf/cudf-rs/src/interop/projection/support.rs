@@ -157,15 +157,14 @@ pub(super) fn validity_for_prepared_projection<'a>(
 
 pub(super) fn host_validity_for_prepared_projection(
     operation: &'static str,
-    validity: Option<Vec<bool>>,
+    validity: Option<Arc<[u8]>>,
     null_count: usize,
     validity_id: BufferId,
 ) -> Result<(PhysicalValidity, Option<BufferBinding<'static>>, Option<Arc<[u8]>>), InteropError> {
-    let Some(validity) = validity else {
+    let Some(mask_bytes) = validity else {
         return Ok((PhysicalValidity::NoValidityBuffer, None, None));
     };
 
-    let mask_bytes: Arc<[u8]> = Arc::from(validity_to_bitmask(&validity));
     let binding = retained_host_binding(operation, validity_id, &mask_bytes)?;
     Ok((
         PhysicalValidity::ValidityMask { mask: validity_id, null_count: Some(null_count) },

@@ -15,8 +15,8 @@ use crate::core::types::TypeId;
 /// [`crate::interop::borrowed::TryBorrowColumnView`], which also carry null-mask
 /// semantics, base-pointer-plus-offset behavior, and execution provenance.
 ///
-/// Create a `DeviceSlice` from a [`ColumnView`](crate::core::ColumnView) via
-/// [`device_slice()`](crate::core::ColumnView::device_slice). Use
+/// Create a `DeviceSlice` from a [`Column`](crate::core::Column) via
+/// [`device_slice()`](crate::core::Column::device_slice). Use
 /// [`split_at()`](Self::split_at) to partition it into sub-regions
 /// (e.g., source and destination vertex IDs).
 ///
@@ -25,8 +25,8 @@ use crate::core::types::TypeId;
 /// pointers via [`as_ptr()`](Self::as_ptr); mutable access requires `&mut self`
 /// via [`as_mut_ptr()`](Self::as_mut_ptr), which upholds Rust's aliasing rules.
 ///
-/// The lifetime `'a` ties this slice to the [`ColumnView`](crate::core::ColumnView)
-/// (or [`Column`](crate::core::Column)) that produced it, preventing the slice
+/// The lifetime `'a` ties this slice to the [`Column`](crate::core::Column)
+/// that produced it, preventing the slice
 /// from outliving the GPU memory it points to.
 #[derive(Debug)]
 pub struct DeviceSlice<'a> {
@@ -42,7 +42,7 @@ pub struct DeviceSlice<'a> {
 // metadata (ptr, len, type_id, elem_size) is immutable after construction, and
 // the lifetime parameter ensures the underlying GPU memory remains valid.
 //
-// NOTE: Unlike `ColumnView` and `TableView`, which are `!Send + !Sync`,
+// NOTE: Unlike the internal column/table view handles, which are `!Send + !Sync`,
 // `DeviceSlice` opts _in_ to Send + Sync. This is an intentional design choice:
 // `DeviceSlice` is a thin descriptor (pointer + length + type tag) with no FFI
 // methods that perform device operations, so there is no risk of CUDA-context or

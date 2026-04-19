@@ -11,12 +11,12 @@ use crate::core::{error::Result, memory::DeviceMemoryResource};
 /// overrides the resources used for one operation and then derives output
 /// retained provenance from the resolved primary input.
 #[derive(Clone, Copy, Default)]
-pub struct ExecutionContext<'a> {
+pub struct ExecutionOverrides<'a> {
     stream: Option<&'a CudaStream>,
     mr: Option<&'a DeviceMemoryResource>,
 }
 
-impl<'a> ExecutionContext<'a> {
+impl<'a> ExecutionOverrides<'a> {
     /// Create an empty borrowed override.
     pub fn new() -> Self {
         Self::default()
@@ -39,7 +39,7 @@ impl<'a> ExecutionContext<'a> {
             input_domain,
             self.stream,
             self.mr,
-            "execution_context::resolve_output_domain",
+            "execution_overrides::resolve_output_domain",
         )
     }
 }

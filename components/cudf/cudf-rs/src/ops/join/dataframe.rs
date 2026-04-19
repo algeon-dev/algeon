@@ -13,7 +13,7 @@ use crate::{
         },
     },
     ops::{join, replace},
-    runtime::{execution_context::ExecutionContext, execution_domain::ExecutionDomain},
+    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
 impl DataFrame {
@@ -22,7 +22,7 @@ impl DataFrame {
         &self,
         right: &DataFrame,
         options: join::MergeOptions,
-        ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionOverrides<'_>,
     ) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(self.execution_domain())?;
         self.merge_impl(
@@ -30,7 +30,7 @@ impl DataFrame {
             options,
             output_domain.explicit_exec_options_raw(),
             Some(output_domain),
-            "dataframe::in_context::merge",
+            "dataframe::with_execution::merge",
         )
     }
 
@@ -39,9 +39,9 @@ impl DataFrame {
         &self,
         right: &DataFrame,
         options: join::MergeOptions,
-        ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionOverrides<'_>,
     ) -> Result<DataFrameJoinSides> {
-        let operation: &'static str = "dataframe::in_context::merge_split";
+        let operation: &'static str = "dataframe::with_execution::merge_split";
         let (left_on_strs, right_on_strs, _shared_keys) = resolve_merge_keys(&options, operation)?;
         let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
         let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
@@ -73,7 +73,7 @@ impl DataFrame {
         &self,
         right: &DataFrame,
         options: join::MergeOptions,
-        ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionOverrides<'_>,
     ) -> Result<Self> {
         self.merge_in_context(right, options, ctx)
     }

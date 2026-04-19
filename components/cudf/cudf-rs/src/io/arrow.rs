@@ -12,7 +12,7 @@
 //! let rt = Runtime::new().unwrap();
 //! let ids = rt.series("id", &[1i32, 2, 3]).unwrap();
 //! let scores = rt.series("score", &[10.0f64, 20.0, 30.0]).unwrap();
-//! let df = DataFrame::from_series([ids, scores]).unwrap();
+//! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 //!
 //! // GPU → Arrow RecordBatch (host-copy)
 //! let batch = df.to_record_batch().unwrap();
@@ -255,7 +255,7 @@ fn map_numeric_to_arrow_error(error: arrow::error::ArrowError) -> Error {
 fn numeric_to_arrow<T>(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>>
 where T: ArrowPrimitiveMapping {
     let data: Vec<T> = cv.to_vec()?;
-    let validity = cv.validity()?;
+    let validity = cv.to_host_validity()?;
 
     match validity {
         None => {
@@ -290,7 +290,7 @@ pub(crate) fn __debug_trigger_record_batch_error_for_test() -> Result<()> {
 fn bool_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
     // Avoid constructing Rust `bool` values directly from raw device bytes.
     let data: Vec<bool> = cv.to_raw_bytes()?.into_iter().map(|byte| byte != 0).collect();
-    let validity = cv.validity()?;
+    let validity = cv.to_host_validity()?;
 
     match validity {
         None => Ok(Arc::new(BooleanArray::from(data))),
@@ -352,7 +352,7 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
 fn primitive_to_column<T>(runtime: &Runtime, arr: &dyn Array) -> Result<Column>
 where T: ArrowPrimitiveMapping {
     let prim = arr.as_primitive::<T::ArrowPrimitive>();
-    let values: Vec<T> = prim.values().iter().copied().collect();
+    let values = prim.values().as_ref();
 
     match prim.nulls() {
         None => runtime.column_from_slice(&values),
@@ -366,6 +366,9 @@ where T: ArrowPrimitiveMapping {
 /// Convert a boolean Arrow array to a cudf Column (Bool8).
 fn bool_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
     let bool_arr = arr.as_boolean();
+    // Arrow booleans are bit-packed, while cudf Bool8 is byte-per-value.
+    // This path still needs an explicit host-side unpacking step before the
+    // required host-to-device copy.
     let values: Vec<bool> = bool_arr.values().iter().collect();
 
     match bool_arr.nulls() {

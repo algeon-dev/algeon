@@ -15,7 +15,7 @@ use crate::{
         replace,
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
     },
-    runtime::{execution_context::ExecutionContext, execution_domain::ExecutionDomain},
+    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
 /// How [`DataFrame::dropna`] decides which rows to drop when `thresh` is unset.
@@ -158,13 +158,13 @@ impl DataFrame {
         self.drop_nulls(&subset_names, threshold).map_err(|e| e.with_operation("dataframe::dropna"))
     }
 
-    pub(crate) fn dropna_in_context(&self, opts: DropNaOptions, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn dropna_in_context(&self, opts: DropNaOptions, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let subset_names: Vec<&str> =
             if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
 
         let subset_len = i32::try_from(subset_names.len()).map_err(|_| {
             Error::new(ErrorKind::InvalidOperation, "subset length exceeds i32::MAX")
-                .with_operation("dataframe::in_context::dropna")
+                .with_operation("dataframe::with_execution::dropna")
         })?;
 
         let threshold = if let Some(t) = opts.thresh {
@@ -182,7 +182,7 @@ impl DataFrame {
             threshold,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::in_context::dropna",
+            "dataframe::with_execution::dropna",
         )
     }
 
@@ -199,7 +199,7 @@ impl DataFrame {
     pub(crate) fn drop_duplicates_in_context(
         &self,
         opts: DropDuplicatesOptions,
-        ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionOverrides<'_>,
     ) -> Result<Self> {
         let subset_names: Vec<&str> =
             if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
@@ -210,7 +210,7 @@ impl DataFrame {
             opts.keep,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::in_context::drop_duplicates",
+            "dataframe::with_execution::drop_duplicates",
         )
     }
 

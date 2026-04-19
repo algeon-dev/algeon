@@ -50,15 +50,19 @@ pub(crate) fn gather_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Runtime, core::Table, ops::copying};
+/// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
-/// let col = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
-/// let table = Table::from_columns(vec![col]).unwrap();
-/// let map = rt.column_from_slice(&[2i32, 0]).unwrap();
-/// let result =
-///     copying::gather(&table.view().unwrap(), &map.view().unwrap()).unwrap();
-/// // result row 0 = source row 2 (30), result row 1 = source row 0 (10)
+/// let df = cudf::dataframe! {
+///     "value" => rt.series("value", &[10i32, 20, 30]).unwrap(),
+/// }
+/// .unwrap();
+/// let map = rt.series("row_index", &[2i32, 0]).unwrap();
+/// let result = df.gather(&map).unwrap();
+/// assert_eq!(
+///     result.series("value").unwrap().to_vec_strict::<i32>().unwrap(),
+///     vec![30, 10]
+/// );
 /// ```
 pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
@@ -96,17 +100,19 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Runtime, core::Table, ops::copying};
+/// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
-/// let col = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
-/// let table = Table::from_columns(vec![col]).unwrap();
-/// let map = rt.column_from_slice(&[2i32, 0]).unwrap();
-/// // SAFETY: indices 2 and 0 are valid for a 3-row table.
-/// let result = unsafe {
-///     copying::gather_unchecked(&table.view().unwrap(), &map.view().unwrap())
+/// let df = cudf::dataframe! {
+///     "value" => rt.series("value", &[10i32, 20, 30]).unwrap(),
 /// }
 /// .unwrap();
+/// let map = rt.series("row_index", &[2i32, 0]).unwrap();
+/// let result = df.gather(&map).unwrap();
+/// assert_eq!(
+///     result.series("value").unwrap().to_vec_strict::<i32>().unwrap(),
+///     vec![30, 10]
+/// );
 /// ```
 ///
 /// Prefer [`gather`] unless profiling shows the bounds check is a bottleneck.
@@ -179,19 +185,25 @@ fn copy_if_else_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Runtime, ops::copying};
+/// use cudf::ops::expr::{col, when};
 ///
-/// let rt = Runtime::new().unwrap();
-/// let lhs = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
-/// let rhs = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
-/// let mask = rt.column_from_slice(&[true, false, true]).unwrap();
-/// let result = copying::copy_if_else(
-///     &lhs.view().unwrap(),
-///     &rhs.view().unwrap(),
-///     &mask.view().unwrap(),
-/// )
+/// let rt = cudf::Runtime::new().unwrap();
+/// let df = cudf::dataframe! {
+///     "lhs" => rt.series("lhs", &[10i32, 20, 30]).unwrap(),
+///     "rhs" => rt.series("rhs", &[1i32, 2, 3]).unwrap(),
+///     "keep_lhs" => rt.series("keep_lhs", &[true, false, true]).unwrap(),
+/// }
 /// .unwrap();
-/// // result: [10, 2, 30]
+/// let out = df
+///     .with_columns([when(col("keep_lhs"))
+///         .then(col("lhs"))
+///         .otherwise(col("rhs"))
+///         .alias("out")])
+///     .unwrap();
+/// assert_eq!(
+///     out.series("out").unwrap().to_vec_strict::<i32>().unwrap(),
+///     vec![10, 2, 30]
+/// );
 /// ```
 pub fn copy_if_else(lhs: &ColumnView<'_>, rhs: &ColumnView<'_>, boolean_mask: &ColumnView<'_>) -> Result<Column> {
     let output_domain = Arc::clone(lhs.execution_domain());

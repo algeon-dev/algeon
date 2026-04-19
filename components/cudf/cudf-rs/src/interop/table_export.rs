@@ -299,7 +299,7 @@ pub(super) fn transfer_from_owned_table_with_names(
 pub(super) fn transfer_from_owned_table_with_runtime_release(
     table: Table,
     operation: &'static str,
-) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
     transfer_from_owned_table_with_runtime_release_synchronization(
         table,
         ReleaseSynchronization::Asynchronous,
@@ -311,7 +311,7 @@ pub(super) fn transfer_from_owned_table_with_runtime_release_synchronization(
     table: Table,
     synchronization: ReleaseSynchronization,
     operation: &'static str,
-) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
     transfer_from_owned_table_with_names_and_runtime_release_synchronization(table, None, synchronization, operation)
 }
 
@@ -319,7 +319,7 @@ pub(super) fn transfer_from_owned_table_with_names_and_runtime_release(
     table: Table,
     names: Option<Vec<String>>,
     operation: &'static str,
-) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
     transfer_from_owned_table_with_names_and_runtime_release_synchronization(
         table,
         names,
@@ -333,7 +333,7 @@ pub(super) fn transfer_from_owned_table_with_names_and_runtime_release_synchroni
     names: Option<Vec<String>>,
     synchronization: ReleaseSynchronization,
     operation: &'static str,
-) -> Result<(OwnedTableTransfer, RuntimeOwnedTableTransferReleaser), InteropError> {
+) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
     let (default_device, readiness) = prepared_device_readiness(operation, table.execution_domain())?;
     let (num_rows, columns, semantic_columns, bindings) = {
         let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
@@ -416,7 +416,7 @@ pub(super) fn transfer_partitioned_owned_table_from_columns(
 pub(super) fn transfer_partitioned_owned_table_from_columns_with_runtime_release(
     producer: PartitionedDataFrameExport,
     operation: &'static str,
-) -> Result<(PartitionedOwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser), InteropError> {
+) -> Result<(PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferReleaser), InteropError> {
     transfer_partitioned_owned_table_from_columns_with_runtime_release_synchronization(
         producer,
         ReleaseSynchronization::Asynchronous,
@@ -428,7 +428,7 @@ pub(super) fn transfer_partitioned_owned_table_from_columns_with_runtime_release
     producer: PartitionedDataFrameExport,
     synchronization: ReleaseSynchronization,
     operation: &'static str,
-) -> Result<(PartitionedOwnedTableTransfer, PartitionedRuntimeOwnedTableTransferReleaser), InteropError> {
+) -> Result<(PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferReleaser), InteropError> {
     let schema_names = producer.column_names_owned();
     let row_count = producer.num_rows();
     let mut partitions = Vec::new();
@@ -445,10 +445,10 @@ pub(super) fn transfer_partitioned_owned_table_from_columns_with_runtime_release
             operation,
         )?;
         partitions.push(PartitionedOwnedTableTransferPartition::new(top_level_column_indices.clone(), transfer));
-        releasers.push(PartitionedRuntimeOwnedTableTransferReleaserPartition::new(top_level_column_indices, releaser));
+        releasers.push(PartitionedOwnedTableTransferReleaserPartition::new(top_level_column_indices, releaser));
     }
 
     let transfer = PartitionedOwnedTableTransfer::try_new(Some(schema_names), row_count, partitions)
         .map_err(|error| error.with_context("operation", operation))?;
-    Ok((transfer, PartitionedRuntimeOwnedTableTransferReleaser::new(releasers)))
+    Ok((transfer, PartitionedOwnedTableTransferReleaser::new(releasers)))
 }

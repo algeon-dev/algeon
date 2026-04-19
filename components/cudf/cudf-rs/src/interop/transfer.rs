@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     mem::ManuallyDrop,
     sync::{Arc, Mutex, MutexGuard},
     thread,
@@ -12,6 +13,56 @@ pub use rapids_interop::{
 
 use super::*;
 use crate::runtime::{CudaEvent, CudaStream};
+
+/// Consumer-supplied completion authority for owned-transfer release.
+///
+/// Unlike prepared-export lease completion, owned-transfer release may defer
+/// the actual drop onto a background thread according to the transfer root's
+/// [`ReleaseSynchronization`]. This authority therefore accepts `cudf-rs`
+/// runtime handles so the releaser can capture owned CUDA wait primitives
+/// before returning to the caller.
+#[derive(Clone, Copy)]
+pub enum TransferCompletionAuthority<'a> {
+    /// Completion is guaranteed before the release call returns.
+    SynchronousByReturn,
+    /// Completion will be observed on the supplied CUDA stream.
+    SameDeviceStream { stream: &'a CudaStream },
+    /// Completion will be observed through the supplied CUDA event.
+    CrossDeviceEvent { event: &'a CudaEvent },
+}
+
+impl<'a> TransferCompletionAuthority<'a> {
+    /// Use a synchronous-by-return completion contract.
+    pub const fn synchronous_by_return() -> Self {
+        Self::SynchronousByReturn
+    }
+
+    /// Use a same-device stream completion contract.
+    pub const fn same_device_stream(stream: &'a CudaStream) -> Self {
+        Self::SameDeviceStream { stream }
+    }
+
+    /// Use a cross-device event completion contract.
+    pub const fn cross_device_event(event: &'a CudaEvent) -> Self {
+        Self::CrossDeviceEvent { event }
+    }
+}
+
+impl fmt::Debug for TransferCompletionAuthority<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SynchronousByReturn => f.write_str("TransferCompletionAuthority::SynchronousByReturn"),
+            Self::SameDeviceStream { stream } => f
+                .debug_struct("TransferCompletionAuthority::SameDeviceStream")
+                .field("device", &stream.device())
+                .finish(),
+            Self::CrossDeviceEvent { event } => f
+                .debug_struct("TransferCompletionAuthority::CrossDeviceEvent")
+                .field("device", &event.device())
+                .finish(),
+        }
+    }
+}
 
 pub(super) struct OwnedColumnTransferState {
     // Retain the owning column so owned-transfer buffer bindings continue to
@@ -92,19 +143,19 @@ enum RuntimeOwnedReleaseCompletion {
 
 impl RuntimeOwnedReleaseCompletion {
     fn try_capture(
-        completion: RuntimeCompletionAuthority<'_>,
+        completion: TransferCompletionAuthority<'_>,
         release_device: i32,
         operation: &'static str,
     ) -> std::result::Result<Self, InteropError> {
         match completion {
-            RuntimeCompletionAuthority::SynchronousByReturn => Err(InteropError::new(
+            TransferCompletionAuthority::SynchronousByReturn => Err(InteropError::new(
                 InteropErrorKind::ProfileUnsupported,
                 "runtime-backed owned-transfer release requires a consumer signal completion authority",
             )
             .with_context("operation", operation)
             .with_context("completion", "synchronous_by_return")
             .with_context("release_device", release_device.to_string())),
-            RuntimeCompletionAuthority::SameDeviceStream { stream } => {
+            TransferCompletionAuthority::SameDeviceStream { stream } => {
                 let stream_device = stream.device().ordinal_raw();
                 if stream_device != release_device {
                     return Err(InteropError::new(
@@ -119,7 +170,7 @@ impl RuntimeOwnedReleaseCompletion {
 
                 Ok(Self::SameDeviceStream { stream: stream.clone() })
             },
-            RuntimeCompletionAuthority::CrossDeviceEvent { event } => {
+            TransferCompletionAuthority::CrossDeviceEvent { event } => {
                 Ok(Self::CrossDeviceEvent { event: event.clone() })
             },
         }
@@ -128,12 +179,12 @@ impl RuntimeOwnedReleaseCompletion {
     fn wait_for_release(&self, release_device: i32, operation: &'static str) -> std::result::Result<(), InteropError> {
         match self {
             Self::SameDeviceStream { stream } => runtime_lease::synchronize_runtime_release_completion(
-                RuntimeCompletionAuthority::same_device_stream(stream),
+                TransferCompletionAuthority::same_device_stream(stream),
                 release_device,
                 operation,
             ),
             Self::CrossDeviceEvent { event } => runtime_lease::synchronize_runtime_release_completion(
-                RuntimeCompletionAuthority::cross_device_event(event),
+                TransferCompletionAuthority::cross_device_event(event),
                 release_device,
                 operation,
             ),
@@ -143,11 +194,11 @@ impl RuntimeOwnedReleaseCompletion {
     fn synchronize_fallback(&self, operation: &'static str) -> crate::Result<()> {
         match self {
             Self::SameDeviceStream { stream } => runtime_lease::synchronize_completion_fallback(
-                RuntimeCompletionAuthority::same_device_stream(stream),
+                TransferCompletionAuthority::same_device_stream(stream),
                 operation,
             ),
             Self::CrossDeviceEvent { event } => runtime_lease::synchronize_completion_fallback(
-                RuntimeCompletionAuthority::cross_device_event(event),
+                TransferCompletionAuthority::cross_device_event(event),
                 operation,
             ),
         }
@@ -261,7 +312,7 @@ impl<T> RuntimeOwnedTransferState<T> {
 
     fn release(
         state: &Arc<Self>,
-        completion: RuntimeCompletionAuthority<'_>,
+        completion: TransferCompletionAuthority<'_>,
         operation: &'static str,
         transfer_kind: &'static str,
     ) -> std::result::Result<(), InteropError>
@@ -354,11 +405,11 @@ impl<T> RuntimeOwnedTransferState<T> {
 /// [`ReleaseSynchronization`]. Async transfers return once release has been
 /// accepted and scheduled, while `MaySynchronizeInternally` transfers may
 /// block the caller thread while carrying out the release contract.
-pub struct RuntimeOwnedColumnTransferReleaser {
+pub struct OwnedColumnTransferReleaser {
     state: Arc<RuntimeOwnedTransferState<Column>>,
 }
 
-impl RuntimeOwnedColumnTransferReleaser {
+impl OwnedColumnTransferReleaser {
     /// Accept release for this transfer and schedule any required
     /// consumer-signal wait according to the matching transfer root's
     /// declared release synchronization.
@@ -366,11 +417,11 @@ impl RuntimeOwnedColumnTransferReleaser {
     /// This fails if ownership has already been claimed by native import,
     /// already accepted by a prior release call, or if the supplied
     /// completion authority does not match the release contract.
-    pub fn release(self, completion: RuntimeCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
+    pub fn release(self, completion: TransferCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
         RuntimeOwnedTransferState::release(
             &self.state,
             completion,
-            "interop::RuntimeOwnedColumnTransferReleaser::release",
+            "interop::OwnedColumnTransferReleaser::release",
             "owned column transfer",
         )
     }
@@ -382,11 +433,11 @@ impl RuntimeOwnedColumnTransferReleaser {
 /// [`ReleaseSynchronization`]. Async transfers return once release has been
 /// accepted and scheduled, while `MaySynchronizeInternally` transfers may
 /// block the caller thread while carrying out the release contract.
-pub struct RuntimeOwnedTableTransferReleaser {
+pub struct OwnedTableTransferReleaser {
     state: Arc<RuntimeOwnedTransferState<Table>>,
 }
 
-impl RuntimeOwnedTableTransferReleaser {
+impl OwnedTableTransferReleaser {
     /// Accept release for this transfer and schedule any required
     /// consumer-signal wait according to the matching transfer root's
     /// declared release synchronization.
@@ -394,11 +445,11 @@ impl RuntimeOwnedTableTransferReleaser {
     /// This fails if ownership has already been claimed by native import,
     /// already accepted by a prior release call, or if the supplied
     /// completion authority does not match the release contract.
-    pub fn release(self, completion: RuntimeCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
+    pub fn release(self, completion: TransferCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
         RuntimeOwnedTransferState::release(
             &self.state,
             completion,
-            "interop::RuntimeOwnedTableTransferReleaser::release",
+            "interop::OwnedTableTransferReleaser::release",
             "owned table transfer",
         )
     }
@@ -409,15 +460,15 @@ impl RuntimeOwnedTableTransferReleaser {
 /// This preserves the original top-level column indices for the partition and
 /// exposes the same one-shot runtime-backed release behavior as the underlying
 /// single-table releaser.
-pub struct PartitionedRuntimeOwnedTableTransferReleaserPartition {
+pub struct PartitionedOwnedTableTransferReleaserPartition {
     top_level_column_indices: Vec<usize>,
-    releaser: RuntimeOwnedTableTransferReleaser,
+    releaser: OwnedTableTransferReleaser,
 }
 
-impl PartitionedRuntimeOwnedTableTransferReleaserPartition {
+impl PartitionedOwnedTableTransferReleaserPartition {
     /// Create one partition releaser wrapper from partition metadata and the
     /// underlying single-table runtime-backed releaser.
-    pub fn new(top_level_column_indices: Vec<usize>, releaser: RuntimeOwnedTableTransferReleaser) -> Self {
+    pub fn new(top_level_column_indices: Vec<usize>, releaser: OwnedTableTransferReleaser) -> Self {
         Self { top_level_column_indices, releaser }
     }
 
@@ -432,12 +483,12 @@ impl PartitionedRuntimeOwnedTableTransferReleaserPartition {
     ///
     /// This is mutually exclusive with importing the matching partition's
     /// `OwnedTableTransfer` back into a native `cudf-rs` `Table`.
-    pub fn release(self, completion: RuntimeCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
+    pub fn release(self, completion: TransferCompletionAuthority<'_>) -> std::result::Result<(), InteropError> {
         self.releaser.release(completion)
     }
 
     /// Consume this wrapper and return the underlying single-table releaser.
-    pub fn into_releaser(self) -> RuntimeOwnedTableTransferReleaser {
+    pub fn into_releaser(self) -> OwnedTableTransferReleaser {
         self.releaser
     }
 }
@@ -446,24 +497,24 @@ impl PartitionedRuntimeOwnedTableTransferReleaserPartition {
 ///
 /// Each entry preserves one retained-provenance partition, one release
 /// contract, and one exclusive ownership state machine.
-pub struct PartitionedRuntimeOwnedTableTransferReleaser {
-    partitions: Vec<PartitionedRuntimeOwnedTableTransferReleaserPartition>,
+pub struct PartitionedOwnedTableTransferReleaser {
+    partitions: Vec<PartitionedOwnedTableTransferReleaserPartition>,
 }
 
-impl PartitionedRuntimeOwnedTableTransferReleaser {
+impl PartitionedOwnedTableTransferReleaser {
     /// Create a partitioned releaser wrapper from already-built partition
     /// releasers.
-    pub fn new(partitions: Vec<PartitionedRuntimeOwnedTableTransferReleaserPartition>) -> Self {
+    pub fn new(partitions: Vec<PartitionedOwnedTableTransferReleaserPartition>) -> Self {
         Self { partitions }
     }
 
     /// Borrow the per-partition releasers in schema order.
-    pub fn partitions(&self) -> &[PartitionedRuntimeOwnedTableTransferReleaserPartition] {
+    pub fn partitions(&self) -> &[PartitionedOwnedTableTransferReleaserPartition] {
         &self.partitions
     }
 
     /// Consume this wrapper and return the per-partition releasers.
-    pub fn into_partitions(self) -> Vec<PartitionedRuntimeOwnedTableTransferReleaserPartition> {
+    pub fn into_partitions(self) -> Vec<PartitionedOwnedTableTransferReleaserPartition> {
         self.partitions
     }
 }
@@ -492,18 +543,18 @@ pub(super) fn runtime_owned_column_owner_and_releaser(
     column: Column,
     release_device: i32,
     release_synchronization: ReleaseSynchronization,
-) -> (RuntimeOwnedColumnTransferOwner, RuntimeOwnedColumnTransferReleaser) {
+) -> (RuntimeOwnedColumnTransferOwner, OwnedColumnTransferReleaser) {
     let state = RuntimeOwnedTransferState::new(column, release_device, release_synchronization);
-    (RuntimeOwnedColumnTransferOwner { state: Arc::clone(&state) }, RuntimeOwnedColumnTransferReleaser { state })
+    (RuntimeOwnedColumnTransferOwner { state: Arc::clone(&state) }, OwnedColumnTransferReleaser { state })
 }
 
 pub(super) fn runtime_owned_table_owner_and_releaser(
     table: Table,
     release_device: i32,
     release_synchronization: ReleaseSynchronization,
-) -> (RuntimeOwnedTableTransferOwner, RuntimeOwnedTableTransferReleaser) {
+) -> (RuntimeOwnedTableTransferOwner, OwnedTableTransferReleaser) {
     let state = RuntimeOwnedTransferState::new(table, release_device, release_synchronization);
-    (RuntimeOwnedTableTransferOwner { state: Arc::clone(&state) }, RuntimeOwnedTableTransferReleaser { state })
+    (RuntimeOwnedTableTransferOwner { state: Arc::clone(&state) }, OwnedTableTransferReleaser { state })
 }
 
 pub(super) fn to_static_binding(

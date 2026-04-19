@@ -32,15 +32,14 @@ pub enum FillPolicy {
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Runtime, ops::replace};
+/// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
-/// let col = rt
-///     .column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
+/// let series = rt
+///     .nullable_series("value", &[1i32, 0, 3], &[true, false, true])
 ///     .unwrap();
-/// let fill = rt.scalar(99i32).unwrap();
-/// let result = replace::replace_nulls(&col.view().unwrap(), &fill).unwrap();
-/// // result: [1, 99, 3]
+/// let result = series.fillna(99i32).unwrap();
+/// assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 99, 3]);
 /// ```
 pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
@@ -85,19 +84,15 @@ pub(crate) fn replace_nulls_with_exec_options(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{Runtime, ops::replace};
+/// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
 /// let left = rt
-///     .column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true])
+///     .nullable_series("left", &[1i32, 0, 3], &[true, false, true])
 ///     .unwrap();
-/// let right = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
-/// let result = replace::replace_nulls_column(
-///     &left.view().unwrap(),
-///     &right.view().unwrap(),
-/// )
-/// .unwrap();
-/// // result: [1, 20, 3]
+/// let right = rt.series("right", &[10i32, 20, 30]).unwrap();
+/// let result = left.fillna_with_series(&right).unwrap();
+/// assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 20, 3]);
 /// ```
 pub fn replace_nulls_column(input: &ColumnView<'_>, replacement: &ColumnView<'_>) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
@@ -148,24 +143,14 @@ pub(crate) fn replace_nulls_column_with_exec_options(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{
-///     Runtime,
-///     ops::replace::{self, FillPolicy},
-/// };
+/// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
-/// let col = rt
-///     .column_from_slice_nullable(
-///         &[1i32, 0, 0, 4],
-///         &[true, false, false, true],
-///     )
+/// let series = rt
+///     .nullable_series("value", &[1i32, 0, 0, 4], &[true, false, false, true])
 ///     .unwrap();
-/// let result = replace::replace_nulls_policy(
-///     &col.view().unwrap(),
-///     FillPolicy::Preceding,
-/// )
-/// .unwrap();
-/// // result: [1, 1, 1, 4]
+/// let result = series.ffill().unwrap();
+/// assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 1, 1, 4]);
 /// ```
 pub fn replace_nulls_policy(input: &ColumnView<'_>, policy: FillPolicy) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());

@@ -10,7 +10,7 @@ use crate::{
     frame::series::Series,
     internal::hash::{FastHashMap, FastHashSet, fast_hash_map_with_capacity},
     ops,
-    runtime::{execution_context::ExecutionContext, execution_domain::ExecutionDomain},
+    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,7 +154,7 @@ impl DataFrame {
             ));
         }
 
-        DataFrame::from_named_pairs(columns).map_err(|e| e.with_operation(operation))
+        DataFrame::from_columns(columns).map_err(|e| e.with_operation(operation))
     }
 
     /// Concatenate two DataFrames row-wise.
@@ -214,14 +214,14 @@ impl DataFrame {
     }
 
     /// Concatenate two DataFrames row-wise using a borrowed per-operation execution override.
-    pub(crate) fn concat_in_context(&self, other: &DataFrame, ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn concat_in_context(&self, other: &DataFrame, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         self.concat_many_in_context(&[other], ctx)
     }
 
     /// Concatenate multiple DataFrames row-wise using a borrowed per-operation execution override.
-    pub(crate) fn concat_many_in_context(&self, others: &[&DataFrame], ctx: &ExecutionContext<'_>) -> Result<Self> {
+    pub(crate) fn concat_many_in_context(&self, others: &[&DataFrame], ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        let operation = "dataframe::in_context::concat_many";
+        let operation = "dataframe::with_execution::concat_many";
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
             self.domain.fence_stream(operation)?;
         }

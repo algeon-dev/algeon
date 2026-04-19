@@ -3,30 +3,16 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{DataType, Runtime, TypeId, ops::reduction};
+//! use cudf::Runtime;
 //!
 //! let rt = Runtime::new().unwrap();
-//! let col = rt.column_from_slice(&[10i32, 20, 30]).unwrap();
-//! let view = col.view().unwrap();
+//! let series = rt.series("value", &[10i32, 20, 30]).unwrap();
 //!
-//! // Reduce to a single scalar.
-//! let total = reduction::reduce(
-//!     &view,
-//!     &reduction::ReduceAgg::Sum,
-//!     &DataType::new(TypeId::Int32),
-//! )
-//! .unwrap();
-//! assert_eq!(total.value::<i32>().unwrap(), 60);
+//! let total = series.sum_value::<i32>().unwrap();
+//! assert_eq!(total, 60);
 //!
-//! // Cumulative (prefix) sum.
-//! let cumsum = reduction::scan(
-//!     &view,
-//!     reduction::ScanAgg::Sum,
-//!     reduction::ScanType::Inclusive,
-//!     reduction::NullPolicy::Exclude,
-//! )
-//! .unwrap();
-//! // cumsum: [10, 30, 60]
+//! let cumsum = series.cumsum().unwrap();
+//! assert_eq!(cumsum.to_vec_strict::<i32>().unwrap(), vec![10, 30, 60]);
 //! ```
 
 use std::{os::raw::c_void, ptr};
@@ -49,6 +35,10 @@ pub enum ReduceAgg {
     Median,
     Any,
     All,
+    /// Count distinct elements, with configurable null handling.
+    NUnique {
+        null_policy: NullPolicy,
+    },
     /// Variance with degrees-of-freedom correction.
     Variance {
         ddof: u32,
@@ -103,6 +93,7 @@ fn reduce_agg_name(agg: &ReduceAgg) -> &'static str {
         ReduceAgg::Median => "median",
         ReduceAgg::Any => "any",
         ReduceAgg::All => "all",
+        ReduceAgg::NUnique { .. } => "nunique",
         ReduceAgg::Variance { .. } => "variance",
         ReduceAgg::Std { .. } => "std",
     }
@@ -171,6 +162,12 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAgg) -> Result<*mut c_void> {
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_ALL, &mut handle),
                 "reduction::create_reduce_agg_handle(all)",
+            )?;
+        },
+        ReduceAgg::NUnique { null_policy } => {
+            error::check_status_in(
+                cudf_sys::cudf_reduce_aggregation_create_nunique(*null_policy as i32, &mut handle),
+                "reduction::create_reduce_agg_handle(nunique)",
             )?;
         },
         ReduceAgg::Variance { ddof } => {

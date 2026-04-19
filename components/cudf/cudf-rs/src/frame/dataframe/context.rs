@@ -3,7 +3,7 @@ use crate::{
     Expr, Result,
     frame::series::Series,
     ops::{join::MergeOptions, sorting::SortOptions},
-    runtime::ExecutionContext,
+    runtime::ExecutionOverrides,
 };
 
 macro_rules! dataframe_scope_forward {
@@ -27,14 +27,14 @@ macro_rules! dataframe_scope_forward {
 #[must_use]
 pub struct DataFrameExecutionScope<'df, 'ctx, 'handles> {
     df: &'df DataFrame,
-    ctx: &'ctx ExecutionContext<'handles>,
+    ctx: &'ctx ExecutionOverrides<'handles>,
 }
 
 impl DataFrame {
     /// Borrow a per-operation execution override for subsequent high-level calls.
-    pub fn in_context<'df, 'ctx, 'handles>(
+    pub fn with_execution<'df, 'ctx, 'handles>(
         &'df self,
-        ctx: &'ctx ExecutionContext<'handles>,
+        ctx: &'ctx ExecutionOverrides<'handles>,
     ) -> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         DataFrameExecutionScope { df: self, ctx }
     }

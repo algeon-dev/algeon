@@ -4,15 +4,17 @@
 //! and FFI calls can fail at runtime.
 //!
 //! Supported forms:
-//! - `Series op Series` (all value/ref combos): `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`
+//! - `Series op Series` (all value/ref combos): `Add`, `Sub`, `Mul`, `Div`, `Rem`
 //! - `Series op scalar` / `scalar op Series` for all arithmetic numeric
 //!   `CudfType`s (`u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`,
 //!   `f32`, `f64`)
 //! - `-Series` (`Neg`) and `!Series` (`Not`)
 //!
 //! Named methods (`add`, `sub`, `logical_and`, `logical_or`, `mul_scalar`,
-//! etc.) remain on `Series` in
-//! `owned.rs`. Operators forward to those methods so behaviour stays aligned.
+//! etc.) remain on `Series` in `owned.rs`. In particular, boolean mask
+//! composition stays on `logical_and` / `logical_or` instead of overloading
+//! Rust's `&` / `|`, because those operators conventionally imply bitwise
+//! semantics for integer-valued data.
 
 use std::sync::Arc;
 
@@ -69,8 +71,6 @@ impl_series_series_op!(Sub, sub, sub);
 impl_series_series_op!(Mul, mul, mul);
 impl_series_series_op!(Div, div, div);
 impl_series_series_op!(Rem, rem, rem);
-impl_series_series_op!(BitAnd, bitand, logical_and);
-impl_series_series_op!(BitOr, bitor, logical_or);
 
 // ===========================================================================
 // Series op scalar — returns Result<Series>

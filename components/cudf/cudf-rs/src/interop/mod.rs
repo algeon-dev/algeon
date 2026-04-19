@@ -43,22 +43,17 @@
 //!   read access with explicit read-start and completion contracts.
 //! - [`CompletionWitness`] and [`LeaseCompletionResult`] make completion and
 //!   drop fallback visible at the shared contract layer.
-//! - [`RuntimeReadStartAuthority`], [`RuntimeCompletionAuthority`],
-//!   [`RuntimeActiveColumnReadLease`], [`RuntimeActiveTableReadLease`], and
-//!   their related `Runtime*` result and witness types are CUDA-specific
-//!   compatibility shims layered on that same shared contract. Prefer the
-//!   shared names for new interop APIs unless you specifically need `cudf-rs`
-//!   runtime handles and producer-owned [`crate::runtime::CudaEvent`]
-//!   witnesses.
-//! - [`RuntimeOwnedColumnTransferReleaser`] and
-//!   [`RuntimeOwnedTableTransferReleaser`] are CUDA-backed release helpers for
-//!   the signal-driven owned-transfer producer path. Their caller-visible
-//!   behavior follows the matching transfer root's declared
-//!   [`ReleaseSynchronization`]: async roots return once release has been
-//!   accepted and scheduled, while `MaySynchronizeInternally` roots may block
-//!   while carrying out the release contract.
-//! - [`PartitionedRuntimeOwnedTableTransferReleaser`] mirrors that runtime
-//!   release path for partitioned owned transfer by preserving one releaser per
+//! - Use [`cuda_stream_handle`] and [`cuda_event_handle`] when a caller already
+//!   has `cudf-rs` runtime handles and needs to activate a shared prepared
+//!   lease with explicit CUDA stream or event facts.
+//! - [`OwnedColumnTransferReleaser`] and [`OwnedTableTransferReleaser`] are
+//!   CUDA-backed release helpers for the signal-driven owned-transfer producer
+//!   path. Their caller-visible behavior follows the matching transfer root's
+//!   declared [`ReleaseSynchronization`]: async roots return once release has
+//!   been accepted and scheduled, while `MaySynchronizeInternally` roots may
+//!   block while carrying out the release contract.
+//! - [`PartitionedOwnedTableTransferReleaser`] mirrors that release path for
+//!   partitioned owned transfer by preserving one releaser per
 //!   retained-provenance partition. Import and release remain mutually
 //!   exclusive independently for each partition.
 //! - Borrowing and prepared export do not transfer ownership.
@@ -147,7 +142,6 @@ use execution::*;
 pub use frame::PartitionedDataFrameExport;
 use prepared::*;
 use projection::{prepared_column_projection_from_view, prepared_host_column_projection_from_view};
-use runtime_lease::*;
 pub use table::{PartitionedLocalTableResult, PartitionedLocalTableResults};
 pub mod prepared {
     pub use rapids_interop::{
@@ -161,14 +155,7 @@ pub mod prepared {
         TryPrepareHostTableExport,
     };
 }
-pub mod runtime {
-    pub use super::runtime_lease::{
-        RuntimeActiveColumnReadLease, RuntimeActiveTableReadLease, RuntimeCompletionAuthority,
-        RuntimeCompletionWitness, RuntimeLeaseCompletionResult, RuntimeReadStartAuthority,
-        TryActivateRuntimeColumnReadLease, TryActivateRuntimeTableReadLease,
-        cuda_explicit_completion_required_lease_backend,
-    };
-}
+pub use runtime_lease::cuda_explicit_completion_required_lease_backend;
 use table_export::{
     prepare_device_table_export_from_columns, prepare_device_table_export_from_columns_with_readiness,
     prepare_host_table_export_from_columns, prepare_host_table_export_from_view,
@@ -185,7 +172,7 @@ use crate::{
         column::{Column, ColumnView, copy_view_to_owned},
         error,
         table::{Table, TableView},
-        types::{DataType, TypeId, validity_to_bitmask},
+        types::{DataType, TypeId},
     },
     frame::{dataframe::DataFrame, series::Series},
     internal::{
@@ -195,3 +182,31 @@ use crate::{
     ops::dictionary,
     runtime::{CudaEvent, Runtime, execution_domain::ExecutionDomain},
 };
+
+/// Borrow a `cudf-rs` CUDA stream as a shared RAPIDS interop stream handle.
+///
+/// This does not transfer ownership. The returned handle is valid only for the
+/// lifetime of `stream`.
+pub fn cuda_stream_handle(
+    stream: &crate::runtime::CudaStream,
+) -> Result<rapids_interop::CudaStreamHandle<'_>, InteropError> {
+    let raw = stream.interop_raw_handle().map_err(|error| {
+        map_cudf_error(InteropErrorKind::ReadinessUnavailable, "interop::cuda_stream_handle", error)
+    })?;
+    rapids_interop::CudaStreamHandle::from_raw_on_device(raw, stream.device().ordinal_raw())
+        .map_err(|error| error.with_context("operation", "interop::cuda_stream_handle"))
+}
+
+/// Borrow a `cudf-rs` CUDA event as a shared RAPIDS interop event handle.
+///
+/// This does not transfer ownership. The returned handle is valid only for the
+/// lifetime of `event`.
+pub fn cuda_event_handle(
+    event: &crate::runtime::CudaEvent,
+) -> Result<rapids_interop::CudaEventHandle<'_>, InteropError> {
+    let raw = event
+        .interop_raw_handle()
+        .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, "interop::cuda_event_handle", error))?;
+    rapids_interop::CudaEventHandle::from_raw_on_device(raw, event.device().ordinal_raw())
+        .map_err(|error| error.with_context("operation", "interop::cuda_event_handle"))
+}
