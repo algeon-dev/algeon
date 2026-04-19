@@ -4,7 +4,7 @@ mod common;
 use std::collections::HashMap;
 
 use common::{
-    cudf::{explicit_runtime, read_parquet_table, unique_temp_dir, write_parquet_table},
+    cudf::{explicit_runtime, read_parquet_dataframe, unique_temp_dir, write_parquet_dataframe},
     support,
     support::{
         BFS_GRAPH_DST_I32, BFS_GRAPH_SRC_I32, BFS_SOURCE_VERTEX_I32, DIRECTED_STAR_DST_I32, DIRECTED_STAR_SRC_I32,
@@ -139,16 +139,13 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
     let out_path = tmp_dir.join("centrality.parquet");
 
-    let table = df.to_table_copy().expect("to_table");
-    let table_view = table.view().expect("table view");
-    write_parquet_table(&table_view, &out_path, &["vertex", "value"], &explicit_runtime());
+    write_parquet_dataframe(&df, &out_path);
 
-    let read_table = read_parquet_table(&out_path, &explicit_runtime());
-    let read_view = read_table.view().expect("read table view");
+    let read_df = read_parquet_dataframe(&out_path, &explicit_runtime());
 
-    assert_eq!(read_view.num_columns().expect("ncols"), 2);
-    let read_verts: Vec<i32> = read_view.column(0).expect("col 0").to_vec().expect("col 0 vec");
-    let read_vals: Vec<f32> = read_view.column(1).expect("col 1").to_vec().expect("col 1 vec");
+    assert_eq!(read_df.num_columns(), 2);
+    let read_verts: Vec<i32> = read_df.series("vertex").expect("vertex").to_vec_strict().expect("vertex vec");
+    let read_vals: Vec<f32> = read_df.series("value").expect("value").to_vec_strict().expect("value vec");
 
     assert_eq!(read_verts, expected_vertices, "vertex column mismatch after Parquet round-trip");
     assert_eq!(read_vals, expected_values, "value column mismatch after Parquet round-trip");

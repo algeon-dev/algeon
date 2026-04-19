@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cudf::{core::Table, interop::prepared::PreparedTableExport, io::parquet};
+use cudf::interop::prepared::PreparedTableExport;
 use cugraph::{
     array::DeviceArray,
     centrality::PageRankParams,
@@ -23,11 +23,11 @@ pub fn explicit_runtime() -> cudf::Runtime {
 }
 
 pub fn i32_series_device_ptr(series: &cudf::Series) -> usize {
-    series.as_column_view().expect("column view").device_slice::<i32>().expect("i32 device slice").as_ptr() as usize
+    series.as_column().device_slice::<i32>().expect("i32 device slice").as_ptr() as usize
 }
 
 pub fn f32_series_device_ptr(series: &cudf::Series) -> usize {
-    series.as_column_view().expect("column view").device_slice::<f32>().expect("f32 device slice").as_ptr() as usize
+    series.as_column().device_slice::<f32>().expect("f32 device slice").as_ptr() as usize
 }
 
 pub fn assert_named_edge_columns(df: &cudf::DataFrame) {
@@ -94,13 +94,14 @@ pub fn python_weighted_reciprocal_dataframe(runtime: &cudf::Runtime) -> cudf::Da
     let src = runtime.series("src", &[0i32, 1, 1, 2]).expect("src");
     let dst = runtime.series("dst", &[1i32, 0, 2, 1]).expect("dst");
     let wgt = runtime.series("weight", &[5.0f32, 2.0, 1.0, 1.0]).expect("weight");
-    cudf::DataFrame::from_series([src, dst, wgt]).expect("python-weighted reciprocal dataframe")
+    cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", wgt)])
+        .expect("python-weighted reciprocal dataframe")
 }
 
 pub fn python_undirected_multigraph_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
     let src = runtime.series("src", &[0i32, 0, 1]).expect("src");
     let dst = runtime.series("dst", &[1i32, 1, 2]).expect("dst");
-    cudf::DataFrame::from_series([src, dst]).expect("python undirected multigraph dataframe")
+    cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("python undirected multigraph dataframe")
 }
 
 pub fn python_weighted_reciprocal_expected_pagerank_map(handle: &ResourceHandle) -> HashMap<i32, f32> {
@@ -121,23 +122,12 @@ pub fn python_weighted_reciprocal_expected_pagerank_map(handle: &ResourceHandle)
     pagerank_score_map(handle, &mut graph)
 }
 
-pub fn write_parquet_table(
-    view: &cudf::core::TableView<'_>,
-    path: &Path,
-    column_names: &[&str],
-    runtime: &cudf::Runtime,
-) {
-    let write_opts = parquet::ParquetTableWriteOptions::builder()
-        .filepath(path)
-        .column_names(column_names)
-        .with_runtime(runtime)
-        .build();
-    parquet::write_parquet(view, &write_opts).expect("write parquet");
+pub fn write_parquet_dataframe(df: &cudf::DataFrame, path: &Path) {
+    df.write_parquet(path).expect("write parquet");
 }
 
-pub fn read_parquet_table(path: &Path, runtime: &cudf::Runtime) -> Table {
-    let read_opts = parquet::ParquetTableReadOptions::builder().filepath(path).with_runtime(runtime).build();
-    parquet::read_parquet_table(&read_opts).expect("read parquet").table
+pub fn read_parquet_dataframe(path: &Path, runtime: &cudf::Runtime) -> cudf::DataFrame {
+    cudf::DataFrame::read_parquet(runtime, path).expect("read parquet")
 }
 
 pub struct TempParquetFixture {

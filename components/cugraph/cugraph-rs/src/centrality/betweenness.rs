@@ -19,7 +19,8 @@
 //!
 //! let src = runtime.series("src", &[0i32, 1, 2, 3]).unwrap();
 //! let dst = runtime.series("dst", &[1i32, 2, 3, 0]).unwrap();
-//! let edges = cudf::DataFrame::from_series([src, dst]).unwrap();
+//! let edges =
+//!     cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).unwrap();
 //! let opts = DataFrameGraphOptions::new("src", "dst").renumber();
 //! let mut graph =
 //!     graph_from_dataframe::<Forward>(&handle, &edges, &opts).unwrap();

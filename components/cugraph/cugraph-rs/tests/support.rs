@@ -80,7 +80,7 @@ pub fn triangle_graph_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
     let src = runtime.series("src", UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
     let dst = runtime.series("dst", UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
     let wgt = runtime.series("weight", UNDIRECTED_TRIANGLE_WEIGHT_F32).expect("weight");
-    cudf::DataFrame::from_series([src, dst, wgt]).expect("triangle graph dataframe")
+    cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", wgt)]).expect("triangle graph dataframe")
 }
 
 pub fn bfs_distance_map_i32_result(handle: &ResourceHandle, result: &BfsResult) -> HashMap<i32, i32> {
