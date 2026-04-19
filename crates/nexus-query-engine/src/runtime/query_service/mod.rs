@@ -1913,6 +1913,10 @@ impl QueryService {
             if available_bytes < grant_policy.min_bytes {
                 continue;
             }
+            // This helper accounts for the query being selected; compute it
+            // before the device slot increments the active-query counter.
+            let reserved_for_remaining_slots =
+                self.reserved_min_bytes_for_selected_device(resources, device, active_queries)?;
             let Some(device_slot) = context.try_acquire_query_slot(self.inner.config.max_queries_per_device) else {
                 continue;
             };
@@ -1931,8 +1935,6 @@ impl QueryService {
             };
             #[cfg(not(feature = "cugraph"))]
             let selected_grant_policy = grant_policy;
-            let reserved_for_remaining_slots =
-                self.reserved_min_bytes_for_selected_device(resources, device, active_queries)?;
             let Some(want_bytes) =
                 self.grant_budget_bytes(available_bytes, selected_grant_policy, reserved_for_remaining_slots)
             else {
