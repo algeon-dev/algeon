@@ -5,14 +5,12 @@
 //! Builder, node, expression-spec, facts, and graph-algorithm modules are
 //! re-exported from here as the engine's public plan surface.
 
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 
 use crate::{
-    bounded::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
     expr::{AggregateFunction, AggregateSpec, ColumnRef, Expr, LimitSpec, LiteralValue, SortExpr, SortSpec},
-    runtime::ExecutionBoundaryPolicy,
     source::SourceNode,
 };
 

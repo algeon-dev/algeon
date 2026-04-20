@@ -16,7 +16,7 @@ use crate::{
         lower_level_unresolved_preflight_gap,
     },
     error::{QueryError, QueryErrorCode, Result},
-    exec::QueryOutputMode,
+    exec::output::QueryOutputMode,
     metrics::{QueryId, TraceId},
     mode::AdaptiveExecutionMode,
     plan::{QueryPlan, ResultSink},

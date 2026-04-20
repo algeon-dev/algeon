@@ -21,7 +21,7 @@ use datafusion::{
 
 use crate::{
     error::{Error, ErrorCode},
-    native_exec::{NativeCudfComposedExec, NativeCudfExec, gpu_resident_producer_input_name},
+    native_exec::{NativeCudfComposedExec, NativeCudfExec, producer::gpu_resident_producer_input_name},
     physical_plan::physical_plan_shape,
     planner::CudfNativePhysicalOptimizerRule,
     policy::FallbackReason,

@@ -1,4 +1,4 @@
-use super::*;
+use crate::error::{QueryError, Result};
 
 /// Boundary contract for how native execution crosses source, build, probe, and
 /// result ownership boundaries.

@@ -1130,7 +1130,7 @@ fn mode_admission_gate_decision(
 }
 
 fn strict_bounded_admitted(plan: &QueryPlan) -> Option<bool> {
-    match crate::exec::strict_bounded_pipeline_admission(plan) {
+    match crate::admission::strict_bounded_pipeline_admission(plan) {
         Ok(Some(_)) => Some(true),
         Ok(None) => Some(false),
         Err(error) if error.code() == crate::error::QueryErrorCode::UnsupportedPlanShape => Some(false),
@@ -1139,7 +1139,7 @@ fn strict_bounded_admitted(plan: &QueryPlan) -> Option<bool> {
 }
 
 fn adaptive_admitted(plan: &QueryPlan) -> Option<bool> {
-    match crate::exec::adaptive_bounded_pipeline_admission(plan) {
+    match crate::admission::adaptive_bounded_pipeline_admission(plan) {
         Ok(Some(admission)) => Some(admission.report().row().candidate_status == AdaptiveCandidateStatus::Admitted),
         Ok(None) => Some(false),
         Err(_) => None,

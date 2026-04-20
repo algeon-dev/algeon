@@ -17,8 +17,9 @@ use datafusion::{
     },
 };
 use nexus_query_engine::{
-    exec::{GpuResidentInputMap, QueryOutput, execute_query_plan_with_gpu_inputs},
+    exec::{execute_query_plan_with_gpu_inputs, output::QueryOutput},
     plan::QueryPlan,
+    runtime::resident::GpuResidentInputMap,
 };
 
 use super::{
@@ -29,7 +30,10 @@ use super::{
     },
     config::NativeCudfExecutionConfig,
     metrics::NativeCudfMetrics,
-    producer::{execute_gpu_resident_producer_with_context, gpu_resident_producer_input_name},
+    producer::{
+        execute_gpu_resident_producer_with_context, gpu_resident_producer_input_name,
+        prepare_gpu_resident_producer_for_execution,
+    },
 };
 use crate::error::{Error, ErrorCode};
 
@@ -155,6 +159,22 @@ impl NativeCudfComposedExec {
     pub(crate) fn gpu_inputs(&self) -> &[Arc<dyn ExecutionPlan>] {
         &self.gpu_inputs
     }
+
+    pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: &TaskContext) -> Self {
+        if !self.execution_config.lakehouse_footer_pruning() {
+            return self.clone();
+        }
+        let mut prepared = self.clone();
+        prepared.plan =
+            super::lakehouse::resolve_query_plan(&self.execution_config, self.plan.clone(), task_context).await;
+        let mut prepared_inputs = Vec::with_capacity(self.gpu_inputs.len());
+        for input in &self.gpu_inputs {
+            prepared_inputs.push(prepare_gpu_resident_producer_for_execution(Arc::clone(input), task_context).await);
+        }
+        prepared.gpu_inputs = prepared_inputs;
+        prepared.execution_config = prepared.execution_config.with_lakehouse_footer_pruning(false);
+        prepared
+    }
 }
 
 impl DisplayAs for NativeCudfComposedExec {
@@ -256,6 +276,12 @@ impl ExecutionPlan for NativeCudfComposedExec {
             Arc::clone(&task_context),
             account_memory_pool,
             async move {
+                let plan = super::lakehouse::resolve_query_plan(&execution_config, plan, task_context.as_ref()).await;
+                let mut prepared_gpu_inputs = Vec::with_capacity(gpu_inputs.len());
+                for input in gpu_inputs {
+                    prepared_gpu_inputs
+                        .push(prepare_gpu_resident_producer_for_execution(input, task_context.as_ref()).await);
+                }
                 // Build one native context for all producer fragments and the consumer so device-resident
                 // handles are compatible across the composed execution.
                 let context_lease = execution_config
@@ -274,7 +300,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
                         let execution_task_context =
                             context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
                         let mut input_map = GpuResidentInputMap::new();
-                        for child in gpu_inputs {
+                        for child in prepared_gpu_inputs {
                             let (input_name, handle) = execute_gpu_resident_producer_with_context(
                                 child.as_ref(),
                                 context,

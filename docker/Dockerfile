@@ -27,11 +27,11 @@
 #                  harvested CUDA subset. No conda, no RAPIDS, no build tools.
 # ===========================================================================
 
-# CUDA 13.x. The forked libs were built against the CUDA 13.0 toolkit; the
+# CUDA 13.x. The forked libs were built against the CUDA 13.2 toolkit; the
 # harvested runtime libs are minor-version forward-compatible. Override these
 # to retarget a different CUDA minor / Ubuntu base / pinned digest.
-ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:13.0.1-runtime-ubuntu24.04
-ARG CUDA_BASE_IMAGE=nvidia/cuda:13.0.1-base-ubuntu24.04
+ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:13.2.1-runtime-ubuntu24.04
+ARG CUDA_BASE_IMAGE=nvidia/cuda:13.2.1-base-ubuntu24.04
 
 # ===========================================================================
 # Stage 1 — harvest the CUDA toolkit subset this binary actually links

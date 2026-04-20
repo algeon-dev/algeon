@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    error::QueryError,
     metrics::{CompiledTaskId, PlanNodeId, QueryId},
     util::comma_separated_usize,
 };

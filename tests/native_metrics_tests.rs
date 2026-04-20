@@ -11,12 +11,12 @@ use datafusion_nexus::{
 };
 use nexus_query_engine::{
     chunk::SourceChunk,
-    exec::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey},
     metrics::{MemoryReservationEventAction, MetricAggregation, MetricUnit, QueryId, QueryMetrics, TraceId},
     plan::QueryPlanBuilder,
     runtime::{
         ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind,
         SourceChunkPlanningMode,
+        cache::local_parquet::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey},
     },
     source::{LocalParquetFile, LocalParquetSource, SourceNode},
 };
@@ -604,6 +604,12 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
     ] {
         assert!(names.contains(&expected), "missing native DataFusion metric: {expected}");
     }
+}
+
+#[test]
+fn native_datafusion_metric_name_order_matches_public_contract_golden() {
+    let actual = format!("{}\n", NATIVE_CUDF_DATAFUSION_METRIC_NAMES.join("\n"));
+    assert_eq!(actual, include_str!("fixtures/native_cudf_datafusion_metric_names.txt"));
 }
 
 #[test]

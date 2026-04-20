@@ -22,7 +22,10 @@ fn bounded_native_query_executes_keyed_hash_join_resident_subplan_pipeline() {
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
     assert!(plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(
+        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan, ExecutionBoundaryPolicy::default())
+            .is_none()
+    );
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

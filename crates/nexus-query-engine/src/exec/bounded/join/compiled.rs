@@ -10,11 +10,9 @@ use super::{
     *,
 };
 use crate::{
+    admission::CompiledJoinExecutionStrategy,
     capability::{KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind, keyed_filtered_semi_anti_join_capable},
-    exec::bounded::{
-        compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
-        strict::CompiledJoinExecutionStrategy,
-    },
+    exec::bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
     expr::{ColumnQualifier, ColumnRef},
 };
 

@@ -1,5 +1,13 @@
 //! Stable name-generation helpers shared across native planning code.
 
+/// Prefix reserved for hidden columns that preserve DataFusion row ordering.
+pub(crate) const DATAFUSION_ORDER_COLUMN_PREFIX: &str = "__cudf_df_order_";
+
+/// Returns whether `name` belongs to the hidden DataFusion ordering contract.
+pub(crate) fn is_datafusion_order_column_name(name: &str) -> bool {
+    name.starts_with(DATAFUSION_ORDER_COLUMN_PREFIX)
+}
+
 /// Returns `base` when it is not taken, otherwise appends the first available
 /// numeric suffix using the `{base}_{suffix}` convention.
 pub fn unique_alias_with_suffix(base: &str, mut taken: impl FnMut(&str) -> bool) -> String {

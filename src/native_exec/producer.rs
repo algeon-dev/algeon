@@ -4,7 +4,7 @@
 //! wrapper type is exposed for diagnostics and plan inspection, but executing
 //! them through the ordinary DataFusion streaming path is invalid.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
@@ -16,9 +16,9 @@ use datafusion::{
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
-    exec::{GpuResultHandle, QueryOutput, execute_query_plan},
+    exec::{execute_query_plan, output::QueryOutput},
     plan::QueryPlan,
-    runtime::ExecutionContext,
+    runtime::{ExecutionContext, SourceStorageProfile, resident::GpuResultHandle},
 };
 
 use super::{
@@ -30,8 +30,20 @@ use super::{
 };
 use crate::error::{Error, ErrorCode};
 
-pub(crate) trait GpuResidentProducerExec {
+/// Frontend-neutral device-resident producer contract used by composed native execution.
+pub trait GpuResidentProducer: Send + Sync {
     fn gpu_result_input_name(&self) -> &str;
+
+    /// Performs async metadata preparation before callers acquire native GPU
+    /// admission. Frontends return an equivalent producer plan carrying any
+    /// resolved metadata-only state.
+    fn prepare_execution_plan<'a>(
+        &'a self,
+        plan: Arc<dyn ExecutionPlan>,
+        _task_context: &'a TaskContext,
+    ) -> BoxFuture<'a, Arc<dyn ExecutionPlan>> {
+        Box::pin(async move { plan })
+    }
 
     fn execute_gpu_result_with_context<'a>(
         &'a self,
@@ -39,6 +51,25 @@ pub(crate) trait GpuResidentProducerExec {
         partition: usize,
         task_context: Arc<TaskContext>,
     ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>>;
+}
+
+/// A frontend hook that recognizes one of its GPU-resident producer nodes.
+pub type GpuResidentProducerDiscovery = for<'a> fn(&'a dyn ExecutionPlan) -> Option<&'a dyn GpuResidentProducer>;
+
+static GPU_RESIDENT_PRODUCER_DISCOVERIES: OnceLock<Mutex<Vec<GpuResidentProducerDiscovery>>> = OnceLock::new();
+
+/// Register a frontend's GPU-resident producer recognizer.
+///
+/// Registration is idempotent for the same function. Core execution never
+/// imports a concrete frontend to discover producer nodes.
+pub fn register_gpu_resident_producer_discovery(discovery: GpuResidentProducerDiscovery) {
+    let mut discoveries = GPU_RESIDENT_PRODUCER_DISCOVERIES
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !discoveries.iter().any(|candidate| std::ptr::fn_addr_eq(*candidate, discovery)) {
+        discoveries.push(discovery);
+    }
 }
 
 /// Internal GPU-resident native fragment producer.
@@ -51,6 +82,8 @@ pub struct NativeCudfGpuProducerExec {
     plan: QueryPlan,
     metrics_capture: Option<NativeMetricsCapture>,
     plan_task_mapping_datafusion_shape: Option<String>,
+    lakehouse_footer_pruning: bool,
+    source_storage_profiles: Vec<SourceStorageProfile>,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
@@ -68,7 +101,7 @@ impl NativeCudfGpuProducerExec {
         plan: QueryPlan,
         metrics_capture: Option<NativeMetricsCapture>,
     ) -> crate::error::Result<Self> {
-        Self::try_new_with_metrics_capture_and_shape(input_name, plan, metrics_capture, None)
+        Self::try_new_with_metrics_capture_and_shape(input_name, plan, metrics_capture, None, false, Vec::new())
     }
 
     pub(crate) fn try_new_with_metrics_capture_and_shape(
@@ -76,6 +109,8 @@ impl NativeCudfGpuProducerExec {
         plan: QueryPlan,
         metrics_capture: Option<NativeMetricsCapture>,
         plan_task_mapping_datafusion_shape: Option<&str>,
+        lakehouse_footer_pruning: bool,
+        source_storage_profiles: Vec<SourceStorageProfile>,
     ) -> crate::error::Result<Self> {
         let input_name = input_name.into();
         if input_name.is_empty() {
@@ -110,6 +145,8 @@ impl NativeCudfGpuProducerExec {
             plan,
             metrics_capture,
             plan_task_mapping_datafusion_shape: plan_task_mapping_datafusion_shape.map(ToString::to_string),
+            lakehouse_footer_pruning,
+            source_storage_profiles,
             metrics: ExecutionPlanMetricsSet::new(),
         })
     }
@@ -126,10 +163,11 @@ impl NativeCudfGpuProducerExec {
     ///
     /// The result stays on the GPU and is returned as `(input_name, GpuResultHandle)` so the composed
     /// consumer can populate its `GpuResidentInputMap` without host materialization.
-    pub(crate) fn execute_gpu_result_with_context(
+    fn execute_gpu_result_with_context(
         &self,
         native_context: &ExecutionContext,
         partition: usize,
+        plan: &QueryPlan,
     ) -> DataFusionResult<(String, GpuResultHandle)> {
         if partition != 0 {
             return Err(Error::new(
@@ -148,7 +186,7 @@ impl NativeCudfGpuProducerExec {
             self.plan_task_mapping_datafusion_shape.as_deref(),
         );
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-        let result = execute_query_plan(native_context, &self.plan).map_err(|error| {
+        let result = execute_query_plan(native_context, plan).map_err(|error| {
             DataFusionError::from(native_query_runtime_error(
                 "datafusion_nexus.native_gpu_producer.execute_gpu",
                 "native cudf GPU-resident fragment execution failed",
@@ -171,9 +209,32 @@ impl NativeCudfGpuProducerExec {
     }
 }
 
-impl GpuResidentProducerExec for NativeCudfGpuProducerExec {
+impl GpuResidentProducer for NativeCudfGpuProducerExec {
     fn gpu_result_input_name(&self) -> &str {
         self.input_name()
+    }
+
+    fn prepare_execution_plan<'a>(
+        &'a self,
+        plan: Arc<dyn ExecutionPlan>,
+        task_context: &'a TaskContext,
+    ) -> BoxFuture<'a, Arc<dyn ExecutionPlan>> {
+        Box::pin(async move {
+            if !self.lakehouse_footer_pruning {
+                return plan;
+            }
+            let runtime_env = task_context.runtime_env();
+            let resolved_plan = crate::native::lakehouse_pruning::prune_native_query_plan(
+                self.plan.clone(),
+                &runtime_env,
+                &self.source_storage_profiles,
+            )
+            .await;
+            let mut prepared = self.clone();
+            prepared.plan = resolved_plan;
+            prepared.lakehouse_footer_pruning = false;
+            Arc::new(prepared)
+        })
     }
 
     fn execute_gpu_result_with_context<'a>(
@@ -183,25 +244,60 @@ impl GpuResidentProducerExec for NativeCudfGpuProducerExec {
         task_context: Arc<TaskContext>,
     ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>> {
         Box::pin(async move {
-            let _ = task_context;
-            NativeCudfGpuProducerExec::execute_gpu_result_with_context(self, native_context, partition)
+            let plan = if self.lakehouse_footer_pruning {
+                let runtime_env = task_context.runtime_env();
+                crate::native::lakehouse_pruning::prune_native_query_plan(
+                    self.plan.clone(),
+                    &runtime_env,
+                    &self.source_storage_profiles,
+                )
+                .await
+            } else {
+                self.plan.clone()
+            };
+            NativeCudfGpuProducerExec::execute_gpu_result_with_context(self, native_context, partition, &plan)
         })
     }
 }
 
-pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducerExec> {
+fn native_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
     if let Some(producer) = plan.downcast_ref::<NativeCudfGpuProducerExec>() {
-        return Some(producer);
-    }
-    #[cfg(feature = "cugraph")]
-    if let Some(producer) = crate::graph_sql::gpu_resident_producer(plan) {
         return Some(producer);
     }
     None
 }
 
+fn ensure_native_gpu_resident_producer_registered() {
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    REGISTER.call_once(|| register_gpu_resident_producer_discovery(native_gpu_resident_producer));
+}
+
+pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
+    ensure_native_gpu_resident_producer_registered();
+    let discoveries = {
+        GPU_RESIDENT_PRODUCER_DISCOVERIES
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
+    discoveries.iter().find_map(|discovery| discovery(plan))
+}
+
 pub(crate) fn gpu_resident_producer_input_name(plan: &dyn ExecutionPlan) -> Option<String> {
     gpu_resident_producer(plan).map(|producer| producer.gpu_result_input_name().to_string())
+}
+
+/// Resolves metadata-only lakehouse work before a composed query acquires GPU
+/// admission or enters the dedicated GPU executor.
+pub(crate) async fn prepare_gpu_resident_producer_for_execution(
+    plan: Arc<dyn ExecutionPlan>,
+    task_context: &TaskContext,
+) -> Arc<dyn ExecutionPlan> {
+    let Some(producer) = gpu_resident_producer(plan.as_ref()) else {
+        return plan;
+    };
+    producer.prepare_execution_plan(Arc::clone(&plan), task_context).await
 }
 
 pub(crate) async fn execute_gpu_resident_producer_with_context(
@@ -293,5 +389,40 @@ impl ExecutionPlan for NativeCudfGpuProducerExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use arrow::datatypes::Schema;
+    use datafusion::physical_plan::{ExecutionPlan, empty::EmptyExec};
+
+    use super::*;
+
+    static REENTRANT_REGISTRATION_RAN: AtomicBool = AtomicBool::new(false);
+
+    fn no_match(_: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
+        None
+    }
+
+    fn register_while_discovering(_: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
+        register_gpu_resident_producer_discovery(no_match);
+        REENTRANT_REGISTRATION_RAN.store(true, Ordering::Release);
+        None
+    }
+
+    #[test]
+    fn discovery_callbacks_run_without_holding_the_registry_lock() {
+        REENTRANT_REGISTRATION_RAN.store(false, Ordering::Release);
+        register_gpu_resident_producer_discovery(register_while_discovering);
+        let plan = EmptyExec::new(Arc::new(Schema::empty()));
+
+        assert!(gpu_resident_producer(&plan).is_none());
+        assert!(REENTRANT_REGISTRATION_RAN.load(Ordering::Acquire));
     }
 }

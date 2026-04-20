@@ -364,6 +364,27 @@ pub(super) fn k_core_params(
     })
 }
 
+#[cfg(feature = "cugraph")]
+pub(super) fn degree_type_to_cugraph(
+    degree_type: crate::plan::GraphKCoreDegreeType,
+    directed: bool,
+) -> cugraph::structure::KCoreDegreeType {
+    // libcugraph's INOUT selector sums incoming and outgoing adjacency. The
+    // Python cuGraph surface treats all three selectors as the same degree on
+    // an undirected graph, whose physical edge list is already symmetric.
+    // Passing INOUT for that representation would therefore double every
+    // degree and change core membership. Use one side for undirected graphs;
+    // incoming and outgoing are equivalent there.
+    if !directed {
+        return cugraph::structure::KCoreDegreeType::In;
+    }
+    match degree_type {
+        crate::plan::GraphKCoreDegreeType::In => cugraph::structure::KCoreDegreeType::In,
+        crate::plan::GraphKCoreDegreeType::Out => cugraph::structure::KCoreDegreeType::Out,
+        crate::plan::GraphKCoreDegreeType::InOut => cugraph::structure::KCoreDegreeType::InOut,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

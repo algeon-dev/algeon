@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(feature = "cugraph")]
+use crate::exec::graph_algorithm::{
+    adaptive_betweenness::*, diagnostics::*, memory::*, resident_cache::*, statistics::*,
+};
 use crate::exec::source::{ScheduledLocalParquetReadOutput, record_bounded_parquet_source_metrics};
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
@@ -459,7 +463,6 @@ fn execute_bounded_generic_graph_algorithm(
     let input_columns = input_frame.num_columns() as u64;
     let input_graph_residency = input_frame.graph_residency().cloned();
     let prior_null_edge_rows_dropped = graph_input_null_edge_rows_dropped(metrics, graph.input);
-
     let null_filter_scope = super::edge_null_filter::EdgeNullFilterScope {
         weight: graph.spec.algorithm.consumes_weight(),
         edge_id: graph.spec.edge_columns.edge_id.is_some(),
@@ -488,7 +491,6 @@ fn execute_bounded_generic_graph_algorithm(
     {
         filtered_input = filtered_input.with_graph_residency(graph_residency);
     }
-
     let mut runtime_spec = RuntimeGraphSpecResolution::CheckedNoRewrite;
     let mut graph_reservation = None;
     let graph_memory_limit_bytes = if crate::graph_memory::graph_memory_reservation_required(graph.spec.algorithm) {
@@ -598,7 +600,6 @@ fn execute_bounded_generic_graph_algorithm(
     };
     let mut live_reservations = vec![input_reservation];
     let mut side_inputs = std::collections::BTreeMap::new();
-
     for input_id in graph.inputs.iter().skip(1) {
         match execute_bounded_generic_node(context, plan, *input_id, gpu_inputs, reservations, metrics) {
             Ok(frame) => {
@@ -705,13 +706,12 @@ fn graph_memory_vertex_estimate_with_reservation(
     input: &DataFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<Option<crate::exec::graph_algorithm::RuntimeGraphStatisticsProbe>> {
+) -> Result<Option<RuntimeGraphStatisticsProbe>> {
     let remaining = reservations.reservable_remaining_bytes()?;
     if remaining == 0 {
         return Ok(None);
     }
-    let model_input =
-        crate::exec::graph_algorithm::graph_memory_model_input_for_frame(input, spec, input.num_rows() as u64, false)?;
+    let model_input = graph_memory_model_input_for_frame(input, spec, input.num_rows() as u64, false)?;
     let probe_bytes = crate::graph_memory::graph_runtime_statistics_probe_bytes(spec.algorithm, model_input, remaining);
     let request = MemoryReservationRequest::new(ReservationKind::GraphAlgorithm, probe_bytes, reservations.budget())
         .with_memory_boundary(crate::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY)

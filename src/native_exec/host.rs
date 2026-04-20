@@ -17,7 +17,7 @@ use datafusion::{
     },
 };
 use nexus_query_engine::{
-    exec::{QueryOutput, execute_query_plan},
+    exec::{execute_query_plan, output::QueryOutput},
     plan::QueryPlan,
 };
 
@@ -90,6 +90,17 @@ impl NativeCudfExec {
     #[cfg_attr(not(feature = "cugraph"), allow(dead_code))]
     pub(crate) fn execution_config(&self) -> &NativeCudfExecutionConfig {
         &self.execution_config
+    }
+
+    pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: &TaskContext) -> Self {
+        if !self.execution_config.lakehouse_footer_pruning() {
+            return self.clone();
+        }
+        let mut prepared = self.clone();
+        prepared.plan =
+            super::lakehouse::resolve_query_plan(&self.execution_config, self.plan.clone(), task_context).await;
+        prepared.execution_config = prepared.execution_config.with_lakehouse_footer_pruning(false);
+        prepared
     }
 }
 
@@ -192,6 +203,7 @@ impl ExecutionPlan for NativeCudfExec {
             Arc::clone(&task_context),
             account_memory_pool,
             async move {
+                let plan = super::lakehouse::resolve_query_plan(&execution_config, plan, task_context.as_ref()).await;
                 // Context construction is the configuration/validation stage. Failures here happen
                 // before the native query starts.
                 let context_lease = execution_config

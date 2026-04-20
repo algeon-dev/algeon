@@ -17,6 +17,8 @@ use std::sync::Arc;
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use bindings::{FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, rename_field};
 use datafusion::{datasource::memory::MemorySourceConfig, physical_plan::ExecutionPlan};
+#[cfg(test)]
+pub(in crate::native) use expr::lower_physical_expr as lower_physical_expr_for_test;
 use nexus_query_engine::{
     expr::{Expr as NativeExpr, LimitSpec as NativeLimitSpec},
     plan::{

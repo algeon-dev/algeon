@@ -6,6 +6,7 @@ use super::{source::local_parquet_execution_frame_schema, *};
 use crate::{
     datatypes::{arrow_fields_match_except_name, is_supported_arrow_type},
     plan::{QueryNode, UnionNode},
+    source::validate_literal_batch_source,
 };
 
 mod expressions;
@@ -264,31 +265,6 @@ fn validate_source_node(source: &crate::source::SourceNode) -> Result<BTreeSet<S
             Ok(schema_column_names(&source.schema))
         },
     }
-}
-
-pub(crate) fn validate_literal_batch_source(source: &crate::source::LiteralBatchSource) -> Result<()> {
-    if source.batches.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.literal_batch_source.validate",
-            "literal batch source requires at least one batch",
-        )
-        .with_fact("reason", "empty_batches"));
-    }
-    validate_schema_supported(&source.schema, "nexus_query_engine.literal_batch_source.validate_schema")?;
-    for (index, batch) in source.batches.iter().enumerate() {
-        if batch.schema().as_ref() != source.schema.as_ref() {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.literal_batch_source.validate",
-                "literal batch schema must match declared source schema",
-            )
-            .with_fact("batch_index", index)
-            .with_fact("declared_fields", source.schema.fields().len())
-            .with_fact("batch_fields", batch.schema().fields().len()));
-        }
-    }
-    Ok(())
 }
 
 fn input_node(plan: &QueryPlan, input: NodeId, consumer: NodeId) -> Result<&QueryNode> {

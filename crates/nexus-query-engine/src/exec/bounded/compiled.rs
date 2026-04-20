@@ -8,20 +8,15 @@
 
 use std::collections::BTreeSet;
 
-pub(in crate::exec::bounded) mod join_strategy;
 mod reservations;
 mod scheduler;
 mod state;
-mod support;
 mod tasks;
 
 pub use scheduler::{
     CompiledPipelineScheduler, CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput,
 };
 pub use state::{CompiledPipelineState, ReleasedCompiledResource};
-pub use support::{
-    CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
-};
 pub(in crate::exec::bounded) use tasks::ResidentFrameStreamPayload;
 #[allow(unused_imports)]
 pub(in crate::exec::bounded) use tasks::ResidentFrameStreamSource;
@@ -32,11 +27,11 @@ pub use tasks::{
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    exec::types::{GpuResidentInputMap, QueryOutput},
+    exec::output::QueryOutput,
     metrics::QueryMetrics,
     pipeline::{CompiledPipeline, PipelineTaskId, PipelineTaskKind},
     plan::{JoinType, PlanNode, QueryPlan, ResultSink},
-    runtime::ExecutionContext,
+    runtime::{ExecutionContext, resident::GpuResidentInputMap},
 };
 
 pub(in crate::exec::bounded) fn execute_compiled_pipeline(

@@ -18,7 +18,7 @@ use arrow::{
 };
 use cudf::DataFrame;
 #[cfg(feature = "cugraph")]
-use nexus_query_engine::exec::GpuResidentGraphCache;
+use nexus_query_engine::runtime::cache::resident_graph::GpuResidentGraphCache;
 #[cfg(feature = "cugraph")]
 use nexus_query_engine::{
     adaptive_runtime::AdaptiveMemoryHistory, exec::force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
@@ -42,8 +42,7 @@ use nexus_query_engine::{
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::QueryErrorCode,
     exec::{
-        GpuDataFrame, GpuHashJoinBuildCache, GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResultHandle,
-        QueryOutput, execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host,
+        execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, output::QueryOutput,
     },
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
@@ -58,6 +57,8 @@ use nexus_query_engine::{
     runtime::{
         BoundedJoinReservationContract, BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext,
         GrantRequest, MemoryControlPolicy, MemoryGovernor, MemorySpaceId, ReservationKind, SourceSchedulerPolicy,
+        cache::{hash_join::GpuHashJoinBuildCache, local_parquet::GpuLocalParquetSourceCache},
+        resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{
         GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,

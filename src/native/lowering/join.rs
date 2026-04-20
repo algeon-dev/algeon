@@ -30,7 +30,10 @@ use super::{
     lower_native_input, projection_outputs,
 };
 use crate::{
-    native::normalize::{NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeNestedLoopJoin},
+    native::{
+        expression_contract::validate_join_residual,
+        normalize::{NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeNestedLoopJoin},
+    },
     policy::FallbackReason,
 };
 
@@ -44,7 +47,7 @@ pub(super) struct CanonicalJoin {
 }
 
 impl CanonicalJoin {
-    const fn new(join_type: NativeJoinType, swap_inputs: bool) -> Self {
+    pub(super) const fn new(join_type: NativeJoinType, swap_inputs: bool) -> Self {
         Self { join_type, swap_inputs }
     }
 
@@ -369,7 +372,10 @@ pub(super) fn lower_hash_join_input(
         .join
         .filter()
         .map(|filter| {
-            lower_join_filter(filter, &join.join.left().schema(), &join.join.right().schema(), canonical, None)
+            let left_schema = join.join.left().schema();
+            let right_schema = join.join.right().schema();
+            let contract = validate_join_residual(filter, &left_schema, &right_schema)?;
+            lower_join_filter(&contract, canonical, None)
         })
         .transpose()?;
     let mut left_required = BTreeSet::<usize>::new();
@@ -410,10 +416,11 @@ pub(super) fn lower_hash_join_input(
         join.join
             .filter()
             .map(|filter| {
+                let left_schema = join.join.left().schema();
+                let right_schema = join.join.right().schema();
+                let contract = validate_join_residual(filter, &left_schema, &right_schema)?;
                 lower_join_filter(
-                    filter,
-                    &join.join.left().schema(),
-                    &join.join.right().schema(),
+                    &contract,
                     canonical,
                     Some(super::join_residual::JoinResidualInputBindings { left: &left, right: &right }),
                 )
@@ -502,13 +509,16 @@ pub(super) fn lower_nested_loop_join_input(
         &RequiredFields::only_with_predicates(right_required, right_predicate_required),
     )?;
     let residual = match join.join.filter() {
-        Some(filter) => Some(lower_join_filter(
-            filter,
-            &join.join.left().schema(),
-            &join.join.right().schema(),
-            canonical,
-            Some(super::join_residual::JoinResidualInputBindings { left: &left, right: &right }),
-        )?),
+        Some(filter) => {
+            let left_schema = join.join.left().schema();
+            let right_schema = join.join.right().schema();
+            let contract = validate_join_residual(filter, &left_schema, &right_schema)?;
+            Some(lower_join_filter(
+                &contract,
+                canonical,
+                Some(super::join_residual::JoinResidualInputBindings { left: &left, right: &right }),
+            )?)
+        },
         None => residual,
     };
     let output_columns = output_requests.lower(&left, &right, canonical)?;
@@ -638,7 +648,10 @@ fn nested_loop_join_residual(
     // Non-inner nested-loop joins require a residual predicate unless the
     // canonicalizer has proven that the predicate-free join is a cross join.
     if let Some(filter) = join.filter() {
-        let residual = lower_join_filter(filter, &join.left().schema(), &join.right().schema(), canonical, None)?;
+        let left_schema = join.left().schema();
+        let right_schema = join.right().schema();
+        let contract = validate_join_residual(filter, &left_schema, &right_schema)?;
+        let residual = lower_join_filter(&contract, canonical, None)?;
         return Ok(Some(residual));
     }
     if matches!(join.join_type(), JoinType::Inner)

@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use arrow::datatypes::{DataType, SchemaRef, TimeUnit};
+use arrow::datatypes::{DataType, SchemaRef};
 use datafusion::{
     physical_expr::{
         LexOrdering, PhysicalExpr, ScalarFunctionExpr,
@@ -15,16 +15,12 @@ use datafusion::{
         projection::ProjectionExec,
     },
 };
-use nexus_query_engine::datatypes::{
-    is_supported_arrow_cast, is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone,
+
+use super::expression_contract::{
+    is_list_carry_type, is_supported_native_type, is_timestamp_with_timezone_type, resolve_column,
+    validate_physical_expr,
 };
-
 use crate::policy::FallbackReason;
-
-mod expressions;
-
-pub(super) use expressions::{bounded_nonnegative_integral_cast_is_supported, validate_physical_expr};
-use expressions::{literal_string, validate_literal_string, validate_substring_arguments_contract};
 
 pub(super) fn validate_schema(schema: SchemaRef) -> Result<(), FallbackReason> {
     for field in schema.fields() {
@@ -33,44 +29,6 @@ pub(super) fn validate_schema(schema: SchemaRef) -> Result<(), FallbackReason> {
         }
     }
     Ok(())
-}
-
-pub(super) fn is_supported_native_type(data_type: &DataType) -> bool {
-    is_supported_arrow_type(data_type)
-}
-
-pub(super) fn is_timestamp_with_timezone_type(data_type: &DataType) -> bool {
-    is_timestamp_with_timezone(data_type)
-}
-
-pub(super) fn is_list_carry_type(data_type: &DataType) -> bool {
-    is_supported_list_carry_type(data_type)
-}
-
-pub(super) fn is_supported_native_cast(source_type: &DataType, target_type: &DataType) -> bool {
-    is_supported_arrow_cast(source_type, target_type)
-}
-
-pub(super) fn is_supported_to_timestamp_seconds_cast(source_type: &DataType, target_type: &DataType) -> bool {
-    matches!(target_type, DataType::Timestamp(TimeUnit::Second, None))
-        && is_integer_to_timestamp_cast(source_type, target_type)
-        && is_supported_arrow_cast(source_type, target_type)
-}
-
-fn is_integer_to_timestamp_cast(source_type: &DataType, target_type: &DataType) -> bool {
-    matches!(
-        (source_type, target_type),
-        (
-            DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::UInt8
-                | DataType::UInt16
-                | DataType::UInt32,
-            DataType::Timestamp(_, None),
-        )
-    )
 }
 
 pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), FallbackReason> {
@@ -323,7 +281,7 @@ pub(super) fn collect_required_columns(
     required: &mut BTreeSet<String>,
 ) -> Result<(), FallbackReason> {
     if let Some(column) = expr.downcast_ref::<Column>() {
-        required.insert(resolved_column_name(column, input_schema)?.to_string());
+        required.insert(resolve_column(column, input_schema)?.field().name().to_string());
         return Ok(());
     }
     if expr.downcast_ref::<Literal>().is_some() {
@@ -351,7 +309,6 @@ pub(super) fn collect_required_columns(
         return Ok(());
     }
     if let Some(like) = expr.downcast_ref::<LikeExpr>() {
-        validate_literal_string(like.pattern())?;
         collect_required_columns(like.expr(), input_schema, required)?;
         return Ok(());
     }
@@ -404,55 +361,8 @@ fn collect_required_columns_for_scalar_function(
     input_schema: &SchemaRef,
     required: &mut BTreeSet<String>,
 ) -> Result<(), FallbackReason> {
-    match function.name().to_ascii_lowercase().as_str() {
-        "substring" | "substr" => {
-            let args = function.args();
-            validate_substring_arguments_contract(function)?;
-            collect_required_columns(&args[0], input_schema, required)?;
-            Ok(())
-        },
-        "date_part" | "extract" => {
-            let [field, expr] = function.args() else {
-                return Err(FallbackReason::UnsupportedExpression);
-            };
-            match literal_string(field)?.to_ascii_lowercase().as_str() {
-                "year" | "month" | "day" | "minute" => {},
-                _ => return Err(FallbackReason::UnsupportedExpression),
-            }
-            collect_required_columns(expr, input_schema, required)
-        },
-        "date_trunc" => {
-            let [field, expr] = function.args() else {
-                return Err(FallbackReason::UnsupportedExpression);
-            };
-            match literal_string(field)?.to_ascii_lowercase().as_str() {
-                "day" | "hour" | "minute" | "second" | "millisecond" | "microsecond" => {},
-                _ => return Err(FallbackReason::UnsupportedExpression),
-            }
-            collect_required_columns(expr, input_schema, required)
-        },
-        "to_timestamp_seconds" => {
-            let [expr] = function.args() else {
-                return Err(FallbackReason::UnsupportedExpression);
-            };
-            collect_required_columns(expr, input_schema, required)
-        },
-        _ => {
-            for arg in function.args() {
-                collect_required_columns(arg, input_schema, required)?;
-            }
-            Ok(())
-        },
+    for arg in function.args() {
+        collect_required_columns(arg, input_schema, required)?;
     }
-}
-
-fn resolved_column_name<'a>(column: &Column, input_schema: &'a SchemaRef) -> Result<&'a str, FallbackReason> {
-    input_schema
-        .fields()
-        .get(column.index())
-        .filter(|field| field.name() == column.name())
-        .map(|field| field.name().as_str())
-        .or_else(|| input_schema.field_with_name(column.name()).ok().map(|field| field.name().as_str()))
-        .or_else(|| input_schema.fields().get(column.index()).map(|field| field.name().as_str()))
-        .ok_or(FallbackReason::UnsupportedExpression)
+    Ok(())
 }

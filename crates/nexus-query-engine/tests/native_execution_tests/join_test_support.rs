@@ -69,7 +69,7 @@ pub(super) fn execute_bounded_keyless_left_only_conditional_join(
     right_schema: &Arc<Schema>,
     join_type: JoinType,
     build_side: JoinSide,
-) -> nexus_query_engine::exec::QueryExecutionResult {
+) -> nexus_query_engine::exec::output::QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -101,7 +101,7 @@ pub(super) fn execute_bounded_equality_left_only_filtered_join(
     left_schema: &Arc<Schema>,
     right_schema: &Arc<Schema>,
     join_type: JoinType,
-) -> nexus_query_engine::exec::QueryExecutionResult {
+) -> nexus_query_engine::exec::output::QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -352,7 +352,7 @@ pub(super) fn supplier_cost_suppkey_join_key(left_name: &str, right_name: &str) 
 }
 
 pub(super) fn assert_empty_bounded_filtered_join_result(
-    result: &nexus_query_engine::exec::QueryExecutionResult,
+    result: &nexus_query_engine::exec::output::QueryExecutionResult,
     join_type: &str,
 ) {
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -384,7 +384,7 @@ pub(super) fn execute_left_only_residual_join(
     left_schema: &Arc<Schema>,
     right_schema: &Arc<Schema>,
     join_type: JoinType,
-) -> nexus_query_engine::exec::QueryExecutionResult {
+) -> nexus_query_engine::exec::output::QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -421,7 +421,7 @@ pub(super) fn execute_bounded_left_only_residual_join(
     left_schema: &Arc<Schema>,
     right_schema: &Arc<Schema>,
     join_type: JoinType,
-) -> nexus_query_engine::exec::QueryExecutionResult {
+) -> nexus_query_engine::exec::output::QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();

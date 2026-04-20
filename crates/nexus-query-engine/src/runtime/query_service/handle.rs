@@ -1,7 +1,7 @@
 #[cfg(feature = "cugraph")]
-use super::super::{ReservedResidentGraphHit, warm_graph_reservation_error};
+use super::super::context::{ReservedResidentGraphHit, warm_graph_reservation_error};
 use super::{
-    super::{create_grant_memory_domain, create_grant_reservation_arena},
+    super::memory_domain::{create_grant_memory_domain, create_grant_reservation_arena},
     *,
 };
 

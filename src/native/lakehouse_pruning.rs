@@ -1,18 +1,20 @@
 //! Object-store footer pruning for native plans produced from table formats.
 
-use std::{error::Error as StdError, future::Future, pin::Pin, sync::Arc};
+mod object_store;
+#[cfg(test)]
+mod product_path_tests;
+
+use std::sync::Arc;
 
 use arrow::datatypes::DataType;
 use datafusion::{
-    common::Result,
-    execution::{object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
+    execution::runtime_env::RuntimeEnv,
     object_store::{ObjectStoreExt, path::Path as ObjectStorePath},
     parquet::{
         arrow::{ParquetRecordBatchStreamBuilder, ProjectionMask, async_reader::ParquetObjectReader},
         file::{metadata::ParquetMetaData, statistics::Statistics},
         schema::types::SchemaDescriptor,
     },
-    physical_plan::ExecutionPlan,
 };
 use futures::TryStreamExt;
 use nexus_query_engine::{
@@ -25,57 +27,55 @@ use nexus_query_engine::{
     },
     parquet_stats::{leaf_column_statistics, row_group_i64_range_for_root_column},
     plan::{NodeId, PlanNode, QueryPlan},
+    runtime::SourceStorageProfile,
     source::{LocalParquetSource, ParquetSourceLocation, SourceColumnRef, SourceNode},
 };
 
-use crate::{
-    error::ErrorSourceDiagnostics, native::table_format_pruning_policy::TableFormatPruningPolicy,
-    native_exec::NativeCudfExec,
+#[cfg(test)]
+use self::object_store::stable_hash_hex;
+use self::object_store::{
+    FooterObjectStoreRegistry, foreign_error_diagnostic, object_error_context, object_store_file,
+    object_store_pruning_error, stable_log_field,
 };
+use crate::native::table_format_pruning_policy::TableFormatPruningPolicy;
 
-type BoxFutureResult<T> = Pin<Box<dyn Future<Output = Result<T>> + Send>>;
-
-/// Applies footer-only dimension-derived row-group pruning to whole-plan native Iceberg scans.
-pub async fn prune_table_format_native_plan(
-    plan: Arc<dyn ExecutionPlan>,
-    runtime_env: &Arc<RuntimeEnv>,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    prune_execution_plan(plan, runtime_env).await
+pub(crate) fn enabled_from_env() -> bool {
+    std::env::var("NEXUS_ICEBERG_FOOTER_PRUNING")
+        .ok()
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true"))
 }
 
-fn prune_execution_plan(
-    plan: Arc<dyn ExecutionPlan>,
+/// Resolves footer-backed pruning for one already-lowered native plan.
+///
+/// The physical optimizer marks native wrappers for this async execution-time
+/// continuation. Keeping the resolver on `QueryPlan` lets every native wrapper
+/// use the same product path without DataFusion plan downcasts or a benchmark
+/// side channel.
+pub(crate) async fn prune_native_query_plan(
+    plan: QueryPlan,
     runtime_env: &Arc<RuntimeEnv>,
-) -> BoxFutureResult<Arc<dyn ExecutionPlan>> {
-    let runtime_env = Arc::clone(runtime_env);
-    Box::pin(async move {
-        if let Some(exec) = plan.downcast_ref::<NativeCudfExec>() {
-            return Ok(prune_native_exec(exec, &runtime_env).await);
-        }
-
-        let children = plan.children();
-        if children.is_empty() {
-            return Ok(plan);
-        }
-
-        let mut rewritten_children = Vec::with_capacity(children.len());
-        let mut changed = false;
-        for child in children {
-            let rewritten = prune_execution_plan(Arc::clone(child), &runtime_env).await?;
-            changed |= !Arc::ptr_eq(child, &rewritten);
-            rewritten_children.push(rewritten);
-        }
-
-        if changed { plan.with_new_children(rewritten_children) } else { Ok(plan) }
-    })
-}
-
-async fn prune_native_exec(exec: &NativeCudfExec, runtime_env: &Arc<RuntimeEnv>) -> Arc<dyn ExecutionPlan> {
+    source_storage_profiles: &[SourceStorageProfile],
+) -> QueryPlan {
     let policy = TableFormatPruningPolicy::default();
-    let mut plan = seed_dimension_derived_reader_predicates(exec.native_plan().clone());
+    let original_plan = plan.clone();
+    let mut plan = seed_dimension_derived_reader_predicates(plan);
     let mut any_applied = false;
+    let static_target_file_count: usize = static_reader_predicate_source_node_ids(&plan)
+        .into_iter()
+        .filter_map(|source_node_id| local_parquet_source(&plan, source_node_id))
+        .map(|source| source.files.len())
+        .sum();
+    if policy.target_file_guard_exceeded(static_target_file_count) {
+        eprintln!(
+            "[lakehouse_pruning] event=skip reason=too_many_static_predicate_files target_file_count={} max_target_file_count={}",
+            static_target_file_count,
+            policy.max_target_files_across_requests(),
+        );
+        return original_plan;
+    }
+    let mut object_stores = FooterObjectStoreRegistry::new(runtime_env, source_storage_profiles);
 
-    match prune_static_reader_predicate_sources(plan.clone(), runtime_env).await {
+    match prune_static_reader_predicate_sources(plan.clone(), &mut object_stores).await {
         Ok(StaticPredicatePruneOutcome { plan: patched, applied, before, after }) => {
             if applied {
                 eprintln!(
@@ -93,7 +93,7 @@ async fn prune_native_exec(exec: &NativeCudfExec, runtime_env: &Arc<RuntimeEnv>)
 
     let requests = discover_dimension_derived_pruning_requests(&plan);
     if requests.is_empty() && !any_applied {
-        return Arc::new(exec.clone());
+        return original_plan;
     }
 
     let target_file_count: usize = requests
@@ -108,11 +108,11 @@ async fn prune_native_exec(exec: &NativeCudfExec, runtime_env: &Arc<RuntimeEnv>)
             target_file_count,
             policy.max_target_files_across_requests(),
         );
-        return if any_applied { rebuild_native_exec(exec, plan) } else { Arc::new(exec.clone()) };
+        return if any_applied { plan } else { original_plan };
     }
 
     for request in requests {
-        match prune_request(plan.clone(), runtime_env, request).await {
+        match prune_request(plan.clone(), &mut object_stores, request).await {
             Ok(RequestOutcome::Applied { plan: patched, target_source_node_id, before, after }) => {
                 eprintln!(
                     "[lakehouse_pruning] event=applied target_source_node_id={} before_row_groups={} after_row_groups={}",
@@ -136,24 +136,7 @@ async fn prune_native_exec(exec: &NativeCudfExec, runtime_env: &Arc<RuntimeEnv>)
         }
     }
 
-    if !any_applied {
-        return Arc::new(exec.clone());
-    }
-
-    rebuild_native_exec(exec, plan)
-}
-
-fn rebuild_native_exec(exec: &NativeCudfExec, plan: QueryPlan) -> Arc<dyn ExecutionPlan> {
-    match NativeCudfExec::try_new(plan, exec.execution_config().clone()) {
-        Ok(patched) => Arc::new(patched),
-        Err(error) => {
-            eprintln!(
-                "[lakehouse_pruning] event=skip reason=rebuild_failed error={}",
-                stable_log_field(&error.to_string()),
-            );
-            Arc::new(exec.clone())
-        },
-    }
+    if any_applied { plan } else { original_plan }
 }
 
 struct StaticPredicatePruneOutcome {
@@ -165,7 +148,7 @@ struct StaticPredicatePruneOutcome {
 
 async fn prune_static_reader_predicate_sources(
     mut plan: QueryPlan,
-    runtime_env: &Arc<RuntimeEnv>,
+    object_stores: &mut FooterObjectStoreRegistry<'_>,
 ) -> std::result::Result<StaticPredicatePruneOutcome, String> {
     let source_node_ids = static_reader_predicate_source_node_ids(&plan);
     if source_node_ids.is_empty() {
@@ -186,7 +169,7 @@ async fn prune_static_reader_predicate_sources(
             continue;
         };
         let selections =
-            static_reader_predicate_row_group_selections(runtime_env, source_node_id, &source, &pruning_expr).await?;
+            static_reader_predicate_row_group_selections(object_stores, source_node_id, &source, &pruning_expr).await?;
         let result = apply_local_parquet_row_group_selections(plan, source_node_id, &selections);
         if result.applied {
             before = before.saturating_add(result.before);
@@ -223,7 +206,7 @@ fn static_reader_predicate_source_node_ids(plan: &QueryPlan) -> Vec<NodeId> {
 }
 
 async fn static_reader_predicate_row_group_selections(
-    runtime_env: &Arc<RuntimeEnv>,
+    object_stores: &mut FooterObjectStoreRegistry<'_>,
     source_node_id: NodeId,
     source: &LocalParquetSource,
     predicate: &StaticRowGroupPruningExpr,
@@ -237,13 +220,7 @@ async fn static_reader_predicate_row_group_selections(
                 stable_log_field(&error)
             )
         })?;
-        let object_context = object_error_context(source_node_id, &object.path);
-        let store = runtime_env.object_store(&object.store_url).map_err(|error| {
-            format!(
-                "static_reader_predicate_object_store_unregistered {}",
-                foreign_error_diagnostic("runtime_object_store_lookup", &error, &object_context, Some(&object.path))
-            )
-        })?;
+        let store = object_stores.store_for_file(file, &object, source_node_id)?;
         let metadata = parquet_metadata(store, object.path, file.file_size_bytes, source_node_id)
             .await
             .map_err(|error| format!("static_reader_predicate_footer_unavailable {error}"))?;
@@ -686,7 +663,7 @@ enum RequestOutcome {
 
 async fn prune_request(
     plan: QueryPlan,
-    runtime_env: &Arc<RuntimeEnv>,
+    object_stores: &mut FooterObjectStoreRegistry<'_>,
     request: nexus_query_engine::optimizer::DimensionDerivedPruningRequest,
 ) -> std::result::Result<RequestOutcome, String> {
     let target_source_node_id = request.target_source_node_id;
@@ -708,7 +685,7 @@ async fn prune_request(
     };
 
     let Some(key_filter) = derive_dimension_key_filter(
-        runtime_env,
+        object_stores,
         request.dimension_source_node_id,
         dimension_source,
         &request.dimension_key_column,
@@ -729,14 +706,7 @@ async fn prune_request(
     let mut per_file_row_group_key_ranges = Vec::with_capacity(target_source.files.len());
     for file in &target_source.files {
         let object = object_store_file(&file.location)?;
-        let store = runtime_env.object_store(&object.store_url).map_err(|error| {
-            foreign_error_diagnostic(
-                "runtime_object_store_lookup",
-                &error,
-                &object_error_context(target_source_node_id, &object.path),
-                Some(&object.path),
-            )
-        })?;
+        let store = object_stores.store_for_file(file, &object, target_source_node_id)?;
         let metadata = parquet_metadata(store, object.path, file.file_size_bytes, target_source_node_id).await?;
         let selected_row_groups = selected_or_all_row_groups(file.row_groups.as_deref(), metadata.num_row_groups());
         per_file_row_group_key_ranges.push(row_group_key_ranges(
@@ -765,7 +735,7 @@ async fn prune_request(
 }
 
 async fn derive_dimension_key_filter(
-    runtime_env: &Arc<RuntimeEnv>,
+    object_stores: &mut FooterObjectStoreRegistry<'_>,
     source_node_id: NodeId,
     source: &LocalParquetSource,
     key_column: &str,
@@ -781,9 +751,7 @@ async fn derive_dimension_key_filter(
     for file in &source.files {
         let object = object_store_file(&file.location)?;
         let object_context = object_error_context(source_node_id, &object.path);
-        let store = runtime_env.object_store(&object.store_url).map_err(|error| {
-            foreign_error_diagnostic("runtime_object_store_lookup", &error, &object_context, Some(&object.path))
-        })?;
+        let store = object_stores.store_for_file(file, &object, source_node_id)?;
         let object_meta = store
             .head(&object.path)
             .await
@@ -852,183 +820,6 @@ fn row_group_key_ranges(
 
 fn selected_or_all_row_groups(selected: Option<&[usize]>, row_group_count: usize) -> Vec<usize> {
     selected.map_or_else(|| (0..row_group_count).collect(), |row_groups| row_groups.to_vec())
-}
-
-struct ObjectStoreFile {
-    store_url: ObjectStoreUrl,
-    path: ObjectStorePath,
-}
-
-fn object_store_file(location: &ParquetSourceLocation) -> std::result::Result<ObjectStoreFile, String> {
-    let ParquetSourceLocation::ObjectStoreUri { uri, .. } = location else {
-        return Err("not_object_store_uri".to_string());
-    };
-    let (scheme, rest) = uri.split_once("://").ok_or_else(|| "missing_uri_scheme".to_string())?;
-    let (authority, path) = rest.split_once('/').ok_or_else(|| "missing_object_path".to_string())?;
-    if authority.is_empty() {
-        return Err("missing_uri_authority".to_string());
-    }
-    if path.is_empty() {
-        return Err("missing_object_path".to_string());
-    }
-    let store_url =
-        ObjectStoreUrl::parse(format!("{scheme}://{authority}")).map_err(|_| "invalid_object_store_url".to_string())?;
-    let path = ObjectStorePath::parse(path).map_err(|_| "invalid_object_path".to_string())?;
-    Ok(ObjectStoreFile { store_url, path })
-}
-
-fn object_error_context(source_node_id: NodeId, path: &ObjectStorePath) -> Vec<(&'static str, String)> {
-    let path = path.to_string();
-    vec![
-        ("source_node_id", source_node_id.to_string()),
-        ("object_path_hash", stable_hash_hex(&path)),
-        ("object_path_leaf", redacted_object_path_leaf(&path)),
-    ]
-}
-
-fn object_store_pruning_error(
-    error: datafusion::object_store::Error,
-    context: &[(&'static str, String)],
-    path: &ObjectStorePath,
-) -> String {
-    let kind = object_store_error_kind(&error);
-    let mut fields = vec![format!("object_store_error_kind={kind}")];
-    if let Some(detail) = object_store_error_detail(&error) {
-        fields.push(format!("object_store_error_detail={detail}"));
-    }
-    if let Some(chain) = ErrorSourceDiagnostics::from_error(&error).chain() {
-        fields.push(format!("error_source_chain={}", stable_log_field(&redact_object_path(chain, path))));
-    }
-    for (key, value) in context {
-        fields.push(format!("{key}={}", stable_log_field(value)));
-    }
-    fields.join(" ")
-}
-
-fn object_store_error_kind(error: &datafusion::object_store::Error) -> &'static str {
-    match error {
-        datafusion::object_store::Error::PermissionDenied { .. } => "permission_denied",
-        datafusion::object_store::Error::Unauthenticated { .. } => "unauthenticated",
-        datafusion::object_store::Error::NotFound { .. } => "not_found",
-        datafusion::object_store::Error::Generic { .. } => "generic",
-        datafusion::object_store::Error::InvalidPath { .. } => "invalid_path",
-        datafusion::object_store::Error::NotSupported { .. } => "not_supported",
-        #[allow(unreachable_patterns)]
-        _ => "other",
-    }
-}
-
-fn object_store_error_detail(error: &datafusion::object_store::Error) -> Option<&'static str> {
-    match error {
-        datafusion::object_store::Error::PermissionDenied { .. } => Some("access_denied"),
-        datafusion::object_store::Error::Unauthenticated { .. } => Some("unauthenticated"),
-        datafusion::object_store::Error::NotFound { .. } => Some("not_found"),
-        datafusion::object_store::Error::Generic { source, .. } => {
-            classify_generic_object_store_source(source.as_ref())
-        },
-        _ => None,
-    }
-}
-
-fn classify_generic_object_store_source(source: &(dyn StdError + 'static)) -> Option<&'static str> {
-    let text = error_chain_text(source);
-    let lower = text.to_ascii_lowercase();
-    if contains_any(&lower, &["invalidaccesskeyid", "invalid access key", "invalid_access_key"]) {
-        return Some("invalid_access_key");
-    }
-    if contains_any(&lower, &["expiredtoken", "expired token", "token expired"]) {
-        return Some("expired_token");
-    }
-    if contains_any(&lower, &["signaturedoesnotmatch", "signature mismatch", "signature did not match"]) {
-        return Some("signature_mismatch");
-    }
-    if contains_any(&lower, &["accessdenied", "access denied", "permission denied"]) {
-        return Some("access_denied");
-    }
-    if contains_any(&lower, &["no credentials", "missing credentials", "could not load credentials"]) {
-        return Some("missing_credentials");
-    }
-    if contains_any(&lower, &["401 unauthorized", "status code: 401", "http 401"]) {
-        return Some("http_401");
-    }
-    if contains_any(&lower, &["403 forbidden", "status code: 403", "http 403"]) {
-        return Some("http_403");
-    }
-    if lower.contains("timeout") || lower.contains("timed out") {
-        return Some("timeout");
-    }
-    None
-}
-
-fn foreign_error_diagnostic(
-    kind: &'static str,
-    error: &(dyn StdError + 'static),
-    context: &[(&'static str, String)],
-    redact_path: Option<&ObjectStorePath>,
-) -> String {
-    let diagnostics = ErrorSourceDiagnostics::from_error(error);
-    let chain = diagnostics.chain().map(str::to_string).unwrap_or_else(|| error.to_string());
-    let chain = redact_path.map_or(chain.clone(), |path| redact_object_path(&chain, path));
-    let mut fields = vec![format!("{kind}={}", stable_log_field(&chain))];
-    if let Some(root_cause) = diagnostics.root_cause_when_distinct() {
-        let root_cause =
-            redact_path.map_or_else(|| root_cause.to_string(), |path| redact_object_path(root_cause, path));
-        fields.push(format!("error_root_cause={}", stable_log_field(&root_cause)));
-    }
-    for (key, value) in context {
-        fields.push(format!("{key}={}", stable_log_field(value)));
-    }
-    fields.join(" ")
-}
-
-fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
-    let mut text = source.to_string();
-    let mut current = source.source();
-    while let Some(source) = current {
-        text.push_str(": ");
-        text.push_str(&source.to_string());
-        current = source.source();
-    }
-    text
-}
-
-fn contains_any(text: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| text.contains(needle))
-}
-
-fn stable_log_field(value: &str) -> String {
-    value.replace(['\t', '\n', '\r'], " ")
-}
-
-fn redact_object_path(message: &str, path: &ObjectStorePath) -> String {
-    let path = path.to_string();
-    let message = if path.is_empty() { message.to_string() } else { message.replace(&path, "<redacted-object-path>") };
-    message
-        .split_whitespace()
-        .map(|token| {
-            if token.contains("://") {
-                "<redacted-uri>".to_string()
-            } else if let Some((prefix, _)) = token.split_once('?') {
-                format!("{prefix}?<redacted-query>")
-            } else {
-                token.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn redacted_object_path_leaf(path: &str) -> String {
-    let path = path.split_once('?').map_or(path, |(path, _)| path);
-    path.rsplit('/').next().filter(|leaf| !leaf.is_empty()).unwrap_or("<empty>").to_string()
-}
-
-fn stable_hash_hex(value: &str) -> String {
-    let hash = value
-        .as_bytes()
-        .iter()
-        .fold(0xcbf29ce484222325_u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3));
-    format!("{hash:016x}")
 }
 
 #[cfg(test)]

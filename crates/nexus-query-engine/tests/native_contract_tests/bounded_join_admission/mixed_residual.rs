@@ -42,7 +42,7 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
         assert!(!plan.capability_analysis().admits_root_join());
         assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
         assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
-        assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+        assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
     }
 
     let plan = mixed_residual_multi_join_plan(
@@ -56,8 +56,7 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
     assert!(!plan.capability_analysis().admits_root_join());
     assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-    let facts = plan
-        .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+    let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("unsupported mixed left multi-join shape should produce facts");
     assert_rejection_facts_are_family_free(&facts, "mixed_left_multi_join");
     assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
@@ -92,8 +91,7 @@ fn bounded_multi_join_reports_left_full_blocker_after_valid_mixed_residual_semi_
         assert!(!plan.capability_analysis().admits_root_join());
         assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
         assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-        let facts = plan
-            .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
             .expect("unsupported mixed left/full multi-join shape should produce facts");
         assert_rejection_facts_are_family_free(&facts, "mixed_left_full_multi_join");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
@@ -129,8 +127,7 @@ fn bounded_multi_join_rejects_invalid_mixed_residual_semi_anti_with_explicit_blo
         assert!(!plan.capability_analysis().admits_root_join());
         assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
         assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-        let facts = plan
-            .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
             .expect("unsupported mixed semi/anti multi-join shape should produce facts");
         assert_rejection_facts_are_family_free(&facts, "invalid_mixed_semi_anti_multi_join");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
@@ -175,6 +172,6 @@ fn bounded_multi_join_keeps_aggregate_inputs_out_of_join_subtrees() {
             !plan.capability_analysis().admits_closed_multi_join_subgraph(),
             "aggregate {aggregate_leaf:?} leaf must not be accepted below a bounded multi-join"
         );
-        assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_some());
+        assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_some());
     }
 }

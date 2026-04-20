@@ -53,3 +53,5 @@ fixture/data/
 # website/ (Docusaurus) is tracked and deployed to GitHub Pages via
 # .github/workflows/deploy-website.yml. Its own build artefacts and
 # node_modules are ignored by website/.gitignore.
+
+.codex

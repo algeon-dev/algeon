@@ -53,7 +53,7 @@ use datafusion_nexus_bench::{
     default_tpch_parquet_root, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
 };
 use nexus_query_engine::{
-    exec::{QueryOutput, execute_query_plan},
+    exec::{execute_query_plan, output::QueryOutput},
     plan::PlanNode,
     runtime::{ExecutionContext, MemoryControlPolicy},
     source::SourceNode,

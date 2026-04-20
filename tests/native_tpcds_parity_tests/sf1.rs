@@ -1118,7 +1118,7 @@ async fn tpcds_sf1_distributed_aggregate_lowering_admits_shared_resident_groupin
         .plan;
         let rendered = optimized.to_string();
         assert!(rendered.contains("Aggregate"), "{query_id} must retain native aggregate lowering:\n{rendered}");
-        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&optimized)
+        let admission = nexus_query_engine::admission::strict_bounded_pipeline_admission(&optimized)
             .expect("strict admission should not fail");
         assert!(admission.is_some(), "{query_id} strict bounded admission should accept the whole native plan");
 
@@ -1486,7 +1486,7 @@ async fn tpcds_sf1_q72_outer_hash_join_lowering_admits_whole_native_plan() {
     assert!(rendered.contains("type=left"), "q72 should lower left/right outer joins natively:\n{rendered}");
 
     let analysis = optimized.capability_analysis();
-    let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&optimized)
+    let admission = nexus_query_engine::admission::strict_bounded_pipeline_admission(&optimized)
         .expect("strict admission should not fail");
     assert!(
         admission.is_some(),

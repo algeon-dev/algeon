@@ -24,7 +24,10 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
     assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(
+        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan, ExecutionBoundaryPolicy::default())
+            .is_none()
+    );
 
     let context = mixed_grouped_aggregate_execution_context(&runtime, 8 * 1024 * 1024 * 1024);
     let result = execute_query_plan(&context, &plan).unwrap();

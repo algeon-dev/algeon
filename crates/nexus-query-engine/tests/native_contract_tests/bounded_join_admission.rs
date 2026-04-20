@@ -1,3 +1,7 @@
+use nexus_query_engine::admission::{
+    bounded_join_modeled_facts as modeled_facts, bounded_join_unsupported_shape_facts as unsupported_facts,
+};
+
 use super::*;
 
 #[path = "bounded_join_admission/aggregate_over_join_subplans.rs"]
@@ -153,9 +157,8 @@ fn large_keyed_inner_build_selects_partitioned_strategy_with_hash_preflight_gate
         .expect("plan should contain a join capability row");
     assert_hash_join_prebuild_exact_requirement(&join.local_requirements, "large partitioned keyed join");
 
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
-        .expect("large one-shot join should still be admitted");
+    let facts =
+        modeled_facts(&plan, ExecutionBoundaryPolicy::default()).expect("large one-shot join should still be admitted");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
     assert_eq!(facts.get("estimated_build_rows").map(String::as_str), Some("n2:100000000"));
@@ -191,8 +194,7 @@ fn plan_captured_keyed_hash_join_strategy_options_drive_strict_admission_facts()
     );
     let plan = optimized.plan;
 
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("custom strategy thresholds should keep the join admitted");
 
     assert_eq!(plan.keyed_hash_join_strategy_options(), strategy_options);
@@ -213,8 +215,7 @@ fn large_keyed_left_and_full_builds_select_partitioned_strategy_with_hash_prefli
             .expect("plan should contain a join capability row");
         assert_hash_join_prebuild_exact_requirement(&join.local_requirements, "left/full large partitioned keyed join");
 
-        let facts = plan
-            .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
             .expect("large partitioned join should report modeled bounded facts");
         assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
         assert_eq!(
@@ -238,8 +239,7 @@ fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "large probe reusable join with small build should be admitted");
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("large probe reusable join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
@@ -264,8 +264,7 @@ fn small_single_use_keyed_inner_join_stays_reusable_strategy() {
         "small single-use reusable joins should retain reusable hash-table gates"
     );
 
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("small single-use inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
@@ -290,8 +289,7 @@ fn small_keyed_inner_join_with_build_artifact_keeps_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "small join with build artifact should be admitted");
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("small join with build artifact should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
@@ -304,8 +302,7 @@ fn small_keyed_left_join_keeps_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "small left join should be admitted");
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("small left join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
@@ -318,8 +315,7 @@ fn byte_small_but_row_non_small_keyed_inner_join_keeps_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "byte-small row-non-small inner join should be admitted");
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("byte-small row-non-small inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
@@ -335,8 +331,7 @@ fn row_small_but_byte_non_small_keyed_inner_join_keeps_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "row-small byte-non-small inner join should be admitted");
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("row-small byte-non-small inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
@@ -352,8 +347,7 @@ fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "unknown probe reusable join with small build should be admitted");
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("small-build reusable join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
@@ -381,7 +375,7 @@ fn small_string_keyed_join_rejects_unsupported_hash_prebuild_contract_before_run
     assert_eq!(facts.get("build_key").map(String::as_str), Some("customer_id"));
     assert_eq!(facts.get("build_key_data_type").map(String::as_str), Some("Utf8"));
     assert_eq!(facts.get("required_contract").map(String::as_str), Some("hash_join_pre_build_reservation_size_bytes"));
-    assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(modeled_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
 }
 
 #[test]
@@ -402,7 +396,7 @@ fn large_string_keyed_probe_rejects_unsupported_hash_prebuild_contract_before_ru
     assert_eq!(facts.get("reason").map(String::as_str), Some("hash_join_pre_build_reservation_unsupported_build_key"));
     assert_eq!(facts.get("build_key").map(String::as_str), Some("customer_id"));
     assert_eq!(facts.get("build_key_data_type").map(String::as_str), Some("Utf8"));
-    assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(modeled_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
 }
 
 #[test]
@@ -411,8 +405,7 @@ fn large_keyed_probe_with_non_small_build_selects_partitioned_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "large probe partitioned join should be admitted");
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("large probe partitioned join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:probe_side_too_large"));
@@ -433,8 +426,7 @@ fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
         .expect("plan should contain a join capability row");
     assert_hash_join_prebuild_exact_requirement(&join.local_requirements, "single-use non-small keyed join");
 
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("single-use non-small build should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(
@@ -471,8 +463,7 @@ fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy_without_h
         "large partitioned keyed residual joins must model per-partition mixed size-data"
     );
 
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("large partitioned residual join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_mixed_keyed_residual"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
@@ -508,8 +499,7 @@ fn keyed_inner_residual_or_selects_mixed_join_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "keyed residual OR join should be admitted through mixed join");
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("keyed residual OR join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_mixed_keyed_residual"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
@@ -526,8 +516,7 @@ fn keyed_decimal_division_residual_selects_one_shot_post_filter_strategy() {
         !analysis.has_rejections(),
         "keyed decimal-division residual join should be admitted through post-join filtering"
     );
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("keyed decimal-division residual join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
     assert_eq!(
@@ -1431,13 +1420,13 @@ fn bounded_capability_analysis_rejects_multi_join_admission_without_family_recog
     assert!(matches!(projection.owner, nexus_query_engine::capability::CapabilityRejectionOwner::Admission(_)));
 
     assert!(
-        nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
+        nexus_query_engine::admission::strict_bounded_pipeline_admission(&plan)
             .expect("strict admission should not fail")
             .is_none(),
         "strict admission must reject through the same envelope projection"
     );
 
-    let adaptive_admission = nexus_query_engine::exec::adaptive_bounded_pipeline_admission(&plan)
+    let adaptive_admission = nexus_query_engine::admission::adaptive_bounded_pipeline_admission(&plan)
         .expect("adaptive admission should not fail")
         .expect("join plan should produce adaptive admission evidence");
     let adaptive_row = adaptive_admission.report().row();
@@ -1448,8 +1437,7 @@ fn bounded_capability_analysis_rejects_multi_join_admission_without_family_recog
         "adaptive rejection should expose the same projected strict gap"
     );
 
-    let unsupported_facts = plan
-        .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+    let unsupported_facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("unsupported envelope should produce bounded rejection facts");
     assert_eq!(unsupported_facts.get("bounded_join_rejection_reason").map(String::as_str), Some(projection.reason));
     for (key, value) in &projection.facts {
@@ -1476,8 +1464,7 @@ fn bounded_capability_analysis_rejects_multi_join_admission_without_family_recog
 fn bounded_capability_analysis_projects_reservation_facts_without_family_path_vocabulary() {
     let plan =
         keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("keyed hash join resident subplan pipeline should produce modeled facts");
 
     assert!(facts.get("bounded_join_reservation_kinds").is_some_and(|value| value.contains("source_read")));
@@ -1494,12 +1481,11 @@ fn bounded_capability_analysis_projects_reservation_facts_without_family_path_vo
 fn bounded_capability_analysis_projects_modeled_report_facts_for_simple_root_join() {
     let plan = simple_root_join_plan();
 
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("root join should produce modeled bounded facts through capability projection");
 
     assert_eq!(facts.get("bounded_join_execution_family"), None);
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
     assert_modeled_reservation_facts_are_consistent(&facts, "root_join");
 }
 
@@ -1508,9 +1494,8 @@ fn bounded_capability_analysis_prevents_modeled_facts_for_capability_rejections(
     let plan = single_join_pipeline_with_empty_in_list_filter_plan();
 
     assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-    assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_none());
-    let facts = plan
-        .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+    assert!(modeled_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
+    let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("capability-rejected single-join pipeline should produce rejection facts");
 
     assert_rejection_facts_are_family_free(&facts, "empty_in_list_filter");
@@ -1543,7 +1528,7 @@ fn bounded_capability_analysis_can_reject_node_capabilities_without_family_proje
     assert_eq!(*reason, "unsupported_join_node_capability");
     assert_eq!(facts.get("join_type").map(String::as_str), Some("cross"));
     assert_eq!(facts.get("key_count").map(String::as_str), Some("1"));
-    assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(modeled_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
 }
 
 #[test]
@@ -1564,7 +1549,7 @@ fn bounded_capability_analysis_rejects_unsupported_join_output_dtype_before_stra
     assert_eq!(facts.get("field_index").map(String::as_str), Some("0"));
     assert_eq!(facts.get("field_name").map(String::as_str), Some("l_key"));
     assert_eq!(facts.get("dtype").map(String::as_str), Some("Binary"));
-    assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(modeled_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
 }
 
 #[test]
@@ -1928,7 +1913,7 @@ fn bounded_single_join_pipeline_admits_serial_aggregate_spine() {
     assert!(!plan.capability_analysis().admits_root_join());
     assert!(plan.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
 }
 
 #[test]
@@ -1938,7 +1923,7 @@ fn bounded_multi_join_pipeline_admits_serial_aggregate_spine_with_projection_and
     assert!(!plan.capability_analysis().admits_root_join());
     assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
 }
 
 #[test]
@@ -1950,7 +1935,7 @@ fn bounded_single_join_pipeline_rejects_aggregate_join_input_leaves() {
         assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
         assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
         assert!(
-            plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_some(),
+            unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_some(),
             "aggregate {aggregate_side} join input must not be accepted as a bounded root join leaf"
         );
     }
@@ -1968,9 +1953,8 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_is_executable_with_modeled_
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
     assert!(plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("keyed hash join resident subplan pipeline should produce modeled bounded facts");
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
     assert_eq!(facts.get("bounded_join_execution_family"), None);
@@ -2074,8 +2058,8 @@ fn bounded_keyed_hash_join_resident_subplan_non_matching_variants_use_full_sort_
 
         assert!(!analysis.admits_keyed_hash_join_resident_subplan_pipeline(), "{variant:?}");
         assert!(analysis.admits_root_full_sort_join_aggregate_pipeline(), "{variant:?}");
-        assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
-        assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_some(), "{variant:?}");
+        assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
+        assert!(modeled_facts(&plan, ExecutionBoundaryPolicy::default()).is_some(), "{variant:?}");
     }
 }
 
@@ -2093,8 +2077,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
         assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
         assert!(!plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(), "{variant:?}");
         assert!(!plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline(), "{variant:?}");
-        let facts = plan
-            .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
             .expect("unsupported keyed hash join resident subplan variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_keyed_hash_resident_subplan");
         assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
@@ -2115,7 +2098,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() 
     assert!(plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
     assert!(analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
     assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
     assert!(analysis.edges.iter().any(|edge| {
         matches!(edge.input_role, InputRole::JoinBuildInput { .. })
             && edge.reservation_requirements.iter().any(|requirement| {
@@ -2136,8 +2119,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() 
             && requirement.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
     }));
 
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("aggregate-over-join subplan TopK pipeline should produce modeled bounded facts");
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
     assert_eq!(facts.get("bounded_join_execution_family"), None);
@@ -2177,14 +2159,14 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_accepts_single_output_pos
     let pipeline = nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis)
         .expect("post-root filtering join TopK plan should compile");
     assert_eq!(
-        nexus_query_engine::exec::compiled_bounded_pipeline_support(&pipeline)
+        nexus_query_engine::admission::compiled_bounded_pipeline_support(&pipeline)
             .expect("graph support check should not fail"),
-        nexus_query_engine::exec::CompiledBoundedPipelineSupport::Supported
+        nexus_query_engine::admission::CompiledBoundedPipelineSupport::Supported
     );
     assert_eq!(
-        nexus_query_engine::exec::compiled_bounded_query_plan_support(&plan, &pipeline)
+        nexus_query_engine::admission::compiled_bounded_query_plan_support(&plan, &pipeline)
             .expect("plan-aware support check should not fail"),
-        nexus_query_engine::exec::CompiledBoundedPipelineSupport::Supported
+        nexus_query_engine::admission::CompiledBoundedPipelineSupport::Supported
     );
 }
 
@@ -2220,11 +2202,10 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_proof_stays_na
             "{variant:?} must not satisfy the aggregate-over-join TopK capability proof"
         );
         assert!(
-            plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_some(),
+            unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_some(),
             "{variant:?} should remain rejected with bounded unsupported-shape facts"
         );
-        let facts = plan
-            .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
             .expect("rejected aggregate-over-join TopK variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_topk");
         assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
@@ -2241,7 +2222,7 @@ fn bounded_root_topk_join_aggregate_pipeline_is_executable_with_modeled_contract
     assert!(!analysis.admits_closed_multi_join_subgraph());
     assert!(!analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
     assert!(analysis.admits_root_topk_join_aggregate_pipeline());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
     assert!(analysis.edges.iter().any(|edge| {
         edge.contract_kinds.contains(&EdgeContractKind::SortInput)
             && edge.reservation_requirements.iter().any(|requirement| {
@@ -2257,13 +2238,12 @@ fn bounded_root_topk_join_aggregate_pipeline_is_executable_with_modeled_contract
             && requirement.quality == ContractQuality::QueryEngineOwnedBoundary
     }));
 
-    let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
+    let admission = nexus_query_engine::admission::strict_bounded_pipeline_admission(&plan)
         .expect("strict bounded admission should not fail")
         .expect("root TopK join/aggregate pipeline should be admitted");
     assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
 
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("root TopK join/aggregate pipeline should produce modeled bounded facts");
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
     assert_eq!(facts.get("bounded_join_execution_family"), None);
@@ -2298,7 +2278,7 @@ fn bounded_root_topk_join_aggregate_rejects_full_scan_without_source_reduction_p
         .first_rejection_projection()
         .expect("missing source reduction should project a local root TopK rejection");
     assert_eq!(projection.reason, "root_topk_join_aggregate_requires_source_reduction_proof");
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_some());
+    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_some());
 }
 
 #[test]
@@ -2328,7 +2308,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_source_reuse() {
         analysis.admits_root_topk_join_aggregate_pipeline(),
         "source reuse is a modeled source-read contract, not computed producer fanout"
     );
-    let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
+    let admission = nexus_query_engine::admission::strict_bounded_pipeline_admission(&plan)
         .expect("strict bounded admission should not fail")
         .expect("shared-source root TopK join/aggregate pipeline should be admitted");
     assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2366,7 +2346,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
         });
         assert!(has_expected_shared_producer, "{variant:?}: expected shared {expected_shared_operator} producer proof");
 
-        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
+        let admission = nexus_query_engine::admission::strict_bounded_pipeline_admission(&plan)
             .expect("strict bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK join/aggregate pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2417,7 +2397,7 @@ fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts_wit
             .unwrap_or_else(|error| panic!("{variant:?} capability report should be valid: {error}"));
         assert_strict_report_has_modeled_subcontract(&report, expected_contract, &format!("{variant:?}"));
 
-        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
+        let admission = nexus_query_engine::admission::strict_bounded_pipeline_admission(&plan)
             .expect("strict bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK join/aggregate pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2449,7 +2429,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
             &format!("{variant:?}"),
         );
 
-        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
+        let admission = nexus_query_engine::admission::strict_bounded_pipeline_admission(&plan)
             .expect("strict bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2518,7 +2498,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontract
             .unwrap_or_else(|error| panic!("{variant:?} capability report should be valid: {error}"));
         assert_strict_report_has_modeled_subcontract(&report, expected_contract, &format!("{variant:?}"));
 
-        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
+        let admission = nexus_query_engine::admission::strict_bounded_pipeline_admission(&plan)
             .expect("strict bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2556,7 +2536,7 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
             "null_filtered_aggregate_fan_in",
         );
 
-        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
+        let admission = nexus_query_engine::admission::strict_bounded_pipeline_admission(&plan)
             .expect("strict bounded admission should not fail")
             .expect("null-filtered aggregate fan-in root TopK pipeline should be admitted");
         assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2743,7 +2723,7 @@ fn bounded_root_topk_join_aggregate_shape_miss_does_not_mask_general_rejection()
     if let Some(projection) = analysis.first_rejection_projection() {
         assert_ne!(projection.reason, "root_topk_join_aggregate_requires_grouped_aggregate_fragment");
     }
-    let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
+    let admission = nexus_query_engine::admission::strict_bounded_pipeline_admission(&plan)
         .expect("strict bounded admission should not fail");
     if let Some(admission) = admission {
         assert_ne!(
@@ -2897,10 +2877,9 @@ fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_is_exe
             .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
     );
     assert!(plan.capability_analysis().admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
 
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
         .expect("resident grouped aggregate subquery filter pipeline should produce modeled bounded facts");
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
     assert_eq!(facts.get("bounded_join_execution_family"), None);
@@ -2979,10 +2958,9 @@ fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_p
                 .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
             "{variant:?}"
         );
-        assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
+        assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
 
-        let facts = plan
-            .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
             .unwrap_or_else(|| panic!("{variant:?} resident grouped aggregate TopK pipeline should be modeled"));
         assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"), "{variant:?}");
         assert_eq!(facts.get("bounded_join_execution_family"), None, "{variant:?}");
@@ -3125,7 +3103,7 @@ fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_keyless_i
     assert!(plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
 
     for variant in [
         KeylessInputSubplanVariant::GroupedAggregate,
@@ -3145,8 +3123,7 @@ fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_keyless_i
             "{variant:?}"
         );
         assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
-        let facts = plan
-            .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
             .expect("unsupported keyless input-subplan subplan shape should produce facts");
         assert_eq!(
             facts.get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability").map(String::as_str),

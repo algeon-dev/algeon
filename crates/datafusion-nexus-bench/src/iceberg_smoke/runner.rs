@@ -551,7 +551,7 @@ pub(crate) async fn run_query_with_registered_native_tables(
     );
     let df = ctx.sql(&sql).await?;
     let task_ctx = df.task_ctx();
-    let mut physical_plan = df.create_physical_plan().await?;
+    let physical_plan = df.create_physical_plan().await?;
     if iceberg_footer_pruning_enabled() {
         let scan_records = staging_records_snapshot(&staging_records);
         if let Err(error) = register_footer_pruning_object_stores_for_scan_records(ctx, &scan_records).await {
@@ -560,13 +560,6 @@ pub(crate) async fn run_query_with_registered_native_tables(
                 stable_tsv_field(&error.to_string())
             );
         }
-        let unpruned_plan = Arc::clone(&physical_plan);
-        physical_plan = datafusion_nexus::native::lakehouse_pruning::prune_table_format_native_plan(
-            physical_plan,
-            &task_ctx.runtime_env(),
-        )
-        .await
-        .unwrap_or(unpruned_plan);
     }
     let planning_row = datafusion_nexus::native_report::NativeDataFusionPlanningReport::from_retained_rule(
         query_id.clone(),
@@ -862,8 +855,8 @@ fn log_native_plan_debug_row(
     );
 }
 
-/// Registers a DataFusion object store for the S3 warehouse so footer-only
-/// pruning (`prune_table_format_native_plan`) can read Parquet footers/row-group
+/// Registers a DataFusion object store for the S3 warehouse so the native
+/// optimizer's footer-pruning continuation can read Parquet footers/row-group
 /// ranges over the object store. The Iceberg catalog reads data files through
 /// its own FileIO, so without this the runtime env has no S3 store registered.
 /// No-op unless footer pruning is enabled and the fixture is S3-backed.

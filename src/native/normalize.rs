@@ -21,7 +21,7 @@ use datafusion::{
 use nexus_query_engine::expr::LimitSpec as NativeLimitSpec;
 
 use crate::{
-    native_exec::gpu_resident_producer_input_name, policy::FallbackReason, report::GpuCandidate,
+    native_exec::producer::gpu_resident_producer_input_name, policy::FallbackReason, report::GpuCandidate,
     table_format::CudfTableFormatScanExec,
 };
 
