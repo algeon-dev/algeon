@@ -1,0 +1,5 @@
+error[E0599]: no function or associated item named `factorize_parts` found for struct `ColumnView<'a>` in the current scope
+ --> tests/public_api/ui/no_testing_column_view_factorize_parts.rs:4:51
+  |
+4 |     let f: fn(&ColumnView<'_>) -> _ = ColumnView::factorize_parts;
+  |                                                   ^^^^^^^^^^^^^^^ function or associated item not found in `ColumnView<'_>`

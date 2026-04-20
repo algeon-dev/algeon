@@ -5,7 +5,7 @@ use std::{
 };
 
 use cudf::{
-    DataFrame, DeviceId, Error, ErrorKind, HostColumnData, Runtime, Series, TypeId,
+    DataFrame, DataType, DeviceId, Error, ErrorKind, HostColumnData, Runtime, Series, TypeId,
     core::{Column, CudfType, DeviceBuffer, Scalar},
     runtime::CudaStream,
     testing::prelude::*,
@@ -52,13 +52,13 @@ pub fn column_from_strs_nullable(data: &[&str], validity: &[bool]) -> cudf::Resu
 }
 
 #[allow(dead_code)]
-pub fn null_column(type_id: TypeId, len: usize) -> cudf::Result<Column> {
-    with_test_runtime(|rt| rt.null_column(type_id, len))
+pub fn null_column(dtype: impl Into<DataType>, len: usize) -> cudf::Result<Column> {
+    with_test_runtime(|rt| rt.null_column(dtype, len))
 }
 
 #[allow(dead_code)]
-pub fn empty_column(type_id: TypeId) -> cudf::Result<Column> {
-    with_test_runtime(|rt| rt.empty_column(type_id))
+pub fn empty_column(dtype: impl Into<DataType>) -> cudf::Result<Column> {
+    with_test_runtime(|rt| rt.empty_column(dtype))
 }
 
 #[allow(dead_code)]
@@ -124,13 +124,13 @@ pub fn series_opt<T: CudfType>(name: impl Into<String>, data: &[Option<T>]) -> c
 }
 
 #[allow(dead_code)]
-pub fn null_series(name: impl Into<String>, type_id: TypeId, len: usize) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.nulls(name, type_id, len))
+pub fn null_series(name: impl Into<String>, dtype: impl Into<DataType>, len: usize) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.nulls(name, dtype, len))
 }
 
 #[allow(dead_code)]
-pub fn empty_series(name: impl Into<String>, type_id: TypeId) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.empty_series(name, type_id))
+pub fn empty_series(name: impl Into<String>, dtype: impl Into<DataType>) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.empty_series(name, dtype))
 }
 
 #[allow(dead_code)]

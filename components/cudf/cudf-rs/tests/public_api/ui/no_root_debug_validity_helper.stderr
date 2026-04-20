@@ -1,0 +1,5 @@
+error[E0425]: cannot find function `__debug_validity_to_host_null_mask_bytes` in crate `cudf`
+ --> tests/public_api/ui/no_root_debug_validity_helper.rs:2:19
+  |
+2 |     let _ = cudf::__debug_validity_to_host_null_mask_bytes(&[true, false, true]);
+  |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `cudf`

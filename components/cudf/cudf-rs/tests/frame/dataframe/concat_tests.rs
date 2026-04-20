@@ -1,5 +1,5 @@
 //! Tests for DataFrame concat, copy, rename, select.
-use cudf::{ColumnOrder, ConcatByNameOptions, DataFrame, ErrorKind, SchemaAlignment, testing::prelude::*};
+use cudf::{ConcatByNameOptions, DataFrame, DataType, ErrorKind, SchemaAlignment, TypeId, testing::prelude::*};
 
 use crate::common::{
     assert_missing_column_error, column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
@@ -169,38 +169,35 @@ fn test_concat_by_name_honors_left_column_order() {
     .unwrap();
 
     let result = left
-        .concat_by_name(
-            &right,
-            ConcatByNameOptions::new().alignment(SchemaAlignment::NullFill).column_order(ColumnOrder::Left),
-        )
+        .concat_by_name(&right, ConcatByNameOptions::new().alignment(SchemaAlignment::NullFill))
         .unwrap();
 
     assert_eq!(result.column_names(), vec!["b", "a", "c"]);
 }
 
 #[test]
-fn test_concat_by_name_honors_first_seen_column_order() {
-    let left = crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
-        .unwrap();
+fn test_concat_by_name_appends_union_only_columns_in_first_appearance_order() {
+    let left = crate::common::dataframe_from_columns(
+        vec!["b".to_string(), "a".to_string()],
+        vec![column_from_slice(&[1i32]).unwrap(), column_from_slice(&[2i32]).unwrap()],
+    )
+    .unwrap();
     let middle = crate::common::dataframe_from_columns(
-        vec!["city".to_string(), "score".to_string()],
-        vec![crate::common::column_from_strs(&["Toronto"]).unwrap(), column_from_slice(&[10.0f64]).unwrap()],
+        vec!["x".to_string(), "a".to_string()],
+        vec![column_from_slice(&[3i32]).unwrap(), column_from_slice(&[4i32]).unwrap()],
     )
     .unwrap();
     let right = crate::common::dataframe_from_columns(
-        vec!["score".to_string(), "country".to_string()],
-        vec![column_from_slice(&[20.0f64]).unwrap(), crate::common::column_from_strs(&["CA"]).unwrap()],
+        vec!["y".to_string(), "x".to_string()],
+        vec![column_from_slice(&[5i32]).unwrap(), column_from_slice(&[6i32]).unwrap()],
     )
     .unwrap();
 
     let result = left
-        .concat_many_by_name(
-            &[&middle, &right],
-            ConcatByNameOptions::new().alignment(SchemaAlignment::NullFill).column_order(ColumnOrder::FirstSeen),
-        )
+        .concat_many_by_name(&[&middle, &right], ConcatByNameOptions::new().alignment(SchemaAlignment::NullFill))
         .unwrap();
 
-    assert_eq!(result.column_names(), vec!["id", "city", "score", "country"]);
+    assert_eq!(result.column_names(), vec!["b", "a", "x", "y"]);
 }
 
 #[test]
@@ -231,6 +228,28 @@ fn test_concat_by_name_exact_rejects_missing_columns() {
     let err = left.concat_by_name(&right, ConcatByNameOptions::new().alignment(SchemaAlignment::Exact)).unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_concat_by_name_decimal_null_fill_preserves_scale() {
+    let decimal = crate::common::series("amount", &[12345i64, 67890])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .unwrap();
+
+    let left = DataFrame::from_columns([("id", crate::common::series("id", &[1i32, 2]).unwrap())]).unwrap();
+    let right = DataFrame::from_columns([("id", crate::common::series("id", &[3i32, 4]).unwrap()), ("amount", decimal)])
+        .unwrap();
+
+    let result = left.concat_by_name(&right, ConcatByNameOptions::default()).unwrap();
+    let amount = result.series("amount").unwrap();
+    let raw = amount.astype(TypeId::Int64).unwrap();
+
+    assert_eq!(amount.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(
+        raw.to_optional_vec::<i64>().unwrap(),
+        vec![None, None, Some(12345), Some(67890)]
+    );
 }
 
 #[test]

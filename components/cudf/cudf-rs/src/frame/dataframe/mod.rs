@@ -21,7 +21,7 @@ mod select;
 mod sort_ops;
 
 pub use column_ops::WithColumnExpr;
-pub use concat_ops::{ColumnOrder, ConcatByNameOptions, SchemaAlignment};
+pub use concat_ops::{ConcatByNameOptions, SchemaAlignment};
 pub use context::DataFrameExecutionScope;
 pub use fillna_ops::{DropDuplicatesOptions, DropNaHow, DropNaOptions};
 pub use info::{

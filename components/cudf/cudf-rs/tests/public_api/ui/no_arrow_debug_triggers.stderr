@@ -1,0 +1,23 @@
+error[E0603]: function `__debug_trigger_numeric_to_arrow_error_for_test` is private
+ --> tests/public_api/ui/no_arrow_debug_triggers.rs:2:30
+  |
+2 |     let _ = cudf::io::arrow::__debug_trigger_numeric_to_arrow_error_for_test();
+  |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ private function
+  |
+note: the function `__debug_trigger_numeric_to_arrow_error_for_test` is defined here
+ --> src/io/arrow.rs
+  |
+  | pub(crate) fn __debug_trigger_numeric_to_arrow_error_for_test() -> Result<()> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: function `__debug_trigger_record_batch_error_for_test` is private
+ --> tests/public_api/ui/no_arrow_debug_triggers.rs:3:30
+  |
+3 |     let _ = cudf::io::arrow::__debug_trigger_record_batch_error_for_test();
+  |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ private function
+  |
+note: the function `__debug_trigger_record_batch_error_for_test` is defined here
+ --> src/io/arrow.rs
+  |
+  | pub(crate) fn __debug_trigger_record_batch_error_for_test() -> Result<()> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -115,8 +115,8 @@ impl Column {
     /// can participate in explicit-provenance pipelines without triggering
     /// mixed-provenance rejection. No device memory is allocated for the
     /// column data itself.
-    pub(crate) fn empty_with_runtime(runtime: &Runtime, type_id: TypeId) -> Result<Self> {
-        Self::create_empty_in_domain(type_id, Arc::clone(runtime.execution_domain()), "column::empty_with_runtime")
+    pub(crate) fn empty_with_runtime(runtime: &Runtime, dtype: DataType) -> Result<Self> {
+        Self::create_empty_with_dtype_in_domain(dtype, Arc::clone(runtime.execution_domain()), "column::empty_with_runtime")
     }
 
     /// Create a column from a host slice of fixed-width elements.
@@ -484,17 +484,18 @@ impl Column {
     }
 
     pub(crate) fn nulls_in_domain(
-        type_id: TypeId,
+        dtype: DataType,
         len: usize,
         domain: &Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
         let size = usize_to_i32_len(len, "data", operation)?;
         if len == 0 {
-            return Self::create_empty_in_domain(type_id, Arc::clone(domain), operation);
+            return Self::create_empty_with_dtype_in_domain(dtype, Arc::clone(domain), operation);
         }
 
-        match type_id {
+        let type_id = dtype.id();
+        let raw = match type_id {
             TypeId::String => {
                 let dummy: Vec<&str> = vec![""; len];
                 let validity = vec![false; len];
@@ -543,7 +544,14 @@ impl Column {
                 )?;
                 Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
             },
+        }?;
+
+        if !dtype.id().is_decimal() || dtype.scale() == 0 {
+            return Ok(raw);
         }
+
+        let raw_view = raw.view()?;
+        unary::cast(&raw_view, &dtype).map_err(|error| error.with_operation(operation))
     }
 
     /// Create an all-null column of the given type and length inside the given
@@ -552,8 +560,8 @@ impl Column {
     /// The resulting column carries the runtime's retained provenance so it can
     /// participate in explicit-provenance pipelines without triggering
     /// mixed-provenance rejection.
-    pub(crate) fn nulls_with_runtime(runtime: &Runtime, type_id: TypeId, len: usize) -> Result<Self> {
-        Self::nulls_in_domain(type_id, len, runtime.execution_domain(), "column::nulls_with_runtime")
+    pub(crate) fn nulls_with_runtime(runtime: &Runtime, dtype: DataType, len: usize) -> Result<Self> {
+        Self::nulls_in_domain(dtype, len, runtime.execution_domain(), "column::nulls_with_runtime")
     }
 
     /// Create a column by repeating a scalar value `size` times inside the

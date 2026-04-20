@@ -1,0 +1,8 @@
+error[E0432]: unresolved import `cudf::frame::dataframe::IntoWithColumnExpr`
+ --> tests/public_api/ui/no_into_with_column_expr.rs:1:5
+  |
+1 | use cudf::frame::dataframe::IntoWithColumnExpr;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^------------------
+  |     |                       |
+  |     |                       help: a similar name exists in the module: `WithColumnExpr`
+  |     no `IntoWithColumnExpr` in `frame::dataframe`

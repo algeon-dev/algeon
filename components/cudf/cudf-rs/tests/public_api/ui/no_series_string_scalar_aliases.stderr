@@ -1,0 +1,71 @@
+error[E0599]: no function or associated item named `eq_scalar_str` found for struct `Series` in the current scope
+ --> tests/public_api/ui/no_series_string_scalar_aliases.rs:4:21
+  |
+4 |     let _ = Series::eq_scalar_str;
+  |                     ^^^^^^^^^^^^^ function or associated item not found in `Series`
+  |
+help: there is a method `eq_scalar` with a similar name
+ --> src/frame/series/owned.rs
+  |
+  |     pub fn eq_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no function or associated item named `ne_scalar_str` found for struct `Series` in the current scope
+ --> tests/public_api/ui/no_series_string_scalar_aliases.rs:5:21
+  |
+5 |     let _ = Series::ne_scalar_str;
+  |                     ^^^^^^^^^^^^^ function or associated item not found in `Series`
+  |
+help: there is a method `ne_scalar` with a similar name
+ --> src/frame/series/owned.rs
+  |
+  |     pub fn ne_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no function or associated item named `gt_scalar_str` found for struct `Series` in the current scope
+ --> tests/public_api/ui/no_series_string_scalar_aliases.rs:6:21
+  |
+6 |     let _ = Series::gt_scalar_str;
+  |                     ^^^^^^^^^^^^^ function or associated item not found in `Series`
+  |
+help: there is a method `gt_scalar` with a similar name
+ --> src/frame/series/owned.rs
+  |
+  |     pub fn gt_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no function or associated item named `lt_scalar_str` found for struct `Series` in the current scope
+ --> tests/public_api/ui/no_series_string_scalar_aliases.rs:7:21
+  |
+7 |     let _ = Series::lt_scalar_str;
+  |                     ^^^^^^^^^^^^^ function or associated item not found in `Series`
+  |
+help: there is a method `lt_scalar` with a similar name
+ --> src/frame/series/owned.rs
+  |
+  |     pub fn lt_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no function or associated item named `ge_scalar_str` found for struct `Series` in the current scope
+ --> tests/public_api/ui/no_series_string_scalar_aliases.rs:8:21
+  |
+8 |     let _ = Series::ge_scalar_str;
+  |                     ^^^^^^^^^^^^^ function or associated item not found in `Series`
+  |
+help: there is a method `ge_scalar` with a similar name
+ --> src/frame/series/owned.rs
+  |
+  |     pub fn ge_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no function or associated item named `le_scalar_str` found for struct `Series` in the current scope
+ --> tests/public_api/ui/no_series_string_scalar_aliases.rs:9:21
+  |
+9 |     let _ = Series::le_scalar_str;
+  |                     ^^^^^^^^^^^^^ function or associated item not found in `Series`
+  |
+help: there is a method `le_scalar` with a similar name
+ --> src/frame/series/owned.rs
+  |
+  |     pub fn le_scalar<T: IntoRuntimeScalar>(&self, rhs: T) -> Result<Series> {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

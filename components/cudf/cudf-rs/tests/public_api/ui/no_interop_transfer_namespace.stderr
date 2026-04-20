@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `cudf::interop::transfer`
+ --> tests/public_api/ui/no_interop_transfer_namespace.rs:1:20
+  |
+1 | use cudf::interop::transfer::{OwnedColumnTransfer, ReleaseSynchronization, TransferCompletionRule};
+  |                    ^^^^^^^^ could not find `transfer` in `interop`
