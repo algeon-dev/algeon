@@ -2,7 +2,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataFrame, MeltOptions};
+use cudf::{DataFrame, frame::dataframe::MeltOptions};
 
 use crate::common::assert_missing_column_error;
 

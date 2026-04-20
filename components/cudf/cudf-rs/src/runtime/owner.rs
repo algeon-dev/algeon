@@ -244,26 +244,42 @@ impl Runtime {
     /// `Some(value)` becomes a valid row; `None` becomes a null row. If every
     /// element is `Some`, this uses the non-nullable constructor path and does
     /// not allocate a null mask.
-    pub fn series_opt<T: CudfType>(&self, name: impl Into<String>, data: &[Option<T>]) -> Result<Series> {
+    pub fn series_opt<T: CudfType>(&self, data: &[Option<T>]) -> Result<Series> {
         let (values, validity, has_nulls) = Series::split_optional_host_values(data);
         if has_nulls {
-            Series::from_named_column(name, self.column_from_slice_nullable(&values, &validity)?)
+            Series::from_column(self.column_from_slice_nullable(&values, &validity)?)
         } else {
-            Series::from_named_column(name, self.column_from_slice(&values)?)
+            Series::from_column(self.column_from_slice(&values)?)
         }
     }
 
-    /// Create an all-null `Series` inside this runtime.
-    pub fn nulls(&self, name: impl Into<String>, dtype: impl Into<DataType>, len: usize) -> Result<Series> {
+    /// Create a named fixed-width `Series` from optional host values inside
+    /// this runtime.
+    pub fn named_series_opt<T: CudfType>(&self, name: impl Into<String>, data: &[Option<T>]) -> Result<Series> {
+        self.series_opt(data).map(|series| series.rename(name))
+    }
+
+    /// Create an unnamed all-null `Series` inside this runtime.
+    pub fn nulls(&self, dtype: impl Into<DataType>, len: usize) -> Result<Series> {
+        Series::from_column(self.null_column(dtype, len)?)
+    }
+
+    /// Create a named all-null `Series` inside this runtime.
+    pub fn named_nulls(&self, name: impl Into<String>, dtype: impl Into<DataType>, len: usize) -> Result<Series> {
         Series::from_named_column(name, self.null_column(dtype, len)?)
     }
 
-    /// Create an empty `Series` inside this runtime.
-    pub fn empty_series(&self, name: impl Into<String>, dtype: impl Into<DataType>) -> Result<Series> {
+    /// Create an unnamed empty `Series` inside this runtime.
+    pub fn empty_series(&self, dtype: impl Into<DataType>) -> Result<Series> {
+        Series::from_column(self.empty_column(dtype)?)
+    }
+
+    /// Create a named empty `Series` inside this runtime.
+    pub fn named_empty_series(&self, name: impl Into<String>, dtype: impl Into<DataType>) -> Result<Series> {
         Series::from_named_column(name, self.empty_column(dtype)?)
     }
 
-    /// Create a `Series` by repeating a scalar inside this runtime.
+    /// Create an unnamed `Series` by repeating a scalar inside this runtime.
     ///
     /// If `scalar` does not already belong to this runtime's execution domain,
     /// the scalar is recreated in this runtime first so placement and
@@ -271,16 +287,43 @@ impl Runtime {
     ///
     /// Supports all scalar types except Dictionary32 (no libcudf scalar
     /// subclass exists for dictionary-encoded scalars).
-    pub fn series_from_scalar(&self, name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Series> {
+    pub fn series_from_scalar(&self, scalar: &Scalar, size: usize) -> Result<Series> {
+        Series::from_column(self.column_from_scalar(scalar, size)?)
+    }
+
+    /// Create a named `Series` by repeating a scalar inside this runtime.
+    ///
+    /// If `scalar` does not already belong to this runtime's execution domain,
+    /// the scalar is recreated in this runtime first so placement and
+    /// allocator selection remain honest.
+    ///
+    /// Supports all scalar types except Dictionary32 (no libcudf scalar
+    /// subclass exists for dictionary-encoded scalars).
+    pub fn named_series_from_scalar(&self, name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Series> {
         Series::from_named_column(name, self.column_from_scalar(scalar, size)?)
     }
 
-    /// Create a fixed-width arithmetic sequence `Series` inside this runtime.
+    /// Create an unnamed fixed-width arithmetic sequence `Series` inside this runtime.
     ///
     /// The output is `[start, start + step, start + 2*step, ...]` with
     /// `size` rows, generated directly on device via libcudf sequence
     /// filling.
-    pub fn sequence<T: CudfType>(&self, name: impl Into<String>, start: T, step: T, size: usize) -> Result<Series> {
+    pub fn sequence<T: CudfType>(&self, start: T, step: T, size: usize) -> Result<Series> {
+        Series::from_column(Column::from_sequence_with_runtime(self, start, step, size)?)
+    }
+
+    /// Create a named fixed-width arithmetic sequence `Series` inside this runtime.
+    ///
+    /// The output is `[start, start + step, start + 2*step, ...]` with
+    /// `size` rows, generated directly on device via libcudf sequence
+    /// filling.
+    pub fn named_sequence<T: CudfType>(
+        &self,
+        name: impl Into<String>,
+        start: T,
+        step: T,
+        size: usize,
+    ) -> Result<Series> {
         Series::from_named_column(name, Column::from_sequence_with_runtime(self, start, step, size)?)
     }
 

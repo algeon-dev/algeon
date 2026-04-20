@@ -1,0 +1,28 @@
+error[E0432]: unresolved imports `cudf::DropNaOptions`, `cudf::InfoDetail`, `cudf::JsonReadOptions`, `cudf::MeltOptions`
+ --> tests/public_api/ui/no_root_dataframe_specialized_types.rs:1:12
+  |
+1 | use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MeltOptions};
+  |            ^^^^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^ no `MeltOptions` in the root
+  |            |              |           |
+  |            |              |           no `JsonReadOptions` in the root
+  |            |              no `InfoDetail` in the root
+  |            no `DropNaOptions` in the root
+  |
+  = help: consider importing this struct instead:
+          cudf::frame::dataframe::DropNaOptions
+  = help: consider importing this struct instead:
+          cudf::frame::dataframe::InfoDetail
+  = help: consider importing this struct instead:
+          cudf::frame::dataframe::JsonReadOptions
+  = help: consider importing this struct instead:
+          cudf::frame::dataframe::MeltOptions
+help: a similar name exists in the module
+  |
+1 - use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MeltOptions};
+1 + use cudf::{GroupByOptions, InfoDetail, JsonReadOptions, MeltOptions};
+  |
+help: a similar name exists in the module
+  |
+1 - use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MeltOptions};
+1 + use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MergeOptions};
+  |

@@ -8,7 +8,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataType, DropNaOptions, TypeId};
+use cudf::{DataType, TypeId, frame::dataframe::DropNaOptions};
 
 // ===========================================================================
 // Empty Series through arithmetic

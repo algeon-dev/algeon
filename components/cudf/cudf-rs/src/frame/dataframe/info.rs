@@ -13,7 +13,7 @@ bitflags::bitflags! {
     /// # Examples
     ///
     /// ```no_run
-    /// use cudf::InfoDetail;
+    /// use cudf::frame::dataframe::InfoDetail;
     ///
     /// // Columns with null counts, no memory accounting.
     /// let detail = InfoDetail::NULL_COUNTS;
@@ -235,7 +235,13 @@ impl DataFrame {
                     position,
                     name: name.clone(),
                     data_type,
-                    nullable: nullable.expect("nullable populated when columns are requested"),
+                    nullable: nullable.ok_or_else(|| {
+                        crate::core::error::invariant_violation(
+                            "dataframe::info_with",
+                            "nullable metadata must be populated when column details are requested",
+                        )
+                        .with_context("column_name", name.clone())
+                    })?,
                     null_count,
                     non_null_count,
                     memory_accounting: if payload_bytes.is_some() || device_allocated_bytes.is_some() {

@@ -1,6 +1,9 @@
 //! Integration tests for DataFrame metadata snapshots via `info()`.
 use cudf::{
-    DataFrame, DataFrameInfo, DataType, DataTypeCount, InfoDetail, Series, TypeId, ops::dictionary, testing::prelude::*,
+    DataFrame, DataType, Series, TypeId,
+    frame::dataframe::{DataFrameInfo, DataFrameMemoryAccounting, DataTypeCount, InfoDetail},
+    ops::dictionary,
+    testing::prelude::*,
 };
 use cudf_sys::{cudf_test_exec_last_stream_value, cudf_test_exec_reset_observation};
 
@@ -110,7 +113,7 @@ fn test_info_with_payload_memory_accounting_reports_expected_bytes() {
 
     assert_eq!(
         info.memory_accounting,
-        Some(cudf::DataFrameMemoryAccounting {
+        Some(DataFrameMemoryAccounting {
             payload_bytes: Some(ids_payload + maybe_payload + names_payload),
             device_allocated_bytes: None,
         })
@@ -219,7 +222,7 @@ fn test_info_empty_dataframe_returns_valid_empty_snapshot() {
             column_count: 0,
             dtypes: vec![],
             columns: Some(vec![]),
-            memory_accounting: Some(cudf::DataFrameMemoryAccounting {
+            memory_accounting: Some(DataFrameMemoryAccounting {
                 payload_bytes: Some(0),
                 device_allocated_bytes: Some(0),
             }),
@@ -232,7 +235,7 @@ fn test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_
     let rt = sample_runtime();
     let expected_stream = rt.stream().testing_raw_handle_value();
     let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([rt.series("names", &["ab", "cde", ""]).unwrap()]).map(|series| {
+        ::std::iter::IntoIterator::into_iter([rt.named_series("names", &["ab", "cde", ""]).unwrap()]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
         }),

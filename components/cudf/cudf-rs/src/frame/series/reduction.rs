@@ -113,7 +113,7 @@ impl Series {
     /// use cudf::Runtime;
     ///
     /// let rt = Runtime::new().unwrap();
-    /// let s = rt.series("x", &[10i32, 20, 30]).unwrap();
+    /// let s = rt.series(&[10i32, 20, 30]).unwrap();
     /// let total = s.sum_value::<i64>().unwrap();
     ///
     /// assert_eq!(total, 60);
@@ -137,8 +137,7 @@ impl Series {
     /// use cudf::Runtime;
     ///
     /// let rt = Runtime::new().unwrap();
-    /// let s =
-    ///     rt.nullable_series("x", &[10i32, 0, 30], &[true, false, true]).unwrap();
+    /// let s = rt.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap();
     /// let min = s.min_value::<i32>().unwrap();
     ///
     /// assert_eq!(min, Some(10));
@@ -176,7 +175,7 @@ impl Series {
     /// use cudf::Runtime;
     ///
     /// let rt = Runtime::new().unwrap();
-    /// let s = rt.series("x", &[10i32, 20, 30]).unwrap();
+    /// let s = rt.series(&[10i32, 20, 30]).unwrap();
     /// let mean = s.mean_value().unwrap();
     ///
     /// assert_eq!(mean, Some(20.0));
@@ -289,7 +288,7 @@ impl Series {
     /// use cudf::Runtime;
     ///
     /// let rt = Runtime::new().unwrap();
-    /// let s = rt.series("x", &[30i32, 10, 20]).unwrap();
+    /// let s = rt.series(&[30i32, 10, 20]).unwrap();
     /// let (min, max) = s.minmax_values::<i32>().unwrap();
     ///
     /// assert_eq!((min, max), (Some(10), Some(30)));

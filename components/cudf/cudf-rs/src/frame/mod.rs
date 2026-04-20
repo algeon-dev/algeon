@@ -1,14 +1,15 @@
-//! High-level DataFrame and Series entry points.
+//! High-level user-facing table and column APIs.
+//!
+//! `frame` is the main high-level namespace below the crate root:
+//!
+//! - [`DataFrame`] and [`Series`] are the primary entry points.
+//! - [`dataframe`] contains DataFrame-specific configuration and result types.
+//! - [`factorization`] contains categorical encoding result and option types.
+//! - [`series`] contains Series-specific traits and helpers.
 
 pub mod dataframe;
 pub mod factorization;
 pub mod series;
 
-pub use dataframe::{
-    ColumnMemoryAccounting, ConcatByNameOptions, CsvReadOptions, CsvWriteOptions, DataFrame,
-    DataFrameColumnInfo, DataFrameInfo, DataFrameJoinSides, DataFrameMemoryAccounting, DataTypeCount,
-    DropDuplicatesOptions, DropNaHow, DropNaOptions, InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions,
-    ParquetReadOptions, ParquetWriteOptions, SchemaAlignment,
-};
-pub use factorization::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized};
-pub use series::{IntoSeries, Series};
+pub use dataframe::DataFrame;
+pub use series::{HostColumnData, IntoSeries, Series};

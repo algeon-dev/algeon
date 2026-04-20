@@ -4,7 +4,8 @@
 //! into the shared result schema for comparison with Python cuDF output.
 
 use cudf::{
-    DataFrame, DropNaOptions, InfoDetail, SortOptions, TypeId,
+    DataFrame, SortOptions, TypeId,
+    frame::dataframe::{DropNaOptions, InfoDetail},
     testing::{ColumnView, prelude::*},
 };
 

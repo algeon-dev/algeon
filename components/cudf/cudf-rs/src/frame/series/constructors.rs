@@ -57,15 +57,25 @@ impl Series {
         Ok(Self { name: None, column, cached_len, cached_null_count })
     }
 
-    /// Create a `Series` by repeating a scalar value `size` times.
+    /// Create an unnamed `Series` by repeating a scalar value `size` times.
     ///
     /// If the scalar is null, all elements will be null.
     ///
     /// # Cost
     /// GPU-allocating: one device allocation of `size` elements.
-    pub fn from_scalar(name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Self> {
+    pub fn from_scalar(scalar: &Scalar, size: usize) -> Result<Self> {
         let column = Column::from_scalar(scalar, size)?;
-        Self::from_named_column(name, column)
+        Self::from_column(column)
+    }
+
+    /// Create a named `Series` by repeating a scalar value `size` times.
+    ///
+    /// If the scalar is null, all elements will be null.
+    ///
+    /// # Cost
+    /// GPU-allocating: one device allocation of `size` elements.
+    pub fn from_named_scalar(name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Self> {
+        Self::from_scalar(scalar, size).map(|series| series.rename(name))
     }
 
     /// Private helper: wrap a `Column` and read its cached metadata.

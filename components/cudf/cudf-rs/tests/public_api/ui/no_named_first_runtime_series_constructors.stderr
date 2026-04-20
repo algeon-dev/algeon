@@ -1,0 +1,89 @@
+error[E0061]: this method takes 1 argument but 2 arguments were supplied
+ --> tests/public_api/ui/no_named_first_runtime_series_constructors.rs:5:16
+  |
+5 |     let _ = rt.series("value", &[1i32, 2, 3]).unwrap();
+  |                ^^^^^^ ------- unexpected argument #1 of type `&'static str`
+  |
+note: method defined here
+ --> src/runtime/owner.rs
+  |
+  |     pub fn series<T: HostColumnData>(&self, data: &[T]) -> Result<Series> {
+  |            ^^^^^^
+help: remove the extra argument
+  |
+5 -     let _ = rt.series("value", &[1i32, 2, 3]).unwrap();
+5 +     let _ = rt.series(&[1i32, 2, 3]).unwrap();
+  |
+
+error[E0277]: the trait bound `DataType: From<&str>` is not satisfied
+ --> tests/public_api/ui/no_named_first_runtime_series_constructors.rs:6:22
+  |
+6 |     let _ = rt.nulls("value", cudf::TypeId::Int32, 3).unwrap();
+  |                ----- ^^^^^^^ the trait `From<&str>` is not implemented for `DataType`
+  |                |
+  |                required by a bound introduced by this call
+  |
+help: the trait `From<&str>` is not implemented for `DataType`
+      but trait `From<cudf::TypeId>` is implemented for it
+ --> src/core/types.rs
+  |
+  | impl From<TypeId> for DataType {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = help: for that trait implementation, expected `cudf::TypeId`, found `&str`
+  = note: required for `&str` to implement `Into<DataType>`
+note: required by a bound in `Runtime::nulls`
+ --> src/runtime/owner.rs
+  |
+  |     pub fn nulls(&self, dtype: impl Into<DataType>, len: usize) -> Result<Series> {
+  |                                     ^^^^^^^^^^^^^^ required by this bound in `Runtime::nulls`
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied
+ --> tests/public_api/ui/no_named_first_runtime_series_constructors.rs:6:16
+  |
+6 |     let _ = rt.nulls("value", cudf::TypeId::Int32, 3).unwrap();
+  |                ^^^^^          ------------------- unexpected argument #2 of type `cudf::TypeId`
+  |
+note: method defined here
+ --> src/runtime/owner.rs
+  |
+  |     pub fn nulls(&self, dtype: impl Into<DataType>, len: usize) -> Result<Series> {
+  |            ^^^^^
+help: remove the extra argument
+  |
+6 -     let _ = rt.nulls("value", cudf::TypeId::Int32, 3).unwrap();
+6 +     let _ = rt.nulls("value", 3).unwrap();
+  |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied
+ --> tests/public_api/ui/no_named_first_runtime_series_constructors.rs:9:16
+  |
+9 |     let _ = rt.series_from_scalar("value", &scalar, 2).unwrap();
+  |                ^^^^^^^^^^^^^^^^^^ ------- unexpected argument #1 of type `&'static str`
+  |
+note: method defined here
+ --> src/runtime/owner.rs
+  |
+  |     pub fn series_from_scalar(&self, scalar: &Scalar, size: usize) -> Result<Series> {
+  |            ^^^^^^^^^^^^^^^^^^
+help: remove the extra argument
+  |
+9 -     let _ = rt.series_from_scalar("value", &scalar, 2).unwrap();
+9 +     let _ = rt.series_from_scalar(&scalar, 2).unwrap();
+  |
+
+error[E0061]: this function takes 2 arguments but 3 arguments were supplied
+  --> tests/public_api/ui/no_named_first_runtime_series_constructors.rs:10:13
+   |
+10 |     let _ = Series::from_scalar("value", &scalar, 2).unwrap();
+   |             ^^^^^^^^^^^^^^^^^^^ ------- unexpected argument #1 of type `&'static str`
+   |
+note: associated function defined here
+  --> src/frame/series/constructors.rs
+   |
+   |     pub fn from_scalar(scalar: &Scalar, size: usize) -> Result<Self> {
+   |            ^^^^^^^^^^^
+help: remove the extra argument
+   |
+10 -     let _ = Series::from_scalar("value", &scalar, 2).unwrap();
+10 +     let _ = Series::from_scalar(&scalar, 2).unwrap();
+   |

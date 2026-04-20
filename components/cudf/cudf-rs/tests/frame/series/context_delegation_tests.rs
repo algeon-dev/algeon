@@ -25,11 +25,12 @@ fn assert_bool_series_eq(lhs: &Series, rhs: &Series) {
 #[test]
 fn default_series_transform_ops_match_empty_execution_context() {
     let rt = sample_runtime();
-    let values = rt.series("x", &[3i32, 1, 2, 1]).unwrap();
-    let maybe = rt.series_opt("maybe", &[Some(3i32), None, Some(2), None]).unwrap();
-    let gather_map = rt.series("idx", &[2i32, 0]).unwrap();
-    let filter_mask = rt.nullable_series("mask", &[true, false, true, false], &[true, true, true, false]).unwrap();
-    let fill_values = rt.series("fill", &[9i32, 8, 7, 6]).unwrap();
+    let values = rt.named_series("x", &[3i32, 1, 2, 1]).unwrap();
+    let maybe = rt.named_series_opt("maybe", &[Some(3i32), None, Some(2), None]).unwrap();
+    let gather_map = rt.named_series("idx", &[2i32, 0]).unwrap();
+    let filter_mask =
+        rt.named_nullable_series("mask", &[true, false, true, false], &[true, true, true, false]).unwrap();
+    let fill_values = rt.named_series("fill", &[9i32, 8, 7, 6]).unwrap();
     let ctx = ExecutionOverrides::new();
 
     let expected_stream = values.as_column().testing_execution_domain_stream_value();
@@ -65,12 +66,12 @@ fn default_series_transform_ops_match_empty_execution_context() {
 #[test]
 fn default_series_numeric_boolean_and_reduction_ops_match_empty_execution_context() {
     let rt = sample_runtime();
-    let ints = rt.series("x", &[3i32, 1, 2, 1]).unwrap();
-    let rhs = rt.series("rhs", &[10i32, 20, 30, 40]).unwrap();
-    let bools = rt.series("flag", &[true, false, true, true]).unwrap();
-    let bools_rhs = rt.series("other_flag", &[true, true, false, true]).unwrap();
+    let ints = rt.named_series("x", &[3i32, 1, 2, 1]).unwrap();
+    let rhs = rt.named_series("rhs", &[10i32, 20, 30, 40]).unwrap();
+    let bools = rt.named_series("flag", &[true, false, true, true]).unwrap();
+    let bools_rhs = rt.named_series("other_flag", &[true, true, false, true]).unwrap();
     let floats = rt
-        .nullable_series("floats", &[1.0f64, f64::NAN, 0.0, f64::NAN, 2.0], &[true, true, false, true, true])
+        .named_nullable_series("floats", &[1.0f64, f64::NAN, 0.0, f64::NAN, 2.0], &[true, true, false, true, true])
         .unwrap();
     let ctx = ExecutionOverrides::new();
 
@@ -89,7 +90,7 @@ fn default_series_numeric_boolean_and_reduction_ops_match_empty_execution_contex
 #[test]
 fn default_series_string_namespace_and_factorization_ops_match_empty_execution_context() {
     let rt = sample_runtime();
-    let strings = rt.series("name", &["Beta", "alpha", "Beta", "gamma"]).unwrap();
+    let strings = rt.named_series("name", &["Beta", "alpha", "Beta", "gamma"]).unwrap();
     let ctx = ExecutionOverrides::new();
 
     let lower = strings.str().lower().unwrap();

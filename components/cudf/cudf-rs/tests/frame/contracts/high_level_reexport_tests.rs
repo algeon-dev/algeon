@@ -12,13 +12,9 @@ fn crate_root_doc_workflow_smoke() {
     use cudf::{DataFrame, Runtime};
 
     let rt = Runtime::builder().build().unwrap();
-    let ids = rt.series("id", &[1i32, 2, 3]).unwrap();
-    let scores = rt.series("score", &[10.0f64, 20.0, 30.0]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, scores]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let ids = rt.series(&[1i32, 2, 3]).unwrap();
+    let scores = rt.series(&[10.0f64, 20.0, 30.0]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
@@ -45,11 +41,11 @@ fn runtime_first_factories_smoke() {
     use cudf::{Runtime, TypeId};
 
     let rt = Runtime::builder().build().unwrap();
-    let ints = rt.series("ints", &[1i32, 2, 3]).unwrap();
-    let nullable = rt.nullable_series("nullable", &[10i32, 0, 30], &[true, false, true]).unwrap();
-    let strings = rt.series("names", &["alice", "bob"]).unwrap();
-    let nulls = rt.nulls("missing", TypeId::Int32, 2).unwrap();
-    let repeated = rt.series_from_scalar("seed", &rt.scalar(7i32).unwrap(), 3).unwrap();
+    let ints = rt.named_series("ints", &[1i32, 2, 3]).unwrap();
+    let nullable = rt.named_nullable_series("nullable", &[10i32, 0, 30], &[true, false, true]).unwrap();
+    let strings = rt.named_series("names", &["alice", "bob"]).unwrap();
+    let nulls = rt.named_nulls("missing", TypeId::Int32, 2).unwrap();
+    let repeated = rt.named_series_from_scalar("seed", &rt.scalar(7i32).unwrap(), 3).unwrap();
 
     assert_eq!(ints.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(nullable.to_optional_vec::<i32>().unwrap(), vec![Some(10), None, Some(30)]);
@@ -60,7 +56,9 @@ fn runtime_first_factories_smoke() {
 
 #[test]
 fn factorization_surface_smoke() {
-    use cudf::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized};
+    use cudf::frame::factorization::{
+        Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized,
+    };
 
     fn assert_factorized_types(_: &Factorized, _: &Codebook, _: &EncodedSeries) {}
 
@@ -97,16 +95,10 @@ fn scoped_control_plane_smoke() {
     use cudf::{AggSpec, DataFrame, ExecutionOverrides, GroupByAgg, Runtime, SortOptions, runtime::CudaStream};
 
     let rt = Runtime::builder().build().unwrap();
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            rt.series("id", &[2i32, 1, 2]).unwrap(),
-            rt.series("value", &[10i64, 20, 30]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = DataFrame::from_columns([
+        ("id", rt.series(&[2i32, 1, 2]).unwrap()),
+        ("value", rt.series(&[10i64, 20, 30]).unwrap()),
+    ])
     .unwrap();
 
     let override_stream = CudaStream::new().unwrap();
@@ -125,13 +117,9 @@ fn scoped_control_plane_smoke() {
 fn advanced_owned_and_high_level_ops_smoke() {
     use cudf::DataFrame;
 
-    let ids = crate::common::series::<i32>("id", &[10, 20, 30]).unwrap();
-    let scores = crate::common::series::<f64>("score", &[1.0, 2.0, 3.0]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, scores]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let ids = crate::common::unnamed_series::<i32>(&[10, 20, 30]).unwrap();
+    let scores = crate::common::unnamed_series::<f64>(&[1.0, 2.0, 3.0]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
     let gather_map = cudf::Series::from_column(column_from_slice(&[2i32, 0]).unwrap()).unwrap();
 
     let gathered = df.gather(&gather_map).unwrap();
@@ -159,16 +147,20 @@ fn empty_dataframe_table_copy_smoke() {
 }
 
 #[test]
-fn frame_module_reexports_high_level_option_types() {
+fn frame_submodules_expose_specialized_high_level_types() {
     use cudf::{
         Runtime,
-        frame::{JsonReadOptions, MeltOptions, ParquetReadOptions},
+        frame::{
+            dataframe::{JsonReadOptions, MeltOptions, ParquetReadOptions},
+            factorization::{DictionaryEncodingOptions, DictionaryKeyOrder},
+        },
     };
 
     let rt = Runtime::builder().build().unwrap();
     let _json = JsonReadOptions::builder().filepath("data.jsonl").with_runtime(&rt).build();
     let _parquet = ParquetReadOptions::builder().filepath("data.parquet").with_runtime(&rt).build();
     let _melt = MeltOptions::builder().id_vars(&["id"]).value_vars(&["value"]).build();
+    let _factorization = DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen);
 }
 
 #[test]
@@ -231,7 +223,10 @@ fn hidden_internal_reexports_are_not_publicly_importable() {
     t.compile_fail("tests/public_api/ui/no_series_bitwise_operator_overloads.rs");
     t.compile_fail("tests/public_api/ui/no_legacy_result_type_names.rs");
     t.compile_fail("tests/public_api/ui/no_execution_context_type.rs");
+    t.compile_fail("tests/public_api/ui/no_root_dataframe_specialized_types.rs");
+    t.compile_fail("tests/public_api/ui/no_root_factorization_types.rs");
     t.compile_fail("tests/public_api/ui/no_dataframe_in_context.rs");
+    t.compile_fail("tests/public_api/ui/no_named_first_runtime_series_constructors.rs");
     t.compile_fail("tests/public_api/ui/no_interop_runtime_wrappers.rs");
     t.compile_fail("tests/public_api/ui/no_interop_shared_contract_nouns.rs");
     t.compile_fail("tests/public_api/ui/no_interop_borrowed_namespace.rs");

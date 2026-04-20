@@ -1,0 +1,21 @@
+error[E0432]: unresolved imports `cudf::Codebook`, `cudf::DictionaryEncodingOptions`, `cudf::DictionaryKeyOrder`, `cudf::EncodedSeries`, `cudf::Factorized`
+ --> tests/public_api/ui/no_root_factorization_types.rs:1:12
+  |
+1 | use cudf::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized};
+  |            ^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^ no `Factorized` in the root
+  |            |         |                          |                   |
+  |            |         |                          |                   no `EncodedSeries` in the root
+  |            |         |                          no `DictionaryKeyOrder` in the root
+  |            |         no `DictionaryEncodingOptions` in the root
+  |            no `Codebook` in the root
+  |
+  = help: consider importing this struct instead:
+          cudf::frame::factorization::Codebook
+  = help: consider importing this struct instead:
+          cudf::frame::factorization::DictionaryEncodingOptions
+  = help: consider importing this enum instead:
+          cudf::frame::factorization::DictionaryKeyOrder
+  = help: consider importing this struct instead:
+          cudf::frame::factorization::EncodedSeries
+  = help: consider importing this struct instead:
+          cudf::frame::factorization::Factorized
