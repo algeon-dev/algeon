@@ -248,9 +248,9 @@ impl DataFrame {
         let operation = "dataframe::replace_nulls";
         let col = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
 
-        crate::runtime::execution_domain::ExecutionDomain::require_same_device_and_fence_secondary(
-            col.execution_domain(),
+        crate::runtime::execution_domain::ExecutionDomain::insert_stream_dependency(
             value.execution_domain(),
+            col.execution_domain(),
             operation,
         )?;
         let cv = col.view()?;

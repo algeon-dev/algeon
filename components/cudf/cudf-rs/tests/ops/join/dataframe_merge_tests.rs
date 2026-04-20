@@ -119,12 +119,13 @@ fn test_inner_merge_same_key() {
 
 #[test]
 fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
+    let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_columns(
         ::std::iter::IntoIterator::into_iter([
-            left_rt.series("id", &[1i32, 2, 3]).unwrap(),
-            left_rt.series("score", &[10i32, 20, 30]).unwrap(),
+            left_rt.named_series("id", &[1i32, 2, 3]).unwrap(),
+            left_rt.named_series("score", &[10i32, 20, 30]).unwrap(),
         ])
         .map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
@@ -134,8 +135,8 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     .unwrap();
     let right = DataFrame::from_columns(
         ::std::iter::IntoIterator::into_iter([
-            right_rt.series("id", &[2i32, 3, 4]).unwrap(),
-            right_rt.series("value", &[200i32, 300, 400]).unwrap(),
+            right_rt.named_series("id", &[2i32, 3, 4]).unwrap(),
+            right_rt.named_series("value", &[200i32, 300, 400]).unwrap(),
         ])
         .map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
@@ -145,8 +146,7 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     .unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
-    let expected_sync_stream = right.testing_execution_domain_stream_value();
-
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
@@ -154,7 +154,7 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 3);
 
     reset_sync_observation();
     let rows: Vec<_> = i32_column(&result, "id")
@@ -295,12 +295,13 @@ fn test_full_merge() {
 
 #[test]
 fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenance() {
+    let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_columns(
         ::std::iter::IntoIterator::into_iter([
-            left_rt.series("id", &[1i32, 2, 3]).unwrap(),
-            left_rt.series("score", &[10i32, 20, 30]).unwrap(),
+            left_rt.named_series("id", &[1i32, 2, 3]).unwrap(),
+            left_rt.named_series("score", &[10i32, 20, 30]).unwrap(),
         ])
         .map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
@@ -310,8 +311,8 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     .unwrap();
     let right = DataFrame::from_columns(
         ::std::iter::IntoIterator::into_iter([
-            right_rt.series("id", &[2i32, 3, 4]).unwrap(),
-            right_rt.series("value", &[200i32, 300, 400]).unwrap(),
+            right_rt.named_series("id", &[2i32, 3, 4]).unwrap(),
+            right_rt.named_series("value", &[200i32, 300, 400]).unwrap(),
         ])
         .map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
@@ -321,8 +322,7 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     .unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
-    let expected_presync_stream = right.testing_execution_domain_stream_value();
-
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let result = left.merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
@@ -330,7 +330,7 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(last_sync_stream_value(), expected_presync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 3);
     assert_eq!(result.series("id").unwrap().as_column().testing_execution_domain_stream_value(), expected_exec_stream);
     assert_eq!(
         result.series("score").unwrap().as_column().testing_execution_domain_stream_value(),
@@ -370,13 +370,14 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
 
 #[test]
 fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_context_resources() {
+    let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
     let left = DataFrame::from_columns(
         ::std::iter::IntoIterator::into_iter([
-            left_rt.series("id", &[1i32, 2, 3]).unwrap(),
-            left_rt.series("score", &[10i32, 20, 30]).unwrap(),
+            left_rt.named_series("id", &[1i32, 2, 3]).unwrap(),
+            left_rt.named_series("score", &[10i32, 20, 30]).unwrap(),
         ])
         .map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
@@ -386,8 +387,8 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
     .unwrap();
     let right = DataFrame::from_columns(
         ::std::iter::IntoIterator::into_iter([
-            right_rt.series("id", &[2i32, 3, 4]).unwrap(),
-            right_rt.series("value", &[200i32, 300, 400]).unwrap(),
+            right_rt.named_series("id", &[2i32, 3, 4]).unwrap(),
+            right_rt.named_series("value", &[200i32, 300, 400]).unwrap(),
         ])
         .map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
@@ -399,8 +400,7 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
         ExecutionOverrides::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
     let expected_exec_stream = target_rt.stream().testing_raw_handle_value();
     let expected_exec_mr = target_rt.memory_resource().testing_raw_handle_value();
-    let expected_presync_stream = right.testing_execution_domain_stream_value();
-
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let result = left.with_execution(&ctx).merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
@@ -409,7 +409,7 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(last_sync_stream_value(), expected_presync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 2);
     assert_eq!(result.series("id").unwrap().as_column().testing_execution_domain_stream_value(), expected_exec_stream);
     assert_eq!(
         result.series("score").unwrap().as_column().testing_execution_domain_stream_value(),

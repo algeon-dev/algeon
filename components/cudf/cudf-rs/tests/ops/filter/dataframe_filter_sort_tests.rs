@@ -1,6 +1,8 @@
 //! Tests for DataFrame high-level filter, filter_isin, sort, deduplicate.
 use cudf::{
-    DataFrame, DropDuplicatesOptions, DropNaOptions, DuplicateKeepOption, ErrorKind, SortOptions, testing::prelude::*,
+    DataFrame, DuplicateKeepOption, ErrorKind, SortOptions,
+    frame::dataframe::{DropDuplicatesOptions, DropNaOptions},
+    testing::prelude::*,
 };
 
 use crate::common::{
@@ -121,13 +123,14 @@ fn test_filter_isin_empty_values() {
 }
 
 #[test]
-fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_syncs_secondary_input_before_dataframe_exec() {
+fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary_input_before_dataframe_exec() {
+    let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
     let values_rt = sample_runtime();
     let df = DataFrame::from_columns(
         ::std::iter::IntoIterator::into_iter([
-            df_rt.series("id", &[10i32, 20, 30]).unwrap(),
-            df_rt.series("score", &[100i32, 200, 300]).unwrap(),
+            df_rt.named_series("id", &[10i32, 20, 30]).unwrap(),
+            df_rt.named_series("score", &[100i32, 200, 300]).unwrap(),
         ])
         .map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
@@ -135,11 +138,10 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_syncs_secondary_
         }),
     )
     .unwrap();
-    let values = values_rt.series("values", &[20i32, 30]).unwrap();
+    let values = values_rt.named_series("values", &[20i32, 30]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();
     let expected_exec_mr = df.testing_execution_domain_mr_value();
-    let expected_presync_stream = values.as_column().testing_execution_domain_stream_value();
-
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let filtered = df.filter_isin("id", &values).unwrap();
 
@@ -147,7 +149,7 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_syncs_secondary_
     assert_eq!(filtered.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(last_sync_stream_value(), expected_presync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30]);

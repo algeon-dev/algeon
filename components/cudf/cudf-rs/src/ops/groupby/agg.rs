@@ -4,6 +4,7 @@ use std::{os::raw::c_void, ptr};
 
 use smallvec::SmallVec;
 
+pub use crate::core::types::NullPolicy;
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -50,8 +51,6 @@ pub struct AggregationRequest<'a> {
     /// One or more aggregations to apply to this column.
     pub aggregations: &'a [GroupByAgg],
 }
-
-pub use crate::core::types::NullPolicy;
 
 /// Output payload of a low-level groupby aggregation.
 pub struct GroupByAggregationOutput {
@@ -178,7 +177,7 @@ pub(crate) fn groupby_aggregate_impl(
         ],
     )?;
 
-    let keys_table = unsafe { Table::from_raw_with_domain(out_keys, std::sync::Arc::clone(output_domain)) };
+    let keys_table = unsafe { Table::from_raw_with_domain(out_keys, std::sync::Arc::clone(output_domain)) }?;
     let total = usize::try_from(out_total_columns).map_err(|_| {
         Error::new(ErrorKind::InvalidOperation, "FFI returned negative total column count")
             .with_operation(operation)
@@ -194,7 +193,7 @@ pub(crate) fn groupby_aggregate_impl(
         for i in 0..n {
             cols.push(unsafe {
                 Column::from_raw_with_domain(col_array[offset + i], std::sync::Arc::clone(output_domain))
-            });
+            }?);
         }
         offset += n;
         results.push(cols);
@@ -211,9 +210,9 @@ fn compatible_groupby_domain(
 ) -> Result<std::sync::Arc<ExecutionDomain>> {
     let output_domain = std::sync::Arc::clone(keys.execution_domain());
     for request in requests {
-        ExecutionDomain::require_same_device_and_fence_secondary(
-            &output_domain,
+        ExecutionDomain::insert_stream_dependency(
             request.values.execution_domain(),
+            &output_domain,
             "groupby::groupby_aggregate",
         )?;
     }
@@ -307,13 +306,13 @@ pub fn groupby_aggregate(
     null_policy: NullPolicy,
 ) -> Result<GroupByAggregationOutput> {
     let output_domain = compatible_groupby_domain(keys, requests)?;
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let exec_options = output_domain.exec_options_raw();
     groupby_aggregate_impl(
         keys,
         requests,
         null_policy,
         &output_domain,
-        exec_options.as_ref(),
+        Some(&exec_options),
         "groupby::groupby_aggregate",
     )
 }

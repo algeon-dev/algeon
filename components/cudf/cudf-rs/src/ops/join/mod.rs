@@ -11,13 +11,13 @@
 //!
 //! let rt = Runtime::new().unwrap();
 //! let left = cudf::dataframe! {
-//!     "id" => rt.series("id", &[1i32, 2, 3]).unwrap(),
-//!     "left_val" => rt.series("left_val", &[10i32, 20, 30]).unwrap(),
+//!     "id" => rt.series(&[1i32, 2, 3]).unwrap(),
+//!     "left_val" => rt.series(&[10i32, 20, 30]).unwrap(),
 //! }
 //! .unwrap();
 //! let right = cudf::dataframe! {
-//!     "id" => rt.series("id", &[2i32, 3, 4]).unwrap(),
-//!     "right_val" => rt.series("right_val", &[200i32, 300, 400]).unwrap(),
+//!     "id" => rt.series(&[2i32, 3, 4]).unwrap(),
+//!     "right_val" => rt.series(&[200i32, 300, 400]).unwrap(),
 //! }
 //! .unwrap();
 //!
@@ -148,8 +148,8 @@ pub(crate) fn join_impl(
     )?;
 
     Ok(JoinSides {
-        left: unsafe { Table::from_raw_with_domain(out_left, std::sync::Arc::clone(output_domain)) },
-        right: unsafe { Table::from_raw_with_domain(out_right, std::sync::Arc::clone(output_domain)) },
+        left: unsafe { Table::from_raw_with_domain(out_left, std::sync::Arc::clone(output_domain)) }?,
+        right: unsafe { Table::from_raw_with_domain(out_right, std::sync::Arc::clone(output_domain)) }?,
     })
 }
 
@@ -169,7 +169,7 @@ fn compatible_join_domain(
             operation,
         )?;
         if !ExecutionDomain::same_provenance(input.execution_domain(), &output_domain) {
-            input.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(input.execution_domain(), &output_domain, operation)?;
         }
     }
 

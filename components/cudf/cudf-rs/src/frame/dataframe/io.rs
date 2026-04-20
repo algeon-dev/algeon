@@ -198,7 +198,7 @@ fn prepare_write_domain(
     })?;
 
     if !ExecutionDomain::same_provenance(frame_domain, write_domain) {
-        frame_domain.fence_stream(operation)?;
+        ExecutionDomain::insert_stream_dependency(frame_domain, write_domain, operation)?;
     }
 
     Ok(())

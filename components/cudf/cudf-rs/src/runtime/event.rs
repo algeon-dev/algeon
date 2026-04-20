@@ -42,7 +42,7 @@ impl CudaEvent {
         error::check_status_in(unsafe { cudf_sys::cudf_event_create(&mut handle) }, "event::new")?;
         Ok(Self {
             handle: Arc::new(CudaEventHandle {
-                raw: NonNull::new(handle).expect("cudf_event_create returned null on success"),
+                raw: error::require_non_null(handle, "event::new", "CUDA event")?,
                 device,
             }),
         })
@@ -103,9 +103,7 @@ impl CudaEvent {
         self.handle.raw.as_ptr() as usize
     }
     pub(crate) fn __debug_interop_raw_handle_value(&self) -> usize {
-        self.interop_raw_handle()
-            .expect("event::__debug_interop_raw_handle_value should resolve the borrowed CUDA event pointer")
-            as usize
+        self.interop_raw_handle().map_or(0, |raw| raw as usize)
     }
 }
 

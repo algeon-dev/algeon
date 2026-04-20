@@ -4,9 +4,9 @@
 use std::{any::Any, sync::Arc};
 
 use rapids_interop::{
-    BorrowedColumnView, BorrowedTableView, CompletionAuthority, ExportProfile, InteropError, InteropErrorKind,
-    LeaseCompletionResult, OwnedColumnTransfer, OwnedTableTransfer, PartitionedPreparedTableExport,
-    PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority,
+    BorrowedColumnView, BorrowedTableView, CompletionAuthority, InteropError, InteropErrorKind, LeaseCompletionResult,
+    OwnedColumnTransfer, OwnedTableTransfer, PartitionedPreparedTableExport, PreparedColumnExport,
+    PreparedExportProfile, PreparedTableExport, ProducerReadiness, ReadStartAuthority,
 };
 
 use super::{
@@ -80,22 +80,18 @@ fn order_runtime_stream_after_owned_transfer_readiness(
     }
 }
 
-fn prepared_import_profile_supported(profile: ExportProfile, operation: &'static str) -> Result<(), InteropError> {
+fn partitioned_prepared_import_profile_supported(
+    profile: PreparedExportProfile,
+    operation: &'static str,
+) -> Result<(), InteropError> {
     match profile {
-        ExportProfile::PreparedDeviceExport | ExportProfile::PreparedHostExport => Ok(()),
-        ExportProfile::BorrowedDeviceCompatibility => Err(InteropError::new(
+        PreparedExportProfile::Device => Ok(()),
+        PreparedExportProfile::Host => Err(InteropError::new(
             InteropErrorKind::ProfileUnsupported,
-            "borrowed compatibility descriptors must be imported through the borrowed-view API",
+            "partitioned prepared table import requires device-backed prepared export partitions",
         )
         .with_context("operation", operation)
-        .with_context("profile", "borrowed_device_compatibility")
-        .with_context("consumer", "cudf-rs")),
-        ExportProfile::OwnedDeviceTransfer => Err(InteropError::new(
-            InteropErrorKind::ProfileUnsupported,
-            "owned device transfer roots must be imported through the owned-transfer API",
-        )
-        .with_context("operation", operation)
-        .with_context("profile", "owned_device_transfer")
+        .with_context("profile", "prepared_host_export")
         .with_context("consumer", "cudf-rs")),
     }
 }
@@ -152,7 +148,7 @@ fn validate_runtime_device(
 }
 
 fn runtime_exec_options(runtime: &Runtime) -> cudf_sys::cudf_exec_options_t {
-    runtime.execution_domain().explicit_exec_options_raw().expect("runtime always provides explicit execution options")
+    runtime.execution_domain().exec_options_raw()
 }
 
 fn synchronize_shared_completion_result(
@@ -252,7 +248,8 @@ pub(super) fn import_column_from_borrowed_view(
         },
     }
 
-    Ok(unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) })
+    unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) }
+        .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))
 }
 
 pub(super) fn import_table_from_borrowed_view(
@@ -346,13 +343,14 @@ pub(super) fn import_column_from_owned_transfer(
                 )
                 .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-                Ok(unsafe {
+                unsafe {
                     Column::from_raw_with_domain_and_owner(
                         handle,
                         Arc::clone(runtime.execution_domain()),
                         retained_owner,
                     )
-                })
+                }
+                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))
             },
         },
     }
@@ -434,13 +432,14 @@ pub(super) fn import_table_from_owned_transfer(
                             operation,
                         )
                         .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-                        return Ok(unsafe {
+                        return unsafe {
                             Table::from_raw_with_domain_and_owners(
                                 handle,
                                 Arc::clone(runtime.execution_domain()),
                                 retained_owners,
                             )
-                        });
+                        }
+                        .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error));
                     },
                 },
             },
@@ -453,14 +452,13 @@ pub(super) fn import_column_from_prepared_export(
     runtime: &Runtime,
     operation: &'static str,
 ) -> Result<Column, InteropError> {
-    prepared_import_profile_supported(export.diagnostics().profile(), operation)?;
     let graph = prepared_device_import_column_graph(export, operation)?;
     let exec_options = runtime_exec_options(runtime);
     let num_semantic_columns = checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
     let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
 
-    match export.diagnostics().profile() {
-        ExportProfile::PreparedDeviceExport => {
+    match export.profile() {
+        PreparedExportProfile::Device => {
             let producer_device = prepared_device_export_producer_device(export.readiness(), operation)?;
             validate_runtime_device(
                 operation,
@@ -489,14 +487,15 @@ pub(super) fn import_column_from_prepared_export(
             )
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-            let imported = unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
+            let imported = unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) }
+                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
             let completion = lease
                 .complete()
                 .map_err(|error| map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
             synchronize_shared_completion_result(completion, operation)?;
             Ok(imported)
         },
-        ExportProfile::PreparedHostExport => {
+        PreparedExportProfile::Host => {
             if !matches!(export.readiness(), ProducerReadiness::HostVisible) {
                 return Err(InteropError::new(
                     InteropErrorKind::ProfileUnsupported,
@@ -530,16 +529,14 @@ pub(super) fn import_column_from_prepared_export(
             )
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-            let imported = unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
+            let imported = unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) }
+                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
             let completion = lease
                 .complete()
                 .map_err(|error| map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
             synchronize_shared_completion_result(completion, operation)?;
             Ok(imported)
         },
-        // `prepared_import_profile_supported` rejects non-prepared profiles
-        // before this match executes.
-        ExportProfile::BorrowedDeviceCompatibility | ExportProfile::OwnedDeviceTransfer => unreachable!(),
     }
 }
 
@@ -548,14 +545,13 @@ pub(super) fn import_table_from_prepared_export(
     runtime: &Runtime,
     operation: &'static str,
 ) -> Result<Table, InteropError> {
-    prepared_import_profile_supported(export.diagnostics().profile(), operation)?;
     let graph = prepared_device_import_table_graph(export, operation)?;
     let exec_options = runtime_exec_options(runtime);
     let num_semantic_columns = checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
     let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
 
-    match export.diagnostics().profile() {
-        ExportProfile::PreparedDeviceExport => {
+    match export.profile() {
+        PreparedExportProfile::Device => {
             let producer_device = prepared_device_export_producer_device(export.readiness(), operation)?;
             validate_runtime_device(
                 operation,
@@ -584,14 +580,15 @@ pub(super) fn import_table_from_prepared_export(
             )
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-            let imported = unsafe { Table::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
+            let imported = unsafe { Table::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) }
+                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
             let completion = lease
                 .complete()
                 .map_err(|error| map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
             synchronize_shared_completion_result(completion, operation)?;
             Ok(imported)
         },
-        ExportProfile::PreparedHostExport => {
+        PreparedExportProfile::Host => {
             if !matches!(export.readiness(), ProducerReadiness::HostVisible) {
                 return Err(InteropError::new(
                     InteropErrorKind::ProfileUnsupported,
@@ -625,16 +622,14 @@ pub(super) fn import_table_from_prepared_export(
             )
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
-            let imported = unsafe { Table::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
+            let imported = unsafe { Table::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) }
+                .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
             let completion = lease
                 .complete()
                 .map_err(|error| map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
             synchronize_shared_completion_result(completion, operation)?;
             Ok(imported)
         },
-        // `prepared_import_profile_supported` rejects non-prepared profiles
-        // before this match executes.
-        ExportProfile::BorrowedDeviceCompatibility | ExportProfile::OwnedDeviceTransfer => unreachable!(),
     }
 }
 
@@ -656,7 +651,7 @@ pub(super) fn import_partitioned_local_tables_from_prepared_export(
     let mut imported = Vec::with_capacity(export.partitions().len());
     for (partition_index, (partition, runtime)) in export.partitions().iter().zip(runtimes.iter().copied()).enumerate()
     {
-        prepared_import_profile_supported(partition.export().diagnostics().profile(), operation)
+        partitioned_prepared_import_profile_supported(partition.export().profile(), operation)
             .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
 
         let producer_device = prepared_device_export_producer_device(partition.export().readiness(), operation)
@@ -704,7 +699,8 @@ pub(super) fn import_partitioned_local_tables_from_prepared_export(
                 .with_context("partition_index", partition_index.to_string())
         })?;
 
-        let table = unsafe { Table::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) };
+        let table = unsafe { Table::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) }
+            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let completion = lease.complete().map_err(|error| {
             map_interop_error(InteropErrorKind::ReadinessUnavailable, operation, error)
                 .with_context("partition_index", partition_index.to_string())

@@ -35,7 +35,7 @@ pub(crate) fn gather_impl(
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
-    Ok(unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Gather (select) rows from a table by index.
@@ -54,10 +54,10 @@ pub(crate) fn gather_impl(
 ///
 /// let rt = Runtime::new().unwrap();
 /// let df = cudf::dataframe! {
-///     "value" => rt.series("value", &[10i32, 20, 30]).unwrap(),
+///     "value" => rt.series(&[10i32, 20, 30]).unwrap(),
 /// }
 /// .unwrap();
-/// let map = rt.series("row_index", &[2i32, 0]).unwrap();
+/// let map = rt.series(&[2i32, 0]).unwrap();
 /// let result = df.gather(&map).unwrap();
 /// assert_eq!(
 ///     result.series("value").unwrap().to_vec_strict::<i32>().unwrap(),
@@ -72,7 +72,7 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
         "copying::gather",
     )?;
     if !ExecutionDomain::same_provenance(gather_map.execution_domain(), &output_domain) {
-        gather_map.execution_domain().fence_stream("copying::gather")?;
+        ExecutionDomain::insert_stream_dependency(gather_map.execution_domain(), &output_domain, "copying::gather")?;
     }
     let exec_options = output_domain.explicit_exec_options_raw();
     gather_impl(
@@ -104,10 +104,10 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
 ///
 /// let rt = Runtime::new().unwrap();
 /// let df = cudf::dataframe! {
-///     "value" => rt.series("value", &[10i32, 20, 30]).unwrap(),
+///     "value" => rt.series(&[10i32, 20, 30]).unwrap(),
 /// }
 /// .unwrap();
-/// let map = rt.series("row_index", &[2i32, 0]).unwrap();
+/// let map = rt.series(&[2i32, 0]).unwrap();
 /// let result = df.gather(&map).unwrap();
 /// assert_eq!(
 ///     result.series("value").unwrap().to_vec_strict::<i32>().unwrap(),
@@ -124,7 +124,11 @@ pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_
         "copying::gather_unchecked",
     )?;
     if !ExecutionDomain::same_provenance(gather_map.execution_domain(), &output_domain) {
-        gather_map.execution_domain().fence_stream("copying::gather_unchecked")?;
+        ExecutionDomain::insert_stream_dependency(
+            gather_map.execution_domain(),
+            &output_domain,
+            "copying::gather_unchecked",
+        )?;
     }
     let exec_options = output_domain.explicit_exec_options_raw();
     gather_impl(
@@ -171,7 +175,7 @@ fn copy_if_else_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Conditionally select elements from two columns based on a boolean mask.
@@ -189,9 +193,9 @@ fn copy_if_else_impl(
 ///
 /// let rt = cudf::Runtime::new().unwrap();
 /// let df = cudf::dataframe! {
-///     "lhs" => rt.series("lhs", &[10i32, 20, 30]).unwrap(),
-///     "rhs" => rt.series("rhs", &[1i32, 2, 3]).unwrap(),
-///     "keep_lhs" => rt.series("keep_lhs", &[true, false, true]).unwrap(),
+///     "lhs" => rt.series(&[10i32, 20, 30]).unwrap(),
+///     "rhs" => rt.series(&[1i32, 2, 3]).unwrap(),
+///     "keep_lhs" => rt.series(&[true, false, true]).unwrap(),
 /// }
 /// .unwrap();
 /// let out = df
@@ -207,14 +211,10 @@ fn copy_if_else_impl(
 /// ```
 pub fn copy_if_else(lhs: &ColumnView<'_>, rhs: &ColumnView<'_>, boolean_mask: &ColumnView<'_>) -> Result<Column> {
     let output_domain = Arc::clone(lhs.execution_domain());
-    ExecutionDomain::require_same_device_and_fence_secondary(
-        &output_domain,
-        rhs.execution_domain(),
-        "copying::copy_if_else",
-    )?;
-    ExecutionDomain::require_same_device_and_fence_secondary(
-        &output_domain,
+    ExecutionDomain::insert_stream_dependency(rhs.execution_domain(), &output_domain, "copying::copy_if_else")?;
+    ExecutionDomain::insert_stream_dependency(
         boolean_mask.execution_domain(),
+        &output_domain,
         "copying::copy_if_else",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();

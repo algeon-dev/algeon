@@ -252,7 +252,7 @@ fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
     let wrong_lookup_values = row_codes.gather(&first_positions).unwrap();
     assert_eq!(wrong_lookup_values.len(), uniques.len());
 
-    let wrong_encoded = query.lookup(&uniques, &wrong_lookup_values).unwrap();
+    let wrong_encoded = query.lookup(uniques, &wrong_lookup_values).unwrap();
     let wrong_decoded = uniques.gather(&wrong_encoded).unwrap();
 
     assert_ne!(

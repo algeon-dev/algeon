@@ -37,7 +37,7 @@ fn murmurhash3_x86_32_impl(
         operation,
         [("seed", seed.to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 fn xxhash_64_impl(
@@ -57,7 +57,7 @@ fn xxhash_64_impl(
         operation,
         [("seed", seed.to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Compute MurmurHash3 32-bit hash of each row in a table.

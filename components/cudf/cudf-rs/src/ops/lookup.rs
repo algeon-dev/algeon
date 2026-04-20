@@ -108,10 +108,12 @@ fn validate_probe_inputs(
     .map_err(|e| meta.decorate(e, operation))?;
 
     if !ExecutionDomain::same_provenance(keys.execution_domain(), input.execution_domain()) {
-        keys.execution_domain().fence_stream(operation).map_err(|e| meta.decorate(e, operation))?;
+        ExecutionDomain::insert_stream_dependency(keys.execution_domain(), input.execution_domain(), operation)
+            .map_err(|e| meta.decorate(e, operation))?;
     }
     if !ExecutionDomain::same_provenance(values.execution_domain(), input.execution_domain()) {
-        values.execution_domain().fence_stream(operation).map_err(|e| meta.decorate(e, operation))?;
+        ExecutionDomain::insert_stream_dependency(values.execution_domain(), input.execution_domain(), operation)
+            .map_err(|e| meta.decorate(e, operation))?;
     }
 
     Ok(meta)
@@ -170,7 +172,7 @@ impl DistinctHashJoinHandle {
             operation,
             [("execution_context_provided", exec_options.is_some().to_string())],
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null distinct-hash-join handle on success") })
+        Ok(Self { handle: error::require_non_null(handle, operation, "distinct hash join")? })
     }
 
     fn left_join_build_indices(
@@ -193,7 +195,7 @@ impl DistinctHashJoinHandle {
             operation,
             [("execution_context_provided", exec_options.is_some().to_string())],
         )?;
-        Ok(unsafe { Column::from_raw_with_domain(handle, Arc::clone(output_domain)) })
+        unsafe { Column::from_raw_with_domain(handle, Arc::clone(output_domain)) }
     }
 }
 

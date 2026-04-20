@@ -91,7 +91,7 @@ impl DataFrame {
         S: AsRef<str>,
     {
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            self.domain.fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         }
 
         let by: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> = by.into_iter().map(|s| s.as_ref().to_string()).collect();

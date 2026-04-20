@@ -82,7 +82,7 @@ impl Runtime {
 
     /// The CUDA device this runtime is pinned to.
     pub fn device(&self) -> DeviceId {
-        self.domain.device().expect("runtime always owns an explicit domain with a device")
+        self.domain.device_id()
     }
 
     /// Synchronize the runtime's default stream.
@@ -92,12 +92,12 @@ impl Runtime {
 
     /// Access the runtime's owned CUDA stream.
     pub fn stream(&self) -> &CudaStream {
-        self.domain.explicit_stream().expect("runtime always owns an explicit stream")
+        self.domain.stream()
     }
 
     /// Access the runtime's owned device memory resource.
     pub fn memory_resource(&self) -> &DeviceMemoryResource {
-        self.domain.explicit_memory_resource().expect("runtime always owns an explicit memory resource")
+        self.domain.memory_resource()
     }
 
     /// Create a fixed-width low-level `Column` inside this runtime.
@@ -224,13 +224,25 @@ impl Runtime {
         )
     }
 
-    /// Create a `Series` from a host slice inside this runtime.
-    pub fn series<T: HostColumnData>(&self, name: impl Into<String>, data: &[T]) -> Result<Series> {
+    /// Create an unnamed `Series` from a host slice inside this runtime.
+    pub fn series<T: HostColumnData>(&self, data: &[T]) -> Result<Series> {
+        Series::from_column(T::create_column_in_runtime(self, data)?)
+    }
+
+    /// Create a named `Series` from a host slice inside this runtime.
+    pub fn named_series<T: HostColumnData>(&self, name: impl Into<String>, data: &[T]) -> Result<Series> {
         Series::from_named_column(name, T::create_column_in_runtime(self, data)?)
     }
 
-    /// Create a nullable `Series` from a host slice plus validity mask inside this runtime.
-    pub fn nullable_series<T: HostColumnData>(
+    /// Create an unnamed nullable `Series` from a host slice plus validity
+    /// mask inside this runtime.
+    pub fn nullable_series<T: HostColumnData>(&self, data: &[T], validity: &[bool]) -> Result<Series> {
+        Series::from_column(T::create_column_nullable_in_runtime(self, data, validity)?)
+    }
+
+    /// Create a named nullable `Series` from a host slice plus validity mask
+    /// inside this runtime.
+    pub fn named_nullable_series<T: HostColumnData>(
         &self,
         name: impl Into<String>,
         data: &[T],

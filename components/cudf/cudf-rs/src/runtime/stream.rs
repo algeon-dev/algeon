@@ -52,7 +52,7 @@ impl CudaStream {
         error::check_status_in(unsafe { cudf_sys::cudf_stream_create(&mut handle) }, "stream::new")?;
         Ok(Self {
             handle: Arc::new(CudaStreamHandle {
-                raw: NonNull::new(handle).expect("cudf_stream_create returned null on success"),
+                raw: error::require_non_null(handle, "stream::new", "CUDA stream")?,
                 device,
             }),
         })
@@ -124,7 +124,7 @@ impl CudaStream {
         Ok(out)
     }
     pub(crate) fn __debug_raw_handle_value(&self) -> usize {
-        self.debug_handle_value().expect("failed to read CUDA stream debug handle value")
+        self.debug_handle_value().unwrap_or(0)
     }
 }
 

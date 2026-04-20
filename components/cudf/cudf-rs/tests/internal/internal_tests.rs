@@ -6,7 +6,7 @@
 //!
 //! Direct unit tests for the helpers live inside `src/internal/mod.rs`.
 
-use cudf::{DataFrame, DropDuplicatesOptions, DuplicateKeepOption};
+use cudf::{DataFrame, DuplicateKeepOption, frame::dataframe::DropDuplicatesOptions};
 
 use crate::common::{assert_duplicate_name_error, assert_missing_column_error, column_from_slice};
 

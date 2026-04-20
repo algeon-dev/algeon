@@ -26,12 +26,13 @@ fn test_filter_series_mask_basic() {
 
 #[test]
 fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
+    let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
     let mask_rt = sample_runtime();
     let df = cudf::DataFrame::from_columns(
         ::std::iter::IntoIterator::into_iter([
-            df_rt.series("id", &[3i32, 1, 4, 1, 5]).unwrap(),
-            df_rt.series("score", &[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap(),
+            df_rt.named_series("id", &[3i32, 1, 4, 1, 5]).unwrap(),
+            df_rt.named_series("score", &[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap(),
         ])
         .map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
@@ -39,11 +40,10 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
         }),
     )
     .unwrap();
-    let mask = mask_rt.series("mask", &[true, false, true, false, true]).unwrap();
+    let mask = mask_rt.named_series("mask", &[true, false, true, false, true]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();
     let expected_exec_mr = df.testing_execution_domain_mr_value();
-    let expected_sync_stream = mask.as_column().testing_execution_domain_stream_value();
-
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let filtered = df.filter(&mask).unwrap();
 
@@ -51,7 +51,7 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
     assert_eq!(filtered.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 4, 5]);

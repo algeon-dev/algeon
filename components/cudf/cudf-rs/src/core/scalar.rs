@@ -30,13 +30,13 @@ unsafe impl Send for Scalar {}
 unsafe impl Sync for Scalar {}
 
 impl Scalar {
-    fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
-        Self { handle: NonNull::new(handle).expect("null scalar handle"), domain }
+    fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+        Ok(Self { handle: error::require_non_null(handle, "scalar::from_handle_with_domain", "scalar")?, domain })
     }
 
     pub(crate) fn from_value_in_domain<T: CudfType>(value: T, domain: &Arc<ExecutionDomain>) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        let exec_options = domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = domain.exec_options_raw();
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_scalar_create_numeric_ex(
@@ -49,7 +49,7 @@ impl Scalar {
             },
             "scalar::from_value_in_domain",
         )?;
-        Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
+        Self::from_handle_with_domain(handle, Arc::clone(domain))
     }
 
     pub(crate) fn from_str_in_domain(value: &str, domain: &Arc<ExecutionDomain>) -> Result<Self> {
@@ -58,12 +58,12 @@ impl Scalar {
                 .with_operation("scalar::from_str_in_domain")
         })?;
         let mut handle = ptr::null_mut();
-        let exec_options = domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = domain.exec_options_raw();
         error::check_status_in(
             unsafe { cudf_sys::cudf_scalar_create_string_ex(c_str.as_ptr(), 1, &exec_options, &mut handle) },
             "scalar::from_str_in_domain",
         )?;
-        Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
+        Self::from_handle_with_domain(handle, Arc::clone(domain))
     }
 
     pub(crate) fn null_numeric_in_domain<T: CudfType>(domain: &Arc<ExecutionDomain>) -> Result<Self> {
@@ -71,7 +71,7 @@ impl Scalar {
         // primitives, all of which have valid all-zero bit patterns.
         let zero = unsafe { std::mem::zeroed::<T>() };
         let mut handle = ptr::null_mut();
-        let exec_options = domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = domain.exec_options_raw();
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_scalar_create_numeric_ex(
@@ -84,19 +84,19 @@ impl Scalar {
             },
             "scalar::null_numeric_in_domain",
         )?;
-        Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
+        Self::from_handle_with_domain(handle, Arc::clone(domain))
     }
 
     pub(crate) fn null_string_in_domain(domain: &Arc<ExecutionDomain>) -> Result<Self> {
         // SAFETY (unwrap): empty string literal "" contains no interior null bytes.
-        let empty = CString::new("").unwrap();
+        let empty = CString::default();
         let mut handle = ptr::null_mut();
-        let exec_options = domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = domain.exec_options_raw();
         error::check_status_in(
             unsafe { cudf_sys::cudf_scalar_create_string_ex(empty.as_ptr(), 0, &exec_options, &mut handle) },
             "scalar::null_string_in_domain",
         )?;
-        Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
+        Self::from_handle_with_domain(handle, Arc::clone(domain))
     }
 
     /// Returns the raw FFI handle. For internal use by operations.
@@ -108,7 +108,7 @@ impl Scalar {
         &self.domain
     }
 
-    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
+    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
         Self::from_handle_with_domain(handle, domain)
     }
 
@@ -127,12 +127,12 @@ impl Scalar {
         }
 
         let mut handle = ptr::null_mut();
-        let exec_options = domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = domain.exec_options_raw();
         error::check_status_in(
             unsafe { cudf_sys::cudf_scalar_copy_ex(self.handle.as_ptr(), &exec_options, &mut handle) },
             operation,
         )?;
-        Ok(Self::from_handle_with_domain(handle, Arc::clone(domain)))
+        Self::from_handle_with_domain(handle, Arc::clone(domain))
     }
     pub(crate) fn __debug_execution_domain_kind(&self) -> &'static str {
         self.domain.debug_kind()
@@ -167,7 +167,7 @@ impl Scalar {
     /// returning a host-visible boolean result.
     pub fn is_valid(&self) -> Result<bool> {
         let mut out: i32 = 0;
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
             unsafe { cudf_sys::cudf_scalar_is_valid_ex(self.handle.as_ptr(), &mut out, &exec_options) },
@@ -195,7 +195,7 @@ impl Scalar {
         // SAFETY: `CudfType` is sealed to built-in primitives with valid
         // all-zero bit patterns.
         let mut out = unsafe { std::mem::zeroed::<T>() };
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         // SAFETY: self.handle is valid. Type was checked to match T::TYPE_ID above.
         // &mut out is a valid pointer to receive the scalar value.
         error::check_status_in(
@@ -218,7 +218,7 @@ impl Scalar {
     pub fn string_value(&self) -> Result<String> {
         let mut ptr: *mut c_char = ptr::null_mut();
         let mut len: i32 = 0;
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
             unsafe { cudf_sys::cudf_scalar_string_value_ex(self.handle.as_ptr(), &mut ptr, &mut len, &exec_options) },

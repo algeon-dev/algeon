@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::{
     core::{
         column::Column,
-        error::{Error, ErrorKind, Result},
+        error::{self, Error, ErrorKind, Result},
     },
     internal::{
         hash::{FastHashSet, FastIndexMap, fast_hash_set_with_capacity},
@@ -67,7 +67,13 @@ pub(crate) fn build_borrowed_table_view_from_columns<'a>(
     let views = indices
         .iter()
         .map(|&idx| {
-            let (_, col) = columns.get_index(idx).expect("BUG: resolved index should always be valid");
+            let (_, col) = columns.get_index(idx).ok_or_else(|| {
+                error::invariant_violation(
+                    "internal::build_borrowed_table_view_from_columns",
+                    "resolved column index should always remain valid",
+                )
+                .with_context("column_index", idx.to_string())
+            })?;
             col.view()
         })
         .collect::<Result<Vec<_>>>()?;

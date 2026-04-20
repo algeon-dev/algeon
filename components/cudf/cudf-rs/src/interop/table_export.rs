@@ -288,7 +288,7 @@ pub(super) fn transfer_from_owned_table_with_names(
         // SAFETY: `to_static_bindings` depends on this retained owner to keep
         // the source table alive for the transfer lifetime.
         to_static_bindings(operation, bindings)?,
-        to_static_readiness(readiness),
+        to_static_readiness(operation, readiness)?,
         owned_transfer_diagnostics(),
         owned_transfer_release_contract(default_device),
         OwnedTableTransferState::new(table),
@@ -351,7 +351,7 @@ pub(super) fn transfer_from_owned_table_with_names_and_runtime_release_synchroni
         columns,
         semantic_columns,
         to_static_bindings(operation, bindings)?,
-        to_static_readiness(readiness),
+        to_static_readiness(operation, readiness)?,
         owned_transfer_diagnostics(),
         owned_transfer_runtime_release_contract_with_synchronization(default_device, synchronization)?,
         owner,

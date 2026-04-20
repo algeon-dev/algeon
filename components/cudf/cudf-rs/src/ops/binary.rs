@@ -267,7 +267,11 @@ pub fn binary_operation_vv(
         "binary::binary_operation_vv",
     )?;
     if !ExecutionDomain::same_provenance(rhs.execution_domain(), &output_domain) {
-        rhs.execution_domain().fence_stream("binary::binary_operation_vv")?;
+        ExecutionDomain::insert_stream_dependency(
+            rhs.execution_domain(),
+            &output_domain,
+            "binary::binary_operation_vv",
+        )?;
     }
     let exec_options = output_domain.explicit_exec_options_raw();
     binary_operation_vv_impl(
@@ -321,7 +325,7 @@ pub(crate) fn binary_operation_vv_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Binary operation: column op scalar.
@@ -335,11 +339,7 @@ pub fn binary_operation_vs(
     output_type: &DataType,
 ) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(lhs.execution_domain());
-    ExecutionDomain::require_same_device_and_fence_secondary(
-        &output_domain,
-        rhs.execution_domain(),
-        "binary::binary_operation_vs",
-    )?;
+    ExecutionDomain::insert_stream_dependency(rhs.execution_domain(), &output_domain, "binary::binary_operation_vs")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     binary_operation_vs_impl(
         lhs,
@@ -392,7 +392,7 @@ pub(crate) fn binary_operation_vs_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Binary operation: scalar op column.
@@ -408,11 +408,7 @@ pub fn binary_operation_sv(
     // Use the column's domain as primary (consistent with binary_operation_vs
     // which also uses the column's domain).
     let output_domain = std::sync::Arc::clone(rhs.execution_domain());
-    ExecutionDomain::require_same_device_and_fence_secondary(
-        &output_domain,
-        lhs.execution_domain(),
-        "binary::binary_operation_sv",
-    )?;
+    ExecutionDomain::insert_stream_dependency(lhs.execution_domain(), &output_domain, "binary::binary_operation_sv")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     binary_operation_sv_impl(
         lhs,
@@ -465,5 +461,5 @@ fn binary_operation_sv_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }

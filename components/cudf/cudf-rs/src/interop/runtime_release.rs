@@ -235,7 +235,15 @@ impl<T> RuntimeOwnedTransferState<T> {
         match inner.status {
             RuntimeOwnedTransferStatus::Pending => {
                 inner.status = RuntimeOwnedTransferStatus::Imported;
-                let owner = inner.owner.take().expect("pending runtime-owned transfer missing retained owner");
+                let owner = inner.owner.take().ok_or_else(|| {
+                    InteropError::new(
+                        InteropErrorKind::InvalidView,
+                        format!("runtime-backed {transfer_kind} lost its retained owner before import"),
+                    )
+                    .with_context("operation", operation)
+                    .with_context("state", RuntimeOwnedTransferStatus::Pending.as_str())
+                    .with_context("release_device", self.release_device.to_string())
+                })?;
                 Ok(ManuallyDrop::into_inner(owner))
             },
             status => Err(InteropError::new(
@@ -320,7 +328,15 @@ impl<T> RuntimeOwnedTransferState<T> {
             match inner.status {
                 RuntimeOwnedTransferStatus::Pending => {
                     inner.status = RuntimeOwnedTransferStatus::Releasing;
-                    inner.owner.take().expect("pending runtime-owned transfer missing retained owner")
+                    inner.owner.take().ok_or_else(|| {
+                        InteropError::new(
+                            InteropErrorKind::InvalidView,
+                            format!("runtime-backed {transfer_kind} lost its retained owner before release"),
+                        )
+                        .with_context("operation", operation)
+                        .with_context("state", RuntimeOwnedTransferStatus::Pending.as_str())
+                        .with_context("release_device", state.release_device.to_string())
+                    })?
                 },
                 status => {
                     return Err(InteropError::new(
@@ -578,17 +594,22 @@ pub(super) fn to_static_bindings(
     bindings.into_iter().map(|binding| to_static_binding(operation, binding)).collect()
 }
 
-pub(super) fn to_static_readiness(readiness: ProducerReadiness<'_>) -> ProducerReadiness<'static> {
+pub(super) fn to_static_readiness(
+    operation: &'static str,
+    readiness: ProducerReadiness<'_>,
+) -> Result<ProducerReadiness<'static>, InteropError> {
     match readiness {
-        ProducerReadiness::HostVisible => ProducerReadiness::HostVisible,
-        ProducerReadiness::DeviceStreamOrdered { stream } => ProducerReadiness::DeviceStreamOrdered {
-            stream: CudaStreamHandle::from_raw_on_device(stream.as_raw(), stream.device())
-                .expect("existing readiness stream handle must remain non-null and device-qualified"),
-        },
-        ProducerReadiness::DeviceEventOrdered { event } => ProducerReadiness::DeviceEventOrdered {
-            event: CudaEventHandle::from_raw_on_device(event.as_raw(), event.device())
-                .expect("existing readiness event handle must remain non-null and device-qualified"),
-        },
+        ProducerReadiness::HostVisible => Ok(ProducerReadiness::HostVisible),
+        ProducerReadiness::DeviceStreamOrdered { stream } => Ok(ProducerReadiness::DeviceStreamOrdered {
+            stream: CudaStreamHandle::from_raw_on_device(stream.as_raw(), stream.device()).map_err(|error| {
+                error.with_context("operation", operation).with_context("readiness", "device_stream_ordered")
+            })?,
+        }),
+        ProducerReadiness::DeviceEventOrdered { event } => Ok(ProducerReadiness::DeviceEventOrdered {
+            event: CudaEventHandle::from_raw_on_device(event.as_raw(), event.device()).map_err(|error| {
+                error.with_context("operation", operation).with_context("readiness", "device_event_ordered")
+            })?,
+        }),
     }
 }
 

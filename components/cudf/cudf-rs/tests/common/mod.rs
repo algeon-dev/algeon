@@ -11,7 +11,9 @@ use cudf::{
     testing::prelude::*,
 };
 use cudf_sys::{
-    CUDF_SUCCESS, cudf_cuda_get_device, cudf_cuda_set_device, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,
+    CUDF_SUCCESS, cudf_cuda_get_device, cudf_cuda_set_device, cudf_test_event_last_wait_stream_raw,
+    cudf_test_event_reset_observation, cudf_test_event_stream_wait_call_count,
+    cudf_test_event_stream_wait_call_count_for_stream_raw, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,
     cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
 };
 
@@ -106,7 +108,12 @@ pub fn null_string_scalar() -> cudf::Result<Scalar> {
 
 #[allow(dead_code)]
 pub fn series<T: HostColumnData>(name: impl Into<String>, data: &[T]) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.series(name, data))
+    with_test_runtime(|rt| rt.named_series(name, data))
+}
+
+#[allow(dead_code)]
+pub fn unnamed_series<T: HostColumnData>(data: &[T]) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.series(data))
 }
 
 #[allow(dead_code)]
@@ -115,22 +122,42 @@ pub fn nullable_series<T: HostColumnData>(
     data: &[T],
     validity: &[bool],
 ) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.nullable_series(name, data, validity))
+    with_test_runtime(|rt| rt.named_nullable_series(name, data, validity))
+}
+
+#[allow(dead_code)]
+pub fn unnamed_nullable_series<T: HostColumnData>(data: &[T], validity: &[bool]) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.nullable_series(data, validity))
 }
 
 #[allow(dead_code)]
 pub fn series_opt<T: CudfType>(name: impl Into<String>, data: &[Option<T>]) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.series_opt(name, data))
+    with_test_runtime(|rt| rt.named_series_opt(name, data))
+}
+
+#[allow(dead_code)]
+pub fn unnamed_series_opt<T: CudfType>(data: &[Option<T>]) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.series_opt(data))
 }
 
 #[allow(dead_code)]
 pub fn null_series(name: impl Into<String>, dtype: impl Into<DataType>, len: usize) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.nulls(name, dtype, len))
+    with_test_runtime(|rt| rt.named_nulls(name, dtype, len))
+}
+
+#[allow(dead_code)]
+pub fn unnamed_null_series(dtype: impl Into<DataType>, len: usize) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.nulls(dtype, len))
 }
 
 #[allow(dead_code)]
 pub fn empty_series(name: impl Into<String>, dtype: impl Into<DataType>) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.empty_series(name, dtype))
+    with_test_runtime(|rt| rt.named_empty_series(name, dtype))
+}
+
+#[allow(dead_code)]
+pub fn unnamed_empty_series(dtype: impl Into<DataType>) -> cudf::Result<Series> {
+    with_test_runtime(|rt| rt.empty_series(dtype))
 }
 
 #[allow(dead_code)]
@@ -182,6 +209,11 @@ pub fn fail_next_column_view_metadata_read() {
 #[allow(dead_code)]
 pub fn reset_sync_observation() {
     unsafe { cudf_test_exec_reset_observation() };
+}
+
+#[allow(dead_code)]
+pub fn reset_dependency_observation() {
+    unsafe { cudf_test_event_reset_observation() };
 }
 
 #[allow(dead_code)]
@@ -257,6 +289,30 @@ pub fn last_sync_stream_value() -> usize {
     let mut out: usize = 0;
     let status = unsafe { cudf_test_exec_last_sync_stream_value(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last synchronized stream observation");
+    out
+}
+
+#[allow(dead_code)]
+pub fn dependency_wait_call_count() -> i32 {
+    let mut out: i32 = -1;
+    let status = unsafe { cudf_test_event_stream_wait_call_count(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read dependency wait call count");
+    out
+}
+
+#[allow(dead_code)]
+pub fn dependency_wait_call_count_for_stream(stream_raw: usize) -> i32 {
+    let mut out: i32 = -1;
+    let status = unsafe { cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read dependency wait call count for stream");
+    out
+}
+
+#[allow(dead_code)]
+pub fn last_dependency_wait_stream_value() -> usize {
+    let mut out: usize = 0;
+    let status = unsafe { cudf_test_event_last_wait_stream_raw(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last dependency wait stream observation");
     out
 }
 

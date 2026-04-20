@@ -42,7 +42,7 @@ pub fn read_csv(options: &CsvTableReadOptions) -> Result<TableReadOutput> {
     let filepath = super::path_to_cstring(&options.filepath, operation)?;
     super::validate_input_path(&options.filepath, operation)?;
     let output_domain = Arc::clone(options.runtime.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+    let exec_options = output_domain.exec_options_raw();
 
     let mut table_handle = ptr::null_mut();
     error::check_status_in_with(
@@ -60,7 +60,7 @@ pub fn read_csv(options: &CsvTableReadOptions) -> Result<TableReadOutput> {
         [("delimiter_char", (options.delimiter as char).to_string()), ("has_header", options.has_header.to_string())],
     )?;
     // SAFETY: table_handle was returned by a successful FFI call, transferring ownership.
-    let table = unsafe { Table::from_raw_with_domain(table_handle, output_domain) };
+    let table = unsafe { Table::from_raw_with_domain(table_handle, output_domain) }?;
     let num_columns = {
         let view = table.view()?;
         view.num_columns()?
@@ -104,8 +104,7 @@ impl CsvTableWriteOptions {
 
 /// Write a table to a CSV file.
 pub fn write_csv(table: &Table, options: &CsvTableWriteOptions) -> Result<()> {
-    let exec_options =
-        options.runtime.as_ref().and_then(|runtime| runtime.execution_domain().explicit_exec_options_raw());
+    let exec_options = options.runtime.as_ref().map(|runtime| runtime.execution_domain().exec_options_raw());
     let table_view = table.view()?;
     write_csv_with_exec(&table_view, options, exec_options.as_ref())
 }

@@ -17,10 +17,10 @@ pub(crate) fn copy_view_to_owned(cv: &ColumnView<'_>) -> Result<Column> {
         );
     }
     let mut handle = ptr::null_mut();
-    let exec_options = cv.execution_domain().explicit_exec_options_raw().expect("execution domain is always explicit");
+    let exec_options = cv.execution_domain().exec_options_raw();
     error::check_status_in(
         unsafe { cudf_sys::cudf_column_copy_from_view_ex(cv.raw_handle(), &exec_options, &mut handle) },
         "column::copy_view_to_owned",
     )?;
-    Ok(unsafe { Column::from_raw_with_domain(handle, Arc::clone(cv.execution_domain())) })
+    unsafe { Column::from_raw_with_domain(handle, Arc::clone(cv.execution_domain())) }
 }

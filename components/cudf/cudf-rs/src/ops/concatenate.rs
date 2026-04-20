@@ -6,8 +6,8 @@
 //! use cudf::{Runtime, Series};
 //!
 //! let rt = Runtime::new().unwrap();
-//! let a = rt.series("value", &[1i32, 2]).unwrap();
-//! let b = rt.series("value", &[3i32, 4, 5]).unwrap();
+//! let a = rt.series(&[1i32, 2]).unwrap();
+//! let b = rt.series(&[3i32, 4, 5]).unwrap();
 //!
 //! let combined = Series::concat(&[&a, &b]).unwrap();
 //! assert_eq!(combined.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
@@ -42,8 +42,8 @@ fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Ar
         return Err(concatenate_requires_input_error("concatenate::concatenate_columns", "column"));
     };
     let output_domain = std::sync::Arc::clone(first.execution_domain());
-    // Fence any input from a different execution domain so its GPU work
-    // completes before the concatenation kernel reads its data.
+    // Order any secondary input stream before the authoritative output stream
+    // so the concatenation kernel only reads completed device data.
     for col in &columns[1..] {
         ExecutionDomain::require_same_device_for_mixed_inputs(
             first.execution_domain(),
@@ -51,7 +51,11 @@ fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Ar
             "concatenate::concatenate_columns",
         )?;
         if !ExecutionDomain::same_provenance(col.execution_domain(), &output_domain) {
-            col.execution_domain().fence_stream("concatenate::concatenate_columns")?;
+            ExecutionDomain::insert_stream_dependency(
+                col.execution_domain(),
+                &output_domain,
+                "concatenate::concatenate_columns",
+            )?;
         }
     }
     Ok(output_domain)
@@ -62,8 +66,8 @@ fn compatible_table_domain(tables: &[&TableView<'_>]) -> Result<std::sync::Arc<E
         return Err(concatenate_requires_input_error("concatenate::concatenate_tables", "table"));
     };
     let output_domain = std::sync::Arc::clone(first.execution_domain());
-    // Fence any input from a different execution domain so its GPU work
-    // completes before the concatenation kernel reads its data.
+    // Order any secondary input stream before the authoritative output stream
+    // so the concatenation kernel only reads completed device data.
     for tbl in &tables[1..] {
         ExecutionDomain::require_same_device_for_mixed_inputs(
             first.execution_domain(),
@@ -71,7 +75,11 @@ fn compatible_table_domain(tables: &[&TableView<'_>]) -> Result<std::sync::Arc<E
             "concatenate::concatenate_tables",
         )?;
         if !ExecutionDomain::same_provenance(tbl.execution_domain(), &output_domain) {
-            tbl.execution_domain().fence_stream("concatenate::concatenate_tables")?;
+            ExecutionDomain::insert_stream_dependency(
+                tbl.execution_domain(),
+                &output_domain,
+                "concatenate::concatenate_tables",
+            )?;
         }
     }
     Ok(output_domain)
@@ -107,7 +115,7 @@ pub(crate) fn concatenate_columns_with_exec(
         [("num_columns", handles.len().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Concatenate multiple tables into a single table.
@@ -140,5 +148,5 @@ pub(crate) fn concatenate_tables_with_exec(
         [("num_tables", handles.len().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }

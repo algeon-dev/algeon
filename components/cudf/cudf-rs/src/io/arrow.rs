@@ -10,8 +10,8 @@
 //! use cudf::{DataFrame, Runtime};
 //!
 //! let rt = Runtime::new().unwrap();
-//! let ids = rt.series("id", &[1i32, 2, 3]).unwrap();
-//! let scores = rt.series("score", &[10.0f64, 20.0, 30.0]).unwrap();
+//! let ids = rt.series(&[1i32, 2, 3]).unwrap();
+//! let scores = rt.series(&[10.0f64, 20.0, 30.0]).unwrap();
 //! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 //!
 //! // GPU → Arrow RecordBatch (host-copy)
@@ -329,8 +329,7 @@ fn string_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
     let data = cv.to_optional_strings()?;
 
     if data.iter().all(|value| value.is_some()) {
-        let values =
-            data.iter().map(|value| value.as_deref().expect("validated all values are present")).collect::<Vec<_>>();
+        let values = data.iter().map(|value| value.as_deref().unwrap_or("")).collect::<Vec<_>>();
         Ok(Arc::new(StringArray::from(values)))
     } else {
         let values = data.iter().map(|value| value.as_deref()).collect::<Vec<_>>();
@@ -376,10 +375,10 @@ where T: ArrowPrimitiveMapping {
     let values = prim.values().as_ref();
 
     match prim.nulls() {
-        None => runtime.column_from_slice(&values),
+        None => runtime.column_from_slice(values),
         Some(null_buf) => {
             let validity: Vec<bool> = null_buf.iter().collect();
-            runtime.column_from_slice_nullable(&values, &validity)
+            runtime.column_from_slice_nullable(values, &validity)
         },
     }
 }

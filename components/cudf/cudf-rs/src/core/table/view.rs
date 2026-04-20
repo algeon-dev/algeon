@@ -43,16 +43,16 @@ impl<'a> TableView<'a> {
         handle: *mut c_void,
         domain: Arc<ExecutionDomain>,
         backing: TableViewBacking<'a>,
-    ) -> Self {
-        Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
+    ) -> Result<Self> {
+        Ok(Self {
+            handle: error::require_non_null(handle, "table_view::from_raw_handle_with_backing", "table view")?,
             domain,
             _backing: backing,
             _lifetime: PhantomData,
-        }
+        })
     }
 
-    pub(crate) fn from_raw_handle(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
+    pub(crate) fn from_raw_handle(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
         Self::from_raw_handle_with_backing(handle, domain, TableViewBacking::None)
     }
 
@@ -111,7 +111,7 @@ impl<'a> TableView<'a> {
             "table_view::column",
         )?;
         // SAFETY: col_handle was returned by a successful FFI call.
-        Ok(unsafe { ColumnView::from_raw_with_domain(col_handle, Arc::clone(&self.domain)) })
+        unsafe { ColumnView::from_raw_with_domain(col_handle, Arc::clone(&self.domain)) }
     }
 
     /// Build a projected table view by selecting a subset of columns.
@@ -152,14 +152,14 @@ impl<'a> TableView<'a> {
                 cudf_sys::cudf_table_view_select_columns(
                     self.handle.as_ptr(),
                     indices_i32.as_ptr(),
-                    i32::try_from(indices_i32.len()).expect("number of selected columns exceeds i32::MAX"),
+                    error::usize_to_i32(indices_i32.len(), "table_view::select_columns", "num_selected_columns")?,
                     &mut out,
                 )
             },
             "table_view::select_columns",
         )?;
 
-        Ok(Self::from_raw_handle(out, Arc::clone(&self.domain)))
+        Self::from_raw_handle(out, Arc::clone(&self.domain))
     }
 
     pub(crate) fn from_borrowed_column_views_in_domain(
@@ -213,7 +213,7 @@ impl<'a> TableView<'a> {
             operation,
         )?;
 
-        Ok(Self::from_raw_handle_with_backing(out, domain, TableViewBacking::ColumnViews(views)))
+        Self::from_raw_handle_with_backing(out, domain, TableViewBacking::ColumnViews(views))
     }
 
     pub(crate) fn from_column_views_in_domain(

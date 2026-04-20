@@ -10,8 +10,9 @@ use std::{
 };
 
 use cudf::{
-    DataFrame, DeviceId, JsonReadOptions, Runtime, Series, TypeId,
+    DataFrame, DeviceId, Runtime, Series, TypeId,
     core::{Column, Table},
+    frame::dataframe::JsonReadOptions,
     interop::runtime_release::{OwnedColumnTransferReleaser, OwnedTableTransferReleaser, TransferCompletionAuthority},
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
@@ -551,8 +552,8 @@ fn owned_transfer_modes() -> [OwnedTransferMode; 3] {
 }
 
 fn sample_named_dataframe(runtime: &Runtime) -> DataFrame {
-    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.named_series("id", &[1i32, 2, 3]).unwrap();
+    let values = runtime.named_series("value", &[10i64, 20, 30]).unwrap();
     DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, values]).map(|series| {
         let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
         (name, series)
@@ -748,7 +749,7 @@ fn table_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes(
 fn series_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes() {
     for mode in owned_transfer_modes() {
         let runtime = Runtime::builder().build().unwrap();
-        let series = runtime.series("numbers", &[1i32, 2, 3]).unwrap();
+        let series = runtime.named_series("numbers", &[1i32, 2, 3]).unwrap();
         let expected_ptr = series.testing_view().unwrap().device_data_ptr().unwrap();
         let expected_stream = series.as_column().testing_execution_domain_stream_value();
         let expected_device = runtime.device().ordinal() as i32;
@@ -764,7 +765,7 @@ fn series_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes
 #[test]
 fn series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared() {
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.series("numbers", &[7i32, 8, 9]).unwrap();
+    let series = runtime.named_series("numbers", &[7i32, 8, 9]).unwrap();
     let shared = series.clone();
     let original_ptr = shared.testing_view().unwrap().device_data_ptr().unwrap();
     let destination_runtime = Runtime::builder().build().unwrap();
@@ -998,8 +999,8 @@ fn runtime_release_owned_column_transfer_wait_failure_keeps_transfer_importable(
 #[test]
 fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_are_shared() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.named_series("id", &[1i32, 2, 3]).unwrap();
+    let values = runtime.named_series("value", &[10i64, 20, 30]).unwrap();
     let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, values]).map(|series| {
         let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
         (name, series)
@@ -1385,8 +1386,8 @@ fn runtime_release_owned_column_transfer_abandoned_without_import_or_release_cle
 #[test]
 fn runtime_release_owned_table_transfer_abandoned_without_import_or_release_cleans_up_without_panicking() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.named_series("id", &[1i32, 2, 3]).unwrap();
+    let vals = runtime.named_series("value", &[10i64, 20, 30]).unwrap();
     let (table, _names) = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
         let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
         (name, series)

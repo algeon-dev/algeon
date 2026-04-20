@@ -21,8 +21,8 @@ use rapids_interop::{
 use crate::common;
 
 fn sample_edge_list(runtime: &Runtime) -> DataFrame {
-    let src = runtime.series("src", &[1i32, 2, 1, 3, 2]).unwrap();
-    let dst = runtime.series("dst", &[2i32, 3, 3, 1, 1]).unwrap();
+    let src = runtime.named_series("src", &[1i32, 2, 1, 3, 2]).unwrap();
+    let dst = runtime.named_series("dst", &[2i32, 3, 3, 1, 1]).unwrap();
     DataFrame::from_columns(::std::iter::IntoIterator::into_iter([src, dst]).map(|series| {
         let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
         (name, series)

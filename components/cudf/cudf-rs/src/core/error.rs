@@ -2,7 +2,7 @@
 //! and an optional source — so that GPU pipeline failures are debuggable without
 //! guesswork.
 
-use std::{borrow::Cow, error::Error as StdError, ffi::CStr, fmt};
+use std::{borrow::Cow, error::Error as StdError, ffi::CStr, fmt, ptr::NonNull};
 
 use rapids_interop::{InteropError, InteropErrorKind};
 
@@ -324,6 +324,34 @@ impl std::error::Error for Error {
 
 /// Convenience type alias.
 pub type Result<T> = std::result::Result<T, Error>;
+
+pub(crate) fn invariant_violation(operation: &'static str, message: impl Into<String>) -> Error {
+    Error::new(ErrorKind::InvalidOperation, message).with_operation(operation)
+}
+
+pub(crate) fn require_non_null<T>(ptr: *mut T, operation: &'static str, target: &'static str) -> Result<NonNull<T>> {
+    NonNull::new(ptr).ok_or_else(|| {
+        Error::new(ErrorKind::NullError, format!("FFI returned null {target} handle on success"))
+            .with_operation(operation)
+            .with_context("target", target)
+    })
+}
+
+pub(crate) fn usize_to_i32(value: usize, operation: &'static str, field: &'static str) -> Result<i32> {
+    i32::try_from(value).map_err(|_| {
+        Error::new(ErrorKind::InvalidOperation, format!("{field} exceeds i32::MAX"))
+            .with_operation(operation)
+            .with_context(field, value.to_string())
+    })
+}
+
+pub(crate) fn usize_to_i64(value: usize, operation: &'static str, field: &'static str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| {
+        Error::new(ErrorKind::InvalidOperation, format!("{field} exceeds i64::MAX"))
+            .with_operation(operation)
+            .with_context(field, value.to_string())
+    })
+}
 
 /// Classify an [`ErrorKind`] as temporary or permanent.
 ///

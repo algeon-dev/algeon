@@ -218,11 +218,11 @@ impl DataFrame {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let operation = "dataframe::with_execution::concat_many";
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            self.domain.fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         }
         for other in others {
             if !ExecutionDomain::same_provenance(&other.domain, &output_domain) {
-                other.domain.fence_stream(operation)?;
+                ExecutionDomain::insert_stream_dependency(&other.domain, &output_domain, operation)?;
             }
         }
         self.concat_many_impl(others, output_domain.explicit_exec_options_raw(), Some(output_domain), operation)
@@ -246,11 +246,11 @@ impl DataFrame {
             ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, &other.domain, operation)?;
         }
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            self.domain.fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         }
         for other in others {
             if !ExecutionDomain::same_provenance(&other.domain, &output_domain) {
-                other.domain.fence_stream(operation)?;
+                ExecutionDomain::insert_stream_dependency(&other.domain, &output_domain, operation)?;
             }
         }
 

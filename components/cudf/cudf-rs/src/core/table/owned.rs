@@ -43,7 +43,7 @@ impl Table {
         .with_context("remedy", "use Runtime::empty_table()")
     }
 
-    fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
+    fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
         Self::from_handle_with_domain_and_owners(handle, domain, None)
     }
 
@@ -51,8 +51,12 @@ impl Table {
         handle: *mut c_void,
         domain: Arc<ExecutionDomain>,
         retained_owners: Option<Vec<Option<Arc<dyn Any + Send + Sync>>>>,
-    ) -> Self {
-        Self { handle: NonNull::new(handle).expect("null table handle"), domain, retained_owners }
+    ) -> Result<Self> {
+        Ok(Self {
+            handle: error::require_non_null(handle, "table::from_handle_with_domain_and_owners", "table")?,
+            domain,
+            retained_owners,
+        })
     }
 
     fn from_columns_impl(
@@ -121,7 +125,7 @@ impl Table {
             error::check_status_in(status, operation)?;
         }
 
-        Ok(Self::from_handle_with_domain_and_owners(table_handle, domain, table_retained_owners))
+        Self::from_handle_with_domain_and_owners(table_handle, domain, table_retained_owners)
     }
 
     /// Create a table from a vector of columns.
@@ -138,13 +142,13 @@ impl Table {
     /// Deep-copy this table.
     pub fn deep_copy(&self) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
             unsafe { cudf_sys::cudf_table_copy_ex(self.handle.as_ptr(), &exec_options, &mut handle) },
             "table::deep_copy",
         )?;
-        Ok(Self::from_handle_with_domain(handle, Arc::clone(&self.domain)))
+        Self::from_handle_with_domain(handle, Arc::clone(&self.domain))
     }
 
     /// Returns the number of columns.
@@ -165,10 +169,10 @@ impl Table {
             unsafe { cudf_sys::cudf_table_view(self.handle.as_ptr(), &mut view_handle) },
             "table::view",
         )?;
-        Ok(TableView::from_raw_handle(view_handle, Arc::clone(&self.domain)))
+        TableView::from_raw_handle(view_handle, Arc::clone(&self.domain))
     }
 
-    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
+    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
         Self::from_handle_with_domain(handle, domain)
     }
 
@@ -181,7 +185,7 @@ impl Table {
         handle: *mut c_void,
         domain: Arc<ExecutionDomain>,
         retained_owners: Vec<Option<Arc<dyn Any + Send + Sync>>>,
-    ) -> Self {
+    ) -> Result<Self> {
         Self::from_handle_with_domain_and_owners(handle, domain, Some(retained_owners))
     }
 
@@ -240,7 +244,7 @@ impl Table {
                 },
                 None => unsafe { Column::from_raw_with_domain(ptr, Arc::clone(&domain)) },
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         // Free the array (not the columns — they are now owned by Column).
         // SAFETY: out_columns was allocated by the C shim for the column pointer array.
