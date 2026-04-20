@@ -1,19 +1,11 @@
-use std::{
-    error::Error as StdError,
-    fmt::{Display, Formatter},
-    fs::File,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 
-use arrow::{datatypes::Schema, error::ArrowError, record_batch::RecordBatch};
+use arrow::record_batch::RecordBatch;
 use datafusion::{
     common::utils::memory::get_record_batch_memory_size,
-    error::DataFusionError,
     execution::{SessionStateBuilder, context::TaskContext},
-    parquet::errors::ParquetError,
     physical_plan::{ExecutionPlan, collect},
-    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+    prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
     native_exec::NativeCudfExecutionConfig,
@@ -26,27 +18,17 @@ use datafusion_nexus::{
     session::CudfSessionStateBuilderExt,
     source_cardinality::register_source_unique_keys_for_path,
 };
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-
-mod dataset;
-mod parity;
-mod tiny;
-
-pub use dataset::{
-    CUDF_TPCDS_CONTENT_FINGERPRINT_ENV, CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_PARQUET_DIR_ENV,
-    CUDF_TPCDS_SCALE_FACTOR_ENV, DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR, DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR, TPCDS_TABLES,
-    TpcdsDatasetMetadata, TpcdsTableFileMetadata, TpcdsTableLayout, TpcdsTableMetadata, default_tpcds_sf1_parquet_root,
-    describe_tpcds_dataset, describe_tpcds_dataset_with_content_fingerprint, discover_tpcds_table_layout,
-    external_tpcds_dataset_metadata, prepare_tpcds_report_dataset, tiny_tpcds_dataset_metadata,
+use datafusion_nexus_workloads::tpcds::{
+    TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, TpcdsWorkloadResult, discover_tpcds_table_layout,
+    register_tpcds_tables as register_neutral_tpcds_tables,
 };
+
+mod parity;
 pub use parity::{
     TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsParityProgressEvent,
     tpcds_parity_report_rows_with_external_oracles, tpcds_parity_workload_items,
     tpcds_parity_workload_items_with_external_oracles, tpcds_parity_workload_items_with_session_configs,
 };
-pub use tiny::write_tiny_tpcds_parquet_dataset;
-
-pub use super::tpcds_queries::{TPCDS_QUERIES, TPCDS_QUERY_COUNT, TpcdsQuery, tpcds_query_ids};
 
 /// Device-byte budget for bounded native TPC-DS execution.
 ///
@@ -161,76 +143,6 @@ struct NativeProfileBase {
     max_retry_attempts: usize,
     min_retry_chunk_row_groups: usize,
     source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
-}
-
-/// Result type used by TPC-DS fixture and workload helpers.
-pub type TpcdsWorkloadResult<T> = std::result::Result<T, TpcdsWorkloadError>;
-
-/// Error categories surfaced by TPC-DS fixture discovery and workload helpers.
-#[derive(Debug)]
-pub enum TpcdsWorkloadError {
-    /// Filesystem or process I/O failed.
-    Io(std::io::Error),
-    /// Arrow schema or record-batch handling failed.
-    Arrow(ArrowError),
-    /// Parquet reading or writing failed.
-    Parquet(ParquetError),
-    /// DataFusion planning or execution failed.
-    DataFusion(DataFusionError),
-    /// A fixture path could not be represented as UTF-8.
-    NonUtf8Path(PathBuf),
-    /// Fixture metadata was incomplete or inconsistent.
-    InvalidDataset(String),
-}
-
-impl Display for TpcdsWorkloadError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(error) => write!(f, "I/O error: {error}"),
-            Self::Arrow(error) => write!(f, "Arrow error: {error}"),
-            Self::Parquet(error) => write!(f, "Parquet error: {error}"),
-            Self::DataFusion(error) => write!(f, "DataFusion error: {error}"),
-            Self::NonUtf8Path(path) => write!(f, "path is not valid UTF-8: {}", path.display()),
-            Self::InvalidDataset(message) => write!(f, "invalid TPC-DS dataset: {message}"),
-        }
-    }
-}
-
-impl StdError for TpcdsWorkloadError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            Self::Arrow(error) => Some(error),
-            Self::Parquet(error) => Some(error),
-            Self::DataFusion(error) => Some(error),
-            Self::NonUtf8Path(_) => None,
-            Self::InvalidDataset(_) => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for TpcdsWorkloadError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<ArrowError> for TpcdsWorkloadError {
-    fn from(value: ArrowError) -> Self {
-        Self::Arrow(value)
-    }
-}
-
-impl From<ParquetError> for TpcdsWorkloadError {
-    fn from(value: ParquetError) -> Self {
-        Self::Parquet(value)
-    }
-}
-
-impl From<DataFusionError> for TpcdsWorkloadError {
-    fn from(value: DataFusionError) -> Self {
-        Self::DataFusion(value)
-    }
 }
 
 /// Session config used by TPC-DS native report surfaces.
@@ -599,7 +511,7 @@ pub async fn tpcds_fallback_pressure_workload_items(
     config: SessionConfig,
 ) -> TpcdsWorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
     let ctx = SessionContext::new_with_config(config);
-    register_tpcds_tables(&ctx, root).await?;
+    register_tpcds_tables_with_native_metadata(&ctx, root).await?;
 
     let mut items = Vec::with_capacity(TPCDS_QUERIES.len());
     for query in TPCDS_QUERIES {
@@ -653,7 +565,7 @@ pub async fn tpcds_datafusion_planning_workload_items_with_optimizer_config(
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
-    register_tpcds_tables(&ctx, root).await?;
+    register_tpcds_tables_with_native_metadata(&ctx, root).await?;
 
     let mut items = Vec::with_capacity(TPCDS_QUERIES.len());
     for query in TPCDS_QUERIES {
@@ -759,7 +671,7 @@ pub async fn tpcds_datafusion_execution_workload_items_filtered(
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
-    register_tpcds_tables(&ctx, root).await?;
+    register_tpcds_tables_with_native_metadata(&ctx, root).await?;
 
     let selected: Vec<&TpcdsQuery> = match query_ids {
         Some(ids) => TPCDS_QUERIES.iter().filter(|q| ids.iter().any(|id| id == &q.id)).collect(),
@@ -840,27 +752,17 @@ async fn execute_tpcds_native_plan(plan: Arc<dyn ExecutionPlan>) -> NativeDataFu
     }
 }
 
-pub async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> TpcdsWorkloadResult<()> {
+pub async fn register_tpcds_tables_with_native_metadata(ctx: &SessionContext, root: &Path) -> TpcdsWorkloadResult<()> {
     for &table in TPCDS_TABLES {
         let layout = discover_tpcds_table_layout(root, table)?;
-        let path = layout.anchor.to_str().ok_or_else(|| TpcdsWorkloadError::NonUtf8Path(layout.anchor.clone()))?;
-        let schema = tpcds_table_schema(&layout)?;
         if let Some(key) = tpcds_source_unique_key(table) {
             register_source_unique_keys_for_path(&layout.anchor, &[key]);
             for file in &layout.files {
                 register_source_unique_keys_for_path(file, &[key]);
             }
         }
-        ctx.register_parquet(table, path, ParquetReadOptions::default().schema(&schema)).await?;
     }
-    Ok(())
-}
-
-fn tpcds_table_schema(layout: &TpcdsTableLayout) -> TpcdsWorkloadResult<Schema> {
-    let first_file = layout.files.first().ok_or_else(|| {
-        TpcdsWorkloadError::InvalidDataset("expected at least one Parquet file for TPC-DS table".to_string())
-    })?;
-    Ok(ParquetRecordBatchReaderBuilder::try_new(File::open(first_file)?)?.schema().as_ref().clone())
+    register_neutral_tpcds_tables(ctx, root).await
 }
 
 pub(crate) fn tpcds_source_unique_key(table: &str) -> Option<&'static [&'static str]> {

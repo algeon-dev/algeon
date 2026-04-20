@@ -13,7 +13,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_nexus_bench::{
+use datafusion_nexus_workloads::tpch::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
     TpchDatasetMetadata, TpchQuery, TpchWorkloadError, discover_tpch_table_layout, prepare_tpch_report_dataset,
     register_tpch_table_layout,
@@ -330,7 +330,7 @@ mod tests {
     #[tokio::test]
     async fn register_tpch_tables_supports_sibling_split_layout() {
         let dir = unique_temp_dir("cpu-tpch-profile-sibling-split-test");
-        datafusion_nexus_bench::write_tiny_tpch_parquet_dataset(&dir).unwrap();
+        datafusion_nexus_workloads::tpch::write_tiny_tpch_parquet_dataset(&dir).unwrap();
         fs::rename(dir.join("lineitem.parquet"), dir.join("lineitem_0000.parquet")).unwrap();
 
         let ctx = SessionContext::new();

@@ -14,7 +14,7 @@ use datafusion_nexus::{
     },
     table_format::{TableFormat, TableFormatScanPlan},
 };
-use datafusion_nexus_bench::TPCH_QUERIES;
+use datafusion_nexus_workloads::tpch::TPCH_QUERIES;
 
 #[allow(dead_code)]
 #[path = "native_iceberg_smoke_report.rs"]

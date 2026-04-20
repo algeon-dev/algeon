@@ -5,26 +5,37 @@ use std::{
 };
 
 use datafusion_nexus::{
-    native_exec::NativeCudfExecutionConfig, native_report::ParityFloatTolerance, planner::CudfOptimizerConfig,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::{
+        NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadInput,
+        ParityFloatTolerance,
+    },
+    planner::CudfOptimizerConfig,
     policy::GpuFallbackPolicy,
 };
 use datafusion_nexus_bench::{
-    CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV,
-    CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV,
-    CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV,
-    CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV,
-    CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-    CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-    CUDF_TPCDS_NATIVE_PROFILE_ENV, CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
-    TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS, TPCDS_NATIVE_PROFILE_CONSERVATIVE,
-    TPCDS_NATIVE_PROFILE_CUSTOM, TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT, TPCDS_QUERIES, TPCDS_QUERY_COUNT,
-    TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
-    TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, TPCDS_TABLES, describe_tpcds_dataset,
-    tiny_tpcds_dataset_metadata, tpcds_native_analytics_optimizer_config_with_profile_settings,
-    tpcds_native_cpu_preference_options_with_env, tpcds_native_optimizer_config_with_profile_settings,
-    tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
-    tpcds_parity_report_rows_with_external_oracles, tpcds_query_ids, tpcds_report_session_config,
-    write_tiny_tpcds_parquet_dataset,
+    report_metadata::ReportDatasetMetadataExt,
+    report_workload::tpcds::{
+        CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV,
+        CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV,
+        CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV,
+        CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV,
+        CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+        CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+        CUDF_TPCDS_NATIVE_PROFILE_ENV, CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+        TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS, TPCDS_NATIVE_PROFILE_CONSERVATIVE,
+        TPCDS_NATIVE_PROFILE_CUSTOM, TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
+        TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
+        TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, TpcdsNativeProfileSettings, TpcdsParityProgressEvent,
+        tpcds_datafusion_planning_workload_items, tpcds_native_analytics_optimizer_config_with_profile_settings,
+        tpcds_native_cpu_preference_options_with_env, tpcds_native_optimizer_config_with_profile_settings,
+        tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
+        tpcds_parity_report_rows_with_external_oracles, tpcds_report_session_config,
+    },
+};
+use datafusion_nexus_workloads::tpcds::{
+    TPCDS_QUERIES, TPCDS_QUERY_COUNT, TPCDS_TABLES, describe_tpcds_dataset, tiny_tpcds_dataset_metadata,
+    tpcds_query_ids, write_tiny_tpcds_parquet_dataset,
 };
 
 #[test]
@@ -58,6 +69,56 @@ fn tpcds_tables_list_has_24_official_tpcds_tables() {
     for table in ["store_sales", "catalog_sales", "web_sales", "date_dim", "customer", "item", "web_site"] {
         assert!(TPCDS_TABLES.contains(&table), "TPCDS_TABLES missing {table}");
     }
+}
+
+#[test]
+fn tpcds_production_planning_builder_preserves_order_and_retained_diagnostics() {
+    std::thread::Builder::new()
+        .name("tpcds-production-planning-builder".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+                let dir = unique_temp_dir("datafusion-nexus-tpcds-production-planning-builder");
+                write_tiny_tpcds_parquet_dataset(&dir).unwrap();
+
+                let items =
+                    tpcds_datafusion_planning_workload_items(&dir, tpcds_report_session_config()).await.unwrap();
+                let expected_ids = tpcds_query_ids().collect::<Vec<_>>();
+                assert_eq!(items.len(), TPCDS_QUERY_COUNT);
+                assert_eq!(items.iter().map(|item| item.query_id.as_str()).collect::<Vec<_>>(), expected_ids);
+                for item in &items {
+                    match &item.input {
+                        NativeDataFusionPlanningWorkloadInput::Planned { native_diagnostics, .. } => {
+                            assert!(!native_diagnostics.report.outcomes().is_empty(), "{}", item.query_id);
+                        },
+                        NativeDataFusionPlanningWorkloadInput::PlanningFailure(failure) => {
+                            panic!(
+                                "{} unexpectedly failed at {}: {}",
+                                item.query_id, failure.stage, failure.reason_code
+                            );
+                        },
+                    }
+                }
+
+                let report = NativeDataFusionPlanningReport::collect(items);
+                let mut report_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
+                report_ids.dedup();
+                assert_eq!(report_ids, expected_ids);
+                assert_eq!(report.accepted_count(), 129);
+                assert_eq!(report.rejected_count(), 156);
+                for query_id in ["q01", "q39", "q72"] {
+                    let row = report.rows.iter().find(|row| row.query_id == query_id).unwrap();
+                    assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{query_id}");
+                    assert_eq!(row.reason_code, None, "{query_id}");
+                    assert_eq!(row.unsupported_category, None, "{query_id}");
+                }
+
+                fs::remove_dir_all(dir).unwrap();
+            });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
@@ -281,11 +342,11 @@ async fn tpcds_parity_report_rows_emit_progress_per_completed_query() {
     let query_filter = vec!["q01".to_string()];
     let mut events = Vec::new();
     let mut emitted_lines = Vec::new();
-    let mut progress = |event: datafusion_nexus_bench::TpcdsParityProgressEvent<'_>| match event {
-        datafusion_nexus_bench::TpcdsParityProgressEvent::QueryStarted { query_index, total, query_id } => {
+    let mut progress = |event: TpcdsParityProgressEvent<'_>| match event {
+        TpcdsParityProgressEvent::QueryStarted { query_index, total, query_id } => {
             events.push(format!("start:{query_index}/{total}:{query_id}"));
         },
-        datafusion_nexus_bench::TpcdsParityProgressEvent::RowReady { query_index, total, query_id, row } => {
+        TpcdsParityProgressEvent::RowReady { query_index, total, query_id, row } => {
             events.push(format!("row:{query_index}/{total}:{query_id}"));
             emitted_lines.push(row.to_tsv_line());
         },
@@ -320,7 +381,7 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
 
 fn tpcds_native_profile_settings_from(
     pairs: impl IntoIterator<Item = (&'static str, &'static str)>,
-) -> datafusion_nexus_bench::TpcdsNativeProfileSettings {
+) -> TpcdsNativeProfileSettings {
     let env = pairs.into_iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
     tpcds_native_profile_settings_with_env(|name| env.get(name).cloned())
 }

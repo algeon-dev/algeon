@@ -2154,7 +2154,7 @@ dependencies = [
  "cugraph-sys",
  "dashmap",
  "datafusion",
- "datafusion-nexus-bench",
+ "datafusion-nexus-workloads",
  "futures",
  "hex",
  "iceberg",
@@ -2194,6 +2194,7 @@ dependencies = [
  "cugraph-sys",
  "datafusion",
  "datafusion-nexus",
+ "datafusion-nexus-workloads",
  "datafusion-substrait",
  "futures",
  "iceberg",
@@ -2244,6 +2245,15 @@ dependencies = [
  "tokio",
  "tonic",
  "url",
+]
+
+[[package]]
+name = "datafusion-nexus-workloads"
+version = "0.2.0"
+dependencies = [
+ "arrow",
+ "datafusion",
+ "parquet",
 ]
 
 [[package]]

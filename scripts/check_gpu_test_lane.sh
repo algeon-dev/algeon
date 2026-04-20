@@ -51,6 +51,7 @@ datafusion-nexus::server_tests
 CPU_LANE="
 datafusion-nexus
 datafusion-nexus-bench
+datafusion-nexus-workloads
 datafusion-nexus::bin/datafusion_nexus_server
 datafusion-nexus::error_tests
 datafusion-nexus::native_fallback_pressure_tests

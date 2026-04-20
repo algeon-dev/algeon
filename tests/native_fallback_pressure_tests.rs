@@ -53,14 +53,8 @@ use datafusion_nexus::{
     report::{GpuCandidate, PlanningReport},
     session::CudfSessionStateBuilderExt,
 };
-use datafusion_nexus_bench::{
-    ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
-    AnalyticalOlapCurrentStrictAdmission, TPCH_QUERY_COUNT, analytical_olap_datafusion_planning_workload_items,
-    analytical_olap_datafusion_planning_workload_items_with_optimizer_config,
-    analytical_olap_fallback_pressure_workload_items, tiny_tpch_dataset_metadata,
-    tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items, tpch_native_optimizer_config,
-    tpch_query_ids, tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items,
-    write_tiny_tpch_parquet_dataset,
+use datafusion_nexus_workloads::tpch::{
+    TPCH_QUERY_COUNT, tiny_tpch_dataset_metadata, tpch_query_ids, write_tiny_tpch_parquet_dataset,
 };
 use nexus_query_engine::{
     adaptive_report::{AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptiveStrategy},
@@ -75,6 +69,20 @@ use nexus_query_engine::{
     runtime::ReservationKind,
     source::{GpuResidentSource, LocalParquetSource, SourceNode},
 };
+
+#[path = "support/analytical_olap_workload.rs"]
+mod analytical_olap_workload;
+#[path = "support/tpch_report.rs"]
+mod tpch_report;
+#[path = "support/tpch_session.rs"]
+mod tpch_session;
+
+use analytical_olap_workload::*;
+use tpch_report::{
+    TestReportDatasetMetadataExt, tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items,
+    tpch_native_optimizer_config, tpch_scalar_fallback_pressure_workload_items,
+};
+use tpch_session::tpch_report_session_config;
 
 const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] = &[
     "q01", "q02", "q03", "q04", "q05", "q06", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q15", "q16",

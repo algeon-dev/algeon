@@ -22,12 +22,12 @@ fn canonical_adapter_paths_expose_stable_contract_symbols() {
     );
     let _planning_report = datafusion_nexus::report::PlanningReport::default();
     let _workload_contracts = (
-        datafusion_nexus_bench::workload::tpch::CUDF_TPCH_PARQUET_DIR_ENV,
-        datafusion_nexus_bench::workload::tpcds::CUDF_TPCDS_SCALE_FACTOR_ENV,
-        datafusion_nexus_bench::workload::clickbench::CUDF_CLICKBENCH_PARQUET_DIR_ENV,
-        size_of::<datafusion_nexus_bench::workload::tpch::TpchQuery>(),
-        size_of::<datafusion_nexus_bench::workload::tpcds::TpcdsQuery>(),
-        size_of::<datafusion_nexus_bench::workload::clickbench::ClickbenchQuery>(),
+        datafusion_nexus_workloads::tpch::CUDF_TPCH_PARQUET_DIR_ENV,
+        datafusion_nexus_workloads::tpcds::CUDF_TPCDS_SCALE_FACTOR_ENV,
+        datafusion_nexus_workloads::clickbench::CUDF_CLICKBENCH_PARQUET_DIR_ENV,
+        size_of::<datafusion_nexus_workloads::tpch::TpchQuery>(),
+        size_of::<datafusion_nexus_workloads::tpcds::TpcdsQuery>(),
+        size_of::<datafusion_nexus_workloads::clickbench::ClickbenchQuery>(),
     );
 }
 
@@ -104,6 +104,18 @@ fn removed_adapter_facades_and_glob_reexports_do_not_reappear() {
     assert_no_crate_root_reexports(&root.join("src/lib.rs"));
     assert_no_removed_public_surface(&root.join("src"));
     assert_modules_are_private(&root.join("src/server/mod.rs"), &["auth", "config", "diagnostics", "error"]);
+}
+
+#[test]
+fn bench_workload_facade_does_not_reappear() {
+    let root = workspace_root();
+    let bench_src = root.join("crates/datafusion-nexus-bench/src");
+    assert!(!bench_src.join("workload.rs").exists(), "bench must not own a workload facade");
+    assert!(!bench_src.join("workload").exists(), "bench must not retain workload implementation modules");
+
+    let bench_lib = std::fs::read_to_string(bench_src.join("lib.rs")).unwrap();
+    assert!(!bench_lib.contains("pub mod workload"), "bench must not expose the removed workload module");
+    assert!(!bench_lib.contains("pub use workload"), "bench must not re-export the removed workload module");
 }
 
 fn workspace_root() -> std::path::PathBuf {

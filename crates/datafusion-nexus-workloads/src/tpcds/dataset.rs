@@ -10,7 +10,7 @@ use parquet::{
     file::reader::{FileReader, SerializedFileReader},
 };
 
-use super::{TpcdsWorkloadError, TpcdsWorkloadResult, tiny::write_tiny_tpcds_parquet_dataset};
+use super::{TpcdsWorkloadError, TpcdsWorkloadResult, fixture::write_tiny_tpcds_parquet_dataset};
 
 /// Canonical TPC-DS table names in registration/report order.
 pub const TPCDS_TABLES: &[&str] = &[
@@ -68,7 +68,7 @@ pub const DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR: &str = "./fixture/data/tpcds/sf1/
 /// on whether the NVMe drive is attached — fixture completeness is probed by
 /// the caller.
 pub fn default_tpcds_sf1_parquet_root() -> &'static str {
-    if crate::workload::tpch::default_nvme_mount_present() {
+    if crate::tpch::default_nvme_mount_present() {
         DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR
     } else {
         DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR
@@ -174,8 +174,8 @@ impl TpcdsDatasetMetadata {
     }
 
     /// Converts TPC-DS metadata into the shared report dataset header shape.
-    pub fn to_workload_dataset_metadata(&self) -> datafusion_nexus::native_report::WorkloadDatasetMetadata {
-        datafusion_nexus::native_report::WorkloadDatasetMetadata {
+    pub fn to_neutral_metadata(&self) -> crate::metadata::WorkloadDatasetMetadata {
+        crate::metadata::WorkloadDatasetMetadata {
             workload: "tpcds",
             root: self.root.clone(),
             scale_factor: Some(self.scale_factor.clone()),

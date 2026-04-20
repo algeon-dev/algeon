@@ -53,6 +53,10 @@ use datafusion_nexus::{
         resolve_table_format_parquet_source_with_metadata,
     },
 };
+use datafusion_nexus_workloads::{
+    tpcds::{TPCDS_QUERIES, TPCDS_TABLES},
+    tpch::{TPCH_QUERIES, TPCH_TABLES},
+};
 use futures::future::BoxFuture;
 use iceberg::{
     NamespaceIdent, TableIdent,
@@ -66,9 +70,9 @@ use nexus_query_engine::{
 };
 use object_store::aws::AmazonS3Builder;
 
-use crate::{
-    TPCDS_QUERIES, TPCDS_TABLES, TPCH_QUERIES, TPCH_TABLES, tpcds_native_report_session_config,
-    tpch_report_session_config, tpch_tuned_cpu_session_config,
+use crate::report_workload::{
+    tpcds::tpcds_native_report_session_config,
+    tpch::{tpch_report_session_config, tpch_tuned_cpu_session_config},
 };
 
 type SmokeResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;

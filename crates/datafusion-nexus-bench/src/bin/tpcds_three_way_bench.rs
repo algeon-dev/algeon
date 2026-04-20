@@ -34,15 +34,15 @@ use datafusion_nexus::{
     report::CandidateOutcome,
     session::CudfSessionStateBuilderExt,
 };
-use datafusion_nexus_bench::{
+use datafusion_nexus_bench::report_workload::tpcds::{
     CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
-    TPCDS_QUERIES, TpcdsNativeProfileSettings, TpcdsQuery, register_tpcds_tables,
+    TpcdsNativeProfileSettings, register_tpcds_tables_with_native_metadata,
     tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings,
     tpcds_native_analytics_optimizer_config_with_profile_settings, tpcds_native_profile_settings_from_env,
     tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
 };
+use datafusion_nexus_workloads::tpcds::{TPCDS_QUERIES, TpcdsQuery};
 use nexus_query_engine::{harness::max_option as max_optional_usize, mode::StatisticalAggregateExecutionMode};
-
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];
 
@@ -341,7 +341,7 @@ async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box<dyn Error>
         Engine::CpuDataFusion => {
             let session_config = tuned_cpu_session_config();
             let ctx = SessionContext::new_with_config(session_config);
-            register_tpcds_tables(&ctx, &cfg.root).await?;
+            register_tpcds_tables_with_native_metadata(&ctx, &cfg.root).await?;
             Ok(BenchRuntime { execution_ctx: ctx, optimizer: None, native_planning: None, skip_cpu_preferred: false })
         },
         Engine::NativeGpu => {
@@ -352,7 +352,7 @@ async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box<dyn Error>
                 .with_cudf_native_rule(Arc::clone(&rule))
                 .build();
             let ctx = SessionContext::new_with_state(state);
-            register_tpcds_tables(&ctx, &cfg.root).await?;
+            register_tpcds_tables_with_native_metadata(&ctx, &cfg.root).await?;
             Ok(BenchRuntime {
                 execution_ctx: ctx,
                 optimizer: Some(rule),
@@ -362,7 +362,7 @@ async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box<dyn Error>
         },
         Engine::HybridCpuPreferred => {
             let cpu_ctx = SessionContext::new_with_config(tuned_cpu_session_config());
-            register_tpcds_tables(&cpu_ctx, &cfg.root).await?;
+            register_tpcds_tables_with_native_metadata(&cpu_ctx, &cfg.root).await?;
             let (native_ctx, optimizer) = build_native_planning_context(&cfg.root, &cfg.native_profile).await?;
             Ok(BenchRuntime {
                 execution_ctx: cpu_ctx,
@@ -386,7 +386,7 @@ async fn build_native_planning_context(
         .with_cudf_native_rule(Arc::clone(&rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
-    register_tpcds_tables(&ctx, root).await?;
+    register_tpcds_tables_with_native_metadata(&ctx, root).await?;
     Ok((ctx, rule))
 }
 

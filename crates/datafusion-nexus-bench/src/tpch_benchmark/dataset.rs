@@ -131,10 +131,10 @@ fn prepare_external_dataset(
 }
 
 fn default_root_for(scale_factor: NativeTpchScaleFactor) -> &'static str {
-    crate::default_tpch_parquet_root(match scale_factor {
-        NativeTpchScaleFactor::Sf1 => crate::TpchDefaultScale::Sf1,
-        NativeTpchScaleFactor::Sf10 => crate::TpchDefaultScale::Sf10,
-        NativeTpchScaleFactor::Sf100 => crate::TpchDefaultScale::Sf100Optimized,
+    datafusion_nexus_workloads::tpch::default_tpch_parquet_root(match scale_factor {
+        NativeTpchScaleFactor::Sf1 => datafusion_nexus_workloads::tpch::TpchDefaultScale::Sf1,
+        NativeTpchScaleFactor::Sf10 => datafusion_nexus_workloads::tpch::TpchDefaultScale::Sf10,
+        NativeTpchScaleFactor::Sf100 => datafusion_nexus_workloads::tpch::TpchDefaultScale::Sf100Optimized,
     })
 }
 

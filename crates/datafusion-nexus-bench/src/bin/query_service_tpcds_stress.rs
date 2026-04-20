@@ -24,10 +24,14 @@ use datafusion_nexus::{
     session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
+    report_workload::tpcds::{
+        register_tpcds_tables_with_native_metadata, tpcds_native_report_session_config, tpcds_report_session_config,
+    },
+    stress_harness::validate_synchronized_admission_queue,
+};
+use datafusion_nexus_workloads::tpcds::{
     CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_PARQUET_DIR_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, TPCDS_QUERIES,
     TpcdsDatasetMetadata, TpcdsQuery, default_tpcds_sf1_parquet_root, describe_tpcds_dataset,
-    stress_harness::validate_synchronized_admission_queue, tpcds_native_report_session_config,
-    tpcds_report_session_config,
 };
 use nexus_query_engine::{
     error::QueryError,
@@ -35,7 +39,6 @@ use nexus_query_engine::{
     runtime::{QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId},
 };
 use tokio::{sync::Barrier, time::timeout};
-
 const TSV_COLUMNS: &[&str] = &[
     "row_type",
     "request_index",
@@ -62,7 +65,6 @@ const TSV_COLUMNS: &[&str] = &[
     "error_facts",
     "error_message",
 ];
-
 const DATASET_ROOT_ENV: &str = CUDF_TPCDS_PARQUET_DIR_ENV;
 const BULK_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_BULK_QUERY_IDS";
 const INTERACTIVE_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_INTERACTIVE_QUERY_IDS";
@@ -80,7 +82,6 @@ const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_MAX_SOURCE_CH
 const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_MAX_ROW_GROUPS_PER_CHUNK";
 const QUERY_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_QUERY_TIMEOUT_MS";
 const OVERLOAD_PROBE_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_OVERLOAD_PROBE";
-
 #[tokio::main]
 async fn main() -> DataFusionResult<()> {
     let config = StressConfig::from_env()?;
@@ -102,7 +103,6 @@ async fn main() -> DataFusionResult<()> {
     print!("{}", report.to_tsv());
     Ok(())
 }
-
 #[derive(Debug, Clone)]
 struct StressConfig {
     dataset_root: PathBuf,
@@ -860,7 +860,7 @@ fn percentile(sorted_values: &[f64], quantile: f64) -> f64 {
 }
 
 async fn register_tpcds_tables(ctx: &SessionContext, root: &Path) -> DataFusionResult<()> {
-    datafusion_nexus_bench::register_tpcds_tables(ctx, root).await.map_err(|error| plan_error(error.to_string()))
+    register_tpcds_tables_with_native_metadata(ctx, root).await.map_err(|error| plan_error(error.to_string()))
 }
 
 fn select_planning_row(

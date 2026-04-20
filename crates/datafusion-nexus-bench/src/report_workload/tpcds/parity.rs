@@ -21,12 +21,13 @@ use datafusion_nexus::{
     planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
     session::CudfSessionStateBuilderExt,
 };
+use datafusion_nexus_workloads::tpcds::TpcdsQuery;
 use futures::FutureExt;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::{
-    TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, TpcdsWorkloadResult, discover_tpcds_table_layout,
-    native_tpcds_session_config, register_tpcds_tables,
+    TPCDS_QUERIES, TPCDS_TABLES, TpcdsWorkloadResult, discover_tpcds_table_layout, native_tpcds_session_config,
+    register_tpcds_tables_with_native_metadata,
 };
 
 /// External oracle configuration for TPC-DS parity runs.
@@ -224,13 +225,13 @@ impl TpcdsParityRunner {
             let mut fallback_config = cpu_session_config.clone();
             fallback_config.options_mut().execution.collect_statistics = false;
             let fallback_ctx = SessionContext::new_with_config(fallback_config);
-            register_tpcds_tables(&fallback_ctx, root).await?;
+            register_tpcds_tables_with_native_metadata(&fallback_ctx, root).await?;
             Some(fallback_ctx)
         } else {
             None
         };
         let cpu_ctx = SessionContext::new_with_config(cpu_session_config);
-        register_tpcds_tables(&cpu_ctx, root).await?;
+        register_tpcds_tables_with_native_metadata(&cpu_ctx, root).await?;
 
         let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
         let native_state = SessionStateBuilder::new_with_default_features()
@@ -238,7 +239,7 @@ impl TpcdsParityRunner {
             .with_cudf_native_rule(Arc::clone(&native_rule))
             .build();
         let native_ctx = SessionContext::new_with_state(native_state);
-        register_tpcds_tables(&native_ctx, root).await?;
+        register_tpcds_tables_with_native_metadata(&native_ctx, root).await?;
 
         Ok(Self { cpu_ctx, cpu_stats_fallback_ctx, native_ctx, native_rule })
     }

@@ -524,7 +524,7 @@ async fn collect_native_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionRes
 fn cpu_session_config() -> SessionConfig {
     match std::env::var("CUDF_TPCH_CPU_PROFILE").as_deref().map(str::to_ascii_lowercase).as_deref() {
         Ok("untuned") | Ok("report") => tpch_report_session_config(),
-        _ => crate::tpch_tuned_cpu_session_config(),
+        _ => crate::report_workload::tpch::tpch_tuned_cpu_session_config(),
     }
 }
 

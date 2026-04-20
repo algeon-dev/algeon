@@ -10,10 +10,6 @@ use datafusion_nexus::{
     },
     planner::CudfNativePhysicalOptimizerRule,
 };
-use datafusion_nexus_bench::{
-    tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_native_report_session_config,
-    tpcds_report_session_config,
-};
 use nexus_query_engine::mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode};
 
 use super::support::*;

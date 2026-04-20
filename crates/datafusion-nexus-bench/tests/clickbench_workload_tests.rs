@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_nexus_bench::{
+use datafusion_nexus_workloads::clickbench::{
     CLICKBENCH_QUERIES, CLICKBENCH_QUERY_COUNT, CLICKBENCH_RAW_TABLE, CLICKBENCH_TABLE, ClickbenchLayout,
     DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR, DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR,
     DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET, clickbench_query_ids, describe_clickbench_dataset,

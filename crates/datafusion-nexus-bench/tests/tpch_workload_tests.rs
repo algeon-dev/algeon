@@ -1,13 +1,27 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_nexus_bench::{
-    TPCH_QUERY_COUNT, TPCH_TABLES, describe_tpch_dataset_with_content_fingerprint, tiny_tpch_dataset_metadata,
-    tpch_fallback_pressure_workload_items, tpch_query_ids, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
+use datafusion_nexus::native_report::{
+    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeFallbackPressureOutcome,
+    NativeFallbackPressureReport,
 };
+use datafusion_nexus_bench::report_workload::tpch::{
+    ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
+    AnalyticalOlapCurrentStrictAdmission, analytical_olap_datafusion_planning_workload_items,
+    analytical_olap_datafusion_planning_workload_items_with_optimizer_config,
+    analytical_olap_fallback_pressure_workload_items, analytical_olap_query_ids,
+    tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items, tpch_native_optimizer_config,
+    tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items,
+};
+use datafusion_nexus_workloads::tpch::{
+    TPCH_QUERY_COUNT, TPCH_TABLES, describe_tpch_dataset_with_content_fingerprint, tiny_tpch_dataset_metadata,
+    tpch_query_ids, write_tiny_tpch_parquet_dataset,
+};
+use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 #[tokio::test]
 async fn tpch_workload_builder_generates_stable_query_items() {
@@ -41,6 +55,127 @@ async fn tpch_workload_builder_generates_stable_query_items() {
     assert_eq!(TPCH_QUERY_COUNT, 22);
     assert_eq!(items.len(), TPCH_QUERY_COUNT);
     assert_eq!(actual_ids, expected_ids);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn tpch_production_planning_and_scalar_builders_preserve_order_and_diagnostics() {
+    let dir = unique_temp_dir("datafusion-nexus-tpch-production-builders");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+
+    let planning_items = tpch_datafusion_planning_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let expected_ids = tpch_query_ids().collect::<Vec<_>>();
+    assert_eq!(planning_items.len(), TPCH_QUERY_COUNT);
+    assert_eq!(planning_items.iter().map(|item| item.query_id.as_str()).collect::<Vec<_>>(), expected_ids);
+
+    let planning = NativeDataFusionPlanningReport::collect(planning_items);
+    assert_eq!(planning.rows.len(), TPCH_QUERY_COUNT);
+    assert_eq!(planning.accepted_count(), TPCH_QUERY_COUNT);
+    assert_eq!(planning.rejected_count(), 0);
+    for query_id in expected_ids {
+        let row = planning.rows.iter().find(|row| row.query_id == query_id).unwrap();
+        assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{query_id}");
+        assert_eq!(row.reason_code, None, "{query_id}");
+        assert_eq!(row.unsupported_category, None, "{query_id}");
+    }
+    let q03 = planning.rows.iter().find(|row| row.query_id == "q03").unwrap();
+    assert!(!q03.strict_bounded_contract_rows.is_empty());
+    assert!(!q03.strict_bounded_compiled_graphs.is_empty());
+
+    let scalar_items = tpch_scalar_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let scalar = NativeFallbackPressureReport::collect(scalar_items);
+    let expected_scalar = [
+        ("q12_scalar_in_list_null", "expression_in_list"),
+        ("q01_scalar_interval_minus_date", "expression_interval_arithmetic"),
+        ("q22_scalar_substring_dynamic_start", "expression_substring_argument"),
+        ("q07_scalar_extract_hour", "expression_extract_field"),
+    ];
+    assert_eq!(scalar.rows.len(), expected_scalar.len());
+    assert_eq!(scalar.rewritten_count(), 0);
+    assert_eq!(scalar.rejected_count(), expected_scalar.len());
+    assert_eq!(
+        scalar.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>(),
+        expected_scalar.iter().map(|(query_id, _)| *query_id).collect::<Vec<_>>()
+    );
+    for (query_id, category) in expected_scalar {
+        let row = scalar.rows.iter().find(|row| row.query_id == query_id).unwrap();
+        assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rejected, "{query_id}");
+        assert_eq!(row.reason_code.as_deref(), Some("unsupported_expression"), "{query_id}");
+        assert_eq!(row.unsupported_category.as_deref(), Some(category), "{query_id}");
+        assert!(row.rejected_before_execution, "{query_id}");
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn analytical_olap_production_catalog_and_builders_preserve_mode_specific_evidence() {
+    let dir = unique_temp_dir("datafusion-nexus-analytical-olap-production-builders");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+
+    let expected_ids = analytical_olap_query_ids().collect::<Vec<_>>();
+    assert_eq!(ANALYTICAL_OLAP_QUERY_COUNT, 10);
+    assert_eq!(expected_ids, ANALYTICAL_OLAP_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>());
+    assert_eq!(
+        ANALYTICAL_OLAP_QUERIES.iter().map(|query| query.workload_class.as_str()).collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "aggregate_sort_topk",
+            "decorrelatable_subquery",
+            "multi_join_resident_pressure",
+            "self_join",
+            "star_schema_join",
+        ])
+    );
+
+    let fallback_items =
+        analytical_olap_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    assert_eq!(fallback_items.iter().map(|item| item.query_id.as_str()).collect::<Vec<_>>(), expected_ids);
+    let fallback = NativeFallbackPressureReport::collect(fallback_items);
+    assert_eq!(fallback.rewritten_count(), ANALYTICAL_OLAP_QUERY_COUNT);
+    assert_eq!(fallback.rejected_count(), 0);
+    assert!(fallback.rows.iter().all(|row| !row.join_diagnostics.is_empty() && !row.source_diagnostics.is_empty()));
+
+    let strict_items =
+        analytical_olap_datafusion_planning_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    assert_eq!(strict_items.iter().map(|item| item.query_id.as_str()).collect::<Vec<_>>(), expected_ids);
+    let strict = NativeDataFusionPlanningReport::collect(strict_items);
+    for query in ANALYTICAL_OLAP_QUERIES {
+        let row = strict.rows.iter().find(|row| row.query_id == query.id).unwrap();
+        match query.current_strict_admission {
+            AnalyticalOlapCurrentStrictAdmission::Accepted => {
+                assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{}", query.id);
+                assert_eq!(row.reason_code, None, "{}", query.id);
+            },
+            AnalyticalOlapCurrentStrictAdmission::RejectedBeforeExecution => {
+                assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution, "{}", query.id);
+                assert!(row.reason_code.is_some(), "{}", query.id);
+            },
+        }
+        assert!(row.adaptive_pipeline_rows.is_empty(), "{}", query.id);
+        if query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin {
+            assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{}", query.id);
+            assert!(!row.strict_bounded_contract_rows.is_empty(), "{}", query.id);
+            assert!(!row.strict_bounded_compiled_graphs.is_empty(), "{}", query.id);
+        }
+    }
+
+    let adaptive_config =
+        tpch_native_optimizer_config().with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
+    let adaptive_items = analytical_olap_datafusion_planning_workload_items_with_optimizer_config(
+        &dir,
+        tpch_report_session_config(),
+        adaptive_config,
+    )
+    .await
+    .unwrap();
+    let adaptive = NativeDataFusionPlanningReport::collect(adaptive_items);
+    assert_eq!(adaptive.rows.len(), ANALYTICAL_OLAP_QUERY_COUNT);
+    for row in &adaptive.rows {
+        assert!(row.strict_bounded_contract_rows.is_empty(), "{}", row.query_id);
+        assert!(row.strict_bounded_compiled_graphs.is_empty(), "{}", row.query_id);
+        assert!(!row.adaptive_pipeline_rows.is_empty(), "{}", row.query_id);
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }

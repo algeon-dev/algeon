@@ -5,9 +5,14 @@ use std::{
 
 use datafusion_nexus::native_report::NativeDataFusionExecutionReport;
 use datafusion_nexus_bench::{
-    ClickbenchDatasetMetadata, ClickbenchExecutionProgressEvent, ClickbenchWorkloadResult,
-    clickbench_datafusion_execution_workload_items_filtered, clickbench_native_optimizer_config,
-    clickbench_report_session_config, prepare_clickbench_report_dataset,
+    report_metadata::ReportDatasetMetadataExt,
+    report_workload::clickbench::{
+        ClickbenchExecutionProgressEvent, clickbench_datafusion_execution_workload_items_filtered,
+        clickbench_native_optimizer_config, clickbench_report_session_config,
+    },
+};
+use datafusion_nexus_workloads::clickbench::{
+    ClickbenchDatasetMetadata, ClickbenchWorkloadError, ClickbenchWorkloadResult, prepare_clickbench_report_dataset,
 };
 use nexus_query_engine::mode::NativePipelineExecutionMode;
 
@@ -32,7 +37,7 @@ async fn main() -> ExitCode {
 
 async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchExecutionReport> {
     let (root, metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
-        datafusion_nexus_bench::ClickbenchWorkloadError::InvalidDataset(
+        ClickbenchWorkloadError::InvalidDataset(
             "no ClickBench fixture found; set CUDF_CLICKBENCH_PARQUET_DIR or stage \
              fixture/data/clickbench/{hits.parquet, partitioned/} before running this report"
                 .to_string(),

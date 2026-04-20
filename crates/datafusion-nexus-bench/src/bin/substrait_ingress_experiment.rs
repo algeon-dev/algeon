@@ -32,9 +32,9 @@ use datafusion_nexus::{
     planner::CudfNativePhysicalOptimizerRule,
     session::CudfSessionStateBuilderExt,
 };
-use datafusion_nexus_bench::{
+use datafusion_nexus_bench::report_workload::tpch::{tpch_native_optimizer_config, tpch_report_session_config};
+use datafusion_nexus_workloads::tpch::{
     TPCH_QUERIES, TPCH_TABLES, discover_tpch_table_layout, prepare_tpch_report_dataset, register_tpch_table_layout,
-    tpch_native_optimizer_config, tpch_report_session_config,
 };
 use datafusion_substrait::logical_plan::{consumer::from_substrait_plan, producer::to_substrait_plan};
 
