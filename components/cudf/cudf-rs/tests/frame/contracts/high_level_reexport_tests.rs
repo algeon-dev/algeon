@@ -233,4 +233,9 @@ fn hidden_internal_reexports_are_not_publicly_importable() {
     t.compile_fail("tests/public_api/ui/no_execution_context_type.rs");
     t.compile_fail("tests/public_api/ui/no_dataframe_in_context.rs");
     t.compile_fail("tests/public_api/ui/no_interop_runtime_wrappers.rs");
+    t.compile_fail("tests/public_api/ui/no_interop_shared_contract_nouns.rs");
+    t.compile_fail("tests/public_api/ui/no_interop_borrowed_namespace.rs");
+    t.compile_fail("tests/public_api/ui/no_interop_prepared_namespace.rs");
+    t.compile_fail("tests/public_api/ui/no_interop_transfer_namespace.rs");
+    t.pass("tests/public_api/ui/interop_canonical_contract_imports.rs");
 }

@@ -73,20 +73,21 @@
 //!   workflows can stay on [`Series`] via `*_value` helpers and only drop to
 //!   `Scalar` when you need explicit device-resident scalar behavior.
 //! - [`Runtime`] / [`ExecutionOverrides`] — explicit stream and allocator control.
-//! - [`interop`] — the preferred external interop boundary for the shared
-//!   borrowed compatibility profile, producer-rooted prepared exports, and
-//!   activated read-lease APIs.
+//! - [`interop`] — `cudf-rs`-specific interop adapters, runtime-backed
+//!   release helpers, CUDA handle projection, and Arrow C Device ABI glue.
+//!   Import shared contract nouns from [`rapids_interop`].
 //! - For lower-level CUDA stream and event management, see the [`runtime`] module.
 //!
 //! If you need to hand device-backed cudf data to another Rust GPU library,
-//! prefer the shared descriptors and prepared export types in [`interop`] over
+//! prefer the shared descriptors and prepared export types in
+//! [`rapids_interop`] plus the adapter methods in [`interop`] over
 //! [`core::DeviceSlice`]. `core::DeviceSlice` is only a raw pointer + length
 //! helper and does not carry null-mask, offset-base, readiness, completion,
 //! or execution-provenance semantics.
 //!
-//! Interop activation uses the shared names in [`interop`]. If you already have
-//! `cudf-rs` runtime handles, use [`interop::cuda_stream_handle`] and
-//! [`interop::cuda_event_handle`] to project them into the shared contract
+//! Interop activation uses the shared names in [`rapids_interop`]. If you
+//! already have `cudf-rs` runtime handles, use [`interop::cuda_stream_handle`]
+//! and [`interop::cuda_event_handle`] to project them into the shared contract
 //! explicitly.
 //!
 //! # Stream Synchronization Strategy

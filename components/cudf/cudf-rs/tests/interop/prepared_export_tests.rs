@@ -11,21 +11,17 @@ use std::sync::{
 
 use cudf::{
     DataFrame, DeviceId, JsonReadOptions, Runtime, TypeId,
-    interop::{
-        borrowed::{
-            BufferBinding, BufferId, ColumnId, ColumnLayout, CudaEventHandle, InteropTypeId, PhysicalValidity,
-            Placement, SchemaNullability, SemanticColumn,
-        },
-        cuda_explicit_completion_required_lease_backend,
-        prepared::{
-            ActiveLeaseBackend, CompletionAuthority, CompletionBinding, CompletionWitness, CompletionWitnessKind,
-            ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseBackend, LeaseCompletionResult,
-            LeaseExportContext, PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority,
-        },
-    },
+    interop::cuda_explicit_completion_required_lease_backend,
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
     testing::prelude::*,
+};
+use rapids_interop::{
+    ActiveLeaseBackend, BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority, CompletionBinding,
+    CompletionWitness, CompletionWitnessKind, CudaEventHandle, ExportProfile, IncompleteDropBehavior, InteropError,
+    InteropErrorKind, LeaseBackend, LeaseCompletionResult, LeaseExportContext, PhysicalValidity, Placement,
+    PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, SchemaNullability,
+    SemanticColumn, TypeId as InteropTypeId,
 };
 use tempfile::TempDir;
 

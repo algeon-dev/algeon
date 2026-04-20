@@ -1,7 +1,7 @@
 //! External interop boundaries.
 //!
-//! This module re-exports the shared RAPIDS Rust interop contract from
-//! [`rapids_interop`] and implements `cudf-rs` producer adapters for:
+//! Shared interop contract nouns live in [`rapids_interop`]. This module
+//! implements `cudf-rs` producer and consumer adapters for:
 //!
 //! - [`crate::core::Column`]
 //! - [`crate::core::ColumnView`]
@@ -13,7 +13,7 @@
 //!
 //! # Contract Summary
 //!
-//! - The shared [`rapids_interop`] names are the primary interop contract.
+//! - Import shared contract types and traits directly from [`rapids_interop`].
 //! - Prepared export plus activated access is the primary consumer-neutral
 //!   single-GPU contract.
 //! - `cudf-rs` now supports consumer-side import from the shared borrowed
@@ -29,32 +29,39 @@
 //!   prepared-device export roots back into owned [`crate::core::Column`] and
 //!   [`crate::core::Table`] values via explicit same-device destination
 //!   [`crate::Runtime`]s.
-//! - [`BorrowedColumnView`] and [`BorrowedTableView`] remain the borrowed GPU
+//! - [`rapids_interop::BorrowedColumnView`] and
+//!   [`rapids_interop::BorrowedTableView`] remain the borrowed GPU
 //!   compatibility profile.
-//! - [`PreparedColumnExport`] and [`PreparedTableExport`] are producer-rooted
-//!   prepared export profiles for activated access.
+//! - [`rapids_interop::PreparedColumnExport`] and
+//!   [`rapids_interop::PreparedTableExport`] are producer-rooted prepared
+//!   export profiles for activated access.
 //! - Deep-copy import into an explicit destination [`crate::Runtime`] remains
 //!   the portability fallback when a consumer needs owned `cudf-rs` values
 //!   instead of borrowing or moving ownership directly.
-//! - [`PartitionedPreparedTableExport`] and [`PartitionedOwnedTableTransfer`]
-//!   are explicit multi-device wrappers around multiple already-valid
-//!   single-device table roots.
-//! - [`ActiveColumnReadLease`] and [`ActiveTableReadLease`] model activated
-//!   read access with explicit read-start and completion contracts.
-//! - [`CompletionWitness`] and [`LeaseCompletionResult`] make completion and
-//!   drop fallback visible at the shared contract layer.
+//! - [`rapids_interop::PartitionedPreparedTableExport`] and
+//!   [`rapids_interop::PartitionedOwnedTableTransfer`] are explicit
+//!   multi-device wrappers around multiple already-valid single-device table
+//!   roots.
+//! - [`rapids_interop::ActiveColumnReadLease`] and
+//!   [`rapids_interop::ActiveTableReadLease`] model activated read access
+//!   with explicit read-start and completion contracts.
+//! - [`rapids_interop::CompletionWitness`] and
+//!   [`rapids_interop::LeaseCompletionResult`] make completion and drop
+//!   fallback visible at the shared contract layer.
 //! - Use [`cuda_stream_handle`] and [`cuda_event_handle`] when a caller already
 //!   has `cudf-rs` runtime handles and needs to activate a shared prepared
 //!   lease with explicit CUDA stream or event facts.
-//! - [`OwnedColumnTransferReleaser`] and [`OwnedTableTransferReleaser`] are
-//!   CUDA-backed release helpers for the signal-driven owned-transfer producer
-//!   path. Their caller-visible behavior follows the matching transfer root's
-//!   declared [`ReleaseSynchronization`]: async roots return once release has
-//!   been accepted and scheduled, while `MaySynchronizeInternally` roots may
-//!   block while carrying out the release contract.
-//! - [`PartitionedOwnedTableTransferReleaser`] mirrors that release path for
-//!   partitioned owned transfer by preserving one releaser per
-//!   retained-provenance partition. Import and release remain mutually
+//! - [`runtime_release::OwnedColumnTransferReleaser`] and
+//!   [`runtime_release::OwnedTableTransferReleaser`] are CUDA-backed release
+//!   helpers for the signal-driven owned-transfer producer path. Their
+//!   caller-visible behavior follows the matching transfer root's declared
+//!   [`rapids_interop::ReleaseSynchronization`]: async roots return once
+//!   release has been accepted and scheduled, while
+//!   `MaySynchronizeInternally` roots may block while carrying out the
+//!   release contract.
+//! - [`runtime_release::PartitionedOwnedTableTransferReleaser`] mirrors that
+//!   release path for partitioned owned transfer by preserving one releaser
+//!   per retained-provenance partition. Import and release remain mutually
 //!   exclusive independently for each partition.
 //! - Borrowing and prepared export do not transfer ownership.
 //! - Borrowed compatibility and prepared export both avoid host copies on the
@@ -80,6 +87,18 @@
 //! - Producer projection requires explicit retained provenance.
 //! - Public `cudf-rs` object construction now satisfies that contract through
 //!   explicit [`crate::Runtime`] ownership.
+//!
+//! # Public Boundary
+//!
+//! - Import shared contract nouns from [`rapids_interop`].
+//! - Use methods on [`crate::Series`] and [`crate::DataFrame`] as the primary
+//!   migration-oriented interop adapters.
+//! - Use methods on [`crate::core::Column`], [`crate::core::Table`],
+//!   [`crate::core::ColumnView`], and [`crate::core::TableView`] when you
+//!   need explicit low-level ownership or borrow control.
+//! - Use [`runtime_release`] and [`arrow_device`] only for `cudf-rs`-specific
+//!   runtime-backed release helpers, CUDA handle projection, and Arrow C
+//!   Device ABI glue.
 //!
 //! # Module Position
 //!
@@ -112,7 +131,7 @@
 //! which hid placement as a side effect of a compute operation.
 
 pub mod arrow_device;
-pub mod borrowed;
+mod borrowed;
 mod column;
 mod consumer_import;
 mod contracts;
@@ -122,10 +141,10 @@ pub mod frame;
 mod import_graph;
 mod projection;
 mod runtime_lease;
+pub mod runtime_release;
 mod table;
 mod table_export;
 mod table_support;
-pub mod transfer;
 
 use std::sync::Arc;
 
@@ -143,17 +162,19 @@ use execution::*;
 pub use frame::PartitionedDataFrameExport;
 use prepared::*;
 use projection::{prepared_column_projection_from_view, prepared_host_column_projection_from_view};
+use rapids_interop::{
+    OwnedColumnTransfer, OwnedTableTransfer, PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition,
+    ReleaseContract, ReleaseSynchronization, TransferCompletionRule, TryIntoOwnedDeviceColumnTransfer,
+    TryIntoOwnedDevicePartitionedTableTransfer, TryIntoOwnedDeviceTableTransfer,
+};
+use runtime_release::*;
 pub use table::{PartitionedLocalTableResult, PartitionedLocalTableResults};
-pub mod prepared {
+mod prepared {
     pub use rapids_interop::{
-        ActiveColumnReadLease, ActiveLeaseActivation, ActiveLeaseBackend, ActivePartitionedTableReadLease,
-        ActiveTableReadLease, CompletionAuthority, CompletionBinding, CompletionWitness, CompletionWitnessBackend,
-        CompletionWitnessKind, ExportDiagnostics, ExportProfile, IncompleteDropBehavior, InteropError,
-        InteropErrorKind, LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext, LeaseReadiness,
-        PartitionedPreparedTableExport, PartitionedPreparedTablePartition, PreparedColumnExport, PreparedTableExport,
-        ProducerReadiness, ReadStartAuthority, ReadStartBinding, TryPrepareDeviceColumnExport,
-        TryPrepareDevicePartitionedTableExport, TryPrepareDeviceTableExport, TryPrepareHostColumnExport,
-        TryPrepareHostTableExport,
+        ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind, PartitionedPreparedTableExport,
+        PartitionedPreparedTablePartition, PreparedColumnExport, PreparedTableExport, ProducerReadiness,
+        TryPrepareDeviceColumnExport, TryPrepareDevicePartitionedTableExport, TryPrepareDeviceTableExport,
+        TryPrepareHostColumnExport, TryPrepareHostTableExport,
     };
 }
 pub use runtime_lease::cuda_explicit_completion_required_lease_backend;
@@ -166,7 +187,6 @@ use table_export::{
     transfer_partitioned_owned_table_from_columns_with_runtime_release,
     transfer_partitioned_owned_table_from_columns_with_runtime_release_synchronization,
 };
-use transfer::*;
 
 use crate::{
     core::{

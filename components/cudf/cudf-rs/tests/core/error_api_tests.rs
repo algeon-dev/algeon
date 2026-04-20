@@ -1,7 +1,5 @@
-use cudf::{
-    Error, ErrorKind, ErrorStatus,
-    interop::prepared::{InteropError, InteropErrorKind},
-};
+use cudf::{Error, ErrorKind, ErrorStatus};
+use rapids_interop::{InteropError, InteropErrorKind};
 
 #[test]
 fn new_defaults_to_permanent() {

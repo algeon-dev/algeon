@@ -5,11 +5,7 @@ use std::{
     thread,
 };
 
-pub use rapids_interop::{
-    OwnedColumnTransfer, OwnedTableTransfer, PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition,
-    ReleaseContract, ReleaseSynchronization, TransferCompletionRule, TryIntoOwnedDeviceColumnTransfer,
-    TryIntoOwnedDevicePartitionedTableTransfer, TryIntoOwnedDeviceTableTransfer,
-};
+use rapids_interop::ReleaseSynchronization;
 
 use super::*;
 use crate::runtime::{CudaEvent, CudaStream};

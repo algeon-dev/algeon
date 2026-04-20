@@ -1,6 +1,6 @@
 [package]
 name = "rapids-interop"
-description = "Borrowed GPU view interop types for RAPIDS Rust crates"
+description = "Shared RAPIDS Rust interop contract types and traits"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

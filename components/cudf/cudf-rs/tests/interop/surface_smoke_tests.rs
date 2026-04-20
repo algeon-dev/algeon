@@ -12,20 +12,17 @@ use cudf::{
     interop::{
         PartitionedLocalTableResults,
         arrow_device::DeviceArrowColumnExport,
-        borrowed::{BorrowedColumnView, BorrowedTableView},
         cuda_explicit_completion_required_lease_backend,
         frame::PartitionedDataFrameExport,
-        prepared::{
-            ActiveLeaseActivation, ActiveLeaseBackend, CompletionAuthority, CompletionBinding, IncompleteDropBehavior,
-            InteropError, LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext, LeaseReadiness,
-            PreparedColumnExport, PreparedTableExport, ReadStartAuthority, ReadStartBinding,
-        },
-        transfer::{
-            OwnedColumnTransfer, OwnedTableTransfer, OwnedTableTransferReleaser, PartitionedOwnedTableTransferReleaser,
-            ReleaseSynchronization,
-        },
+        runtime_release::{OwnedTableTransferReleaser, PartitionedOwnedTableTransferReleaser},
     },
     runtime::{CudaEvent, CudaStream},
+};
+use rapids_interop::{
+    ActiveLeaseActivation, ActiveLeaseBackend, BorrowedColumnView, BorrowedTableView, CompletionAuthority,
+    CompletionBinding, IncompleteDropBehavior, InteropError, LeaseActivation, LeaseBackend, LeaseCompletionResult,
+    LeaseExportContext, LeaseReadiness, OwnedColumnTransfer, OwnedTableTransfer, PreparedColumnExport,
+    PreparedTableExport, ReadStartAuthority, ReadStartBinding, ReleaseSynchronization,
 };
 
 struct TestActivation;

@@ -5,7 +5,7 @@ use rapids_interop::{CompletionWitness, CompletionWitnessKind, InteropError, Int
 use super::authorities::{ProducerReadinessBinding, SharedCudaCompletionWitnessState, create_producer_owned_event};
 use crate::{
     core::error::{self, Result},
-    interop::transfer::TransferCompletionAuthority,
+    interop::runtime_release::TransferCompletionAuthority,
     runtime::{CudaEvent, CudaStream, DeviceId, device_guard::DeviceGuard},
 };
 

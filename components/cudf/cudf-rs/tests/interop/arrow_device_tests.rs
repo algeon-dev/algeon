@@ -10,13 +10,15 @@ use std::{
 use cudf::{
     DataFrame, DataType, DeviceId, ErrorKind, Runtime, Series, TypeId,
     core::{Column, Table},
-    interop::{
-        arrow_device::{DeviceArrowDeviceType, DeviceArrowExportMaterialization, DeviceArrowImportMaterialization},
-        borrowed::{BufferBinding, ColumnLayout, PhysicalValidity, SchemaNullability, SemanticColumn},
-        prepared::{ExportProfile, PreparedColumnExport},
+    interop::arrow_device::{
+        DeviceArrowDeviceType, DeviceArrowExportMaterialization, DeviceArrowImportMaterialization,
     },
     ops::dictionary,
     testing::prelude::*,
+};
+use rapids_interop::{
+    BufferBinding, ColumnLayout, ExportProfile, PhysicalValidity, PreparedColumnExport, SchemaNullability,
+    SemanticColumn,
 };
 use tempfile::TempDir;
 

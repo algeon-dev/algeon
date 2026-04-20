@@ -8,18 +8,17 @@ use cudf::{
             DeviceArrowColumnExport, DeviceArrowColumnOwnedAbiParts, DeviceArrowColumnRawParts, DeviceArrowTableExport,
             DeviceArrowTableOwnedAbiParts, DeviceArrowTableRawParts, ForeignDeviceArrowColumn, ForeignDeviceArrowTable,
         },
-        borrowed::{BorrowedColumnView, BorrowedTableView},
-        prepared::{
-            CompletionAuthority, CompletionWitnessKind, LeaseCompletionResult, PreparedColumnExport,
-            PreparedTableExport, ProducerReadiness, ReadStartAuthority,
-        },
-        transfer::{
-            OwnedColumnTransfer, OwnedColumnTransferReleaser, OwnedTableTransfer, OwnedTableTransferReleaser,
-            PartitionedOwnedTableTransferReleaser,
+        runtime_release::{
+            OwnedColumnTransferReleaser, OwnedTableTransferReleaser, PartitionedOwnedTableTransferReleaser,
         },
     },
     runtime::{CudaEvent, CudaStream},
     testing::prelude::*,
+};
+use rapids_interop::{
+    BorrowedColumnView, BorrowedTableView, CompletionAuthority, CompletionWitnessKind, LeaseCompletionResult,
+    OwnedColumnTransfer, OwnedTableTransfer, PreparedColumnExport, PreparedTableExport, ProducerReadiness,
+    ReadStartAuthority,
 };
 use static_assertions::{assert_impl_all, assert_not_impl_any};
 

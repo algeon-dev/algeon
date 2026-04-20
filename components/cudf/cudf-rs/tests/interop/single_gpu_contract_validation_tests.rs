@@ -12,16 +12,10 @@
 //!   prepared-export boundary
 use std::{collections::HashMap, ffi::c_void};
 
-use cudf::{
-    AggSpec, DataFrame, GroupByAgg, Runtime,
-    interop::{
-        borrowed::{BufferBinding, ColumnLayout, SemanticColumn},
-        prepared::{
-            CompletionAuthority, ExportProfile, LeaseCompletionResult, PreparedTableExport, ProducerReadiness,
-            ReadStartAuthority,
-        },
-    },
-    testing::prelude::*,
+use cudf::{AggSpec, DataFrame, GroupByAgg, Runtime, testing::prelude::*};
+use rapids_interop::{
+    BufferBinding, ColumnLayout, CompletionAuthority, ExportProfile, LeaseCompletionResult, PreparedTableExport,
+    ProducerReadiness, ReadStartAuthority, SemanticColumn,
 };
 
 use crate::common;

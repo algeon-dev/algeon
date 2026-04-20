@@ -1,8 +1,8 @@
 pub use rapids_interop::{
     BorrowedColumnView, BorrowedTableView, BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout,
     CudaEventHandle, CudaStreamHandle, DataType as InteropDataType, DeviceMemoryResourceHandle, ExecutionBinding,
-    NullMask, NullMaskKind, PhysicalValidity, Placement, SchemaNullability, SemanticColumn, SemanticTable, TableId,
-    TryBorrowColumnView, TryBorrowTableView, TypeId as InteropTypeId,
+    PhysicalValidity, Placement, SchemaNullability, SemanticColumn, SemanticTable, TableId, TryBorrowColumnView,
+    TryBorrowTableView, TypeId as InteropTypeId,
 };
 
 use super::*;
