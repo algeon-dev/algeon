@@ -21,7 +21,7 @@ pub struct SeriesStringNamespace<'series>(&'series Series);
 impl SeriesStringNamespace<'_> {
     // -- Case conversion ---------------------------------------------------
 
-    /// Convert each string element to lowercase. Inherits the source Series' name.
+    /// Convert each string element to lowercase.
     ///
     /// The input must be a `STRING` column.
     ///
@@ -36,7 +36,7 @@ impl SeriesStringNamespace<'_> {
         self.0.string_unary_with_context(strings::to_lower_impl, ctx, "series::str::lower_in")
     }
 
-    /// Convert each string element to uppercase. Inherits the source Series' name.
+    /// Convert each string element to uppercase.
     ///
     /// The input must be a `STRING` column.
     ///
@@ -56,7 +56,7 @@ impl SeriesStringNamespace<'_> {
     /// Element-wise literal substring containment test.
     ///
     /// Returns a `BOOL8` Series: `true` where the string contains `pat`.
-    /// Null input elements produce null output. Inherits the source Series' name.
+    /// Null input elements produce null output.
     ///
     /// Equivalent to cuDF Python's `Series.str.contains(pat, regex=False)`.
     ///
@@ -78,7 +78,7 @@ impl SeriesStringNamespace<'_> {
 
     /// Element-wise starts-with test.
     ///
-    /// Returns a `BOOL8` Series. Inherits the source Series' name.
+    /// Returns a `BOOL8` Series.
     ///
     /// Equivalent to cuDF Python's `Series.str.startswith(pat)`.
     ///
@@ -100,7 +100,7 @@ impl SeriesStringNamespace<'_> {
 
     /// Element-wise ends-with test.
     ///
-    /// Returns a `BOOL8` Series. Inherits the source Series' name.
+    /// Returns a `BOOL8` Series.
     ///
     /// Equivalent to cuDF Python's `Series.str.endswith(pat)`.
     ///
@@ -123,8 +123,6 @@ impl SeriesStringNamespace<'_> {
     // -- Strip / trim -------------------------------------------------------
 
     /// Strip whitespace from both sides of each string.
-    ///
-    /// Inherits the source Series' name.
     ///
     /// Equivalent to cuDF Python's `Series.str.strip()`.
     ///
@@ -181,7 +179,6 @@ impl SeriesStringNamespace<'_> {
     /// Character count (not byte count) per string.
     ///
     /// Returns an `INT32` Series. Null input elements produce null output.
-    /// Inherits the source Series' name.
     ///
     /// Equivalent to cuDF Python's `Series.str.len()`.
     ///
@@ -202,7 +199,7 @@ impl SeriesStringNamespace<'_> {
 
     /// Byte count per string.
     ///
-    /// Returns an `INT32` Series. Inherits the source Series' name.
+    /// Returns an `INT32` Series.
     ///
     /// # Cost
     /// GPU-allocating: produces a new INT32 column.

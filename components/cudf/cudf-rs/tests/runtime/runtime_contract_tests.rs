@@ -290,7 +290,6 @@ async fn to_record_batch_in_spawn_blocking() {
 
     assert_eq!(batch.num_columns(), 2);
     assert_eq!(batch.num_rows(), 5);
-    assert_eq!(batch.schema().field(0).name(), "id");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

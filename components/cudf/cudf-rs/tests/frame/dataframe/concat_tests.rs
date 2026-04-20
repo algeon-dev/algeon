@@ -257,20 +257,8 @@ fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let left = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([left_rt.named_series("a", &[1i32, 2]).unwrap()]).map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
-    .unwrap();
-    let right = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([right_rt.named_series("a", &[3i32, 4]).unwrap()]).map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
-    .unwrap();
+    let left = DataFrame::from_columns([("a", left_rt.series(&[1i32, 2]).unwrap())]).unwrap();
+    let right = DataFrame::from_columns([("a", right_rt.series(&[3i32, 4]).unwrap())]).unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
     crate::common::reset_dependency_observation();
@@ -390,27 +378,9 @@ fn test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance() {
     let rt1 = sample_runtime();
     let rt2 = sample_runtime();
     let rt3 = sample_runtime();
-    let df1 = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([rt1.named_series("a", &[1i32, 2]).unwrap()]).map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
-    .unwrap();
-    let df2 = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([rt2.named_series("a", &[3i32, 4]).unwrap()]).map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
-    .unwrap();
-    let df3 = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([rt3.named_series("a", &[5i32, 6]).unwrap()]).map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
-    .unwrap();
+    let df1 = DataFrame::from_columns([("a", rt1.series(&[1i32, 2]).unwrap())]).unwrap();
+    let df2 = DataFrame::from_columns([("a", rt2.series(&[3i32, 4]).unwrap())]).unwrap();
+    let df3 = DataFrame::from_columns([("a", rt3.series(&[5i32, 6]).unwrap())]).unwrap();
     let expected_domain_id = df1.testing_execution_domain_id();
 
     let result = df1.concat_many(&[&df2, &df3]).unwrap();

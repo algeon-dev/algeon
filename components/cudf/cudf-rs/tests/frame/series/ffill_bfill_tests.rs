@@ -15,10 +15,11 @@ fn test_series_ffill_basic() {
 }
 
 #[test]
-fn test_series_ffill_preserves_name() {
+fn test_series_ffill_display_omits_input_name() {
     let s = crate::common::nullable_series::<i32>("my_col", &[1, 0], &[true, false]).unwrap();
     let result = s.ffill().unwrap();
-    assert_eq!(result.name(), Some("my_col"));
+    let output = format!("{}", result);
+    assert!(!output.contains("my_col"), "ffill output should not expose schema names: {}", output);
 }
 
 #[test]
@@ -71,10 +72,11 @@ fn test_series_bfill_basic() {
 }
 
 #[test]
-fn test_series_bfill_preserves_name() {
+fn test_series_bfill_display_omits_input_name() {
     let s = crate::common::nullable_series::<i32>("my_col", &[0, 1], &[false, true]).unwrap();
     let result = s.bfill().unwrap();
-    assert_eq!(result.name(), Some("my_col"));
+    let output = format!("{}", result);
+    assert!(!output.contains("my_col"), "bfill output should not expose schema names: {}", output);
 }
 
 #[test]

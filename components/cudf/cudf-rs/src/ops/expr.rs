@@ -148,7 +148,7 @@ pub enum Expr {
     IsNull(Box<Expr>),
     /// Validity-check: produces BOOL8 where `true` = non-null.
     IsNotNull(Box<Expr>),
-    /// Rename the output of an inner expression.
+    /// Assign a schema/output name to an inner expression.
     Alias { inner: Box<Expr>, name: String },
     /// Replace nulls with a scalar value.
     FillNaScalar { input: Box<Expr>, value: LitValue },
@@ -172,7 +172,7 @@ pub enum Expr {
 impl Expr {
     // -- Builder methods ---------------------------------------------------
 
-    /// Rename this expression's output column.
+    /// Assign a schema/output name used by DataFrame materialization APIs.
     pub fn alias(self, name: impl Into<String>) -> Expr {
         Expr::Alias { inner: Box::new(self), name: name.into() }
     }
@@ -361,10 +361,10 @@ impl Expr {
 
     /// Evaluate this expression against a DataFrame.
     ///
-    /// When the expression has a determinable output name, the returned
-    /// [`Series`] is renamed accordingly.
+    /// Expression naming is schema metadata handled by DataFrame-level APIs.
+    /// The returned [`Series`] itself is unnamed.
     pub fn eval(&self, df: &DataFrame) -> Result<Series> {
-        let series = match self {
+        match self {
             Expr::Column(name) => df.series(name),
 
             Expr::Literal(lit_val) => {
@@ -407,8 +407,8 @@ impl Expr {
             },
 
             Expr::Alias { inner, name } => {
-                let series = inner.eval(df)?;
-                Ok(series.rename(name))
+                let _ = name;
+                inner.eval(df)
             },
 
             Expr::FillNaScalar { input, value } => {
@@ -498,12 +498,7 @@ impl Expr {
                 let col = copying::copy_if_else(&true_cv, &false_cv, &cond_cv)?;
                 Series::from_column(col)
             },
-        }?;
-
-        Ok(match self.output_name() {
-            Some(name) => series.rename(name),
-            None => series,
-        })
+        }
     }
 }
 

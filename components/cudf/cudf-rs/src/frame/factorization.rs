@@ -42,12 +42,7 @@ impl DictionaryEncodingOptions {
     }
 }
 
-fn positional_code_series(
-    len: usize,
-    domain: &Arc<ExecutionDomain>,
-    name: Option<&str>,
-    decoded_name: Option<&str>,
-) -> Result<EncodedSeries> {
+fn positional_code_series(len: usize, domain: &Arc<ExecutionDomain>) -> Result<EncodedSeries> {
     let values: Vec<i32> = (0..len)
         .map(|idx| {
             i32::try_from(idx).map_err(|_| {
@@ -59,11 +54,7 @@ fn positional_code_series(
         .collect::<Result<_>>()?;
     let column = Column::from_slice_in_domain(&values, domain)?;
     let series = Series::from_column(column)?;
-    let series = match name {
-        Some(name) => series.rename(name),
-        None => series,
-    };
-    Ok(EncodedSeries::new(series, decoded_name.map(str::to_string)))
+    Ok(EncodedSeries::new(series))
 }
 
 /// A series of encoded dictionary indices.
@@ -73,12 +64,11 @@ fn positional_code_series(
 #[derive(Clone)]
 pub struct EncodedSeries {
     series: Series,
-    decoded_name: Option<String>,
 }
 
 impl EncodedSeries {
-    pub(crate) fn new(series: Series, decoded_name: Option<String>) -> Self {
-        Self { series, decoded_name }
+    pub(crate) fn new(series: Series) -> Self {
+        Self { series }
     }
 
     pub fn as_series(&self) -> &Series {
@@ -87,10 +77,6 @@ impl EncodedSeries {
 
     pub fn into_series(self) -> Series {
         self.series
-    }
-
-    pub fn decoded_name(&self) -> Option<&str> {
-        self.decoded_name.as_deref()
     }
 }
 
@@ -119,21 +105,9 @@ impl Deref for EncodedSeries {
 pub struct Codebook {
     keys: Series,
     codes: EncodedSeries,
-    fallback_decoded_name: Option<String>,
 }
 
 impl Codebook {
-    pub(crate) fn from_keys_with_fallback(keys: Series, fallback_decoded_name: Option<String>) -> Result<Self> {
-        let code_name = keys.name().map(|name| format!("{name}_codes"));
-        let codes = positional_code_series(
-            keys.len(),
-            keys.as_column().execution_domain(),
-            code_name.as_deref(),
-            fallback_decoded_name.as_deref(),
-        )?;
-        Ok(Self { keys, codes, fallback_decoded_name })
-    }
-
     pub fn from_keys(keys: Series) -> Result<Self> {
         let operation = "codebook::from_keys";
         let distinct_keys = keys.drop_duplicates().map_err(|e| e.with_operation(operation))?;
@@ -145,8 +119,8 @@ impl Codebook {
                 .with_context("remedy", "deduplicate the key series before constructing a reusable Codebook"));
         }
 
-        let fallback_decoded_name = keys.name().map(str::to_string);
-        Self::from_keys_with_fallback(keys, fallback_decoded_name)
+        let codes = positional_code_series(keys.len(), keys.as_column().execution_domain())?;
+        Ok(Self { keys, codes })
     }
 
     pub fn keys(&self) -> &Series {
@@ -169,41 +143,15 @@ impl Codebook {
         let encoded =
             lookup::probe_prevalidated(&values.view()?, &self.keys.view()?, &self.codes.view()?, "codebook::encode")?;
         let encoded = Series::from_column(encoded)?;
-        let encoded = match values.name() {
-            Some(name) => encoded.rename(format!("{name}_codes")),
-            None => encoded,
-        };
-        Ok(EncodedSeries::new(encoded, values.name().map(str::to_string)))
-    }
-
-    pub fn encode_as(&self, values: &Series, output_name: &str) -> Result<EncodedSeries> {
-        let encoded = self.encode(values)?;
-        Ok(EncodedSeries::new(encoded.into_series().rename(output_name), values.name().map(str::to_string)))
+        Ok(EncodedSeries::new(encoded))
     }
 
     pub fn decode(&self, codes: &EncodedSeries) -> Result<Series> {
-        let decoded = self.keys.gather(codes.as_series())?;
-        let name = codes.decoded_name().or(self.fallback_decoded_name.as_deref());
-        Ok(match name {
-            Some(name) => decoded.rename(name),
-            None => decoded,
-        })
-    }
-
-    pub fn decode_as(&self, codes: &EncodedSeries, output_name: &str) -> Result<Series> {
-        self.decode(codes).map(|decoded| decoded.rename(output_name))
+        self.keys.gather(codes.as_series())
     }
 
     pub fn decode_series(&self, codes: &Series) -> Result<Series> {
-        let decoded = self.keys.gather(codes)?;
-        Ok(match self.fallback_decoded_name.as_deref() {
-            Some(name) => decoded.rename(name),
-            None => decoded,
-        })
-    }
-
-    pub fn decode_series_as(&self, codes: &Series, output_name: &str) -> Result<Series> {
-        self.decode_series(codes).map(|decoded| decoded.rename(output_name))
+        self.keys.gather(codes)
     }
 
     pub fn into_parts(self) -> (Series, EncodedSeries) {

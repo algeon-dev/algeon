@@ -14,11 +14,10 @@ use crate::{
 };
 
 impl DataFrame {
-    /// Return a named [`Series`] for the given column — the canonical user-facing accessor.
+    /// Return the [`Series`] values for the given column.
     ///
     /// The returned `Series` shares the underlying `Arc<Column>`, so this is a
-    /// metadata-only operation that does not copy GPU data. The series name is
-    /// set to the DataFrame column name.
+    /// metadata-only operation that does not copy GPU data.
     ///
     /// # Cost
     ///
@@ -32,7 +31,6 @@ impl DataFrame {
     pub fn series(&self, name: &str) -> Result<Series> {
         let col = self.columns.get(name).ok_or_else(|| missing_column_error("dataframe::series", name))?;
         Series::from_column_arc(Arc::clone(col))
-            .map(|series| series.rename(name))
             .map_err(|e| e.with_operation("dataframe::series").with_context("column_name", name.to_string()))
     }
 
@@ -53,7 +51,7 @@ impl DataFrame {
     pub fn get(&self, name: &str) -> Result<Option<Series>> {
         match self.columns.get(name) {
             Some(col) => Series::from_column_arc(Arc::clone(col))
-                .map(|series| Some(series.rename(name)))
+                .map(Some)
                 .map_err(|e| e.with_operation("dataframe::get").with_context("column_name", name.to_string())),
             None => Ok(None),
         }
@@ -71,7 +69,6 @@ impl DataFrame {
     pub fn iter_series(&self) -> impl Iterator<Item = Result<Series>> + '_ {
         self.columns.iter().map(|(name, col)| {
             Series::from_column_arc(Arc::clone(col))
-                .map(|series| series.rename(name))
                 .map_err(|e| e.with_operation("dataframe::iter_series").with_context("column_name", name.clone()))
         })
     }

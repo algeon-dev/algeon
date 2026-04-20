@@ -15,11 +15,7 @@ fn dataframe_ops_with_device_runtime() {
     // Create data and seed with runtime's provenance.
     let ids = crate::common::series::<i32>("id", &[3, 1, 4, 1, 5]).unwrap();
     let scores = crate::common::series::<f64>("score", &[30.0, 10.0, 40.0, 15.0, 50.0]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, scores]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
     let result: Vec<i32> = sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap();

@@ -271,7 +271,7 @@ fn copy_into_domain_timestamp_microseconds() {
     let ts = dur.astype(TypeId::TimestampMicroseconds).unwrap();
     let scalar = ts.min().unwrap();
 
-    let result = rt.named_series_from_scalar("out", &scalar, 2).unwrap();
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = crate::common::series::<i64>("out", &[1_000_000, 1_000_000])
         .unwrap()
         .astype(TypeId::DurationMicroseconds)
@@ -289,7 +289,7 @@ fn copy_into_domain_timestamp_days() {
     let ts = dur.astype(TypeId::TimestampDays).unwrap();
     let scalar = ts.min().unwrap();
 
-    let result = rt.named_series_from_scalar("out", &scalar, 2).unwrap();
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = crate::common::series::<i32>("out", &[100, 100])
         .unwrap()
         .astype(TypeId::DurationDays)
@@ -306,7 +306,7 @@ fn copy_into_domain_duration_seconds() {
     let dur = s.astype(TypeId::DurationSeconds).unwrap();
     let scalar = dur.min().unwrap();
 
-    let result = rt.named_series_from_scalar("out", &scalar, 2).unwrap();
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = crate::common::series::<i64>("out", &[42, 42]).unwrap().astype(TypeId::DurationSeconds).unwrap();
     assert_series_host_export_equivalent(&expected, &result);
 }
@@ -320,7 +320,7 @@ fn copy_into_domain_null_timestamp() {
     let scalar = ts.min().unwrap();
 
     // series_from_scalar with a null scalar produces a column of all nulls
-    let result = rt.named_series_from_scalar("out", &scalar, 3).unwrap();
+    let result = rt.series_from_scalar(&scalar, 3).unwrap();
     let expected = crate::common::nullable_series::<i64>("out", &[0, 0, 0], &[false, false, false])
         .unwrap()
         .astype(TypeId::DurationMicroseconds)
@@ -339,7 +339,7 @@ fn copy_into_domain_decimal64() {
     let dec = s.astype(DataType::fixed_point(TypeId::Decimal64, -2)).unwrap();
     let scalar = dec.min().unwrap();
 
-    let result = rt.named_series_from_scalar("out", &scalar, 2).unwrap();
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = crate::common::series::<i64>("out", &[100, 100])
         .unwrap()
         .astype(DataType::fixed_point(TypeId::Decimal64, -2))
@@ -354,7 +354,7 @@ fn copy_into_domain_decimal128() {
     let dec = s.astype(DataType::fixed_point(TypeId::Decimal128, -3)).unwrap();
     let scalar = dec.min().unwrap();
 
-    let result = rt.named_series_from_scalar("out", &scalar, 2).unwrap();
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = crate::common::series::<i64>("out", &[200, 200])
         .unwrap()
         .astype(DataType::fixed_point(TypeId::Decimal128, -3))
@@ -369,7 +369,7 @@ fn copy_into_domain_numeric_i32_regression() {
     let rt = sample_runtime();
     let scalar = scalar(42i32).unwrap();
 
-    let result = rt.named_series_from_scalar("out", &scalar, 1).unwrap();
+    let result = rt.series_from_scalar(&scalar, 1).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
 }
 
@@ -379,7 +379,7 @@ fn copy_into_domain_string_regression() {
     let scalar = crate::common::string_scalar("hello").unwrap();
 
     // count=2 so an offsets-buffer replication bug (e.g. [0,5,0,5] vs [0,5,10]) is caught.
-    let result = rt.named_series_from_scalar("out", &scalar, 2).unwrap();
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
     assert_eq!(result.to_strings_strict().unwrap(), vec!["hello".to_string(), "hello".to_string()]);
 }
 
@@ -392,12 +392,8 @@ fn scalar_copy_dataframe_round_trip() {
     let ts = s.astype(TypeId::DurationMicroseconds).unwrap().astype(TypeId::TimestampMicroseconds).unwrap();
     let scalar = ts.min().unwrap();
 
-    let series = rt.named_series_from_scalar("ts_col", &scalar, 3).unwrap();
-    let df = cudf::DataFrame::from_columns(::std::iter::IntoIterator::into_iter([series]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let series = rt.series_from_scalar(&scalar, 3).unwrap();
+    let df = cudf::DataFrame::from_columns([("ts_col", series)]).unwrap();
     let retrieved = df.series("ts_col").unwrap();
 
     let expected = crate::common::series::<i64>("ts_col", &[1_000_000, 1_000_000, 1_000_000])
@@ -427,7 +423,7 @@ fn copy_into_domain_list_scalar() {
 
     // libcudf min() on list columns returns the lexicographically smallest element.
     let scalar = list_series.min().unwrap();
-    let result = rt.named_series_from_scalar("out", &scalar, 2).unwrap();
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = read_json_series(
         &rt,
         "scalar_copy_list_expected.jsonl",
@@ -435,8 +431,7 @@ fn copy_into_domain_list_scalar() {
 {\"nested\":[1,2]}
 ",
         "nested",
-    )
-    .rename("out");
+    );
 
     assert_series_host_export_equivalent(&expected, &result);
 }
@@ -455,7 +450,7 @@ fn copy_into_domain_struct_scalar() {
 
     // libcudf min() on struct columns compares fields in order (id first, then label).
     let scalar = struct_series.min().unwrap();
-    let result = rt.named_series_from_scalar("out", &scalar, 2).unwrap();
+    let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = read_json_series(
         &rt,
         "scalar_copy_struct_expected.jsonl",
@@ -463,8 +458,7 @@ fn copy_into_domain_struct_scalar() {
 {\"point\":{\"id\":1,\"label\":\"one\"}}
 ",
         "point",
-    )
-    .rename("out");
+    );
 
     assert_series_host_export_equivalent(&expected, &result);
 }

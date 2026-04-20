@@ -151,7 +151,7 @@ impl DataFrame {
     }
 
     /// Return a zero-based per-group row number for already-sorted rows.
-    pub fn group_cumcount<I, S>(&self, keys: I, name: &str) -> Result<Series>
+    pub fn group_cumcount<I, S>(&self, keys: I) -> Result<Series>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -170,10 +170,13 @@ impl DataFrame {
 
         let row_idx_name = unique_temp_column_name(self, "__cudf_group_cumcount_row_idx__");
         let group_start_name = unique_temp_column_name(self, "__cudf_group_cumcount_group_start__");
-        let row_idx = Series::from_named_column(
-            row_idx_name.clone(),
-            Column::from_sequence_in_domain(0i32, 1i32, self.row_count, Arc::clone(&self.domain), operation)?,
-        )?;
+        let row_idx = Series::from_column(Column::from_sequence_in_domain(
+            0i32,
+            1i32,
+            self.row_count,
+            Arc::clone(&self.domain),
+            operation,
+        )?)?;
         let with_row_idx = self.with_column(&row_idx_name, row_idx)?;
 
         let first_rows = with_row_idx.drop_duplicates(
@@ -184,7 +187,7 @@ impl DataFrame {
         first_row_columns.push(row_idx_name.as_str());
         let first_rows = first_rows.select(first_row_columns)?;
         let first_rows = first_rows
-            .with_column(&group_start_name, first_rows.series(&row_idx_name)?.rename(&group_start_name))?
+            .with_column(&group_start_name, first_rows.series(&row_idx_name)?)?
             .without_columns([row_idx_name.as_str()])?;
 
         let aligned = with_row_idx
@@ -192,6 +195,6 @@ impl DataFrame {
             .sort_values([row_idx_name.as_str()], SortOptions::new().with_stable(true))?;
 
         let rank = aligned.series(&row_idx_name)?.sub(&aligned.series(&group_start_name)?)?;
-        Ok(rank.rename(name))
+        Ok(rank)
     }
 }

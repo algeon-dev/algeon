@@ -127,18 +127,12 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary
     let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
     let values_rt = sample_runtime();
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            df_rt.named_series("id", &[10i32, 20, 30]).unwrap(),
-            df_rt.named_series("score", &[100i32, 200, 300]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = DataFrame::from_columns([
+        ("id", df_rt.series(&[10i32, 20, 30]).unwrap()),
+        ("score", df_rt.series(&[100i32, 200, 300]).unwrap()),
+    ])
     .unwrap();
-    let values = values_rt.named_series("values", &[20i32, 30]).unwrap();
+    let values = values_rt.series(&[20i32, 30]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();
     let expected_exec_mr = df.testing_execution_domain_mr_value();
     crate::common::reset_dependency_observation();

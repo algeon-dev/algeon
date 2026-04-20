@@ -56,20 +56,14 @@ fn df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     let target_rt = sample_runtime();
 
     // Build a DataFrame with a nullable column in domain A.
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            rt_a.named_series("id", &[1i32, 2, 3]).unwrap(),
-            rt_a.named_nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = DataFrame::from_columns([
+        ("id", rt_a.series(&[1i32, 2, 3]).unwrap()),
+        ("val", rt_a.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap()),
+    ])
     .unwrap();
 
     // Fill series in domain B.
-    let fill = rt_b.named_series("fill", &[99i32, 99, 99]).unwrap();
+    let fill = rt_b.series(&[99i32, 99, 99]).unwrap();
 
     let df = df.copy_into_runtime(&target_rt).unwrap();
     let fill = fill.copy_into_runtime(&target_rt).unwrap();
@@ -92,19 +86,13 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
 
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            rt_a.named_series("id", &[1i32, 2, 3]).unwrap(),
-            rt_a.named_nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = DataFrame::from_columns([
+        ("id", rt_a.series(&[1i32, 2, 3]).unwrap()),
+        ("val", rt_a.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap()),
+    ])
     .unwrap();
 
-    let fill = rt_b.named_series("fill", &[99i32, 99, 99]).unwrap();
+    let fill = rt_b.series(&[99i32, 99, 99]).unwrap();
     let expected_mr = df.testing_execution_domain_mr_value();
 
     // Without runtime, mixed domains now succeed under v2.
@@ -123,18 +111,12 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 #[test]
 fn df_fillna_after_copy_into_runtime_same_domain_works() {
     let rt = sample_runtime();
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            rt.named_series("id", &[1i32, 2, 3]).unwrap(),
-            rt.named_nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = DataFrame::from_columns([
+        ("id", rt.series(&[1i32, 2, 3]).unwrap()),
+        ("val", rt.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap()),
+    ])
     .unwrap();
-    let fill = rt.named_series("fill", &[99i32, 99, 99]).unwrap();
+    let fill = rt.series(&[99i32, 99, 99]).unwrap();
 
     obs_reset();
     let result =
@@ -156,8 +138,8 @@ fn series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     let rt_b = sample_runtime();
     let target_rt = sample_runtime();
 
-    let series = rt_a.named_nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap();
-    let fill = rt_b.named_series("fill", &[99i32, 99, 99]).unwrap();
+    let series = rt_a.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap();
+    let fill = rt_b.series(&[99i32, 99, 99]).unwrap();
 
     let series = series.copy_into_runtime(&target_rt).unwrap();
     let fill = fill.copy_into_runtime(&target_rt).unwrap();
@@ -183,8 +165,8 @@ fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
 
-    let series = rt_a.named_nullable_series("val", &[10i32, 0, 30], &[true, false, true]).unwrap();
-    let fill = rt_b.named_series("fill", &[99i32, 99, 99]).unwrap();
+    let series = rt_a.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap();
+    let fill = rt_b.series(&[99i32, 99, 99]).unwrap();
     let expected_mr = series.as_column().testing_execution_domain_mr_value();
 
     // Without runtime, mixed domains now succeed under v2.
@@ -220,13 +202,7 @@ fn runtime_empty_column_retains_explicit_domain() {
 #[test]
 fn runtime_empty_column_in_dataframe_no_mixed_domain_error() {
     let rt = sample_runtime();
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([rt.named_series("id", &[1i32; 0]).unwrap()]).map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
-    .unwrap();
+    let df = DataFrame::from_columns([("id", rt.series(&[1i32; 0]).unwrap())]).unwrap();
     let empty_col = rt.empty_column(TypeId::Int64).unwrap();
 
     // Adding an empty column in the same domain should succeed without
@@ -246,7 +222,7 @@ fn runtime_column_from_device_ptr_retains_explicit_domain() {
     let rt = sample_runtime();
 
     // Allocate some device memory via a Series (easiest way to get a device ptr).
-    let source = rt.named_series("src", &[10i32, 20, 30]).unwrap();
+    let source = rt.series(&[10i32, 20, 30]).unwrap();
     let device_ptr = source.testing_view().unwrap().device_data_ptr().unwrap();
 
     obs_reset();
@@ -266,7 +242,7 @@ fn runtime_column_from_device_ptr_uses_ex_ffi() {
     let default_mr = obs_current_device_resource() as usize;
 
     // Allocate source data in the runtime's domain.
-    let source = rt.named_series("src", &[1i64, 2, 3, 4]).unwrap();
+    let source = rt.series(&[1i64, 2, 3, 4]).unwrap();
     let device_ptr = source.testing_view().unwrap().device_data_ptr().unwrap();
 
     obs_reset();

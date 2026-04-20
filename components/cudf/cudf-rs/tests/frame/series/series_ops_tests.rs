@@ -90,7 +90,7 @@ fn test_series_add_ref_owned() {
     assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
 }
 
-// -- naming behavior: Series op Series produces unnamed result --
+// -- output contract: Series formatting never exposes schema names --
 
 #[test]
 fn test_series_op_series_produces_unnamed_result() {
@@ -98,7 +98,12 @@ fn test_series_op_series_produces_unnamed_result() {
     let b = crate::common::series::<i32>("named_b", &[10, 20, 30]).unwrap();
 
     let result = (&a + &b).unwrap();
-    assert_eq!(result.name(), None);
+    let output = format!("{}", result);
+    assert!(
+        !output.contains("named_a") && !output.contains("named_b"),
+        "series + series output should not expose schema names: {}",
+        output
+    );
 }
 
 // -- dtype promotion --
@@ -169,24 +174,25 @@ fn test_series_mul_scalar_owned_operator() {
     assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
-// -- naming behavior: Series op scalar inherits Series name --
+// -- output contract: scalar ops also omit schema names in Series formatting --
 
 #[test]
-fn test_series_op_scalar_inherits_name() {
+fn test_series_op_scalar_display_omits_input_name() {
     let s = crate::common::series::<f64>("my_col", &[1.0, 2.0, 3.0]).unwrap();
 
     let result = (&s * 2.0_f64).unwrap();
-    assert_eq!(result.name(), Some("my_col"));
+    let output = format!("{}", result);
+    assert!(!output.contains("my_col"), "series * scalar output should not expose schema names: {}", output);
 }
 
 #[test]
 fn test_series_op_scalar_unnamed_stays_unnamed() {
-    // from_column produces an unnamed Series (name = None).
+    // from_column produces an unnamed Series.
     let unnamed = Series::from_column(column_from_slice(&[1i32, 2, 3]).unwrap()).unwrap();
-    assert_eq!(unnamed.name(), None);
 
     let result = (&unnamed + 10_i32).unwrap();
-    assert_eq!(result.name(), None);
+    let output = format!("{}", result);
+    assert!(!output.contains("name="), "unnamed series output should stay unnamed: {}", output);
 }
 
 // ===========================================================================
@@ -269,22 +275,24 @@ fn test_scalar_mul_owned_series_operator() {
     assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
-// -- naming behavior: scalar op Series inherits Series name --
+// -- output contract: scalar-on-series formatting omits schema names --
 
 #[test]
-fn test_scalar_op_series_inherits_name() {
+fn test_scalar_op_series_display_omits_input_name() {
     let s = crate::common::series::<f64>("my_col", &[1.0, 2.0]).unwrap();
 
     let result = (2.0_f64 * &s).unwrap();
-    assert_eq!(result.name(), Some("my_col"));
+    let output = format!("{}", result);
+    assert!(!output.contains("my_col"), "scalar * series output should not expose schema names: {}", output);
 }
 
 #[test]
-fn test_scalar_sub_series_inherits_name() {
+fn test_scalar_sub_series_display_omits_input_name() {
     let s = crate::common::series::<f64>("revenue", &[100.0, 200.0]).unwrap();
 
     let result = (1000.0_f64 - &s).unwrap();
-    assert_eq!(result.name(), Some("revenue"));
+    let output = format!("{}", result);
+    assert!(!output.contains("revenue"), "scalar - series output should not expose schema names: {}", output);
 }
 
 // ===========================================================================
@@ -441,15 +449,21 @@ fn test_series_rem_produces_unnamed_result() {
     let b = crate::common::series::<i32>("named_b", &[3]).unwrap();
 
     let result = (&a % &b).unwrap();
-    assert_eq!(result.name(), None);
+    let output = format!("{}", result);
+    assert!(
+        !output.contains("named_a") && !output.contains("named_b"),
+        "series % series output should not expose schema names: {}",
+        output
+    );
 }
 
 #[test]
-fn test_series_rem_scalar_inherits_name() {
+fn test_series_rem_scalar_display_omits_input_name() {
     let s = crate::common::series::<i32>("my_col", &[10, 23]).unwrap();
 
     let result = (&s % 3_i32).unwrap();
-    assert_eq!(result.name(), Some("my_col"));
+    let output = format!("{}", result);
+    assert!(!output.contains("my_col"), "series % scalar output should not expose schema names: {}", output);
 }
 
 #[test]
@@ -506,11 +520,12 @@ fn test_series_neg_owned() {
 }
 
 #[test]
-fn test_series_neg_inherits_name() {
+fn test_series_neg_display_omits_input_name() {
     let s = crate::common::series::<i32>("my_col", &[1, 2]).unwrap();
 
     let result = (-&s).unwrap();
-    assert_eq!(result.name(), Some("my_col"));
+    let output = format!("{}", result);
+    assert!(!output.contains("my_col"), "negated series output should not expose schema names: {}", output);
 }
 
 // ===========================================================================
@@ -537,11 +552,12 @@ fn test_series_not_owned() {
 }
 
 #[test]
-fn test_series_not_inherits_name() {
+fn test_series_not_display_omits_input_name() {
     let s = crate::common::series::<bool>("flags", &[true, false]).unwrap();
 
     let result = (!&s).unwrap();
-    assert_eq!(result.name(), Some("flags"));
+    let output = format!("{}", result);
+    assert!(!output.contains("flags"), "logical-not series output should not expose schema names: {}", output);
 }
 
 #[test]
@@ -551,7 +567,6 @@ fn test_series_logical_and_method_bool() {
 
     let result = a.logical_and(&b).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(result.name(), None);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
 }
 
@@ -562,7 +577,6 @@ fn test_series_logical_or_method_bool() {
 
     let result = a.logical_or(&b).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(result.name(), None);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
 }
 
@@ -584,7 +598,6 @@ fn test_series_rem_scalar_method() {
     let s = crate::common::series::<i32>("x", &[10, 23]).unwrap();
 
     let result = s.rem_scalar(3i32).unwrap();
-    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2]);
 }
 

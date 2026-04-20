@@ -36,11 +36,7 @@ fn sort_preserves_schema_names_and_lengths() {
     // sort internally resolves column names and builds table views.
     let names_col = crate::common::series::<i32>("a", &[3, 1, 2]).unwrap();
     let vals_col = crate::common::series::<i64>("b", &[30, 10, 20]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([names_col, vals_col]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("a", names_col), ("b", vals_col)]).unwrap();
 
     let sorted = df.sort_values(["a"], cudf::SortOptions::new()).unwrap();
 
@@ -59,11 +55,7 @@ fn reassembly_after_drop_duplicates_preserves_schema() {
     // drop_duplicates internally uses resolve + reassemble helpers.
     let a = crate::common::series::<i32>("x", &[1, 1, 2, 2, 3]).unwrap();
     let b = crate::common::series::<i64>("y", &[10, 10, 20, 20, 30]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a, b]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("x", a), ("y", b)]).unwrap();
 
     let distinct = df
         .drop_duplicates(
@@ -84,11 +76,7 @@ fn reassembly_after_drop_duplicates_preserves_schema() {
 fn sort_with_missing_column_returns_error() {
     // resolve_column_names should produce a clear error for unknown columns.
     let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("a", a)]).unwrap();
 
     let err = df.sort_values(["nonexistent"], cudf::SortOptions::new()).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
@@ -103,19 +91,11 @@ fn join_reassembly_preserves_schema_names() {
     // join internally uses reassembly helpers to rebuild DataFrames.
     let left_key = crate::common::series::<i32>("key", &[1, 2, 3]).unwrap();
     let left_val = crate::common::series::<f64>("lval", &[10.0, 20.0, 30.0]).unwrap();
-    let left = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([left_key, left_val]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let left = DataFrame::from_columns([("key", left_key), ("lval", left_val)]).unwrap();
 
     let right_key = crate::common::series::<i32>("key", &[2, 3, 4]).unwrap();
     let right_val = crate::common::series::<f64>("rval", &[200.0, 300.0, 400.0]).unwrap();
-    let right = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([right_key, right_val]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let right = DataFrame::from_columns([("key", right_key), ("rval", right_val)]).unwrap();
 
     let opts = cudf::MergeOptions::new().on(["key"]).how_inner();
     let joined = left.merge(&right, opts).unwrap();

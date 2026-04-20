@@ -1,4 +1,4 @@
-//! Integration tests for `Series` — the named, Arc-shared GPU column wrapper.
+//! Integration tests for `Series` — the Arc-shared GPU column wrapper.
 //!
 //! All tests require a GPU.
 
@@ -68,45 +68,10 @@ fn test_new_nullable_strs_rejects_mismatched_validity_length() {
     assert_eq!(err.operation(), "column::from_strs_nullable_with_runtime");
 }
 
-// ---------------------------------------------------------------------------
-// Name accessors
-// ---------------------------------------------------------------------------
-
 #[test]
-fn test_name_returns_constructor_name() {
-    let s = crate::common::series::<i32>("my_col", &[1]).unwrap();
-    assert_eq!(s.name(), Some("my_col"));
-}
-
-#[test]
-fn test_from_column_has_no_name() {
+fn test_from_column_constructor() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let s = Series::from_column(col).unwrap();
-    assert_eq!(s.name(), None);
-}
-
-// ---------------------------------------------------------------------------
-// rename returns new Series, original unchanged
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_rename_returns_new_series() {
-    let s = crate::common::series::<i32>("old", &[1, 2, 3]).unwrap();
-    let renamed = s.rename("new");
-
-    assert_eq!(renamed.name(), Some("new"));
-    assert_eq!(s.name(), Some("old")); // original unchanged
-}
-
-#[test]
-fn test_rename_shares_arc() {
-    let s = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
-    let renamed = s.rename("b");
-
-    // Both should point to the same GPU data (Arc sharing).
-    let ptr_orig = s.testing_view().unwrap().device_data_ptr().unwrap();
-    let ptr_renamed = renamed.testing_view().unwrap().device_data_ptr().unwrap();
-    assert_eq!(ptr_orig, ptr_renamed);
+    let _ = Series::from_column(col).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +88,6 @@ fn test_clone_shares_gpu_data() {
     assert_eq!(ptr_s, ptr_cloned);
 
     // Both are independently usable.
-    assert_eq!(cloned.name(), Some("vals"));
     assert_eq!(cloned.len(), 2);
 }
 
@@ -135,8 +99,6 @@ fn test_clone_shares_gpu_data() {
 fn test_from_column_round_trip() {
     let col = column_from_slice(&[5i32, 10, 15]).unwrap();
     let s = Series::from_column(col).unwrap();
-
-    assert_eq!(s.name(), None);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(s.len(), 3);
 
@@ -184,7 +146,6 @@ fn test_gt_scalar_i32() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.len(), 3);
-    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, false, true]);
 }
 
@@ -194,7 +155,6 @@ fn test_lt_scalar_f64() {
     let mask = s.lt_scalar(5.0f64).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("y"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
 }
 
@@ -204,7 +164,6 @@ fn test_eq_scalar_i32() {
     let mask = s.eq_scalar(2i32).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("z"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true, false]);
 }
 
@@ -214,7 +173,6 @@ fn test_eq_scalar_string() {
     let mask = s.eq_scalar("active").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("status"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
@@ -224,7 +182,6 @@ fn test_ne_scalar_string() {
     let mask = s.ne_scalar("active").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("status"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
@@ -235,7 +192,6 @@ fn test_gt_scalar_string() {
     let mask = s.gt_scalar("apple").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("fruit"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
@@ -245,7 +201,6 @@ fn test_lt_scalar_string() {
     let mask = s.lt_scalar("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("fruit"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
 }
 
@@ -255,7 +210,6 @@ fn test_ge_scalar_string() {
     let mask = s.ge_scalar("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("fruit"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
@@ -265,7 +219,6 @@ fn test_le_scalar_string() {
     let mask = s.le_scalar("banana").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("fruit"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, false]);
 }
 
@@ -275,7 +228,6 @@ fn test_gt_scalar_preserves_input() {
     let _mask = s.gt_scalar(2i32).unwrap();
 
     // Original series is unchanged.
-    assert_eq!(s.name(), Some("x"));
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
@@ -289,7 +241,6 @@ fn test_ne_scalar_i32() {
     let mask = s.ne_scalar(2i32).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
@@ -299,7 +250,6 @@ fn test_ge_scalar_i32() {
     let mask = s.ge_scalar(5i32).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
@@ -309,7 +259,6 @@ fn test_le_scalar_i32() {
     let mask = s.le_scalar(5i32).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, false]);
 }
 
@@ -324,7 +273,6 @@ fn test_eq_series() {
     let mask = a.eq(&b).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), None);
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
@@ -398,8 +346,6 @@ fn test_add_series() {
     let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
     let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
     let result = a.add(&b).unwrap();
-
-    assert_eq!(result.name(), None);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }
@@ -438,8 +384,6 @@ fn test_div_series_f64() {
 fn test_add_scalar_i32() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let result = s.add_scalar(10i32).unwrap();
-
-    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![11, 12, 13]);
 }
@@ -448,8 +392,6 @@ fn test_add_scalar_i32() {
 fn test_sub_scalar_i32() {
     let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let result = s.sub_scalar(5i32).unwrap();
-
-    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![5, 15, 25]);
 }
 
@@ -457,8 +399,6 @@ fn test_sub_scalar_i32() {
 fn test_mul_scalar_f64() {
     let s = crate::common::series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
     let result = s.mul_scalar(2.0f64).unwrap();
-
-    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
@@ -466,8 +406,6 @@ fn test_mul_scalar_f64() {
 fn test_div_scalar_f64() {
     let s = crate::common::series::<f64>("x", &[10.0, 20.0, 30.0]).unwrap();
     let result = s.div_scalar(5.0f64).unwrap();
-
-    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
@@ -488,8 +426,6 @@ fn test_add_operator_with_borrowed_operands() {
     let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
 
     let result = (&a + &b).unwrap();
-
-    assert_eq!(result.name(), None);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }
 

@@ -143,10 +143,7 @@ impl DataFrame {
             })?;
             let nulls = Column::nulls_in_domain(*dtype, self.row_count, &self.domain, operation)
                 .map_err(|e| e.with_operation(operation))?;
-            columns.push((
-                name.clone(),
-                Series::from_column(nulls).map_err(|e| e.with_operation(operation))?.rename(name),
-            ));
+            columns.push((name.clone(), Series::from_column(nulls).map_err(|e| e.with_operation(operation))?));
         }
 
         DataFrame::from_columns(columns).map_err(|e| e.with_operation(operation))

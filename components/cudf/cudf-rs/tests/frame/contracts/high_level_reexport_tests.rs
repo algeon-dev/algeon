@@ -41,11 +41,11 @@ fn runtime_first_factories_smoke() {
     use cudf::{Runtime, TypeId};
 
     let rt = Runtime::builder().build().unwrap();
-    let ints = rt.named_series("ints", &[1i32, 2, 3]).unwrap();
-    let nullable = rt.named_nullable_series("nullable", &[10i32, 0, 30], &[true, false, true]).unwrap();
-    let strings = rt.named_series("names", &["alice", "bob"]).unwrap();
-    let nulls = rt.named_nulls("missing", TypeId::Int32, 2).unwrap();
-    let repeated = rt.named_series_from_scalar("seed", &rt.scalar(7i32).unwrap(), 3).unwrap();
+    let ints = rt.series(&[1i32, 2, 3]).unwrap();
+    let nullable = rt.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap();
+    let strings = rt.series(&["alice", "bob"]).unwrap();
+    let nulls = rt.nulls(TypeId::Int32, 2).unwrap();
+    let repeated = rt.series_from_scalar(&rt.scalar(7i32).unwrap(), 3).unwrap();
 
     assert_eq!(ints.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(nullable.to_optional_vec::<i32>().unwrap(), vec![Some(10), None, Some(30)]);
@@ -67,7 +67,6 @@ fn factorization_surface_smoke() {
     assert_factorized_types(&factorized, factorized.codebook(), factorized.row_codes());
 
     let decoded = factorized.decode().unwrap();
-    assert_eq!(decoded.name(), Some("kind"));
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["a", "b", "a"]);
 
     let first_seen =
@@ -85,8 +84,6 @@ fn lookup_table_is_publicly_reexported() {
     let input = crate::common::series("vertex", &["u2", "u9"]).unwrap();
 
     let probed = table.probe(&input).unwrap();
-
-    assert_eq!(probed.name(), Some("label"));
     assert_eq!(probed.to_optional_strings().unwrap(), vec![Some("bob".to_string()), None]);
 }
 

@@ -184,8 +184,6 @@ fn test_factorize_returns_typed_result() {
     let factorized = df.factorize("id").unwrap();
     assert_eq!(factorized.row_codes().len(), 5);
     assert_eq!(factorized.codebook().len(), 5); // all values are unique
-    assert_eq!(factorized.row_codes().name(), Some("id_codes"));
-    assert_eq!(factorized.codebook().keys().name(), Some("id_keys"));
 }
 
 #[test]
@@ -281,16 +279,14 @@ fn test_advanced_filter_isin_still_works_via_view_and_ops() {
 }
 
 // ===========================================================================
-// 7. runtime.named_sequence(name, start, step, len)
+// 7. runtime.sequence(start, step, len)
 // ===========================================================================
 
 #[test]
 fn test_runtime_sequence_creates_device_side_fixed_width_series() {
     let rt = sample_runtime();
 
-    let seq = rt.named_sequence("row_idx", 0i32, 1i32, 5).unwrap();
-
-    assert_eq!(seq.name(), Some("row_idx"));
+    let seq = rt.sequence(0i32, 1i32, 5).unwrap();
     assert_eq!(seq.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 3, 4]);
 }
 
@@ -298,7 +294,7 @@ fn test_runtime_sequence_creates_device_side_fixed_width_series() {
 fn test_runtime_sequence_uses_runtime_execution_domain() {
     let rt = sample_runtime();
 
-    let seq = rt.named_sequence("row_idx", 3i32, 2i32, 4).unwrap();
+    let seq = rt.sequence(3i32, 2i32, 4).unwrap();
 
     assert_eq!(seq.as_column().testing_execution_domain_id(), rt.testing_execution_domain_id());
     assert_eq!(seq.to_vec_strict::<i32>().unwrap(), vec![3, 5, 7, 9]);

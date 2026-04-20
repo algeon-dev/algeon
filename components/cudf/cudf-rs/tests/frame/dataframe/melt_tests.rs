@@ -18,11 +18,7 @@ fn test_melt_single_value_var() {
     let a = crate::common::series("A", &["a", "b", "c"]).unwrap();
     let b = crate::common::series::<i32>("B", &[1, 3, 5]).unwrap();
     let c = crate::common::series::<i32>("C", &[2, 4, 6]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![a, b, c]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b), ("C", c)]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).build();
     let result = df.melt(opts).unwrap();
@@ -47,11 +43,7 @@ fn test_melt_multiple_value_vars() {
     let a = crate::common::series("A", &["a", "b", "c"]).unwrap();
     let b = crate::common::series::<i32>("B", &[1, 3, 5]).unwrap();
     let c = crate::common::series::<i32>("C", &[2, 4, 6]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![a, b, c]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b), ("C", c)]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B", "C"]).build();
     let result = df.melt(opts).unwrap();
@@ -74,11 +66,7 @@ fn test_melt_multiple_value_vars() {
 fn test_melt_custom_var_value_names() {
     let a = crate::common::series("A", &["x"]).unwrap();
     let b = crate::common::series::<i32>("B", &[10]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![a, b]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b)]).unwrap();
 
     let opts =
         MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).var_name("my_var").value_name("my_val").build();
@@ -99,11 +87,7 @@ fn test_melt_default_value_vars() {
     let a = crate::common::series("A", &["x", "y"]).unwrap();
     let b = crate::common::series::<i32>("B", &[1, 2]).unwrap();
     let c = crate::common::series::<i32>("C", &[3, 4]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![a, b, c]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b), ("C", c)]).unwrap();
 
     // Only id_vars specified → value_vars = [B, C]
     let opts = MeltOptions::builder().id_vars(&["A"]).build();
@@ -121,11 +105,7 @@ fn test_melt_default_value_vars() {
 fn test_melt_no_id_vars() {
     let b = crate::common::series::<i32>("B", &[1, 2]).unwrap();
     let c = crate::common::series::<i32>("C", &[3, 4]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![b, c]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("B", b), ("C", c)]).unwrap();
 
     let opts = MeltOptions::builder().value_vars(&["B", "C"]).build();
     let result = df.melt(opts).unwrap();
@@ -142,11 +122,7 @@ fn test_melt_no_id_vars() {
 fn test_melt_preserves_nulls_in_values() {
     let a = crate::common::series("A", &["x", "y"]).unwrap();
     let b = crate::common::nullable_series::<i32>("B", &[1, 0], &[true, false]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![a, b]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b)]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).build();
     let result = df.melt(opts).unwrap();
@@ -165,11 +141,7 @@ fn test_melt_preserves_nulls_in_values() {
 fn test_melt_empty_dataframe() {
     let a = crate::common::series::<&str>("A", &[]).unwrap();
     let b = crate::common::series::<i32>("B", &[]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![a, b]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b)]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).build();
     let result = df.melt(opts).unwrap();
@@ -182,11 +154,7 @@ fn test_melt_empty_dataframe() {
 fn test_melt_all_columns_as_id_vars_returns_empty_long_frame() {
     let a = crate::common::series("A", &["x", "y"]).unwrap();
     let b = crate::common::series::<i32>("B", &[1, 2]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![a, b]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b)]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A", "B"]).build();
     let result = df.melt(opts).unwrap();
@@ -204,11 +172,7 @@ fn test_melt_single_row() {
     let a = crate::common::series("A", &["x"]).unwrap();
     let b = crate::common::series::<i32>("B", &[10]).unwrap();
     let c = crate::common::series::<i32>("C", &[20]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![a, b, c]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b), ("C", c)]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B", "C"]).build();
     let result = df.melt(opts).unwrap();
@@ -219,11 +183,7 @@ fn test_melt_single_row() {
 #[test]
 fn test_melt_missing_id_var_returns_error() {
     let b = crate::common::series::<i32>("B", &[1]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![b]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("B", b)]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["nonexistent"]).value_vars(&["B"]).build();
     let err = df.melt(opts).unwrap_err();
@@ -233,11 +193,7 @@ fn test_melt_missing_id_var_returns_error() {
 #[test]
 fn test_melt_missing_value_var_returns_error() {
     let a = crate::common::series::<i32>("A", &[1]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter(vec![a]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("A", a)]).unwrap();
 
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["nonexistent"]).build();
     let err = df.melt(opts).unwrap_err();

@@ -295,13 +295,9 @@ fn assert_two_numeric_columns_table(table: &Table) {
 }
 
 fn named_numeric_frame(runtime: &Runtime) -> DataFrame {
-    let ids = runtime.named_series("id", &[1i32, 2, 3]).unwrap();
-    let values = runtime.named_series("value", &[10i64, 20, 30]).unwrap();
-    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, values]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap()
+    let ids = runtime.series(&[1i32, 2, 3]).unwrap();
+    let values = runtime.series(&[10i64, 20, 30]).unwrap();
+    DataFrame::from_columns([("id", ids), ("value", values)]).unwrap()
 }
 
 fn assert_named_numeric_dataframe(imported: &DataFrame, left_name: &str, right_name: &str) {
@@ -317,12 +313,8 @@ fn dictionary_backed_nested_frame(filename: &str, rows: &str) -> DataFrame {
     let point = frame.series("point").unwrap();
     let id = frame.series("id").unwrap();
     let encoded = dictionary::encode(&category.testing_view().unwrap(), TypeId::Int32).unwrap();
-    let category = Series::from_column(encoded).unwrap().rename("category");
-    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([category, nested, point, id]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap()
+    let category = Series::from_column(encoded).unwrap();
+    DataFrame::from_columns([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap()
 }
 
 fn owned_table_transfer_with_root_names(transfer: OwnedTableTransfer, names: Vec<String>) -> OwnedTableTransfer {
@@ -376,8 +368,6 @@ mod column_import_contracts {
         let imported = reset_exec_observation(|| {
             Series::try_import_from_borrowed_column_view_into_runtime(&borrowed, &destination_runtime).unwrap()
         });
-
-        assert_eq!(imported.name(), None);
         assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
         assert_column_imported_into_runtime(imported.as_column(), &destination_runtime);
     }
@@ -409,8 +399,6 @@ mod column_import_contracts {
         let imported = reset_exec_observation(|| {
             Series::try_import_from_prepared_column_export_into_runtime(&export, &destination_runtime).unwrap()
         });
-
-        assert_eq!(imported.name(), None);
         assert_eq!(imported.to_strings_strict().unwrap(), vec!["one", "two", "three"]);
         assert_column_imported_into_runtime(imported.as_column(), &destination_runtime);
     }
@@ -443,8 +431,6 @@ mod column_import_contracts {
         let transfer = column.try_into_owned_transfer().unwrap();
         let imported =
             Series::try_import_from_owned_device_column_transfer_into_runtime(transfer, &destination_runtime).unwrap();
-
-        assert_eq!(imported.name(), None);
         assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
         assert_eq!(imported.as_column().testing_view().unwrap().device_data_ptr().unwrap(), expected_ptr);
         assert_column_bound_to_runtime(imported.as_column(), &destination_runtime);
@@ -691,15 +677,10 @@ mod table_import_contracts {
         let category_source = frame.series("category").unwrap().as_column().deep_copy().unwrap();
         let category =
             Series::from_column(dictionary::encode(&category_source.testing_view().unwrap(), TypeId::Int32).unwrap())
-                .unwrap()
-                .rename("category");
-        let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([name, lists, point, category]).map(
-            |series| {
-                let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-                (name, series)
-            },
-        ))
-        .unwrap();
+                .unwrap();
+        let frame =
+            DataFrame::from_columns([("name", name), ("lists", lists), ("point", point), ("category", category)])
+                .unwrap();
         let destination_runtime = common::sample_runtime();
 
         let prepared_source = frame.clone();

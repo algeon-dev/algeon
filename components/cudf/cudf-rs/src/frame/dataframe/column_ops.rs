@@ -52,8 +52,7 @@ impl DataFrame {
     /// Return a new DataFrame with a single column added or replaced.
     ///
     /// The `name` parameter controls the column name in the resulting
-    /// DataFrame. The input's own [`Series::name()`] is **ignored** —
-    /// DataFrame is the schema authority for column naming.
+    /// DataFrame. `DataFrame` is the schema authority for column naming.
     ///
     /// Use [`assign`](Self::assign) for batch addition of multiple columns,
     /// or [`with_columns`](Self::with_columns) for expression-based computed
@@ -95,9 +94,8 @@ impl DataFrame {
     /// Return a new DataFrame with multiple columns added or replaced from
     /// `(name, Series)` pairs.
     ///
-    /// The pair key controls the column name in the resulting DataFrame. The
-    /// input Series' own [`Series::name()`] is **ignored** — DataFrame is the
-    /// schema authority for column naming.
+    /// The pair key controls the column name in the resulting DataFrame.
+    /// `DataFrame` is the schema authority for column naming.
     ///
     /// For each pair, if `name` already exists the column is replaced;
     /// otherwise it is appended. All unchanged columns are shared via

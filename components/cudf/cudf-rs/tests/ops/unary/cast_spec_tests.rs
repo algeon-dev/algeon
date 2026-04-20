@@ -158,14 +158,15 @@ fn test_cast_same_type() {
 }
 
 // ===========================================================================
-// Name preservation
+// Series display omits schema names
 // ===========================================================================
 
 #[test]
-fn test_cast_preserves_name() {
+fn test_cast_display_omits_input_name() {
     let s = crate::common::series::<i32>("my_column", &[1, 2]).unwrap();
     let result = s.astype(TypeId::Float64).unwrap();
-    assert_eq!(result.name(), Some("my_column"));
+    let output = format!("{}", result);
+    assert!(!output.contains("my_column"), "cast output should not expose schema names: {}", output);
 }
 
 // ===========================================================================
@@ -227,7 +228,6 @@ fn test_to_datetime_default_microseconds() {
     let s = crate::common::series::<i64>("ts", &[0, 1_000_000]).unwrap();
     let result = s.to_datetime(None).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::TimestampMicroseconds);
-    assert_eq!(result.name(), Some("ts"));
 }
 
 #[test]
@@ -278,7 +278,6 @@ fn test_to_numeric_f64_to_i64() {
     let s = crate::common::series::<f64>("x", &[1.9, 2.0, 3.1]).unwrap();
     let result = s.to_numeric(TypeId::Int64).unwrap();
     assert_eq!(result.to_vec_strict::<i64>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(result.name(), Some("x"));
 }
 
 #[test]

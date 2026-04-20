@@ -300,7 +300,7 @@ impl Series {
 
     // -- Scan (cumulative) operations ----------------------------------------
 
-    /// Inclusive cumulative sum. Inherits the source Series' name.
+    /// Inclusive cumulative sum.
     ///
     /// Nulls are excluded from the running total (filled with null in output).
     ///
@@ -316,7 +316,7 @@ impl Series {
         )
     }
 
-    /// Inclusive cumulative minimum. Inherits the source Series' name.
+    /// Inclusive cumulative minimum.
     pub fn cummin(&self) -> Result<Series> {
         self.scan_with_context(
             ScanAgg::Min,
@@ -327,7 +327,7 @@ impl Series {
         )
     }
 
-    /// Inclusive cumulative maximum. Inherits the source Series' name.
+    /// Inclusive cumulative maximum.
     pub fn cummax(&self) -> Result<Series> {
         self.scan_with_context(
             ScanAgg::Max,
@@ -338,7 +338,7 @@ impl Series {
         )
     }
 
-    /// Inclusive cumulative product. Inherits the source Series' name.
+    /// Inclusive cumulative product.
     pub fn cumprod(&self) -> Result<Series> {
         self.scan_with_context(
             ScanAgg::Product,
@@ -351,7 +351,7 @@ impl Series {
 
     // -- Unary operations ----------------------------------------------------
 
-    /// Element-wise NaN check. Returns a `BOOL8` mask. Inherits name.
+    /// Element-wise NaN check. Returns a `BOOL8` mask.
     ///
     /// Only meaningful for float types; integer types will return all `false`.
     ///
@@ -361,12 +361,12 @@ impl Series {
         self.is_nan_with_context(&default_execution_context(), "series::is_nan")
     }
 
-    /// Element-wise not-NaN check. Returns a `BOOL8` mask. Inherits name.
+    /// Element-wise not-NaN check. Returns a `BOOL8` mask.
     pub fn is_not_nan(&self) -> Result<Series> {
         self.is_not_nan_with_context(&default_execution_context(), "series::is_not_nan")
     }
 
-    /// Element-wise absolute value. Inherits the source Series' name.
+    /// Element-wise absolute value.
     ///
     /// # Cost
     /// GPU-allocating: produces a new column.
@@ -374,7 +374,7 @@ impl Series {
         self.unary_with_context(UnaryOperator::Abs, &default_execution_context(), "series::abs")
     }
 
-    /// Element-wise arithmetic negation. Inherits the source Series' name.
+    /// Element-wise arithmetic negation.
     ///
     /// # Cost
     /// GPU-allocating: produces a new column.
@@ -382,8 +382,7 @@ impl Series {
         self.unary_with_context(UnaryOperator::Negate, &default_execution_context(), "series::neg")
     }
 
-    /// Element-wise logical NOT for `Bool8` columns. Inherits the source
-    /// Series' name.
+    /// Element-wise logical NOT for `Bool8` columns.
     ///
     /// # Cost
     /// GPU-allocating: produces a new BOOL8 column.

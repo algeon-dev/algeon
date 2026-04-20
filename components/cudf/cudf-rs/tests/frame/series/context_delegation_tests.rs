@@ -10,13 +10,11 @@ use cudf::{ExecutionOverrides, Series, SortOptions, TypeId, testing::prelude::*}
 use crate::common::{last_exec_mr_value, last_exec_stream_value, reset_exec_observation, sample_runtime};
 
 fn assert_i32_series_eq(lhs: &Series, rhs: &Series) {
-    assert_eq!(lhs.name(), rhs.name());
     assert_eq!(lhs.dtype().unwrap().id(), rhs.dtype().unwrap().id());
     assert_eq!(lhs.to_optional_vec::<i32>().unwrap(), rhs.to_optional_vec::<i32>().unwrap());
 }
 
 fn assert_bool_series_eq(lhs: &Series, rhs: &Series) {
-    assert_eq!(lhs.name(), rhs.name());
     assert_eq!(lhs.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(rhs.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(lhs.to_optional_vec::<bool>().unwrap(), rhs.to_optional_vec::<bool>().unwrap());
@@ -25,12 +23,11 @@ fn assert_bool_series_eq(lhs: &Series, rhs: &Series) {
 #[test]
 fn default_series_transform_ops_match_empty_execution_context() {
     let rt = sample_runtime();
-    let values = rt.named_series("x", &[3i32, 1, 2, 1]).unwrap();
-    let maybe = rt.named_series_opt("maybe", &[Some(3i32), None, Some(2), None]).unwrap();
-    let gather_map = rt.named_series("idx", &[2i32, 0]).unwrap();
-    let filter_mask =
-        rt.named_nullable_series("mask", &[true, false, true, false], &[true, true, true, false]).unwrap();
-    let fill_values = rt.named_series("fill", &[9i32, 8, 7, 6]).unwrap();
+    let values = rt.series(&[3i32, 1, 2, 1]).unwrap();
+    let maybe = rt.series_opt(&[Some(3i32), None, Some(2), None]).unwrap();
+    let gather_map = rt.series(&[2i32, 0]).unwrap();
+    let filter_mask = rt.nullable_series(&[true, false, true, false], &[true, true, true, false]).unwrap();
+    let fill_values = rt.series(&[9i32, 8, 7, 6]).unwrap();
     let ctx = ExecutionOverrides::new();
 
     let expected_stream = values.as_column().testing_execution_domain_stream_value();
@@ -66,13 +63,11 @@ fn default_series_transform_ops_match_empty_execution_context() {
 #[test]
 fn default_series_numeric_boolean_and_reduction_ops_match_empty_execution_context() {
     let rt = sample_runtime();
-    let ints = rt.named_series("x", &[3i32, 1, 2, 1]).unwrap();
-    let rhs = rt.named_series("rhs", &[10i32, 20, 30, 40]).unwrap();
-    let bools = rt.named_series("flag", &[true, false, true, true]).unwrap();
-    let bools_rhs = rt.named_series("other_flag", &[true, true, false, true]).unwrap();
-    let floats = rt
-        .named_nullable_series("floats", &[1.0f64, f64::NAN, 0.0, f64::NAN, 2.0], &[true, true, false, true, true])
-        .unwrap();
+    let ints = rt.series(&[3i32, 1, 2, 1]).unwrap();
+    let rhs = rt.series(&[10i32, 20, 30, 40]).unwrap();
+    let bools = rt.series(&[true, false, true, true]).unwrap();
+    let bools_rhs = rt.series(&[true, true, false, true]).unwrap();
+    let floats = rt.nullable_series(&[1.0f64, f64::NAN, 0.0, f64::NAN, 2.0], &[true, true, false, true, true]).unwrap();
     let ctx = ExecutionOverrides::new();
 
     assert_i32_series_eq(&ints.add(&rhs).unwrap(), &ints.add_in(&rhs, &ctx).unwrap());
@@ -90,12 +85,11 @@ fn default_series_numeric_boolean_and_reduction_ops_match_empty_execution_contex
 #[test]
 fn default_series_string_namespace_and_factorization_ops_match_empty_execution_context() {
     let rt = sample_runtime();
-    let strings = rt.named_series("name", &["Beta", "alpha", "Beta", "gamma"]).unwrap();
+    let strings = rt.series(&["Beta", "alpha", "Beta", "gamma"]).unwrap();
     let ctx = ExecutionOverrides::new();
 
     let lower = strings.str().lower().unwrap();
     let lower_in_context = strings.str().lower_in(&ctx).unwrap();
-    assert_eq!(lower.name(), lower_in_context.name());
     assert_eq!(lower.to_strings_strict().unwrap(), lower_in_context.to_strings_strict().unwrap());
 
     let contains = strings.str().contains("a").unwrap();

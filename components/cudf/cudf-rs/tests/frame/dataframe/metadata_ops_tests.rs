@@ -403,7 +403,7 @@ fn test_assign_on_zero_column_frame_rejects_row_count_mismatch() {
 fn test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
     let rt = Runtime::new().unwrap();
     let df = rt.empty_dataframe();
-    let values = rt.named_series("values", &[7i32, 8]).unwrap();
+    let values = rt.series(&[7i32, 8]).unwrap();
 
     let result = df.assign([("values", values)]).unwrap();
 
@@ -490,7 +490,7 @@ fn test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch() 
 fn test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
     let rt = Runtime::new().unwrap();
     let df = rt.empty_dataframe();
-    let values = rt.named_series("values", &[11i32, 22]).unwrap();
+    let values = rt.series(&[11i32, 22]).unwrap();
 
     let result = df.with_column("values", values).unwrap();
 

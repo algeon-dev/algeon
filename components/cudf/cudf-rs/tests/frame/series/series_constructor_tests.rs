@@ -15,86 +15,72 @@ use crate::common::scalar;
 fn test_runtime_series_default_is_unnamed() {
     let rt = cudf::Runtime::new().unwrap();
     let s = rt.series(&[10i32, 20, 30]).unwrap();
-
-    assert_eq!(s.name(), None);
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
-fn test_runtime_named_series_sets_metadata_name() {
+fn test_runtime_series_from_host_slice() {
     let rt = cudf::Runtime::new().unwrap();
-    let s = rt.named_series("x", &[10i32, 20, 30]).unwrap();
-
-    assert_eq!(s.name(), Some("x"));
+    let s = rt.series(&[10i32, 20, 30]).unwrap();
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
-fn test_runtime_named_and_unnamed_null_series_split() {
+fn test_runtime_null_series_constructors() {
     let rt = cudf::Runtime::new().unwrap();
 
     let unnamed = rt.nulls(TypeId::Int32, 2).unwrap();
-    assert_eq!(unnamed.name(), None);
     assert_eq!(unnamed.null_count(), 2);
 
-    let named = rt.named_nulls("missing", TypeId::Int32, 2).unwrap();
-    assert_eq!(named.name(), Some("missing"));
-    assert_eq!(named.null_count(), 2);
+    let second = rt.nulls(TypeId::Int32, 2).unwrap();
+    assert_eq!(second.null_count(), 2);
 }
 
 #[test]
-fn test_runtime_named_and_unnamed_scalar_seed_split() {
+fn test_runtime_scalar_seed_constructor() {
     let rt = cudf::Runtime::new().unwrap();
     let scalar = scalar(42i32).unwrap();
 
     let unnamed = rt.series_from_scalar(&scalar, 3).unwrap();
-    assert_eq!(unnamed.name(), None);
     assert_eq!(unnamed.to_vec_strict::<i32>().unwrap(), vec![42, 42, 42]);
 
-    let named = rt.named_series_from_scalar("seed", &scalar, 2).unwrap();
-    assert_eq!(named.name(), Some("seed"));
-    assert_eq!(named.to_vec_strict::<i32>().unwrap(), vec![42, 42]);
+    let second = rt.series_from_scalar(&scalar, 2).unwrap();
+    assert_eq!(second.to_vec_strict::<i32>().unwrap(), vec![42, 42]);
 }
 
 #[test]
-fn test_runtime_named_and_unnamed_optional_series_split() {
+fn test_runtime_optional_series_constructor() {
     let rt = cudf::Runtime::new().unwrap();
 
     let unnamed = rt.series_opt(&[Some(10i32), None, Some(30)]).unwrap();
-    assert_eq!(unnamed.name(), None);
     assert_eq!(unnamed.to_optional_vec::<i32>().unwrap(), vec![Some(10), None, Some(30)]);
 
-    let named = rt.named_series_opt("maybe", &[Some(1i32), None, Some(3)]).unwrap();
-    assert_eq!(named.name(), Some("maybe"));
-    assert_eq!(named.to_optional_vec::<i32>().unwrap(), vec![Some(1), None, Some(3)]);
+    let second = rt.series_opt(&[Some(1i32), None, Some(3)]).unwrap();
+    assert_eq!(second.to_optional_vec::<i32>().unwrap(), vec![Some(1), None, Some(3)]);
 }
 
 #[test]
-fn test_runtime_named_and_unnamed_empty_series_split() {
+fn test_runtime_empty_series_constructor() {
     let rt = cudf::Runtime::new().unwrap();
 
     let unnamed = rt.empty_series(TypeId::Int32).unwrap();
-    assert_eq!(unnamed.name(), None);
     assert_eq!(unnamed.dtype().unwrap().id(), TypeId::Int32);
     assert!(unnamed.is_empty());
 
-    let named = rt.named_empty_series("empty", TypeId::Int32).unwrap();
-    assert_eq!(named.name(), Some("empty"));
-    assert_eq!(named.dtype().unwrap().id(), TypeId::Int32);
-    assert!(named.is_empty());
+    let second = rt.empty_series(TypeId::Int32).unwrap();
+    assert_eq!(second.dtype().unwrap().id(), TypeId::Int32);
+    assert!(second.is_empty());
 }
 
 #[test]
-fn test_runtime_named_and_unnamed_sequence_split() {
+fn test_runtime_sequence_constructor() {
     let rt = cudf::Runtime::new().unwrap();
 
     let unnamed = rt.sequence(0i32, 2i32, 4).unwrap();
-    assert_eq!(unnamed.name(), None);
     assert_eq!(unnamed.to_vec_strict::<i32>().unwrap(), vec![0, 2, 4, 6]);
 
-    let named = rt.named_sequence("row_idx", 1i32, 3i32, 4).unwrap();
-    assert_eq!(named.name(), Some("row_idx"));
-    assert_eq!(named.to_vec_strict::<i32>().unwrap(), vec![1, 4, 7, 10]);
+    let second = rt.sequence(1i32, 3i32, 4).unwrap();
+    assert_eq!(second.to_vec_strict::<i32>().unwrap(), vec![1, 4, 7, 10]);
 }
 
 // ===========================================================================
@@ -104,8 +90,6 @@ fn test_runtime_named_and_unnamed_sequence_split() {
 #[test]
 fn test_from_optional_i32() {
     let s = crate::common::series_opt("x", &[Some(10i32), None, Some(30)]).unwrap();
-
-    assert_eq!(s.name(), Some("x"));
     assert_eq!(s.len(), 3);
     assert_eq!(s.null_count(), 1);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
@@ -115,8 +99,6 @@ fn test_from_optional_i32() {
 #[test]
 fn test_from_optional_bool_preserves_false() {
     let s = crate::common::series_opt("flag", &[Some(false), Some(true), None, Some(false)]).unwrap();
-
-    assert_eq!(s.name(), Some("flag"));
     assert_eq!(s.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(s.to_optional_vec::<bool>().unwrap(), vec![Some(false), Some(true), None, Some(false)]);
 }
@@ -124,8 +106,6 @@ fn test_from_optional_bool_preserves_false() {
 #[test]
 fn test_from_optional_empty() {
     let s = crate::common::series_opt::<i32>("empty", &[]).unwrap();
-
-    assert_eq!(s.name(), Some("empty"));
     assert!(s.is_empty());
     assert_eq!(s.null_count(), 0);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
@@ -138,8 +118,6 @@ fn test_from_optional_empty() {
 #[test]
 fn test_nulls_i32_basic() {
     let s = crate::common::null_series("x", TypeId::Int32, 5).unwrap();
-
-    assert_eq!(s.name(), Some("x"));
     assert_eq!(s.len(), 5);
     assert_eq!(s.null_count(), 5);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
@@ -197,9 +175,7 @@ fn test_nulls_decimal_preserve_scale() {
 #[test]
 fn test_from_scalar_i32() {
     let scalar = scalar(42i32).unwrap();
-    let s = Series::from_named_scalar("x", &scalar, 4).unwrap();
-
-    assert_eq!(s.name(), Some("x"));
+    let s = Series::from_scalar(&scalar, 4).unwrap();
     assert_eq!(s.len(), 4);
     assert_eq!(s.null_count(), 0);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
@@ -209,7 +185,7 @@ fn test_from_scalar_i32() {
 #[test]
 fn test_from_scalar_f64() {
     let scalar = scalar(2.5f64).unwrap();
-    let s = Series::from_named_scalar("val", &scalar, 3).unwrap();
+    let s = Series::from_scalar(&scalar, 3).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(s.to_vec_strict::<f64>().unwrap(), vec![2.5, 2.5, 2.5]);
@@ -218,7 +194,7 @@ fn test_from_scalar_f64() {
 #[test]
 fn test_from_scalar_string() {
     let scalar = crate::common::string_scalar("hello").unwrap();
-    let s = Series::from_named_scalar("greet", &scalar, 2).unwrap();
+    let s = Series::from_scalar(&scalar, 2).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::String);
     assert_eq!(s.len(), 2);
@@ -228,7 +204,7 @@ fn test_from_scalar_string() {
 #[test]
 fn test_from_scalar_null_produces_all_nulls() {
     let scalar = crate::common::null_scalar::<i32>().unwrap();
-    let s = Series::from_named_scalar("x", &scalar, 3).unwrap();
+    let s = Series::from_scalar(&scalar, 3).unwrap();
 
     assert_eq!(s.len(), 3);
     assert_eq!(s.null_count(), 3);
@@ -237,7 +213,7 @@ fn test_from_scalar_null_produces_all_nulls() {
 #[test]
 fn test_from_scalar_zero_size() {
     let scalar = scalar(1i32).unwrap();
-    let s = Series::from_named_scalar("x", &scalar, 0).unwrap();
+    let s = Series::from_scalar(&scalar, 0).unwrap();
 
     assert_eq!(s.len(), 0);
     assert_eq!(s.null_count(), 0);
@@ -247,8 +223,6 @@ fn test_from_scalar_zero_size() {
 fn test_from_scalar_default_is_unnamed() {
     let scalar = scalar(9i32).unwrap();
     let s = Series::from_scalar(&scalar, 2).unwrap();
-
-    assert_eq!(s.name(), None);
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![9, 9]);
 }
 
@@ -259,8 +233,6 @@ fn test_from_scalar_default_is_unnamed() {
 #[test]
 fn test_empty_i32() {
     let s = crate::common::empty_series("x", TypeId::Int32).unwrap();
-
-    assert_eq!(s.name(), Some("x"));
     assert_eq!(s.len(), 0);
     assert_eq!(s.null_count(), 0);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
