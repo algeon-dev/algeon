@@ -14,11 +14,16 @@ use datafusion::common::{
     config::{ConfigEntry, ConfigExtension, ConfigOptions, ExtensionOptions},
 };
 use nexus_query_engine::{
-    GraphMemoryCalibrationOverride, MemoryControlPolicy, NativePipelineExecutionMode, SourceChunkPlanningMode,
-    SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
+    graph_memory::GraphMemoryCalibrationOverride,
+    mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
+    runtime::{MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy},
 };
 
-use crate::{CudfOptimizerConfig, Error, ErrorCode, NativeCudfExecutionConfig};
+use crate::{
+    error::{Error, ErrorCode},
+    native_exec::NativeCudfExecutionConfig,
+    planner::CudfOptimizerConfig,
+};
 
 /// DataFusion config-extension namespace prefix for datafusion-nexus options.
 pub const DATAFUSION_NEXUS_CONFIG_PREFIX: &str = "datafusion_nexus";
@@ -726,13 +731,13 @@ fn reject_request_grant_for_pre_admitted_query_handle(
 
 #[cfg(test)]
 mod tests {
-    use nexus_query_engine::{
+    use nexus_query_engine::runtime::{
         DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
         QueryServiceConfig, QueryServiceTenantConfig, TenantId,
     };
 
     use super::*;
-    use crate::{GpuFallbackPolicy, native_exec::QueryAdmissionSource};
+    use crate::{native_exec::QueryAdmissionSource, policy::GpuFallbackPolicy};
 
     fn nongds_deployment() -> DeploymentIoCapability {
         DeploymentIoCapability::from_probe_inputs(

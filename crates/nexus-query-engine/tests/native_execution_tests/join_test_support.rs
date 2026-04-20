@@ -23,15 +23,15 @@ pub(super) fn join_right_source(path: &Path, schema: &Arc<Schema>, columns: &[&s
 
 pub(super) fn join_order_id_key() -> JoinKey {
     JoinKey::new(
-        nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
-        nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+        nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
+        nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
     )
 }
 
 pub(super) fn id_join_key() -> JoinKey {
     JoinKey::new(
-        nexus_query_engine::ColumnRef::input(0, "id", "left_id"),
-        nexus_query_engine::ColumnRef::input(1, "id", "right_id"),
+        nexus_query_engine::expr::ColumnRef::input(0, "id", "left_id"),
+        nexus_query_engine::expr::ColumnRef::input(1, "id", "right_id"),
     )
 }
 
@@ -69,7 +69,7 @@ pub(super) fn execute_bounded_keyless_left_only_conditional_join(
     right_schema: &Arc<Schema>,
     join_type: JoinType,
     build_side: JoinSide,
-) -> nexus_query_engine::QueryExecutionResult {
+) -> nexus_query_engine::exec::QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -82,7 +82,7 @@ pub(super) fn execute_bounded_keyless_left_only_conditional_join(
         JoinSpec::new(join_type, vec![])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "qty", "qty"),
+                nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
                 "qty",
             )])
             .with_build_side(build_side),
@@ -101,7 +101,7 @@ pub(super) fn execute_bounded_equality_left_only_filtered_join(
     left_schema: &Arc<Schema>,
     right_schema: &Arc<Schema>,
     join_type: JoinType,
-) -> nexus_query_engine::QueryExecutionResult {
+) -> nexus_query_engine::exec::QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -114,7 +114,7 @@ pub(super) fn execute_bounded_equality_left_only_filtered_join(
         right,
         JoinSpec::new(join_type, vec![join_order_id_key()])
             .with_output_projection(vec![JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "qty", "qty"),
+                nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
                 "qty",
             )])
             .with_build_side(JoinSide::Right),
@@ -136,7 +136,7 @@ pub(super) fn keyless_conditional_join_input_subplan_plan(
     threshold_aggregate_schema: Arc<Schema>,
     output_schema: Arc<Schema>,
     gpu_sink: bool,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let lineitem = builder.add_source(SourceNode::LocalParquet(join_left_source(
         lineitem_path,
@@ -155,8 +155,11 @@ pub(super) fn keyless_conditional_join_input_subplan_plan(
         anti_orders,
         JoinSpec::new(JoinType::LeftAnti, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&left_subplan_schema),
@@ -183,9 +186,15 @@ pub(super) fn keyless_conditional_join_input_subplan_plan(
                 Expr::input_column(1, "threshold", "threshold"),
             ))
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "threshold", "threshold"), "threshold"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "threshold", "threshold"),
+                    "threshold",
+                ),
             ])
             .with_build_side(JoinSide::Left),
         Arc::clone(&output_schema),
@@ -208,7 +217,7 @@ pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     grouped_fact_schema: &Arc<Schema>,
     scalar_fact_schema: &Arc<Schema>,
     supplier_schema: &Arc<Schema>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let join_schema = Arc::new(Schema::new(vec![
         Field::new("ps_partkey", DataType::Int32, false),
         Field::new("qty", DataType::Int64, false),
@@ -235,10 +244,10 @@ pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         JoinSpec::new(JoinType::Inner, vec![supplier_cost_suppkey_join_key("ps_suppkey", "s_suppkey")])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    nexus_query_engine::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+                    nexus_query_engine::expr::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
                     "ps_partkey",
                 ),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -268,7 +277,7 @@ pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         scalar_supplier,
         JoinSpec::new(JoinType::Inner, vec![supplier_cost_suppkey_join_key("ps_suppkey", "s_suppkey")])
             .with_output_projection(vec![JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "qty", "qty"),
+                nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
                 "qty",
             )])
             .with_build_side(JoinSide::Right),
@@ -296,10 +305,10 @@ pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
             ))
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    nexus_query_engine::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+                    nexus_query_engine::expr::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
                     "ps_partkey",
                 ),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "value", "value"), "value"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "value", "value"), "value"),
             ])
             .with_build_side(JoinSide::Left),
         Arc::clone(&output_schema),
@@ -337,13 +346,13 @@ pub(super) fn supplier_cost_supplier_source(path: &Path, schema: &Arc<Schema>) -
 
 pub(super) fn supplier_cost_suppkey_join_key(left_name: &str, right_name: &str) -> JoinKey {
     JoinKey::new(
-        nexus_query_engine::ColumnRef::input(0, left_name, left_name),
-        nexus_query_engine::ColumnRef::input(1, right_name, right_name),
+        nexus_query_engine::expr::ColumnRef::input(0, left_name, left_name),
+        nexus_query_engine::expr::ColumnRef::input(1, right_name, right_name),
     )
 }
 
 pub(super) fn assert_empty_bounded_filtered_join_result(
-    result: &nexus_query_engine::QueryExecutionResult,
+    result: &nexus_query_engine::exec::QueryExecutionResult,
     join_type: &str,
 ) {
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -375,7 +384,7 @@ pub(super) fn execute_left_only_residual_join(
     left_schema: &Arc<Schema>,
     right_schema: &Arc<Schema>,
     join_type: JoinType,
-) -> nexus_query_engine::QueryExecutionResult {
+) -> nexus_query_engine::exec::QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -389,7 +398,7 @@ pub(super) fn execute_left_only_residual_join(
         JoinSpec::new(join_type, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "qty", "qty"),
+                nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
                 "qty",
             )])
             .with_build_side(JoinSide::Right),
@@ -412,7 +421,7 @@ pub(super) fn execute_bounded_left_only_residual_join(
     left_schema: &Arc<Schema>,
     right_schema: &Arc<Schema>,
     join_type: JoinType,
-) -> nexus_query_engine::QueryExecutionResult {
+) -> nexus_query_engine::exec::QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -426,7 +435,7 @@ pub(super) fn execute_bounded_left_only_residual_join(
         JoinSpec::new(join_type, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "qty", "qty"),
+                nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
                 "qty",
             )])
             .with_build_side(JoinSide::Right),
@@ -442,7 +451,7 @@ pub(super) fn residual_validation_error(
     join_type: JoinType,
     keys: Vec<JoinKey>,
     residual: Expr,
-) -> nexus_query_engine::QueryError {
+) -> nexus_query_engine::error::QueryError {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
     residual_validation_error_with_schema(join_type, keys, residual, schema, vec!["id"])
 }
@@ -453,7 +462,7 @@ pub(super) fn residual_validation_error_with_schema(
     residual: Expr,
     schema: Arc<Schema>,
     read_columns: Vec<&str>,
-) -> nexus_query_engine::QueryError {
+) -> nexus_query_engine::error::QueryError {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("left_id", DataType::Int32, true),
@@ -478,8 +487,8 @@ pub(super) fn residual_validation_error_with_schema(
         left,
         right,
         JoinSpec::new(join_type, keys).with_residual_predicate(residual).with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "id", "left_id"), "left_id"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "id", "right_id"), "right_id"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "id", "left_id"), "left_id"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "id", "right_id"), "right_id"),
         ]),
         output_schema,
     );

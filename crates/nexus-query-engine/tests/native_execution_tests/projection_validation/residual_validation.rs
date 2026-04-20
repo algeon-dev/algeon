@@ -85,7 +85,7 @@ fn native_query_rejects_unsupported_residual_expression_families_before_source_r
     let cases = vec![
         ("LIKE", Expr::like(Expr::input_column(0, "id", "left_id"), "1%")),
         ("SUBSTRING", Expr::substring(Expr::input_column(0, "id", "left_id"), 1, Some(1))),
-        ("EXTRACT", Expr::extract(nexus_query_engine::DatePart::Year, Expr::input_column(0, "id", "left_id"))),
+        ("EXTRACT", Expr::extract(nexus_query_engine::expr::DatePart::Year, Expr::input_column(0, "id", "left_id"))),
     ];
 
     for (family, residual) in cases {
@@ -108,18 +108,18 @@ fn native_query_rejects_post_join_date_trunc_residual_before_source_read() {
         Field::new("event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
     ]));
     let left_ts = Expr::date_trunc(
-        nexus_query_engine::DatePart::Day,
+        nexus_query_engine::expr::DatePart::Day,
         Expr::input_column(0, "event_ts", "left_event_ts"),
         DataType::Timestamp(TimeUnit::Nanosecond, None),
     );
     let right_ts = Expr::date_trunc(
-        nexus_query_engine::DatePart::Day,
+        nexus_query_engine::expr::DatePart::Day,
         Expr::input_column(1, "event_ts", "right_event_ts"),
         DataType::Timestamp(TimeUnit::Nanosecond, None),
     );
     let residual = Expr::binary(
         Expr::case(
-            vec![nexus_query_engine::CaseWhen::new(
+            vec![nexus_query_engine::expr::CaseWhen::new(
                 Expr::binary(
                     Expr::input_column(0, "id", "left_id"),
                     BinaryOp::Eq,
@@ -159,15 +159,21 @@ fn native_query_rejects_post_join_extract_new_fields_before_source_read() {
     ]));
     let residual = Expr::binary(
         Expr::case(
-            vec![nexus_query_engine::CaseWhen::new(
+            vec![nexus_query_engine::expr::CaseWhen::new(
                 Expr::binary(
                     Expr::input_column(0, "id", "left_id"),
                     BinaryOp::Eq,
                     Expr::input_column(1, "id", "right_id"),
                 ),
-                Expr::extract(nexus_query_engine::DatePart::Hour, Expr::input_column(0, "event_ts", "left_event_ts")),
+                Expr::extract(
+                    nexus_query_engine::expr::DatePart::Hour,
+                    Expr::input_column(0, "event_ts", "left_event_ts"),
+                ),
             )],
-            Expr::extract(nexus_query_engine::DatePart::Hour, Expr::input_column(1, "event_ts", "right_event_ts")),
+            Expr::extract(
+                nexus_query_engine::expr::DatePart::Hour,
+                Expr::input_column(1, "event_ts", "right_event_ts"),
+            ),
         ),
         BinaryOp::Gt,
         Expr::literal(LiteralValue::Int32(0)),

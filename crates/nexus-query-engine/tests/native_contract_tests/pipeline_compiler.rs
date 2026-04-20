@@ -2,17 +2,22 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
 use nexus_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnRef, CompiledPipeline, Expr, GpuResidentSource,
-    JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LocalParquetFile, LocalParquetSource, NodeId,
-    PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind,
-    PipelineTask, PipelineTaskId, PipelineTaskKind, PlanNode, QueryError, QueryPlan, QueryPlanBuilder, ReservationGate,
-    ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime, ResidentResource, ResidentResourceId,
-    SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode, StrictBoundedContractReport,
     capability::{
         CapabilityAnalysis, CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirement,
         ReservationRequirementScope, SubgraphInvariantKind,
     },
-    compile_pipeline,
+    contract_report::StrictBoundedContractReport,
+    error::QueryError,
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnRef, Expr, LimitSpec, SortExpr, SortSpec},
+    pipeline::{
+        CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
+        PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ReservationGate, ReservationGateId,
+        ReservationGateOwner, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind,
+        compile_pipeline,
+    },
+    plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, QueryPlan, QueryPlanBuilder},
+    runtime::ReservationKind,
+    source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
 
 use crate::bounded_join_admission::{

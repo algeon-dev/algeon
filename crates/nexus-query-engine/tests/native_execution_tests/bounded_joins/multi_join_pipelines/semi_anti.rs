@@ -28,8 +28,11 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
         JoinSpec::new(JoinType::LeftSemi, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&left_only_join_schema),
@@ -40,8 +43,11 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
         JoinSpec::new(JoinType::LeftAnti, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&left_only_join_schema),

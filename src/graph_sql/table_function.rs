@@ -21,8 +21,8 @@ use super::{
     vertex_id_domain_for_call,
 };
 use crate::{
-    NativeCudfExecutionConfig,
     graph_sql::{CugraphAlgoExec, metadata::cugraph_metadata_table_functions},
+    native_exec::NativeCudfExecutionConfig,
     session::session_state_with_native_execution_config,
     session_config::DataFusionNexusSessionConfig,
 };

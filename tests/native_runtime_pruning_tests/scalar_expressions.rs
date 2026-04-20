@@ -137,8 +137,8 @@ async fn native_runtime_ilike_rejects_before_native_execution() {
     assert!(
         matches!(
             lowering.report.outcomes()[0],
-            datafusion_nexus::CandidateOutcome::Rejected {
-                reason: datafusion_nexus::FallbackReason::UnsupportedExpression,
+            datafusion_nexus::report::CandidateOutcome::Rejected {
+                reason: datafusion_nexus::policy::FallbackReason::UnsupportedExpression,
                 ..
             }
         ),
@@ -164,8 +164,8 @@ async fn native_runtime_integer_modulo_rejects_before_native_execution() {
     assert!(
         matches!(
             lowering.report.outcomes()[0],
-            datafusion_nexus::CandidateOutcome::Rejected {
-                reason: datafusion_nexus::FallbackReason::UnsupportedExpression,
+            datafusion_nexus::report::CandidateOutcome::Rejected {
+                reason: datafusion_nexus::policy::FallbackReason::UnsupportedExpression,
                 ..
             }
         ),
@@ -197,8 +197,8 @@ async fn native_runtime_invalid_scalar_expressions_reject_before_native_executio
         assert!(
             matches!(
                 lowering.report.outcomes()[0],
-                datafusion_nexus::CandidateOutcome::Rejected {
-                    reason: datafusion_nexus::FallbackReason::UnsupportedExpression,
+                datafusion_nexus::report::CandidateOutcome::Rejected {
+                    reason: datafusion_nexus::policy::FallbackReason::UnsupportedExpression,
                     ..
                 }
             ),
@@ -228,8 +228,8 @@ async fn native_runtime_date_trunc_calendrical_grains_reject_before_native_execu
         assert!(
             matches!(
                 lowering.report.outcomes()[0],
-                datafusion_nexus::CandidateOutcome::Rejected {
-                    reason: datafusion_nexus::FallbackReason::UnsupportedExpression,
+                datafusion_nexus::report::CandidateOutcome::Rejected {
+                    reason: datafusion_nexus::policy::FallbackReason::UnsupportedExpression,
                     ..
                 }
             ),

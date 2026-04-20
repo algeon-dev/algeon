@@ -635,13 +635,13 @@ fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "k", "k"),
-                nexus_query_engine::ColumnRef::input(1, "k", "k"),
+                nexus_query_engine::expr::ColumnRef::input(0, "k", "k"),
+                nexus_query_engine::expr::ColumnRef::input(1, "k", "k"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "grp", "grp"), "grp"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "v", "v"), "v"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "grp", "grp"), "grp"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "v", "v"), "v"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -774,13 +774,13 @@ fn join_grouped_stddev_samp_can_preserve_left_probe_order_bits() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "date_sk", "date_sk"),
-                nexus_query_engine::ColumnRef::input(1, "date_sk", "date_sk"),
+                nexus_query_engine::expr::ColumnRef::input(0, "date_sk", "date_sk"),
+                nexus_query_engine::expr::ColumnRef::input(1, "date_sk", "date_sk"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "grp", "grp"), "grp"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "grp", "grp"), "grp"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
         ])
         .with_build_side(JoinSide::Right)
         .with_datafusion_order_preserved_side(JoinSide::Left),
@@ -893,12 +893,12 @@ fn bounded_residual_join_grouped_stddev_samp_keeps_order_bits_after_filter() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "date_sk", "date_sk"),
-                nexus_query_engine::ColumnRef::input(1, "date_sk", "date_sk"),
+                nexus_query_engine::expr::ColumnRef::input(0, "date_sk", "date_sk"),
+                nexus_query_engine::expr::ColumnRef::input(1, "date_sk", "date_sk"),
             )],
         )
         .with_residual_predicate(Expr::case(
-            vec![nexus_query_engine::CaseWhen::new(
+            vec![nexus_query_engine::expr::CaseWhen::new(
                 Expr::binary(
                     Expr::input_column(0, "date_sk", "date_sk"),
                     BinaryOp::Eq,
@@ -909,8 +909,8 @@ fn bounded_residual_join_grouped_stddev_samp_keeps_order_bits_after_filter() {
             Expr::literal(LiteralValue::Boolean(false)),
         ))
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "grp", "grp"), "grp"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "grp", "grp"), "grp"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
         ])
         .with_build_side(JoinSide::Right)
         .with_datafusion_order_preserved_side(JoinSide::Left),
@@ -1046,14 +1046,14 @@ fn bounded_tolerant_grouped_statistical_aggregate_streams_partial_moments() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "k", "k"),
-                nexus_query_engine::ColumnRef::input(1, "k", "k"),
+                nexus_query_engine::expr::ColumnRef::input(0, "k", "k"),
+                nexus_query_engine::expr::ColumnRef::input(1, "k", "k"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "grp", "grp"), "grp"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "v", "v"), "v"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "d", "d"), "d"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "grp", "grp"), "grp"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "v", "v"), "v"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "d", "d"), "d"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -1216,14 +1216,14 @@ fn bounded_tolerant_filtered_grouped_statistical_aggregate_uses_filter_preparati
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "k", "k"),
-                nexus_query_engine::ColumnRef::input(1, "k", "k"),
+                nexus_query_engine::expr::ColumnRef::input(0, "k", "k"),
+                nexus_query_engine::expr::ColumnRef::input(1, "k", "k"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "grp", "grp"), "grp"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "v", "v"), "v"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "keep", "keep"), "keep"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "grp", "grp"), "grp"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "v", "v"), "v"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "keep", "keep"), "keep"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -1354,18 +1354,21 @@ fn bounded_grouped_stddev_samp_over_empty_join_stream_returns_empty_batch() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "k", "k"),
-                nexus_query_engine::ColumnRef::input(1, "k", "k"),
+                nexus_query_engine::expr::ColumnRef::input(0, "k", "k"),
+                nexus_query_engine::expr::ColumnRef::input(1, "k", "k"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "i_item_id", "i_item_id"), "i_item_id"),
             JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "i_item_desc", "i_item_desc"),
+                nexus_query_engine::expr::ColumnRef::input(1, "i_item_id", "i_item_id"),
+                "i_item_id",
+            ),
+            JoinOutputColumn::right(
+                nexus_query_engine::expr::ColumnRef::input(1, "i_item_desc", "i_item_desc"),
                 "i_item_desc",
             ),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "s_state", "s_state"), "s_state"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "v", "v"), "v"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "s_state", "s_state"), "s_state"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "v", "v"), "v"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),

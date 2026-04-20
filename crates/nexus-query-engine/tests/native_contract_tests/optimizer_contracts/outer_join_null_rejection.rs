@@ -2,7 +2,7 @@
 fn outer_join_null_rejection_converts_left_join_when_inner_join_key_rejects_right_nulls() {
     let plan = inner_join_over_projected_left_join_right_key_plan();
     let options = NativeOptimizerOptions {
-        join_filter_reassociation: nexus_query_engine::JoinFilterReassociationOptions::disabled(),
+        join_filter_reassociation: nexus_query_engine::optimizer::JoinFilterReassociationOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
 
@@ -36,7 +36,7 @@ fn outer_join_null_rejection_preserves_left_join_build_side_after_build_side_sel
     );
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::default(),
-        outer_join_null_rejection: nexus_query_engine::OuterJoinNullRejectionOptions::default(),
+        outer_join_null_rejection: nexus_query_engine::optimizer::OuterJoinNullRejectionOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
@@ -121,7 +121,7 @@ fn outer_join_null_rejection_revisits_large_input_after_aggregate_pushdown() {
     let plan = aggregate_over_reason_join_over_large_left_join_plan();
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    options.outer_join_null_rejection = nexus_query_engine::OuterJoinNullRejectionOptions::default();
+    options.outer_join_null_rejection = nexus_query_engine::optimizer::OuterJoinNullRejectionOptions::default();
 
     let result = optimize_query_plan(plan, &options);
 
@@ -235,15 +235,15 @@ fn outer_join_null_rejection_keeps_marker_null_filter_when_marker_escapes_projec
     assert!(result.diagnostics.outer_join_null_rejection.is_empty());
 }
 
-fn inner_join_over_projected_left_join_right_key_plan() -> nexus_query_engine::QueryPlan {
+fn inner_join_over_projected_left_join_right_key_plan() -> nexus_query_engine::plan::QueryPlan {
     inner_join_over_projected_left_join_key_plan("r_key")
 }
 
-fn inner_join_over_projected_left_join_left_key_plan() -> nexus_query_engine::QueryPlan {
+fn inner_join_over_projected_left_join_left_key_plan() -> nexus_query_engine::plan::QueryPlan {
     inner_join_over_projected_left_join_key_plan("l_key")
 }
 
-fn inner_join_over_projected_left_join_key_plan(rejecting_key: &str) -> nexus_query_engine::QueryPlan {
+fn inner_join_over_projected_left_join_key_plan(rejecting_key: &str) -> nexus_query_engine::plan::QueryPlan {
     inner_join_over_projected_left_join_key_plan_with_sources(
         rejecting_key,
         gpu_source("left", &["l_key", "payload"]),
@@ -252,7 +252,7 @@ fn inner_join_over_projected_left_join_key_plan(rejecting_key: &str) -> nexus_qu
     )
 }
 
-fn inner_join_over_limited_projected_left_join_right_key_plan() -> nexus_query_engine::QueryPlan {
+fn inner_join_over_limited_projected_left_join_right_key_plan() -> nexus_query_engine::plan::QueryPlan {
     inner_join_over_projected_left_join_key_plan_with_sources(
         "r_key",
         gpu_source("left", &["l_key", "payload"]),
@@ -266,7 +266,7 @@ fn inner_join_over_estimated_projected_left_join_right_key_plan(
     left_rows: u64,
     right_bytes: u64,
     right_rows: u64,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     inner_join_over_projected_left_join_key_plan_with_sources(
         "r_key",
         estimated_local_source_with_fields("left", &["l_key", "payload"], left_bytes, left_rows),
@@ -280,7 +280,7 @@ fn inner_join_over_projected_left_join_key_plan_with_sources(
     left_source: SourceNode,
     right_source: SourceNode,
     limit_fetch: Option<usize>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(left_source);
     let right = builder.add_source(right_source);
@@ -335,7 +335,7 @@ fn inner_join_over_projected_left_join_key_plan_with_sources(
     builder.finish_gpu_resident(root)
 }
 
-fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> nexus_query_engine::QueryPlan {
+fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(gpu_source("left", &["l_key"]));
     let right = builder.add_source(gpu_source("right", &["r_key"]));
@@ -377,7 +377,7 @@ fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> nexus_quer
     builder.finish_gpu_resident(root)
 }
 
-fn inner_join_over_large_left_join_right_key_plan() -> nexus_query_engine::QueryPlan {
+fn inner_join_over_large_left_join_right_key_plan() -> nexus_query_engine::plan::QueryPlan {
     inner_join_over_projected_left_join_key_plan_with_sources(
         "r_key",
         gpu_source("left", &["l_key", "payload"]),
@@ -386,7 +386,7 @@ fn inner_join_over_large_left_join_right_key_plan() -> nexus_query_engine::Query
     )
 }
 
-fn aggregate_over_reason_join_over_large_left_join_plan() -> nexus_query_engine::QueryPlan {
+fn aggregate_over_reason_join_over_large_left_join_plan() -> nexus_query_engine::plan::QueryPlan {
     let sales_schema = schema(&[
         "ss_item_sk",
         "ss_customer_sk",
@@ -518,7 +518,7 @@ fn aggregate_over_reason_join_over_large_left_join_plan() -> nexus_query_engine:
     builder.finish_with_host_sink(limited)
 }
 
-fn union_aggregate_over_left_join_right_key_plan() -> nexus_query_engine::QueryPlan {
+fn union_aggregate_over_left_join_right_key_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let returns = builder.add_source(gpu_source("returns", &["return_item", "return_order", "returns_value"]));
     let sales = builder.add_source(gpu_source("sales", &["sales_item", "sales_order", "site_sk"]));
@@ -610,7 +610,7 @@ enum MarkerNullFilterPlanVariant {
     MarkerEscapes,
 }
 
-fn marker_null_filter_left_join_plan(variant: MarkerNullFilterPlanVariant) -> nexus_query_engine::QueryPlan {
+fn marker_null_filter_left_join_plan(variant: MarkerNullFilterPlanVariant) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(gpu_source("left", &["l_key", "payload"]));
     let right_schema = Arc::new(Schema::new(vec![
@@ -661,7 +661,7 @@ fn marker_null_filter_left_join_plan(variant: MarkerNullFilterPlanVariant) -> ne
 
 fn outer_join_null_rejection_only_options() -> NativeOptimizerOptions {
     NativeOptimizerOptions {
-        outer_join_null_rejection: nexus_query_engine::OuterJoinNullRejectionOptions::default(),
+        outer_join_null_rejection: nexus_query_engine::optimizer::OuterJoinNullRejectionOptions::default(),
         ..NativeOptimizerOptions::disabled()
     }
 }

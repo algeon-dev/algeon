@@ -23,6 +23,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::physical_plan::{ExecutionPlan, metrics::MetricsSet};
+use nexus_query_engine::mode::StatisticalAggregateExecutionMode;
 
 use super::{
     NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
@@ -30,7 +31,7 @@ use super::{
     diagnostics::{post_native_plan_coverage, unsupported_category},
     tsv::{TsvRow, stable_tsv_field, write_workload_dataset_metadata},
 };
-use crate::{StatisticalAggregateExecutionMode, planner::NativePlanningDiagnostics};
+use crate::planner::NativePlanningDiagnostics;
 
 /// TPC-DS parity TSV column names in wire/report order.
 pub(crate) const NATIVE_TPCDS_PARITY_TSV_COLUMNS: &[&str] = &[

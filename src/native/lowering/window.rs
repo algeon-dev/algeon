@@ -12,10 +12,15 @@ use datafusion::{
     physical_plan::windows::WindowUDFExpr,
 };
 use nexus_query_engine::{
-    Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
-    QueryPlanBuilder as NativeQueryPlanBuilder, ShiftDirection as NativeShiftDirection, SortExpr as NativeSortExpr,
-    WindowFrame as NativeWindowFrame, WindowFunction as NativeWindowFunction, WindowSpec as NativeWindowSpec,
-    is_supported_list_carry_type, is_timestamp_with_timezone,
+    datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
+    expr::{
+        Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
+        SortExpr as NativeSortExpr,
+    },
+    plan::{
+        QueryPlanBuilder as NativeQueryPlanBuilder, ShiftDirection as NativeShiftDirection,
+        WindowFrame as NativeWindowFrame, WindowFunction as NativeWindowFunction, WindowSpec as NativeWindowSpec,
+    },
 };
 
 use super::{

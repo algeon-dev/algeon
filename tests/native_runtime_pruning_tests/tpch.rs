@@ -247,13 +247,13 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
-            && event.reservation_kind == nexus_query_engine::ReservationKind::PartialState
+            && event.reservation_kind == nexus_query_engine::runtime::ReservationKind::PartialState
             && event.memory_boundary == "compiled_aggregate_partial_state_work"
-            && event.action == nexus_query_engine::MemoryReservationEventAction::Reserve
+            && event.action == nexus_query_engine::metrics::MemoryReservationEventAction::Reserve
     }));
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
-            && event.reservation_kind == nexus_query_engine::ReservationKind::FinalSort
+            && event.reservation_kind == nexus_query_engine::runtime::ReservationKind::FinalSort
             && event.memory_boundary == "final_sort"
     }));
     assert!(
@@ -306,12 +306,12 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
-            && event.reservation_kind == nexus_query_engine::ReservationKind::OperatorOutput
+            && event.reservation_kind == nexus_query_engine::runtime::ReservationKind::OperatorOutput
             && event.memory_boundary == "compiled_projection"
     }));
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
-            && event.reservation_kind == nexus_query_engine::ReservationKind::FinalSort
+            && event.reservation_kind == nexus_query_engine::runtime::ReservationKind::FinalSort
             && event.memory_boundary == "final_sort"
     }));
     assert!(

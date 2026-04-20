@@ -6,9 +6,12 @@ use datafusion::{
     physical_plan::filter::FilterExec,
 };
 use nexus_query_engine::{
-    LiteralValue as NativeLiteralValue, LocalParquetFile as NativeLocalParquetFile,
-    PartitionColumnDisposition as NativePartitionColumnDisposition, SourceColumnRef as NativeSourceColumnRef,
+    expr::LiteralValue as NativeLiteralValue,
     parquet_stats::{ColumnByteKind, row_group_column_bytes, row_group_null_counts_for_root_column},
+    source::{
+        LocalParquetFile as NativeLocalParquetFile, PartitionColumnDisposition as NativePartitionColumnDisposition,
+        SourceColumnRef as NativeSourceColumnRef,
+    },
 };
 use parquet::file::reader::{FileReader, SerializedFileReader};
 

@@ -2,24 +2,35 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
 use nexus_query_engine::{
-    BinaryOp, CredentialMode, Expr, GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS,
-    GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
-    GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm,
-    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBetweennessSeeds,
-    GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs, GraphCalibrationSource, GraphConstructionOptions,
-    GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEdgePredicateInput,
-    GraphLayoutRequirement, GraphLouvainParams, GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput,
-    GraphModelErrorRatio, GraphOutputSchemaKind, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome,
-    GraphReservationReport, GraphResidencyDescriptor, GraphResidencyOrientation, GraphResidencyPlanAnalysis,
-    GraphSeedMode, GraphSourceFingerprintBypassReason, GraphSourceVertexRequirement, GraphStatistics,
-    GraphTriangleCountAllParams, GraphVertexEstimate, GraphVertexEstimateSource, GraphVertexIdTypeSupport,
-    GraphWeightPolicy, LiteralValue, LocalParquetFile, LocalParquetSource, ParquetFieldIdReadBinding,
-    ParquetPositionDeleteFile, PlanNode, ProjectionOutput, QueryErrorCode, QueryPlan, QueryPlanBuilder,
-    ResolvedParquetSource, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
-    graph_memory_class, graph_memory_reservation_required, graph_residency_descriptor_for_edge_plan,
-    graph_runtime_statistics_probe_bytes, graph_vertex_estimate_probe_bytes, planned_resident_graph_key,
-    stable_graph_result_schema, triangle_count_peak_chunk_min_degree_pricing_term,
+    contract_report::StrictBoundedContractReport,
+    error::QueryErrorCode,
+    expr::{BinaryOp, Expr, LiteralValue},
+    graph_memory::{
+        GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GraphCalibrationSource, GraphMemoryClass, GraphMemoryModel,
+        GraphMemoryModelInput, GraphModelErrorRatio, GraphReservationOutcome, GraphReservationReport, GraphSeedMode,
+        GraphStatistics, GraphVertexEstimate, GraphVertexEstimateSource, graph_memory_class,
+        graph_memory_reservation_required, graph_runtime_statistics_probe_bytes, graph_vertex_estimate_probe_bytes,
+        triangle_count_peak_chunk_min_degree_pricing_term,
+    },
+    mode::StrictBoundedExecutionMode,
+    plan::{
+        GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
+        GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_OPERATION_REGISTRY, GraphAlgorithm,
+        GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBetweennessSeeds,
+        GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
+        GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
+        GraphEdgePredicateInput, GraphLayoutRequirement, GraphLouvainParams, GraphOutputSchemaKind,
+        GraphPageRankParams, GraphPredicateInput, GraphResidencyDescriptor, GraphResidencyOrientation,
+        GraphResidencyPlanAnalysis, GraphSourceFingerprintBypassReason, GraphSourceVertexRequirement,
+        GraphTriangleCountAllParams, GraphVertexIdTypeSupport, GraphWeightPolicy, PlanNode, ProjectionOutput,
+        QueryPlan, QueryPlanBuilder, graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
+        stable_graph_result_schema,
+    },
+    source::{
+        CredentialMode, GpuResidentSource, LocalParquetFile, LocalParquetSource, ParquetFieldIdReadBinding,
+        ParquetPositionDeleteFile, ResolvedParquetSource, SourceNode,
+    },
 };
 
 #[test]

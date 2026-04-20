@@ -1,6 +1,7 @@
 //! Native query plan IR.
 //!
-//! [`QueryPlan`] is the DataFusion-free IR that `execute_query_plan` runs.
+//! [`QueryPlan`](crate::plan::QueryPlan) is the DataFusion-free IR that
+//! `execute_query_plan` runs.
 //! Builder, node, expression-spec, facts, and graph-algorithm modules are
 //! re-exported from here as the engine's public plan surface.
 

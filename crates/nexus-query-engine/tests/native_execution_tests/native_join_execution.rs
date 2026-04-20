@@ -39,14 +39,14 @@ fn native_query_executes_inner_equi_join_with_explicit_output_projection() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
-                nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
@@ -126,13 +126,13 @@ fn native_query_executes_inner_join_when_output_projection_omits_keys() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
-                nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
@@ -193,13 +193,13 @@ fn native_query_executes_left_join_with_null_padded_right_projection() {
         JoinSpec::new(
             JoinType::Left,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
-                nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
@@ -275,21 +275,21 @@ fn native_query_executes_full_join_with_null_padded_output_projection() {
         JoinSpec::new(
             JoinType::Full,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
-                nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
             )],
         )
         .with_output_projection(vec![
             JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
                 "left_order_id",
             ),
             JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
                 "right_order_id",
             ),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
@@ -382,12 +382,12 @@ fn native_query_executes_left_semi_join_with_left_only_projection() {
         JoinSpec::new(
             JoinType::LeftSemi,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
-                nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
             )],
         )
         .with_output_projection(vec![JoinOutputColumn::left(
-            nexus_query_engine::ColumnRef::input(0, "qty", "qty"),
+            nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
             "qty",
         )])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
@@ -449,12 +449,12 @@ fn native_query_executes_left_anti_join_with_left_only_projection() {
         JoinSpec::new(
             JoinType::LeftAnti,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
-                nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
             )],
         )
         .with_output_projection(vec![JoinOutputColumn::left(
-            nexus_query_engine::ColumnRef::input(0, "qty", "qty"),
+            nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
             "qty",
         )])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
@@ -514,12 +514,12 @@ fn native_query_executes_left_mark_join_with_boolean_mark_column() {
         JoinSpec::new(
             JoinType::LeftMark,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
-                nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
             )],
         )
         .with_output_projection(vec![JoinOutputColumn::left(
-            nexus_query_engine::ColumnRef::input(0, "qty", "qty"),
+            nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
             "qty",
         )])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
@@ -596,12 +596,12 @@ fn native_query_executes_left_mark_join_with_no_matches() {
         JoinSpec::new(
             JoinType::LeftMark,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
-                nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
             )],
         )
         .with_output_projection(vec![JoinOutputColumn::left(
-            nexus_query_engine::ColumnRef::input(0, "qty", "qty"),
+            nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
             "qty",
         )])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)

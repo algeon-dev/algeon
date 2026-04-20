@@ -109,10 +109,10 @@ fn root_cause_log_message(source: &(dyn StdError + 'static)) -> String {
 }
 
 fn error_log_message(error: &(dyn StdError + 'static)) -> String {
-    if let Some(adapter_error) = error.downcast_ref::<datafusion_nexus::Error>() {
+    if let Some(adapter_error) = error.downcast_ref::<datafusion_nexus::error::Error>() {
         return adapter_error.message().to_string();
     }
-    if let Some(native_error) = error.downcast_ref::<nexus_query_engine::QueryError>() {
+    if let Some(native_error) = error.downcast_ref::<nexus_query_engine::error::QueryError>() {
         return native_error.message().to_string();
     }
     if let Some(datafusion_error) = error.downcast_ref::<datafusion::common::DataFusionError>() {
@@ -127,10 +127,10 @@ fn error_log_message(error: &(dyn StdError + 'static)) -> String {
 fn find_project_error(error: &datafusion::common::DataFusionError) -> Option<String> {
     let mut current: Option<&(dyn StdError + 'static)> = Some(error);
     while let Some(error) = current {
-        if let Some(adapter_error) = error.downcast_ref::<datafusion_nexus::Error>() {
+        if let Some(adapter_error) = error.downcast_ref::<datafusion_nexus::error::Error>() {
             return Some(adapter_error.message().to_string());
         }
-        if let Some(native_error) = error.downcast_ref::<nexus_query_engine::QueryError>() {
+        if let Some(native_error) = error.downcast_ref::<nexus_query_engine::error::QueryError>() {
             return Some(native_error.message().to_string());
         }
         current = error.source();
@@ -153,7 +153,7 @@ async fn run() -> Result<(), ServerError> {
 
 #[cfg(test)]
 mod tests {
-    use datafusion_nexus::{Error, ErrorCode};
+    use datafusion_nexus::error::{Error, ErrorCode};
 
     use super::*;
 
@@ -173,8 +173,8 @@ mod tests {
 
     #[test]
     fn source_chain_log_message_uses_native_human_message_without_structured_fields() {
-        let source = nexus_query_engine::QueryError::new(
-            nexus_query_engine::QueryErrorCode::ServiceOverloaded,
+        let source = nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::ServiceOverloaded,
             "nexus_query_engine.query_service.admit",
             "native query service queue is full",
         );

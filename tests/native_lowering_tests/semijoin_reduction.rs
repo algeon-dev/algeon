@@ -41,8 +41,8 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
         "pre-optimizer left-semi should still sit above an inner-join tree"
     );
 
-    let optimized = nexus_query_engine::optimize_query_plan(direct_plan.clone(), &Default::default());
-    assert_eq!(optimized.change, nexus_query_engine::NativeOptimizerChange::Changed);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(direct_plan.clone(), &Default::default());
+    assert_eq!(optimized.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(optimized.diagnostics.semijoin_reduction.applied_count, 1);
     assert!(
@@ -51,7 +51,7 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
             .semijoin_reduction
             .candidates
             .iter()
-            .all(|candidate| candidate.rule_name == nexus_query_engine::SEMIJOIN_REDUCTION_RULE_NAME)
+            .all(|candidate| candidate.rule_name == nexus_query_engine::optimizer::SEMIJOIN_REDUCTION_RULE_NAME)
     );
 
     let optimized_left_semi = native_join_ids(&optimized.plan, NativeJoinType::LeftSemi);
@@ -114,7 +114,7 @@ fn field(name: &str) -> Field {
     Field::new(name, DataType::Int32, false)
 }
 
-fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &nexus_query_engine::JoinNode)> {
+fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &nexus_query_engine::plan::JoinNode)> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {

@@ -5,8 +5,9 @@ use datafusion::{
     physical_plan::{ExecutionPlan, projection::ProjectionExec},
 };
 use nexus_query_engine::{
-    LimitSpec as NativeLimitSpec, LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
-    QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
+    expr::LimitSpec as NativeLimitSpec,
+    plan::{QueryPlan as NativeQueryPlan, QueryPlanBuilder as NativeQueryPlanBuilder},
+    source::{LocalParquetSource as NativeLocalParquetSource, SourceNode as NativeSourceNode},
 };
 
 use super::{

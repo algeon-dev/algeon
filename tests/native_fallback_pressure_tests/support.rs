@@ -78,7 +78,7 @@ pub(super) fn rejected_native_diagnostics() -> NativePlanningDiagnostics {
     let mut report = PlanningReport::new();
     report.push_rejected(
         GpuCandidate::new("SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))", 1),
-        datafusion_nexus::FallbackReason::NativeBoundedJoinUnsupported,
+        datafusion_nexus::policy::FallbackReason::NativeBoundedJoinUnsupported,
     );
     NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
@@ -518,28 +518,28 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
 pub(super) fn report_row<'a>(
     report: &'a NativeFallbackPressureReport,
     query_id: &str,
-) -> &'a datafusion_nexus::NativeFallbackPressureRow {
+) -> &'a datafusion_nexus::native_report::NativeFallbackPressureRow {
     report.rows.iter().find(|row| row.query_id == query_id).expect("report row should exist")
 }
 
 pub(super) fn planning_rows<'a>(
     report: &'a NativeDataFusionPlanningReport,
     query_id: &str,
-) -> Vec<&'a datafusion_nexus::NativeDataFusionPlanningRow> {
+) -> Vec<&'a datafusion_nexus::native_report::NativeDataFusionPlanningRow> {
     report.rows.iter().filter(|row| row.query_id == query_id).collect()
 }
 
 pub(super) fn whole_plan_planning_row<'a>(
     report: &'a NativeDataFusionPlanningReport,
     query_id: &str,
-) -> &'a datafusion_nexus::NativeDataFusionPlanningRow {
+) -> &'a datafusion_nexus::native_report::NativeDataFusionPlanningRow {
     report.rows.iter().find(|row| row.query_id == query_id).expect("report row should exist")
 }
 
 pub(super) fn planning_replacement_row<'a>(
     report: &'a NativeDataFusionPlanningReport,
     query_id: &str,
-) -> &'a datafusion_nexus::NativeDataFusionPlanningRow {
+) -> &'a datafusion_nexus::native_report::NativeDataFusionPlanningRow {
     let rows = report.rows.iter().filter(|row| row.query_id == query_id);
     // Replacement assertions use the last accepted fragment row when strict
     // whole-plan admission fails closed and child native fragments still

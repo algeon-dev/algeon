@@ -7,11 +7,14 @@ use arrow::{
 };
 use datafusion::physical_plan::{ExecutionPlan, empty::EmptyExec, metrics::MetricsSet};
 use datafusion_nexus::{
-    GpuCandidate, NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics, NativeStrictBoundedContractDiagnostics,
-    NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityNativePlanningOutcome,
-    NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport, NativeTpcdsParityWorkloadItem,
-    ParityComparisonMode, ParityFloatTolerance, ParityStatus, PlanningReport, compare_record_batches,
-    sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
+    native_report::{
+        NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityNativePlanningOutcome,
+        NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport, NativeTpcdsParityWorkloadItem,
+        ParityComparisonMode, ParityFloatTolerance, ParityStatus, compare_record_batches, sql_has_top_level_order_by,
+        sql_top_level_order_by_covers_output_columns,
+    },
+    planner::{NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics, NativeStrictBoundedContractDiagnostics},
+    report::{GpuCandidate, PlanningReport},
 };
 
 #[test]
@@ -131,8 +134,8 @@ fn external_oracle_decimal_precision_widening_matches_cpu_value() {
         query_id: "qxx".to_string(),
         sql: "SELECT amount FROM t ORDER BY amount".to_string(),
         cpu_outcome: NativeTpcdsParityCpuOutcome::Succeeded { schema: cpu_schema, batches: vec![cpu_batch] },
-        native_planning: datafusion_nexus::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
-            datafusion_nexus::NativePlanningFailure {
+        native_planning: datafusion_nexus::native_report::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
+            datafusion_nexus::native_report::NativePlanningFailure {
                 stage: "physical_planning".to_string(),
                 reason_code: "physical_planning_failed".to_string(),
                 message: "not relevant".to_string(),
@@ -259,13 +262,15 @@ fn parity_status_for_cpu_failure_flags_cpu_failed_and_skips_comparison() {
     let item = NativeTpcdsParityWorkloadItem {
         query_id: "q01".to_string(),
         sql: "SELECT 1 ORDER BY 1".to_string(),
-        cpu_outcome: NativeTpcdsParityCpuOutcome::PlanningFailed(datafusion_nexus::NativePlanningFailure {
-            stage: "sql_to_logical_plan".to_string(),
-            reason_code: "sql_planning_failed".to_string(),
-            message: "boom".to_string(),
-        }),
-        native_planning: datafusion_nexus::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
-            datafusion_nexus::NativePlanningFailure {
+        cpu_outcome: NativeTpcdsParityCpuOutcome::PlanningFailed(
+            datafusion_nexus::native_report::NativePlanningFailure {
+                stage: "sql_to_logical_plan".to_string(),
+                reason_code: "sql_planning_failed".to_string(),
+                message: "boom".to_string(),
+            },
+        ),
+        native_planning: datafusion_nexus::native_report::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
+            datafusion_nexus::native_report::NativePlanningFailure {
                 stage: "sql_to_logical_plan".to_string(),
                 reason_code: "sql_planning_failed".to_string(),
                 message: "boom".to_string(),
@@ -362,7 +367,7 @@ fn accepted_native_planning(schema: &Arc<Schema>) -> NativeTpcdsParityNativePlan
             input_plan_shape: "EmptyExec".to_string(),
             input_join_diagnostics: Vec::new(),
             report,
-            native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics::default(),
+            native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
             source_diagnostics: Vec::new(),
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
             adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),

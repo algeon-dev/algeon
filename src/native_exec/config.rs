@@ -14,14 +14,21 @@ use std::{
 
 use datafusion::execution::context::TaskContext;
 use nexus_query_engine::{
-    AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, CudfInventory, DynamicFilterExecutionOptions,
-    ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool,
-    GpuHashJoinBuildCache, GpuInventory, GpuLocalParquetSourceCache, GraphMemoryCalibrationOverride,
-    KeyedHashJoinStrategyOptions, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode,
-    QueryGrantRequest, QueryHandle, QueryId, QueryMemoryDomainPolicy, QueryPlacementHint, ServiceStreamPool,
-    SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy,
-    SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext, TraceId,
-    default_service_stream_pool_size_for_device, device_budget_bytes_from_facts,
+    adaptive_runtime::AdaptiveMemoryHistory,
+    capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
+    chunk::SourceChunkPlanningOptions,
+    dynamic_filter::DynamicFilterExecutionOptions,
+    exec::{GpuHashJoinBuildCache, GpuLocalParquetSourceCache},
+    graph_memory::GraphMemoryCalibrationOverride,
+    metrics::{QueryId, TraceId},
+    mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
+    runtime::{
+        CudfInventory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind,
+        GpuExecutionPool, GpuInventory, MemoryControlPolicy, MemoryResourcePolicy, QueryGrantRequest, QueryHandle,
+        QueryMemoryDomainPolicy, QueryPlacementHint, ServiceStreamPool, SourceChunkPlanningMode, SourceFetchConfig,
+        SourceSchedulerPolicy, SourceStorageProfile, TenantQueryContext, default_service_stream_pool_size_for_device,
+        device_budget_bytes_from_facts,
+    },
 };
 
 use super::{
@@ -219,7 +226,7 @@ fn standalone_bounded_context_debug_guard(
         return None;
     }
     let device_ordinal = match context.device_placement() {
-        nexus_query_engine::DevicePlacement::SingleDevice { device_ordinal } => device_ordinal,
+        nexus_query_engine::runtime::DevicePlacement::SingleDevice { device_ordinal } => device_ordinal,
         _ => return None,
     };
     Some(StandaloneBoundedContextDebugGuard::new_with_owner(device_ordinal, task_context_owner))
@@ -913,7 +920,7 @@ impl NativeCudfExecutionConfig {
         &self,
         graph_model_ask: Option<GraphAdmissionModelAsk>,
         placement_hint: QueryPlacementHint,
-    ) -> nexus_query_engine::Result<Option<Arc<QueryAdmissionTicket>>> {
+    ) -> nexus_query_engine::error::Result<Option<Arc<QueryAdmissionTicket>>> {
         let graph_ask = self.graph_aware_requested_grants_for_model_ask(graph_model_ask)?;
         Ok(self.new_plan_query_admission_ticket_with_graph_ask(graph_ask, placement_hint))
     }
@@ -922,7 +929,7 @@ impl NativeCudfExecutionConfig {
     pub(crate) fn graph_aware_requested_grant_bytes_for_model_ask(
         &self,
         graph_model_ask_bytes: Option<u64>,
-    ) -> nexus_query_engine::Result<Option<u64>> {
+    ) -> nexus_query_engine::error::Result<Option<u64>> {
         if self.requested_grant_bytes.is_some() {
             return Ok(None);
         }
@@ -943,7 +950,7 @@ impl NativeCudfExecutionConfig {
     fn graph_aware_requested_grants_for_model_ask(
         &self,
         graph_model_ask: Option<GraphAdmissionModelAsk>,
-    ) -> nexus_query_engine::Result<Option<GraphAdmissionGrantAsk>> {
+    ) -> nexus_query_engine::error::Result<Option<GraphAdmissionGrantAsk>> {
         if self.requested_grant_bytes.is_some() {
             return Ok(None);
         }
@@ -969,7 +976,7 @@ impl NativeCudfExecutionConfig {
         mut self,
         graph_model_ask: Option<GraphAdmissionModelAsk>,
         placement_hint: QueryPlacementHint,
-    ) -> nexus_query_engine::Result<Self> {
+    ) -> nexus_query_engine::error::Result<Self> {
         let graph_ask = self.graph_aware_requested_grants_for_model_ask(graph_model_ask)?;
         if let Some(ticket) = self.new_plan_query_admission_ticket_with_graph_ask(graph_ask, placement_hint) {
             self.query_admission_ticket = Some(ticket);
@@ -1032,8 +1039,8 @@ impl NativeCudfExecutionConfig {
     #[cfg(feature = "server")]
     pub(crate) fn query_admission_source_matches(
         &self,
-        service: &nexus_query_engine::QueryService,
-        tenant_id: &nexus_query_engine::TenantId,
+        service: &nexus_query_engine::runtime::QueryService,
+        tenant_id: &nexus_query_engine::runtime::TenantId,
     ) -> bool {
         self.query_admission_source
             .as_ref()
@@ -1321,7 +1328,7 @@ impl NativeCudfExecutionConfig {
                     Error::from_native(
                         "datafusion_nexus.native_exec.context_executor",
                         "failed to resolve the standalone GPU execution-pool device",
-                        nexus_query_engine::QueryError::from_cudf(
+                        nexus_query_engine::error::QueryError::from_cudf(
                             "datafusion_nexus.native_exec.context_executor",
                             "failed to resolve the standalone GPU execution-pool device",
                             error,
@@ -1373,8 +1380,8 @@ impl NativeCudfExecutionConfig {
 
     fn stamp_native_error_correlation(
         &self,
-        mut error: nexus_query_engine::QueryError,
-    ) -> nexus_query_engine::QueryError {
+        mut error: nexus_query_engine::error::QueryError,
+    ) -> nexus_query_engine::error::QueryError {
         if let Some(query_id) = &self.query_id {
             error = error.with_query_id(query_id.clone());
         }
@@ -1459,8 +1466,11 @@ fn fraction_budget_bytes(total_bytes: u64, budget_fraction: f64) -> Option<u64> 
 #[cfg(test)]
 mod tests {
     use nexus_query_engine::{
-        DeploymentIoCapability, DeviceFacts, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus,
-        QueryError, QueryErrorCode, QueryService, QueryServiceConfig, QueryServiceTenantConfig, Result, TenantId,
+        error::{QueryError, QueryErrorCode, Result},
+        runtime::{
+            DeploymentIoCapability, DeviceFacts, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus,
+            QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+        },
     };
 
     use super::*;

@@ -1,5 +1,8 @@
-use datafusion_nexus::{CandidateOutcome, FallbackReason, GpuCandidate, GpuFallbackPolicy, PlanningReport};
-use nexus_query_engine::{TriageCode, TriageVerdict};
+use datafusion_nexus::{
+    policy::{FallbackReason, GpuFallbackPolicy},
+    report::{CandidateOutcome, GpuCandidate, PlanningReport},
+};
+use nexus_query_engine::triage::{TriageCode, TriageVerdict};
 
 #[test]
 fn gpu_preferred_is_default_development_policy() {

@@ -4,7 +4,7 @@ use datafusion::common::{DataFusionError, SchemaError};
 use tonic::{Status, metadata::MetadataValue};
 
 use super::{datafusion_error::find_adapter_error, observability::CapturedError};
-use crate::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, error::ErrorSourceDiagnostics};
+use crate::error::{Error, ErrorCode, ErrorKind, ErrorSourceDiagnostics, ErrorStatus, Facts};
 
 /// Flight SQL response metadata key containing the stable adapter error code.
 pub const ERROR_CODE_METADATA_KEY: &str = "x-datafusion-nexus-error-code";
@@ -101,7 +101,7 @@ impl ServerError {
             Ok(adapter_error) => return Self { inner: adapter_error_with_message(message, *adapter_error) },
             Err(source) => source,
         };
-        let source = match source.downcast::<nexus_query_engine::QueryError>() {
+        let source = match source.downcast::<nexus_query_engine::error::QueryError>() {
             Ok(native_error) => {
                 return Self { inner: Error::from_native("datafusion_nexus.server.session", message, *native_error) };
             },
@@ -958,8 +958,8 @@ mod tests {
 
     #[test]
     fn server_error_session_preserves_native_query_error_classification() {
-        let native = nexus_query_engine::QueryError::new(
-            nexus_query_engine::QueryErrorCode::ServiceOverloaded,
+        let native = nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::ServiceOverloaded,
             "nexus_query_engine.query_service.admit",
             "native query service queue is full",
         )

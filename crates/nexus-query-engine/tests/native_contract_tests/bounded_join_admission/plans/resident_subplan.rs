@@ -28,7 +28,7 @@ pub(crate) enum KeyedHashJoinResidentSubplanPipelineVariant {
 
 pub(crate) fn keyed_hash_join_resident_subplan_pipeline_plan(
     variant: KeyedHashJoinResidentSubplanPipelineVariant,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let supplier_schema = Arc::new(Schema::new(vec![
         Field::new("s_suppkey", DataType::Int32, false),
         Field::new("s_name", DataType::Utf8, false),
@@ -192,7 +192,7 @@ fn build_resident_subplan_revenue_aggregate(
     revenue_projection_schema: Arc<Schema>,
     revenue_schema: Arc<Schema>,
     aggregate_function: AggregateFunction,
-) -> nexus_query_engine::NodeId {
+) -> nexus_query_engine::plan::NodeId {
     let lineitem = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         format!("/tmp/resident-subplan-{label}-lineitem.parquet"),
         Arc::clone(&lineitem_schema),

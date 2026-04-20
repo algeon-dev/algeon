@@ -38,7 +38,7 @@ pub(crate) use resident_subplan::{
 
 pub(crate) fn keyless_conditional_join_input_subplan_plan(
     variant: KeylessInputSubplanVariant,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let lineitem_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -185,7 +185,7 @@ pub(crate) fn keyless_conditional_join_input_subplan_plan(
     builder.finish_with_host_sink(root)
 }
 
-pub(crate) fn serial_aggregate_single_join_spine_plan() -> nexus_query_engine::QueryPlan {
+pub(crate) fn serial_aggregate_single_join_spine_plan() -> nexus_query_engine::plan::QueryPlan {
     let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
     let orders_schema = Arc::new(Schema::new(vec![
         Field::new("o_orderkey", DataType::Int32, false),
@@ -268,7 +268,7 @@ pub(crate) fn serial_aggregate_single_join_spine_plan() -> nexus_query_engine::Q
     builder.finish_with_host_sink(sort)
 }
 
-pub(crate) fn single_join_post_root_aggregate_sort_limit_plan() -> nexus_query_engine::QueryPlan {
+pub(crate) fn single_join_post_root_aggregate_sort_limit_plan() -> nexus_query_engine::plan::QueryPlan {
     let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
     let orders_schema = Arc::new(Schema::new(vec![
         Field::new("o_orderkey", DataType::Int32, false),
@@ -335,7 +335,7 @@ pub(crate) fn single_join_post_root_aggregate_sort_limit_plan() -> nexus_query_e
     builder.finish_with_host_sink(limit)
 }
 
-pub(crate) fn serial_aggregate_multi_join_spine_plan() -> nexus_query_engine::QueryPlan {
+pub(crate) fn serial_aggregate_multi_join_spine_plan() -> nexus_query_engine::plan::QueryPlan {
     let part_schema = Arc::new(Schema::new(vec![
         Field::new("p_partkey", DataType::Int32, false),
         Field::new("p_brand", DataType::Utf8, false),
@@ -462,7 +462,7 @@ pub(crate) fn serial_aggregate_multi_join_spine_plan() -> nexus_query_engine::Qu
     builder.finish_with_host_sink(sort)
 }
 
-pub(super) fn single_join_with_aggregate_input_plan(aggregate_side: JoinSide) -> nexus_query_engine::QueryPlan {
+pub(super) fn single_join_with_aggregate_input_plan(aggregate_side: JoinSide) -> nexus_query_engine::plan::QueryPlan {
     let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
     let orders_schema = Arc::new(Schema::new(vec![
         Field::new("o_orderkey", DataType::Int32, false),

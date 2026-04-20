@@ -26,7 +26,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "q02 should be admitted by the capability proof:\n{native_plan}"
     );
-    let optimized_q2 = nexus_query_engine::optimize_query_plan(native_plan.clone(), &Default::default());
+    let optimized_q2 = nexus_query_engine::optimizer::optimize_query_plan(native_plan.clone(), &Default::default());
     assert!(
         optimized_q2.diagnostics.join_filter_reassociation.applied_count >= 1,
         "q02 should use join-filter reassociation to push nation/region filtering below the partsupp join:\n{}",
@@ -40,7 +40,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         optimized_q2.plan
     );
     let facts = native_plan
-        .bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
+        .bounded_join_modeled_facts(nexus_query_engine::runtime::ExecutionBoundaryPolicy::default())
         .expect("q02 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -55,14 +55,14 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         native_plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
         "q15 should lower to the executable root full-sort shared aggregate fanout pipeline:\n{native_plan}"
     );
-    let optimized_q15 = nexus_query_engine::optimize_query_plan(native_plan.clone(), &Default::default());
+    let optimized_q15 = nexus_query_engine::optimizer::optimize_query_plan(native_plan.clone(), &Default::default());
     assert!(
         optimized_q15.plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
         "optimized q15 should be admitted by the root full-sort shared aggregate fanout envelope:\n{}",
         optimized_q15.plan
     );
     let facts = native_plan
-        .bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
+        .bounded_join_modeled_facts(nexus_query_engine::runtime::ExecutionBoundaryPolicy::default())
         .expect("q15 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -80,7 +80,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         "q18 should lower to the executable resident grouped aggregate TopK pipeline:\n{native_plan}"
     );
     let facts = native_plan
-        .bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
+        .bounded_join_modeled_facts(nexus_query_engine::runtime::ExecutionBoundaryPolicy::default())
         .expect("q18 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -96,7 +96,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         "q20 should lower to the executable resident grouped aggregate subquery-filter pipeline:\n{native_plan}"
     );
     let facts = native_plan
-        .bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
+        .bounded_join_modeled_facts(nexus_query_engine::runtime::ExecutionBoundaryPolicy::default())
         .expect("q20 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -164,9 +164,9 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
 
     let result = lower_physical_plan_to_native(plan);
     assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    let optimized = nexus_query_engine::optimize_query_plan(result.plans[0].clone(), &Default::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(result.plans[0].clone(), &Default::default());
 
-    assert_eq!(optimized.change, nexus_query_engine::NativeOptimizerChange::Changed);
+    assert_eq!(optimized.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(optimized.diagnostics.semijoin_reduction.applied_count, 1);
     assert_eq!(optimized.diagnostics.semijoin_reduction.candidates[0].crossed_join_node_ids.len(), 2);
@@ -244,7 +244,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
 }
 
 fn q21_left_only_mixed_residual_join_matches(
-    join: &nexus_query_engine::JoinNode,
+    join: &nexus_query_engine::plan::JoinNode,
     expected_join_type: NativeJoinType,
 ) -> bool {
     join.spec.join_type == expected_join_type
@@ -291,9 +291,19 @@ fn assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(plan: &Qu
             && join.spec.keys[0].right.name() == "ps_partkey"
     });
     let (producer_column, consumer_column, consumer_table, expected_lowering) = if part_builds_partsupp_join {
-        ("p_partkey", "ps_partkey", "partsupp", nexus_query_engine::DynamicFilterConsumerLowering::PostDecodeOnly)
+        (
+            "p_partkey",
+            "ps_partkey",
+            "partsupp",
+            nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::PostDecodeOnly,
+        )
     } else {
-        ("ps_partkey", "p_partkey", "part", nexus_query_engine::DynamicFilterConsumerLowering::ReaderPredicate)
+        (
+            "ps_partkey",
+            "p_partkey",
+            "part",
+            nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
+        )
     };
 
     assert!(
@@ -303,7 +313,7 @@ fn assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(plan: &Qu
                 && route.consumer_lowering == expected_lowering
                 && matches!(
                     route.consumer,
-                    nexus_query_engine::DynamicFilterConsumer::LocalParquetSource {
+                    nexus_query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource {
                         source_node_id
                     } if source_tables_below(plan, source_node_id) == BTreeSet::from([consumer_table.to_string()])
                 )
@@ -312,7 +322,7 @@ fn assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(plan: &Qu
     );
 }
 
-fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &nexus_query_engine::JoinNode)> {
+fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &nexus_query_engine::plan::JoinNode)> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -474,7 +484,8 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         nexus_query_engine::capability::StrictBoundedEnvelope::RootFullSortJoinAggregate,
     );
     assert!(
-        plan.bounded_join_unsupported_shape_facts(nexus_query_engine::ExecutionBoundaryPolicy::default()).is_none()
+        plan.bounded_join_unsupported_shape_facts(nexus_query_engine::runtime::ExecutionBoundaryPolicy::default())
+            .is_none()
     );
     let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     assert_eq!(output_fields, vec!["ps_partkey", "value"]);
@@ -544,7 +555,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         BTreeSet::from(["nation".to_string(), "partsupp".to_string(), "supplier".to_string()])
     );
 
-    let optimized = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
     assert_q11_keyless_proof_selected_as(
         &optimized.plan,
         "optimized q11",
@@ -558,7 +569,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     );
     assert!(
         aggregate_join_pushdown.candidates.iter().any(|candidate| candidate.rejected_reason
-            == Some(nexus_query_engine::AggregateJoinPushdownRejectedReason::InputNotJoin)),
+            == Some(nexus_query_engine::optimizer::AggregateJoinPushdownRejectedReason::InputNotJoin)),
         "q11 scalar threshold aggregate should be derived from the grouped branch before aggregate-join pushdown: {aggregate_join_pushdown:?}"
     );
     let preaggregates = optimized
@@ -701,7 +712,7 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
     assert_eq!(sort.spec.expressions[1].expr.to_string(), "c_count");
     assert!(sort.spec.expressions[1].descending);
 
-    let optimized = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
     assert_eq!(
         aggregate_join_pushdown.applied_count, 1,
@@ -779,7 +790,7 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
         plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
         "q16 should be admitted as one root full-sort grouped aggregate pipeline:\n{plan}"
     );
-    let optimized = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
     assert!(
         optimized.plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
         "optimized q16 should remain admitted as one root full-sort grouped aggregate pipeline:\n{}",
@@ -867,7 +878,7 @@ fn projection_wrapped_aggregate<'a>(
     plan: &'a QueryPlan,
     node_id: NodeId,
     context: &str,
-) -> &'a nexus_query_engine::AggregateNode {
+) -> &'a nexus_query_engine::plan::AggregateNode {
     let projection_node = plan.node(node_id).unwrap_or_else(|| panic!("{context} projection should exist"));
     let PlanNode::Projection(projection) = &projection_node.kind else {
         panic!("{context} should be projection-wrapped");

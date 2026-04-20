@@ -7,14 +7,17 @@ use std::{
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::physical_plan::ExecutionPlan;
 use nexus_query_engine::{
-    Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralBatchSource as NativeLiteralBatchSource,
-    LiteralValue as NativeLiteralValue, LocalParquetFile as NativeLocalParquetFile,
-    LocalParquetSource as NativeLocalParquetSource, MissingColumn as NativeMissingColumn,
-    ParquetEqualityDeleteFile as NativeParquetEqualityDeleteFile,
-    ParquetFieldIdReadBinding as NativeParquetFieldIdReadBinding,
-    ParquetPositionDeleteFile as NativeParquetPositionDeleteFile, PartitionColumn as NativePartitionColumn,
-    QueryPlanBuilder as NativeQueryPlanBuilder, SourceColumnRef as NativeSourceColumnRef,
-    SourceNode as NativeSourceNode, ZERO_COLUMN_COUNT_COLUMN as NATIVE_ZERO_COLUMN_COUNT_COLUMN,
+    expr::{Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue},
+    plan::QueryPlanBuilder as NativeQueryPlanBuilder,
+    source::{
+        LiteralBatchSource as NativeLiteralBatchSource, LocalParquetFile as NativeLocalParquetFile,
+        LocalParquetSource as NativeLocalParquetSource, MissingColumn as NativeMissingColumn,
+        ParquetEqualityDeleteFile as NativeParquetEqualityDeleteFile,
+        ParquetFieldIdReadBinding as NativeParquetFieldIdReadBinding,
+        ParquetPositionDeleteFile as NativeParquetPositionDeleteFile, PartitionColumn as NativePartitionColumn,
+        SourceColumnRef as NativeSourceColumnRef, SourceNode as NativeSourceNode,
+        ZERO_COLUMN_COUNT_COLUMN as NATIVE_ZERO_COLUMN_COUNT_COLUMN,
+    },
 };
 use parquet::{arrow::PARQUET_FIELD_ID_META_KEY, file::reader::FileReader};
 
@@ -397,8 +400,9 @@ mod tests {
         physical_plan::filter::FilterExec,
     };
     use nexus_query_engine::{
-        CredentialMode, PlanNode, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef,
-        validate_local_parquet_source,
+        exec::validate_local_parquet_source,
+        plan::PlanNode,
+        source::{CredentialMode, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef},
     };
     use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -2471,7 +2475,8 @@ mod tests {
         requirements.read_column_file_indices.clear();
         requirements.projected_output_columns = vec!["part".to_string()];
         requirements.projected_output_column_source_refs = vec![NativeSourceColumnRef::Partition(0)];
-        requirements.partition_columns = vec![nexus_query_engine::PartitionColumn::new("part", DataType::Int32, false)];
+        requirements.partition_columns =
+            vec![nexus_query_engine::source::PartitionColumn::new("part", DataType::Int32, false)];
         requirements.partition_column_indices = vec![0];
         requirements.scan_output_columns = vec!["part".to_string()];
 

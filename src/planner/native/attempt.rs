@@ -50,8 +50,8 @@ use crate::{
 pub(super) struct NativeOptimizationAttempt {
     pub(super) plan: Arc<dyn ExecutionPlan>,
     pub(super) report: PlanningReport,
-    pub(super) native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics,
-    pub(super) source_diagnostics: Vec<nexus_query_engine::SourceDiagnostics>,
+    pub(super) native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics,
+    pub(super) source_diagnostics: Vec<nexus_query_engine::source::SourceDiagnostics>,
     pub(super) strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
     pub(super) adaptive_pipeline: NativeAdaptivePipelineDiagnostics,
     pub(super) rewritten: bool,
@@ -131,15 +131,17 @@ fn native_preference_rejected(report: &PlanningReport) -> bool {
     })
 }
 
-fn native_preference_fallback_reason(reason: nexus_query_engine::NativePlanCpuPreferenceReason) -> FallbackReason {
+fn native_preference_fallback_reason(
+    reason: nexus_query_engine::plan::NativePlanCpuPreferenceReason,
+) -> FallbackReason {
     match reason {
-        nexus_query_engine::NativePlanCpuPreferenceReason::SmallSelectiveTopK => {
+        nexus_query_engine::plan::NativePlanCpuPreferenceReason::SmallSelectiveTopK => {
             FallbackReason::NativeSmallSelectiveTopkCpuPreferred
         },
-        nexus_query_engine::NativePlanCpuPreferenceReason::SmallSelectiveResidualJoin => {
+        nexus_query_engine::plan::NativePlanCpuPreferenceReason::SmallSelectiveResidualJoin => {
             FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred
         },
-        nexus_query_engine::NativePlanCpuPreferenceReason::SmallSelectiveFullSort => {
+        nexus_query_engine::plan::NativePlanCpuPreferenceReason::SmallSelectiveFullSort => {
             FallbackReason::NativeSmallSelectiveFullSortCpuPreferred
         },
     }
@@ -148,8 +150,8 @@ fn native_preference_fallback_reason(reason: nexus_query_engine::NativePlanCpuPr
 pub(super) fn optimize_count_only_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
-    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
-    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+    native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering_input = peel_output_requirement_exec(Arc::clone(&plan));
     let lowering = crate::native::lower_count_only_physical_plan_to_native(lowering_input);
@@ -166,8 +168,8 @@ pub(super) fn optimize_count_only_native_plan(
 pub(super) fn optimize_final_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
-    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
-    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+    native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     optimize_final_native_plan_with_composition(
         plan,
@@ -181,8 +183,8 @@ pub(super) fn optimize_final_native_plan(
 fn optimize_final_native_plan_with_composition(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
-    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
-    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+    native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
     allow_fragment_composition: bool,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
@@ -261,7 +263,7 @@ fn optimize_final_native_plan_with_composition(
 
     let mut report = lowering.report.clone();
     stamp_planning_report_correlation(&mut report, native_execution_config);
-    let mut native_optimizer = nexus_query_engine::NativeOptimizerDiagnostics::default();
+    let mut native_optimizer = nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default();
     let mut source_diagnostics = lowering.source_diagnostics.clone();
     let mut strict_bounded_contract = NativeStrictBoundedContractDiagnostics::default();
     let mut adaptive_pipeline = NativeAdaptivePipelineDiagnostics::default();
@@ -344,8 +346,8 @@ fn replace_lowered_root_or_keep_plan(
     properties_plan: Option<Arc<dyn ExecutionPlan>>,
     lowering: crate::native::NativeLoweringResult,
     native_execution_config: &NativeCudfExecutionConfig,
-    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
-    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+    native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let properties_plan = properties_plan.unwrap_or_else(|| Arc::clone(&plan));
     let mut lowering = lowering;
@@ -354,7 +356,7 @@ fn replace_lowered_root_or_keep_plan(
         return Ok(NativeOptimizationAttempt {
             plan,
             report: lowering.report,
-            native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics::default(),
+            native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
             source_diagnostics: lowering.source_diagnostics,
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
             adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
@@ -369,7 +371,8 @@ fn replace_lowered_root_or_keep_plan(
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
     let optimizer_options = native_optimizer_options_for_execution(native_optimizer_options, native_execution_config)
         .map_err(DataFusionError::from)?;
-    let optimizer_result = nexus_query_engine::optimize_query_plan(lowering.plans[0].clone(), &optimizer_options);
+    let optimizer_result =
+        nexus_query_engine::optimizer::optimize_query_plan(lowering.plans[0].clone(), &optimizer_options);
     let native_optimizer = optimizer_result.diagnostics;
     let ordered_output_sort_needed = properties_plan.properties().output_ordering().is_some()
         && !crate::native::native_plan_reproduces_declared_output_ordering(&optimizer_result.plan);
@@ -407,8 +410,8 @@ fn replace_lowered_root_or_keep_plan(
         .single_rewritten_candidate()
         .cloned()
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
-    if let nexus_query_engine::NativePlanPreferenceDecision::CpuPreferred { reason, .. } =
-        nexus_query_engine::native_plan_preference_decision(&native_plan, native_plan_preference_options)
+    if let nexus_query_engine::plan::NativePlanPreferenceDecision::CpuPreferred { reason, .. } =
+        nexus_query_engine::plan::native_plan_preference_decision(&native_plan, native_plan_preference_options)
     {
         return Ok(NativeOptimizationAttempt {
             plan,
@@ -422,7 +425,7 @@ fn replace_lowered_root_or_keep_plan(
     }
 
     if native_execution_config.native_pipeline_execution_mode()
-        == nexus_query_engine::NativePipelineExecutionMode::Adaptive
+        == nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive
     {
         let adaptive_pipeline =
             plan_adaptive_pipeline_diagnostics(&native_plan, candidate.clone(), native_execution_config)?
@@ -503,17 +506,17 @@ fn replace_lowered_root_or_keep_plan(
 }
 
 fn native_optimizer_options_for_execution(
-    options: &nexus_query_engine::NativeOptimizerOptions,
+    options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_execution_config: &NativeCudfExecutionConfig,
-) -> crate::error::Result<nexus_query_engine::NativeOptimizerOptions> {
+) -> crate::error::Result<nexus_query_engine::optimizer::NativeOptimizerOptions> {
     native_execution_config.validate_query_policies()?;
     let mut options = options.clone();
     options.semijoin_reduction.admission_mode = match native_execution_config.native_pipeline_execution_mode() {
-        nexus_query_engine::NativePipelineExecutionMode::StrictBounded => {
-            nexus_query_engine::SemijoinReductionAdmissionMode::StrictBounded
+        nexus_query_engine::mode::NativePipelineExecutionMode::StrictBounded => {
+            nexus_query_engine::optimizer::SemijoinReductionAdmissionMode::StrictBounded
         },
-        nexus_query_engine::NativePipelineExecutionMode::Adaptive => {
-            nexus_query_engine::SemijoinReductionAdmissionMode::Adaptive
+        nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive => {
+            nexus_query_engine::optimizer::SemijoinReductionAdmissionMode::Adaptive
         },
     };
     options.dynamic_filter_route_discovery.execution = native_execution_config.dynamic_filter_execution_options();
@@ -530,7 +533,7 @@ fn native_optimizer_options_for_execution(
 
 fn native_datafusion_exec_for_plan(
     original_plan: Arc<dyn ExecutionPlan>,
-    native_plan: nexus_query_engine::QueryPlan,
+    native_plan: nexus_query_engine::plan::QueryPlan,
     native_execution_config: &NativeCudfExecutionConfig,
     datafusion_shape: &str,
     eq_properties: EquivalenceProperties,
@@ -559,14 +562,14 @@ fn native_datafusion_exec_for_plan(
     .map_err(DataFusionError::from)
 }
 
-fn native_plan_gpu_resident_source_names(plan: &nexus_query_engine::QueryPlan) -> BTreeSet<String> {
+fn native_plan_gpu_resident_source_names(plan: &nexus_query_engine::plan::QueryPlan) -> BTreeSet<String> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
-            nexus_query_engine::PlanNode::Source(source) => match source.as_ref() {
-                nexus_query_engine::SourceNode::GpuResident(source) => Some(source.input_name.clone()),
-                nexus_query_engine::SourceNode::LocalParquet(_) => None,
-                nexus_query_engine::SourceNode::LiteralBatch(_) => None,
+            nexus_query_engine::plan::PlanNode::Source(source) => match source.as_ref() {
+                nexus_query_engine::source::SourceNode::GpuResident(source) => Some(source.input_name.clone()),
+                nexus_query_engine::source::SourceNode::LocalParquet(_) => None,
+                nexus_query_engine::source::SourceNode::LiteralBatch(_) => None,
             },
             _ => None,
         })
@@ -613,11 +616,11 @@ fn collect_gpu_resident_producer_children(
 fn compose_host_remainder_over_native_fragments_if_possible(
     rewritten_plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
-    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
-    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+    native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
     report: &mut PlanningReport,
-    native_optimizer: &mut nexus_query_engine::NativeOptimizerDiagnostics,
-    source_diagnostics: &mut Vec<nexus_query_engine::SourceDiagnostics>,
+    native_optimizer: &mut nexus_query_engine::optimizer::NativeOptimizerDiagnostics,
+    source_diagnostics: &mut Vec<nexus_query_engine::source::SourceDiagnostics>,
     strict_bounded_contract: &mut NativeStrictBoundedContractDiagnostics,
     adaptive_pipeline: &mut NativeAdaptivePipelineDiagnostics,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
@@ -645,8 +648,8 @@ fn compose_host_remainder_over_native_fragments_if_possible(
 fn try_compose_host_remainder_over_native_fragments(
     rewritten_plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
-    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
-    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+    native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
 ) -> DataFusionResult<Option<NativeOptimizationAttempt>> {
     if rewritten_plan.downcast_ref::<NativeCudfExec>().is_some()
         || rewritten_plan.downcast_ref::<NativeCudfComposedExec>().is_some()
@@ -763,14 +766,14 @@ fn producerize_native_fragments(
 }
 
 fn native_gpu_resident_producer_boundary_is_rejected(
-    plan: &nexus_query_engine::QueryPlan,
+    plan: &nexus_query_engine::plan::QueryPlan,
     native_execution_config: &NativeCudfExecutionConfig,
 ) -> DataFusionResult<bool> {
     match native_execution_config.native_pipeline_execution_mode() {
-        nexus_query_engine::NativePipelineExecutionMode::StrictBounded => {
+        nexus_query_engine::mode::NativePipelineExecutionMode::StrictBounded => {
             native_execution_boundary_is_rejected(plan, native_execution_config)
         },
-        nexus_query_engine::NativePipelineExecutionMode::Adaptive => {
+        nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive => {
             let diagnostics = plan_adaptive_pipeline_diagnostics(
                 plan,
                 GpuCandidate::new("NativeCudfGpuProducerExec", plan.output_schema().fields().len()),
@@ -785,8 +788,8 @@ fn native_gpu_resident_producer_boundary_is_rejected(
 fn optimize_native_child_without_composing_host_remainder(
     child: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
-    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
-    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+    native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     optimize_final_native_plan_with_composition(
         child,
@@ -800,13 +803,13 @@ fn optimize_native_child_without_composing_host_remainder(
 fn optimize_native_children_for_host_arrow_boundary(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
-    native_optimizer_options: &nexus_query_engine::NativeOptimizerOptions,
-    native_plan_preference_options: &nexus_query_engine::NativePlanPreferenceOptions,
+    native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
+    native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
     mode: HostArrowChildReplacementMode,
     scope: HostArrowChildReplacementScope,
     report: &mut PlanningReport,
-    native_optimizer: &mut nexus_query_engine::NativeOptimizerDiagnostics,
-    source_diagnostics: &mut Vec<nexus_query_engine::SourceDiagnostics>,
+    native_optimizer: &mut nexus_query_engine::optimizer::NativeOptimizerDiagnostics,
+    source_diagnostics: &mut Vec<nexus_query_engine::source::SourceDiagnostics>,
     strict_bounded_contract: &mut NativeStrictBoundedContractDiagnostics,
     adaptive_pipeline: &mut NativeAdaptivePipelineDiagnostics,
 ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
@@ -829,7 +832,7 @@ fn optimize_native_children_for_host_arrow_boundary(
 
     let mut rewritten = false;
     let mut child_reports = Vec::new();
-    let mut child_native_optimizer = nexus_query_engine::NativeOptimizerDiagnostics::default();
+    let mut child_native_optimizer = nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default();
     let mut child_source_diagnostics = Vec::new();
     let mut new_children = Vec::with_capacity(children.len());
     for child in children {
@@ -1074,7 +1077,7 @@ fn expr_contains_scalar_function(expr: &Arc<dyn PhysicalExpr>) -> bool {
 }
 
 fn native_execution_boundary_is_rejected(
-    plan: &nexus_query_engine::QueryPlan,
+    plan: &nexus_query_engine::plan::QueryPlan,
     execution_config: &NativeCudfExecutionConfig,
 ) -> DataFusionResult<bool> {
     if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
@@ -1120,9 +1123,9 @@ fn stamp_planning_report_correlation(report: &mut PlanningReport, native_executi
 }
 
 fn stamp_native_error_correlation(
-    mut error: nexus_query_engine::QueryError,
+    mut error: nexus_query_engine::error::QueryError,
     native_execution_config: &NativeCudfExecutionConfig,
-) -> nexus_query_engine::QueryError {
+) -> nexus_query_engine::error::QueryError {
     if let Some(query_id) = native_execution_config.query_id() {
         error = error.with_query_id(query_id.clone());
     }
@@ -1168,16 +1171,16 @@ mod tests {
     #[test]
     fn optimizer_options_for_execution_copy_dynamic_filter_policy_from_execution_config() {
         let dynamic_filter_options =
-            nexus_query_engine::DynamicFilterExecutionOptions::default().with_max_build_rows(10_000);
-        let keyed_hash_join_strategy_options = nexus_query_engine::KeyedHashJoinStrategyOptions::default()
+            nexus_query_engine::dynamic_filter::DynamicFilterExecutionOptions::default().with_max_build_rows(10_000);
+        let keyed_hash_join_strategy_options = nexus_query_engine::capability::KeyedHashJoinStrategyOptions::default()
             .with_small_reusable_hash_build_row_threshold(11);
         let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_dynamic_filter_execution_options(dynamic_filter_options)
             .with_keyed_hash_join_strategy_options(keyed_hash_join_strategy_options)
-            .with_native_pipeline_execution_mode(nexus_query_engine::NativePipelineExecutionMode::Adaptive);
+            .with_native_pipeline_execution_mode(nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive);
 
         let options = native_optimizer_options_for_execution(
-            &nexus_query_engine::NativeOptimizerOptions::disabled(),
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::disabled(),
             &execution_config,
         )
         .expect("valid execution policy should produce optimizer options");
@@ -1186,7 +1189,7 @@ mod tests {
         assert_eq!(options.keyed_hash_join_strategy, keyed_hash_join_strategy_options);
         assert_eq!(
             options.semijoin_reduction.admission_mode,
-            nexus_query_engine::SemijoinReductionAdmissionMode::Adaptive
+            nexus_query_engine::optimizer::SemijoinReductionAdmissionMode::Adaptive
         );
     }
 
@@ -1194,13 +1197,13 @@ mod tests {
     fn optimizer_options_for_execution_rejects_invalid_expert_query_policy() {
         let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_dynamic_filter_execution_options(
-                nexus_query_engine::DynamicFilterExecutionOptions::default()
+                nexus_query_engine::dynamic_filter::DynamicFilterExecutionOptions::default()
                     .with_max_build_rows(10)
                     .with_large_local_parquet_range_producer_rows(11),
             );
 
         let error = native_optimizer_options_for_execution(
-            &nexus_query_engine::NativeOptimizerOptions::disabled(),
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::disabled(),
             &execution_config,
         )
         .unwrap_err();
@@ -1215,12 +1218,12 @@ mod tests {
     fn optimizer_options_for_execution_rejects_invalid_keyed_hash_join_policy() {
         let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_keyed_hash_join_strategy_options(
-                nexus_query_engine::KeyedHashJoinStrategyOptions::default()
+                nexus_query_engine::capability::KeyedHashJoinStrategyOptions::default()
                     .with_large_keyed_hash_build_row_threshold(10),
             );
 
         let error = native_optimizer_options_for_execution(
-            &nexus_query_engine::NativeOptimizerOptions::disabled(),
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::disabled(),
             &execution_config,
         )
         .unwrap_err();
@@ -1235,12 +1238,12 @@ mod tests {
     fn optimizer_options_for_execution_rejects_invalid_aggregate_strategy_policy() {
         let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_aggregate_strategy_execution_options(
-                nexus_query_engine::AggregateStrategyExecutionOptions::default()
+                nexus_query_engine::capability::AggregateStrategyExecutionOptions::default()
                     .with_encoded_key_partial_low_cardinality_threshold_ppm(1_000_001),
             );
 
         let error = native_optimizer_options_for_execution(
-            &nexus_query_engine::NativeOptimizerOptions::disabled(),
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::disabled(),
             &execution_config,
         )
         .unwrap_err();
@@ -1255,12 +1258,12 @@ mod tests {
     fn optimizer_options_for_execution_rejects_invalid_source_chunk_planning_policy() {
         let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_source_chunk_planning_options(
-                nexus_query_engine::SourceChunkPlanningOptions::default()
+                nexus_query_engine::chunk::SourceChunkPlanningOptions::default()
                     .with_local_parquet_throughput_min_device_budget_bytes(0),
             );
 
         let error = native_optimizer_options_for_execution(
-            &nexus_query_engine::NativeOptimizerOptions::disabled(),
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::disabled(),
             &execution_config,
         )
         .unwrap_err();
@@ -1273,12 +1276,12 @@ mod tests {
 
     #[test]
     fn optimizer_options_for_execution_rejects_invalid_optimizer_policy() {
-        let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-            semijoin_reduction: nexus_query_engine::SemijoinReductionOptions {
+        let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+            semijoin_reduction: nexus_query_engine::optimizer::SemijoinReductionOptions {
                 cost_threshold_multiplier: 0,
                 ..Default::default()
             },
-            ..nexus_query_engine::NativeOptimizerOptions::disabled()
+            ..nexus_query_engine::optimizer::NativeOptimizerOptions::disabled()
         };
         let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1);
 

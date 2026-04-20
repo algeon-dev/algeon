@@ -43,9 +43,15 @@ fn bounded_native_query_executes_mixed_inner_multi_join_pipeline_with_ordered_re
         orders,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         first_join_schema,
@@ -56,9 +62,12 @@ fn bounded_native_query_executes_mixed_inner_multi_join_pipeline_with_ordered_re
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "region", "region"), "region"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "region", "region"), "region"),
             ])
             .with_build_side(JoinSide::Right),
         second_join_schema,

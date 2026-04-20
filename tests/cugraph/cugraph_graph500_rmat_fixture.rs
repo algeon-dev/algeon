@@ -21,7 +21,8 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphSqlConfig, GpuFallbackPolicy, NativeCudfExecutionConfig,
+    graph_sql::CugraphSqlConfig, native_exec::NativeCudfExecutionConfig, planner::CudfOptimizerConfig,
+    policy::GpuFallbackPolicy, session::CudfSessionStateBuilderExt,
 };
 use serde_json::Value;
 

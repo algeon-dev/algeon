@@ -135,11 +135,11 @@ impl RunParams {
         // The regression under test is the credential DEFAULT CHAIN: RustFS
         // credentials must come only from the ambient AWS env pair the
         // object-store provider resolves, never from static NEXUS_ICEBERG_S3_*.
-        reject_non_empty_env(datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)?;
-        reject_non_empty_env(datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)?;
-        reject_non_empty_env(datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)?;
-        reject_non_empty_env(datafusion_nexus::iceberg::AWS_SESSION_TOKEN_ENV)?;
-        reject_non_empty_env(datafusion_nexus::iceberg::AWS_SECURITY_TOKEN_ENV)?;
+        reject_non_empty_env(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)?;
+        reject_non_empty_env(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)?;
+        reject_non_empty_env(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)?;
+        reject_non_empty_env(datafusion_nexus::table_format::iceberg::AWS_SESSION_TOKEN_ENV)?;
+        reject_non_empty_env(datafusion_nexus::table_format::iceberg::AWS_SECURITY_TOKEN_ENV)?;
 
         let namespace = std::env::var(NEXUS_ICEBERG_NAMESPACE_ENV).map_err(|_| {
             format!("set {NEXUS_ICEBERG_NAMESPACE_ENV} to a loaded data-bearing namespace such as tpch_sf1")
@@ -158,9 +158,9 @@ impl RunParams {
             Err(_) => None,
         };
 
-        let aws_access_key_id =
-            std::env::var(datafusion_nexus::iceberg::AWS_ACCESS_KEY_ID_ENV).unwrap_or_else(|_| "cudfadmin".to_string());
-        let aws_secret_access_key = std::env::var(datafusion_nexus::iceberg::AWS_SECRET_ACCESS_KEY_ENV)
+        let aws_access_key_id = std::env::var(datafusion_nexus::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV)
+            .unwrap_or_else(|_| "cudfadmin".to_string());
+        let aws_secret_access_key = std::env::var(datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV)
             .unwrap_or_else(|_| "cudfadminsecret".to_string());
 
         Ok(Self {
@@ -193,19 +193,13 @@ impl RunParams {
             (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
             (
                 NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
-                datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN.to_string(),
+                datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN.to_string(),
             ),
-            (datafusion_nexus::iceberg::AWS_REGION_ENV, self.s3_region.clone()),
-            (datafusion_nexus::iceberg::AWS_ACCESS_KEY_ID_ENV, self.aws_access_key_id.clone()),
-            (datafusion_nexus::iceberg::AWS_SECRET_ACCESS_KEY_ENV, self.aws_secret_access_key.clone()),
-            (
-                datafusion_nexus::table_format_contracts::NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV,
-                read_strategy.to_string(),
-            ),
-            (
-                datafusion_nexus::table_format_contracts::NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
-                read_mode.to_string(),
-            ),
+            (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, self.s3_region.clone()),
+            (datafusion_nexus::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV, self.aws_access_key_id.clone()),
+            (datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV, self.aws_secret_access_key.clone()),
+            (datafusion_nexus::table_format::NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, read_strategy.to_string()),
+            (datafusion_nexus::table_format::NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV, read_mode.to_string()),
         ])
     }
 
@@ -597,18 +591,18 @@ impl EnvGuard {
     /// credential and ambient session token cleared.
     fn install(params: &RunParams) -> E2eResult<Self> {
         let values: HashMap<&'static str, String> = HashMap::from([
-            (datafusion_nexus::iceberg::AWS_ACCESS_KEY_ID_ENV, params.aws_access_key_id.clone()),
-            (datafusion_nexus::iceberg::AWS_SECRET_ACCESS_KEY_ENV, params.aws_secret_access_key.clone()),
-            (datafusion_nexus::iceberg::AWS_REGION_ENV, params.s3_region.clone()),
+            (datafusion_nexus::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV, params.aws_access_key_id.clone()),
+            (datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV, params.aws_secret_access_key.clone()),
+            (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, params.s3_region.clone()),
         ]);
         let mut names: Vec<&'static str> = values.keys().copied().collect();
         names.extend([
-            datafusion_nexus::iceberg::AWS_SESSION_TOKEN_ENV,
-            datafusion_nexus::iceberg::AWS_SECURITY_TOKEN_ENV,
-            datafusion_nexus::iceberg::AWS_PROFILE_ENV,
-            datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV,
-            datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV,
-            datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV,
+            datafusion_nexus::table_format::iceberg::AWS_SESSION_TOKEN_ENV,
+            datafusion_nexus::table_format::iceberg::AWS_SECURITY_TOKEN_ENV,
+            datafusion_nexus::table_format::iceberg::AWS_PROFILE_ENV,
+            datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV,
+            datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV,
+            datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV,
         ]);
         names.sort_unstable();
         names.dedup();

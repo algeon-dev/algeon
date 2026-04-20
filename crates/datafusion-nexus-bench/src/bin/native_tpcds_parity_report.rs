@@ -6,13 +6,15 @@ use std::{
 };
 
 use datafusion_nexus::{
-    CudfOptimizerConfig, GpuFallbackPolicy, NativePipelineExecutionMode, NativeTpcdsParityReport, ParityFloatTolerance,
-    StatisticalAggregateExecutionMode,
+    native_report::{NativeTpcdsParityReport, ParityFloatTolerance},
+    planner::CudfOptimizerConfig,
+    policy::GpuFallbackPolicy,
 };
 use datafusion_nexus_bench::{
     TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, prepare_tpcds_report_dataset, tpcds_native_optimizer_config,
     tpcds_parity_report_rows_with_external_oracles, tpcds_report_session_config,
 };
+use nexus_query_engine::mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode};
 
 const CUDF_TPCDS_PARITY_QUERY_IDS_ENV: &str = "CUDF_TPCDS_PARITY_QUERY_IDS";
 const CUDF_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV: &str = "CUDF_TPCDS_PARITY_FLOAT_ABS_TOLERANCE";
@@ -123,7 +125,7 @@ fn validate_statistical_aggregate_parity_contract(
     mode: StatisticalAggregateExecutionMode,
     tolerance: ParityFloatTolerance,
 ) {
-    if mode.tolerance_contract() == datafusion_nexus::StatisticalAggregateToleranceContract::FloatTolerant
+    if mode.tolerance_contract() == nexus_query_engine::mode::StatisticalAggregateToleranceContract::FloatTolerant
         && !tolerance.is_enabled()
     {
         panic!(

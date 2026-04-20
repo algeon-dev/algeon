@@ -31,12 +31,15 @@ fn native_query_executes_conditional_non_equi_inner_join() {
                 right_order_id_times_ten(),
             ))
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                    nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
                     "right_order_id",
                 ),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ]),
         Arc::clone(&output_schema),
     );
@@ -110,8 +113,11 @@ fn native_query_executes_left_join_with_equi_key_and_residual_predicate() {
         JoinSpec::new(JoinType::Left, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -178,15 +184,18 @@ fn native_query_executes_full_join_with_equi_key_and_residual_predicate() {
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
                     "left_order_id",
                 ),
                 JoinOutputColumn::right(
-                    nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                    nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
                     "right_order_id",
                 ),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),

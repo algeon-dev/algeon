@@ -1,5 +1,5 @@
 use super::*;
-use crate::{WindowFrame, WindowNode};
+use crate::plan::{WindowFrame, WindowNode};
 
 pub(in crate::capability) fn root_full_sort_join_aggregate_shape_decision(
     plan: &QueryPlan,

@@ -26,8 +26,11 @@ fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_rese
         JoinSpec::new(JoinType::Inner, vec![])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ]),
         Arc::clone(&output_schema),
     );
@@ -114,8 +117,11 @@ fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatch
         JoinSpec::new(JoinType::Left, vec![])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -196,15 +202,18 @@ fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retaine
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
                     "left_order_id",
                 ),
                 JoinOutputColumn::right(
-                    nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                    nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
                     "right_order_id",
                 ),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ]),
         Arc::clone(&output_schema),
     );
@@ -427,7 +436,7 @@ fn keyless_outer_cross_join_plan(
     join_type: JoinType,
     empty_left: bool,
     empty_right: bool,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("qty", DataType::Int32, join_type == JoinType::Full),
         Field::new("category", DataType::Utf8, true),
@@ -463,8 +472,11 @@ fn keyless_outer_cross_join_plan(
         right,
         JoinSpec::new(join_type, vec![])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(match join_type {
                 JoinType::Left => JoinSide::Right,

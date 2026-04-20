@@ -22,7 +22,7 @@ use datafusion::{
     },
 };
 use futures::Stream;
-use nexus_query_engine::{
+use nexus_query_engine::runtime::{
     ExecutionCancellation, QueryAdmissionRequest, QueryGrantBand, QueryGrantRequest, QueryHandle, QueryPlacementHint,
     QueryQos, QueryService, TenantId, TenantQueryContext,
 };
@@ -56,7 +56,7 @@ impl QueryAdmissionSource {
     pub(crate) fn requested_grant_band(
         &self,
         request: QueryGrantRequest,
-    ) -> nexus_query_engine::Result<QueryGrantBand> {
+    ) -> nexus_query_engine::error::Result<QueryGrantBand> {
         self.service.tenant_requested_grant_band_with_grant_request(&self.tenant_id, request)
     }
 
@@ -294,7 +294,7 @@ impl QueryAdmissionTicket {
     pub(crate) fn begin_execution_round(
         self: &Arc<Self>,
         task_context: Arc<TaskContext>,
-    ) -> nexus_query_engine::Result<QueryAdmissionExecutionRoundGuard> {
+    ) -> nexus_query_engine::error::Result<QueryAdmissionExecutionRoundGuard> {
         let task_key = Self::task_key(&task_context);
         let mut state = self.lock_state()?;
         Self::remove_stale_rounds_locked(&mut state);
@@ -324,7 +324,7 @@ impl QueryAdmissionTicket {
         self: &Arc<Self>,
         task_context: Arc<TaskContext>,
         cancellation: ExecutionCancellation,
-    ) -> nexus_query_engine::Result<TicketTenantQueryContext> {
+    ) -> nexus_query_engine::error::Result<TicketTenantQueryContext> {
         let task_key = Self::task_key(&task_context);
         loop {
             let notify = Arc::clone(&self.notify);
@@ -376,7 +376,7 @@ impl QueryAdmissionTicket {
         task_context: Arc<TaskContext>,
         epoch: Option<u64>,
         cancellation: ExecutionCancellation,
-    ) -> nexus_query_engine::Result<TicketTenantQueryContext> {
+    ) -> nexus_query_engine::error::Result<TicketTenantQueryContext> {
         let mut reset_guard = TicketAdmitResetGuard { ticket: Arc::clone(self), task_key, disarmed: false };
         let request = QueryAdmissionRequest::new()
             .with_qos(self.source.qos)
@@ -427,8 +427,8 @@ impl QueryAdmissionTicket {
                 self.notify.notify_waiters();
                 drop(state);
                 drop(handle);
-                return Err(nexus_query_engine::QueryError::new(
-                    nexus_query_engine::QueryErrorCode::Internal,
+                return Err(nexus_query_engine::error::QueryError::new(
+                    nexus_query_engine::error::QueryErrorCode::Internal,
                     "datafusion_nexus.native_exec.admission_ticket",
                     "query admission ticket execution round disappeared during admission",
                 ));
@@ -438,8 +438,8 @@ impl QueryAdmissionTicket {
                 self.notify.notify_waiters();
                 drop(state);
                 drop(handle);
-                return Err(nexus_query_engine::QueryError::new(
-                    nexus_query_engine::QueryErrorCode::Internal,
+                return Err(nexus_query_engine::error::QueryError::new(
+                    nexus_query_engine::error::QueryErrorCode::Internal,
                     "datafusion_nexus.native_exec.admission_ticket",
                     "query admission ticket execution round changed during admission",
                 ));
@@ -460,7 +460,7 @@ impl QueryAdmissionTicket {
         epoch: u64,
         task_context: Arc<TaskContext>,
         cancellation: ExecutionCancellation,
-    ) -> nexus_query_engine::Result<TicketTenantQueryContext> {
+    ) -> nexus_query_engine::error::Result<TicketTenantQueryContext> {
         let mut pending_guard =
             QueryAdmissionPendingContextGuard { ticket: Arc::clone(self), task_key, epoch, released: false };
         match handle.acquire_context_with_cancellation_async(cancellation).await {
@@ -543,10 +543,10 @@ impl QueryAdmissionTicket {
         self.notify.notify_waiters();
     }
 
-    fn lock_state(&self) -> nexus_query_engine::Result<std::sync::MutexGuard<'_, TicketState>> {
+    fn lock_state(&self) -> nexus_query_engine::error::Result<std::sync::MutexGuard<'_, TicketState>> {
         self.state.lock().map_err(|_error| {
-            nexus_query_engine::QueryError::new(
-                nexus_query_engine::QueryErrorCode::Internal,
+            nexus_query_engine::error::QueryError::new(
+                nexus_query_engine::error::QueryErrorCode::Internal,
                 "datafusion_nexus.native_exec.admission_ticket",
                 "query admission ticket state mutex was poisoned",
             )
@@ -774,7 +774,7 @@ mod tests {
         physical_plan::{ExecutionPlan, empty::EmptyExec},
     };
     use futures::StreamExt;
-    use nexus_query_engine::{
+    use nexus_query_engine::runtime::{
         DeploymentIoCapability, ExecutionCancellation, GdsDriverProbeStatus, KvikioCompatModeStatus,
         NvidiaFsProbeStatus, QueryServiceConfig, QueryServiceTenantConfig,
     };

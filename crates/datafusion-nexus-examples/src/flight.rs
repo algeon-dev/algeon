@@ -5,7 +5,7 @@
 
 use anyhow::Context;
 use datafusion_nexus::{
-    NexusGpuBackend,
+    backend::NexusGpuBackend,
     server::{FlightSqlServer, ServerConfig, ServerShutdown},
 };
 use tokio_util::sync::CancellationToken;

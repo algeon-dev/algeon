@@ -7,9 +7,9 @@ use arrow::{
     datatypes::DataType,
     record_batch::RecordBatch,
 };
-use datafusion_nexus::{
+use datafusion_nexus::graph_sql::{
     CugraphAlgorithm,
-    graph_sql::parity::{ParityComparator, ParitySpec, ParityTruthSource},
+    parity::{ParityComparator, ParitySpec, ParityTruthSource},
 };
 use serde_json::Value;
 

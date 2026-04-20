@@ -55,9 +55,13 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CandidateOutcome, FallbackReason, NativeFallbackPressureOutcome, NativeFallbackPressureReport,
-    NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeLoweringResult,
-    lower_physical_plan_to_native,
+    native::{NativeLoweringResult, lower_physical_plan_to_native},
+    native_report::{
+        NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadInput,
+        NativeFallbackPressureWorkloadItem,
+    },
+    policy::FallbackReason,
+    report::CandidateOutcome,
 };
 use datafusion_nexus_bench::{
     ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
@@ -65,9 +69,12 @@ use datafusion_nexus_bench::{
     tpch_fallback_pressure_workload_items, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
 };
 use nexus_query_engine::{
-    AggregateFunction, Expr, JoinNullEquality as NativeJoinNullEquality, JoinOutputColumn as NativeJoinOutputColumn,
-    JoinSide as NativeJoinSide, JoinType as NativeJoinType, LiteralValue, NodeId, PlanNode, QueryPlan, ResultSink,
-    SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
+    expr::{AggregateFunction, Expr, LiteralValue},
+    plan::{
+        JoinNullEquality as NativeJoinNullEquality, JoinOutputColumn as NativeJoinOutputColumn,
+        JoinSide as NativeJoinSide, JoinType as NativeJoinType, NodeId, PlanNode, QueryPlan, ResultSink,
+    },
+    source::{SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN},
 };
 
 #[path = "native_lowering_tests/analytical_olap.rs"]
@@ -200,11 +207,15 @@ fn count_only_sql_session_config() -> SessionConfig {
     config
 }
 
-fn native_local_parquet_source(plan: &nexus_query_engine::QueryPlan) -> &nexus_query_engine::LocalParquetSource {
+fn native_local_parquet_source(
+    plan: &nexus_query_engine::plan::QueryPlan,
+) -> &nexus_query_engine::source::LocalParquetSource {
     native_local_parquet_sources(plan).into_iter().next().expect("native plan should contain a local parquet source")
 }
 
-fn native_local_parquet_sources(plan: &nexus_query_engine::QueryPlan) -> Vec<&nexus_query_engine::LocalParquetSource> {
+fn native_local_parquet_sources(
+    plan: &nexus_query_engine::plan::QueryPlan,
+) -> Vec<&nexus_query_engine::source::LocalParquetSource> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -218,7 +229,9 @@ fn native_local_parquet_sources(plan: &nexus_query_engine::QueryPlan) -> Vec<&ne
         .collect()
 }
 
-fn native_literal_batch_sources(plan: &nexus_query_engine::QueryPlan) -> Vec<&nexus_query_engine::LiteralBatchSource> {
+fn native_literal_batch_sources(
+    plan: &nexus_query_engine::plan::QueryPlan,
+) -> Vec<&nexus_query_engine::source::LiteralBatchSource> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -231,15 +244,15 @@ fn native_literal_batch_sources(plan: &nexus_query_engine::QueryPlan) -> Vec<&ne
         .collect()
 }
 
-fn local_parquet_source_table(source: &nexus_query_engine::LocalParquetSource) -> Option<&str> {
+fn local_parquet_source_table(source: &nexus_query_engine::source::LocalParquetSource) -> Option<&str> {
     source.files.first()?.path.file_stem()?.to_str()
 }
 
-fn native_aggregate_functions(plan: &nexus_query_engine::QueryPlan) -> Vec<AggregateFunction> {
+fn native_aggregate_functions(plan: &nexus_query_engine::plan::QueryPlan) -> Vec<AggregateFunction> {
     native_aggregate_exprs(plan).iter().map(|expr| expr.function).collect()
 }
 
-fn native_aggregate_exprs(plan: &nexus_query_engine::QueryPlan) -> &[nexus_query_engine::AggregateExpr] {
+fn native_aggregate_exprs(plan: &nexus_query_engine::plan::QueryPlan) -> &[nexus_query_engine::expr::AggregateExpr] {
     native_aggregate_nodes(plan)
         .into_iter()
         .next()
@@ -247,7 +260,7 @@ fn native_aggregate_exprs(plan: &nexus_query_engine::QueryPlan) -> &[nexus_query
         .expect("native plan should contain an aggregate node")
 }
 
-fn native_aggregate_nodes(plan: &nexus_query_engine::QueryPlan) -> Vec<&nexus_query_engine::AggregateNode> {
+fn native_aggregate_nodes(plan: &nexus_query_engine::plan::QueryPlan) -> Vec<&nexus_query_engine::plan::AggregateNode> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -257,7 +270,7 @@ fn native_aggregate_nodes(plan: &nexus_query_engine::QueryPlan) -> Vec<&nexus_qu
         .collect()
 }
 
-fn native_aggregate_group_exprs(plan: &nexus_query_engine::QueryPlan) -> &[Expr] {
+fn native_aggregate_group_exprs(plan: &nexus_query_engine::plan::QueryPlan) -> &[Expr] {
     plan.nodes()
         .iter()
         .find_map(|node| match &node.kind {
@@ -267,7 +280,7 @@ fn native_aggregate_group_exprs(plan: &nexus_query_engine::QueryPlan) -> &[Expr]
         .expect("native plan should contain an aggregate node")
 }
 
-fn native_projection_exprs(plan: &nexus_query_engine::QueryPlan) -> Vec<&Expr> {
+fn native_projection_exprs(plan: &nexus_query_engine::plan::QueryPlan) -> Vec<&Expr> {
     plan.nodes()
         .iter()
         .flat_map(|node| match &node.kind {
@@ -277,11 +290,11 @@ fn native_projection_exprs(plan: &nexus_query_engine::QueryPlan) -> Vec<&Expr> {
         .collect()
 }
 
-fn native_filter_expr(plan: &nexus_query_engine::QueryPlan) -> &Expr {
+fn native_filter_expr(plan: &nexus_query_engine::plan::QueryPlan) -> &Expr {
     native_filter_exprs(plan).into_iter().next().expect("native plan should contain a filter node")
 }
 
-fn native_filter_exprs(plan: &nexus_query_engine::QueryPlan) -> Vec<&Expr> {
+fn native_filter_exprs(plan: &nexus_query_engine::plan::QueryPlan) -> Vec<&Expr> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -291,7 +304,7 @@ fn native_filter_exprs(plan: &nexus_query_engine::QueryPlan) -> Vec<&Expr> {
         .collect()
 }
 
-fn native_joins(plan: &nexus_query_engine::QueryPlan) -> Vec<&nexus_query_engine::JoinNode> {
+fn native_joins(plan: &nexus_query_engine::plan::QueryPlan) -> Vec<&nexus_query_engine::plan::JoinNode> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -301,7 +314,7 @@ fn native_joins(plan: &nexus_query_engine::QueryPlan) -> Vec<&nexus_query_engine
         .collect()
 }
 
-fn rewritten_native_join(result: &NativeLoweringResult) -> &nexus_query_engine::JoinNode {
+fn rewritten_native_join(result: &NativeLoweringResult) -> &nexus_query_engine::plan::JoinNode {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -316,7 +329,7 @@ fn rewritten_native_join(result: &NativeLoweringResult) -> &nexus_query_engine::
 }
 
 fn assert_right_hash_join_contract(
-    join: &nexus_query_engine::JoinNode,
+    join: &nexus_query_engine::plan::JoinNode,
     expected_join_type: NativeJoinType,
     expected_build_side: NativeJoinSide,
     expected_projection: &[(NativeJoinSide, &str, &str)],
@@ -354,8 +367,8 @@ fn projection_source_for_alias<'a>(expressions: &'a [String], alias: &str) -> &'
 }
 
 fn assert_join_input_materializes_decimal_cast(
-    plan: &nexus_query_engine::QueryPlan,
-    input: nexus_query_engine::NodeId,
+    plan: &nexus_query_engine::plan::QueryPlan,
+    input: nexus_query_engine::plan::NodeId,
     alias: &str,
     source_column: &str,
 ) {
@@ -387,8 +400,8 @@ fn assert_join_input_materializes_decimal_cast(
 }
 
 fn assert_join_input_materializes_substring(
-    plan: &nexus_query_engine::QueryPlan,
-    input: nexus_query_engine::NodeId,
+    plan: &nexus_query_engine::plan::QueryPlan,
+    input: nexus_query_engine::plan::NodeId,
     alias: &str,
     source_column: &str,
 ) {
@@ -416,8 +429,8 @@ fn assert_join_input_materializes_substring(
 }
 
 fn assert_join_input_materializes_case_decimal_divide(
-    plan: &nexus_query_engine::QueryPlan,
-    input: nexus_query_engine::NodeId,
+    plan: &nexus_query_engine::plan::QueryPlan,
+    input: nexus_query_engine::plan::NodeId,
     alias: &str,
     source_column: &str,
 ) {
@@ -439,7 +452,7 @@ fn assert_join_input_materializes_case_decimal_divide(
                                     && matches!(
                                         &branches[0].then,
                                         Expr::Binary {
-                                            op: nexus_query_engine::BinaryOp::Divide,
+                                            op: nexus_query_engine::expr::BinaryOp::Divide,
                                             output_type: Some(DataType::Decimal128(_, _)),
                                             left,
                                             right,
@@ -455,8 +468,8 @@ fn assert_join_input_materializes_case_decimal_divide(
 }
 
 fn assert_join_input_materializes_upper_utf8view_cast(
-    plan: &nexus_query_engine::QueryPlan,
-    input: nexus_query_engine::NodeId,
+    plan: &nexus_query_engine::plan::QueryPlan,
+    input: nexus_query_engine::plan::NodeId,
     alias: &str,
     source_column: &str,
 ) {

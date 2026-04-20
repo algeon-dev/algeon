@@ -25,7 +25,7 @@ fn disabled_native_optimizer_keeps_stream_fanout_replay_off() {
     assert!(result.diagnostics.stream_fanout_replay.is_empty());
 }
 
-fn shared_projected_probe_fanout_plan() -> nexus_query_engine::QueryPlan {
+fn shared_projected_probe_fanout_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(gpu_source("fact", &["key", "qty"]));
     let prefix_dim = builder.add_source(gpu_source("prefix_dim", &["key"]));

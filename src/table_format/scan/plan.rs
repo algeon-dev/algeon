@@ -1,4 +1,4 @@
-use super::*;
+use super::{columns::TableFormatUnsupportedColumn, *};
 
 /// Resolved table-format scan facts consumed by later native lowering stages.
 ///
@@ -237,7 +237,7 @@ impl TableFormatScanPlan {
         self.projected_columns
             .iter()
             .chain(self.pure_filter_columns.iter())
-            .find(|column| !nexus_query_engine::is_supported_arrow_type(&column.data_type))
+            .find(|column| !nexus_query_engine::datatypes::is_supported_arrow_type(&column.data_type))
             .map(|column| TableFormatUnsupportedColumn {
                 logical_name: column.logical_name.as_str(),
                 data_type: &column.data_type,
@@ -359,15 +359,17 @@ fn summarize_resolved_source_fallback_reason<'a>(values: impl IntoIterator<Item 
 
 pub(super) fn table_format_source_read_contract(source: &ResolvedParquetSource) -> &'static str {
     match source.read_strategy {
-        nexus_query_engine::ParquetReadStrategy::LocalCacheKvikio
+        nexus_query_engine::source::ParquetReadStrategy::LocalCacheKvikio
             if source.cache_status == LakehouseCacheStatus::Hit =>
         {
             "local_cache_hit"
         },
-        nexus_query_engine::ParquetReadStrategy::RemoteHostBuffer if source.remote_host_buffer_ranged_enabled => {
+        nexus_query_engine::source::ParquetReadStrategy::RemoteHostBuffer
+            if source.remote_host_buffer_ranged_enabled =>
+        {
             "remote_host_buffer_ranged"
         },
-        nexus_query_engine::ParquetReadStrategy::RemoteHostBuffer => "remote_host_buffer_full",
+        nexus_query_engine::source::ParquetReadStrategy::RemoteHostBuffer => "remote_host_buffer_full",
         _ => source.read_strategy.as_str(),
     }
 }

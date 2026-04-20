@@ -26,9 +26,13 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, NATIVE_CUDF_DATAFUSION_METRIC_NAMES,
-    NativeCudfComposedExec, NativeCudfExec, NativeCudfGpuProducerExec, NativeDataFusionExecutionMetrics,
-    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, StatisticalAggregateExecutionMode,
+    native_exec::{
+        NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfComposedExec, NativeCudfExec, NativeCudfGpuProducerExec,
+    },
+    native_report::{NativeDataFusionExecutionMetrics, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow},
+    planner::CudfNativePhysicalOptimizerRule,
+    report::CandidateOutcome,
+    session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
     CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
@@ -37,7 +41,7 @@ use datafusion_nexus_bench::{
     tpcds_native_analytics_optimizer_config_with_profile_settings, tpcds_native_profile_settings_from_env,
     tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
 };
-use nexus_query_engine::harness::max_option as max_optional_usize;
+use nexus_query_engine::{harness::max_option as max_optional_usize, mode::StatisticalAggregateExecutionMode};
 
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];

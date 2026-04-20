@@ -6,7 +6,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use datafusion::prelude::SessionContext;
-use datafusion_nexus::NexusGpuBackend;
+use datafusion_nexus::backend::NexusGpuBackend;
 
 pub mod flight;
 pub mod pipelines;

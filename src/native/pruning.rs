@@ -25,7 +25,7 @@ use datafusion::{
     },
     physical_plan::filter::FilterExec,
 };
-use nexus_query_engine::PredicateDisposition as NativePredicateDisposition;
+use nexus_query_engine::source::PredicateDisposition as NativePredicateDisposition;
 
 use super::validate::validate_physical_expr;
 use crate::policy::FallbackReason;

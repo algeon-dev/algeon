@@ -442,11 +442,11 @@ impl CompiledTaskExecutor for MockExecutor {
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<Self::Resource>,
-    ) -> nexus_query_engine::Result<CompiledTaskOutput<Self::Resource>> {
+    ) -> nexus_query_engine::error::Result<CompiledTaskOutput<Self::Resource>> {
         self.executed.push(task.id());
         if self.fail_tasks.contains(&task.id()) {
-            return Err(nexus_query_engine::QueryError::new(
-                nexus_query_engine::QueryErrorCode::Internal,
+            return Err(nexus_query_engine::error::QueryError::new(
+                nexus_query_engine::error::QueryErrorCode::Internal,
                 "nexus_query_engine.tests.mock_executor",
                 "mock compiled executor failure",
             )
@@ -491,14 +491,14 @@ impl CompiledTaskExecutor for MockExecutor {
         &mut self,
         resource: ResidentResourceId,
         _payload: Self::Resource,
-    ) -> nexus_query_engine::Result<()> {
+    ) -> nexus_query_engine::error::Result<()> {
         self.released.push(resource);
         if self.simulate_scheduler_memory_pressure {
             self.simulated_live_reserved_bytes = self.simulated_live_reserved_bytes.saturating_sub(1);
         }
         if self.fail_release_resources.contains(&resource) {
-            return Err(nexus_query_engine::QueryError::new(
-                nexus_query_engine::QueryErrorCode::Internal,
+            return Err(nexus_query_engine::error::QueryError::new(
+                nexus_query_engine::error::QueryErrorCode::Internal,
                 "nexus_query_engine.tests.mock_executor",
                 "mock compiled release failure",
             )
@@ -510,13 +510,13 @@ impl CompiledTaskExecutor for MockExecutor {
         Ok(())
     }
 
-    fn cleanup_after_error(&mut self) -> nexus_query_engine::Result<()> {
+    fn cleanup_after_error(&mut self) -> nexus_query_engine::error::Result<()> {
         self.cleanup_calls = self.cleanup_calls.saturating_add(1);
         self.task_local_released.extend(self.task_local_live.drain(..).rev());
         Ok(())
     }
 
-    fn before_scheduling_cycle(&mut self) -> nexus_query_engine::Result<CompiledSchedulingCycle> {
+    fn before_scheduling_cycle(&mut self) -> nexus_query_engine::error::Result<CompiledSchedulingCycle> {
         if self.cooperative_shrink_cycles_remaining == 0 {
             return Ok(CompiledSchedulingCycle::default());
         }
@@ -536,7 +536,7 @@ impl CompiledTaskExecutor for MockExecutor {
         &self,
         task: &PipelineTask,
         _state: &CompiledPipelineState<Self::Resource>,
-    ) -> nexus_query_engine::Result<CompiledTaskAdmission> {
+    ) -> nexus_query_engine::error::Result<CompiledTaskAdmission> {
         let Some(remaining_bytes) = self.simulated_remaining_bytes else {
             return Ok(CompiledTaskAdmission::admitted());
         };
@@ -712,7 +712,7 @@ pub(super) fn bounded_context_with_mode_and_memory_history(
 pub(super) fn bounded_context_builder(
     runtime: Arc<cudf::Runtime>,
     mode: NativePipelineExecutionMode,
-) -> nexus_query_engine::ExecutionContextBuilder {
+) -> nexus_query_engine::runtime::ExecutionContextBuilder {
     ExecutionContext::builder()
         .with_shared_runtime(runtime)
         .with_memory_control_policy(MemoryControlPolicy::Bounded {

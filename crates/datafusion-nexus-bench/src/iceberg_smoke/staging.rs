@@ -79,7 +79,7 @@ impl TableFormatPlanner for StagingTableFormatPlanner {
     fn plan_scan(
         &self,
         request: TableFormatScanRequest,
-    ) -> BoxFuture<'_, datafusion_nexus::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
         Box::pin(async move {
             eprintln!(
                 "[native_iceberg_smoke_report] stage=table_format_scan_planning_start table_name={} staging_mode={}",
@@ -153,7 +153,7 @@ fn scan_plan_with_tpcds_source_unique_keys(
     scan_plan
 }
 
-fn table_format_data_file_local_paths(file: &datafusion_nexus::TableFormatDataFile) -> Vec<PathBuf> {
+fn table_format_data_file_local_paths(file: &datafusion_nexus::table_format::TableFormatDataFile) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(path) = table_format_local_path_from_location(&file.location) {
         paths.push(path);
@@ -306,7 +306,7 @@ pub(crate) fn clear_staging_records(records: &Arc<Mutex<Vec<StagingRecord>>>) {
 
 pub(crate) fn aggregate_scan_diagnostics(records: &[StagingRecord]) -> TableFormatScanDiagnostics {
     if records.is_empty() {
-        return TableFormatScanPlan::new(datafusion_nexus::TableFormat::Iceberg).diagnostics();
+        return TableFormatScanPlan::new(datafusion_nexus::table_format::TableFormat::Iceberg).diagnostics();
     }
 
     let diagnostics = records.iter().map(|record| record.scan_plan.diagnostics()).collect::<Vec<_>>();

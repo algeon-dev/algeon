@@ -30,8 +30,11 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         join_schema,
@@ -143,8 +146,11 @@ fn bounded_stddev_join_aggregate_keeps_exact_and_tolerant_statistical_contracts_
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         join_schema,
@@ -249,8 +255,11 @@ fn bounded_native_query_fuses_compiled_sort_limit_with_topk() {
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         join_schema,
@@ -359,13 +368,19 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
         JoinSpec::new(
             JoinType::Left,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "c_custkey", "c_custkey"),
-                nexus_query_engine::ColumnRef::input(1, "o_custkey", "o_custkey"),
+                nexus_query_engine::expr::ColumnRef::input(0, "c_custkey", "c_custkey"),
+                nexus_query_engine::expr::ColumnRef::input(1, "o_custkey", "o_custkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "c_custkey", "c_custkey"),
+                "c_custkey",
+            ),
+            JoinOutputColumn::right(
+                nexus_query_engine::expr::ColumnRef::input(1, "o_orderkey", "o_orderkey"),
+                "o_orderkey",
+            ),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -537,16 +552,16 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "id", "id"),
-                nexus_query_engine::ColumnRef::input(1, "id", "id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "id", "id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "id", "id"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "category", "category"), "category"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "class", "class"), "class"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "brand", "brand"), "brand"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "category", "category"), "category"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "class", "class"), "class"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "brand", "brand"), "brand"),
             JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "detail_sales", "detail_sales"),
+                nexus_query_engine::expr::ColumnRef::input(0, "detail_sales", "detail_sales"),
                 "detail_sales",
             ),
         ])

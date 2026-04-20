@@ -213,7 +213,7 @@ impl TableFormatUnsupportedColumn<'_> {
 
     /// Human-readable Arrow type for client-facing diagnostics.
     pub(crate) fn data_type_summary(&self) -> String {
-        nexus_query_engine::diagnostic_arrow_type(self.data_type)
+        nexus_query_engine::datatypes::diagnostic_arrow_type(self.data_type)
     }
 }
 

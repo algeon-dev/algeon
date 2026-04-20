@@ -662,7 +662,7 @@ fn disabled_native_optimizer_keeps_join_build_side_selection_off() {
     assert!(result.diagnostics.is_empty());
 }
 
-fn estimated_inner_equi_join_plan(left_bytes: u64, right_bytes: u64) -> nexus_query_engine::QueryPlan {
+fn estimated_inner_equi_join_plan(left_bytes: u64, right_bytes: u64) -> nexus_query_engine::plan::QueryPlan {
     estimated_inner_join_plan(JoinSide::Right, left_bytes, 1, right_bytes, 1)
 }
 
@@ -672,7 +672,7 @@ fn estimated_inner_join_plan(
     left_rows: u64,
     right_bytes: u64,
     right_rows: u64,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(estimated_local_source("left", "left_key", left_bytes, left_rows));
     let right = builder.add_source(estimated_local_source("right", "right_key", right_bytes, right_rows));
@@ -703,7 +703,7 @@ fn estimated_inner_residual_join_plan(
     left_rows: u64,
     right_bytes: u64,
     right_rows: u64,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(estimated_local_source_with_fields(
         "left_residual",

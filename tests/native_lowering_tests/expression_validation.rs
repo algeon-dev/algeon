@@ -104,7 +104,7 @@ fn decimal_division_lowers_with_declared_binary_output_type() {
             if matches!(
                 expr.as_ref(),
                 Expr::Binary {
-                    op: nexus_query_engine::BinaryOp::Divide,
+                    op: nexus_query_engine::expr::BinaryOp::Divide,
                     output_type: Some(DataType::Decimal128(_, _)),
                     ..
                 }

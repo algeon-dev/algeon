@@ -12,7 +12,7 @@ use datafusion::{
 };
 
 use crate::{
-    Error, ErrorCode,
+    error::{Error, ErrorCode},
     table_format::{TableFormat, TableFormatScanDiagnostics, TableFormatScanPlan},
 };
 

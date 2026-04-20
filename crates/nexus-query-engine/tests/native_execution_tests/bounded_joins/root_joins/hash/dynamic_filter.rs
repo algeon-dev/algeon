@@ -32,15 +32,15 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
     let optimized =
-        nexus_query_engine::optimize_query_plan(plan, &nexus_query_engine::NativeOptimizerOptions::default());
+        nexus_query_engine::optimizer::optimize_query_plan(plan, &nexus_query_engine::optimizer::NativeOptimizerOptions::default());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -115,14 +115,14 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "p_partkey", "p_partkey"),
-                nexus_query_engine::ColumnRef::input(1, "ps_partkey", "ps_partkey"),
+                nexus_query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"),
+                nexus_query_engine::expr::ColumnRef::input(1, "ps_partkey", "ps_partkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
             JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "ps_supplycost", "ps_supplycost"),
+                nexus_query_engine::expr::ColumnRef::input(1, "ps_supplycost", "ps_supplycost"),
                 "ps_supplycost",
             ),
         ])
@@ -135,14 +135,14 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "s_suppkey", "s_suppkey"),
-                nexus_query_engine::ColumnRef::input(1, "ps_suppkey", "ps_suppkey"),
+                nexus_query_engine::expr::ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                nexus_query_engine::expr::ColumnRef::input(1, "ps_suppkey", "ps_suppkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "ps_partkey", "ps_partkey"), "ps_partkey"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "ps_partkey", "ps_partkey"), "ps_partkey"),
             JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "ps_supplycost", "ps_supplycost"),
+                nexus_query_engine::expr::ColumnRef::input(1, "ps_supplycost", "ps_supplycost"),
                 "ps_supplycost",
             ),
         ])
@@ -167,19 +167,19 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
             JoinType::Inner,
             vec![
                 JoinKey::new(
-                    nexus_query_engine::ColumnRef::input(0, "p_partkey", "p_partkey"),
-                    nexus_query_engine::ColumnRef::input(1, "ps_partkey", "ps_partkey"),
+                    nexus_query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"),
+                    nexus_query_engine::expr::ColumnRef::input(1, "ps_partkey", "ps_partkey"),
                 ),
                 JoinKey::new(
-                    nexus_query_engine::ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
-                    nexus_query_engine::ColumnRef::input(1, "min_supplycost", "min_supplycost"),
+                    nexus_query_engine::expr::ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
+                    nexus_query_engine::expr::ColumnRef::input(1, "min_supplycost", "min_supplycost"),
                 ),
             ],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
             JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
+                nexus_query_engine::expr::ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
                 "ps_supplycost",
             ),
         ])
@@ -187,18 +187,18 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
         Arc::clone(&result_schema),
     );
     let plan = builder.finish_with_host_sink(final_join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        dynamic_filter_route_discovery: nexus_query_engine::DynamicFilterRouteDiscoveryOptions::default(),
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::disabled()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        dynamic_filter_route_discovery: nexus_query_engine::optimizer::DynamicFilterRouteDiscoveryOptions::default(),
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::disabled()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert!(optimized.plan.dynamic_filter_routes().iter().any(|route| {
         route.consumer_columns == ["ps_partkey".to_string()]
-            && route.consumer_lowering == nexus_query_engine::DynamicFilterConsumerLowering::PostDecodeOnly
+            && route.consumer_lowering == nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::PostDecodeOnly
             && matches!(
                 route.consumer,
-                nexus_query_engine::DynamicFilterConsumer::LocalParquetSource { source_node_id }
+                nexus_query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource { source_node_id }
                     if source_node_id == partsupp
             )
     }));
@@ -215,7 +215,7 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
         .unwrap();
 
     let analysis = optimized.plan.capability_analysis();
-    let pipeline = nexus_query_engine::compile_pipeline(&optimized.plan, &analysis).unwrap();
+    let pipeline = nexus_query_engine::pipeline::compile_pipeline(&optimized.plan, &analysis).unwrap();
     let scheduler = nexus_query_engine::exec::CompiledPipelineScheduler::new(&pipeline).unwrap();
     let mut metrics = QueryMetrics::default();
     let gpu_inputs = GpuResidentInputMap::new();
@@ -304,18 +304,18 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -438,14 +438,14 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "cs_sold_date_sk", "cs_sold_date_sk"),
-                nexus_query_engine::ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+                nexus_query_engine::expr::ColumnRef::input(0, "cs_sold_date_sk", "cs_sold_date_sk"),
+                nexus_query_engine::expr::ColumnRef::input(1, "d_date_sk", "d_date_sk"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"), "cs_item_sk"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"), "cs_item_sk"),
             JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "d_week_seq", "d_week_seq"),
+                nexus_query_engine::expr::ColumnRef::input(1, "d_week_seq", "d_week_seq"),
                 "d_week_seq",
             ),
         ])
@@ -458,17 +458,17 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "inv_date_sk", "inv_date_sk"),
-                nexus_query_engine::ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+                nexus_query_engine::expr::ColumnRef::input(0, "inv_date_sk", "inv_date_sk"),
+                nexus_query_engine::expr::ColumnRef::input(1, "d_date_sk", "d_date_sk"),
             )],
         )
         .with_output_projection(vec![
             JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "inv_item_sk", "inv_item_sk"),
+                nexus_query_engine::expr::ColumnRef::input(0, "inv_item_sk", "inv_item_sk"),
                 "inv_item_sk",
             ),
             JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "d_week_seq", "d_week_seq"),
+                nexus_query_engine::expr::ColumnRef::input(1, "d_week_seq", "d_week_seq"),
                 "d_week_seq",
             ),
         ])
@@ -481,8 +481,8 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
-                nexus_query_engine::ColumnRef::input(1, "inv_item_sk", "inv_item_sk"),
+                nexus_query_engine::expr::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
+                nexus_query_engine::expr::ColumnRef::input(1, "inv_item_sk", "inv_item_sk"),
             )],
         )
         .with_residual_predicate(Expr::binary(
@@ -491,18 +491,18 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
             Expr::input_column(1, "d_week_seq", "d_week_seq"),
         ))
         .with_output_projection(vec![JoinOutputColumn::left(
-            nexus_query_engine::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
+            nexus_query_engine::expr::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
             "cs_item_sk",
         )])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(root);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     let residual_route = optimized
         .plan
         .dynamic_filter_routes()
@@ -510,14 +510,14 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         .find(|route| {
             matches!(
                 route.producer,
-                nexus_query_engine::DynamicFilterProducer::HashJoinBuild {
+                nexus_query_engine::dynamic_filter::DynamicFilterProducer::HashJoinBuild {
                     join_node_id,
                     build_side: JoinSide::Right,
                     ..
                 } if join_node_id == sales_with_d1
             ) && matches!(
                 route.consumer,
-                nexus_query_engine::DynamicFilterConsumer::LocalParquetSource {
+                nexus_query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource {
                     source_node_id
                 } if source_node_id == d2
             ) && route.producer_columns == ["d_week_seq".to_string()]
@@ -598,18 +598,18 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -697,8 +697,8 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         order_keys,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -711,23 +711,23 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "qty", "qty"),
-                nexus_query_engine::ColumnRef::input(1, "qty", "qty"),
+                nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
+                nexus_query_engine::expr::ColumnRef::input(1, "qty", "qty"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(qty_join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -813,18 +813,18 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -903,18 +903,18 @@ fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_sou
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -991,18 +991,18 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -1025,7 +1025,7 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
     assert_eq!(metrics.dynamic_filter_skipped_count, 1);
     assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "skipped"
-            && row.skipped_reason.as_deref() == Some(nexus_query_engine::LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON)
+            && row.skipped_reason.as_deref() == Some(nexus_query_engine::dynamic_filter::LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON)
     }));
     assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "produced"
@@ -1070,18 +1070,18 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -1179,18 +1179,18 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -1286,15 +1286,15 @@ fn bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source() {
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
     let optimized =
-        nexus_query_engine::optimize_query_plan(plan, &nexus_query_engine::NativeOptimizerOptions::default());
+        nexus_query_engine::optimizer::optimize_query_plan(plan, &nexus_query_engine::optimizer::NativeOptimizerOptions::default());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -1359,22 +1359,22 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(
         optimized.plan.dynamic_filter_routes()[0].consumer,
-        nexus_query_engine::DynamicFilterConsumer::HashJoinProbe { .. }
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumer::HashJoinProbe { .. }
     ));
 
     let context = ExecutionContext::builder()
@@ -1454,22 +1454,22 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(
         optimized.plan.dynamic_filter_routes()[0].consumer,
-        nexus_query_engine::DynamicFilterConsumer::Filter { .. }
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumer::Filter { .. }
     ));
 
     let context = ExecutionContext::builder()
@@ -1559,23 +1559,23 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         output_schema,
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert_eq!(optimized.plan.dynamic_filter_routes()[0].consumer_columns, ["raw_order_id".to_string()]);
     assert!(matches!(
         optimized.plan.dynamic_filter_routes()[0].consumer,
-        nexus_query_engine::DynamicFilterConsumer::Filter { .. }
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumer::Filter { .. }
     ));
 
     let context = ExecutionContext::builder()
@@ -1656,18 +1656,18 @@ fn bounded_native_query_rejects_aggregate_keyset_dynamic_filter_without_strict_e
         keyset,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "qty", "qty"),
+                nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
                 "qty",
             )])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -1731,22 +1731,22 @@ fn bounded_native_query_rejects_build_dynamic_filter_below_aggregate_probe_witho
         grouped_fact,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "order_id", "order_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "order_id", "order_id"),
                 "order_id",
             )])
             .with_build_side(JoinSide::Left),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
-        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
-        ..nexus_query_engine::NativeOptimizerOptions::default()
+    let optimizer_options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(
         optimized.plan.dynamic_filter_routes()[0].consumer,
-        nexus_query_engine::DynamicFilterConsumer::LocalParquetSource { .. }
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource { .. }
     ));
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))

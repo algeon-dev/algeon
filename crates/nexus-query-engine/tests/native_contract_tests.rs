@@ -12,34 +12,48 @@ use arrow::{
 };
 use cudf::{DataType as CudfDataType, TypeId};
 use nexus_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, BoundedJoinReservationContract,
-    BoundedJoinReservationStatus, BuildMaterializationBoundary, ByteRangeDisposition, ColumnRef, CredentialMode,
-    DataPlacement, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, Expr,
-    GpuLocalParquetSourceCacheKey, GpuResidentSource, JoinKey, JoinNullEquality, JoinOperatorMetrics, JoinOutputColumn,
-    JoinSide, JoinSpec, JoinType, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, LimitSpec,
-    LiteralBatchSource, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
-    MemoryReservationRequest, MemorySpaceId, MissingColumn, NativeOptimizerOptions, NodeId, OperatorMetrics,
-    ParquetEqualityDeleteFile, ParquetFieldIdReadBinding, ParquetPositionDeleteFile, ParquetReaderDecimalType,
-    ParquetReaderDecimalTypeId, PartitionColumn, PartitionColumnDisposition, PlanNode, PredicateDisposition,
-    ProbeExecutionBoundary, ProjectionOutput, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryId,
-    QueryMetrics, QueryPlanBuilder, RejectedSourceFeature, RemoteParquetReadMode, ReservationKind,
-    ResolvedParquetSource, ResultMaterializationBoundary, ResultSink, RetryFacts, ScanLimitDisposition, SchemaBehavior,
-    SchemaMappingDisposition, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceMetadataCache,
-    SourceNode, SourceReadBoundary, SourceSchedulerPolicy, SourceTaskMemoryModel, StrictBoundedContractOwner,
-    StrictBoundedExecutionMode, TraceId, WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN,
-    ZeroColumnCountDisposition,
     capability::{
         AggregateExecutionStage, AggregateExecutionStrategy, CapabilityDecision, ContractQuality, ContractStatus,
         EdgeConsumer, EdgeContractKind, InputRole, KeyedHashJoinStrategyOptions, NodeOperator, OrderingRequirement,
         RequiredProperty, ReservationRequirementScope, ResidualRequirement, ResultSinkKind, ScheduleConstraint,
         SharedProducerIdentity, SourceFormatCapability, SubgraphInvariantKind, aggregate_strategy_capability_decision,
     },
-    contract_report::StrictBoundedContractReport,
-    cudf_dtype_from_arrow_type,
-    expr::{CaseWhen, DatePart},
-    is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type, is_supported_list_carry_type,
-    plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_metadata_cache,
-    validate_local_parquet_source,
+    chunk::{
+        SourceChunkPlanningPolicy, SourceMetadataCache, SourceTaskMemoryModel, plan_local_parquet_source_chunks,
+        plan_local_parquet_source_chunks_with_metadata_cache,
+    },
+    contract_report::{StrictBoundedContractOwner, StrictBoundedContractReport},
+    datatypes::{
+        cudf_dtype_from_arrow_type, is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type,
+        is_supported_list_carry_type,
+    },
+    error::{QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus},
+    exec::{GpuLocalParquetSourceCacheKey, validate_local_parquet_source},
+    expr::{
+        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, DatePart, Expr, LimitSpec,
+        LiteralValue, SortExpr, SortSpec,
+    },
+    metrics::{BoundaryMetrics, JoinOperatorMetrics, OperatorMetrics, QueryId, QueryMetrics, TraceId},
+    mode::StrictBoundedExecutionMode,
+    optimizer::NativeOptimizerOptions,
+    plan::{
+        DataPlacement, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode,
+        ProjectionOutput, QueryPlanBuilder, ResultSink, SchemaBehavior, WindowFunction, WindowSpec,
+    },
+    runtime::{
+        BoundedJoinReservationContract, BoundedJoinReservationStatus, BuildMaterializationBoundary,
+        ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, MemoryControlPolicy,
+        MemoryReservationRequest, MemorySpaceId, ProbeExecutionBoundary, ReservationKind,
+        ResultMaterializationBoundary, RetryFacts, SourceReadBoundary, SourceSchedulerPolicy,
+    },
+    source::{
+        ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,
+        LakehouseCacheStatus, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
+        ParquetEqualityDeleteFile, ParquetFieldIdReadBinding, ParquetPositionDeleteFile, ParquetReaderDecimalType,
+        ParquetReaderDecimalTypeId, PartitionColumn, PartitionColumnDisposition, PredicateDisposition,
+        RejectedSourceFeature, RemoteParquetReadMode, ResolvedParquetSource, ScanLimitDisposition,
+        SchemaMappingDisposition, SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    },
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -115,6 +129,8 @@ pub(crate) mod bounded_join_admission;
 mod bounded_join_sizing;
 #[path = "native_contract_tests/capability_module_boundaries.rs"]
 mod capability_module_boundaries;
+#[path = "native_contract_tests/dependency_direction.rs"]
+mod dependency_direction;
 #[path = "native_contract_tests/expr_contracts.rs"]
 mod expr_contracts;
 #[path = "native_contract_tests/graph_algorithm.rs"]
@@ -135,6 +151,8 @@ mod plan_contracts;
 mod preference_contracts;
 #[path = "native_contract_tests/public_facade.rs"]
 mod public_facade;
+#[path = "../../../tests/support/public_surface.rs"]
+mod public_surface;
 #[path = "native_contract_tests/reservation_tracker_contracts.rs"]
 mod reservation_tracker_contracts;
 #[path = "native_contract_tests/source_contracts.rs"]
@@ -216,7 +234,7 @@ fn execute_query_plan_stamps_correlation_on_early_errors() {
         .build()
         .unwrap();
 
-    let error = match nexus_query_engine::execute_query_plan(&context, &plan) {
+    let error = match nexus_query_engine::exec::execute_query_plan(&context, &plan) {
         Ok(_) => panic!("cancelled context should fail before execution"),
         Err(error) => error,
     };

@@ -11,10 +11,12 @@ use datafusion::{
     },
 };
 use nexus_query_engine::{
-    ColumnRef as NativeColumnRef, Expr as NativeExpr, JoinKey as NativeJoinKey,
-    JoinNullEquality as NativeJoinNullEquality, JoinSide as NativeJoinSide, JoinSpec as NativeJoinSpec,
-    JoinType as NativeJoinType, QueryPlanBuilder as NativeQueryPlanBuilder, is_supported_list_carry_type,
-    is_timestamp_with_timezone,
+    datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
+    expr::{ColumnRef as NativeColumnRef, Expr as NativeExpr},
+    plan::{
+        JoinKey as NativeJoinKey, JoinNullEquality as NativeJoinNullEquality, JoinSide as NativeJoinSide,
+        JoinSpec as NativeJoinSpec, JoinType as NativeJoinType, QueryPlanBuilder as NativeQueryPlanBuilder,
+    },
 };
 
 use super::{

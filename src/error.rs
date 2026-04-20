@@ -205,7 +205,7 @@ impl Error {
     pub fn from_native(
         operation: &'static str,
         message: impl Into<String>,
-        source: nexus_query_engine::QueryError,
+        source: nexus_query_engine::error::QueryError,
     ) -> Self {
         let code = code_for_native_error(&source);
         let mut error = Self::new(code, operation, message)
@@ -378,28 +378,28 @@ fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
 // native `UnsupportedPlanShape` becomes adapter `UnsupportedOperator` because
 // the adapter has no shape-specific code. The exact native code remains
 // available in the `native_code` fact attached by `Error::from_native`.
-fn code_for_native_error(error: &nexus_query_engine::QueryError) -> ErrorCode {
+fn code_for_native_error(error: &nexus_query_engine::error::QueryError) -> ErrorCode {
     match error.code() {
-        nexus_query_engine::QueryErrorCode::Cancelled => ErrorCode::Cancelled,
-        nexus_query_engine::QueryErrorCode::UnsupportedPlanShape => ErrorCode::UnsupportedOperator,
-        nexus_query_engine::QueryErrorCode::UnsupportedOperator => ErrorCode::UnsupportedOperator,
-        nexus_query_engine::QueryErrorCode::UnsupportedExpression => ErrorCode::UnsupportedExpression,
-        nexus_query_engine::QueryErrorCode::UnsupportedType => ErrorCode::UnsupportedType,
-        nexus_query_engine::QueryErrorCode::InvalidPlan => ErrorCode::InvalidExecutionPlan,
-        nexus_query_engine::QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
-        nexus_query_engine::QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
-        nexus_query_engine::QueryErrorCode::CudfResourceExhausted => ErrorCode::CudfResourceExhausted,
-        nexus_query_engine::QueryErrorCode::CudfTemporaryFailure => ErrorCode::CudfTemporaryFailure,
-        nexus_query_engine::QueryErrorCode::CudfPersistentFailure => ErrorCode::CudfPersistentFailure,
-        nexus_query_engine::QueryErrorCode::CudfDependencyFailure => ErrorCode::CudfDependencyFailure,
-        nexus_query_engine::QueryErrorCode::SourceAccessDenied => ErrorCode::SourceAccessDenied,
-        nexus_query_engine::QueryErrorCode::SourceUnauthenticated => ErrorCode::SourceUnauthenticated,
-        nexus_query_engine::QueryErrorCode::SourceObjectNotFound => ErrorCode::SourceObjectNotFound,
-        nexus_query_engine::QueryErrorCode::SourceTemporaryFailure => ErrorCode::SourceTemporaryFailure,
-        nexus_query_engine::QueryErrorCode::CudfInvariantViolation => ErrorCode::CudfInvariantViolation,
-        nexus_query_engine::QueryErrorCode::MemoryReservationFailed => ErrorCode::MemoryReservationFailed,
-        nexus_query_engine::QueryErrorCode::ServiceOverloaded => ErrorCode::ServiceOverloaded,
-        nexus_query_engine::QueryErrorCode::Internal => ErrorCode::Internal,
+        nexus_query_engine::error::QueryErrorCode::Cancelled => ErrorCode::Cancelled,
+        nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape => ErrorCode::UnsupportedOperator,
+        nexus_query_engine::error::QueryErrorCode::UnsupportedOperator => ErrorCode::UnsupportedOperator,
+        nexus_query_engine::error::QueryErrorCode::UnsupportedExpression => ErrorCode::UnsupportedExpression,
+        nexus_query_engine::error::QueryErrorCode::UnsupportedType => ErrorCode::UnsupportedType,
+        nexus_query_engine::error::QueryErrorCode::InvalidPlan => ErrorCode::InvalidExecutionPlan,
+        nexus_query_engine::error::QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
+        nexus_query_engine::error::QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
+        nexus_query_engine::error::QueryErrorCode::CudfResourceExhausted => ErrorCode::CudfResourceExhausted,
+        nexus_query_engine::error::QueryErrorCode::CudfTemporaryFailure => ErrorCode::CudfTemporaryFailure,
+        nexus_query_engine::error::QueryErrorCode::CudfPersistentFailure => ErrorCode::CudfPersistentFailure,
+        nexus_query_engine::error::QueryErrorCode::CudfDependencyFailure => ErrorCode::CudfDependencyFailure,
+        nexus_query_engine::error::QueryErrorCode::SourceAccessDenied => ErrorCode::SourceAccessDenied,
+        nexus_query_engine::error::QueryErrorCode::SourceUnauthenticated => ErrorCode::SourceUnauthenticated,
+        nexus_query_engine::error::QueryErrorCode::SourceObjectNotFound => ErrorCode::SourceObjectNotFound,
+        nexus_query_engine::error::QueryErrorCode::SourceTemporaryFailure => ErrorCode::SourceTemporaryFailure,
+        nexus_query_engine::error::QueryErrorCode::CudfInvariantViolation => ErrorCode::CudfInvariantViolation,
+        nexus_query_engine::error::QueryErrorCode::MemoryReservationFailed => ErrorCode::MemoryReservationFailed,
+        nexus_query_engine::error::QueryErrorCode::ServiceOverloaded => ErrorCode::ServiceOverloaded,
+        nexus_query_engine::error::QueryErrorCode::Internal => ErrorCode::Internal,
         _ => ErrorCode::Internal,
     }
 }
@@ -416,7 +416,7 @@ fn diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {
     if let Some(error) = error.downcast_ref::<Error>() {
         return normalize_diagnostic_message(error.message());
     }
-    if let Some(error) = error.downcast_ref::<nexus_query_engine::QueryError>() {
+    if let Some(error) = error.downcast_ref::<nexus_query_engine::error::QueryError>() {
         return normalize_diagnostic_message(error.message());
     }
     if let Some(error) = error.downcast_ref::<DataFusionError>() {
@@ -494,8 +494,8 @@ mod tests {
 
     #[test]
     fn source_diagnostics_render_project_errors_by_message_not_structured_display() {
-        let native = nexus_query_engine::QueryError::new(
-            nexus_query_engine::QueryErrorCode::CudfDependencyFailure,
+        let native = nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::CudfDependencyFailure,
             "nexus_query_engine.test",
             "native root cause",
         )

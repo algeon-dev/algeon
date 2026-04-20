@@ -6,7 +6,7 @@ use datafusion::{
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
     physical_plan::{aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
 };
-use nexus_query_engine::{
+use nexus_query_engine::source::{
     MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
     SourceColumnRef as NativeSourceColumnRef,
 };
@@ -72,7 +72,7 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
     /// `None` means the value must come from file partition metadata. `Some`
     /// represents a table-format default value materialized for every row of
     /// the file.
-    pub(in crate::native) partition_column_values: Vec<Option<nexus_query_engine::LiteralValue>>,
+    pub(in crate::native) partition_column_values: Vec<Option<nexus_query_engine::expr::LiteralValue>>,
     /// DataFusion table partition-column indices required by this source.
     pub(in crate::native) partition_column_indices: Vec<usize>,
     /// Required nullable table columns missing from the physical file schema.

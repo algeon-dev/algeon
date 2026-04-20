@@ -95,7 +95,7 @@ fn resident_revenue_keyed_hash_join_subplan_plan(
     lineitem_path: &Path,
     supplier_schema: &Arc<Schema>,
     lineitem_schema: &Arc<Schema>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let revenue_projection_schema = Arc::new(Schema::new(vec![
         Field::new("supplier_no", DataType::Int32, false),
         Field::new("revenue", DataType::Int64, false),
@@ -138,15 +138,18 @@ fn resident_revenue_keyed_hash_join_subplan_plan(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "s_suppkey", "s_suppkey"),
-                nexus_query_engine::ColumnRef::input(1, "supplier_no", "supplier_no"),
+                nexus_query_engine::expr::ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                nexus_query_engine::expr::ColumnRef::input(1, "supplier_no", "supplier_no"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "s_name", "s_name"), "s_name"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                "s_suppkey",
+            ),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "s_name", "s_name"), "s_name"),
             JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "total_revenue", "total_revenue"),
+                nexus_query_engine::expr::ColumnRef::input(1, "total_revenue", "total_revenue"),
                 "total_revenue",
             ),
         ])
@@ -177,15 +180,18 @@ fn resident_revenue_keyed_hash_join_subplan_plan(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "total_revenue", "total_revenue"),
-                nexus_query_engine::ColumnRef::input(1, "max_revenue", "max_revenue"),
+                nexus_query_engine::expr::ColumnRef::input(0, "total_revenue", "total_revenue"),
+                nexus_query_engine::expr::ColumnRef::input(1, "max_revenue", "max_revenue"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "s_name", "s_name"), "s_name"),
             JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "total_revenue", "total_revenue"),
+                nexus_query_engine::expr::ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                "s_suppkey",
+            ),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "s_name", "s_name"), "s_name"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "total_revenue", "total_revenue"),
                 "total_revenue",
             ),
         ])
@@ -206,7 +212,7 @@ fn build_resident_revenue_aggregate(
     lineitem_schema: &Arc<Schema>,
     revenue_projection_schema: Arc<Schema>,
     revenue_schema: Arc<Schema>,
-) -> nexus_query_engine::NodeId {
+) -> nexus_query_engine::plan::NodeId {
     let lineitem = builder.add_source(SourceNode::LocalParquet(join_left_source(
         lineitem_path,
         lineitem_schema,

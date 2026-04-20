@@ -200,7 +200,9 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn assert_strict_report_has_host_sink_boundary(report: &nexus_query_engine::StrictBoundedContractReport) {
+fn assert_strict_report_has_host_sink_boundary(
+    report: &nexus_query_engine::contract_report::StrictBoundedContractReport,
+) {
     assert!(
         report.gate_rows().iter().any(|row| {
             row.owner.to_string() == "sink_boundary"
@@ -213,7 +215,7 @@ fn assert_strict_report_has_host_sink_boundary(report: &nexus_query_engine::Stri
     );
 }
 
-fn assert_strict_report_has_join_path_gates(report: &nexus_query_engine::StrictBoundedContractReport) {
+fn assert_strict_report_has_join_path_gates(report: &nexus_query_engine::contract_report::StrictBoundedContractReport) {
     for kind in [
         ReservationKind::SourceRead,
         ReservationKind::BuildSide,
@@ -246,7 +248,7 @@ fn assert_strict_report_has_join_path_gates(report: &nexus_query_engine::StrictB
     }
 }
 
-fn task_kind_count(pipeline: &nexus_query_engine::CompiledPipeline, kind: PipelineTaskKind) -> usize {
+fn task_kind_count(pipeline: &nexus_query_engine::pipeline::CompiledPipeline, kind: PipelineTaskKind) -> usize {
     pipeline.tasks().iter().filter(|task| task.kind() == kind).count()
 }
 

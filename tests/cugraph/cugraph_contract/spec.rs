@@ -9,20 +9,24 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use datafusion_nexus::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, stable_result_schema};
+use datafusion_nexus::graph_sql::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, stable_result_schema};
 use nexus_query_engine::{
-    GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
-    GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
-    GraphBetweennessCentralityParams, GraphBfsParams, GraphConstructionOptions, GraphCoreNumberParams,
-    GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
-    GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams,
-    GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
-    GraphOutDegreesAllParams, GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
-    GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams,
-    GraphVertexIdTypeSupport, GraphWccParams, PlanNode, QueryPlan, QueryPlanBuilder, SourceNode,
-    StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
-    stable_graph_result_schema,
+    contract_report::StrictBoundedContractReport,
+    mode::StrictBoundedExecutionMode,
+    plan::{
+        GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
+        GRAPH_OPERATION_REGISTRY, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
+        GraphBetweennessCentralityParams, GraphBfsParams, GraphConstructionOptions, GraphCoreNumberParams,
+        GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
+        GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams,
+        GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
+        GraphOutDegreesAllParams, GraphPageRankParams, GraphPageRankPersonalizationInput,
+        GraphPersonalizedPageRankParams, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
+        GraphTriangleCountAllParams, GraphVertexIdTypeSupport, GraphWccParams, PlanNode, QueryPlan, QueryPlanBuilder,
+        stable_graph_result_schema,
+    },
+    source::{GpuResidentSource, SourceNode},
 };
 
 /// Build a default params variant for one registered algorithm.

@@ -13,9 +13,15 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error as AdapterError,
-    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
-    NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
+    error::Error as AdapterError,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::{
+        NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
+        NativeDataFusionPostNativeExecutionPath,
+    },
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::GpuFallbackPolicy,
+    session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
     CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_PARQUET_DIR_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, TPCDS_QUERIES,
@@ -24,8 +30,9 @@ use datafusion_nexus_bench::{
     tpcds_report_session_config,
 };
 use nexus_query_engine::{
-    QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
+    error::QueryError,
     harness::StableFnv1a64,
+    runtime::{QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId},
 };
 use tokio::{sync::Barrier, time::timeout};
 
@@ -643,7 +650,7 @@ async fn run_native_request(
 async fn collect_native_with_handle(
     config: &StressConfig,
     query: &TpcdsQuery,
-    handle: Arc<nexus_query_engine::QueryHandle>,
+    handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
         NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),

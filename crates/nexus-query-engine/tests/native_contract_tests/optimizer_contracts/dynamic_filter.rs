@@ -2568,7 +2568,7 @@ fn dynamic_filter_uses_hash_join_build_when_join_input_narrows_aggregate_keyset(
     assert_eq!(route.producer_columns, vec!["ctr_customer_sk".to_string()]);
 }
 
-fn build_subtree_source_reuse_dynamic_filter_cycle_plan() -> nexus_query_engine::QueryPlan {
+fn build_subtree_source_reuse_dynamic_filter_cycle_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let shared_probe =
         builder.add_source(estimated_local_source("shared_probe", "shared_key", 8 * 1024 * 1024, 10_000));
@@ -2611,7 +2611,7 @@ fn build_subtree_source_reuse_dynamic_filter_cycle_plan() -> nexus_query_engine:
     builder.finish_gpu_resident(root)
 }
 
-fn repeated_consumer_file_set_dynamic_filter_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_consumer_file_set_dynamic_filter_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let output_schema = schema(&["left_key"]);
     let fact = builder.add_source(estimated_local_source_with_stable_id(
@@ -2647,7 +2647,7 @@ fn repeated_consumer_file_set_dynamic_filter_plan() -> nexus_query_engine::Query
     builder.finish_gpu_resident(union)
 }
 
-fn shared_prefix_branch_local_dynamic_filter_plan() -> (nexus_query_engine::QueryPlan, NodeId, NodeId) {
+fn shared_prefix_branch_local_dynamic_filter_plan() -> (nexus_query_engine::plan::QueryPlan, NodeId, NodeId) {
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(estimated_local_source_with_fields(
         "store_sales",
@@ -2707,7 +2707,7 @@ fn shared_prefix_branch_local_dynamic_filter_plan() -> (nexus_query_engine::Quer
     (builder.finish_gpu_resident(final_join), first_branch_join, second_branch_join)
 }
 
-fn shared_filtered_prefix_branch_local_dynamic_filter_plan() -> (nexus_query_engine::QueryPlan, NodeId, NodeId, NodeId)
+fn shared_filtered_prefix_branch_local_dynamic_filter_plan() -> (nexus_query_engine::plan::QueryPlan, NodeId, NodeId, NodeId)
 {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["sold_date_sk", "item_sk"]);
@@ -2775,7 +2775,7 @@ fn shared_filtered_prefix_branch_local_dynamic_filter_plan() -> (nexus_query_eng
 }
 
 struct SharedPartsuppDynamicFilterPlan {
-    plan: nexus_query_engine::QueryPlan,
+    plan: nexus_query_engine::plan::QueryPlan,
     partsupp: NodeId,
     part_partsupp_join: NodeId,
 }
@@ -2971,7 +2971,7 @@ fn q02_like_shared_partsupp_dynamic_filter_plan(
     }
 }
 
-fn aggregate_keyset_source(builder: &mut QueryPlanBuilder, name: &str, key_name: &str) -> nexus_query_engine::NodeId {
+fn aggregate_keyset_source(builder: &mut QueryPlanBuilder, name: &str, key_name: &str) -> nexus_query_engine::plan::NodeId {
     let source = builder.add_source(gpu_source(name, &[key_name]));
     builder.add_aggregate(source, AggregateSpec::new(vec![Expr::column(key_name)], Vec::new()), schema(&[key_name]))
 }
@@ -3004,8 +3004,8 @@ fn expr_is_int32_literal(expr: &Expr, value: i32) -> bool {
     matches!(expr, Expr::Literal(LiteralValue::Int32(candidate)) if *candidate == value)
 }
 
-fn max_direct_join_probe_consumer_count(plan: &nexus_query_engine::QueryPlan) -> usize {
-    let mut counts = std::collections::BTreeMap::<nexus_query_engine::NodeId, usize>::new();
+fn max_direct_join_probe_consumer_count(plan: &nexus_query_engine::plan::QueryPlan) -> usize {
+    let mut counts = std::collections::BTreeMap::<nexus_query_engine::plan::NodeId, usize>::new();
     for node in plan.nodes() {
         let PlanNode::Join(join) = &node.kind else {
             continue;

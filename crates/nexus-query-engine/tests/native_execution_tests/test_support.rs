@@ -13,7 +13,7 @@ pub(super) fn partition_column_query_plan(
     first_path: &Path,
     second_path: &Path,
     file_schema: Arc<Schema>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let source_schema = Arc::new(Schema::new(
         file_schema
             .fields()
@@ -66,7 +66,7 @@ pub(super) fn partition_passthrough_query_plan(
     file_schema: Arc<Schema>,
     partition_columns: Vec<PartitionColumn>,
     partition_values: Vec<Vec<LiteralValue>>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     assert_eq!(paths.len(), partition_values.len());
     let partition_names = partition_columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
     let source_schema = Arc::new(Schema::new(

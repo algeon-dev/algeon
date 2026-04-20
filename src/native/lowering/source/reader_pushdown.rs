@@ -3,7 +3,8 @@ use std::path::Path;
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
 use nexus_query_engine::{
-    BinaryOp as NativeBinaryOp, Expr as NativeExpr, LocalParquetSource as NativeLocalParquetSource,
+    expr::{BinaryOp as NativeBinaryOp, Expr as NativeExpr},
+    source::LocalParquetSource as NativeLocalParquetSource,
 };
 
 use crate::{

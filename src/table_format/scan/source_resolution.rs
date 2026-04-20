@@ -154,14 +154,14 @@ pub fn resolve_table_format_parquet_source_with_metadata(
         TableFormatReadCapability::ObjectStore { scheme } if scheme == "s3" => {
             resolve_s3_table_format_parquet_source(location, config, metadata)
         },
-        TableFormatReadCapability::ObjectStore { scheme } => Err(crate::Error::new(
-            crate::ErrorCode::InvalidExecutionPlan,
+        TableFormatReadCapability::ObjectStore { scheme } => Err(crate::error::Error::new(
+            crate::error::ErrorCode::InvalidExecutionPlan,
             "datafusion_nexus.table_format.resolve_parquet_source",
             "unsupported table-format object-store parquet source scheme",
         )
         .with_fact("source_location_scheme", scheme.as_str())),
-        TableFormatReadCapability::Unsupported { reason } => Err(crate::Error::new(
-            crate::ErrorCode::InvalidExecutionPlan,
+        TableFormatReadCapability::Unsupported { reason } => Err(crate::error::Error::new(
+            crate::error::ErrorCode::InvalidExecutionPlan,
             "datafusion_nexus.table_format.resolve_parquet_source",
             "unsupported table-format parquet source location",
         )
@@ -346,8 +346,8 @@ fn reject_if_remote_direct_required(
     if config.remote_direct_read_mode != RemoteParquetReadMode::RequireDirect {
         return Ok(());
     }
-    Err(crate::Error::new(
-        crate::ErrorCode::InvalidExecutionPlan,
+    Err(crate::error::Error::new(
+        crate::error::ErrorCode::InvalidExecutionPlan,
         "datafusion_nexus.table_format.resolve_parquet_source",
         "remote direct read mode is required, but source resolution selected a fallback path",
     )
@@ -556,7 +556,7 @@ mod tests {
     fn table_format_parquet_read_strategy_config_uses_storage_profile_capability() {
         let default_profile = SourceStorageProfile::s3(
             DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
-            nexus_query_engine::S3SourceStorageProfile::default_chain(),
+            nexus_query_engine::runtime::S3SourceStorageProfile::default_chain(),
         );
         let default_config = TableFormatParquetReadStrategyConfig::default()
             .with_source_storage_profile_remote_direct_capability(&default_profile);
@@ -564,7 +564,7 @@ mod tests {
 
         let region_profile = SourceStorageProfile::s3(
             DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
-            nexus_query_engine::S3SourceStorageProfile::default_chain().with_region("us-west-2"),
+            nexus_query_engine::runtime::S3SourceStorageProfile::default_chain().with_region("us-west-2"),
         );
         let region_config = TableFormatParquetReadStrategyConfig::default()
             .with_source_storage_profile_remote_direct_capability(&region_profile);
@@ -572,7 +572,7 @@ mod tests {
 
         let scoped_profile = SourceStorageProfile::s3(
             DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
-            nexus_query_engine::S3SourceStorageProfile::default_chain()
+            nexus_query_engine::runtime::S3SourceStorageProfile::default_chain()
                 .with_endpoint("http://localhost:9000")
                 .with_static_credentials("access", "secret", None),
         );
@@ -817,7 +817,7 @@ mod tests {
 
         if remote_direct_backend_disabled() {
             let error = result.unwrap_err();
-            assert_eq!(error.code(), crate::ErrorCode::InvalidExecutionPlan);
+            assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
             assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
             assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_backend_disabled"));
         } else {
@@ -843,7 +843,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(error.code(), crate::ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
         assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
         assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_disabled"));
     }
@@ -863,7 +863,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(error.code(), crate::ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
         assert_eq!(error.fact_value("fallback_reason"), Some("explicit_remote_host_buffer_full"));
     }
 
@@ -910,7 +910,7 @@ mod tests {
 
         if remote_direct_backend_disabled() {
             let error = result.unwrap_err();
-            assert_eq!(error.code(), crate::ErrorCode::InvalidExecutionPlan);
+            assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
             assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
             assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_backend_disabled"));
         } else {
@@ -1076,7 +1076,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(error.code(), crate::ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
         assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
         assert_eq!(error.fact_value("fallback_reason"), Some("lakehouse_cache_fill_before_read"));
     }

@@ -6,7 +6,7 @@
 //! accounting over the query lifetime; live peak and retained-byte fields
 //! describe instantaneous resident device memory.
 
-use nexus_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
+use nexus_query_engine::{adaptive_report::AdaptivePipelineReportRow, contract_report::StrictBoundedContractGateRow};
 
 use super::{
     metrics::NativeDataFusionExecutionMetrics,
@@ -54,7 +54,7 @@ pub struct NativeDataFusionPlanningRow {
     /// Adaptive-only rows; strict evidence must not be projected here.
     pub adaptive_pipeline_rows: Vec<AdaptivePipelineReportRow>,
     /// Native optimizer diagnostics emitted while preparing the candidate.
-    pub native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics,
+    pub native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics,
     /// Whether the optimized DataFusion plan contains an explicit native edge-list normalization step.
     pub edge_normalize_inserted: bool,
     /// Nested join-shape diagnostics serialized as stable key/value rows.
@@ -592,7 +592,7 @@ mod tests {
             strict_bounded_contract_rows: Vec::new(),
             strict_bounded_compiled_graphs: Vec::new(),
             adaptive_pipeline_rows: Vec::new(),
-            native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics::default(),
+            native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
             edge_normalize_inserted: false,
             join_diagnostics: Vec::new(),
             source_diagnostics: Vec::new(),

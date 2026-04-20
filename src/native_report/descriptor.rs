@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use nexus_query_engine::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit};
+use nexus_query_engine::metrics::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit};
 
 const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "adaptive_downgrade_count",

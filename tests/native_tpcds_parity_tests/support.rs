@@ -8,9 +8,13 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionPostNativeExecutionPath,
-    NativeDataFusionRuntimeOutcome, NativeTpcdsParityPlanningOutcome, NativeTpcdsParityRow,
-    NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityStageStatus, ParityStatus,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::{
+        NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
+        NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityStageStatus, ParityStatus,
+    },
+    planner::CudfOptimizerConfig,
+    policy::GpuFallbackPolicy,
 };
 use datafusion_nexus_bench::{
     CUDF_TPCDS_PARQUET_DIR_ENV, TPCDS_QUERIES, TPCDS_TABLES, TpcdsWorkloadResult, default_tpcds_sf1_parquet_root,
@@ -181,11 +185,11 @@ pub(super) fn q72_native_optimizer_config() -> CudfOptimizerConfig {
 }
 
 pub(super) fn plan_contains_aggregate_function(
-    plan: &nexus_query_engine::QueryPlan,
-    function: nexus_query_engine::AggregateFunction,
+    plan: &nexus_query_engine::plan::QueryPlan,
+    function: nexus_query_engine::expr::AggregateFunction,
 ) -> bool {
     plan.nodes().iter().any(|node| match &node.kind {
-        nexus_query_engine::PlanNode::Aggregate(aggregate) => {
+        nexus_query_engine::plan::PlanNode::Aggregate(aggregate) => {
             aggregate.spec.aggr_exprs.iter().any(|expr| expr.function == function)
         },
         _ => false,

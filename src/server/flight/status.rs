@@ -11,7 +11,10 @@ pub(super) fn datafusion_error_to_flight_error(
     FlightError::from(status)
 }
 
-pub(super) fn verify_flight_info_plan(plan: &LogicalPlan, ticket_kind: StatementTicketKind) -> crate::Result<()> {
+pub(super) fn verify_flight_info_plan(
+    plan: &LogicalPlan,
+    ticket_kind: StatementTicketKind,
+) -> crate::error::Result<()> {
     match ticket_kind {
         StatementTicketKind::Statement => verify_statement_query_plan(plan),
         StatementTicketKind::PreparedStatement => verify_prepared_query_plan(plan),
@@ -27,7 +30,7 @@ pub(super) fn flight_info_result_schema(plan: &LogicalPlan) -> Schema {
     }
 }
 
-pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> crate::Result<()> {
+pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> crate::error::Result<()> {
     match plan {
         LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(Error::new(
             ErrorCode::UnsupportedOperator,
@@ -43,7 +46,7 @@ pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> crate::Result<(
     }
 }
 
-pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> crate::Result<()> {
+pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> crate::error::Result<()> {
     match plan {
         // DDL carries no result set, but DataFusion executes it eagerly in
         // `execute_logical_plan` and yields an empty stream. The shared do_get
@@ -72,7 +75,7 @@ pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> crate::Result<()
     }
 }
 
-pub(super) fn verify_update_plan(plan: &LogicalPlan) -> crate::Result<()> {
+pub(super) fn verify_update_plan(plan: &LogicalPlan) -> crate::error::Result<()> {
     match plan {
         LogicalPlan::Ddl(ddl) => verify_update_ddl(ddl, "datafusion_nexus.server.flight.do_put_update.verify_plan"),
         LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(Error::new(
@@ -97,7 +100,7 @@ pub(super) fn verify_sql_statement_namespace(
     statement: &Statement,
     operation: &'static str,
     session_update_message: &'static str,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     match statement {
         Statement::SetVariable(set) if operation == "datafusion_nexus.server.flight.do_put_update.verify_plan" => {
             reject_flight_datafusion_nexus_session_key(&set.variable, operation)
@@ -120,7 +123,7 @@ pub(super) fn verify_sql_statement_namespace(
     }
 }
 
-fn reject_flight_datafusion_nexus_session_key(variable: &str, operation: &'static str) -> crate::Result<()> {
+fn reject_flight_datafusion_nexus_session_key(variable: &str, operation: &'static str) -> crate::error::Result<()> {
     let normalized = variable.trim().to_ascii_lowercase();
     if normalized != "datafusion_nexus" && !normalized.starts_with("datafusion_nexus.") {
         return Ok(());
@@ -135,7 +138,7 @@ fn reject_flight_datafusion_nexus_session_key(variable: &str, operation: &'stati
     .with_fact("configuration_scope", "server_or_tenant_defaults"))
 }
 
-pub(super) fn verify_update_ddl(ddl: &DdlStatement, operation: &'static str) -> crate::Result<()> {
+pub(super) fn verify_update_ddl(ddl: &DdlStatement, operation: &'static str) -> crate::error::Result<()> {
     match ddl {
         DdlStatement::CreateMemoryTable(_) | DdlStatement::CreateIndex(_) => Err(Error::new(
             ErrorCode::UnsupportedOperator,

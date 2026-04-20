@@ -357,15 +357,15 @@ fn dimension_pruning_key_accumulator_supports_q16_string_predicate_with_utf8view
     )
     .expect("test batch should be valid");
 
-    let filter = nexus_query_engine::dimension_key_filter_from_batch(&batch, "p_partkey", &part_brand_type_size_predicate())
+    let filter = nexus_query_engine::optimizer::dimension_key_filter_from_batch(&batch, "p_partkey", &part_brand_type_size_predicate())
         .expect("part string predicate should be evaluable")
         .expect("qualifying part keys should build a filter");
 
-    assert_eq!(filter.bounds(), nexus_query_engine::DimensionDerivedKeyRange { min: 10, max: 40 });
+    assert_eq!(filter.bounds(), nexus_query_engine::optimizer::KeyRange { min: 10, max: 40 });
     assert_eq!(filter.run_count(), 2);
-    assert!(filter.overlaps(nexus_query_engine::DimensionDerivedKeyRange { min: 10, max: 10 }));
-    assert!(filter.overlaps(nexus_query_engine::DimensionDerivedKeyRange { min: 40, max: 40 }));
-    assert!(!filter.overlaps(nexus_query_engine::DimensionDerivedKeyRange { min: 20, max: 30 }));
+    assert!(filter.overlaps(nexus_query_engine::optimizer::KeyRange { min: 10, max: 10 }));
+    assert!(filter.overlaps(nexus_query_engine::optimizer::KeyRange { min: 40, max: 40 }));
+    assert!(!filter.overlaps(nexus_query_engine::optimizer::KeyRange { min: 20, max: 30 }));
 }
 
 #[test]
@@ -584,10 +584,10 @@ fn dimension_pruning_external_stats_narrow_existing_row_group_selection() {
         plan,
         source,
         &[vec![
-            Some(nexus_query_engine::DimensionDerivedKeyRange { min: 10, max: 19 }),
-            Some(nexus_query_engine::DimensionDerivedKeyRange { min: 30, max: 39 }),
+            Some(nexus_query_engine::optimizer::KeyRange { min: 10, max: 19 }),
+            Some(nexus_query_engine::optimizer::KeyRange { min: 30, max: 39 }),
         ]],
-        &nexus_query_engine::DimensionKeyFilter::from_bounds(nexus_query_engine::DimensionDerivedKeyRange {
+        &nexus_query_engine::optimizer::DimensionKeyFilter::from_bounds(nexus_query_engine::optimizer::KeyRange {
             min: 35,
             max: 35,
         }),
@@ -621,15 +621,15 @@ fn dimension_pruning_scattered_keyset_prunes_gaps_a_single_range_would_keep() {
     let plan = builder.finish_gpu_resident(source);
 
     let scattered =
-        nexus_query_engine::DimensionKeyFilter::from_keys(&[5, 35]).expect("non-empty keyset builds a filter");
+        nexus_query_engine::optimizer::DimensionKeyFilter::from_keys(&[5, 35]).expect("non-empty keyset builds a filter");
     assert_eq!(scattered.run_count(), 2);
 
     let result = apply_dimension_derived_pruning_with_stats(
         plan,
         source,
         &[vec![
-            Some(nexus_query_engine::DimensionDerivedKeyRange { min: 10, max: 19 }),
-            Some(nexus_query_engine::DimensionDerivedKeyRange { min: 30, max: 39 }),
+            Some(nexus_query_engine::optimizer::KeyRange { min: 10, max: 19 }),
+            Some(nexus_query_engine::optimizer::KeyRange { min: 30, max: 39 }),
         ]],
         &scattered,
     );
@@ -696,7 +696,7 @@ fn dimension_pruning_does_not_seed_reader_predicate_through_shared_aggregate_sub
     fs::remove_dir_all(dir).expect("temporary dimension pruning fixture should be removable");
 }
 
-fn shared_fact_target_dimension_pruning_plan() -> nexus_query_engine::QueryPlan {
+fn shared_fact_target_dimension_pruning_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(estimated_local_source("store_sales", "fact_key", 512 * 1024 * 1024, 10_000_000));
     let output_schema = schema(&["dim_key", "fact_key"]);
@@ -727,7 +727,7 @@ fn shared_fact_target_dimension_pruning_plan() -> nexus_query_engine::QueryPlan 
     builder.finish_gpu_resident(union)
 }
 
-fn aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> nexus_query_engine::QueryPlan {
+fn aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> nexus_query_engine::plan::QueryPlan {
     aggregate_group_filter_dimension_pruning_plan_with_predicate(
         dir,
         Expr::binary(Expr::column("ss_sold_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000))),
@@ -737,7 +737,7 @@ fn aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> nexus_query_engi
 fn aggregate_group_filter_dimension_pruning_plan_with_predicate(
     dir: &Path,
     filter_predicate: Expr,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let fact_path = dir.join("store_sales.parquet");
     let date_path = dir.join("date_dim.parquet");
     let fact_schema = Arc::new(Schema::new(vec![
@@ -818,7 +818,7 @@ fn aggregate_group_filter_dimension_pruning_plan_with_predicate(
     builder.finish_gpu_resident(filtered)
 }
 
-fn shared_aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> nexus_query_engine::QueryPlan {
+fn shared_aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> nexus_query_engine::plan::QueryPlan {
     let fact_path = dir.join("store_sales.parquet");
     let date_path = dir.join("date_dim.parquet");
     let fact_schema = Arc::new(Schema::new(vec![
@@ -904,7 +904,7 @@ fn shared_aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> nexus_que
     builder.finish_gpu_resident(union)
 }
 
-fn aggregate_right_group_filter_left_join_plan(dir: &Path) -> nexus_query_engine::QueryPlan {
+fn aggregate_right_group_filter_left_join_plan(dir: &Path) -> nexus_query_engine::plan::QueryPlan {
     let fact_path = dir.join("left_fact.parquet");
     let dim_path = dir.join("right_dim.parquet");
     let fact_schema = Arc::new(Schema::new(vec![Field::new("fact_key", DataType::Int32, false)]));

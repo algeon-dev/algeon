@@ -1389,8 +1389,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        LocalParquetFile, LocalParquetSource, QueryPlanBuilder, SourceNode,
-        plan::{GraphConstructionOptions, GraphTriangleCountAllParams},
+        plan::{GraphConstructionOptions, GraphTriangleCountAllParams, QueryPlanBuilder},
+        source::{LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
     fn edge_schema() -> SchemaRef {

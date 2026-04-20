@@ -568,7 +568,7 @@ pub(crate) async fn run_query_with_registered_native_tables(
         .await
         .unwrap_or(unpruned_plan);
     }
-    let planning_row = datafusion_nexus::NativeDataFusionPlanningReport::from_retained_rule(
+    let planning_row = datafusion_nexus::native_report::NativeDataFusionPlanningReport::from_retained_rule(
         query_id.clone(),
         Arc::clone(&physical_plan),
         native_rule,
@@ -828,7 +828,7 @@ fn smoke_native_plan_debug_enabled() -> bool {
 
 fn log_native_plan_debug_row(
     query_id: &str,
-    planning_row: &datafusion_nexus::NativeDataFusionPlanningRow,
+    planning_row: &datafusion_nexus::native_report::NativeDataFusionPlanningRow,
     post_native_plan: &dyn ExecutionPlan,
 ) {
     eprintln!(

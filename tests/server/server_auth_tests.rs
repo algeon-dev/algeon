@@ -4,7 +4,7 @@ use std::{io::Write, net::TcpListener, time::Duration};
 
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
 use datafusion_nexus::server::{
-    AuthConfig, AuthMode, ServerConfig, StaticUserConfig, auth::hash_password, serve_with_listener,
+    AuthConfig, AuthMode, ServerConfig, StaticUserConfig, hash_password, serve_with_listener,
 };
 use tonic::{Code, transport::Endpoint};
 

@@ -1,6 +1,7 @@
-use datafusion_nexus::NativeStrictBoundedCompiledGraphDiagnostics;
+use datafusion_nexus::planner::NativeStrictBoundedCompiledGraphDiagnostics;
 use nexus_query_engine::{
-    AdaptivePipelineReportRow, StrictBoundedContractGateRow, harness::max_option as max_optional_usize,
+    adaptive_report::AdaptivePipelineReportRow, contract_report::StrictBoundedContractGateRow,
+    harness::max_option as max_optional_usize,
 };
 
 use super::*;

@@ -16,10 +16,15 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy,
-    NativeCudfExecutionConfig, NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
-    NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
-    register_source_unique_keys_for_path,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::{
+        NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
+        NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
+    },
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::GpuFallbackPolicy,
+    session::CudfSessionStateBuilderExt,
+    source_cardinality::register_source_unique_keys_for_path,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -128,7 +133,7 @@ pub struct TpcdsNativeProfileSettings {
     pub max_row_groups_per_chunk: usize,
     pub max_retry_attempts: usize,
     pub min_retry_chunk_row_groups: usize,
-    pub source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
+    pub source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
 }
 
 impl TpcdsNativeProfileSettings {
@@ -155,7 +160,7 @@ struct NativeProfileBase {
     max_row_groups_per_chunk: usize,
     max_retry_attempts: usize,
     min_retry_chunk_row_groups: usize,
-    source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
+    source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
 }
 
 /// Result type used by TPC-DS fixture and workload helpers.
@@ -278,7 +283,7 @@ fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
 /// from GPU-only `cugraph_*` calls.
 pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default(
-        nexus_query_engine::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
+        nexus_query_engine::mode::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
     )
 }
 
@@ -287,7 +292,7 @@ pub fn tpcds_native_optimizer_config_with_profile_settings(
     profile: &TpcdsNativeProfileSettings,
 ) -> CudfOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
-        nexus_query_engine::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
+        nexus_query_engine::mode::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
         profile,
     )
 }
@@ -302,7 +307,7 @@ pub fn tpcds_native_optimizer_config_with_profile_settings(
 /// DataFusion compatibility.
 pub fn tpcds_native_analytics_optimizer_config() -> CudfOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default(
-        nexus_query_engine::StatisticalAggregateExecutionMode::GpuNativeTolerant,
+        nexus_query_engine::mode::StatisticalAggregateExecutionMode::GpuNativeTolerant,
     )
 }
 
@@ -311,7 +316,7 @@ pub fn tpcds_native_analytics_optimizer_config_with_profile_settings(
     profile: &TpcdsNativeProfileSettings,
 ) -> CudfOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
-        nexus_query_engine::StatisticalAggregateExecutionMode::GpuNativeTolerant,
+        nexus_query_engine::mode::StatisticalAggregateExecutionMode::GpuNativeTolerant,
         profile,
     )
 }
@@ -328,7 +333,7 @@ pub fn tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_s
 }
 
 /// Resolves TPC-DS hybrid analytics CPU-preference options from env.
-pub fn tpcds_native_cpu_preference_options_from_env() -> nexus_query_engine::NativePlanPreferenceOptions {
+pub fn tpcds_native_cpu_preference_options_from_env() -> nexus_query_engine::plan::NativePlanPreferenceOptions {
     tpcds_native_cpu_preference_options_with_env(|name| std::env::var(name).ok())
 }
 
@@ -336,10 +341,10 @@ pub fn tpcds_native_cpu_preference_options_from_env() -> nexus_query_engine::Nat
 /// env reader for tests and benchmark harnesses.
 pub fn tpcds_native_cpu_preference_options_with_env(
     mut get: impl FnMut(&'static str) -> Option<String>,
-) -> nexus_query_engine::NativePlanPreferenceOptions {
-    let mut options = nexus_query_engine::NativePlanPreferenceOptions {
+) -> nexus_query_engine::plan::NativePlanPreferenceOptions {
+    let mut options = nexus_query_engine::plan::NativePlanPreferenceOptions {
         max_small_selective_residual_join_row_groups: TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS,
-        ..nexus_query_engine::NativePlanPreferenceOptions::default()
+        ..nexus_query_engine::plan::NativePlanPreferenceOptions::default()
     };
 
     if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV) {
@@ -369,7 +374,7 @@ pub fn tpcds_native_cpu_preference_options_with_env(
 }
 
 fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
-    statistical_aggregate_execution_mode_default: nexus_query_engine::StatisticalAggregateExecutionMode,
+    statistical_aggregate_execution_mode_default: nexus_query_engine::mode::StatisticalAggregateExecutionMode,
 ) -> CudfOptimizerConfig {
     let profile = tpcds_native_profile_settings_from_env();
     tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
@@ -379,7 +384,7 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
 }
 
 fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
-    statistical_aggregate_execution_mode_default: nexus_query_engine::StatisticalAggregateExecutionMode,
+    statistical_aggregate_execution_mode_default: nexus_query_engine::mode::StatisticalAggregateExecutionMode,
     profile: &TpcdsNativeProfileSettings,
 ) -> CudfOptimizerConfig {
     let statistical_aggregate_execution_mode =
@@ -389,7 +394,7 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
     // than being routed through DataFusion CPU fallback as a small/selective
     // preference. Leave the env constants above in place so the old benchmark
     // gate can be restored once graph SQL has an explicit GPU-only boundary.
-    let preference_options = nexus_query_engine::NativePlanPreferenceOptions::disabled();
+    let preference_options = nexus_query_engine::plan::NativePlanPreferenceOptions::disabled();
     CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(
             NativeCudfExecutionConfig::bounded(
@@ -508,7 +513,7 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             max_row_groups_per_chunk: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative,
         },
         TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT => NativeProfileBase {
             name: TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
@@ -518,7 +523,7 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             max_row_groups_per_chunk: TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput,
+            source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
         },
         other => panic!(
             "unsupported {CUDF_TPCDS_NATIVE_PROFILE_ENV}={other}; expected {TPCDS_NATIVE_PROFILE_CONSERVATIVE} or {TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
@@ -555,11 +560,11 @@ fn parse_env_bool(name: &'static str, value: String) -> bool {
     }
 }
 
-fn parse_env_source_chunk_planning_mode(value: String) -> nexus_query_engine::SourceChunkPlanningMode {
+fn parse_env_source_chunk_planning_mode(value: String) -> nexus_query_engine::runtime::SourceChunkPlanningMode {
     match value.trim().to_ascii_lowercase().as_str() {
-        "conservative" => nexus_query_engine::SourceChunkPlanningMode::Conservative,
+        "conservative" => nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative,
         "local_parquet_throughput" | "local_throughput" => {
-            nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput
+            nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
         },
         other => panic!(
             "unsupported {CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}={other}; expected conservative or local_parquet_throughput"
@@ -567,8 +572,8 @@ fn parse_env_source_chunk_planning_mode(value: String) -> nexus_query_engine::So
     }
 }
 
-fn optional_env_statistical_aggregate_execution_mode() -> Option<nexus_query_engine::StatisticalAggregateExecutionMode>
-{
+fn optional_env_statistical_aggregate_execution_mode()
+-> Option<nexus_query_engine::mode::StatisticalAggregateExecutionMode> {
     optional_env_statistical_aggregate_execution_mode_for(CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
         .or_else(|| {
             optional_env_statistical_aggregate_execution_mode_for(CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV)
@@ -577,9 +582,9 @@ fn optional_env_statistical_aggregate_execution_mode() -> Option<nexus_query_eng
 
 fn optional_env_statistical_aggregate_execution_mode_for(
     name: &'static str,
-) -> Option<nexus_query_engine::StatisticalAggregateExecutionMode> {
+) -> Option<nexus_query_engine::mode::StatisticalAggregateExecutionMode> {
     std::env::var(name).ok().map(|value| {
-        value.parse::<nexus_query_engine::StatisticalAggregateExecutionMode>().unwrap_or_else(|error| {
+        value.parse::<nexus_query_engine::mode::StatisticalAggregateExecutionMode>().unwrap_or_else(|error| {
             panic!("unsupported {name}={value}; expected datafusion_exact_host_welford or gpu_native_tolerant: {error}")
         })
     })

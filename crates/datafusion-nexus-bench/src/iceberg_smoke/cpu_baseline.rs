@@ -122,7 +122,7 @@ pub fn fingerprint_output_batches(
     schema: &arrow::datatypes::Schema,
     batches: &[RecordBatch],
     sql: &str,
-) -> datafusion_nexus::ParityComparisonResult {
+) -> datafusion_nexus::native_report::ParityComparisonResult {
     compare_record_batches(
         schema,
         batches,
@@ -176,7 +176,7 @@ pub fn cpu_baseline_listing_urls_from_scan_plan(scan_plan: &TableFormatScanPlan)
 }
 
 pub(crate) fn cpu_baseline_listing_url_from_data_file(
-    file: &datafusion_nexus::TableFormatDataFile,
+    file: &datafusion_nexus::table_format::TableFormatDataFile,
 ) -> Option<datafusion::error::Result<ListingTableUrl>> {
     if let Some(resolved) = &file.resolved_parquet_source
         && resolved.read_strategy == ParquetReadStrategy::LocalCacheKvikio

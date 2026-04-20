@@ -5,7 +5,7 @@
 //! a TSV schema break and requires bumping the consuming report's schema
 //! version.
 
-use nexus_query_engine::TriageCode;
+use nexus_query_engine::triage::TriageCode;
 
 /// Policy controlling whether DataFusion may fall back to CPU execution.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

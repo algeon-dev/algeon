@@ -27,20 +27,32 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CandidateOutcome, CudfTableFormatScanExec, ErrorCode, ErrorStatus, FallbackReason, TableFormat,
-    TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
-    TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent, TableFormatLakehouseCachePolicy,
-    TableFormatParquetReadStrategyConfig, TableFormatParquetReadStrategyPreference, TableFormatParquetSourceMetadata,
-    TableFormatPartitionTransform, TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability,
-    TableFormatScalarValue, TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature,
-    TableFormatUnsupportedFeatureCode, iceberg::CudfIcebergTableProvider, lower_physical_plan_to_native,
-    resolve_table_format_parquet_source, resolve_table_format_parquet_source_with_metadata,
-    schema_with_source_unique_keys,
+    error::{ErrorCode, ErrorStatus},
+    native::lower_physical_plan_to_native,
+    policy::FallbackReason,
+    report::CandidateOutcome,
+    source_cardinality::schema_with_source_unique_keys,
+    table_format::{
+        CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
+        TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
+        TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
+        TableFormatParquetReadStrategyPreference, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
+        TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue,
+        TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
+        iceberg::CudfIcebergTableProvider, resolve_table_format_parquet_source,
+        resolve_table_format_parquet_source_with_metadata,
+    },
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
-    CredentialMode, ExecutionContext, LakehouseCacheStatus, LiteralValue as NativeLiteralValue, ParquetReadStrategy,
-    PlanNode, QueryOutput, ResolvedParquetSource, SourceColumnRef, SourceDecodeInput, SourceNode, execute_query_plan,
+    exec::{QueryOutput, execute_query_plan},
+    expr::LiteralValue as NativeLiteralValue,
+    plan::PlanNode,
+    runtime::ExecutionContext,
+    source::{
+        CredentialMode, LakehouseCacheStatus, ParquetReadStrategy, ResolvedParquetSource, SourceColumnRef,
+        SourceDecodeInput, SourceNode,
+    },
 };
 use parquet::arrow::{ArrowWriter, PARQUET_FIELD_ID_META_KEY};
 
@@ -78,7 +90,7 @@ impl TableFormatPlanner for SleepingPlanner {
     fn plan_scan(
         &self,
         _request: TableFormatScanRequest,
-    ) -> BoxFuture<'_, datafusion_nexus::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
         let plan = self.plan.clone();
         let delay = self.delay;
         Box::pin(async move {
@@ -96,7 +108,7 @@ impl TableFormatPlanner for BusyPlanner {
     fn plan_scan(
         &self,
         _request: TableFormatScanRequest,
-    ) -> BoxFuture<'_, datafusion_nexus::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
         let plan = self.plan.clone();
         let spin_for = self.spin_for;
         Box::pin(async move {
@@ -127,7 +139,7 @@ impl TableFormatPlanner for RecordingPlanner {
     fn plan_scan(
         &self,
         request: TableFormatScanRequest,
-    ) -> BoxFuture<'_, datafusion_nexus::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
         let scan_limit = request.scan_limit;
         self.requests.lock().expect("request recorder mutex poisoned").push(request);
         let plan = self.plan.clone().with_scan_limit(scan_limit);
@@ -1789,17 +1801,19 @@ fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTableFormatSc
     plan.children().into_iter().find_map(|child| find_table_format_scan(child.as_ref()))
 }
 
-fn adapter_error_from(error: &DataFusionError) -> &datafusion_nexus::Error {
+fn adapter_error_from(error: &DataFusionError) -> &datafusion_nexus::error::Error {
     match error {
         DataFusionError::External(source) => {
-            source.downcast_ref::<datafusion_nexus::Error>().expect("expected datafusion_nexus::Error")
+            source.downcast_ref::<datafusion_nexus::error::Error>().expect("expected datafusion_nexus::error::Error")
         },
         DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => adapter_error_from(source),
         other => panic!("expected adapter error, got {other:?}"),
     }
 }
 
-fn native_local_parquet_source(plan: &nexus_query_engine::QueryPlan) -> &nexus_query_engine::LocalParquetSource {
+fn native_local_parquet_source(
+    plan: &nexus_query_engine::plan::QueryPlan,
+) -> &nexus_query_engine::source::LocalParquetSource {
     plan.nodes()
         .iter()
         .find_map(|node| match &node.kind {
@@ -1813,7 +1827,9 @@ fn native_local_parquet_source(plan: &nexus_query_engine::QueryPlan) -> &nexus_q
         .expect("native plan should contain a local parquet source")
 }
 
-fn native_local_parquet_sources(plan: &nexus_query_engine::QueryPlan) -> Vec<&nexus_query_engine::LocalParquetSource> {
+fn native_local_parquet_sources(
+    plan: &nexus_query_engine::plan::QueryPlan,
+) -> Vec<&nexus_query_engine::source::LocalParquetSource> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -1827,14 +1843,14 @@ fn native_local_parquet_sources(plan: &nexus_query_engine::QueryPlan) -> Vec<&ne
         .collect()
 }
 
-fn native_plan_limit_count(plan: &nexus_query_engine::QueryPlan) -> usize {
+fn native_plan_limit_count(plan: &nexus_query_engine::plan::QueryPlan) -> usize {
     plan.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Limit(_))).count()
 }
 
-fn native_plan_filter_count(plan: &nexus_query_engine::QueryPlan) -> usize {
+fn native_plan_filter_count(plan: &nexus_query_engine::plan::QueryPlan) -> usize {
     plan.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Filter(_))).count()
 }
 
-fn native_plan_union_count(plan: &nexus_query_engine::QueryPlan) -> usize {
+fn native_plan_union_count(plan: &nexus_query_engine::plan::QueryPlan) -> usize {
     plan.nodes().iter().filter(|node| matches!(&node.kind, PlanNode::Union(_))).count()
 }

@@ -371,7 +371,7 @@ pub struct ResolvedParquetSource {
     pub content_identity: Option<String>,
     /// Execution-time source storage profile used for object-store fetches.
     ///
-    /// The referenced profile lives on [`crate::ExecutionContext`]. Keeping only
+    /// The referenced profile lives on [`crate::runtime::ExecutionContext`]. Keeping only
     /// the id here lets plans and diagnostics stay credential-free.
     pub storage_profile_id: Option<String>,
     /// Selected high-level read strategy.

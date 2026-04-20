@@ -6,16 +6,18 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
         NativeTpchBenchmarkConfig { query_ids: vec!["q02".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let metadata = benchmark_metadata();
     let mut planning = rejected_planning_row("q02");
-    planning.strict_bounded_contract_rows = vec![nexus_query_engine::StrictBoundedContractGateRow {
-        execution_mode: nexus_query_engine::StrictBoundedExecutionMode::UnsupportedStrictBounded,
+    planning.strict_bounded_contract_rows = vec![nexus_query_engine::contract_report::StrictBoundedContractGateRow {
+        execution_mode: nexus_query_engine::mode::StrictBoundedExecutionMode::UnsupportedStrictBounded,
         contract_scope: nexus_query_engine::capability::ReservationRequirementScope::Node,
-        gate_id: nexus_query_engine::StrictBoundedContractGateId::Compiled(nexus_query_engine::ReservationGateId::new(
-            0,
-        )),
-        owner: nexus_query_engine::StrictBoundedContractOwner::Compiled(
-            nexus_query_engine::ReservationGateOwner::Task(nexus_query_engine::PipelineTaskId::new(0)),
+        gate_id: nexus_query_engine::contract_report::StrictBoundedContractGateId::Compiled(
+            nexus_query_engine::pipeline::ReservationGateId::new(0),
         ),
-        reservation_kind: nexus_query_engine::ReservationKind::MixedSizeData,
+        owner: nexus_query_engine::contract_report::StrictBoundedContractOwner::Compiled(
+            nexus_query_engine::pipeline::ReservationGateOwner::Task(
+                nexus_query_engine::pipeline::PipelineTaskId::new(0),
+            ),
+        ),
+        reservation_kind: nexus_query_engine::runtime::ReservationKind::MixedSizeData,
         memory_boundary: "mixed_keyed_residual_or_conditional_full_retained_size_data",
         required_contract: "mixed_keyed_residual_or_conditional_full_retained_size_data",
         contract_status: nexus_query_engine::capability::ContractStatus::BlockedByLowerLevel,

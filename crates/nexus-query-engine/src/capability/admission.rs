@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{graph::*, model::*, shape::*, *};
-use crate::ResultSink;
+use crate::plan::ResultSink;
 
 pub(super) fn analyze_root_join_admission(
     plan: &QueryPlan,

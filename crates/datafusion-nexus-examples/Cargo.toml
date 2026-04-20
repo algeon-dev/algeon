@@ -19,6 +19,7 @@ cudf-sys = { workspace = true }
 cugraph-sys = { workspace = true }
 datafusion = { workspace = true }
 datafusion-nexus = { workspace = true, features = ["server-cugraph", "iceberg"] }
+nexus-query-engine = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }

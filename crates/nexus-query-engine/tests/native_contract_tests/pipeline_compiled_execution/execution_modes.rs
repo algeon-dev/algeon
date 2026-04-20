@@ -18,7 +18,7 @@ fn native_pipeline_modes_are_explicit_and_report_construction_stays_strict_only(
     let _: fn(
         StrictBoundedExecutionMode,
         Vec<StrictBoundedContractGateRow>,
-    ) -> nexus_query_engine::Result<StrictBoundedContractReport> = StrictBoundedContractReport::from_gate_rows;
+    ) -> nexus_query_engine::error::Result<StrictBoundedContractReport> = StrictBoundedContractReport::from_gate_rows;
 }
 
 #[test]
@@ -377,9 +377,9 @@ fn adaptive_task_memory_history_records_compiled_task_observations() {
         .with_compiled_task_id(task.id())
         .with_memory_boundary("source_read");
     metrics.record_reservation_granted_timeline_event(&request, MemoryReservationEventAction::Reserve, 96, 96, 96);
-    metrics.record_reservation_timeline_event(nexus_query_engine::MemoryReservationEvent::from_request(
+    metrics.record_reservation_timeline_event(nexus_query_engine::metrics::MemoryReservationEvent::from_request(
         &request,
-        nexus_query_engine::MemoryReservationEventOutcome::Applied,
+        nexus_query_engine::metrics::MemoryReservationEventOutcome::Applied,
         MemoryReservationEventAction::Release,
         0,
         -96,
@@ -411,7 +411,7 @@ fn adaptive_task_memory_history_recommends_lower_reservation_with_headroom() {
 
     history.record_task_observation(
         task_key,
-        nexus_query_engine::AdaptiveTaskMemoryObservation {
+        nexus_query_engine::adaptive_runtime::AdaptiveTaskMemoryObservation {
             reservation_requested_bytes: 1024,
             reservation_granted_bytes: 1024,
             observed_peak_bytes: Some(128),

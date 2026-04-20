@@ -175,7 +175,7 @@ fn semijoin_reduction_strict_gate_allows_later_passes_to_route_dimension_keyset_
     assert_eq!(candidate.rejected_reason, None);
     assert_eq!(
         candidate.admission_decision,
-        Some(nexus_query_engine::SemijoinReductionAdmissionDecision::StrictBoundedKept)
+        Some(nexus_query_engine::optimizer::SemijoinReductionAdmissionDecision::StrictBoundedKept)
     );
     assert_eq!(candidate.original_admitted, Some(true));
     assert_eq!(candidate.rewritten_admitted, Some(true));
@@ -223,7 +223,7 @@ fn semijoin_reduction_strict_admission_gate_keeps_rewrite_when_original_is_not_y
     assert_eq!(candidate.rejected_reason, None);
     assert_eq!(
         candidate.admission_decision,
-        Some(nexus_query_engine::SemijoinReductionAdmissionDecision::StrictBoundedKept)
+        Some(nexus_query_engine::optimizer::SemijoinReductionAdmissionDecision::StrictBoundedKept)
     );
     assert_eq!(candidate.original_admitted, Some(false));
     assert_eq!(candidate.rewritten_admitted, Some(false));
@@ -303,18 +303,18 @@ enum SemijoinTarget {
     Right,
 }
 
-fn root_semijoin_over_inner_join_plan(target: SemijoinTarget) -> nexus_query_engine::QueryPlan {
+fn root_semijoin_over_inner_join_plan(target: SemijoinTarget) -> nexus_query_engine::plan::QueryPlan {
     root_semijoin_over_inner_join_plan_impl(target, true)
 }
 
-fn root_semijoin_over_inner_join_plan_with_raw_keyset(target: SemijoinTarget) -> nexus_query_engine::QueryPlan {
+fn root_semijoin_over_inner_join_plan_with_raw_keyset(target: SemijoinTarget) -> nexus_query_engine::plan::QueryPlan {
     root_semijoin_over_inner_join_plan_impl(target, false)
 }
 
 fn root_semijoin_over_inner_join_plan_impl(
     target: SemijoinTarget,
     aggregate_keyset: bool,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     root_semijoin_over_inner_join_plan_with_options(
         target,
         aggregate_keyset,
@@ -327,7 +327,7 @@ fn root_semijoin_over_inner_join_plan_impl(
 fn root_semijoin_over_inner_join_plan_with_null_equality(
     semijoin_null_equality: JoinNullEquality,
     crossed_join_null_equality: JoinNullEquality,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     root_semijoin_over_inner_join_plan_with_options(
         SemijoinTarget::Right,
         true,
@@ -337,7 +337,7 @@ fn root_semijoin_over_inner_join_plan_with_null_equality(
     )
 }
 
-fn root_semijoin_over_crossed_join_type_plan(join_type: JoinType) -> nexus_query_engine::QueryPlan {
+fn root_semijoin_over_crossed_join_type_plan(join_type: JoinType) -> nexus_query_engine::plan::QueryPlan {
     root_semijoin_over_inner_join_plan_with_options(
         SemijoinTarget::Right,
         true,
@@ -353,7 +353,7 @@ fn root_semijoin_over_inner_join_plan_with_options(
     crossed_join_type: JoinType,
     semijoin_null_equality: JoinNullEquality,
     crossed_join_null_equality: JoinNullEquality,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let x = builder.add_source(gpu_source("x", &["x_key", "x_payload"]));
     let y = builder.add_source(gpu_source("y", &["y_key", "y_payload"]));
@@ -397,7 +397,7 @@ fn root_semijoin_over_inner_join_plan_with_options(
     builder.finish_gpu_resident(semi)
 }
 
-fn root_semijoin_over_duplicate_output_name_plan() -> nexus_query_engine::QueryPlan {
+fn root_semijoin_over_duplicate_output_name_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let x = builder.add_source(gpu_source("x", &["x_key"]));
     let y = builder.add_source(gpu_source("y", &["y_key"]));
@@ -429,7 +429,7 @@ fn root_semijoin_over_duplicate_output_name_plan() -> nexus_query_engine::QueryP
     builder.finish_gpu_resident(semi)
 }
 
-fn root_semijoin_over_expression_key_projection_plan() -> nexus_query_engine::QueryPlan {
+fn root_semijoin_over_expression_key_projection_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let x = builder.add_source(gpu_source("x", &["x_key"]));
     let y = builder.add_source(gpu_source("y", &["y_key"]));
@@ -464,7 +464,7 @@ fn root_semijoin_over_expression_key_projection_plan() -> nexus_query_engine::Qu
     builder.finish_gpu_resident(semi)
 }
 
-fn root_semijoin_over_dropped_key_projection_plan() -> nexus_query_engine::QueryPlan {
+fn root_semijoin_over_dropped_key_projection_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let x = builder.add_source(gpu_source("x", &["x_key"]));
     let y = builder.add_source(gpu_source("y", &["y_key"]));
@@ -493,7 +493,7 @@ fn root_semijoin_over_dropped_key_projection_plan() -> nexus_query_engine::Query
     builder.finish_gpu_resident(semi)
 }
 
-fn root_semijoin_over_nested_inner_join_plan() -> nexus_query_engine::QueryPlan {
+fn root_semijoin_over_nested_inner_join_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let a = builder.add_source(gpu_source("a", &["a_key", "a_payload"]));
     let b = builder.add_source(gpu_source("b", &["b_key", "b_payload"]));
@@ -555,19 +555,19 @@ fn root_semijoin_over_nested_inner_join_plan() -> nexus_query_engine::QueryPlan 
     builder.finish_gpu_resident(semi)
 }
 
-fn root_semijoin_over_fact_date_dimension_plan() -> nexus_query_engine::QueryPlan {
+fn root_semijoin_over_fact_date_dimension_plan() -> nexus_query_engine::plan::QueryPlan {
     root_semijoin_over_fact_date_dimension_plan_with_week_keyset(week_dates_from_filtered_date_dimension)
 }
 
-fn root_semijoin_over_fact_date_dimension_plan_with_left_semi_week_keyset() -> nexus_query_engine::QueryPlan {
+fn root_semijoin_over_fact_date_dimension_plan_with_left_semi_week_keyset() -> nexus_query_engine::plan::QueryPlan {
     root_semijoin_over_fact_date_dimension_plan_with_week_keyset(
         week_dates_from_filtered_date_dimension_left_semi,
     )
 }
 
 fn root_semijoin_over_fact_date_dimension_plan_with_week_keyset(
-    week_keyset: fn(&mut QueryPlanBuilder, nexus_query_engine::NodeId) -> nexus_query_engine::NodeId,
-) -> nexus_query_engine::QueryPlan {
+    week_keyset: fn(&mut QueryPlanBuilder, nexus_query_engine::plan::NodeId) -> nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(estimated_local_source_with_fields(
         "store_sales",
@@ -626,8 +626,8 @@ fn root_semijoin_over_fact_date_dimension_plan_with_week_keyset(
 
 fn week_dates_from_filtered_date_dimension(
     builder: &mut QueryPlanBuilder,
-    date_dim: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    date_dim: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     let all_dates = builder.add_projection(
         date_dim,
         vec![
@@ -661,8 +661,8 @@ fn week_dates_from_filtered_date_dimension(
 
 fn week_dates_from_filtered_date_dimension_left_semi(
     builder: &mut QueryPlanBuilder,
-    date_dim: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    date_dim: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     let all_dates = builder.add_projection(
         date_dim,
         vec![
@@ -694,7 +694,7 @@ fn week_dates_from_filtered_date_dimension_left_semi(
     )
 }
 
-fn assert_left_semi_input(plan: &nexus_query_engine::QueryPlan, node_id: nexus_query_engine::NodeId, key_name: &str) {
+fn assert_left_semi_input(plan: &nexus_query_engine::plan::QueryPlan, node_id: nexus_query_engine::plan::NodeId, key_name: &str) {
     let node = plan.node(node_id).expect("node should exist");
     let PlanNode::Join(join) = &node.kind else {
         panic!("expected pushed left-semi join");
@@ -709,7 +709,7 @@ fn assert_left_semi_input(plan: &nexus_query_engine::QueryPlan, node_id: nexus_q
     );
 }
 
-fn assert_semijoin_rejection(plan: nexus_query_engine::QueryPlan, reason: SemijoinReductionRejectedReason) {
+fn assert_semijoin_rejection(plan: nexus_query_engine::plan::QueryPlan, reason: SemijoinReductionRejectedReason) {
     let result = optimize_query_plan(plan, &semijoin_reduction_only_options(SemijoinReductionOptions::default()));
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);

@@ -6,14 +6,14 @@ use datafusion::{
     physical_plan::ExecutionPlan,
 };
 #[cfg(feature = "cugraph")]
-use nexus_query_engine::QueryPlacementHint;
-use nexus_query_engine::{PlanNode, QueryId};
+use nexus_query_engine::runtime::QueryPlacementHint;
+use nexus_query_engine::{metrics::QueryId, plan::PlanNode};
 
 use super::CudfOptimizerConfig;
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphAlgoExec;
 use crate::{
-    Error, ErrorCode,
+    error::{Error, ErrorCode},
     native_exec::{
         GraphAdmissionModelAsk, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
         NativeCudfGpuProducerExec, admission::QueryAdmissionTicket, plan_is_cpu_fallback_limited,
@@ -58,9 +58,9 @@ pub struct NativePlanningDiagnostics {
     /// Candidate rewrite outcomes from the native physical optimizer rule.
     pub report: PlanningReport,
     /// DataFusion-free native optimizer diagnostics from the lowered plan.
-    pub native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics,
+    pub native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics,
     /// Source-read diagnostics captured while lowering/planning native sources.
-    pub source_diagnostics: Vec<nexus_query_engine::SourceDiagnostics>,
+    pub source_diagnostics: Vec<nexus_query_engine::source::SourceDiagnostics>,
     /// Strict bounded contract evidence; never populated from adaptive rows.
     pub strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
     /// Adaptive admission evidence; never projected into strict contract rows.
@@ -87,8 +87,8 @@ struct CudfNativePhysicalOptimizerRuleState {
     last_input_plan_shape: Mutex<Option<String>>,
     last_input_join_diagnostics: Mutex<Vec<NativeJoinDiagnosticSummary>>,
     last_report: Mutex<Option<PlanningReport>>,
-    last_native_optimizer: Mutex<nexus_query_engine::NativeOptimizerDiagnostics>,
-    last_source_diagnostics: Mutex<Vec<nexus_query_engine::SourceDiagnostics>>,
+    last_native_optimizer: Mutex<nexus_query_engine::optimizer::NativeOptimizerDiagnostics>,
+    last_source_diagnostics: Mutex<Vec<nexus_query_engine::source::SourceDiagnostics>>,
     last_strict_bounded_contract: Mutex<NativeStrictBoundedContractDiagnostics>,
     last_adaptive_pipeline: Mutex<NativeAdaptivePipelineDiagnostics>,
 }
@@ -113,7 +113,7 @@ impl CudfNativePhysicalOptimizerRule {
                 last_input_plan_shape: Mutex::new(None),
                 last_input_join_diagnostics: Mutex::new(Vec::new()),
                 last_report: Mutex::new(None),
-                last_native_optimizer: Mutex::new(nexus_query_engine::NativeOptimizerDiagnostics::default()),
+                last_native_optimizer: Mutex::new(nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default()),
                 last_source_diagnostics: Mutex::new(Vec::new()),
                 last_strict_bounded_contract: Mutex::new(NativeStrictBoundedContractDiagnostics::default()),
                 last_adaptive_pipeline: Mutex::new(NativeAdaptivePipelineDiagnostics::default()),
@@ -147,7 +147,7 @@ impl CudfNativePhysicalOptimizerRule {
     }
 
     /// Source diagnostics captured during the most recent native planning attempt.
-    pub fn last_source_diagnostics(&self) -> Vec<nexus_query_engine::SourceDiagnostics> {
+    pub fn last_source_diagnostics(&self) -> Vec<nexus_query_engine::source::SourceDiagnostics> {
         self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned").clone()
     }
 
@@ -309,7 +309,10 @@ fn apply_execution_admission_wrappers(
     {
         optimized.plan = wrap_plan_with_query_admission_ticket(Arc::clone(&optimized.plan), ticket);
     } else if optimized.rewritten
-        && matches!(native_execution_config.memory_control_policy(), nexus_query_engine::MemoryControlPolicy::Unbounded)
+        && matches!(
+            native_execution_config.memory_control_policy(),
+            nexus_query_engine::runtime::MemoryControlPolicy::Unbounded
+        )
         && let Some(limiter) = native_execution_config.unbounded_native_execution_limiter()
     {
         optimized.plan = wrap_plan_with_unbounded_native_execution_limit(Arc::clone(&optimized.plan), limiter);
@@ -396,7 +399,7 @@ struct GraphModelAskScan {
 
 fn complete_graph_dominated_model_ask_bytes(
     plan: &dyn ExecutionPlan,
-    calibration_override: nexus_query_engine::GraphMemoryCalibrationOverride,
+    calibration_override: nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride,
     device_total_memory_bytes: Option<u64>,
 ) -> DataFusionResult<Option<GraphAdmissionModelAsk>> {
     let mut scan = GraphModelAskScan::default();
@@ -413,7 +416,7 @@ fn complete_graph_dominated_model_ask_bytes(
 
 fn collect_graph_model_ask_scan(
     plan: &dyn ExecutionPlan,
-    calibration_override: nexus_query_engine::GraphMemoryCalibrationOverride,
+    calibration_override: nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride,
     device_total_memory_bytes: Option<u64>,
     scan: &mut GraphModelAskScan,
 ) -> DataFusionResult<bool> {
@@ -447,8 +450,8 @@ fn collect_graph_model_ask_scan(
 }
 
 fn update_graph_model_ask_scan(
-    native_plan: &nexus_query_engine::QueryPlan,
-    calibration_override: nexus_query_engine::GraphMemoryCalibrationOverride,
+    native_plan: &nexus_query_engine::plan::QueryPlan,
+    calibration_override: nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride,
     device_total_memory_bytes: Option<u64>,
     scan: &mut GraphModelAskScan,
 ) -> DataFusionResult<bool> {
@@ -462,7 +465,7 @@ fn update_graph_model_ask_scan(
         scan.disqualified = true;
         return Ok(true);
     }
-    for estimate in nexus_query_engine::graph_memory_estimates_for_plan(
+    for estimate in nexus_query_engine::graph_memory::graph_memory_estimates_for_plan(
         native_plan,
         calibration_override,
         device_total_memory_bytes,
@@ -500,11 +503,11 @@ fn update_cugraph_model_ask_scan(cugraph: &CugraphAlgoExec, scan: &mut GraphMode
     Ok(())
 }
 
-fn native_plan_graph_node_count(native_plan: &nexus_query_engine::QueryPlan) -> usize {
+fn native_plan_graph_node_count(native_plan: &nexus_query_engine::plan::QueryPlan) -> usize {
     native_plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))).count()
 }
 
-fn native_plan_is_graph_dominated(native_plan: &nexus_query_engine::QueryPlan) -> bool {
+fn native_plan_is_graph_dominated(native_plan: &nexus_query_engine::plan::QueryPlan) -> bool {
     let mut has_graph = false;
     for node in native_plan.nodes() {
         match &node.kind {
@@ -526,7 +529,7 @@ fn native_plan_is_graph_dominated(native_plan: &nexus_query_engine::QueryPlan) -
     has_graph
 }
 
-fn native_plan_is_graph_ticket_light_fragment(native_plan: &nexus_query_engine::QueryPlan) -> bool {
+fn native_plan_is_graph_ticket_light_fragment(native_plan: &nexus_query_engine::plan::QueryPlan) -> bool {
     native_plan.nodes().iter().all(|node| {
         matches!(node.kind, PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Limit(_))
     })
@@ -539,14 +542,19 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
     #[cfg(feature = "cugraph")]
-    use nexus_query_engine::GpuResidentSource;
+    use nexus_query_engine::plan::ProjectionOutput;
     #[cfg(feature = "cugraph")]
-    use nexus_query_engine::ProjectionOutput;
+    use nexus_query_engine::source::GpuResidentSource;
     use nexus_query_engine::{
-        DeploymentIoCapability, GdsDriverProbeStatus, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
-        GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings,
-        GraphTriangleCountAllParams, KvikioCompatModeStatus, LocalParquetFile, LocalParquetSource, NvidiaFsProbeStatus,
-        QueryPlan, QueryPlanBuilder, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SourceNode, TenantId,
+        plan::{
+            GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
+            GraphConstructionPolicy, GraphEdgeColumnBindings, GraphTriangleCountAllParams, QueryPlan, QueryPlanBuilder,
+        },
+        runtime::{
+            DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
+            QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+        },
+        source::{LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
     use super::*;
@@ -563,7 +571,7 @@ mod tests {
         NativeOptimizationAttempt {
             plan: Arc::new(EmptyExec::new(Arc::new(Schema::empty()))),
             report: PlanningReport::new(),
-            native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics::default(),
+            native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
             source_diagnostics: Vec::new(),
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
             adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
@@ -696,15 +704,15 @@ mod tests {
             source,
             vec![
                 ProjectionOutput::new(
-                    nexus_query_engine::Expr::column("src"),
+                    nexus_query_engine::expr::Expr::column("src"),
                     Field::new("src", DataType::Int64, false),
                 ),
                 ProjectionOutput::new(
-                    nexus_query_engine::Expr::column("dst"),
+                    nexus_query_engine::expr::Expr::column("dst"),
                     Field::new("dst", DataType::Int64, false),
                 ),
                 ProjectionOutput::new(
-                    nexus_query_engine::Expr::column("weight"),
+                    nexus_query_engine::expr::Expr::column("weight"),
                     Field::new("weight", DataType::Float64, false),
                 ),
             ],

@@ -33,10 +33,14 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, CugraphSqlConfig, MemoryShare,
-    NativeDataFusionExecutionMetrics, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy, SlotGuarantee,
+    backend::{MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
+    graph_sql::CugraphSqlConfig,
+    native_report::NativeDataFusionExecutionMetrics,
+    planner::CudfNativePhysicalOptimizerRule,
+    report::CandidateOutcome,
+    session::CudfSessionStateBuilderExt,
 };
-use nexus_query_engine::harness::StableFnv1a64;
+use nexus_query_engine::{harness::StableFnv1a64, runtime::SlotGuarantee};
 use tokio::sync::Barrier;
 
 const ENV_EDGES: &str = "CUDF_CUGRAPH_ADMISSION_EDGES_PARQUET";
@@ -1600,7 +1604,7 @@ mod tests {
         array::{ArrayRef, Int64Array},
         datatypes::{DataType, Field, Schema},
     };
-    use datafusion_nexus::{NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow};
+    use datafusion_nexus::native_report::{NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow};
 
     use super::*;
 

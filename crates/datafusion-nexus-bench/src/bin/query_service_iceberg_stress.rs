@@ -12,14 +12,28 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_nexus::{
-    CudfIcebergTableProvider, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt,
-    Error as AdapterError, GlueIcebergCatalogConfig, GlueIcebergTableConfig, GpuFallbackPolicy,
-    IcebergTableFormatPlanner, NativeCudfExecutionConfig, NativeDataFusionPlanningOutcome,
-    NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
-    TableFormatScanRequest, load_glue_table,
+    error::Error as AdapterError,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::{
+        NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
+        NativeDataFusionPostNativeExecutionPath,
+    },
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::GpuFallbackPolicy,
+    session::CudfSessionStateBuilderExt,
+    table_format::{
+        TableFormatScanRequest,
+        iceberg::{
+            CudfIcebergTableProvider, GlueIcebergTableConfig, IcebergTableFormatPlanner,
+            catalog::GlueIcebergCatalogConfig, load_glue_table,
+        },
+    },
 };
 use datafusion_nexus_bench::{stress_harness::validate_synchronized_admission_queue, tpch_report_session_config};
-use nexus_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId};
+use nexus_query_engine::{
+    error::QueryError,
+    runtime::{QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId},
+};
 use tokio::sync::Barrier;
 
 const TSV_COLUMNS: &[&str] = &[
@@ -472,7 +486,7 @@ async fn run_native_request(
 
 async fn collect_native_with_handle(
     config: &StressConfig,
-    handle: Arc<nexus_query_engine::QueryHandle>,
+    handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
         NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),

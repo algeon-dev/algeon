@@ -181,7 +181,7 @@ fn assert_query_service_exact_runtime_warm_pricing(mode: NativePipelineExecution
             device_capacity_bytes: Some(256 * 1024 * 1024),
             max_concurrent_queries: 2,
             max_queries_per_device: Some(2),
-            slot_guarantee: nexus_query_engine::SlotGuarantee::Optimistic,
+            slot_guarantee: nexus_query_engine::runtime::SlotGuarantee::Optimistic,
             max_source_chunk_bytes: cold_grant,
             resident_graph_cache_max_retained_bytes: Some(64 * 1024 * 1024),
             native_pipeline_execution_mode: mode,

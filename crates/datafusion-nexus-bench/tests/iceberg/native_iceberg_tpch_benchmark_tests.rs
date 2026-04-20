@@ -10,9 +10,13 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion_nexus::{
-    NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome,
-    ParityComparisonMode, ParityStatus, TableFormat, TableFormatDataFile, TableFormatDataFileFormat,
-    TableFormatReadCapability, TableFormatScanPlan,
+    native_report::{
+        NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome,
+        ParityComparisonMode, ParityStatus,
+    },
+    table_format::{
+        TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatReadCapability, TableFormatScanPlan,
+    },
 };
 use datafusion_nexus_bench::TPCH_QUERIES;
 use native_iceberg_tpch_benchmark::{
@@ -25,7 +29,9 @@ use native_iceberg_tpch_benchmark::{
     write_benchmark_tsv_row,
 };
 use nexus_query_engine::{
-    CredentialMode, LakehouseCacheStatus, MemoryControlPolicy, ResolvedParquetSource, StatisticalAggregateExecutionMode,
+    mode::StatisticalAggregateExecutionMode,
+    runtime::MemoryControlPolicy,
+    source::{CredentialMode, LakehouseCacheStatus, ResolvedParquetSource},
 };
 
 #[test]
@@ -180,7 +186,7 @@ fn iceberg_benchmark_native_optimizer_allows_source_reuse_up_to_profile_source_c
         native_iceberg_smoke_report::native_optimizer_options_for_profile(NativeExecutionProfile::Smoke, &smoke_config);
     assert_eq!(
         smoke_options.local_parquet_source_reuse.max_variant_selected_bytes,
-        nexus_query_engine::LocalParquetSourceReuseOptions::default().max_variant_selected_bytes
+        nexus_query_engine::optimizer::LocalParquetSourceReuseOptions::default().max_variant_selected_bytes
     );
 }
 

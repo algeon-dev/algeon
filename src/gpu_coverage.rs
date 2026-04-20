@@ -37,12 +37,13 @@ use serde_json::{Value, json};
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphAlgoExec;
 use crate::{
-    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, Error, ErrorCode, FallbackReason,
-    GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
-    NativeDataFusionPostNativeExecutionPath, PlanningReport,
-    error::ErrorSourceDiagnostics,
-    native_report::post_native_plan_coverage,
+    error::{Error, ErrorCode, ErrorSourceDiagnostics},
+    native_exec::{NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec},
+    native_report::{NativeDataFusionPostNativeExecutionPath, post_native_plan_coverage},
     physical_plan::physical_plan_shape,
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::{FallbackReason, GpuFallbackPolicy},
+    report::{CandidateOutcome, PlanningReport},
     session::{CudfSessionStateBuilderExt, installed_cudf_native_optimizer_config},
 };
 
@@ -66,7 +67,7 @@ pub(crate) const GPU_COVERAGE_REJECTION_REASON_FACT: &str = "gpu_coverage_reject
 /// planning state, not a catalog or table-state fingerprint. Do not compare
 /// coverage verdicts across catalog, view, or table changes solely by this
 /// field.
-pub async fn validate_query(ctx: &SessionContext, sql: impl AsRef<str>) -> crate::Result<QueryGpuCoverage> {
+pub async fn validate_query(ctx: &SessionContext, sql: impl AsRef<str>) -> crate::error::Result<QueryGpuCoverage> {
     let sql = sql.as_ref();
     let config = optimizer_config_for_validation(ctx);
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(config.diagnostic_optimizer_config.clone()));
@@ -543,7 +544,7 @@ impl QueryGpuRejection {
             return Self::new(
                 phase,
                 reason_code,
-                matches!(adapter_error.status(), crate::ErrorStatus::Temporary),
+                matches!(adapter_error.status(), crate::error::ErrorStatus::Temporary),
                 diagnostics.chain().unwrap_or_else(|| adapter_error.message()).to_string(),
             );
         }
@@ -1190,7 +1191,7 @@ fn classify_physical_planning_error(error: &DataFusionError) -> QueryGpuRejectio
 
 fn planning_did_io_for_physical_error(
     phase: QueryGpuRejectionPhase,
-    diagnostics: Option<&crate::NativePlanningDiagnostics>,
+    diagnostics: Option<&crate::planner::NativePlanningDiagnostics>,
 ) -> bool {
     diagnostics.is_some_and(planning_diagnostics_did_io) || phase == QueryGpuRejectionPhase::PlanningIo
 }
@@ -1447,7 +1448,7 @@ fn runtime_caveats_for_overall(
     caveats
 }
 
-fn planning_diagnostics_did_io(diagnostics: &crate::NativePlanningDiagnostics) -> bool {
+fn planning_diagnostics_did_io(diagnostics: &crate::planner::NativePlanningDiagnostics) -> bool {
     diagnostics.input_plan_root.contains("CudfTableFormatScanExec")
         || diagnostics.input_plan_shape.contains("CudfTableFormatScanExec")
         || diagnostics.report.outcomes().iter().any(|outcome| match outcome {
@@ -1500,7 +1501,10 @@ mod tests {
         physical_plan::projection::{ProjectionExec, ProjectionExpr},
         prelude::SessionConfig,
     };
-    use nexus_query_engine::{LocalParquetSource, QueryPlanBuilder, SourceNode};
+    use nexus_query_engine::{
+        plan::QueryPlanBuilder,
+        source::{LocalParquetSource, SourceNode},
+    };
 
     use super::*;
 
@@ -1541,8 +1545,9 @@ mod tests {
     ) -> Arc<dyn ExecutionPlan> {
         let schema = one_column_schema();
         let mut builder = QueryPlanBuilder::new();
-        let source =
-            builder.add_source(SourceNode::GpuResident(nexus_query_engine::GpuResidentSource::new(input_name, schema)));
+        let source = builder.add_source(SourceNode::GpuResident(nexus_query_engine::source::GpuResidentSource::new(
+            input_name, schema,
+        )));
         Arc::new(
             NativeCudfComposedExec::try_new(
                 builder.finish_with_host_sink(source),

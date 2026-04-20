@@ -1,5 +1,6 @@
+use nexus_query_engine::mode::StatisticalAggregateExecutionMode;
+
 use super::*;
-use crate::StatisticalAggregateExecutionMode;
 
 /// In-memory fallback-pressure report.
 ///

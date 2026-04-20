@@ -21,7 +21,7 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = bounded_context(Arc::new(runtime));
     let mut compiled_metrics = QueryMetrics::default();
-    let gpu_inputs = nexus_query_engine::GpuResidentInputMap::new();
+    let gpu_inputs = nexus_query_engine::exec::GpuResidentInputMap::new();
 
     let (state, compiled_batch) = {
         let mut executor =
@@ -81,7 +81,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = bounded_context(Arc::new(runtime));
     let mut metrics = QueryMetrics::default();
-    let gpu_inputs = nexus_query_engine::GpuResidentInputMap::new();
+    let gpu_inputs = nexus_query_engine::exec::GpuResidentInputMap::new();
 
     let (state, compiled_batch) = {
         let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
@@ -138,7 +138,7 @@ fn execute_query_plan_rejects_grouped_aggregate_join_build_input_without_strict_
         Ok(_) => panic!("D.3.3 grouped aggregate join-build input needs explicit strict envelope admission"),
         Err(error) => error,
     };
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.fact_value("bounded_join_rejection_boundary"), Some("admission_capability"));
     assert_eq!(
         error.fact_value("bounded_join_rejection_reason"),
@@ -558,17 +558,18 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
         "GPU sink compiled pipeline must not carry host materialization gates"
     );
     assert!(
-        nexus_query_engine::strict_bounded_pipeline_rejection_projection(&plan)
+        nexus_query_engine::exec::strict_bounded_pipeline_rejection_projection(&plan)
             .expect("strict rejection projection should not fail")
             .is_none(),
         "GPU sink should stay inside the compiled bounded envelope"
     );
     assert!(
-        plan.bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default()).is_some(),
+        plan.bounded_join_modeled_facts(nexus_query_engine::runtime::ExecutionBoundaryPolicy::default()).is_some(),
         "GPU sink plans admitted by strict compiled execution must emit modeled bounded-join facts"
     );
     assert!(
-        plan.bounded_join_unsupported_shape_facts(nexus_query_engine::ExecutionBoundaryPolicy::default()).is_none(),
+        plan.bounded_join_unsupported_shape_facts(nexus_query_engine::runtime::ExecutionBoundaryPolicy::default())
+            .is_none(),
         "GPU sink plans admitted by strict compiled execution must not emit unsupported bounded-join facts"
     );
     let context = bounded_context(Arc::new(runtime));
@@ -638,7 +639,7 @@ fn pipeline_validation_rejects_non_sink_edge_gate_on_sink_boundary() {
 
     let error = malformed.validate().expect_err("unrelated edge gates must not attach to the sink boundary");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("gate_owner"), Some("sink_boundary"));
     assert_eq!(error.fact_value("requirement_scope"), Some("edge"));
     assert_eq!(error.fact_value("reservation_kind"), Some("probe_side"));
@@ -677,7 +678,7 @@ fn pipeline_validation_rejects_host_sink_output_lifetime() {
 
     let error = pipeline.validate().expect_err("host sinks cannot retain sink-output resources");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("resident_resource_id"), Some("r0"));
     assert_eq!(error.fact_value("sink_boundary_kind"), Some("host_arrow_materialization"));
     assert_eq!(error.fact_value("sink_output_resource_count"), Some("1"));
@@ -692,7 +693,7 @@ fn pipeline_validation_rejects_gpu_sink_output_from_wrong_producer() {
 
     let error = pipeline.validate().expect_err("GPU sink output must be produced by the sink boundary input task");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("resident_resource_id"), Some("r0"));
     assert_eq!(error.fact_value("producer_task"), Some("t1"));
     assert_eq!(error.fact_value("sink_boundary_task_id"), Some("t0"));
@@ -710,7 +711,7 @@ fn pipeline_validation_rejects_multiple_gpu_sink_outputs() {
 
     let error = pipeline.validate().expect_err("GPU sinks must expose exactly one sink-output resource");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("sink_boundary_task_id"), Some("t0"));
     assert_eq!(error.fact_value("sink_boundary_kind"), Some("gpu_resident_output"));
     assert_eq!(error.fact_value("sink_output_resource_count"), Some("2"));
@@ -1293,14 +1294,14 @@ fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() 
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
     let context = bounded_context(Arc::new(runtime));
-    let gpu_inputs = nexus_query_engine::GpuResidentInputMap::new();
+    let gpu_inputs = nexus_query_engine::exec::GpuResidentInputMap::new();
     let mut metrics = QueryMetrics::default();
     let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
 
     let error = executor.take_host_output().expect_err("empty host sink should be a structured invariant error");
     let rendered = error.to_string();
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.facts().get("compiled_task_id"), Some("t5"));
     assert_eq!(error.facts().get("sink_boundary_kind"), Some("host_arrow_materialization"));
     assert!(!rendered.contains("BoundedJoinExecutionFamily"));

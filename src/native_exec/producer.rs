@@ -15,7 +15,11 @@ use datafusion::{
     },
 };
 use futures::future::BoxFuture;
-use nexus_query_engine::{ExecutionContext, GpuResultHandle, QueryOutput, QueryPlan, execute_query_plan};
+use nexus_query_engine::{
+    exec::{GpuResultHandle, QueryOutput, execute_query_plan},
+    plan::QueryPlan,
+    runtime::ExecutionContext,
+};
 
 use super::{
     common::{

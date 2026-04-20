@@ -1,8 +1,8 @@
 //! Server-issued bearer token store with optional TTL.
 //!
-//! The store is shared across the [`crate::server::auth::handle_handshake`]
+//! The store is shared across the [`crate::server::handle_handshake`]
 //! path (which inserts on successful credential check) and the
-//! [`crate::server::auth::AuthInterceptor`] path (which looks up on every
+//! [`crate::server::AuthInterceptor`] path (which looks up on every
 //! authenticated RPC). Both paths share a single [`dashmap::DashMap`] so
 //! contention on the hot per-RPC lookup is minimal.
 

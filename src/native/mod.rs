@@ -20,9 +20,9 @@ use datafusion::{
 };
 use lowering::lower_normalized_plan;
 use nexus_query_engine::{
-    Expr as NativeExpr, NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan,
-    SortExpr as NativeSortExpr, SortSpec as NativeSortSpec, SourceDiagnostics as NativeSourceDiagnostics,
-    SourceNode as NativeSourceNode,
+    expr::{Expr as NativeExpr, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec},
+    plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan},
+    source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
 };
 use normalize::normalize_native_plan;
 use source::source_diagnostics_for_normalized_plan;
@@ -212,7 +212,7 @@ pub(crate) fn wrap_candidate_with_declared_output_ordering_sort(candidate: GpuCa
 
 fn declared_output_ordering_sort_spec(
     ordering: &LexOrdering,
-    output_node: &nexus_query_engine::QueryNode,
+    output_node: &nexus_query_engine::plan::QueryNode,
 ) -> Result<NativeSortSpec, crate::policy::FallbackReason> {
     if ordering.is_empty() {
         return Err(crate::policy::FallbackReason::NativeOrderedOutputUnsupported);
@@ -387,11 +387,13 @@ mod tests {
     };
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col};
     use nexus_query_engine::{
-        AggregateExpr, AggregateFunction, AggregateSpec, Expr, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams,
-        GraphConstructionOptions, GraphEdgeColumnBindings, GraphPageRankParams, JoinSpec, JoinType, LimitSpec,
-        LiteralBatchSource, LiteralValue, LocalParquetSource, ProjectionOutput, QueryPlan, QueryPlanBuilder, SortExpr,
-        SortSpec, SourceNode, WindowFunction, WindowSpec,
-        plan::{EdgeNormalizeSpec, graph_result_schema_for_params},
+        expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LimitSpec, LiteralValue, SortExpr, SortSpec},
+        plan::{
+            EdgeNormalizeSpec, GraphAlgorithm, GraphAlgorithmParams, GraphConstructionOptions, GraphEdgeColumnBindings,
+            GraphPageRankParams, JoinSpec, JoinType, ProjectionOutput, QueryPlan, QueryPlanBuilder, WindowFunction,
+            WindowSpec, graph_result_schema_for_params,
+        },
+        source::{GpuResidentSource, LiteralBatchSource, LocalParquetSource, SourceNode},
     };
 
     use super::{declared_output_ordering_sort_spec, native_plan_reproduces_declared_output_ordering};
@@ -574,11 +576,11 @@ mod tests {
         let output_schema = graph_result_schema_for_params(&params);
         let graph = builder.add_graph_algorithm(
             source,
-            nexus_query_engine::GraphAlgorithmSpec::new(
+            nexus_query_engine::plan::GraphAlgorithmSpec::new(
                 GraphAlgorithm::PageRank,
                 GraphEdgeColumnBindings::new("src", "dst", Option::<String>::None),
                 GraphConstructionOptions {
-                    policy: nexus_query_engine::GraphConstructionPolicy::RawLibcugraph,
+                    policy: nexus_query_engine::plan::GraphConstructionPolicy::RawLibcugraph,
                     ..Default::default()
                 },
                 params,

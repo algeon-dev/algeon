@@ -27,23 +27,31 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode, FallbackReason,
-    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
-    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, NativePipelineExecutionMode,
-    ParityComparisonMode, ParityFloatTolerance, ParityStatus, StatisticalAggregateExecutionMode,
-    TableFormatDataFileFormat, TableFormatDirectDeviceReadDisposition, TableFormatParquetReadStrategyConfig,
-    TableFormatParquetSourceMetadata, TableFormatPlanner, TableFormatReadCapability, TableFormatScanDiagnostics,
-    TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeatureCode, compare_record_batches,
-    iceberg::{
-        AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, CudfIcebergTableProvider, GlueIcebergCredentialSource,
-        GlueIcebergTableConfig, IcebergTableFormatPlanner, NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
-        NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_ICEBERG_GLUE_TABLE_ENV,
-        NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        catalog::{IcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig},
-        iceberg_schema_to_datafusion_arrow_schema, load_glue_table,
+    error::{Error, ErrorCode},
+    native_exec::NativeCudfExecutionConfig,
+    native_report::{
+        NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
+        NativeDataFusionRuntimeOutcome, ParityComparisonMode, ParityFloatTolerance, ParityStatus,
+        compare_record_batches, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
     },
-    register_source_unique_keys_for_path, resolve_table_format_parquet_source_with_metadata,
-    schema_with_source_unique_keys, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::{FallbackReason, GpuFallbackPolicy},
+    session::CudfSessionStateBuilderExt,
+    source_cardinality::{register_source_unique_keys_for_path, schema_with_source_unique_keys},
+    table_format::{
+        TableFormatDataFileFormat, TableFormatDirectDeviceReadDisposition, TableFormatParquetReadStrategyConfig,
+        TableFormatParquetSourceMetadata, TableFormatPlanner, TableFormatReadCapability, TableFormatScanDiagnostics,
+        TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeatureCode,
+        iceberg::{
+            AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, CudfIcebergTableProvider,
+            GlueIcebergCredentialSource, GlueIcebergTableConfig, IcebergTableFormatPlanner,
+            NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV, NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_DATABASE_ENV,
+            NEXUS_ICEBERG_GLUE_TABLE_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+            catalog::{IcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig},
+            iceberg_schema_to_datafusion_arrow_schema, load_glue_table,
+        },
+        resolve_table_format_parquet_source_with_metadata,
+    },
 };
 use futures::future::BoxFuture;
 use iceberg::{
@@ -51,7 +59,11 @@ use iceberg::{
     io::FileIO,
     table::{StaticTable, Table},
 };
-use nexus_query_engine::{ParquetReadStrategy, SourceSchedulerPolicy};
+use nexus_query_engine::{
+    mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
+    runtime::SourceSchedulerPolicy,
+    source::ParquetReadStrategy,
+};
 use object_store::aws::AmazonS3Builder;
 
 use crate::{

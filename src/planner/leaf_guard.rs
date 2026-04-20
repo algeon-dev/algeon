@@ -185,7 +185,7 @@ fn scan_plan_rejection(leaf: &CudfTableFormatScanExec) -> Option<FallbackReason>
         leaf.schema()
             .fields()
             .iter()
-            .any(|field| !nexus_query_engine::is_supported_arrow_type(field.data_type()))
+            .any(|field| !nexus_query_engine::datatypes::is_supported_arrow_type(field.data_type()))
             .then_some(FallbackReason::UnsupportedType)
     })
 }
@@ -293,7 +293,10 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::datatypes::{DataType, Field, Schema};
-    use nexus_query_engine::{LiteralBatchSource, QueryPlanBuilder, SourceNode};
+    use nexus_query_engine::{
+        plan::QueryPlanBuilder,
+        source::{LiteralBatchSource, SourceNode},
+    };
 
     use super::*;
     use crate::{

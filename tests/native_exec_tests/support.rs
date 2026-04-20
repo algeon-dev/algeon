@@ -35,11 +35,14 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_nexus::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig};
+use datafusion_nexus::{
+    native_exec::NativeCudfExecutionConfig, planner::CudfOptimizerConfig, policy::GpuFallbackPolicy,
+};
 use datafusion_nexus_bench::{TPCH_TABLES, tpch_report_session_config};
 use nexus_query_engine::{
-    ColumnRef, GpuResidentSource, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LocalParquetFile,
-    LocalParquetSource, QueryPlan, QueryPlanBuilder, SourceNode,
+    expr::ColumnRef,
+    plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlan, QueryPlanBuilder},
+    source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
 
 pub(super) fn bounded_config() -> NativeCudfExecutionConfig {
@@ -114,11 +117,13 @@ pub(super) fn int64_array(batch: &RecordBatch, index: usize) -> &Int64Array {
     batch.column(index).as_any().downcast_ref::<Int64Array>().unwrap()
 }
 
-pub(super) fn adapter_error(error: &DataFusionError) -> &datafusion_nexus::Error {
+pub(super) fn adapter_error(error: &DataFusionError) -> &datafusion_nexus::error::Error {
     let DataFusionError::External(source) = error else {
         panic!("native execution errors should cross DataFusion as external adapter errors: {error}");
     };
-    source.downcast_ref::<datafusion_nexus::Error>().expect("DataFusion external error should preserve adapter Error")
+    source
+        .downcast_ref::<datafusion_nexus::error::Error>()
+        .expect("DataFusion external error should preserve adapter Error")
 }
 
 fn schema() -> Arc<Schema> {

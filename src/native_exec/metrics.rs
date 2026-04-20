@@ -12,7 +12,10 @@ use std::{
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType, Time,
 };
-use nexus_query_engine::{ExecutionBoundaryPolicy, JoinOperatorMetrics, LakehouseCacheFillEventSnapshot, QueryMetrics};
+use nexus_query_engine::{
+    metrics::{JoinOperatorMetrics, QueryMetrics},
+    runtime::{ExecutionBoundaryPolicy, LakehouseCacheFillEventSnapshot},
+};
 
 use super::admission::QueryAdmissionFacts;
 
@@ -1608,25 +1611,29 @@ impl NativeCudfMetrics {
     fn record_boundary_policy(&self, policy: ExecutionBoundaryPolicy) {
         // These counters record which boundary policy was selected for this native query execution,
         // not rows or bytes crossing that boundary.
-        if matches!(policy.source_read(), nexus_query_engine::SourceReadBoundary::DirectDeviceLocalParquet) {
+        if matches!(policy.source_read(), nexus_query_engine::runtime::SourceReadBoundary::DirectDeviceLocalParquet) {
             self.source_read_boundary_direct_device.add(1);
         }
         if matches!(
             policy.build_materialization(),
-            nexus_query_engine::BuildMaterializationBoundary::QueryScopedGpuHashJoin
+            nexus_query_engine::runtime::BuildMaterializationBoundary::QueryScopedGpuHashJoin
         ) {
             self.build_materialization_boundary_query_scoped.add(1);
         }
         if matches!(
             policy.build_materialization(),
-            nexus_query_engine::BuildMaterializationBoundary::DurableGpuHashJoin
+            nexus_query_engine::runtime::BuildMaterializationBoundary::DurableGpuHashJoin
         ) {
             self.build_materialization_boundary_durable.add(1);
         }
-        if matches!(policy.probe_execution(), nexus_query_engine::ProbeExecutionBoundary::ReusableGpuHashJoin) {
+        if matches!(policy.probe_execution(), nexus_query_engine::runtime::ProbeExecutionBoundary::ReusableGpuHashJoin)
+        {
             self.probe_execution_boundary_reusable.add(1);
         }
-        if matches!(policy.result_materialization(), nexus_query_engine::ResultMaterializationBoundary::ExplicitSink) {
+        if matches!(
+            policy.result_materialization(),
+            nexus_query_engine::runtime::ResultMaterializationBoundary::ExplicitSink
+        ) {
             self.result_materialization_boundary_explicit.add(1);
         }
     }
@@ -1751,8 +1758,8 @@ mod tests {
     use std::time::Duration;
 
     use nexus_query_engine::{
-        JoinOperatorMetrics, LakehouseCacheFillEventSnapshot, OperatorMetrics, SourceReadParquetEvidenceMetrics,
-        SourceReadRuntimeMetrics,
+        metrics::{JoinOperatorMetrics, OperatorMetrics, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics},
+        runtime::LakehouseCacheFillEventSnapshot,
     };
 
     use super::*;

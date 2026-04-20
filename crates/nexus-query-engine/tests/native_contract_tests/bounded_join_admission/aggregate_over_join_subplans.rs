@@ -97,8 +97,10 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission
 fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_survives_native_optimizer() {
     let plan =
         keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
-    let optimized =
-        nexus_query_engine::optimize_query_plan(plan, &nexus_query_engine::NativeOptimizerOptions::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
+        plan,
+        &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
+    );
 
     assert!(
         optimized
@@ -109,7 +111,8 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_survives_
     );
     assert!(
         optimized.diagnostics.projection_simplification.candidates.iter().any(|candidate| {
-            candidate.rejected_reason == Some(nexus_query_engine::ProjectionSimplificationRejectedReason::ShapeContract)
+            candidate.rejected_reason
+                == Some(nexus_query_engine::optimizer::ProjectionSimplificationRejectedReason::ShapeContract)
         }),
         "protected projection wrappers should be reported as shape-contract rejections"
     );
@@ -154,7 +157,7 @@ pub(crate) enum AggregateOverJoinSubplanInputsVariant {
 
 pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     variant: AggregateOverJoinSubplanInputsVariant,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let left_join_schema = aggregate_over_join_subplan_join_subtree_schema();
     let right_join_schema = aggregate_over_join_subplan_join_subtree_schema();
     let left_aggregate_schema = Arc::new(Schema::new(vec![
@@ -398,7 +401,7 @@ fn build_aggregate_over_join_subplan_bounded_join_subtree(
     label: &str,
     nested_unsupported_join: bool,
     preaggregate_leaf_function: Option<AggregateFunction>,
-) -> nexus_query_engine::NodeId {
+) -> nexus_query_engine::plan::NodeId {
     let partsupp_schema = Arc::new(Schema::new(vec![
         Field::new("ps_partkey", DataType::Int32, false),
         Field::new("ps_suppkey", DataType::Int32, false),

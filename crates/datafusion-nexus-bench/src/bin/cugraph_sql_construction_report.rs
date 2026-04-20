@@ -19,9 +19,14 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphSqlConfig,
-    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativePipelineExecutionMode,
+    graph_sql::CugraphSqlConfig,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::NativeDataFusionExecutionMetrics,
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::GpuFallbackPolicy,
+    session::CudfSessionStateBuilderExt,
 };
+use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 const ROWS_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_ROWS";
 const MEMORY_POLICY_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_MEMORY_POLICY";

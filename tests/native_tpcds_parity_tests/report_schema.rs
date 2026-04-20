@@ -1,4 +1,4 @@
-use datafusion_nexus::{
+use datafusion_nexus::native_report::{
     NATIVE_TPCDS_PARITY_TSV_HEADER, NativeDataFusionPostNativeExecutionPath, NativeTpcdsParityExternalOutputSummary,
     NativeTpcdsParityReport, NativeTpcdsParityRow, ParityComparisonMode, ParityFloatTolerance, ParityStatus,
 };
@@ -47,16 +47,17 @@ fn parity_tsv_header_pins_columns() {
 fn parity_report_to_tsv_emits_metadata_and_header() {
     let row = NativeTpcdsParityRow {
         query_id: "q01".to_string(),
-        cpu_planning_status: datafusion_nexus::ParityStageStatus::Succeeded,
-        cpu_runtime_status: datafusion_nexus::ParityStageStatus::Succeeded,
-        native_planning_outcome: datafusion_nexus::NativeTpcdsParityPlanningOutcome::RejectedBeforeExecution,
+        cpu_planning_status: datafusion_nexus::native_report::ParityStageStatus::Succeeded,
+        cpu_runtime_status: datafusion_nexus::native_report::ParityStageStatus::Succeeded,
+        native_planning_outcome:
+            datafusion_nexus::native_report::NativeTpcdsParityPlanningOutcome::RejectedBeforeExecution,
         native_reason_code: Some("unsupported_operator".to_string()),
         native_unsupported_category: Some("operator_join".to_string()),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
         native_plan_fragment_count: 0,
         host_datafusion_boundary_count: 0,
         native_runtime_started: false,
-        native_runtime_outcome: datafusion_nexus::NativeDataFusionRuntimeOutcome::NotStarted,
+        native_runtime_outcome: datafusion_nexus::native_report::NativeDataFusionRuntimeOutcome::NotStarted,
         parity_status: ParityStatus::NativeRejected,
         parity_detail: None,
         cpu_output_rows: Some(0),
@@ -74,7 +75,7 @@ fn parity_report_to_tsv_emits_metadata_and_header() {
     };
     let report = NativeTpcdsParityReport::from_rows(vec![row], ParityFloatTolerance::exact())
         .with_statistical_aggregate_execution_mode(
-            datafusion_nexus::StatisticalAggregateExecutionMode::GpuNativeTolerant,
+            nexus_query_engine::mode::StatisticalAggregateExecutionMode::GpuNativeTolerant,
         );
     let tsv = report.to_tsv();
     let first_line = tsv.lines().next().unwrap();

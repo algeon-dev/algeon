@@ -201,7 +201,7 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
     }
     if matches!(
         algorithm.native_algorithm().vertex_id_type_support(),
-        nexus_query_engine::GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType
+        nexus_query_engine::plan::GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType
     ) {
         limitations.push("legacy cuGraph implementation requires Int32 source and destination vertex columns");
     }

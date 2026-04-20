@@ -16,7 +16,10 @@ use datafusion::{
         metrics::{ExecutionPlanMetricsSet, MetricsSet, RecordOutput},
     },
 };
-use nexus_query_engine::{QueryOutput, QueryPlan, execute_query_plan};
+use nexus_query_engine::{
+    exec::{QueryOutput, execute_query_plan},
+    plan::QueryPlan,
+};
 
 use super::{
     common::{

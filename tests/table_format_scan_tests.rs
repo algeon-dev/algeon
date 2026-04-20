@@ -3,11 +3,14 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::physical_plan::displayable;
 use datafusion_nexus::{
-    CudfTableFormatScanExec, FallbackReason, TableFormat, TableFormatColumnMapping, TableFormatColumnRole,
-    TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile,
-    TableFormatDeleteFileContent, TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform,
-    TableFormatPartitionValue, TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan,
-    TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
+    policy::FallbackReason,
+    table_format::{
+        CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
+        TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
+        TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatPartitionValue,
+        TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan, TableFormatUnsupportedFeature,
+        TableFormatUnsupportedFeatureCode,
+    },
 };
 
 #[test]

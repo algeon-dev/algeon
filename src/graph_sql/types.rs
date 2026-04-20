@@ -2,7 +2,7 @@ use std::{fmt, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::{DataFusionError, Result};
-use nexus_query_engine::{
+use nexus_query_engine::plan::{
     DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, GraphAlgorithm as NativeGraphAlgorithm,
     GraphAlgorithmParams as NativeGraphAlgorithmParams, GraphBetweennessSeeds as NativeGraphBetweennessSeeds,
     GraphConstructionOptions as NativeGraphConstructionOptions,
@@ -10,7 +10,7 @@ use nexus_query_engine::{
 };
 
 use super::plan_error;
-use crate::NativeCudfExecutionConfig;
+use crate::native_exec::NativeCudfExecutionConfig;
 
 pub const CUGRAPH_PAGERANK_FUNCTION: &str = "cugraph_pagerank";
 pub const CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION: &str = "cugraph_personalized_pagerank";
@@ -143,7 +143,7 @@ impl CugraphAlgorithm {
 /// Registry-level metadata for a SQL-visible cuGraph operation.
 ///
 /// One entry per [`CugraphAlgorithm`] variant. Mirrors
-/// [`nexus_query_engine::GRAPH_OPERATION_REGISTRY`]: each SQL UDTF resolves to
+/// [`nexus_query_engine::plan::GRAPH_OPERATION_REGISTRY`]: each SQL UDTF resolves to
 /// the same native algorithm advertised by the engine, and the SQL function
 /// name follows the `cugraph_<native_name>` convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -156,7 +156,7 @@ pub struct CugraphOperationDefinition {
 /// Source-of-truth list of SQL-visible cuGraph algorithms.
 ///
 /// Order is preserved by [`CugraphAlgorithm::all`] and is the order in which
-/// [`cugraph_table_functions`](crate::cugraph_table_functions) registers UDTFs.
+/// [`cugraph_table_functions`](crate::graph_sql::cugraph_table_functions) registers UDTFs.
 pub const CUGRAPH_OPERATION_REGISTRY: &[CugraphOperationDefinition] = &[
     CugraphOperationDefinition {
         algorithm: CugraphAlgorithm::PageRank,
@@ -962,7 +962,7 @@ pub struct CugraphEigenvectorCentralityParams {
 
 impl Default for CugraphEigenvectorCentralityParams {
     fn default() -> Self {
-        // Mirrors `nexus_query_engine::GraphEigenvectorCentralityParams::default`.
+        // Mirrors `nexus_query_engine::plan::GraphEigenvectorCentralityParams::default`.
         Self { epsilon: 1.0e-6, max_iterations: 200 }
     }
 }
@@ -977,7 +977,7 @@ pub struct CugraphKatzCentralityParams {
 
 impl Default for CugraphKatzCentralityParams {
     fn default() -> Self {
-        // Mirrors `nexus_query_engine::GraphKatzCentralityParams::default`.
+        // Mirrors `nexus_query_engine::plan::GraphKatzCentralityParams::default`.
         Self { alpha: 0.01, beta: 1.0, epsilon: 1.0e-6, max_iterations: 1000 }
     }
 }
@@ -991,7 +991,7 @@ pub struct CugraphHitsParams {
 
 impl Default for CugraphHitsParams {
     fn default() -> Self {
-        // Mirrors `nexus_query_engine::GraphHitsParams::default`.
+        // Mirrors `nexus_query_engine::plan::GraphHitsParams::default`.
         Self { epsilon: 1.0e-5, max_iterations: 100, normalize: false }
     }
 }
@@ -1084,7 +1084,7 @@ pub struct CugraphTriangleCountAllParams;
 
 /// Degree direction for core-number and k-core SQL parameters.
 ///
-/// Mirrors `nexus_query_engine::GraphKCoreDegreeType`.
+/// Mirrors `nexus_query_engine::plan::GraphKCoreDegreeType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CugraphKCoreDegreeType {
     In,
@@ -1130,7 +1130,7 @@ pub struct CugraphKCoreParams {
 
 impl Default for CugraphKCoreParams {
     fn default() -> Self {
-        // Mirrors `nexus_query_engine::GraphKCoreParams::default`.
+        // Mirrors `nexus_query_engine::plan::GraphKCoreParams::default`.
         Self { k: 2, degree_type: CugraphKCoreDegreeType::InOut }
     }
 }
@@ -1153,7 +1153,7 @@ pub struct CugraphLeidenParams {
 
 impl Default for CugraphLeidenParams {
     fn default() -> Self {
-        // Matches nexus_query_engine::GraphLeidenParams::default().
+        // Matches nexus_query_engine::plan::GraphLeidenParams::default().
         Self { max_level: 100, resolution: 1.0, theta: 1.0, seed: 0 }
     }
 }
@@ -1177,7 +1177,7 @@ pub struct CugraphEcgParams {
 
 impl Default for CugraphEcgParams {
     fn default() -> Self {
-        // Matches nexus_query_engine::GraphEcgParams::default().
+        // Matches nexus_query_engine::plan::GraphEcgParams::default().
         Self { min_weight: 0.001, ensemble_size: 10, max_level: 100, threshold: 1.0e-7, resolution: 1.0, seed: 0 }
     }
 }
@@ -1203,7 +1203,7 @@ pub struct CugraphSpectralClusteringParams {
 
 impl Default for CugraphSpectralClusteringParams {
     fn default() -> Self {
-        // Matches nexus_query_engine::GraphSpectralClusteringParams::default().
+        // Matches nexus_query_engine::plan::GraphSpectralClusteringParams::default().
         Self {
             n_clusters: 2,
             n_eigenvectors: 2,
@@ -1255,7 +1255,7 @@ pub struct CugraphForceAtlas2Params {
 
 impl Default for CugraphForceAtlas2Params {
     fn default() -> Self {
-        // Matches nexus_query_engine::GraphForceAtlas2Params::default().
+        // Matches nexus_query_engine::plan::GraphForceAtlas2Params::default().
         Self {
             max_iter: 500,
             outbound_attraction_distribution: false,

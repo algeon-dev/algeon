@@ -5,7 +5,7 @@ use datafusion::{
     common::ScalarValue,
     physical_expr::{PhysicalExpr, expressions::Literal},
 };
-use nexus_query_engine::{LiteralValue as NativeLiteralValue, is_supported_arrow_type};
+use nexus_query_engine::{datatypes::is_supported_arrow_type, expr::LiteralValue as NativeLiteralValue};
 
 use crate::policy::FallbackReason;
 

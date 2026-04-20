@@ -1,7 +1,7 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::*;
-use crate::{DynamicFilterConsumerLowering, Expr, metrics::DynamicFilterSourceSnapshot};
+use crate::{dynamic_filter::DynamicFilterConsumerLowering, expr::Expr, metrics::DynamicFilterSourceSnapshot};
 
 impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn produce_hash_join_build_dynamic_filters(

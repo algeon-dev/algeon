@@ -3,13 +3,9 @@ use std::{collections::HashMap, net::TcpListener, sync::Arc, time::Duration};
 use arrow::array::{Int32Array, Int64Array, UInt32Array, UInt64Array};
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use datafusion_nexus::server::{
-    ServerConfig,
-    config::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
-        NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_SERVER_SESSION_PROFILE_ENV,
-    },
-    serve_with_listener,
+    NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+    NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+    NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_SERVER_SESSION_PROFILE_ENV, ServerConfig, serve_with_listener,
 };
 use futures::TryStreamExt;
 use iceberg::{
@@ -78,11 +74,11 @@ fn local_server_env(
         (NEXUS_ICEBERG_S3_ENDPOINT_ENV, s3_endpoint.to_string()),
         (NEXUS_ICEBERG_S3_REGION_ENV, "us-east-1".to_string()),
         (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
-        (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
-        (datafusion_nexus::iceberg::AWS_ACCESS_KEY_ID_ENV, moto_access_key()),
-        (datafusion_nexus::iceberg::AWS_SECRET_ACCESS_KEY_ENV, moto_secret_key()),
-        (datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, local_s3_access_key()),
-        (datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, local_s3_secret_key()),
+        (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
+        (datafusion_nexus::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV, moto_access_key()),
+        (datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV, moto_secret_key()),
+        (datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, local_s3_access_key()),
+        (datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, local_s3_secret_key()),
     ])
 }
 
@@ -258,12 +254,12 @@ fn moto_secret_key() -> String {
 }
 
 fn local_s3_access_key() -> String {
-    std::env::var(datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)
+    std::env::var(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)
         .unwrap_or_else(|_| "cudfadmin".to_string())
 }
 
 fn local_s3_secret_key() -> String {
-    std::env::var(datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)
+    std::env::var(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)
         .unwrap_or_else(|_| "cudfadminsecret".to_string())
 }
 
@@ -293,9 +289,9 @@ impl EnvGuard {
     fn install(values: &HashMap<&'static str, String>) -> Self {
         let mut names: Vec<&'static str> = values.keys().copied().collect();
         names.extend([
-            datafusion_nexus::iceberg::AWS_SESSION_TOKEN_ENV,
-            datafusion_nexus::iceberg::AWS_SECURITY_TOKEN_ENV,
-            datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV,
+            datafusion_nexus::table_format::iceberg::AWS_SESSION_TOKEN_ENV,
+            datafusion_nexus::table_format::iceberg::AWS_SECURITY_TOKEN_ENV,
+            datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV,
         ]);
         names.sort_unstable();
         names.dedup();

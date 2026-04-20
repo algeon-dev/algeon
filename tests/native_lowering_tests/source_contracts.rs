@@ -848,7 +848,7 @@ fn overlapping_byte_ranges_are_rejected_with_source_reason() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn assert_s3_remote_native_source(source: &nexus_query_engine::LocalParquetSource, expected_uri: &str) {
+fn assert_s3_remote_native_source(source: &nexus_query_engine::source::LocalParquetSource, expected_uri: &str) {
     assert_eq!(source.file_count(), 1);
     let file = &source.files[0];
     assert_eq!(file.location.read_capability(), "object_store:s3");

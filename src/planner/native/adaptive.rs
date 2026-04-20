@@ -1,5 +1,8 @@
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
-use nexus_query_engine::{AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptivePipelineReportRow, QueryPlan};
+use nexus_query_engine::{
+    adaptive_report::{AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptivePipelineReportRow},
+    plan::QueryPlan,
+};
 
 use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCandidate};
 
@@ -55,9 +58,11 @@ pub(super) fn plan_adaptive_pipeline_diagnostics(
     execution_config: &NativeCudfExecutionConfig,
 ) -> DataFusionResult<Option<NativeAdaptivePipelineDiagnostics>> {
     let memory_history = execution_config.adaptive_memory_history();
-    let admission =
-        nexus_query_engine::adaptive_bounded_pipeline_admission_with_memory_history(plan, memory_history.as_deref())
-            .map_err(|error| adaptive_pipeline_report_error(stamp_native_error_correlation(error, execution_config)))?;
+    let admission = nexus_query_engine::exec::adaptive_bounded_pipeline_admission_with_memory_history(
+        plan,
+        memory_history.as_deref(),
+    )
+    .map_err(|error| adaptive_pipeline_report_error(stamp_native_error_correlation(error, execution_config)))?;
     Ok(admission.map(|admission| {
         NativeAdaptivePipelineDiagnostics::single(
             candidate,
@@ -73,7 +78,7 @@ pub(super) fn adaptive_pipeline_was_rejected(diagnostics: &NativeAdaptivePipelin
         .any(|candidate| candidate.report.row().candidate_status == AdaptiveCandidateStatus::Rejected)
 }
 
-fn adaptive_pipeline_report_error(error: nexus_query_engine::QueryError) -> DataFusionError {
+fn adaptive_pipeline_report_error(error: nexus_query_engine::error::QueryError) -> DataFusionError {
     Error::from_native(
         "datafusion_nexus.native.adaptive_pipeline_diagnostics",
         "adaptive pipeline diagnostics could not be built",
@@ -96,9 +101,9 @@ fn stamp_adaptive_report_correlation(
 }
 
 fn stamp_native_error_correlation(
-    mut error: nexus_query_engine::QueryError,
+    mut error: nexus_query_engine::error::QueryError,
     execution_config: &NativeCudfExecutionConfig,
-) -> nexus_query_engine::QueryError {
+) -> nexus_query_engine::error::QueryError {
     if let Some(query_id) = execution_config.query_id() {
         error = error.with_query_id(query_id.clone());
     }
