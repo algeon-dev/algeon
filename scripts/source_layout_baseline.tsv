@@ -1,18 +1,14 @@
 # kind physical_lines path
 # Generated/static data is allowlisted in scripts/check_source_layout.sh.
-production 1918 crates/datafusion-nexus-bench/src/bin/cugraph_admission_stress.rs
 production 1057 crates/datafusion-nexus-bench/src/bin/native_clickbench_benchmark.rs
 production 1150 crates/datafusion-nexus-bench/src/bin/native_iceberg_tpch_benchmark.rs
 production 915 crates/datafusion-nexus-bench/src/bin/query_service_iceberg_stress.rs
 production 1160 crates/datafusion-nexus-bench/src/bin/query_service_tpcds_stress.rs
-production 2015 crates/datafusion-nexus-bench/src/bin/query_service_tpch_stress.rs
 production 971 crates/datafusion-nexus-bench/src/bin/tpcds_outlier_triage.rs
-production 1365 crates/datafusion-nexus-bench/src/bin/tpcds_three_way_bench.rs
 production 913 crates/datafusion-nexus-bench/src/iceberg_smoke/config.rs
 production 917 crates/datafusion-nexus-bench/src/iceberg_smoke/runner.rs
 production 979 crates/datafusion-nexus-bench/src/tpch_benchmark/reports.rs
 production 1204 crates/datafusion-nexus-workloads/src/tpcds/fixture.rs
-production 1498 crates/datafusion-nexus-tools/src/e2e/server_iceberg_rest_multigpu_e2e.rs
 production 1757 crates/nexus-query-engine/src/capability/admission.rs
 production 847 crates/nexus-query-engine/src/capability/aggregate.rs
 production 1408 crates/nexus-query-engine/src/capability/invariant.rs

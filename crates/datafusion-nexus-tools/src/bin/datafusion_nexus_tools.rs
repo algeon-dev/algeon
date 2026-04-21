@@ -8,6 +8,9 @@ use std::{env, error::Error};
 
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+#[cfg(not(test))]
+#[path = "../connection_retry.rs"]
+mod connection_retry;
 #[cfg(all(feature = "embedded-backend-e2e", not(test)))]
 #[path = "../e2e/embedded_backend_e2e.rs"]
 mod embedded_backend_e2e;

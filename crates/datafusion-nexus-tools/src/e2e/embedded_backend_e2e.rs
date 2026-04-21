@@ -21,8 +21,10 @@ use futures::TryStreamExt;
 use reqwest::{StatusCode, header};
 use serde_json::{Value, json};
 use tokio::{process::Child, time::Instant};
-use tonic::{Code, transport::Endpoint};
+use tonic::Code;
 use url::Url;
+
+use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
 
 type E2eResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -193,7 +195,7 @@ async fn run_checks(params: &RunParams, child: &mut Child) -> E2eResult<()> {
     let http = reqwest::Client::builder().pool_max_idle_per_host(128).build()?;
     wait_for_health(&http, params, child).await?;
 
-    let mut flight = connect_with_retry(&params.flight_url, Duration::from_secs(60)).await?;
+    let mut flight = connect_flight_sql(&params.flight_url, Duration::from_secs(60)).await?;
     assert_catalog_truth(&mut flight).await?;
     let seed = query_single_int(&mut flight, "SELECT src FROM citation_edges WHERE src IS NOT NULL LIMIT 1").await?;
     let year =
@@ -334,7 +336,7 @@ async fn assert_ad_hoc_graph(
 
 async fn assert_shared_ledger(http: &reqwest::Client, params: &RunParams, year: i64) -> E2eResult<()> {
     println!("checking shared REST/Flight admission ledger");
-    let mut flight = connect_with_retry(&params.flight_url, Duration::from_secs(30)).await?;
+    let mut flight = connect_flight_sql(&params.flight_url, Duration::from_secs(30)).await?;
     let held = flight.execute("SELECT 1 AS held".to_string(), None).await?;
     let rest_task = {
         let http = http.clone();
@@ -360,14 +362,14 @@ async fn assert_shared_ledger(http: &reqwest::Client, params: &RunParams, year: 
 
 async fn assert_overload_contract(http: &reqwest::Client, params: &RunParams, year: i64) -> E2eResult<()> {
     println!("checking overload contract");
-    let mut active_client = connect_with_retry(&params.flight_url, Duration::from_secs(30)).await?;
+    let mut active_client = connect_flight_sql(&params.flight_url, Duration::from_secs(30)).await?;
     let held = active_client.execute("SELECT 1 AS held_for_overload".to_string(), None).await?;
 
     let mut queued = Vec::with_capacity(QUEUE_FILL_REQUESTS);
     for _ in 0..QUEUE_FILL_REQUESTS {
         let flight_url = params.flight_url.clone();
         queued.push(tokio::spawn(async move {
-            let mut client = connect_with_retry(&flight_url, Duration::from_secs(30)).await?;
+            let mut client = connect_flight_sql(&flight_url, Duration::from_secs(30)).await?;
             client.execute("SELECT 1 AS queued_for_overload".to_string(), None).await?;
             Ok::<(), Box<dyn Error + Send + Sync>>(())
         }));
@@ -390,7 +392,7 @@ async fn assert_overload_contract(http: &reqwest::Client, params: &RunParams, ye
         return Err("overflow REST request returned 429 without Retry-After".into());
     }
 
-    let mut overflow_client = connect_with_retry(&params.flight_url, Duration::from_secs(30)).await?;
+    let mut overflow_client = connect_flight_sql(&params.flight_url, Duration::from_secs(30)).await?;
     match overflow_client.execute("SELECT 2 AS overflow".to_string(), None).await {
         Err(FlightError::Tonic(status)) if status.code() == Code::ResourceExhausted => {},
         Err(error) => {
@@ -409,7 +411,7 @@ async fn assert_overload_contract(http: &reqwest::Client, params: &RunParams, ye
     wait_for_exact_queue_depth(http, params, 0, Duration::from_secs(30)).await?;
     consume_flight_info(&mut active_client, held).await?;
 
-    let mut recovery_client = connect_with_retry(&params.flight_url, Duration::from_secs(30)).await?;
+    let mut recovery_client = connect_flight_sql(&params.flight_url, Duration::from_secs(30)).await?;
     let recovered = query_single_int(&mut recovery_client, "SELECT 3 AS recovered").await?;
     if recovered != 3 {
         return Err(format!("post-overload Flight recovery returned {recovered}, expected 3").into());
@@ -571,22 +573,18 @@ fn require_nonnegative_distances(rows: &[Value]) -> E2eResult<()> {
     Ok(())
 }
 
-async fn connect_with_retry(
+async fn connect_flight_sql(
     url: &str,
     timeout: Duration,
 ) -> E2eResult<FlightSqlServiceClient<tonic::transport::Channel>> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match Endpoint::from_shared(url.to_string())?.connect().await {
-            Ok(channel) => return Ok(FlightSqlServiceClient::new(channel)),
-            Err(error) => {
-                if Instant::now() >= deadline {
-                    return Err(format!("Flight SQL server did not accept connections at {url}: {error:?}").into());
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            },
-        }
-    }
+    connect_with_retry(
+        url,
+        ConnectionRetryConfig::fixed_timeout(timeout, Duration::from_millis(100)),
+        || Ok(BeforeConnect::Continue),
+        FlightSqlServiceClient::new,
+        |error| format!("Flight SQL server did not accept connections at {url}: {error:?}"),
+    )
+    .await
 }
 
 async fn query_batches(

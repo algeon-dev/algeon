@@ -1,0 +1,630 @@
+//! cuGraph-heavy admission and memory-governance stress harness.
+//!
+//! Library-mode experiment binary: builds one process-scoped
+//! `NexusGpuBackend`, installs cuGraph SQL on per-worker `SessionContext`s,
+//! fires a configurable concurrent workload, and reports
+//!
+//! - one TSV row per executed query (admission facts, reservation facts,
+//!   graph memory-model facts, wall times, structured failure), and
+//! - a periodic diagnostics TSV sampled from the admission snapshot, the
+//!   memory-governor report, the device failure report, and the physical
+//!   CUDA async-pool counters (`DeviceMemoryManager::pool_usage`).
+//!
+//! Everything is env-var driven like the sibling `query_service_*_stress`
+//! binaries. GPU runs must be wrapped in `flock /tmp/cudf-gpu.lock`.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fs,
+    io::Write as _,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+use arrow::{array::Array, datatypes::SchemaRef, record_batch::RecordBatch, util::display::array_value_to_string};
+use datafusion::{
+    execution::{SessionStateBuilder, context::TaskContext},
+    physical_plan::{ExecutionPlan, collect, displayable, metrics::MetricsSet},
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+};
+use datafusion_nexus::{
+    backend::{MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
+    graph_sql::CugraphSqlConfig,
+    native_report::NativeDataFusionExecutionMetrics,
+    planner::CudfNativePhysicalOptimizerRule,
+    report::CandidateOutcome,
+    session::CudfSessionStateBuilderExt,
+};
+use nexus_query_engine::{harness::StableFnv1a64, runtime::SlotGuarantee};
+use tokio::sync::Barrier;
+
+mod config;
+mod report;
+mod sampling;
+mod workload;
+
+#[cfg(test)]
+use config::parse_workload;
+use config::{ENV_FOS, ENV_PAPERS, ENV_PRINT_PLANNING};
+#[cfg(test)]
+use report::{DEVICE_SAMPLE_COLUMNS, QUERY_COLUMNS, SAMPLE_COLUMNS, device_peaks};
+use report::{query_rows_makespan_ms, write_outputs};
+#[cfg(test)]
+use sampling::device_sample_rows;
+use sampling::spawn_sampler;
+use workload::{catalog, expand_workload};
+
+/// Retained optimizer rules (diagnostic planning-report mode only).
+static PLANNING_RULES: Mutex<Vec<Arc<CudfNativePhysicalOptimizerRule>>> = Mutex::new(Vec::new());
+
+#[derive(Debug, Clone)]
+struct HarnessConfig {
+    edges_parquet: String,
+    papers_parquet: Option<String>,
+    fos_parquet: Option<String>,
+    workload: Vec<(String, usize)>,
+    iterations: usize,
+    stagger_ms: u64,
+    max_concurrent_queries: usize,
+    slot_guarantee: SlotGuarantee,
+    grant_min: Option<MemoryShare>,
+    grant_want: Option<MemoryShare>,
+    wait_timeout_ms: u64,
+    budget_fraction: Option<f64>,
+    device_budget_bytes: Option<u64>,
+    requested_grant_min_bytes: Option<u64>,
+    requested_grant_bytes: Option<u64>,
+    raw_input_edges: Option<u64>,
+    sample_interval_ms: u64,
+    query_timeout_ms: u64,
+    out_dir: PathBuf,
+    run_id: String,
+    bfs_seed: Option<i64>,
+    batch_size: Option<usize>,
+    device_ordinals: Vec<usize>,
+    source_cache_max_retained_bytes: Option<u64>,
+    graph_cache_max_retained_bytes: Option<u64>,
+    warmup_iterations: usize,
+    cuda_profiler_capture: bool,
+}
+
+#[derive(Debug, Clone)]
+struct QuerySpec {
+    label: String,
+    sql: String,
+    needs_papers: bool,
+    needs_fos: bool,
+}
+
+pub async fn run() -> Result<(), Box<dyn Error>> {
+    let config = HarnessConfig::from_env()?;
+    fs::create_dir_all(&config.out_dir)?;
+
+    let backend = build_backend(&config)?;
+
+    // Seed discovery for traversal algorithms: cheap via parquet stats.
+    let seed = match config.bfs_seed {
+        Some(seed) => seed,
+        None => discover_seed(&backend, &config).await?,
+    };
+    let catalog_specs = catalog(seed);
+
+    let requests = expand_workload(&config, &catalog_specs)?;
+    eprintln!(
+        "# cugraph_admission_stress run_id={} requests={} workload={:?}",
+        config.run_id,
+        requests.len(),
+        config.workload
+    );
+
+    // Diagnostics sampler on a dedicated OS thread.
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let samples = Arc::new(Mutex::new(SampleCollection::default()));
+    let sampler_handle = spawn_sampler(&backend, &config, Arc::clone(&stop_flag), Arc::clone(&samples));
+
+    // Pre-build one session per worker task so registration cost is off the
+    // measured path, then fire everything through one barrier.
+    let mut workers = Vec::with_capacity(requests.len());
+    for request in &requests {
+        let ctx = build_session(&backend, &config, request).await?;
+        workers.push((request.clone(), ctx));
+    }
+
+    let barrier = Arc::new(Barrier::new(workers.len()));
+    let profiler_active = Arc::new(AtomicBool::new(false));
+    let profiler_error = Arc::new(Mutex::new(None::<String>));
+    let run_started = Instant::now();
+    if config.uses_phased_execution() {
+        backend.set_cugraph_bfs_singleflight_enabled(false);
+    }
+    let mut tasks = Vec::with_capacity(workers.len());
+    for (request, ctx) in workers {
+        let barrier = Arc::clone(&barrier);
+        let profiler_active = Arc::clone(&profiler_active);
+        let profiler_error = Arc::clone(&profiler_error);
+        let config = config.clone();
+        let worker_backend = backend.clone();
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            if config.stagger_ms > 0 && request.task_index > 0 {
+                tokio::time::sleep(Duration::from_millis(config.stagger_ms * request.task_index as u64)).await;
+            }
+
+            if !config.uses_phased_execution() {
+                let mut rows = Vec::with_capacity(config.iterations);
+                for iteration in 0..config.iterations {
+                    rows.push(run_one(&config, &ctx, &request, iteration).await);
+                }
+                return WorkerRows { warmup: Vec::new(), measured: rows };
+            }
+
+            let mut warmup = Vec::with_capacity(config.warmup_iterations);
+            for iteration in 0..config.warmup_iterations {
+                if iteration > 0 {
+                    barrier.wait().await;
+                }
+                warmup.push(run_one(&config, &ctx, &request, iteration).await);
+            }
+
+            if barrier.wait().await.is_leader() {
+                worker_backend.set_cugraph_bfs_singleflight_enabled(true);
+                if config.cuda_profiler_capture {
+                    match cudf::runtime::cuda_profiler_start() {
+                        Ok(()) => profiler_active.store(true, Ordering::SeqCst),
+                        Err(error) => {
+                            *profiler_error.lock().unwrap() =
+                                Some(format!("failed to start CUDA profiler capture: {error}"));
+                        },
+                    }
+                }
+            }
+            barrier.wait().await;
+
+            let mut measured = Vec::with_capacity(config.iterations);
+            for iteration in 0..config.iterations {
+                if iteration > 0 {
+                    barrier.wait().await;
+                }
+                measured.push(run_one(&config, &ctx, &request, iteration).await);
+            }
+
+            if barrier.wait().await.is_leader()
+                && profiler_active.swap(false, Ordering::SeqCst)
+                && let Err(error) = cudf::runtime::cuda_profiler_stop()
+            {
+                *profiler_error.lock().unwrap() = Some(format!("failed to stop CUDA profiler capture: {error}"));
+            }
+            barrier.wait().await;
+            WorkerRows { warmup, measured }
+        }));
+    }
+
+    let mut query_rows = Vec::new();
+    let mut warmup_rows = Vec::new();
+    for task in tasks {
+        match task.await {
+            Ok(rows) => {
+                warmup_rows.extend(rows.warmup);
+                query_rows.extend(rows.measured);
+            },
+            Err(join_error) => eprintln!("worker task panicked: {join_error}"),
+        }
+    }
+    let makespan_ms = if config.uses_phased_execution() {
+        query_rows_makespan_ms(&query_rows).unwrap_or_else(|| duration_ms(run_started.elapsed()))
+    } else {
+        duration_ms(run_started.elapsed())
+    };
+
+    stop_flag.store(true, Ordering::SeqCst);
+    let _ = sampler_handle.join();
+    backend.set_cugraph_bfs_singleflight_enabled(true);
+
+    let effective_active_max = backend.query_service().gpu_execution_query_report().peak_active_query_jobs;
+    let bfs_singleflight = backend.cugraph_bfs_singleflight_snapshot();
+    let samples = samples.lock().unwrap();
+    write_outputs(
+        &config,
+        &warmup_rows,
+        &query_rows,
+        &samples.legacy,
+        &samples.by_device,
+        makespan_ms,
+        effective_active_max,
+        bfs_singleflight,
+    )?;
+    if let Some(error) = profiler_error.lock().unwrap().take() {
+        return Err(error.into());
+    }
+    eprintln!("# done run_id={} makespan_ms={makespan_ms:.1} rows={}", config.run_id, query_rows.len());
+    Ok(())
+}
+
+struct WorkerRows {
+    warmup: Vec<QueryRow>,
+    measured: Vec<QueryRow>,
+}
+
+fn build_backend(config: &HarnessConfig) -> Result<NexusGpuBackend, Box<dyn Error>> {
+    let memory_policy = match config.device_budget_bytes {
+        Some(bytes) => NexusMemoryPolicy::Bounded {
+            device_ordinals: config.device_ordinals.clone(),
+            device_budget_bytes: bytes,
+            max_source_chunk_bytes: 256 * 1024 * 1024,
+            max_row_groups_per_chunk: 1024,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        },
+        None => NexusMemoryPolicy::BoundedAuto {
+            device_ordinals: config.device_ordinals.clone(),
+            budget_fraction: config.budget_fraction,
+        },
+    };
+    let mut admission = NexusAdmissionPolicy::default()
+        .with_max_concurrent_queries(config.max_concurrent_queries)
+        .with_slot_guarantee(config.slot_guarantee)
+        .with_wait_timeout(Duration::from_millis(config.wait_timeout_ms));
+    if let Some(min) = config.grant_min {
+        admission = admission.with_grant_min(min);
+    }
+    if let Some(want) = config.grant_want {
+        admission = admission.with_grant_want(want);
+    }
+    let mut builder = NexusGpuBackend::builder().memory_policy(memory_policy).admission(admission);
+    if let Some(max_retained_bytes) = config.source_cache_max_retained_bytes {
+        builder = builder.query_service_local_parquet_source_cache_max_retained_bytes(Some(max_retained_bytes));
+    }
+    if let Some(max_retained_bytes) = config.graph_cache_max_retained_bytes {
+        builder = builder.query_service_resident_graph_cache_max_retained_bytes(Some(max_retained_bytes));
+    }
+    Ok(builder.build()?)
+}
+
+async fn build_session(
+    backend: &NexusGpuBackend,
+    config: &HarnessConfig,
+    request: &Request,
+) -> Result<SessionContext, Box<dyn Error>> {
+    let mut session_config = SessionConfig::new()
+        .with_target_partitions(1)
+        .with_repartition_file_scans(false)
+        .with_repartition_aggregations(false)
+        .with_repartition_sorts(false);
+    if let Some(batch_size) = config.batch_size {
+        session_config = session_config.with_batch_size(batch_size);
+    }
+    let builder = SessionStateBuilder::new().with_config(session_config).with_default_features();
+    let builder = backend.install_on_with_cugraph_sql(builder, CugraphSqlConfig::default())?;
+    // Diagnostic mode: swap in a retained copy of the optimizer rule (same
+    // config, so the rule-name dedup key replaces the backend's instance) so
+    // per-query PlanningReports can be read back.
+    let builder = if std::env::var(ENV_PRINT_PLANNING).is_ok() {
+        let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
+        PLANNING_RULES.lock().unwrap().push(Arc::clone(&rule));
+        builder.with_cudf_native_rule(rule)
+    } else {
+        builder
+    };
+    let ctx = SessionContext::new_with_state(builder.build());
+
+    ctx.register_parquet("citation_edges", &config.edges_parquet, ParquetReadOptions::default()).await?;
+    if request.spec.needs_papers {
+        let path =
+            config.papers_parquet.as_deref().ok_or_else(|| format!("{} requires {ENV_PAPERS}", request.spec.label))?;
+        ctx.register_parquet("papers", path, ParquetReadOptions::default()).await?;
+    }
+    if request.spec.needs_fos {
+        let path = config.fos_parquet.as_deref().ok_or_else(|| format!("{} requires {ENV_FOS}", request.spec.label))?;
+        ctx.register_parquet("paper_fos", path, ParquetReadOptions::default()).await?;
+    }
+    if let Some(bytes) = config.requested_grant_min_bytes {
+        ctx.sql(&format!("SET datafusion_nexus.request.requested_grant_min_bytes = {bytes}")).await?.collect().await?;
+    }
+    if let Some(bytes) = config.requested_grant_bytes {
+        ctx.sql(&format!("SET datafusion_nexus.request.requested_grant_bytes = {bytes}")).await?.collect().await?;
+    }
+    if let Some(raw_input_edges) = config.raw_input_edges {
+        ctx.sql(&format!("SET datafusion_nexus.request.graph_raw_input_edges = {raw_input_edges}"))
+            .await?
+            .collect()
+            .await?;
+    }
+    Ok(ctx)
+}
+
+async fn discover_seed(backend: &NexusGpuBackend, config: &HarnessConfig) -> Result<i64, Box<dyn Error>> {
+    let request = Request {
+        task_index: 0,
+        spec: QuerySpec { label: "seed".into(), sql: String::new(), needs_papers: false, needs_fos: false },
+    };
+    let ctx = build_session(backend, config, &request).await?;
+    let batches = ctx.sql("SELECT MIN(src) AS s FROM citation_edges").await?.collect().await?;
+    let scalar = batches
+        .first()
+        .and_then(|batch| batch.column(0).as_any().downcast_ref::<arrow::array::Int64Array>().map(|a| a.value(0)))
+        .ok_or("seed discovery failed")?;
+    Ok(scalar)
+}
+
+#[derive(Debug, Clone)]
+struct Request {
+    task_index: usize,
+    spec: QuerySpec,
+}
+
+async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request, iteration: usize) -> QueryRow {
+    let start_epoch_ms = epoch_ms();
+    let started = Instant::now();
+    let mut row = QueryRow::new(config, request, iteration, start_epoch_ms);
+
+    let plan: Arc<dyn ExecutionPlan> = match ctx.sql(&request.spec.sql).await {
+        Ok(df) => match df.create_physical_plan().await {
+            Ok(plan) => plan,
+            Err(error) => {
+                return row.finish_failed(started, format!("physical_planning_failed: {error}"));
+            },
+        },
+        Err(error) => {
+            return row.finish_failed(started, format!("sql_planning_failed: {error}"));
+        },
+    };
+
+    let plan_display = displayable(plan.as_ref()).indent(false).to_string();
+    row.native_lowered = plan_display.contains("CugraphAlgoExec") || plan_display.contains("NativeCudf");
+    if std::env::var(ENV_PRINT_PLANNING).is_ok() {
+        for rule in PLANNING_RULES.lock().unwrap().iter() {
+            if let Some(report) = rule.last_report() {
+                for outcome in report.outcomes() {
+                    match outcome {
+                        CandidateOutcome::Rewritten { candidate } => {
+                            eprintln!("[planning] {} REWRITTEN shape={}", request.spec.label, candidate.shape);
+                        },
+                        CandidateOutcome::Rejected { candidate, reason } => {
+                            eprintln!(
+                                "[planning] {} REJECTED shape={} reason={}",
+                                request.spec.label,
+                                candidate.shape,
+                                reason.code()
+                            );
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+    let task_ctx = Arc::new(TaskContext::from(&ctx.state()));
+    let outcome =
+        tokio::time::timeout(Duration::from_millis(config.query_timeout_ms), collect(Arc::clone(&plan), task_ctx))
+            .await;
+    match outcome {
+        Ok(Ok(batches)) => {
+            row.output_rows = Some(batches.iter().map(|batch| batch.num_rows()).sum());
+            row.absorb_metrics(&NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref())));
+            match fingerprint_batches(&plan.schema(), &batches) {
+                Ok(fingerprint) => {
+                    row.output_fingerprint = Some(fingerprint);
+                    row.finish_ok(started)
+                },
+                Err(error) => row.finish_failed(started, format!("output_fingerprint_failed: {error}")),
+            }
+        },
+        Ok(Err(error)) => {
+            row.absorb_metrics(&NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref())));
+            row.finish_failed(started, error.to_string())
+        },
+        Err(_) => row.finish_failed(started, format!("query_timeout after {} ms", config.query_timeout_ms)),
+    }
+}
+
+fn fingerprint_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> Result<String, arrow::error::ArrowError> {
+    let mut hasher = StableFnv1a64::new();
+    hasher.update_field("datafusion-nexus-cugraph-admission-output-multiset-v2");
+    for batch in batches {
+        if batch.schema().as_ref() != schema.as_ref() {
+            return Err(arrow::error::ArrowError::SchemaError(
+                "cuGraph stress output fingerprint requires collected batches to match the planned schema".to_string(),
+            ));
+        }
+    }
+    hasher.update_field("schema_metadata");
+    hasher.update_metadata(schema.metadata());
+    for field in schema.fields() {
+        hasher.update_field("field");
+        hasher.update_field(field.name());
+        hasher.update_field(&field.data_type().to_string());
+        hasher.update_field(if field.is_nullable() { "nullable" } else { "non_nullable" });
+        hasher.update_metadata(field.metadata());
+    }
+    hasher.update_field(&batches.iter().map(RecordBatch::num_rows).sum::<usize>().to_string());
+    hasher.update_field(&schema.fields().len().to_string());
+    let mut row_fingerprints = Vec::with_capacity(batches.iter().map(RecordBatch::num_rows).sum());
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            let mut row_hasher = StableFnv1a64::new();
+            row_hasher.update_field("datafusion-nexus-cugraph-admission-row-v1");
+            for column in 0..batch.num_columns() {
+                let array = batch.column(column);
+                if array.is_null(row) {
+                    row_hasher.update_field("null");
+                } else {
+                    row_hasher.update_field("value");
+                    row_hasher.update_field(&array_value_to_string(array.as_ref(), row)?);
+                }
+            }
+            row_fingerprints.push(row_hasher.finish());
+        }
+    }
+    row_fingerprints.sort_unstable();
+    for row_fingerprint in row_fingerprints {
+        hasher.update_bytes(&row_fingerprint.to_le_bytes());
+    }
+    Ok(format!("output-fnv1a64:{:016x}", hasher.finish()))
+}
+
+fn plan_metrics_recursive(plan: &dyn ExecutionPlan) -> MetricsSet {
+    let mut metrics = MetricsSet::new();
+    append_plan_metrics(&mut metrics, plan);
+    metrics
+}
+
+fn append_plan_metrics(metrics: &mut MetricsSet, plan: &dyn ExecutionPlan) {
+    if let Some(plan_metrics) = plan.metrics() {
+        for metric in plan_metrics.iter() {
+            metrics.push(Arc::clone(metric));
+        }
+    }
+    for child in plan.children() {
+        append_plan_metrics(metrics, child.as_ref());
+    }
+}
+
+#[derive(Debug, Clone)]
+struct QueryRow {
+    run_id: String,
+    label: String,
+    task_index: usize,
+    iteration: usize,
+    start_epoch_ms: u128,
+    end_epoch_ms: u128,
+    wall_ms: f64,
+    outcome: &'static str,
+    admission_sequence: Option<usize>,
+    admission_wait_ms: Option<f64>,
+    device_ordinal: Option<usize>,
+    query_grant_bytes: Option<usize>,
+    reservation_requested_bytes: usize,
+    reservation_granted_bytes: usize,
+    reservation_live_peak_bytes: usize,
+    reservation_denied_count: usize,
+    allocator_high_water_bytes: Option<usize>,
+    max_task_observed_peak_bytes: Option<usize>,
+    max_task_reservation_bytes: usize,
+    source_cache_hits: usize,
+    source_cache_misses: usize,
+    source_cache_inserts: usize,
+    source_cache_insert_skipped: usize,
+    source_cache_retained_bytes: usize,
+    graph_algorithm: Option<String>,
+    graph_class: Option<String>,
+    graph_outcome: Option<String>,
+    graph_raw_input_edges: Option<usize>,
+    graph_input_edges: Option<usize>,
+    graph_vertex_estimate: Option<usize>,
+    graph_vertex_estimate_source: Option<String>,
+    graph_vertex_width_bytes: Option<usize>,
+    graph_weight_width_bytes: Option<usize>,
+    graph_directed: Option<bool>,
+    graph_renumber: Option<bool>,
+    graph_construction_policy: Option<String>,
+    graph_edge_normalize_inserted: Option<bool>,
+    graph_calibration_source: Option<String>,
+    graph_seed_count: Option<usize>,
+    graph_seed_mode: Option<String>,
+    graph_model_requested_bytes: Option<usize>,
+    graph_requested_bytes: Option<usize>,
+    graph_budget_bytes: Option<usize>,
+    graph_model_error_ratio: Option<String>,
+    graph_statistics_exact_vertices: Option<usize>,
+    graph_statistics_degree_max: Option<usize>,
+    graph_statistics_degree_p99: Option<usize>,
+    graph_statistics_sum_min_degree_oriented: Option<usize>,
+    graph_statistics_oriented_edge_count: Option<usize>,
+    graph_statistics_peak_chunk_min_degree_sum: Option<usize>,
+    graph_statistics_sum_out_degree: Option<usize>,
+    graph_peak_bytes: Option<usize>,
+    graph_reason: Option<String>,
+    graph_cache: Option<String>,
+    graph_elapsed_ms: Option<f64>,
+    graph_output_device_bytes: Option<usize>,
+    output_rows: Option<usize>,
+    output_fingerprint: Option<String>,
+    native_lowered: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SampleRow {
+    epoch_ms: u128,
+    governor_capacity_bytes: u64,
+    governor_outstanding_bytes: u64,
+    governor_available_bytes: u64,
+    active_grants: usize,
+    active_queries: usize,
+    queued_queries: usize,
+    pool_reserved_current_bytes: u64,
+    pool_reserved_high_bytes: u64,
+    pool_used_current_bytes: u64,
+    pool_used_high_bytes: u64,
+    allocation_failure_count: u64,
+    trim_retry_count: u64,
+}
+
+#[derive(Debug, Default)]
+struct SampleCollection {
+    legacy: Vec<SampleRow>,
+    by_device: Vec<DeviceSampleRow>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DeviceSampleFacts {
+    governor_capacity_bytes: u64,
+    governor_outstanding_bytes: u64,
+    governor_available_bytes: u64,
+    active_grants: usize,
+    gpu_execution_worker_count: usize,
+    gpu_execution_active_jobs: usize,
+    gpu_execution_queued_jobs: usize,
+    gpu_execution_active_query_jobs: usize,
+    pool_reserved_current_bytes: u64,
+    pool_reserved_high_bytes: u64,
+    pool_used_current_bytes: u64,
+    pool_used_high_bytes: u64,
+    allocation_failure_count: u64,
+    trim_retry_count: u64,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceSampleRow {
+    epoch_ms: u128,
+    device_ordinal: usize,
+    active_queries: usize,
+    queued_queries: usize,
+    facts: DeviceSampleFacts,
+}
+
+fn fmt_opt<T: ToString>(value: Option<T>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn fmt_opt_str(value: &Option<String>) -> String {
+    value.clone().unwrap_or_else(|| "none".to_string())
+}
+
+fn graph_cache_metadata_value(metadata: &str) -> Option<String> {
+    metadata
+        .split(',')
+        .find_map(|part| part.trim().strip_prefix("graph_cache="))
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn tsv_field(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ")
+}
+
+fn epoch_ms() -> u128 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+    duration.as_nanos() as f64 / 1_000_000.0
+}
+
+#[cfg(test)]
+mod tests;

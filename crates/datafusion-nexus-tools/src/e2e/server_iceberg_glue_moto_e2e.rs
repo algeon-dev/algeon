@@ -17,8 +17,9 @@ use iceberg_catalog_glue::{
     AWS_ACCESS_KEY_ID, AWS_REGION_NAME, AWS_SECRET_ACCESS_KEY, GLUE_CATALOG_PROP_URI, GLUE_CATALOG_PROP_WAREHOUSE,
     GlueCatalogBuilder,
 };
-use tonic::transport::Endpoint;
 use url::Url;
+
+use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
 
 type E2eResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -92,7 +93,7 @@ async fn validate_flight_sql_server(
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
-    let mut client = connect_with_retry(addr).await;
+    let mut client = connect_flight_sql(addr).await;
 
     let sql = format!("SELECT count(*) AS row_count FROM glue.\"{}\".{table}", namespace);
     let row_count = query_count(&mut client, &sql).await?;
@@ -152,22 +153,21 @@ fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
     (listener, addr)
 }
 
-async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClient<tonic::transport::Channel> {
+async fn connect_flight_sql(addr: std::net::SocketAddr) -> FlightSqlServiceClient<tonic::transport::Channel> {
     let uri = format!("http://{addr}");
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
-    let mut backoff = Duration::from_millis(10);
-    loop {
-        match Endpoint::from_shared(uri.clone()).unwrap().connect().await {
-            Ok(channel) => return FlightSqlServiceClient::new(channel),
-            Err(error) => {
-                if std::time::Instant::now() >= deadline {
-                    panic!("Flight SQL server did not accept connections at {addr} within 15s: {error:?}");
-                }
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_millis(500));
-            },
-        }
-    }
+    connect_with_retry(
+        &uri,
+        ConnectionRetryConfig::exponential_timeout(
+            Duration::from_secs(15),
+            Duration::from_millis(10),
+            Duration::from_millis(500),
+        ),
+        || Ok(BeforeConnect::Continue),
+        FlightSqlServiceClient::new,
+        |error| format!("Flight SQL server did not accept connections at {addr} within 15s: {error:?}"),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"))
 }
 
 fn int_value(array: &arrow::array::ArrayRef) -> Option<i64> {

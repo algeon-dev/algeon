@@ -3889,6 +3889,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "cudf",
+ "cudf-sys",
  "cugraph",
  "cugraph-sys",
  "futures",

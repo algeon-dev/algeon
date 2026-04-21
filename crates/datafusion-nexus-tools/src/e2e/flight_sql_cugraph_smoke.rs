@@ -13,7 +13,8 @@ use arrow::{
 use arrow_flight::{FlightEndpoint, Ticket, sql::client::FlightSqlServiceClient};
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-use tonic::transport::Endpoint;
+
+use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
 
 type SmokeResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -32,7 +33,7 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
     let url = server_url(url_arg);
     let source = SmokeSource::from_env()?;
     let result_mode = GraphResultMode::from_env()?;
-    let mut client = connect_with_retry(&url).await?;
+    let mut client = connect_flight_sql(&url).await?;
     let suffix = unique_suffix();
     let raw_table = format!("raw_edges_{suffix}");
     let target_view = format!("target_edges_{suffix}");
@@ -262,18 +263,15 @@ fn write_edge_parquet(path: &Path) -> SmokeResult<()> {
     Ok(())
 }
 
-async fn connect_with_retry(url: &str) -> SmokeResult<FlightSqlServiceClient<tonic::transport::Channel>> {
-    let mut last_error = None;
-    for _ in 0..50 {
-        match Endpoint::from_shared(url.to_string())?.connect().await {
-            Ok(channel) => return Ok(FlightSqlServiceClient::new(channel)),
-            Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            },
-        }
-    }
-    Err(format!("Flight SQL server did not accept connections at {url}: {last_error:?}").into())
+async fn connect_flight_sql(url: &str) -> SmokeResult<FlightSqlServiceClient<tonic::transport::Channel>> {
+    connect_with_retry(
+        url,
+        ConnectionRetryConfig::fixed_attempts(50, Duration::from_millis(50)),
+        || Ok(BeforeConnect::Continue),
+        FlightSqlServiceClient::new,
+        |error| format!("Flight SQL server did not accept connections at {url}: {:?}", Some(error)),
+    )
+    .await
 }
 
 async fn execute_batches(
