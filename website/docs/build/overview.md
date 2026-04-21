@@ -23,7 +23,7 @@ Docker path is documented separately in [Building with Docker](./docker.md).
 
 | Component | Role | Language | How it is consumed |
 | --- | --- | --- | --- |
-| [`datafusion-nexus`](https://github.com/morristai/datafusion-nexus) | DataFusion physical-plan adapter, native IR (`nexus-query-engine`), benchmarks, Flight SQL server | Rust | cloned (this repo) |
+| [`datafusion-nexus`](https://github.com/morristai/datafusion-nexus) | DataFusion adapter, native engine (`nexus-query-engine`), workload contracts, benchmarks, Flight SQL server | Rust | cloned (this repo) |
 | [`cudf-rs`](https://github.com/morristai/cudf-rs) | Safe Rust API over libcudf (`cudf`, `cudf-sys`, `rapids-interop`); vendors the [`cudf` fork](https://github.com/DataFusion-Nexus/cudf) as a submodule | Rust + C++/CUDA | cloned (+ submodule) |
 | [`cugraph-rs`](https://github.com/morristai/cugraph-rs) | Safe Rust API over libcugraph (`cugraph`, `cugraph-sys`); vendors the [`cugraph` fork](https://github.com/DataFusion-Nexus/cugraph) as a submodule | Rust + C++/CUDA | cloned (+ submodule) |
 

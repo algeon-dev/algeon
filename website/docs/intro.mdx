@@ -102,14 +102,17 @@ boundary in detail.
 
 ## Repository layout
 
-The Cargo workspace has four members:
+The Cargo workspace has six packages:
 
 - `datafusion-nexus` — the DataFusion-facing adapter: optimizer rule, table
   functions, Iceberg integration, the Flight SQL server, and reports.
 - `nexus-query-engine` — the DataFusion-free native plan and GPU executor.
-- `datafusion-nexus-bench` — benchmark, report, fixture, and stress binaries.
+- `datafusion-nexus-workloads` — adapter-neutral TPC-H, TPC-DS, and ClickBench
+  catalogs, fixtures, dataset discovery, and DataFusion registration.
+- `datafusion-nexus-bench` — benchmark, report, triage, and stress binaries.
 - `datafusion-nexus-tools` — developer and operator tools, including local
   end-to-end runners.
+- `datafusion-nexus-examples` — runnable embedded-backend examples.
 
 Two sibling repositories are also first-class parts of the implementation,
 even though they are not workspace members: `cudf-rs` is the Rust/libcudf

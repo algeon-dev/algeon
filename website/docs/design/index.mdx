@@ -186,10 +186,10 @@ The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 | Change | Correct home | Contract to update |
 | --- | --- | --- |
 | Support a new DataFusion physical shape | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | Planning reports and fallback reasons |
-| Add native IR or executor behavior | `crates/nexus-query-engine/src/plan`, `expr`, `source`, `exec` | Engine contract tests and metrics |
-| Admit a bounded compiled shape | `crates/nexus-query-engine/src/capability`, `pipeline`, `exec/bounded` | Strict/adaptive diagnostics; no family-name shortcuts |
+| Add native IR or executor behavior | `crates/nexus-query-engine/src/plan`, `expr`, `source`, `exec`, `runtime` | Engine contract tests and metrics |
+| Admit a bounded compiled shape | `crates/nexus-query-engine/src/admission`, `capability`, `pipeline` | Strict/adaptive diagnostics; no family-name shortcuts |
 | Improve GPU memory, streams, source readers, or graph interop | `cudf`, `cugraph`, `rapids-interop` crates | Binding crate API and FFI error mapping |
-| Change public evidence | `src/native_report/`, `src/native_exec/metrics.rs`, `src/error.rs` | Public surface schema/version constants |
+| Change public evidence | `src/native_report/`, `src/native_exec/metrics/`, `src/error.rs` | Public surface schema/version constants |
 
 ## cuGraph SQL path
 
@@ -213,7 +213,7 @@ ORDER BY value DESC;
     {
       id: 'udtf', lane: 'host', col: 0,
       kind: 'sql', name: 'cugraph_*()', note: ['table function', 'CugraphAlgoExec'], tone: 'plan',
-      sub: 'src/graph_sql/table_function.rs · src/graph_sql/exec.rs',
+      sub: 'src/graph_sql/table_function.rs · src/graph_sql/exec/',
       detail: <><code>CugraphAlgoTableProvider</code> parses SQL arguments,
         resolves the edge relation in the DataFusion catalog, creates the
         physical edge-source plan, and returns <code>CugraphAlgoExec</code>.
@@ -290,6 +290,10 @@ keeps these concerns separate:
 - The Flight SQL server can expose a workspace overlay so users get short names
   without teaching a read-only Iceberg catalog to accept views.
 
+Set `NEXUS_ICEBERG_FOOTER_PRUNING=true` to let native object-store scans use
+Parquet footers for safe static and dimension-derived row-group pruning before
+execution.
+
 Iceberg/Glue/S3 is feature-gated behind `--features iceberg`; tests must not
 require a real AWS account.
 
@@ -300,15 +304,15 @@ Use this page as the routing table before changing behavior:
 | If you are changing... | Inspect first | Keep stable |
 | --- | --- | --- |
 | Native rewrite coverage | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | `PlanningReport`, `FallbackReason`, rule names |
-| Native execution semantics | `crates/nexus-query-engine/src/exec/`, `capability/`, `pipeline/` | Strict/adaptive separation and reservation evidence |
-| cuGraph SQL behavior | `src/graph_sql/types.rs`, `parser.rs`, `metadata/`, `exec.rs`, engine `exec/graph_algorithm/` | Metadata column order and validation output |
+| Native execution semantics | `crates/nexus-query-engine/src/admission/`, `capability/`, `pipeline/`, `exec/`, `runtime/` | Strict/adaptive separation and reservation evidence |
+| cuGraph SQL behavior | `src/graph_sql/types.rs`, `parser.rs`, `metadata/`, `exec/`, engine `exec/graph_algorithm/` | Metadata column order and validation output |
 | Iceberg/source behavior | `src/table_format/`, `src/table_format/iceberg/`, server workspace configuration | Source diagnostics and credential-safe error facts |
-| Public diagnostics | `src/native_report/schema.rs`, `src/native_exec/metrics.rs`, `src/error.rs` | TSV headers, metric names, `ErrorCode`s |
+| Public diagnostics | `src/native_report/schema.rs`, `src/native_exec/metrics/`, `src/error.rs` | TSV headers, metric names, `ErrorCode`s |
 
 ## Authoritative references
 
 - [cuGraph SQL API](../cugraph/overview.mdx) for callable graph algorithms and
   validation metadata.
 - `Cargo.toml` for feature gates and dependency declarations.
-- `src/native_report/schema.rs`, `src/native_exec/metrics.rs`, and
+- `src/native_report/schema.rs`, `src/native_exec/metrics/`, and
   `src/error.rs` for stable report, metric, and error contracts.

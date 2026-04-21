@@ -148,6 +148,11 @@ NEXUS_LAKEHOUSE_CACHE_MAX_BYTES=536870912000
 the complete object is published locally; `disabled` never fills. The cache is
 independent of the decoded VRAM source cache.
 
+Set `NEXUS_ICEBERG_FOOTER_PRUNING=true` to enable native object-store footer
+pruning. It applies safe static and dimension-derived filters to Parquet row
+groups before execution; a footer-read failure skips that pruning step without
+failing the query.
+
 A mutable workspace overlay exposes those source tables under unqualified names
 while keeping interactive DDL local to `datafusion.public`:
 
