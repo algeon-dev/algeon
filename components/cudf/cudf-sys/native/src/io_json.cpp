@@ -1,5 +1,6 @@
 #include "execution_context_internal.hpp"
 #include "io.h"
+#include "io_test_hooks.hpp"
 #include "shim_common.h"
 
 #include <cudf/io/json.hpp>
@@ -83,6 +84,15 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(const char* filepath,
 
     auto options = builder.build();
     auto result  = cudf::io::read_json(options, exec.stream, exec.mr);
+
+    auto const fault = cudf_test_io_take_next_metadata_fault();
+    if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
+      cudf_status_t const fault_status =
+        cudf_test_io_apply_metadata_fault(fault, out_names, out_num_names);
+      if (fault_status != CUDF_SUCCESS) { return fault_status; }
+      *out_table = cudf_release_table_handle(std::move(result.tbl));
+      return CUDF_SUCCESS;
+    }
 
     // Extract column names from metadata.
     auto const& schema = result.metadata.schema_info;

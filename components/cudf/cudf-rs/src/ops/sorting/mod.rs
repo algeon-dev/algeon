@@ -21,12 +21,16 @@
 //! );
 //! ```
 
-use std::ptr;
+mod errors;
+pub(crate) mod testing_hooks;
 
+use std::{ptr, sync::Arc};
+
+use self::errors::{sort_key_count_limit_error, sort_option_count_mismatch_error};
 use crate::{
     core::{
         column::Column,
-        error::{self, Error, ErrorKind, Result},
+        error::{self, Result},
         table::{Table, TableView},
     },
     runtime::execution_domain::ExecutionDomain,
@@ -54,33 +58,31 @@ fn validate_sort_params(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<()> {
-    let expected = i32::try_from(num_keys).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "number of sort keys exceeds i32::MAX")
-            .with_operation(operation)
-            .with_context("num_keys", num_keys.to_string())
-    })?;
+    let expected = i32::try_from(num_keys).map_err(|_| sort_key_count_limit_error(operation, num_keys))?;
 
     if let Some(orders) = column_order {
         if orders.len() != num_keys {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
+            return Err(sort_option_count_mismatch_error(
+                operation,
                 format!("column_order length ({}) must equal number of keys ({})", orders.len(), num_keys),
-            )
-            .with_operation(operation)
-            .with_context("num_keys", num_keys.to_string())
-            .with_context("column_order_len", orders.len().to_string()));
+                "column_order_length_mismatch",
+                "provide either no column_order values or exactly one value per sort key",
+                num_keys,
+                orders.len(),
+            ));
         }
     }
 
     if let Some(nulls) = null_precedence {
         if nulls.len() != num_keys {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
+            return Err(sort_option_count_mismatch_error(
+                operation,
                 format!("null_precedence length ({}) must equal number of keys ({})", nulls.len(), num_keys),
-            )
-            .with_operation(operation)
-            .with_context("num_keys", num_keys.to_string())
-            .with_context("null_precedence_len", nulls.len().to_string()));
+                "null_precedence_length_mismatch",
+                "provide either no null_precedence values or exactly one value per sort key",
+                num_keys,
+                nulls.len(),
+            ));
         }
     }
 
@@ -89,11 +91,7 @@ fn validate_sort_params(
 }
 
 fn checked_num_keys(operation: &'static str, num_keys: usize) -> Result<i32> {
-    i32::try_from(num_keys).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "number of sort keys exceeds i32::MAX")
-            .with_operation(operation)
-            .with_context("num_keys", num_keys.to_string())
-    })
+    i32::try_from(num_keys).map_err(|_| sort_key_count_limit_error(operation, num_keys))
 }
 
 /// Helper: convert Option slices to raw pointers.
@@ -117,7 +115,7 @@ pub(crate) fn sort_table_impl(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
     stable: bool,
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
@@ -141,14 +139,14 @@ pub(crate) fn sort_table_impl(
         status,
         operation,
         [
-            ("num_keys", num_keys.to_string()),
+            ("keys_count", num_keys.to_string()),
             ("column_order_provided", column_order.is_some().to_string()),
             ("null_precedence_provided", null_precedence.is_some().to_string()),
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
 
-    unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 pub(crate) fn sort_by_key_impl(
@@ -157,7 +155,7 @@ pub(crate) fn sort_by_key_impl(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
     stable: bool,
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
@@ -208,14 +206,14 @@ pub(crate) fn sort_by_key_impl(
         status,
         operation,
         [
-            ("num_key_columns", num_key_columns.to_string()),
+            ("keys_count", num_key_columns.to_string()),
             ("column_order_provided", column_order.is_some().to_string()),
             ("null_precedence_provided", null_precedence.is_some().to_string()),
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
 
-    unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Sort the rows of a table by all its columns.
@@ -227,7 +225,7 @@ pub fn sort(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.exec_options_raw();
     sort_table_impl(input, column_order, null_precedence, false, &output_domain, Some(&exec_options), "sorting::sort")
 }
@@ -238,7 +236,7 @@ pub fn stable_sort(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.exec_options_raw();
     sort_table_impl(
         input,
@@ -258,7 +256,7 @@ pub fn sort_by_key(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let output_domain = std::sync::Arc::clone(values.execution_domain());
+    let output_domain = Arc::clone(values.execution_domain());
     ExecutionDomain::require_same_device_for_mixed_inputs(
         values.execution_domain(),
         keys.execution_domain(),
@@ -289,7 +287,7 @@ pub fn stable_sort_by_key(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let output_domain = std::sync::Arc::clone(values.execution_domain());
+    let output_domain = Arc::clone(values.execution_domain());
     ExecutionDomain::require_same_device_for_mixed_inputs(
         values.execution_domain(),
         keys.execution_domain(),
@@ -323,7 +321,7 @@ pub fn sorted_order(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.exec_options_raw();
     let num_keys = input.num_columns()?;
     validate_sort_params("sorting::sorted_order", num_keys, column_order, null_precedence)?;
@@ -335,7 +333,7 @@ pub fn sorted_order(
         unsafe { cudf_sys::cudf_sorted_order_ex(input.raw_handle(), co, np, num_keys_i32, &mut out, &exec_options) },
         "sorting::sorted_order",
         [
-            ("num_keys", num_keys.to_string()),
+            ("keys_count", num_keys.to_string()),
             ("column_order_provided", column_order.is_some().to_string()),
             ("null_precedence_provided", null_precedence.is_some().to_string()),
             ("execution_context_provided", "true".to_string()),
@@ -361,7 +359,7 @@ pub fn is_sorted(
         unsafe { cudf_sys::cudf_is_sorted(input.raw_handle(), co, np, num_keys_i32, &mut out) },
         "sorting::is_sorted",
         [
-            ("num_keys", num_keys.to_string()),
+            ("keys_count", num_keys.to_string()),
             ("column_order_provided", column_order.is_some().to_string()),
             ("null_precedence_provided", null_precedence.is_some().to_string()),
         ],
@@ -390,7 +388,8 @@ pub fn is_sorted(
 /// - **empty** — meaning "use defaults for all sort keys", or
 /// - **exactly equal** in length to the number of sort-key columns.
 ///
-/// Any other length is rejected at sort time with an `InvalidOperation` error.
+/// Any other length is rejected at sort time with
+/// `ErrorKind::Unsupported` plus `ErrorCode::UnsupportedOperation`.
 ///
 /// # Example
 ///
@@ -449,33 +448,38 @@ impl SortOptions {
     ///
     /// - Empty vectors are expanded to defaults for all keys.
     /// - Non-empty vectors must match `num_keys` exactly.
-    pub(crate) fn resolve(&self, num_keys: usize) -> Result<(Vec<Order>, Option<Vec<NullOrder>>)> {
-        let orders = self.resolve_orders(num_keys)?;
-        let null_orders = self.resolve_null_orders(num_keys)?;
+    pub(crate) fn resolve(
+        &self,
+        num_keys: usize,
+        operation: &'static str,
+    ) -> Result<(Vec<Order>, Option<Vec<NullOrder>>)> {
+        let orders = self.resolve_orders(num_keys, operation)?;
+        let null_orders = self.resolve_null_orders(num_keys, operation)?;
         Ok((orders, null_orders))
     }
 
-    fn resolve_orders(&self, num_keys: usize) -> Result<Vec<Order>> {
+    fn resolve_orders(&self, num_keys: usize, operation: &'static str) -> Result<Vec<Order>> {
         if self.descending.is_empty() {
             Ok(vec![Order::Ascending; num_keys])
         } else if self.descending.len() == num_keys {
             Ok(self.descending.iter().map(|&d| if d { Order::Descending } else { Order::Ascending }).collect())
         } else {
-            Err(Error::new(
-                ErrorKind::InvalidOperation,
+            Err(sort_option_count_mismatch_error(
+                operation,
                 format!(
                     "descending length ({}) must be 0 or equal to number of sort keys ({})",
                     self.descending.len(),
                     num_keys
                 ),
-            )
-            .with_operation("SortOptions::resolve")
-            .with_context("descending_len", self.descending.len().to_string())
-            .with_context("num_keys", num_keys.to_string()))
+                "descending_length_mismatch",
+                "provide either zero descending flags or exactly one flag per sort key",
+                num_keys,
+                self.descending.len(),
+            ))
         }
     }
 
-    fn resolve_null_orders(&self, num_keys: usize) -> Result<Option<Vec<NullOrder>>> {
+    fn resolve_null_orders(&self, num_keys: usize, operation: &'static str) -> Result<Option<Vec<NullOrder>>> {
         if self.nulls_first.is_empty() {
             // Expand the high-level default explicitly so behavior stays stable
             // even if cuDF's implicit default changes across versions.
@@ -483,17 +487,18 @@ impl SortOptions {
         } else if self.nulls_first.len() == num_keys {
             Ok(Some(self.nulls_first.iter().map(|&nf| if nf { NullOrder::Before } else { NullOrder::After }).collect()))
         } else {
-            Err(Error::new(
-                ErrorKind::InvalidOperation,
+            Err(sort_option_count_mismatch_error(
+                operation,
                 format!(
                     "nulls_first length ({}) must be 0 or equal to number of sort keys ({})",
                     self.nulls_first.len(),
                     num_keys
                 ),
-            )
-            .with_operation("SortOptions::resolve")
-            .with_context("nulls_first_len", self.nulls_first.len().to_string())
-            .with_context("num_keys", num_keys.to_string()))
+                "nulls_first_length_mismatch",
+                "provide either zero nulls_first flags or exactly one flag per sort key",
+                num_keys,
+                self.nulls_first.len(),
+            ))
         }
     }
 }

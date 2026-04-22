@@ -13,7 +13,7 @@ use std::{
 use super::{device_slice::DeviceSlice, view::ColumnView};
 use crate::{
     core::{
-        error::{self, Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
         scalar::Scalar,
         types::{
             CudfType, DataType, TypeId, count_nulls, cudf_null_mask_allocation_size_bytes, validity_to_ffi_bitmask,
@@ -24,11 +24,111 @@ use crate::{
 };
 
 fn usize_to_i32_len(len: usize, what: &'static str, operation: &'static str) -> Result<i32> {
-    i32::try_from(len).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, format!("{} length exceeds i32::MAX", what))
+    i32::try_from(len).map_err(|_| error::range_limit_error(ErrorKind::InvalidInput, operation, what, "i32::MAX", len))
+}
+
+fn type_id_label(type_id: TypeId) -> String {
+    format!("{type_id:?}").to_lowercase()
+}
+
+fn fixed_width_type_required_error(
+    operation: &'static str,
+    message: &'static str,
+    type_id: TypeId,
+    remedy: &'static str,
+) -> Error {
+    Error::new(ErrorKind::InvalidInput, message)
+        .with_code(ErrorCode::UnsupportedDtype)
+        .with_operation(operation)
+        .with_context("type_id", type_id_label(type_id))
+        .with_context("reason", "requires_fixed_width_type")
+        .with_context("remedy", remedy)
+}
+
+fn null_device_ptr_error(operation: &'static str, row_count: usize, type_id: TypeId) -> Error {
+    Error::new(ErrorKind::InvalidInput, "device_ptr is null but row_count > 0")
+        .with_code(ErrorCode::NullUnexpected)
+        .with_operation(operation)
+        .with_context("resource", "device_ptr")
+        .with_context("reason", "null_pointer_with_positive_row_count")
+        .with_context("remedy", "ensure device_ptr is non-null whenever row_count is positive")
+        .with_context("row_count", row_count.to_string())
+        .with_context("type_id", type_id_label(type_id))
+}
+
+fn checked_required_buffer_bytes(
+    operation: &'static str,
+    resource: &'static str,
+    row_count: usize,
+    elem_size_bytes: i32,
+    type_id: TypeId,
+) -> Result<usize> {
+    row_count.checked_mul(elem_size_bytes as usize).ok_or_else(|| {
+        Error::new(ErrorKind::InvalidInput, "required buffer size overflowed usize")
+            .with_code(ErrorCode::UnsupportedOperation)
             .with_operation(operation)
-            .with_context("len", len.to_string())
+            .with_context("resource", resource)
+            .with_context("reason", "size_overflowed_usize")
+            .with_context(
+                "remedy",
+                "reduce row_count or choose a smaller fixed-width type so the required buffer size fits within usize",
+            )
+            .with_context("row_count", row_count.to_string())
+            .with_context("elem_size_bytes", elem_size_bytes.to_string())
+            .with_context("type_id", type_id_label(type_id))
     })
+}
+
+fn buffer_size_mismatch_error(
+    operation: &'static str,
+    resource: &'static str,
+    message: &'static str,
+    actual_bytes: usize,
+    expected_bytes: usize,
+    row_count: usize,
+    type_id: TypeId,
+) -> Error {
+    Error::new(ErrorKind::InvalidInput, message)
+        .with_code(ErrorCode::ColumnLengthMismatch)
+        .with_operation(operation)
+        .with_context("resource", resource)
+        .with_context("reason", "size_mismatch_with_row_count")
+        .with_context("remedy", format!("ensure {resource} has exactly row_count * element_size bytes"))
+        .with_context("actual_bytes", actual_bytes.to_string())
+        .with_context("expected_bytes", expected_bytes.to_string())
+        .with_context("row_count", row_count.to_string())
+        .with_context("type_id", type_id_label(type_id))
+}
+
+fn null_mask_buffer_too_small_error(
+    operation: &'static str,
+    actual_bytes: usize,
+    expected_bytes: usize,
+    row_count: usize,
+) -> Error {
+    Error::new(ErrorKind::InvalidInput, "null mask buffer too small")
+        .with_code(ErrorCode::InvalidInput)
+        .with_operation(operation)
+        .with_context("resource", "null_mask_buffer")
+        .with_context("reason", "insufficient_allocation_size")
+        .with_context(
+            "remedy",
+            "provide at least cudf_null_mask_allocation_size_bytes(row_count) bytes in null_mask_buffer",
+        )
+        .with_context("actual_bytes", actual_bytes.to_string())
+        .with_context("expected_bytes", expected_bytes.to_string())
+        .with_context("row_count", row_count.to_string())
+}
+
+fn null_count_exceeds_row_count_error(operation: &'static str, null_count: usize, row_count: usize) -> Error {
+    Error::new(ErrorKind::InvalidInput, "null_count exceeds row_count")
+        .with_code(ErrorCode::ColumnLengthMismatch)
+        .with_operation(operation)
+        .with_context("resource", "null_count")
+        .with_context("reason", "exceeds_row_count")
+        .with_context("remedy", "ensure null_count does not exceed row_count")
+        .with_context("expected_rows", row_count.to_string())
+        .with_context("actual_rows", null_count.to_string())
 }
 
 /// An owned GPU column backed by a `cudf::column`.
@@ -152,18 +252,16 @@ impl Column {
     ) -> Result<Self> {
         if let Some(validity) = validity {
             if data.len() != validity.len() {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    "data and validity slices must have the same length",
-                )
-                .with_operation(operation)
-                .with_context("data_len", data.len().to_string())
-                .with_context("validity_len", validity.len().to_string()));
+                return Err(Error::new(ErrorKind::InvalidInput, "data and validity slices must have the same length")
+                    .with_code(ErrorCode::ColumnLengthMismatch)
+                    .with_operation(operation)
+                    .with_context("expected_rows", data.len().to_string())
+                    .with_context("actual_rows", validity.len().to_string()));
             }
         }
 
         let mut handle = ptr::null_mut();
-        let size = usize_to_i32_len(data.len(), "data", operation)?;
+        let size = usize_to_i32_len(data.len(), "row_count", operation)?;
         let null_mask = validity.map(validity_to_ffi_bitmask);
         let null_count = validity.map(count_nulls).unwrap_or(0);
         let exec_options = domain.exec_options_raw();
@@ -242,10 +340,11 @@ impl Column {
     pub fn device_slice<T: CudfType>(&self) -> Result<DeviceSlice<'_>> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
-            return Err(Error::new(ErrorKind::TypeError, "column type does not match requested type")
+            return Err(Error::new(ErrorKind::InvalidInput, "column type does not match requested type")
+                .with_code(ErrorCode::TypeMismatch)
                 .with_operation("column::device_slice")
-                .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
-                .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
+                .with_context("left_type_id", format!("{:?}", dt.id()).to_lowercase())
+                .with_context("right_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
         }
 
         let base_ptr = self.device_data_ptr()?;
@@ -387,20 +486,20 @@ impl Column {
         let operation = "column::from_device_ptr_with_runtime";
 
         if type_id.size_in_bytes()?.is_none() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "from_device_ptr only supports fixed-width types")
-                .with_operation(operation)
-                .with_context("len", len.to_string())
-                .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
+            return Err(fixed_width_type_required_error(
+                operation,
+                "from_device_ptr only supports fixed-width types",
+                type_id,
+                "use a fixed-width type when importing a raw device pointer as a cudf column",
+            ));
         }
+
+        let size = usize_to_i32_len(len, "row_count", operation)?;
 
         if len > 0 && device_ptr.is_null() {
-            return Err(Error::new(ErrorKind::NullError, "device_ptr is null but len > 0")
-                .with_operation(operation)
-                .with_context("len", len.to_string())
-                .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
+            return Err(null_device_ptr_error(operation, len, type_id));
         }
 
-        let size = usize_to_i32_len(len, "data", operation)?;
         let output_domain = Arc::clone(runtime.execution_domain());
         let exec_options = output_domain.exec_options_raw();
         let mut handle = ptr::null_mut();
@@ -418,7 +517,7 @@ impl Column {
                 )
             },
             operation,
-            [("len", len.to_string()), ("type_id", format!("{:?}", type_id).to_lowercase())],
+            [("row_count", len.to_string()), ("type_id", type_id_label(type_id))],
         )?;
         Self::from_handle_with_domain(handle, output_domain)
     }
@@ -449,17 +548,15 @@ impl Column {
     ) -> Result<Self> {
         if let Some(validity) = validity {
             if data.len() != validity.len() {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    "data and validity slices must have the same length",
-                )
-                .with_operation(operation)
-                .with_context("data_len", data.len().to_string())
-                .with_context("validity_len", validity.len().to_string()));
+                return Err(Error::new(ErrorKind::InvalidInput, "data and validity slices must have the same length")
+                    .with_code(ErrorCode::ColumnLengthMismatch)
+                    .with_operation(operation)
+                    .with_context("expected_rows", data.len().to_string())
+                    .with_context("actual_rows", validity.len().to_string()));
             }
         }
 
-        let num_strings = usize_to_i32_len(data.len(), "data", operation)?;
+        let num_strings = usize_to_i32_len(data.len(), "row_count", operation)?;
 
         let ptrs: Vec<*const c_char> = data.iter().map(|s| s.as_ptr() as *const c_char).collect();
         let lengths: Vec<i32> =
@@ -494,7 +591,7 @@ impl Column {
         domain: &Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        let size = usize_to_i32_len(len, "data", operation)?;
+        let size = usize_to_i32_len(len, "row_count", operation)?;
         if len == 0 {
             return Self::create_empty_with_dtype_in_domain(dtype, Arc::clone(domain), operation);
         }
@@ -508,20 +605,16 @@ impl Column {
             },
             _ => {
                 let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::InvalidOperation,
-                        format!("{operation} does not support variable-width type {:?}", type_id),
+                    fixed_width_type_required_error(
+                        operation,
+                        "null-column construction requires a fixed-width type or STRING",
+                        type_id,
+                        "use a fixed-width type or STRING when constructing an all-null column",
                     )
-                    .with_operation(operation)
-                    .with_context("type_id", format!("{:?}", type_id).to_lowercase())
                 })?;
 
-                let data_len_bytes = len.checked_mul(elem_size as usize).ok_or_else(|| {
-                    Error::new(ErrorKind::InvalidOperation, "column byte size overflow")
-                        .with_operation(operation)
-                        .with_context("len", len.to_string())
-                        .with_context("elem_size_bytes", elem_size.to_string())
-                })?;
+                let data_len_bytes =
+                    checked_required_buffer_bytes(operation, "data_buffer_size", len, elem_size, type_id)?;
 
                 let data = vec![0u8; data_len_bytes];
                 let validity = vec![false; len];
@@ -545,7 +638,7 @@ impl Column {
                         )
                     },
                     operation,
-                    [("type_id", format!("{:?}", type_id).to_lowercase()), ("len", len.to_string())],
+                    [("type_id", type_id_label(type_id)), ("row_count", len.to_string())],
                 )?;
                 Self::from_handle_with_domain(handle, Arc::clone(domain))
             },
@@ -591,8 +684,13 @@ impl Column {
         size: usize,
     ) -> Result<Self> {
         let size_i32 = i32::try_from(size).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "size exceeds i32::MAX")
-                .with_operation("column::from_sequence_with_runtime")
+            error::range_limit_error(
+                ErrorKind::InvalidInput,
+                "column::from_sequence_with_runtime",
+                "size",
+                "i32::MAX",
+                size,
+            )
         })?;
         let init_scalar = runtime.scalar(init)?;
         let step_scalar = runtime.scalar(step)?;
@@ -621,7 +719,7 @@ impl Column {
         operation: &'static str,
     ) -> Result<Self> {
         let size_i32 = i32::try_from(size)
-            .map_err(|_| Error::new(ErrorKind::InvalidOperation, "size exceeds i32::MAX").with_operation(operation))?;
+            .map_err(|_| error::range_limit_error(ErrorKind::InvalidInput, operation, "size", "i32::MAX", size))?;
         let init_scalar = Scalar::from_value_in_domain(init, &domain)?;
         let step_scalar = Scalar::from_value_in_domain(step, &domain)?;
         let mut handle = ptr::null_mut();
@@ -664,7 +762,7 @@ impl Column {
     /// Returns an error if `size` exceeds `i32::MAX` (FFI limit).
     pub fn from_scalar(scalar: &Scalar, size: usize) -> Result<Self> {
         let size_i32 = i32::try_from(size).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "size exceeds i32::MAX").with_operation("column::from_scalar")
+            error::range_limit_error(ErrorKind::InvalidInput, "column::from_scalar", "size", "i32::MAX", size)
         })?;
         let mut handle = ptr::null_mut();
         let exec_options = scalar.domain.exec_options_raw();
@@ -714,12 +812,15 @@ fn require_runtime_matches_buffer_device(
     let runtime_device = runtime.device();
     if runtime_device.ordinal() as i32 != device_snapshot {
         return Err(Error::new(
-            ErrorKind::InvalidOperation,
+            ErrorKind::InvalidInput,
             "device buffer belongs to a different CUDA device than the target runtime",
         )
+        .with_code(ErrorCode::CrossDeviceInputs)
         .with_operation(operation)
-        .with_context("runtime_device", runtime_device.ordinal().to_string())
-        .with_context("buffer_device", device_snapshot.to_string()));
+        .with_context("left_device", runtime_device.ordinal().to_string())
+        .with_context("right_device", device_snapshot.to_string())
+        .with_context("resource", "device_buffer")
+        .with_context("remedy", "move the buffer into a Runtime bound to the same CUDA device before adopting it"));
     }
 
     Ok(Arc::clone(runtime.execution_domain()))
@@ -754,22 +855,28 @@ impl Column {
         let operation = "column::from_device_buffer_with_runtime";
 
         let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, "from_device_buffer only supports fixed-width types")
-                .with_operation(operation)
-                .with_context("type_id", format!("{:?}", type_id).to_lowercase())
+            fixed_width_type_required_error(
+                operation,
+                "from_device_buffer only supports fixed-width types",
+                type_id,
+                "use a fixed-width type when adopting a device buffer as a cudf column",
+            )
         })?;
 
         let row_count_i32 = usize_to_i32_len(row_count, "row_count", operation)?;
 
-        let expected_bytes = row_count * (elem_size as usize);
+        let expected_bytes = checked_required_buffer_bytes(operation, "data_buffer", row_count, elem_size, type_id)?;
         let actual_bytes = buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
         if actual_bytes != expected_bytes {
-            return Err(Error::new(ErrorKind::InvalidOperation, "buffer size does not match row_count * element size")
-                .with_operation(operation)
-                .with_context("buffer_bytes", actual_bytes.to_string())
-                .with_context("expected_bytes", expected_bytes.to_string())
-                .with_context("row_count", row_count.to_string())
-                .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
+            return Err(buffer_size_mismatch_error(
+                operation,
+                "data_buffer",
+                "buffer size does not match row_count * element size",
+                actual_bytes,
+                expected_bytes,
+                row_count,
+                type_id,
+            ));
         }
 
         let (raw_buf, device_snapshot) = buffer.into_raw_parts();
@@ -837,58 +944,58 @@ impl Column {
         let operation = "column::from_device_buffer_nullable_with_runtime";
 
         let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, "from_device_buffer_nullable only supports fixed-width types")
-                .with_operation(operation)
-                .with_context("type_id", format!("{:?}", type_id).to_lowercase())
+            fixed_width_type_required_error(
+                operation,
+                "from_device_buffer_nullable only supports fixed-width types",
+                type_id,
+                "use a fixed-width type when adopting nullable device buffers as a cudf column",
+            )
         })?;
 
         let row_count_i32 = usize_to_i32_len(row_count, "row_count", operation)?;
 
         let null_count_i32 = i32::try_from(null_count).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "null_count exceeds i32::MAX")
-                .with_operation(operation)
-                .with_context("null_count", null_count.to_string())
+            error::range_limit_error(ErrorKind::InvalidInput, operation, "null_count", "i32::MAX", null_count)
         })?;
 
         if null_count > row_count {
-            return Err(Error::new(ErrorKind::InvalidOperation, "null_count exceeds row_count")
-                .with_operation(operation)
-                .with_context("null_count", null_count.to_string())
-                .with_context("row_count", row_count.to_string()));
+            return Err(null_count_exceeds_row_count_error(operation, null_count, row_count));
         }
 
-        let expected_data_bytes = row_count * (elem_size as usize);
+        let expected_data_bytes =
+            checked_required_buffer_bytes(operation, "data_buffer", row_count, elem_size, type_id)?;
         let actual_data_bytes = data_buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
         if actual_data_bytes != expected_data_bytes {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
+            return Err(buffer_size_mismatch_error(
+                operation,
+                "data_buffer",
                 "data buffer size does not match row_count * element size",
-            )
-            .with_operation(operation)
-            .with_context("buffer_bytes", actual_data_bytes.to_string())
-            .with_context("expected_bytes", expected_data_bytes.to_string()));
+                actual_data_bytes,
+                expected_data_bytes,
+                row_count,
+                type_id,
+            ));
         }
 
         let min_mask_bytes = cudf_null_mask_allocation_size_bytes(row_count);
         let actual_mask_bytes = null_mask_buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
         if actual_mask_bytes < min_mask_bytes {
-            return Err(Error::new(ErrorKind::InvalidOperation, "null mask buffer too small")
-                .with_operation(operation)
-                .with_context("mask_bytes", actual_mask_bytes.to_string())
-                .with_context("min_required_bytes", min_mask_bytes.to_string())
-                .with_context("row_count", row_count.to_string()));
+            return Err(null_mask_buffer_too_small_error(operation, actual_mask_bytes, min_mask_bytes, row_count));
         }
 
         let data_device_snapshot = data_buffer.device_snapshot();
         let mask_device_snapshot = null_mask_buffer.device_snapshot();
         if data_device_snapshot != mask_device_snapshot {
             return Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::InvalidInput,
                 "data buffer and null mask buffer must belong to the same CUDA device",
             )
+            .with_code(ErrorCode::CrossDeviceInputs)
             .with_operation(operation)
-            .with_context("data_device", data_device_snapshot.to_string())
-            .with_context("mask_device", mask_device_snapshot.to_string()));
+            .with_context("left_device", data_device_snapshot.to_string())
+            .with_context("right_device", mask_device_snapshot.to_string())
+            .with_context("resource", "null_mask_buffer")
+            .with_context("remedy", "ensure both buffers were allocated on the same CUDA device"));
         }
 
         let (raw_data, data_device_snapshot) = data_buffer.into_raw_parts();

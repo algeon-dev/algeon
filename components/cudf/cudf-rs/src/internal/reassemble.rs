@@ -10,7 +10,8 @@ use std::sync::Arc;
 use crate::{
     core::{
         column::Column,
-        error::{Error, ErrorKind, Result},
+        error::{ErrorKind, Result},
+        schema,
         table::Table,
     },
     frame::dataframe::{DataFrame, resolve_frame_domain_from_authoritative_source},
@@ -35,10 +36,13 @@ pub(crate) fn dataframe_from_table_and_names(table: Table, names: Vec<String>) -
 
     let cols = table.into_columns()?;
     if cols.len() != names.len() {
-        return Err(Error::new(ErrorKind::InvalidOperation, "column count does not match name count")
-            .with_operation("internal::reassemble::dataframe_from_table_and_names")
-            .with_context("columns_count", cols.len().to_string())
-            .with_context("names_count", names.len().to_string()));
+        return Err(schema::column_name_count_mismatch_error(
+            ErrorKind::InvalidInput,
+            "internal::reassemble::dataframe_from_table_and_names",
+            "column count does not match name count",
+            names.len(),
+            cols.len(),
+        ));
     }
 
     let mut map: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(names.len());

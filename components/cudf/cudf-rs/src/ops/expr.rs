@@ -1,7 +1,9 @@
 //! Expression DSL for declarative column operations.
 //!
-//! Provides a cuDF-Python / Polars-style expression API where users compose
-//! column operations as an AST and evaluate them against a [`DataFrame`].
+//! Use the DSL entry points [`col`], [`lit`], and [`when`] to start
+//! expressions, then extend them with arithmetic, comparisons, casts,
+//! naming, aggregation expression methods, and string expression methods
+//! before evaluating them against a [`DataFrame`].
 //!
 //! # Reduction Shape
 //!
@@ -60,8 +62,8 @@ use crate::{
         types::{CudfType, DataType, NullPolicy},
     },
     frame::{dataframe::DataFrame, series::Series},
+    runtime::execution_domain::ExecutionDomain,
 };
-
 // ===========================================================================
 // LitValue — type-erased scalar factory (crate-private)
 // ===========================================================================
@@ -71,7 +73,7 @@ use crate::{
 /// Not part of the public API — use [`lit()`] to create literals.
 enum LitValueInner {
     /// A numeric scalar factory. The closure creates the Scalar on demand.
-    Numeric(Box<dyn Fn(&Arc<crate::runtime::execution_domain::ExecutionDomain>) -> Result<Scalar> + Send + Sync>),
+    Numeric(Box<dyn Fn(&Arc<ExecutionDomain>) -> Result<Scalar> + Send + Sync>),
     /// A string literal.
     String(String),
 }
@@ -83,19 +85,14 @@ enum LitValueInner {
 pub struct LitValue(Arc<LitValueInner>);
 
 impl LitValue {
-    pub(crate) fn to_scalar_in_domain(
-        &self,
-        domain: &Arc<crate::runtime::execution_domain::ExecutionDomain>,
-    ) -> Result<Scalar> {
+    pub(crate) fn to_scalar_in_domain(&self, domain: &Arc<ExecutionDomain>) -> Result<Scalar> {
         match &*self.0 {
             LitValueInner::Numeric(f) => f(domain),
             LitValueInner::String(s) => Scalar::from_str_in_domain(s, domain),
         }
     }
 
-    fn numeric(
-        f: impl Fn(&Arc<crate::runtime::execution_domain::ExecutionDomain>) -> Result<Scalar> + Send + Sync + 'static,
-    ) -> Self {
+    fn numeric(f: impl Fn(&Arc<ExecutionDomain>) -> Result<Scalar> + Send + Sync + 'static) -> Self {
         Self(Arc::new(LitValueInner::Numeric(Box::new(f))))
     }
 
@@ -164,8 +161,9 @@ pub enum Expr {
     StringOp { input: Box<Expr>, op: StringOperator },
     /// Conditional: row-wise `if cond then true_val else false_val`.
     ///
-    /// Construct via [`when()`] builder chain. Output name is `None` — an
-    /// explicit `.alias()` is required for use in `with_columns`.
+    /// Construct via the staged [`when()`] conditional expression chain.
+    /// Output name is `None` — an explicit `.alias()` is required for use in
+    /// `with_columns`.
     IfElse { condition: Box<Expr>, true_val: Box<Expr>, false_val: Box<Expr> },
 }
 
@@ -185,9 +183,10 @@ impl Expr {
         Expr::Cast { input: Box::new(self), target: target.into() }
     }
 
-    /// Enter the aggregation namespace for broadcast aggregate expressions.
+    /// Access aggregation expression methods for broadcast aggregate
+    /// expressions.
     ///
-    /// Methods on the returned namespace reduce once, then broadcast the
+    /// Methods on the returned accessor reduce once, then broadcast the
     /// result back to the frame row count so it can participate in larger
     /// row-aligned expressions.
     pub fn agg(self) -> ExprAggNamespace {
@@ -323,7 +322,7 @@ impl Expr {
 
     // -- String builders (Phase 4a) ----------------------------------------
 
-    /// Enter the string namespace for string-specific expression methods.
+    /// Access string expression methods for string-specific transforms.
     pub fn str(self) -> ExprStringNamespace {
         ExprStringNamespace(self)
     }
@@ -503,10 +502,11 @@ impl Expr {
 }
 
 // ===========================================================================
-// Aggregation namespace
+// Aggregation expression methods
 // ===========================================================================
 
-/// Aggregation namespace for row-aligned broadcast aggregate expressions.
+/// Aggregation expression methods for row-aligned broadcast aggregate
+/// expressions.
 ///
 /// Construct via [`Expr::agg`]. Methods on this type reduce their input to a
 /// scalar internally, then broadcast the result back to the DataFrame row
@@ -610,10 +610,10 @@ impl ExprAggNamespace {
 }
 
 // ===========================================================================
-// String namespace
+// String expression methods
 // ===========================================================================
 
-/// String namespace for expression methods on string columns.
+/// String expression methods on string columns.
 ///
 /// Construct via [`Expr::str`]. Methods on this type produce row-aligned
 /// expressions that preserve the input column name.
@@ -672,7 +672,7 @@ impl ExprStringNamespace {
 }
 
 // ===========================================================================
-// Free functions: col(), lit(), when()
+// DSL entry points
 // ===========================================================================
 
 /// Create an expression referencing a named column.
@@ -687,7 +687,8 @@ pub fn lit<L: IntoLit>(value: L) -> Expr {
     value.into_expr()
 }
 
-/// Begin a conditional expression: `when(cond).then(x).otherwise(y)`.
+/// Begin a conditional expression chain:
+/// `when(cond).then(x).otherwise(y)`.
 ///
 /// The result is a row-aligned column — not a scalar branch selector.
 /// `IfElse` does not inherit an output name, so `.alias()` is required
@@ -708,10 +709,12 @@ pub fn when(condition: Expr) -> WhenBuilder {
 }
 
 // ===========================================================================
-// when / then / otherwise builder types
+// Staged conditional expression chain
 // ===========================================================================
 
-/// Intermediate builder: holds the condition, awaiting `.then()`.
+/// First stage of a `when(...).then(...).otherwise(...)` chain.
+///
+/// Holds the condition until you provide the `true` branch with [`Self::then`].
 pub struct WhenBuilder(Expr);
 
 impl WhenBuilder {
@@ -721,7 +724,10 @@ impl WhenBuilder {
     }
 }
 
-/// Intermediate builder: holds condition + true-branch, awaiting `.otherwise()`.
+/// Second stage of a `when(...).then(...).otherwise(...)` chain.
+///
+/// Holds the condition and `true` branch until you complete the expression
+/// with [`Self::otherwise`].
 pub struct ThenBuilder {
     condition: Expr,
     true_val: Expr,

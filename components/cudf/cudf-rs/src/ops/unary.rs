@@ -1,11 +1,14 @@
 //! GPU-accelerated unary operations.
 
-use std::ptr;
+use std::{ptr, sync::Arc};
 
-use crate::core::{
-    column::{Column, ColumnView},
-    error::{self, Result},
-    types::DataType,
+use crate::{
+    core::{
+        column::{Column, ColumnView},
+        error::{self, Result},
+        types::DataType,
+    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Unary operators matching `cudf::unary_operator`.
@@ -95,7 +98,7 @@ impl UnaryOperator {
 
 /// Apply a unary operation element-wise.
 pub fn unary_operation(input: &ColumnView<'_>, op: UnaryOperator) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     unary_operation_impl(input, op, &output_domain, exec_options.as_ref(), "unary::unary_operation")
 }
@@ -103,7 +106,7 @@ pub fn unary_operation(input: &ColumnView<'_>, op: UnaryOperator) -> Result<Colu
 pub(crate) fn unary_operation_impl(
     input: &ColumnView<'_>,
     op: UnaryOperator,
-    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -122,7 +125,7 @@ pub(crate) fn unary_operation_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Return a boolean column with each element logically negated.
@@ -134,14 +137,14 @@ pub fn logical_not(input: &ColumnView<'_>) -> Result<Column> {
 
 /// Return a boolean column: `true` where elements are null.
 pub fn is_null(input: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     is_null_impl(input, &output_domain, exec_options.as_ref(), "unary::is_null")
 }
 
 pub(crate) fn is_null_impl(
     input: &ColumnView<'_>,
-    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -156,19 +159,19 @@ pub(crate) fn is_null_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Return a boolean column: `true` where elements are valid (non-null).
 pub fn is_valid(input: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     is_valid_impl(input, &output_domain, exec_options.as_ref(), "unary::is_valid")
 }
 
 pub(crate) fn is_valid_impl(
     input: &ColumnView<'_>,
-    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -183,12 +186,12 @@ pub(crate) fn is_valid_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Cast a column to the specified data type.
 pub fn cast(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     cast_impl(input, output_type, &output_domain, exec_options.as_ref(), "unary::cast")
 }
@@ -196,7 +199,7 @@ pub fn cast(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
 pub(crate) fn cast_impl(
     input: &ColumnView<'_>,
     output_type: &DataType,
-    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -219,7 +222,7 @@ pub(crate) fn cast_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Check whether a cast between two data types is supported.
@@ -248,14 +251,14 @@ pub fn is_supported_cast(from: &DataType, to: &DataType) -> Result<bool> {
 
 /// Return a boolean column: `true` where elements are NaN.
 pub fn is_nan(input: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     is_nan_impl(input, &output_domain, exec_options.as_ref(), "unary::is_nan")
 }
 
 pub(crate) fn is_nan_impl(
     input: &ColumnView<'_>,
-    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -270,19 +273,19 @@ pub(crate) fn is_nan_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Return a boolean column: `true` where elements are not NaN.
 pub fn is_not_nan(input: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     is_not_nan_impl(input, &output_domain, exec_options.as_ref(), "unary::is_not_nan")
 }
 
 pub(crate) fn is_not_nan_impl(
     input: &ColumnView<'_>,
-    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -297,5 +300,5 @@ pub(crate) fn is_not_nan_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }

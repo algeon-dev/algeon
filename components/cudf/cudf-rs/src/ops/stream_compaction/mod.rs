@@ -1,11 +1,14 @@
 //! GPU-accelerated stream compaction: drop_nulls, distinct (deduplicate).
 
+mod errors;
+
 use std::{ptr, sync::Arc};
 
+use self::errors::{key_index_out_of_bounds_error, unsupported_stream_compaction_validation_error};
 pub use crate::core::types::NullEquality;
 use crate::{
     core::{
-        error::{self, Error, ErrorKind, Result},
+        error::{self, ErrorKind, Result},
         table::{Table, TableView},
     },
     runtime::execution_domain::ExecutionDomain,
@@ -71,18 +74,10 @@ fn checked_key_indices_i32(input: &TableView<'_>, keys: &[usize], operation: &'s
     keys.iter()
         .map(|&key| {
             if key >= num_columns {
-                Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("key column index {} out of bounds for {} columns", key, num_columns),
-                )
-                .with_operation(operation)
-                .with_context("key_index", key.to_string())
-                .with_context("num_columns", num_columns.to_string()))
+                Err(key_index_out_of_bounds_error(operation, key, num_columns))
             } else {
                 i32::try_from(key).map_err(|_| {
-                    Error::new(ErrorKind::InvalidOperation, "key column index exceeds i32::MAX")
-                        .with_operation(operation)
-                        .with_context("key_index", key.to_string())
+                    error::range_limit_error(ErrorKind::InvalidInput, operation, "column_index", "i32::MAX", key)
                 })
             }
         })
@@ -98,11 +93,18 @@ pub(crate) fn drop_nulls_impl(
     operation: &'static str,
 ) -> Result<Table> {
     let keys_i32 = checked_key_indices_i32(input, keys, operation)?;
-    let num_keys = i32::try_from(keys_i32.len()).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "num_keys exceeds i32::MAX")
-            .with_operation(operation)
-            .with_context("num_keys", keys_i32.len().to_string())
-    })?;
+    let keys_count = error::usize_to_i32(keys_i32.len(), operation, "keys_count")?;
+
+    if keep_threshold < 0 {
+        return Err(unsupported_stream_compaction_validation_error(
+            operation,
+            "keep_threshold must be >= 0",
+            "negative_keep_threshold",
+            "use keep_threshold >= 0",
+        )
+        .with_context("keys_count", keys_i32.len().to_string())
+        .with_context("keep_threshold", keep_threshold.to_string()));
+    }
 
     let mut out = ptr::null_mut();
     let status = match exec_options {
@@ -110,21 +112,21 @@ pub(crate) fn drop_nulls_impl(
             cudf_sys::cudf_drop_nulls_ex(
                 input.raw_handle(),
                 keys_i32.as_ptr(),
-                num_keys,
+                keys_count,
                 keep_threshold,
                 &mut out,
                 options,
             )
         },
         None => unsafe {
-            cudf_sys::cudf_drop_nulls(input.raw_handle(), keys_i32.as_ptr(), num_keys, keep_threshold, &mut out)
+            cudf_sys::cudf_drop_nulls(input.raw_handle(), keys_i32.as_ptr(), keys_count, keep_threshold, &mut out)
         },
     };
     error::check_status_in_with(
         status,
         operation,
         [
-            ("num_keys", num_keys.to_string()),
+            ("keys_count", keys_count.to_string()),
             ("keep_threshold", keep_threshold.to_string()),
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
@@ -143,11 +145,7 @@ pub(crate) fn distinct_impl(
     operation: &'static str,
 ) -> Result<Table> {
     let keys_i32 = checked_key_indices_i32(input, keys, operation)?;
-    let num_keys = i32::try_from(keys_i32.len()).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "num_keys exceeds i32::MAX")
-            .with_operation(operation)
-            .with_context("num_keys", keys_i32.len().to_string())
-    })?;
+    let keys_count = error::usize_to_i32(keys_i32.len(), operation, "keys_count")?;
 
     let mut out = ptr::null_mut();
     let keep_ffi = keep.to_raw();
@@ -158,7 +156,7 @@ pub(crate) fn distinct_impl(
             cudf_sys::cudf_distinct_ex(
                 input.raw_handle(),
                 keys_i32.as_ptr(),
-                num_keys,
+                keys_count,
                 keep_ffi,
                 null_eq_ffi,
                 nan_eq_ffi,
@@ -170,7 +168,7 @@ pub(crate) fn distinct_impl(
             cudf_sys::cudf_distinct(
                 input.raw_handle(),
                 keys_i32.as_ptr(),
-                num_keys,
+                keys_count,
                 keep_ffi,
                 null_eq_ffi,
                 nan_eq_ffi,
@@ -182,7 +180,7 @@ pub(crate) fn distinct_impl(
         status,
         operation,
         [
-            ("num_keys", num_keys.to_string()),
+            ("keys_count", keys_count.to_string()),
             ("keep", format!("{:?}", keep).to_lowercase()),
             ("null_equality", format!("{:?}", null_equality).to_lowercase()),
             ("nan_equality", format!("{:?}", nan_equality).to_lowercase()),
@@ -211,7 +209,7 @@ pub(crate) fn distinct_impl(
 /// assert_eq!(result.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
 /// ```
 pub fn drop_nulls(input: &TableView<'_>, keys: &[usize], keep_threshold: i32) -> Result<Table> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     drop_nulls_impl(input, keys, keep_threshold, &output_domain, exec_options.as_ref(), "stream_compaction::drop_nulls")
 }
@@ -240,7 +238,7 @@ pub fn distinct(
     null_equality: NullEquality,
     nan_equality: NanEquality,
 ) -> Result<Table> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     distinct_impl(
         input,

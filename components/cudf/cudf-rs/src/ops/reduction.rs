@@ -15,11 +15,11 @@
 //! assert_eq!(cumsum.to_vec_strict::<i32>().unwrap(), vec![10, 30, 60]);
 //! ```
 
-use std::{os::raw::c_void, ptr};
+use std::{os::raw::c_void, ptr, sync::Arc};
 
 use crate::core::{
     column::{Column, ColumnView},
-    error::{self, Error, ErrorKind, Result},
+    error::{self, Error, ErrorCode, ErrorKind, Result},
     scalar::Scalar,
     types::DataType,
 };
@@ -82,6 +82,7 @@ impl ScanType {
 }
 
 pub use crate::core::types::NullPolicy;
+use crate::runtime::execution_domain::ExecutionDomain;
 
 fn reduce_agg_name(agg: &ReduceAgg) -> &'static str {
     match agg {
@@ -99,12 +100,17 @@ fn reduce_agg_name(agg: &ReduceAgg) -> &'static str {
     }
 }
 
+pub(crate) fn ddof_range_error(operation: &'static str, ddof: u32) -> Error {
+    Error::new(ErrorKind::InvalidInput, "ddof exceeds libcudf i32 range")
+        .with_code(ErrorCode::UnsupportedOperation)
+        .with_operation(operation)
+        .with_context("reason", "ddof_exceeds_i32_range")
+        .with_context("remedy", "use a ddof value within libcudf's i32 range")
+        .with_context("ddof", ddof.to_string())
+}
+
 pub(crate) fn checked_ddof_to_i32(ddof: u32, operation: &'static str) -> Result<i32> {
-    i32::try_from(ddof).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "ddof exceeds libcudf i32 range")
-            .with_operation(operation)
-            .with_context("ddof", ddof.to_string())
-    })
+    i32::try_from(ddof).map_err(|_| ddof_range_error(operation, ddof))
 }
 
 /// Create a C-side reduce aggregation handle.
@@ -215,7 +221,7 @@ unsafe fn create_scan_agg_handle(agg: ScanAgg) -> Result<*mut c_void> {
 
 /// Reduce a column to a single scalar value.
 pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAgg, output_type: &DataType) -> Result<Scalar> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     reduce_impl(input, agg, output_type, &output_domain, exec_options.as_ref(), "reduction::reduce")
 }
@@ -224,13 +230,13 @@ pub(crate) fn reduce_impl(
     input: &ColumnView<'_>,
     agg: &ReduceAgg,
     output_type: &DataType,
-    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Scalar> {
     // SAFETY: create_reduce_agg_handle calls FFI with valid parameters.
-    let agg_handle = unsafe { create_reduce_agg_handle(agg)? };
-    let dtype_handle = output_type.to_raw_handle_for("reduction::reduce")?;
+    let agg_handle = unsafe { create_reduce_agg_handle(agg).map_err(|error| error.with_operation(operation))? };
+    let dtype_handle = output_type.to_raw_handle_for(operation)?;
 
     let mut out = ptr::null_mut();
     // SAFETY: input handle is valid (NonNull). agg_handle and dtype_handle
@@ -259,12 +265,12 @@ pub(crate) fn reduce_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Scalar::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Scalar::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Compute a prefix scan (cumulative operation) on a column.
 pub fn scan(input: &ColumnView<'_>, agg: ScanAgg, scan_type: ScanType, null_policy: NullPolicy) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     scan_impl(input, agg, scan_type, null_policy, &output_domain, exec_options.as_ref(), "reduction::scan")
 }
@@ -274,12 +280,12 @@ pub(crate) fn scan_impl(
     agg: ScanAgg,
     scan_type: ScanType,
     null_policy: NullPolicy,
-    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
     // SAFETY: create_scan_agg_handle calls FFI with valid parameters.
-    let agg_handle = unsafe { create_scan_agg_handle(agg)? };
+    let agg_handle = unsafe { create_scan_agg_handle(agg).map_err(|error| error.with_operation(operation))? };
 
     let mut out = ptr::null_mut();
     let scan_type_ffi = scan_type.to_raw();
@@ -315,19 +321,19 @@ pub(crate) fn scan_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Compute the min and max of a column simultaneously.
 pub fn minmax(input: &ColumnView<'_>) -> Result<(Scalar, Scalar)> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     minmax_impl(input, &output_domain, exec_options.as_ref(), "reduction::minmax")
 }
 
 pub(crate) fn minmax_impl(
     input: &ColumnView<'_>,
-    output_domain: &std::sync::Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<(Scalar, Scalar)> {
@@ -345,8 +351,8 @@ pub(crate) fn minmax_impl(
     // SAFETY: out_min/out_max were returned by a successful FFI call.
     unsafe {
         Ok((
-            Scalar::from_raw_with_domain(out_min, std::sync::Arc::clone(output_domain))?,
-            Scalar::from_raw_with_domain(out_max, std::sync::Arc::clone(output_domain))?,
+            Scalar::from_raw_with_domain(out_min, Arc::clone(output_domain))?,
+            Scalar::from_raw_with_domain(out_max, Arc::clone(output_domain))?,
         ))
     }
 }

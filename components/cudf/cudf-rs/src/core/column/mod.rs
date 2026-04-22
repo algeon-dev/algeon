@@ -9,10 +9,16 @@ mod convert;
 mod device_buffer;
 mod device_slice;
 mod owned;
+mod testing_hooks;
 mod view;
 
 pub(crate) use convert::copy_view_to_owned;
 pub use device_buffer::DeviceBuffer;
 pub use device_slice::DeviceSlice;
 pub use owned::Column;
+pub(crate) use testing_hooks::slice_view_for_test;
 pub use view::ColumnView;
+pub(crate) use view::{
+    column_view_to_fixed_width_host_bytes_for_test, column_view_to_raw_bytes_for_test,
+    synthetic_string_view_without_children, trigger_fixed_width_host_byte_range_overflow_for_test,
+};

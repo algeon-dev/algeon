@@ -150,6 +150,14 @@ cudf_status_t cudf_table_view_num_columns(cudf_table_view_handle handle, int32_t
 /// Get the number of rows in a table_view.
 cudf_status_t cudf_table_view_num_rows(cudf_table_view_handle handle, int32_t* out);
 
+/// Testing-only hook: force the next `cudf_table_view_num_columns` call on
+/// the current thread to return `-1` on success.
+void cudf_test_table_view_fail_next_negative_num_columns();
+
+/// Testing-only hook: force the next `cudf_table_view_num_rows` call on the
+/// current thread to return `-1` on success.
+void cudf_test_table_view_fail_next_negative_num_rows();
+
 /// Get a column_view from a table_view by index. The returned view is
 /// heap-allocated and must be freed with cudf_column_view_destroy.
 cudf_status_t cudf_table_view_column(cudf_table_view_handle handle,

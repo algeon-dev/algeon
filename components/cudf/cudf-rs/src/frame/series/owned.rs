@@ -4,7 +4,7 @@ use super::context::default_execution_context;
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{Error, ErrorKind, Result},
+        error::{Error, ErrorCode, ErrorKind, Result},
         scalar::IntoRuntimeScalar,
         types::{CudfType, DataType, TimestampResolution, TypeId},
     },
@@ -18,6 +18,13 @@ use crate::{
 
 pub(super) const SERIES_VALUE_COUNTS_FALLBACK_NAME: &str = "value";
 pub(super) const SERIES_VALUE_COUNTS_COUNT_NAME: &str = "count";
+
+pub(super) fn unsupported_numeric_target_error(operation: &'static str, target: TypeId) -> Error {
+    Error::new(ErrorKind::Unsupported, format!("target type {target:?} is not numeric"))
+        .with_code(ErrorCode::UnsupportedDtype)
+        .with_operation(operation)
+        .with_context("type_id", format!("{:?}", target).to_lowercase())
+}
 
 /// A reference-counted GPU column vector.
 ///
@@ -76,13 +83,11 @@ impl Series {
             return Ok(());
         }
 
-        Err(Error::new(
-            ErrorKind::InvalidArgument,
-            "logical boolean operations require both operands to have dtype Bool8",
-        )
-        .with_operation(operation)
-        .with_context("lhs_type_id", format!("{:?}", lhs_type).to_lowercase())
-        .with_context("rhs_type_id", format!("{:?}", rhs_type).to_lowercase()))
+        Err(Error::new(ErrorKind::InvalidInput, "logical boolean operations require both operands to have dtype Bool8")
+            .with_code(ErrorCode::TypeMismatch)
+            .with_operation(operation)
+            .with_context("left_type_id", format!("{:?}", lhs_type).to_lowercase())
+            .with_context("right_type_id", format!("{:?}", rhs_type).to_lowercase()))
     }
 
     /// Returns the data type of the underlying column.
@@ -224,14 +229,18 @@ impl Series {
     /// Device-to-host copy: one synchronous memcpy of `len * size_of::<T>()` bytes.
     ///
     /// # Errors
-    /// - `InvalidOperation` if the column is nullable.
-    /// - `TypeError` if the column dtype does not match `T`.
+    /// - `ErrorKind::InvalidInput` with `ErrorCode::NullUnexpected` if the
+    ///   column is nullable.
+    /// - `ErrorKind::InvalidInput` with `ErrorCode::TypeMismatch` if the
+    ///   column dtype does not match `T`.
     pub fn to_vec_strict<T: CudfType>(&self) -> Result<Vec<T>> {
         let cv = self.column.view()?;
-        if cv.null_count()? > 0 {
-            return Err(Error::new(ErrorKind::InvalidOperation, "to_vec_strict rejects columns containing nulls")
+        let null_count = cv.null_count()?;
+        if null_count > 0 {
+            return Err(Error::new(ErrorKind::InvalidInput, "to_vec_strict rejects columns containing nulls")
+                .with_code(ErrorCode::NullUnexpected)
                 .with_operation("series::to_vec_strict")
-                .with_context("null_count", cv.null_count()?.to_string()));
+                .with_context("null_count", null_count.to_string()));
         }
         cv.to_vec::<T>()
     }
@@ -249,7 +258,8 @@ impl Series {
     /// for data, plus `ceil(len / 8)` bytes for the null mask.
     ///
     /// # Errors
-    /// Returns `TypeError` if the column dtype does not match `T`.
+    /// Returns `ErrorKind::InvalidInput` with `ErrorCode::TypeMismatch` if the
+    /// column dtype does not match `T`.
     pub fn to_optional_vec<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
         self.column.view()?.to_optional_vec::<T>()
     }
@@ -262,14 +272,18 @@ impl Series {
     /// [`to_strings_lossy`](Self::to_strings_lossy) instead.
     ///
     /// # Errors
-    /// - `InvalidOperation` if the column is nullable.
-    /// - `TypeError` if the underlying column type is not `STRING`.
+    /// - `ErrorKind::InvalidInput` with `ErrorCode::NullUnexpected` if the
+    ///   column is nullable.
+    /// - `ErrorKind::InvalidInput` with `ErrorCode::TypeMismatch` if the
+    ///   underlying column type is not `STRING`.
     pub fn to_strings_strict(&self) -> Result<Vec<String>> {
         let cv = self.column.view()?;
-        if cv.null_count()? > 0 {
-            return Err(Error::new(ErrorKind::InvalidOperation, "to_strings_strict rejects columns containing nulls")
+        let null_count = cv.null_count()?;
+        if null_count > 0 {
+            return Err(Error::new(ErrorKind::InvalidInput, "to_strings_strict rejects columns containing nulls")
+                .with_code(ErrorCode::NullUnexpected)
                 .with_operation("series::to_strings_strict")
-                .with_context("null_count", cv.null_count()?.to_string()));
+                .with_context("null_count", null_count.to_string()));
         }
         cv.to_strings_lossy()
     }
@@ -281,7 +295,8 @@ impl Series {
     /// Non-nullable columns return all `Some`.
     ///
     /// # Errors
-    /// Returns `TypeError` if the underlying column type is not `STRING`.
+    /// Returns `ErrorKind::InvalidInput` with `ErrorCode::TypeMismatch` if the
+    /// underlying column type is not `STRING`.
     pub fn to_optional_strings(&self) -> Result<Vec<Option<String>>> {
         self.column.view()?.to_optional_strings()
     }
@@ -294,7 +309,8 @@ impl Series {
     /// [`to_optional_strings`](Self::to_optional_strings).
     ///
     /// # Errors
-    /// Returns `TypeError` if the underlying column type is not `STRING`.
+    /// Returns `ErrorKind::InvalidInput` with `ErrorCode::TypeMismatch` if the
+    /// underlying column type is not `STRING`.
     pub fn to_strings_lossy(&self) -> Result<Vec<String>> {
         self.column.view()?.to_strings_lossy()
     }
@@ -556,20 +572,26 @@ impl Series {
     /// All series must have the same data type.
     ///
     /// # Errors
-    /// Returns `InvalidOperation` if the input slice is empty.
+    /// Returns `ErrorKind::InvalidInput` if the input slice is empty.
     /// Returns an error if the series have mismatched dtypes.
     ///
     /// # Cost
     /// GPU-allocating: produces a new column combining all input data.
     pub fn concat(series: &[&Series]) -> Result<Series> {
         if series.is_empty() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "cannot concatenate empty slice of Series")
-                .with_operation("series::concat"));
+            return Err(Error::new(ErrorKind::InvalidInput, "cannot concatenate empty slice of Series")
+                .with_code(ErrorCode::UnsupportedOperation)
+                .with_operation("series::concat")
+                .with_context("reason", "empty_input")
+                .with_context("remedy", "provide at least one input series"));
         }
 
-        let views: Vec<_> = series.iter().map(|s| s.column.view()).collect::<Result<Vec<_>>>()?;
+        let views: Vec<_> = series
+            .iter()
+            .map(|s| s.column.view().map_err(|e| e.with_operation("series::concat")))
+            .collect::<Result<Vec<_>>>()?;
         let view_refs: Vec<&ColumnView<'_>> = views.iter().collect();
-        let col = concatenate::concatenate_columns(&view_refs)?;
+        let col = concatenate::concatenate_columns(&view_refs).map_err(|e| e.with_operation("series::concat"))?;
         Self::from_column(col)
     }
 
@@ -662,8 +684,7 @@ impl Series {
     /// GPU-allocating: a new column is produced with the target numeric dtype.
     pub fn to_numeric(&self, target: TypeId) -> Result<Series> {
         if !target.is_numeric() && !target.is_boolean() {
-            return Err(Error::new(ErrorKind::NotSupported, format!("target type {target:?} is not numeric"))
-                .with_operation("series::to_numeric"));
+            return Err(unsupported_numeric_target_error("series::to_numeric", target));
         }
         self.cast_in_context(target, &default_execution_context(), "series::to_numeric")
     }

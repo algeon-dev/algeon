@@ -4,13 +4,16 @@ use super::owned::DataFrame;
 use crate::{
     core::{
         column::Column,
-        error::{Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
         types::DataType,
     },
     frame::series::Series,
-    internal::hash::{FastHashMap, FastHashSet, fast_hash_map_with_capacity},
+    internal::{
+        hash::{FastHashMap, FastHashSet, fast_hash_map_with_capacity},
+        resolve::missing_column_error,
+    },
     ops,
-    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,9 +83,10 @@ fn concat_by_name_schema(
                     if let Some(existing) = dtypes.get(name) {
                         if *existing != dtype {
                             return Err(Error::new(
-                                ErrorKind::InvalidOperation,
+                                ErrorKind::InvalidInput,
                                 format!("column '{name}' has incompatible dtypes for concat_by_name"),
                             )
+                            .with_code(ErrorCode::TypeMismatch)
                             .with_operation(operation)
                             .with_context("column_name", name.clone())
                             .with_context("left_type_id", format!("{:?}", existing.id()).to_lowercase())
@@ -94,13 +98,8 @@ fn concat_by_name_schema(
                     }
                 },
                 None if alignment == SchemaAlignment::Exact => {
-                    return Err(Error::new(
-                        ErrorKind::InvalidOperation,
-                        format!("column '{name}' is missing under exact concat_by_name alignment"),
-                    )
-                    .with_operation(operation)
-                    .with_context("column_name", name.clone())
-                    .with_context("schema_alignment", format!("{alignment:?}").to_lowercase()));
+                    return Err(missing_column_error(operation, name)
+                        .with_context("schema_alignment", format!("{alignment:?}").to_lowercase()));
                 },
                 None => {},
             }
@@ -108,6 +107,23 @@ fn concat_by_name_schema(
     }
 
     Ok(dtypes)
+}
+
+fn concat_by_name_missing_planned_dtype_error(operation: &'static str, column_name: &str) -> Error {
+    error::invariant_violation(operation, "aligned concat_by_name is missing a planned dtype")
+        .with_context("column_name", column_name.to_string())
+        .with_context("resource", "concat_by_name_schema")
+        .with_context("reason", "missing_planned_dtype")
+        .with_context("remedy", "ensure concat_by_name schema planning records a dtype for every output column")
+}
+
+pub(crate) fn trigger_concat_by_name_missing_planned_dtype_for_test() -> Result<()> {
+    let runtime = Runtime::new()?;
+    let df = DataFrame::from_columns([("left", runtime.series(&[1i32])?)])?;
+    let output_names = vec!["missing".to_string()];
+    let dtypes = FastHashMap::default();
+    df.align_for_concat_by_name(&output_names, &dtypes, SchemaAlignment::NullFill, "dataframe::concat_many_by_name")
+        .map(|_| ())
 }
 
 impl DataFrame {
@@ -127,20 +143,11 @@ impl DataFrame {
             }
 
             if alignment == SchemaAlignment::Exact {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("column '{name}' is missing under exact concat_by_name alignment"),
-                )
-                .with_operation(operation)
-                .with_context("column_name", name.clone())
-                .with_context("schema_alignment", format!("{alignment:?}").to_lowercase()));
+                return Err(missing_column_error(operation, name)
+                    .with_context("schema_alignment", format!("{alignment:?}").to_lowercase()));
             }
 
-            let dtype = dtypes.get(name).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, "aligned concat_by_name is missing a planned dtype")
-                    .with_operation(operation)
-                    .with_context("column_name", name.clone())
-            })?;
+            let dtype = dtypes.get(name).ok_or_else(|| concat_by_name_missing_planned_dtype_error(operation, name))?;
             let nulls = Column::nulls_in_domain(*dtype, self.row_count, &self.domain, operation)
                 .map_err(|e| e.with_operation(operation))?;
             columns.push((name.clone(), Series::from_column(nulls).map_err(|e| e.with_operation(operation))?));
@@ -273,9 +280,10 @@ impl DataFrame {
     fn validate_concat_schema(&self, other: &DataFrame, operation: &'static str) -> Result<()> {
         if self.columns.len() != other.columns.len() {
             return Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::InvalidInput,
                 "cannot concatenate DataFrames with different column counts",
             )
+            .with_code(ErrorCode::UnsupportedOperation)
             .with_operation(operation)
             .with_context("left_columns", self.columns.len().to_string())
             .with_context("right_columns", other.columns.len().to_string()));
@@ -284,9 +292,10 @@ impl DataFrame {
         for (left_name, right_name) in self.columns.keys().zip(other.columns.keys()) {
             if left_name != right_name {
                 return Err(Error::new(
-                    ErrorKind::InvalidOperation,
+                    ErrorKind::InvalidInput,
                     format!("schema mismatch: column '{}' vs '{}'", left_name, right_name),
                 )
+                .with_code(ErrorCode::UnsupportedOperation)
                 .with_operation(operation)
                 .with_context("left_column", left_name.clone())
                 .with_context("right_column", right_name.clone()));
@@ -298,9 +307,10 @@ impl DataFrame {
             let right_type = right_col.view()?.data_type()?.id();
             if left_type != right_type {
                 return Err(Error::new(
-                    ErrorKind::InvalidOperation,
+                    ErrorKind::InvalidInput,
                     "cannot concatenate DataFrames with mismatched column types",
                 )
+                .with_code(ErrorCode::TypeMismatch)
                 .with_operation(operation)
                 .with_context("column_index", i.to_string())
                 .with_context("column_name", name.to_string())

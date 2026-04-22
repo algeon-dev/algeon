@@ -11,7 +11,8 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     core::{
-        error::{self, Error, ErrorKind, Result},
+        error::{self, ErrorKind, Result},
+        schema,
         table::Table,
     },
     io::TableReadOutput,
@@ -119,13 +120,13 @@ pub(crate) fn write_csv_with_exec(
     if let Some(ref names) = options.column_names {
         let expected = table.num_columns()?;
         if names.len() != expected {
-            return Err(Error::new(
-                ErrorKind::InvalidArgument,
+            return Err(schema::column_name_count_mismatch_error(
+                ErrorKind::InvalidInput,
+                "io::csv::write_csv",
                 format!("column name count ({}) does not match table column count ({})", names.len(), expected),
-            )
-            .with_operation("io::csv::write_csv")
-            .with_context("column_name_count", names.len().to_string())
-            .with_context("table_column_count", expected.to_string()));
+                names.len(),
+                expected,
+            ));
         }
     }
 
@@ -138,11 +139,11 @@ pub(crate) fn write_csv_with_exec(
                 .iter()
                 .map(|s| {
                     CString::new(s.as_str()).map_err(|_| {
-                        crate::core::error::Error::new(
-                            crate::core::error::ErrorKind::InvalidArgument,
+                        super::interior_null_byte_error(
+                            "io::csv::write_csv",
+                            "column_name",
                             "column name contains interior null byte",
                         )
-                        .with_operation("io::csv::write_csv")
                         .with_context("column_name", s.to_string())
                     })
                 })
@@ -184,7 +185,7 @@ pub(crate) fn write_csv_with_exec(
         },
         "io::csv::write_csv",
         [
-            ("num_column_names", num_cols.to_string()),
+            ("column_name_count", num_cols.to_string()),
             ("delimiter_char", (options.delimiter as char).to_string()),
             ("include_header", options.include_header.to_string()),
         ],
@@ -207,13 +208,13 @@ fn read_header_names(path: &Path, delimiter: u8) -> Result<Vec<String>> {
 
 fn validate_header_name_count(name_count: usize, num_columns: usize) -> Result<()> {
     if name_count != num_columns {
-        return Err(Error::new(
-            ErrorKind::InvalidArgument,
+        return Err(schema::column_name_count_mismatch_error(
+            ErrorKind::InvalidInput,
+            "io::csv::read_csv",
             format!("header column count ({name_count}) does not match table column count ({num_columns})"),
-        )
-        .with_operation("io::csv::read_csv")
-        .with_context("header_column_count", name_count.to_string())
-        .with_context("table_column_count", num_columns.to_string()));
+            name_count,
+            num_columns,
+        ));
     }
 
     Ok(())

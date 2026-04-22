@@ -1,4 +1,13 @@
-//! Runtime control for per-operation execution authority and retained provenance.
+//! Runtime utilities for device-pinned execution resources and retained provenance.
+//!
+//! This module exposes the public runtime control surface:
+//!
+//! - [`Runtime`] owns one CUDA device binding plus default [`CudaStream`] and
+//!   [`crate::core::memory::DeviceMemoryResource`] handles
+//! - [`ExecutionOverrides`] borrows a stream and/or memory resource for one
+//!   operation
+//! - [`CudaStream`] and [`CudaEvent`] expose low-level CUDA ordering handles
+//! - [`DeviceId`] is a validated CUDA device ordinal
 
 pub mod device;
 pub(crate) mod device_guard;

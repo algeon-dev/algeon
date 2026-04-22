@@ -15,5 +15,9 @@ mod owned;
 pub(crate) mod reduction;
 mod strings;
 
+pub(crate) use context::{
+    trigger_series_row_range_end_limit_error_for_test, trigger_series_row_range_overflow_error_for_test,
+    trigger_series_row_range_start_limit_error_for_test,
+};
 pub use host_column_data::HostColumnData;
 pub use owned::{IntoSeries, Series};

@@ -6,7 +6,11 @@
 
 mod agg;
 mod dataframe;
+mod errors;
+mod output;
+pub(crate) mod testing_hooks;
 
 pub(crate) use agg::groupby_aggregate_impl;
 pub use agg::{AggregationRequest, GroupByAgg, GroupByAggregationOutput, NullPolicy, groupby_aggregate};
 pub use dataframe::{AggSpec, GroupBy, GroupByExecutionScope, GroupByOptions};
+pub(crate) use output::value_counts_result_columns;

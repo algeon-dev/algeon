@@ -12,6 +12,15 @@
 extern "C" {
 #endif
 
+typedef enum {
+  CUDF_TEST_IO_METADATA_FAULT_NONE                = 0,
+  CUDF_TEST_IO_METADATA_FAULT_NEGATIVE_NAME_COUNT = 1,
+  CUDF_TEST_IO_METADATA_FAULT_NULL_NAME_ARRAY     = 2,
+  CUDF_TEST_IO_METADATA_FAULT_NULL_NAME_ENTRY     = 3,
+  CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME   = 4,
+  CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT     = 5,
+} cudf_test_io_metadata_fault_t;
+
 // ---------------------------------------------------------------------------
 // Parquet
 // ---------------------------------------------------------------------------
@@ -223,6 +232,13 @@ cudf_status_t cudf_io_write_json_ex(cudf_table_view_handle table,
                                     int32_t lines,
                                     int32_t include_nulls,
                                     const cudf_exec_options_t* options);
+
+/// Arm a one-shot malformed metadata response for the next JSON/Parquet
+/// metadata read on the current thread. Intended only for regression tests.
+void cudf_test_io_set_next_metadata_fault(cudf_test_io_metadata_fault_t fault);
+
+/// Clear any armed malformed metadata response on the current thread.
+void cudf_test_io_reset_metadata_fault();
 
 #ifdef __cplusplus
 }

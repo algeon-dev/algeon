@@ -3,7 +3,7 @@ use std::{ops::Deref, sync::Arc};
 use crate::{
     core::{
         column::Column,
-        error::{Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
     },
     frame::series::{IntoSeries, Series},
     ops::lookup,
@@ -43,18 +43,24 @@ impl DictionaryEncodingOptions {
 }
 
 fn positional_code_series(len: usize, domain: &Arc<ExecutionDomain>) -> Result<EncodedSeries> {
-    let values: Vec<i32> = (0..len)
-        .map(|idx| {
-            i32::try_from(idx).map_err(|_| {
-                Error::new(ErrorKind::InvalidOperation, "codebook length exceeds i32::MAX")
-                    .with_operation("factorization::positional_code_series")
-                    .with_context("len", len.to_string())
-            })
-        })
-        .collect::<Result<_>>()?;
+    let len_i32 = i32::try_from(len).map_err(|_| {
+        error::range_limit_error(
+            ErrorKind::InvalidInput,
+            "factorization::positional_code_series",
+            "keys_count",
+            "i32::MAX",
+            len,
+        )
+    })?;
+    let values: Vec<i32> = (0..len_i32).collect();
     let column = Column::from_slice_in_domain(&values, domain)?;
     let series = Series::from_column(column)?;
     Ok(EncodedSeries::new(series))
+}
+
+pub(crate) fn trigger_codebook_key_count_limit_error_for_test() -> Result<()> {
+    let runtime = crate::runtime::Runtime::new()?;
+    positional_code_series((i32::MAX as usize) + 1, runtime.execution_domain()).map(|_| ())
 }
 
 /// A series of encoded dictionary indices.
@@ -112,10 +118,11 @@ impl Codebook {
         let operation = "codebook::from_keys";
         let distinct_keys = keys.drop_duplicates().map_err(|e| e.with_operation(operation))?;
         if distinct_keys.len() != keys.len() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "codebook keys must be unique")
+            return Err(Error::new(ErrorKind::InvalidInput, "codebook keys must be unique")
+                .with_code(ErrorCode::DuplicateKey)
                 .with_operation(operation)
-                .with_context("key_count", keys.len().to_string())
-                .with_context("distinct_key_count", distinct_keys.len().to_string())
+                .with_context("keys_count", keys.len().to_string())
+                .with_context("distinct_keys_count", distinct_keys.len().to_string())
                 .with_context("remedy", "deduplicate the key series before constructing a reusable Codebook"));
         }
 

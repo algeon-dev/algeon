@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use super::{
-    owned::{SERIES_VALUE_COUNTS_COUNT_NAME, SERIES_VALUE_COUNTS_FALLBACK_NAME, Series},
+    owned::{
+        SERIES_VALUE_COUNTS_COUNT_NAME, SERIES_VALUE_COUNTS_FALLBACK_NAME, Series, unsupported_numeric_target_error,
+    },
     reduction::{infer_reduce_output_type, scalar_to_optional_value},
 };
 use crate::{
     core::{
-        error::{Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
         scalar::{IntoRuntimeScalar, Scalar},
         types::{CudfType, DataType, NullPolicy, TimestampResolution, TypeId},
     },
@@ -23,7 +25,7 @@ use crate::{
         strings::{self, StripSide},
         unary::{self, UnaryOperator},
     },
-    runtime::{ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{ExecutionOverrides, Runtime, execution_domain::ExecutionDomain},
 };
 
 fn factorization_key_order(order: DictionaryKeyOrder) -> factorization::KeyOrder {
@@ -84,6 +86,18 @@ macro_rules! series_context_op {
             Series::from_column(col)
         }
     };
+}
+
+fn value_counts_from_groupby_output(
+    gb: crate::ops::groupby::GroupByAggregationOutput,
+    operation: &'static str,
+) -> Result<crate::DataFrame> {
+    let (key_col, count_col) = crate::ops::groupby::value_counts_result_columns(gb, operation)?;
+    crate::DataFrame::from_columns([
+        (SERIES_VALUE_COUNTS_FALLBACK_NAME.to_string(), Series::from_column(key_col)?),
+        (SERIES_VALUE_COUNTS_COUNT_NAME.to_string(), Series::from_column(count_col)?),
+    ])
+    .map_err(|e| e.with_operation(operation))
 }
 
 macro_rules! series_forward_in {
@@ -226,6 +240,23 @@ pub(super) fn default_execution_context() -> ExecutionOverrides<'static> {
     ExecutionOverrides::new()
 }
 
+fn range_testing_series() -> Result<Series> {
+    let runtime = Runtime::new()?;
+    runtime.series(&[1i32, 2, 3])
+}
+
+pub(crate) fn trigger_series_row_range_start_limit_error_for_test() -> Result<Series> {
+    range_testing_series()?.__debug_gather_range_for_test(usize::MAX, 1, "series::slice")
+}
+
+pub(crate) fn trigger_series_row_range_end_limit_error_for_test() -> Result<Series> {
+    range_testing_series()?.__debug_gather_range_for_test(i32::MAX as usize, 1, "series::slice")
+}
+
+pub(crate) fn trigger_series_row_range_overflow_error_for_test() -> Result<Series> {
+    range_testing_series()?.__debug_gather_range_for_test(i32::MAX as usize, usize::MAX, "series::slice")
+}
+
 impl Series {
     fn resolve_context_output_domain(
         &self,
@@ -248,7 +279,7 @@ impl Series {
         operation: &'static str,
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
-        let (orders, null_orders) = options.resolve(1)?;
+        let (orders, null_orders) = options.resolve(1, operation)?;
         let cv = self.column.view()?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.explicit_exec_options_raw();
@@ -491,12 +522,10 @@ impl Series {
             return Series::from_column(empty);
         }
 
-        let end = start + len;
-        let start_i32: i32 = start.try_into().map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "row range start exceeds i32::MAX").with_operation(operation)
-        })?;
+        let start_i32: i32 = start.try_into().map_err(|_| error::row_range_limit_error(operation, "start", start))?;
+        let end = start.checked_add(len).ok_or_else(|| error::row_range_overflow_error(operation, start, len))?;
         let end_i32: i32 = end.try_into().map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "row range end exceeds i32::MAX").with_operation(operation)
+            error::row_range_limit_error(operation, "end", end).with_context("start_row", start.to_string())
         })?;
         let indices: Vec<i32> = (start_i32..end_i32).collect();
         let map = crate::core::column::Column::from_slice_in_domain(&indices, &output_domain)?;
@@ -574,21 +603,24 @@ impl Series {
         let mask_dtype = mask_cv.data_type()?;
         if mask_dtype.id() != TypeId::Bool8 {
             return Err(Error::new(
-                ErrorKind::TypeError,
+                ErrorKind::InvalidInput,
                 format!("filter mask must be Bool8, got {:?}", mask_dtype.id()),
             )
+            .with_code(ErrorCode::TypeMismatch)
             .with_operation(operation)
-            .with_context("mask_dtype", format!("{:?}", mask_dtype.id())));
+            .with_context("left_type_id", format!("{:?}", mask_dtype.id()).to_lowercase())
+            .with_context("right_type_id", "bool8"));
         }
         let mask_len = mask_cv.len()?;
         if mask_len != self.len() {
             return Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::InvalidInput,
                 format!("filter mask length ({}) does not match series length ({})", mask_len, self.len()),
             )
+            .with_code(ErrorCode::ColumnLengthMismatch)
             .with_operation(operation)
-            .with_context("mask_length", mask_len.to_string())
-            .with_context("series_length", self.len().to_string()));
+            .with_context("actual_rows", mask_len.to_string())
+            .with_context("expected_rows", self.len().to_string()));
         }
 
         ExecutionDomain::require_same_device_for_mixed_inputs(
@@ -666,7 +698,6 @@ impl Series {
         operation: &'static str,
     ) -> Result<crate::DataFrame> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
-        let value_name = SERIES_VALUE_COUNTS_FALLBACK_NAME.to_string();
 
         let keys_view = self.column.view().map_err(|e| e.with_operation(operation))?;
         let values_view = self.column.view().map_err(|e| e.with_operation(operation))?;
@@ -682,27 +713,7 @@ impl Series {
             exec_options.as_ref(),
             operation,
         )?;
-
-        let mut key_columns = gb.keys.into_columns()?;
-        let key_col = key_columns.pop().ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, "groupby aggregate returned no key columns")
-                .with_operation(operation)
-        })?;
-        let mut agg_results = gb.results;
-        let mut count_cols = agg_results.pop().ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, "groupby aggregate returned no count results")
-                .with_operation(operation)
-        })?;
-        let count_col = count_cols.pop().ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, "groupby aggregate returned empty count result")
-                .with_operation(operation)
-        })?;
-
-        crate::DataFrame::from_columns([
-            (value_name, Series::from_column(key_col)?),
-            (SERIES_VALUE_COUNTS_COUNT_NAME.to_string(), Series::from_column(count_col)?),
-        ])
-        .map_err(|e| e.with_operation(operation))
+        value_counts_from_groupby_output(gb, operation)
     }
 
     fn value_counts_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<crate::DataFrame> {
@@ -972,18 +983,41 @@ impl Series {
         operation: &'static str,
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let cv = self.column.view()?;
+        let values_cv = values.column.view()?;
+        let input_type = cv.data_type()?.id();
+        let values_type = values_cv.data_type()?.id();
+
+        if input_type != values_type {
+            return Err(Error::new(ErrorKind::InvalidInput, "isin requires both inputs to have the same dtype")
+                .with_code(ErrorCode::TypeMismatch)
+                .with_operation(operation)
+                .with_context("left_type_id", format!("{:?}", input_type).to_lowercase())
+                .with_context("right_type_id", format!("{:?}", values_type).to_lowercase()));
+        }
+
         ExecutionDomain::require_same_device_for_mixed_inputs(
             self.column.execution_domain(),
             values.column.execution_domain(),
             operation,
-        )?;
+        )
+        .map_err(|e| {
+            e.with_context("left_type_id", format!("{:?}", input_type).to_lowercase())
+                .with_context("right_type_id", format!("{:?}", values_type).to_lowercase())
+        })?;
         if !ExecutionDomain::same_provenance(values.column.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(values.column.execution_domain(), &output_domain, operation)?;
+            ExecutionDomain::insert_stream_dependency(values.column.execution_domain(), &output_domain, operation)
+                .map_err(|e| {
+                    e.with_context("left_type_id", format!("{:?}", input_type).to_lowercase())
+                        .with_context("right_type_id", format!("{:?}", values_type).to_lowercase())
+                })?;
         }
-        let cv = self.column.view()?;
-        let values_cv = values.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        let col = crate::ops::search::contains_impl(&values_cv, &cv, &output_domain, exec_options.as_ref(), operation)?;
+        let col = crate::ops::search::contains_impl(&values_cv, &cv, &output_domain, exec_options.as_ref(), operation)
+            .map_err(|e| {
+                e.with_context("left_type_id", format!("{:?}", input_type).to_lowercase())
+                    .with_context("right_type_id", format!("{:?}", values_type).to_lowercase())
+            })?;
         Series::from_column(col)
     }
 
@@ -1047,6 +1081,15 @@ impl Series {
             operation,
         )?;
         Series::from_column(col)
+    }
+
+    pub(crate) fn __debug_gather_range_for_test(
+        &self,
+        start: usize,
+        len: usize,
+        operation: &'static str,
+    ) -> Result<Series> {
+        self.gather_range_in_context_inner(start, len, &default_execution_context(), operation)
     }
 }
 
@@ -1265,8 +1308,7 @@ impl Series {
     /// Cast to a numeric type using the explicit execution-context override.
     pub fn to_numeric_in(&self, target: TypeId, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
         if !target.is_numeric() && !target.is_boolean() {
-            return Err(Error::new(ErrorKind::NotSupported, format!("target type {target:?} is not numeric"))
-                .with_operation("series::to_numeric_in"));
+            return Err(unsupported_numeric_target_error("series::to_numeric_in", target));
         }
         self.cast_in_context(target, ctx, "series::to_numeric_in")
     }

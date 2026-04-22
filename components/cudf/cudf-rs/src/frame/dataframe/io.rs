@@ -7,7 +7,10 @@ use typed_builder::TypedBuilder;
 
 use super::owned::DataFrame;
 use crate::{
-    core::error::{Error, ErrorKind, Result},
+    core::{
+        error::{ErrorKind, Result},
+        schema,
+    },
     io::{
         TableReadOutput,
         csv::{self, CsvTableReadOptions, CsvTableWriteOptions},
@@ -175,16 +178,53 @@ fn validate_dataframe_csv_column_name_count(
     operation: &'static str,
 ) -> Result<()> {
     if name_count != num_columns {
-        return Err(Error::new(
-            ErrorKind::InvalidOperation,
+        return Err(schema::column_name_count_mismatch_error(
+            ErrorKind::InvalidInput,
+            operation,
             format!("column name count ({name_count}) does not match table column count ({num_columns})"),
-        )
-        .with_operation(operation)
-        .with_context("column_name_count", name_count.to_string())
-        .with_context("table_column_count", num_columns.to_string()));
+            name_count,
+            num_columns,
+        ));
     }
 
     Ok(())
+}
+
+fn require_reader_schema_names(
+    result: TableReadOutput,
+    operation: &'static str,
+    reader_label: &'static str,
+) -> Result<(crate::core::Table, Vec<String>)> {
+    let num_columns = {
+        let view = result.table.view()?;
+        view.num_columns()?
+    };
+    let names = result.column_names.unwrap_or_default();
+
+    if names.len() != num_columns {
+        let (message, reason) = if names.is_empty() && num_columns > 0 {
+            (format!("{reader_label} did not return column names for a non-empty table"), "missing_reader_schema_names")
+        } else {
+            (
+                format!(
+                    "{reader_label} returned {} column names for a table with {} columns",
+                    names.len(),
+                    num_columns
+                ),
+                "mismatch_with_table_column_count",
+            )
+        };
+        return Err(schema::foreign_column_name_count_contract_error(
+            operation,
+            message,
+            reason,
+            names.len(),
+            num_columns,
+            "ensure the reader returns one schema name per table column for non-empty results",
+        ));
+    }
+
+    Ok((result.table, names))
 }
 
 fn prepare_write_domain(
@@ -192,10 +232,7 @@ fn prepare_write_domain(
     write_domain: &Arc<ExecutionDomain>,
     operation: &'static str,
 ) -> Result<()> {
-    ExecutionDomain::require_same_device_for_mixed_inputs(frame_domain, write_domain, operation).map_err(|e| {
-        e.with_context("frame_domain", frame_domain.debug_label())
-            .with_context("write_domain", write_domain.debug_label())
-    })?;
+    ExecutionDomain::require_same_device_for_mixed_inputs(frame_domain, write_domain, operation)?;
 
     if !ExecutionDomain::same_provenance(frame_domain, write_domain) {
         ExecutionDomain::insert_stream_dependency(frame_domain, write_domain, operation)?;
@@ -232,10 +269,11 @@ impl DataFrame {
     /// `has_header` is `true`, this high-level API also parses the CSV header
     /// on the host to recover truthful column names.
     pub fn read_csv_with_options(options: CsvReadOptions) -> Result<Self> {
+        let operation = "dataframe::read_csv_with_options";
         let table_options = options.to_table_options();
-        let result = csv::read_csv(&table_options)?;
+        let result = csv::read_csv(&table_options).map_err(|error| error.with_operation(operation))?;
         let names = resolve_csv_column_names(&options, &result)?;
-        Self::from_table(result.table, names)
+        Self::from_table(result.table, names).map_err(|error| error.with_operation(operation))
     }
 
     /// Write this `DataFrame` to a CSV file, preserving the DataFrame schema
@@ -300,16 +338,11 @@ impl DataFrame {
     /// Column names are recovered from Parquet schema metadata rather than
     /// synthesized heuristically.
     pub fn read_parquet_with_options(options: ParquetReadOptions) -> Result<Self> {
+        let operation = "dataframe::read_parquet_with_options";
         let table_options = options.to_table_options();
-        let result = parquet::read_parquet_table(&table_options)?;
-        let names = result.column_names.ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                "parquet reader did not return column names; this is unexpected for the parquet format",
-            )
-            .with_operation("dataframe::read_parquet_with_options")
-        })?;
-        Self::from_table(result.table, names)
+        let result = parquet::read_parquet_table(&table_options).map_err(|error| error.with_operation(operation))?;
+        let (table, names) = require_reader_schema_names(result, operation, "parquet reader")?;
+        Self::from_table(table, names).map_err(|error| error.with_operation(operation))
     }
 
     /// Write this `DataFrame` to a Parquet file, embedding column names in
@@ -372,9 +405,11 @@ impl DataFrame {
     /// Performs host file I/O, allocates new GPU-backed columns for the
     /// decoded result, and copies decoded field data into device memory.
     pub fn read_json_with_options(options: JsonReadOptions) -> Result<Self> {
+        let operation = "dataframe::read_json_with_options";
         let table_options = options.to_table_options();
-        let result = json::read_json_table(&table_options)?;
-        Self::from_table(result.table, result.column_names.unwrap_or_default())
+        let result = json::read_json_table(&table_options).map_err(|error| error.with_operation(operation))?;
+        let (table, names) = require_reader_schema_names(result, operation, "json reader")?;
+        Self::from_table(table, names).map_err(|error| error.with_operation(operation))
     }
 
     /// Write this `DataFrame` to a JSON Lines (NDJSON) file, using column

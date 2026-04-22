@@ -19,14 +19,15 @@
 //! );
 //! ```
 
-use std::ptr;
+use std::{ptr, sync::Arc};
 
 use crate::{
     core::{
         column::ColumnView,
-        error::{self, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
         scalar::Scalar,
         table::{Table, TableView},
+        types::TypeId,
     },
     runtime::execution_domain::ExecutionDomain,
 };
@@ -34,7 +35,7 @@ use crate::{
 pub(crate) fn apply_boolean_mask_impl(
     input: &TableView<'_>,
     mask: &ColumnView<'_>,
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
@@ -50,7 +51,7 @@ pub(crate) fn apply_boolean_mask_impl(
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Filter rows of a table using a boolean mask column.
@@ -59,7 +60,32 @@ pub(crate) fn apply_boolean_mask_impl(
 /// or null are dropped. The mask must be a `BOOL8` column with the same
 /// number of rows as the input table.
 pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Result<Table> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let mask_dtype = mask.data_type()?;
+    if mask_dtype.id() != TypeId::Bool8 {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("filter mask must be Bool8, got {:?}", mask_dtype.id()),
+        )
+        .with_code(ErrorCode::TypeMismatch)
+        .with_operation("filter::apply_boolean_mask")
+        .with_context("left_type_id", format!("{:?}", mask_dtype.id()).to_lowercase())
+        .with_context("right_type_id", "bool8"));
+    }
+
+    let input_rows = input.num_rows()?;
+    let mask_len = mask.len()?;
+    if mask_len != input_rows {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("filter mask length ({mask_len}) does not match table row count ({input_rows})"),
+        )
+        .with_code(ErrorCode::ColumnLengthMismatch)
+        .with_operation("filter::apply_boolean_mask")
+        .with_context("actual_rows", mask_len.to_string())
+        .with_context("expected_rows", input_rows.to_string()));
+    }
+
+    let output_domain = Arc::clone(input.execution_domain());
     ExecutionDomain::require_same_device_for_mixed_inputs(
         input.execution_domain(),
         mask.execution_domain(),
@@ -81,7 +107,7 @@ pub(crate) fn apply_row_predicate_impl(
     nodes: &[cudf_sys::cudf_row_predicate_node_t],
     root_index: i32,
     retained_scalars: &[Scalar],
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Table> {
@@ -117,5 +143,5 @@ pub(crate) fn apply_row_predicate_impl(
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
-    unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }

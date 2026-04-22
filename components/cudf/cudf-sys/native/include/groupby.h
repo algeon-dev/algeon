@@ -51,6 +51,11 @@ cudf_status_t cudf_aggregation_create_variance(int32_t ddof, cudf_aggregation_ha
 /// Destroy an aggregation handle.
 void cudf_aggregation_destroy(cudf_aggregation_handle handle);
 
+/// Arm a one-shot malformed metadata response for the next groupby aggregate
+/// call on the current thread. Intended only for integration tests that
+/// validate Rust-side foreign-contract classification.
+void cudf_test_groupby_fail_next_negative_total_columns();
+
 /// Perform a groupby aggregation.
 ///
 /// @param keys           Table view of grouping key columns.

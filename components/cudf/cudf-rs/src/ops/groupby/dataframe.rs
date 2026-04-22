@@ -5,13 +5,17 @@ use std::sync::Arc;
 use smallvec::SmallVec;
 use typed_builder::TypedBuilder;
 
-use super::agg::{AggregationRequest, GroupByAgg, NullPolicy, groupby_aggregate, groupby_aggregate_impl};
+use super::{
+    agg::{AggregationRequest, GroupByAgg, NullPolicy, groupby_aggregate_impl},
+    errors::unsupported_groupby_validation_error,
+    output::take_groupby_result_columns_for_output,
+};
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{Error, ErrorKind, Result},
+        error::Result,
     },
-    frame::dataframe::DataFrame,
+    frame::dataframe::{DataFrame, group_keys::require_non_empty_group_keys},
     internal::resolve::missing_column_error,
     runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
 };
@@ -193,9 +197,15 @@ impl<'a> GroupBy<'a> {
 
         ExecutionDomain::insert_stream_dependency(self.df.execution_domain(), &output_domain, operation)?;
 
+        require_non_empty_group_keys(self.keys.len(), operation)?;
+
         if specs.is_empty() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "at least one aggregation spec is required")
-                .with_operation(operation));
+            return Err(unsupported_groupby_validation_error(
+                operation,
+                "at least one aggregation spec is required",
+                "empty_agg_specs",
+                "provide at least one AggSpec or use a shortcut like .sum([...])",
+            ));
         }
 
         let columns = self.df.columns_map();
@@ -272,39 +282,20 @@ impl<'a> GroupBy<'a> {
                 operation,
             )?
         } else {
-            groupby_aggregate(keys_table.table(), &requests, self.options.null_policy())?
+            let exec_options = output_domain.exec_options_raw();
+            groupby_aggregate_impl(
+                keys_table.table(),
+                &requests,
+                self.options.null_policy(),
+                &output_domain,
+                Some(&exec_options),
+                operation,
+            )?
         };
 
-        let mut grouped_results: Vec<Vec<Option<Column>>> =
+        let grouped_results: Vec<Vec<Option<Column>>> =
             gb_result.results.into_iter().map(|cols| cols.into_iter().map(Some).collect()).collect();
-
-        let mut all_result_cols: Vec<Column> = Vec::with_capacity(output_order.len());
-        for (request_index, (group_idx, agg_idx)) in output_order.iter().enumerate() {
-            let group_count = grouped_results.len();
-            let group = grouped_results.get_mut(*group_idx).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, "groupby result group index out of bounds")
-                    .with_operation(operation)
-                    .with_context("request_index", request_index.to_string())
-                    .with_context("group_index", group_idx.to_string())
-                    .with_context("group_count", group_count.to_string())
-            })?;
-
-            let col_slot = group.get_mut(*agg_idx).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, "groupby result index out of bounds")
-                    .with_operation(operation)
-                    .with_context("request_index", request_index.to_string())
-                    .with_context("agg_index", agg_idx.to_string())
-            })?;
-
-            let col = col_slot.take().ok_or_else(|| {
-                Error::new(ErrorKind::InvalidOperation, "groupby result column consumed more than once")
-                    .with_operation(operation)
-                    .with_context("request_index", request_index.to_string())
-                    .with_context("agg_index", agg_idx.to_string())
-            })?;
-
-            all_result_cols.push(col);
-        }
+        let all_result_cols = take_groupby_result_columns_for_output(grouped_results, &output_order, operation)?;
 
         let result_keys_cols = gb_result.keys.into_columns()?;
 

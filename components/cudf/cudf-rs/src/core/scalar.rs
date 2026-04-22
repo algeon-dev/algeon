@@ -11,10 +11,24 @@ use std::{
 };
 
 use super::{
-    error::{self, Error, ErrorKind, Result},
+    error::{self, Error, ErrorCode, ErrorKind, Result},
     types::{CudfType, DataType, TypeId},
 };
 use crate::runtime::execution_domain::ExecutionDomain;
+
+fn type_id_label(type_id: TypeId) -> String {
+    format!("{:?}", type_id).to_lowercase()
+}
+
+fn negative_string_length_error(operation: &'static str, raw_len: i32) -> Error {
+    Error::new(ErrorKind::InvariantViolation, "FFI returned negative string length")
+        .with_operation(operation)
+        .with_code(ErrorCode::InvariantViolation)
+        .with_context("raw_len", raw_len.to_string())
+        .with_context("resource", "string_scalar_value")
+        .with_context("reason", "negative_string_length")
+        .with_context("remedy", "ensure the foreign scalar backend returns a non-negative string length")
+}
 
 /// An owned scalar value on the GPU.
 ///
@@ -54,8 +68,11 @@ impl Scalar {
 
     pub(crate) fn from_str_in_domain(value: &str, domain: &Arc<ExecutionDomain>) -> Result<Self> {
         let c_str = CString::new(value).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "string contains interior null byte")
-                .with_operation("scalar::from_str_in_domain")
+            error::interior_null_byte_error(
+                "scalar::from_str_in_domain",
+                "string_scalar",
+                "string scalar contains interior null byte",
+            )
         })?;
         let mut handle = ptr::null_mut();
         let exec_options = domain.exec_options_raw();
@@ -119,10 +136,11 @@ impl Scalar {
     fn copy_into_domain_with_operation(&self, domain: &Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
         if self.data_type()?.id() == TypeId::Dictionary32 {
             return Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::InvalidInput,
                 "scalar copy does not support Dictionary32 (no libcudf scalar subclass exists)",
             )
             .with_operation(operation)
+            .with_code(ErrorCode::UnsupportedDtype)
             .with_context("type_id", "dictionary32"));
         }
 
@@ -187,10 +205,11 @@ impl Scalar {
     pub fn value<T: CudfType>(&self) -> Result<T> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
-            return Err(Error::new(ErrorKind::TypeError, "scalar type does not match requested type")
+            return Err(Error::new(ErrorKind::InvalidInput, "scalar type does not match requested type")
                 .with_operation("scalar::value")
-                .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
-                .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
+                .with_code(ErrorCode::TypeMismatch)
+                .with_context("left_type_id", type_id_label(dt.id()))
+                .with_context("right_type_id", type_id_label(T::TYPE_ID)));
         }
         // SAFETY: `CudfType` is sealed to built-in primitives with valid
         // all-zero bit patterns.
@@ -216,6 +235,15 @@ impl Scalar {
     /// This may synchronize the scalar's bound execution domain before
     /// returning the host-visible string.
     pub fn string_value(&self) -> Result<String> {
+        let dt = self.data_type()?;
+        if dt.id() != TypeId::String {
+            return Err(Error::new(ErrorKind::InvalidInput, "scalar type does not match requested type")
+                .with_operation("scalar::string_value")
+                .with_code(ErrorCode::TypeMismatch)
+                .with_context("left_type_id", type_id_label(dt.id()))
+                .with_context("right_type_id", type_id_label(TypeId::String)));
+        }
+
         let mut ptr: *mut c_char = ptr::null_mut();
         let mut len: i32 = 0;
         let exec_options = self.domain.exec_options_raw();
@@ -225,11 +253,7 @@ impl Scalar {
             "scalar::string_value",
         )?;
         // SAFETY: ptr and len are returned by a successful FFI call.
-        let byte_len = usize::try_from(len).map_err(|_| {
-            error::Error::new(error::ErrorKind::InvalidOperation, "FFI returned negative string length")
-                .with_operation("scalar::string_value")
-                .with_context("raw_len", len.to_string())
-        })?;
+        let byte_len = usize::try_from(len).map_err(|_| negative_string_length_error("scalar::string_value", len))?;
         let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len) };
         let value = String::from_utf8_lossy(bytes).into_owned();
         // SAFETY: ptr was allocated by the C shim and must be freed with cudf_string_free.
@@ -237,6 +261,10 @@ impl Scalar {
         self.domain.synchronize_for_host_visibility("scalar::string_value")?;
         Ok(value)
     }
+}
+
+pub(crate) fn trigger_negative_string_length_error_for_test() -> Result<()> {
+    Err(negative_string_length_error("scalar::string_value", -1))
 }
 
 impl Drop for Scalar {

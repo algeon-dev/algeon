@@ -15,12 +15,8 @@ fn prepared_column_projection_from_materialized_view<'a>(
     next_buffer_id: u32,
 ) -> Result<PreparedColumnProjection<'a>, InteropError> {
     let interop_type = map_data_type(data_type);
-    let active_elements = offset.checked_add(len).ok_or_else(|| {
-        InteropError::new(InteropErrorKind::InvalidView, "active element range overflowed")
-            .with_context("operation", operation)
-            .with_context("offset", offset.to_string())
-            .with_context("len", len.to_string())
-    })?;
+    let active_elements =
+        offset.checked_add(len).ok_or_else(|| active_projection_range_overflow_error(operation, offset, len))?;
     let mut next_column_id = next_column_id;
     let mut next_buffer_id = next_buffer_id;
     let column_id = allocate_column_id(operation, &mut next_column_id)?;
@@ -32,7 +28,7 @@ fn prepared_column_projection_from_materialized_view<'a>(
         )
         .with_context("operation", operation)
         .with_context("type_id", format!("{:?}", data_type.id()).to_lowercase())
-        .with_context("num_children", num_children.to_string()));
+        .with_context("child_count", num_children.to_string()));
     }
 
     let values_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
@@ -46,11 +42,14 @@ fn prepared_column_projection_from_materialized_view<'a>(
         .with_context("type_id", format!("{:?}", data_type.id()).to_lowercase())
     })?;
     let values_byte_len = active_elements.checked_mul(elem_size).ok_or_else(|| {
-        InteropError::new(InteropErrorKind::InvalidView, "active value byte range overflowed")
-            .with_context("operation", operation)
-            .with_context("offset", offset.to_string())
-            .with_context("len", len.to_string())
-            .with_context("elem_size", elem_size.to_string())
+        projection_byte_range_overflow_error(
+            operation,
+            "active value byte range overflowed",
+            "value_byte_range",
+            offset,
+            len,
+        )
+        .with_context("elem_size", elem_size.to_string())
     })?;
 
     let values_device = pointer_device(operation, data_ptr, default_device)?;
@@ -102,13 +101,9 @@ pub(super) fn prepared_column_projection_from_view<'a>(
     let num_children =
         view.num_children().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let offset = usize::try_from(
-        view.offset().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "column view offset must be >= 0")
-            .with_context("operation", operation)
-    })?;
+    let offset_raw = view.offset().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let offset =
+        usize::try_from(offset_raw).map_err(|_| negative_projection_offset_error(operation, offset_raw as i64))?;
     let data_ptr =
         view.device_data_ptr().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let nullable = view.nullable().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
@@ -117,12 +112,8 @@ pub(super) fn prepared_column_projection_from_view<'a>(
         view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let null_mask_ptr =
         view.null_mask_ptr().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let active_elements = offset.checked_add(len).ok_or_else(|| {
-        InteropError::new(InteropErrorKind::InvalidView, "active element range overflowed")
-            .with_context("operation", operation)
-            .with_context("offset", offset.to_string())
-            .with_context("len", len.to_string())
-    })?;
+    let active_elements =
+        offset.checked_add(len).ok_or_else(|| active_projection_range_overflow_error(operation, offset, len))?;
     let mut next_column_id = next_column_id;
     let column_id = allocate_column_id(operation, &mut next_column_id)?;
 
@@ -133,13 +124,15 @@ pub(super) fn prepared_column_projection_from_view<'a>(
         let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
 
         if num_children < 1 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
+            return Err(projection_child_count_error(
+                operation,
                 "string column view must expose an offsets child",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "string")
-            .with_context("num_children", num_children.to_string()));
+                "string",
+                num_children,
+                1,
+                "requires_offsets_child",
+                "expose an offsets child before projecting string data",
+            ));
         }
 
         let offsets_view =
@@ -148,29 +141,36 @@ pub(super) fn prepared_column_projection_from_view<'a>(
             .data_type()
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let offsets_elem_size = map_data_type(offsets_type).id().fixed_width_size_bytes().ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "string offsets child must be fixed-width")
-                .with_context("operation", operation)
-                .with_context("offsets_type_id", format!("{:?}", offsets_type.id()).to_lowercase())
+            projection_child_fixed_width_error(
+                operation,
+                "string offsets child must be fixed-width",
+                "offsets_layout",
+                format!("{:?}", offsets_type.id()).to_lowercase(),
+                "materialize string offsets as a fixed-width Int32 child before projection",
+            )
         })?;
         if offsets_elem_size != std::mem::size_of::<i32>() {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
+            return Err(projection_child_width_error(
+                operation,
                 "string offsets child must use 32-bit offsets",
-            )
-            .with_context("operation", operation)
-            .with_context("offsets_elem_size", offsets_elem_size.to_string()));
+                "offsets_layout",
+                offsets_elem_size,
+                std::mem::size_of::<i32>(),
+                "materialize string offsets as 32-bit signed integers before projection",
+            ));
         }
-        let offsets_required_elements = offset.checked_add(len).and_then(|v| v.checked_add(1)).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "string offsets range overflowed")
-                .with_context("operation", operation)
-                .with_context("offset", offset.to_string())
-                .with_context("len", len.to_string())
-        })?;
+        let offsets_required_elements = offset
+            .checked_add(len)
+            .and_then(|v| v.checked_add(1))
+            .ok_or_else(|| offsets_range_overflow_error(operation, "string offsets range overflowed", offset, len))?;
         let offsets_byte_len = offsets_required_elements.checked_mul(offsets_elem_size).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "string offsets byte range overflowed")
-                .with_context("operation", operation)
-                .with_context("offset", offset.to_string())
-                .with_context("len", len.to_string())
+            projection_byte_range_overflow_error(
+                operation,
+                "string offsets byte range overflowed",
+                "offsets_byte_range",
+                offset,
+                len,
+            )
         })?;
         let offsets_ptr = offsets_view
             .device_data_ptr()
@@ -232,13 +232,15 @@ pub(super) fn prepared_column_projection_from_view<'a>(
         let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
 
         if num_children < 2 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
+            return Err(projection_child_count_error(
+                operation,
                 "dictionary column view must expose indices and keys columns",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "dictionary32")
-            .with_context("num_children", num_children.to_string()));
+                "dictionary32",
+                num_children,
+                2,
+                "requires_indices_and_keys",
+                "expose both indices and keys children before projecting dictionary data",
+            ));
         }
 
         let indices_view = dictionary::indices(view)
@@ -247,23 +249,32 @@ pub(super) fn prepared_column_projection_from_view<'a>(
             .data_type()
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let indices_elem_size = map_data_type(indices_type).id().fixed_width_size_bytes().ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "dictionary indices child must be fixed-width")
-                .with_context("operation", operation)
-                .with_context("indices_type_id", format!("{:?}", indices_type.id()).to_lowercase())
+            projection_child_fixed_width_error(
+                operation,
+                "dictionary indices child must be fixed-width",
+                "indices_layout",
+                format!("{:?}", indices_type.id()).to_lowercase(),
+                "materialize dictionary indices as a fixed-width Int32 child before projection",
+            )
         })?;
         if indices_elem_size != std::mem::size_of::<i32>() {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
+            return Err(projection_child_width_error(
+                operation,
                 "dictionary indices child must use 32-bit indices",
-            )
-            .with_context("operation", operation)
-            .with_context("indices_elem_size", indices_elem_size.to_string()));
+                "indices_layout",
+                indices_elem_size,
+                std::mem::size_of::<i32>(),
+                "materialize dictionary indices as 32-bit signed integers before projection",
+            ));
         }
         let indices_byte_len = active_elements.checked_mul(indices_elem_size).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "dictionary indices byte range overflowed")
-                .with_context("operation", operation)
-                .with_context("offset", offset.to_string())
-                .with_context("len", len.to_string())
+            projection_byte_range_overflow_error(
+                operation,
+                "dictionary indices byte range overflowed",
+                "indices_byte_range",
+                offset,
+                len,
+            )
         })?;
         let indices_ptr = indices_view
             .device_data_ptr()
@@ -322,13 +333,15 @@ pub(super) fn prepared_column_projection_from_view<'a>(
         let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
 
         if num_children < 2 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
+            return Err(projection_child_count_error(
+                operation,
                 "list column view must expose offsets and child columns",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "list")
-            .with_context("num_children", num_children.to_string()));
+                "list",
+                num_children,
+                2,
+                "requires_offsets_and_child",
+                "expose both offsets and child columns before projecting list data",
+            ));
         }
 
         let offsets_view =
@@ -337,26 +350,36 @@ pub(super) fn prepared_column_projection_from_view<'a>(
             .data_type()
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let offsets_elem_size = map_data_type(offsets_type).id().fixed_width_size_bytes().ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "list offsets child must be fixed-width")
-                .with_context("operation", operation)
-                .with_context("offsets_type_id", format!("{:?}", offsets_type.id()).to_lowercase())
+            projection_child_fixed_width_error(
+                operation,
+                "list offsets child must be fixed-width",
+                "offsets_layout",
+                format!("{:?}", offsets_type.id()).to_lowercase(),
+                "materialize list offsets as a fixed-width Int32 child before projection",
+            )
         })?;
         if offsets_elem_size != std::mem::size_of::<i32>() {
-            return Err(InteropError::new(InteropErrorKind::InvalidView, "list offsets child must use 32-bit offsets")
-                .with_context("operation", operation)
-                .with_context("offsets_elem_size", offsets_elem_size.to_string()));
+            return Err(projection_child_width_error(
+                operation,
+                "list offsets child must use 32-bit offsets",
+                "offsets_layout",
+                offsets_elem_size,
+                std::mem::size_of::<i32>(),
+                "materialize list offsets as 32-bit signed integers before projection",
+            ));
         }
-        let offsets_required_elements = offset.checked_add(len).and_then(|v| v.checked_add(1)).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "list offsets range overflowed")
-                .with_context("operation", operation)
-                .with_context("offset", offset.to_string())
-                .with_context("len", len.to_string())
-        })?;
+        let offsets_required_elements = offset
+            .checked_add(len)
+            .and_then(|v| v.checked_add(1))
+            .ok_or_else(|| offsets_range_overflow_error(operation, "list offsets range overflowed", offset, len))?;
         let offsets_byte_len = offsets_required_elements.checked_mul(offsets_elem_size).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "list offsets byte range overflowed")
-                .with_context("operation", operation)
-                .with_context("offset", offset.to_string())
-                .with_context("len", len.to_string())
+            projection_byte_range_overflow_error(
+                operation,
+                "list offsets byte range overflowed",
+                "offsets_byte_range",
+                offset,
+                len,
+            )
         })?;
         let offsets_ptr = offsets_view
             .device_data_ptr()

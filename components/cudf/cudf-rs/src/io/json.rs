@@ -11,7 +11,8 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     core::{
-        error::{self, Error, ErrorKind, Result},
+        error::{self, ErrorKind, Result},
+        schema,
         table::Table,
     },
     io::TableReadOutput,
@@ -135,17 +136,17 @@ pub(crate) fn write_json_with_exec(
     if !options.column_names.is_empty() {
         let expected = table.num_columns()?;
         if options.column_names.len() != expected {
-            return Err(Error::new(
-                ErrorKind::InvalidArgument,
+            return Err(schema::column_name_count_mismatch_error(
+                ErrorKind::InvalidInput,
+                operation,
                 format!(
                     "column name count ({}) does not match table column count ({})",
                     options.column_names.len(),
                     expected
                 ),
-            )
-            .with_operation(operation)
-            .with_context("column_name_count", options.column_names.len().to_string())
-            .with_context("table_column_count", expected.to_string()));
+                options.column_names.len(),
+                expected,
+            ));
         }
     }
 
@@ -155,9 +156,9 @@ pub(crate) fn write_json_with_exec(
         .enumerate()
         .map(|(index, name)| {
             CString::new(name.as_str()).map_err(|_| {
-                Error::new(ErrorKind::InvalidArgument, "column name contains interior null byte")
-                    .with_operation(operation)
+                super::interior_null_byte_error(operation, "column_name", "column name contains interior null byte")
                     .with_context("column_index", index.to_string())
+                    .with_context("column_name", name.to_string())
             })
         })
         .collect::<Result<_>>()?;

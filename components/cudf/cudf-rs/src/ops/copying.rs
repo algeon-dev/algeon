@@ -65,7 +65,7 @@ pub(crate) fn gather_impl(
 /// );
 /// ```
 pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     ExecutionDomain::require_same_device_for_mixed_inputs(
         input.execution_domain(),
         gather_map.execution_domain(),
@@ -117,7 +117,7 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
 ///
 /// Prefer [`gather`] unless profiling shows the bounds check is a bottleneck.
 pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     ExecutionDomain::require_same_device_for_mixed_inputs(
         input.execution_domain(),
         gather_map.execution_domain(),

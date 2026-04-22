@@ -132,7 +132,6 @@ fn owned_transfer_producer_device(
 
 fn validate_runtime_device(
     operation: &'static str,
-    expected_label: &'static str,
     message: &'static str,
     expected_device: i32,
     runtime: &Runtime,
@@ -141,10 +140,52 @@ fn validate_runtime_device(
     if actual_device != expected_device {
         return Err(InteropError::new(InteropErrorKind::ExecutionBindingMismatch, message)
             .with_context("operation", operation)
-            .with_context(expected_label, expected_device.to_string())
-            .with_context("runtime_device", actual_device.to_string()));
+            .with_context("left_device", expected_device.to_string())
+            .with_context("right_device", actual_device.to_string()));
     }
     Ok(())
+}
+
+fn zero_column_non_empty_borrowed_table_error(operation: &'static str, table_row_count: usize) -> InteropError {
+    InteropError::new(
+        InteropErrorKind::InvalidView,
+        "borrowed table import cannot materialize a zero-column table with non-zero row count",
+    )
+    .with_context("operation", operation)
+    .with_context("resource", "table_shape")
+    .with_context("reason", "zero_column_non_empty_table")
+    .with_context("table_row_count", table_row_count.to_string())
+    .with_context("remedy", "provide at least one semantic column or report zero rows")
+}
+
+fn partition_runtime_count_mismatch_error(
+    operation: &'static str,
+    expected_count: usize,
+    actual_count: usize,
+) -> InteropError {
+    InteropError::new(
+        InteropErrorKind::ExecutionBindingMismatch,
+        "partitioned prepared table export import requires one destination runtime per partition",
+    )
+    .with_context("operation", operation)
+    .with_context("resource", "execution_bindings")
+    .with_context("reason", "partition_runtime_count_mismatch")
+    .with_context("expected_count", expected_count.to_string())
+    .with_context("actual_count", actual_count.to_string())
+    .with_context("remedy", "provide exactly one destination runtime per partition")
+}
+
+fn missing_dataframe_import_names_error(operation: &'static str, explicit_variant: &'static str) -> InteropError {
+    InteropError::new(
+        InteropErrorKind::InvalidView,
+        format!(
+            "high-level DataFrame import requires schema names on the shared root; use {explicit_variant} when the root does not carry schema names"
+        ),
+    )
+    .with_context("operation", operation)
+    .with_context("resource", "schema_names")
+    .with_context("reason", "missing_schema_names")
+    .with_context("remedy", format!("use {explicit_variant} when the root does not carry schema names"))
 }
 
 fn runtime_exec_options(runtime: &Runtime) -> cudf_sys::cudf_exec_options_t {
@@ -191,7 +232,6 @@ pub(super) fn import_column_from_borrowed_view(
 ) -> Result<Column, InteropError> {
     validate_runtime_device(
         operation,
-        "descriptor_device",
         "borrowed descriptor import requires the destination runtime to use the same CUDA device",
         borrowed.execution().device(),
         runtime,
@@ -259,19 +299,13 @@ pub(super) fn import_table_from_borrowed_view(
 ) -> Result<Table, InteropError> {
     validate_runtime_device(
         operation,
-        "descriptor_device",
         "borrowed descriptor import requires the destination runtime to use the same CUDA device",
         borrowed.execution().device(),
         runtime,
     )?;
     if borrowed.num_columns() == 0 {
         if borrowed.num_rows() != 0 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "borrowed table import cannot materialize a zero-column table with non-zero row count",
-            )
-            .with_context("operation", operation)
-            .with_context("num_rows", borrowed.num_rows().to_string()));
+            return Err(zero_column_non_empty_borrowed_table_error(operation, borrowed.num_rows()));
         }
 
         return runtime.empty_table().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error));
@@ -294,7 +328,6 @@ pub(super) fn import_column_from_owned_transfer(
     let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
     validate_runtime_device(
         operation,
-        "producer_device",
         "owned device transfer import requires the destination runtime to use the same CUDA device",
         producer_device,
         runtime,
@@ -366,7 +399,6 @@ pub(super) fn import_table_from_owned_transfer(
     let producer_device = owned_transfer_producer_device(transfer.readiness(), operation)?;
     validate_runtime_device(
         operation,
-        "producer_device",
         "owned device transfer import requires the destination runtime to use the same CUDA device",
         producer_device,
         runtime,
@@ -462,7 +494,6 @@ pub(super) fn import_column_from_prepared_export(
             let producer_device = prepared_device_export_producer_device(export.readiness(), operation)?;
             validate_runtime_device(
                 operation,
-                "producer_device",
                 "prepared device export import requires the destination runtime to use the same CUDA device",
                 producer_device,
                 runtime,
@@ -555,7 +586,6 @@ pub(super) fn import_table_from_prepared_export(
             let producer_device = prepared_device_export_producer_device(export.readiness(), operation)?;
             validate_runtime_device(
                 operation,
-                "producer_device",
                 "prepared device export import requires the destination runtime to use the same CUDA device",
                 producer_device,
                 runtime,
@@ -639,13 +669,7 @@ pub(super) fn import_partitioned_local_tables_from_prepared_export(
     operation: &'static str,
 ) -> Result<Vec<(Vec<usize>, Table)>, InteropError> {
     if export.partitions().len() != runtimes.len() {
-        return Err(InteropError::new(
-            InteropErrorKind::ExecutionBindingMismatch,
-            "partitioned prepared table export import requires one destination runtime per partition",
-        )
-        .with_context("operation", operation)
-        .with_context("partition_count", export.partitions().len().to_string())
-        .with_context("runtime_count", runtimes.len().to_string()));
+        return Err(partition_runtime_count_mismatch_error(operation, export.partitions().len(), runtimes.len()));
     }
 
     let mut imported = Vec::with_capacity(export.partitions().len());
@@ -658,7 +682,6 @@ pub(super) fn import_partitioned_local_tables_from_prepared_export(
             .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
         validate_runtime_device(
             operation,
-            "producer_device",
             "partitioned prepared device export import requires each destination runtime to use the matching partition CUDA device",
             producer_device,
             runtime,
@@ -731,14 +754,5 @@ pub(super) fn required_dataframe_import_names(
     operation: &'static str,
     explicit_variant: &'static str,
 ) -> Result<Vec<String>, InteropError> {
-    names.map(|names| names.to_vec()).ok_or_else(|| {
-        InteropError::new(
-            InteropErrorKind::InvalidView,
-            format!(
-                "high-level DataFrame import requires schema names on the shared root; use {explicit_variant} when the root does not carry schema names"
-            ),
-        )
-        .with_context("operation", operation)
-        .with_context("explicit_names_variant", explicit_variant)
-    })
+    names.map(|names| names.to_vec()).ok_or_else(|| missing_dataframe_import_names_error(operation, explicit_variant))
 }

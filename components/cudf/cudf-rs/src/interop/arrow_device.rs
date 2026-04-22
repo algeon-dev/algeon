@@ -1,3 +1,28 @@
+//! Arrow C Device ABI interop for existing GPU-backed cudf values.
+//!
+//! This module is the device-side Arrow interop boundary. It exports or
+//! imports Arrow C Device ABI roots that describe existing device buffers, and
+//! it is intentionally separate from [`crate::io::arrow`], which converts
+//! through host-resident Rust Arrow [`arrow::record_batch::RecordBatch`]
+//! values.
+//!
+//! # Zero-copy vs copy
+//!
+//! This surface can preserve existing device pointers for many supported
+//! layouts. When it does, the reported materialization is
+//! [`DeviceArrowExportMaterialization::ProducerRetainedView`] on export or
+//! [`DeviceArrowImportMaterialization::ForeignRetainedView`] on import.
+//!
+//! It is not an unconditional zero-copy guarantee. Some layouts still require
+//! bridge-owned device materialization, reported as
+//! [`DeviceArrowExportMaterialization::BridgeOwnedDeviceCopy`] or
+//! [`DeviceArrowImportMaterialization::BridgeOwnedDeviceCopy`]. For example,
+//! `Bool8` needs a bridge-owned device copy because cuDF stores booleans as
+//! one byte per value while Arrow booleans are bit-packed.
+//!
+//! If you need a regular Arrow `RecordBatch`, use [`crate::io::arrow`] instead.
+pub(crate) mod testing_hooks;
+
 use std::{
     any::Any,
     ffi::{CStr, CString},
@@ -14,7 +39,7 @@ use crate::{
     DataFrame, Series,
     core::{
         Column, Table,
-        error::{self, Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
         types::TypeId,
     },
     ops::dictionary,
@@ -121,16 +146,55 @@ fn foreign_import_materialization_for_table_view(
     Ok(DeviceArrowImportMaterialization::ForeignRetainedView)
 }
 
-fn validate_same_device(input_device: i32, runtime: &Runtime, operation: &'static str) -> Result<()> {
+fn foreign_input_contract_error(
+    operation: &'static str,
+    message: &'static str,
+    resource: &'static str,
+    remedy: &'static str,
+) -> Error {
+    Error::new(ErrorKind::InvalidInput, message)
+        .with_code(ErrorCode::InvalidInput)
+        .with_operation(operation)
+        .with_context("resource", resource)
+        .with_context("remedy", remedy)
+}
+
+fn foreign_metadata_violation(
+    operation: &'static str,
+    message: &'static str,
+    resource: &'static str,
+    reason: &'static str,
+    remedy: &'static str,
+) -> Error {
+    Error::new(ErrorKind::InvariantViolation, message)
+        .with_code(ErrorCode::InvariantViolation)
+        .with_operation(operation)
+        .with_context("resource", resource)
+        .with_context("reason", reason)
+        .with_context("remedy", remedy)
+}
+
+fn validate_same_device(
+    input_device: i32,
+    runtime: &Runtime,
+    operation: &'static str,
+    resource: &'static str,
+) -> Result<()> {
     let runtime_device = runtime.device().ordinal() as i32;
     if input_device != runtime_device {
         return Err(Error::new(
-            ErrorKind::InvalidArgument,
+            ErrorKind::InvalidInput,
             "device-arrow import requires the foreign input and destination runtime to use the same CUDA device",
         )
+        .with_code(ErrorCode::CrossDeviceInputs)
         .with_operation(operation)
-        .with_context("input_device", input_device.to_string())
-        .with_context("runtime_device", runtime_device.to_string()));
+        .with_context("left_device", runtime_device.to_string())
+        .with_context("right_device", input_device.to_string())
+        .with_context("resource", resource)
+        .with_context(
+            "remedy",
+            "import into a Runtime pinned to the same CUDA device as the foreign Arrow device roots",
+        ));
     }
     Ok(())
 }
@@ -140,12 +204,15 @@ fn validate_supported_device_type(input_type: DeviceArrowDeviceType, operation: 
         input_type,
         DeviceArrowDeviceType::Cuda | DeviceArrowDeviceType::CudaHost | DeviceArrowDeviceType::CudaManaged
     ) {
-        return Err(Error::new(
-            ErrorKind::InvalidArgument,
-            "device-arrow import currently accepts only ARROW_DEVICE_CUDA, ARROW_DEVICE_CUDA_HOST, or ARROW_DEVICE_CUDA_MANAGED roots",
-        )
-        .with_operation(operation)
-        .with_context("device_type", input_type.raw_code().to_string()));
+        return Err(
+            foreign_input_contract_error(
+                operation,
+                "device-arrow import currently accepts only ARROW_DEVICE_CUDA, ARROW_DEVICE_CUDA_HOST, or ARROW_DEVICE_CUDA_MANAGED roots",
+                "device_type",
+                "use ARROW_DEVICE_CUDA, ARROW_DEVICE_CUDA_HOST, or ARROW_DEVICE_CUDA_MANAGED roots for device-arrow import",
+            )
+            .with_context("device_type", input_type.raw_code().to_string()),
+        );
     }
     Ok(())
 }
@@ -185,6 +252,8 @@ struct ArrowDeviceArray {
     sync_event: *mut c_void,
     reserved: [i64; 3],
 }
+
+const FIXED_WIDTH_DATA_BUFFER_INDEX: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeviceArrowAbiOwnership {
@@ -265,12 +334,247 @@ fn validate_raw_abi_parts(
     operation: &'static str,
 ) -> Result<(NonNull<c_void>, NonNull<c_void>)> {
     let schema = NonNull::new(schema).ok_or_else(|| {
-        Error::new(ErrorKind::InvalidArgument, "Arrow device schema pointer must not be null").with_operation(operation)
+        foreign_input_contract_error(
+            operation,
+            "Arrow device schema pointer must not be null",
+            "arrow_device_schema",
+            "pass owned non-null Arrow device schema and array roots produced by this bridge handoff path",
+        )
     })?;
     let array = NonNull::new(array).ok_or_else(|| {
-        Error::new(ErrorKind::InvalidArgument, "Arrow device array pointer must not be null").with_operation(operation)
+        foreign_input_contract_error(
+            operation,
+            "Arrow device array pointer must not be null",
+            "arrow_device_array",
+            "pass owned non-null Arrow device schema and array roots produced by this bridge handoff path",
+        )
     })?;
     Ok((schema, array))
+}
+
+fn with_optional_column_index(mut err: Error, column_index: Option<usize>) -> Error {
+    if let Some(index) = column_index {
+        err = err.with_context("column_index", index.to_string());
+    }
+    err
+}
+
+fn unsupported_fixed_width_values_ptr_layout(operation: &'static str, column_index: Option<usize>) -> Error {
+    with_optional_column_index(
+        Error::new(
+            ErrorKind::Unsupported,
+            "fixed-width values pointer access requires a supported fixed-width leaf layout",
+        )
+        .with_code(ErrorCode::UnsupportedLayout)
+        .with_operation(operation)
+        .with_context("resource", "column_layout")
+        .with_context("reason", "not_fixed_width_leaf")
+        .with_context("remedy", "call fixed_width_values_ptr only on supported fixed-width leaf layouts"),
+        column_index,
+    )
+}
+
+fn arrow_device_array_metadata_violation(
+    operation: &'static str,
+    message: &'static str,
+    reason: &'static str,
+    remedy: &'static str,
+    column_index: Option<usize>,
+) -> Error {
+    with_optional_column_index(
+        foreign_metadata_violation(operation, message, "arrow_device_array", reason, remedy),
+        column_index,
+    )
+}
+
+fn arrow_device_schema_metadata_violation(
+    operation: &'static str,
+    message: &'static str,
+    reason: &'static str,
+    remedy: &'static str,
+    column_index: Option<usize>,
+) -> Error {
+    with_optional_column_index(
+        foreign_metadata_violation(operation, message, "arrow_device_schema", reason, remedy),
+        column_index,
+    )
+}
+
+fn missing_fixed_width_values_buffer(operation: &'static str, column_index: Option<usize>) -> Error {
+    with_optional_column_index(
+        foreign_input_contract_error(
+            operation,
+            "Arrow device array is missing the fixed-width values buffer",
+            "arrow_device_array",
+            "ensure the Arrow device array exposes the values buffer for supported fixed-width leaf layouts",
+        )
+        .with_context("reason", "missing_fixed_width_values_buffer"),
+        column_index,
+    )
+}
+
+unsafe fn arrow_schema_is_supported_fixed_width_leaf(
+    schema: &ArrowSchema,
+    operation: &'static str,
+    column_index: Option<usize>,
+) -> Result<bool> {
+    if schema.format.is_null() {
+        return Err(arrow_device_schema_metadata_violation(
+            operation,
+            "Arrow schema format must not be null",
+            "invalid_foreign_schema_metadata",
+            "ensure the Arrow schema exposes a non-null format string",
+            column_index,
+        ));
+    }
+    if schema.n_children < 0 {
+        return Err(arrow_device_schema_metadata_violation(
+            operation,
+            "Arrow schema child count must be >= 0",
+            "invalid_foreign_schema_metadata",
+            "ensure the Arrow schema reports a non-negative child count",
+            column_index,
+        )
+        .with_context("table_column_count", schema.n_children.to_string()));
+    }
+
+    let format = CStr::from_ptr(schema.format).to_string_lossy();
+    if format.is_empty() {
+        return Ok(false);
+    }
+    if !schema.dictionary.is_null() || schema.n_children != 0 {
+        return Ok(false);
+    }
+
+    let supported = match format.as_bytes()[0] {
+        b'c' | b'C' | b's' | b'S' | b'i' | b'I' | b'l' | b'L' | b'e' | b'f' | b'g' | b'w' => true,
+        b'd' => format.starts_with("d:"),
+        b't' => {
+            format.starts_with("td") || format.starts_with("ts") || format.starts_with("tt") || format.starts_with("tD")
+        },
+        _ => false,
+    };
+
+    Ok(supported)
+}
+
+unsafe fn fixed_width_values_buffer_ptr(
+    array: &ArrowArray,
+    operation: &'static str,
+    column_index: Option<usize>,
+) -> Result<*const c_void> {
+    if array.n_buffers < 0 {
+        return Err(arrow_device_array_metadata_violation(
+            operation,
+            "Arrow device array buffer count must be >= 0",
+            "invalid_foreign_array_metadata",
+            "ensure the Arrow device array reports a non-negative buffer count",
+            column_index,
+        ));
+    }
+    if (array.n_buffers as usize) <= FIXED_WIDTH_DATA_BUFFER_INDEX {
+        return Err(missing_fixed_width_values_buffer(operation, column_index));
+    }
+    if array.buffers.is_null() {
+        return Err(arrow_device_array_metadata_violation(
+            operation,
+            "Arrow device array buffers pointer must not be null",
+            "invalid_foreign_array_metadata",
+            "ensure the Arrow device array exposes a non-null buffers pointer",
+            column_index,
+        ));
+    }
+
+    Ok(*array.buffers.add(FIXED_WIDTH_DATA_BUFFER_INDEX))
+}
+
+unsafe fn table_child_schema_for_fixed_width_ptr<'a>(
+    schema: &'a ArrowSchema,
+    index: usize,
+    operation: &'static str,
+) -> Result<Option<&'a ArrowSchema>> {
+    if schema.n_children < 0 {
+        return Err(foreign_metadata_violation(
+            operation,
+            "Arrow table column count must be >= 0",
+            "table_column_count",
+            "invalid_foreign_table_metadata",
+            "ensure the foreign Arrow table schema reports a non-negative column count",
+        )
+        .with_context("table_column_count", schema.n_children.to_string())
+        .with_context("column_index", index.to_string()));
+    }
+
+    let count = schema.n_children as usize;
+    if index >= count {
+        return Ok(None);
+    }
+    if schema.children.is_null() {
+        return Err(arrow_device_schema_metadata_violation(
+            operation,
+            "Arrow table schema children pointer must not be null",
+            "invalid_foreign_table_metadata",
+            "ensure the foreign Arrow table schema exposes non-null child pointers",
+            Some(index),
+        ));
+    }
+
+    let child = *schema.children.add(index);
+    if child.is_null() {
+        return Err(arrow_device_schema_metadata_violation(
+            operation,
+            "Arrow table schema child must not be null",
+            "invalid_foreign_table_metadata",
+            "ensure the foreign Arrow table schema exposes non-null child entries",
+            Some(index),
+        ));
+    }
+
+    Ok(Some(&*child))
+}
+
+unsafe fn table_child_array_for_fixed_width_ptr<'a>(
+    array: &'a ArrowDeviceArray,
+    index: usize,
+    operation: &'static str,
+) -> Result<Option<&'a ArrowArray>> {
+    if array.array.n_children < 0 {
+        return Err(arrow_device_array_metadata_violation(
+            operation,
+            "Arrow table array child count must be >= 0",
+            "invalid_foreign_table_metadata",
+            "ensure the foreign Arrow table array reports a non-negative child count",
+            Some(index),
+        )
+        .with_context("table_column_count", array.array.n_children.to_string()));
+    }
+
+    let count = array.array.n_children as usize;
+    if index >= count {
+        return Ok(None);
+    }
+    if array.array.children.is_null() {
+        return Err(arrow_device_array_metadata_violation(
+            operation,
+            "Arrow table array children pointer must not be null",
+            "invalid_foreign_table_metadata",
+            "ensure the foreign Arrow table array exposes non-null child pointers",
+            Some(index),
+        ));
+    }
+
+    let child = *array.array.children.add(index);
+    if child.is_null() {
+        return Err(arrow_device_array_metadata_violation(
+            operation,
+            "Arrow table array child must not be null",
+            "invalid_foreign_table_metadata",
+            "ensure the foreign Arrow table array exposes non-null child entries",
+            Some(index),
+        ));
+    }
+
+    Ok(Some(&*child))
 }
 
 struct DeviceArrowAbiRootInner {
@@ -343,9 +647,14 @@ impl DeviceArrowAbiRootInner {
             operation,
         )?;
         i32::try_from(out).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "Arrow device id exceeds i32::MAX")
-                .with_operation(operation)
-                .with_context("device_id", out.to_string())
+            foreign_metadata_violation(
+                operation,
+                "Arrow device id exceeds i32::MAX",
+                "device_id",
+                "invalid_foreign_device_id",
+                "ensure the foreign Arrow device roots report a CUDA device id that fits within i32::MAX",
+            )
+            .with_context("device_id", out.to_string())
         })
     }
 
@@ -389,40 +698,49 @@ impl DeviceArrowAbiRootInner {
     }
 
     fn fixed_width_values_ptr(&self, operation: &'static str) -> Result<*const c_void> {
-        let mut out = ptr::null();
-        error::check_status_in(
-            unsafe {
-                cudf_sys::cudf_arrow_device_column_fixed_width_values_ptr(
-                    self.schema.as_ptr(),
-                    self.array.as_ptr(),
-                    &mut out,
-                )
-            },
-            operation,
-        )?;
-        Ok(out)
+        let schema = unsafe { &*self.schema.as_ptr().cast::<ArrowSchema>() };
+        if !unsafe { arrow_schema_is_supported_fixed_width_leaf(schema, operation, None) }? {
+            return Err(unsupported_fixed_width_values_ptr_layout(operation, None));
+        }
+
+        let array = unsafe { &*self.array.as_ptr().cast::<ArrowDeviceArray>() };
+        unsafe { fixed_width_values_buffer_ptr(&array.array, operation, None) }
     }
 
     fn table_fixed_width_values_ptr(&self, index: usize, operation: &'static str) -> Result<*const c_void> {
         let index = i64::try_from(index).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "table column index exceeds i64::MAX")
-                .with_operation(operation)
-                .with_context("column_index", index.to_string())
+            error::range_limit_error(ErrorKind::InvalidInput, operation, "column_index", "i64::MAX", index)
         })?;
+        let column_index = index as usize;
+        let schema = unsafe { &*self.schema.as_ptr().cast::<ArrowSchema>() };
+        let array = unsafe { &*self.array.as_ptr().cast::<ArrowDeviceArray>() };
+        let child_schema = unsafe { table_child_schema_for_fixed_width_ptr(schema, column_index, operation) }?;
+        let child_array = unsafe { table_child_array_for_fixed_width_ptr(array, column_index, operation) }?;
 
-        let mut out = ptr::null();
-        error::check_status_in(
-            unsafe {
-                cudf_sys::cudf_arrow_device_table_fixed_width_values_ptr(
-                    self.schema.as_ptr(),
-                    self.array.as_ptr(),
-                    index,
-                    &mut out,
-                )
+        match (child_schema, child_array) {
+            (Some(child_schema), Some(child_array)) => {
+                if !unsafe { arrow_schema_is_supported_fixed_width_leaf(child_schema, operation, Some(column_index)) }?
+                {
+                    return Err(unsupported_fixed_width_values_ptr_layout(operation, Some(column_index)));
+                }
+                unsafe { fixed_width_values_buffer_ptr(child_array, operation, Some(column_index)) }
             },
-            operation,
-        )?;
-        Ok(out)
+            _ => {
+                let mut out = ptr::null();
+                error::check_status_in(
+                    unsafe {
+                        cudf_sys::cudf_arrow_device_table_fixed_width_values_ptr(
+                            self.schema.as_ptr(),
+                            self.array.as_ptr(),
+                            index,
+                            &mut out,
+                        )
+                    },
+                    operation,
+                )?;
+                Ok(out)
+            },
+        }
     }
 
     fn table_column_names(&self, operation: &'static str) -> Result<Vec<String>> {
@@ -432,9 +750,14 @@ impl DeviceArrowAbiRootInner {
             operation,
         )?;
         let count = usize::try_from(out).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "Arrow table column count must be >= 0")
-                .with_operation(operation)
-                .with_context("num_columns", out.to_string())
+            foreign_metadata_violation(
+                operation,
+                "Arrow table column count must be >= 0",
+                "table_column_count",
+                "invalid_foreign_table_metadata",
+                "ensure the foreign Arrow table schema reports a non-negative column count",
+            )
+            .with_context("table_column_count", out.to_string())
         })?;
 
         let mut names = Vec::with_capacity(count);
@@ -525,9 +848,13 @@ fn export_device_arrow_table_from_view(
         Some(raw_names) => (
             raw_names.as_ptr(),
             i32::try_from(raw_names.len()).map_err(|_| {
-                Error::new(ErrorKind::InvalidOperation, "number of dataframe columns exceeds i32::MAX")
-                    .with_operation(operation)
-                    .with_context("num_columns", raw_names.len().to_string())
+                error::range_limit_error(
+                    ErrorKind::InvalidInput,
+                    operation,
+                    "table_column_count",
+                    "i32::MAX",
+                    raw_names.len(),
+                )
             })?,
         ),
         None => (ptr::null(), 0),
@@ -1133,10 +1460,11 @@ impl DataFrame {
         let names = retained_df.column_names_owned();
         let c_names = names
             .iter()
-            .map(|name| {
+            .enumerate()
+            .map(|(index, name)| {
                 CString::new(name.as_str()).map_err(|_| {
-                    Error::new(ErrorKind::InvalidArgument, "dataframe column names must not contain interior NUL bytes")
-                        .with_operation(operation)
+                    error::interior_null_byte_error(operation, "column_name", "column name contains interior null byte")
+                        .with_context("column_index", index.to_string())
                         .with_context("column_name", name.clone())
                 })
             })
@@ -1155,7 +1483,7 @@ impl Column {
     ) -> Result<Self> {
         let operation = "interop::Column::try_import_from_device_arrow_column_into_runtime";
         validate_supported_device_type(input.inner.try_device_type(operation)?, operation)?;
-        validate_same_device(input.inner.try_device_id(operation)?, runtime, operation)?;
+        validate_same_device(input.inner.try_device_id(operation)?, runtime, operation, "foreign_device_arrow_column")?;
 
         let exec_options = runtime.execution_domain().exec_options_raw();
         let mut handle = ptr::null_mut();
@@ -1210,7 +1538,7 @@ impl Table {
     ) -> Result<Self> {
         let operation = "interop::Table::try_import_from_device_arrow_table_into_runtime";
         validate_supported_device_type(input.inner.try_device_type(operation)?, operation)?;
-        validate_same_device(input.inner.try_device_id(operation)?, runtime, operation)?;
+        validate_same_device(input.inner.try_device_id(operation)?, runtime, operation, "foreign_device_arrow_table")?;
 
         let exec_options = runtime.execution_domain().exec_options_raw();
         let mut handle = ptr::null_mut();

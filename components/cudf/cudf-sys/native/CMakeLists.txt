@@ -142,6 +142,7 @@ add_library(
   src/io_parquet.cpp
   src/io_csv.cpp
   src/io_json.cpp
+  src/io_test_hooks.cpp
   src/sorting.cpp
   src/filter.cpp
   src/groupby.cpp

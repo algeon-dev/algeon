@@ -2,12 +2,9 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
-use super::{fillna_ops::DropDuplicatesOptions, owned::DataFrame};
+use super::{fillna_ops::DropDuplicatesOptions, group_keys::require_non_empty_group_keys, owned::DataFrame};
 use crate::{
-    core::{
-        column::Column,
-        error::{Error, ErrorKind, Result},
-    },
+    core::{column::Column, error::Result},
     frame::series::Series,
     internal::resolve::resolve_column_names,
     ops::{
@@ -97,7 +94,7 @@ impl DataFrame {
         let by: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> = by.into_iter().map(|s| s.as_ref().to_string()).collect();
         let by_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = by.iter().map(|s| s.as_str()).collect();
         let key_indices = resolve_column_names(&self.columns, &by_refs, operation)?;
-        let (orders, null_orders) = options.resolve(by_refs.len())?;
+        let (orders, null_orders) = options.resolve(by_refs.len(), operation)?;
         let null_order_ref = null_orders.as_deref();
 
         let all_in_order =
@@ -159,11 +156,7 @@ impl DataFrame {
         let operation = "dataframe::group_cumcount";
         let keys: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> =
             keys.into_iter().map(|key| key.as_ref().to_string()).collect();
-        if keys.is_empty() {
-            return Err(
-                Error::new(ErrorKind::InvalidOperation, "at least one group key is required").with_operation(operation)
-            );
-        }
+        require_non_empty_group_keys(keys.len(), operation)?;
 
         let key_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = keys.iter().map(|key| key.as_str()).collect();
         resolve_column_names(&self.columns, &key_refs, operation)?;

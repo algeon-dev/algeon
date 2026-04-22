@@ -4,11 +4,7 @@ use typed_builder::TypedBuilder;
 
 use super::owned::DataFrame;
 use crate::{
-    core::{
-        error::{Error, ErrorKind, Result},
-        scalar::Scalar,
-        types::CudfType,
-    },
+    core::{error::Result, scalar::Scalar, schema, types::CudfType},
     frame::series::Series,
     internal::resolve::{missing_column_error, resolve_column_names},
     ops::{
@@ -95,6 +91,10 @@ impl DropDuplicatesOptions {
     }
 }
 
+pub(crate) fn trigger_dataframe_dropna_subset_count_limit_error_for_test() -> Result<()> {
+    Err(schema::column_name_count_limit_error("dataframe::dropna", "subset length exceeds i32::MAX", usize::MAX))
+}
+
 impl DataFrame {
     /// Remove duplicate rows based on a subset of columns (internal).
     ///
@@ -142,8 +142,11 @@ impl DataFrame {
             if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
 
         let subset_len = i32::try_from(subset_names.len()).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "subset length exceeds i32::MAX")
-                .with_operation("dataframe::dropna")
+            schema::column_name_count_limit_error(
+                "dataframe::dropna",
+                "subset length exceeds i32::MAX",
+                subset_names.len(),
+            )
         })?;
 
         let threshold = if let Some(t) = opts.thresh {
@@ -163,8 +166,11 @@ impl DataFrame {
             if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
 
         let subset_len = i32::try_from(subset_names.len()).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "subset length exceeds i32::MAX")
-                .with_operation("dataframe::with_execution::dropna")
+            schema::column_name_count_limit_error(
+                "dataframe::with_execution::dropna",
+                "subset length exceeds i32::MAX",
+                subset_names.len(),
+            )
         })?;
 
         let threshold = if let Some(t) = opts.thresh {

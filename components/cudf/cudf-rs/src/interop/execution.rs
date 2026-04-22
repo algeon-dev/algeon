@@ -50,8 +50,8 @@ pub(super) fn prepared_device_event_readiness<'a>(
             "prepared export readiness event must live on the producer CUDA device",
         )
         .with_context("operation", operation)
-        .with_context("producer_device", options.device.to_string())
-        .with_context("event_device", event_device.to_string()));
+        .with_context("left_device", options.device.to_string())
+        .with_context("right_device", event_device.to_string()));
     }
     let event_ptr = event
         .interop_raw_handle()

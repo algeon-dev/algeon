@@ -386,8 +386,8 @@ pub(crate) fn synchronize_runtime_release_completion(
                 )
                 .with_context("operation", operation)
                 .with_context("completion", "same_device_stream")
-                .with_context("release_device", release_device.to_string())
-                .with_context("stream_device", stream_device.to_string()));
+                .with_context("left_device", release_device.to_string())
+                .with_context("right_device", stream_device.to_string()));
             }
             let raw = stream.interop_raw_handle().map_err(|error| {
                 super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error)

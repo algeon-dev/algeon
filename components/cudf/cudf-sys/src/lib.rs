@@ -34,6 +34,12 @@ pub const CUDF_ERROR_INDEX: i32 = 7;
 pub const CUDF_ERROR_UNKNOWN: i32 = 8;
 pub const CUDF_ERROR_FATAL_CUDA: i32 = 9;
 pub const CUDF_ERROR_INVALID_ARGUMENT: i32 = 10;
+pub const CUDF_TEST_IO_METADATA_FAULT_NONE: i32 = 0;
+pub const CUDF_TEST_IO_METADATA_FAULT_NEGATIVE_NAME_COUNT: i32 = 1;
+pub const CUDF_TEST_IO_METADATA_FAULT_NULL_NAME_ARRAY: i32 = 2;
+pub const CUDF_TEST_IO_METADATA_FAULT_NULL_NAME_ENTRY: i32 = 3;
+pub const CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME: i32 = 4;
+pub const CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT: i32 = 5;
 
 pub type cudf_status_t = i32;
 
@@ -2499,6 +2505,25 @@ extern "C" {
     /// Force the next column-view metadata read (`size` or `null_count`) to
     /// fail for panic-elimination regression testing.
     pub fn cudf_test_fail_next_column_view_metadata_read();
+
+    /// Force the next groupby aggregate call to report a negative result
+    /// column count on success for foreign-contract regression testing.
+    pub fn cudf_test_groupby_fail_next_negative_total_columns();
+
+    /// Force the next table-view metadata read for column count to report a
+    /// negative value on success for foreign-contract regression testing.
+    pub fn cudf_test_table_view_fail_next_negative_num_columns();
+
+    /// Force the next table-view metadata read for row count to report a
+    /// negative value on success for foreign-contract regression testing.
+    pub fn cudf_test_table_view_fail_next_negative_num_rows();
+
+    /// Arm a one-shot malformed metadata response for the next JSON/Parquet
+    /// metadata read on the current thread.
+    pub fn cudf_test_io_set_next_metadata_fault(fault: i32);
+
+    /// Clear any armed malformed metadata response on the current thread.
+    pub fn cudf_test_io_reset_metadata_fault();
 
     /// Construct a synthetic fixed-width column_view with a caller-controlled
     /// logical offset. Intended only for regression tests that need edge-case

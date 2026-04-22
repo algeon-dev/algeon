@@ -1,11 +1,13 @@
 //! Internal factorization operators shared by high-level Series/DataFrame APIs.
 
+pub(crate) mod testing_hooks;
+
 use std::sync::Arc;
 
 use crate::{
     core::{
         column::{Column, ColumnView, copy_view_to_owned},
-        error::{Error, ErrorKind, Result},
+        error::{Error, ErrorCode, ErrorKind, Result},
         table::TableView,
         types::TypeId,
     },
@@ -33,6 +35,16 @@ struct FirstSeenKeyOrder {
     ordered_keys: Column,
 }
 
+fn foreign_factorization_row_code_dtype_error(operation: &'static str, actual_type_id: TypeId) -> Error {
+    Error::new(ErrorKind::InvariantViolation, "factorization row-code dtype must be Int32")
+        .with_code(ErrorCode::InvariantViolation)
+        .with_operation(operation)
+        .with_context("resource", "row_codes")
+        .with_context("reason", "unexpected_dtype")
+        .with_context("type_id", format!("{:?}", actual_type_id).to_lowercase())
+        .with_context("remedy", "ensure the factorization backend emits Int32 row codes")
+}
+
 fn empty_code_column(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
@@ -40,9 +52,7 @@ fn empty_code_column(
 ) -> Result<Column> {
     let input_dtype = input.data_type().map_err(|e| e.with_operation(operation))?;
     if input_dtype.id() != TypeId::Int32 {
-        return Err(Error::new(ErrorKind::InvalidOperation, "factorization row-code dtype must be Int32")
-            .with_operation(operation)
-            .with_context("row_code_type_id", format!("{:?}", input_dtype.id()).to_lowercase()));
+        return Err(foreign_factorization_row_code_dtype_error(operation, input_dtype.id()));
     }
 
     Column::empty_in_domain(TypeId::Int32, Arc::clone(output_domain), operation)

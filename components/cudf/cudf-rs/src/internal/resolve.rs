@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::{
     core::{
         column::Column,
-        error::{self, Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
     },
     internal::{
         hash::{FastHashSet, FastIndexMap, fast_hash_set_with_capacity},
@@ -20,8 +20,44 @@ use crate::{
 pub(crate) fn missing_column_error(operation: &'static str, name: impl Into<String>) -> Error {
     let name = name.into();
     Error::new(ErrorKind::NotFound, format!("column '{}' not found in schema", name))
+        .with_code(ErrorCode::MissingColumn)
         .with_operation(operation)
         .with_context("column_name", name)
+}
+
+pub(crate) fn duplicate_column_name_error_with_contract(
+    operation: &'static str,
+    duplicate_name: impl Into<String>,
+    column_name_count: usize,
+    message: impl Into<String>,
+    reason: &'static str,
+    remedy: &'static str,
+) -> Error {
+    let duplicate_name = duplicate_name.into();
+    Error::new(ErrorKind::InvalidInput, message)
+        .with_code(ErrorCode::DuplicateColumnName)
+        .with_operation(operation)
+        .with_context("duplicate_name", duplicate_name)
+        .with_context("column_name_count", column_name_count.to_string())
+        .with_context("resource", "column_name")
+        .with_context("reason", reason)
+        .with_context("remedy", remedy)
+}
+
+pub(crate) fn duplicate_column_name_error(
+    operation: &'static str,
+    duplicate_name: impl Into<String>,
+    column_name_count: usize,
+    message: impl Into<String>,
+) -> Error {
+    duplicate_column_name_error_with_contract(
+        operation,
+        duplicate_name,
+        column_name_count,
+        message,
+        "duplicate_column_name",
+        "ensure column names are unique",
+    )
 }
 
 /// Validate that `names` contains no duplicates.
@@ -33,9 +69,12 @@ pub(crate) fn validate_no_duplicate_names(names: &[String], operation: &'static 
     let mut seen = fast_hash_set_with_capacity(names.len());
     for name in names {
         if !seen.insert(name) {
-            return Err(Error::new(ErrorKind::InvalidOperation, format!("duplicate column name '{}'", name))
-                .with_operation(operation)
-                .with_context("duplicate_name", name.clone()));
+            return Err(duplicate_column_name_error(
+                operation,
+                name.clone(),
+                names.len(),
+                format!("duplicate column name '{}'", name),
+            ));
         }
     }
     Ok(())
@@ -82,7 +121,7 @@ pub(crate) fn build_borrowed_table_view_from_columns<'a>(
         let authoritative_domain =
             columns.values().next().map(|column| Arc::clone(column.execution_domain())).ok_or_else(|| {
                 Error::new(
-                    ErrorKind::InvalidOperation,
+                    ErrorKind::InvalidInput,
                     "building an empty borrowed table view requires an authoritative source column",
                 )
                 .with_operation("internal::build_borrowed_table_view_from_columns")
@@ -123,7 +162,7 @@ mod tests {
     fn validate_no_duplicate_names_rejects_dup() {
         let names = vec!["a".into(), "b".into(), "a".into()];
         let err = validate_no_duplicate_names(&names, "test").unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.context().iter().any(|(k, v)| *k == "duplicate_name" && v == "a"));
     }
 

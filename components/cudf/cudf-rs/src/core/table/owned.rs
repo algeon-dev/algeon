@@ -7,11 +7,11 @@ use std::{
 
 use smallvec::SmallVec;
 
-use super::{TABLE_HANDLE_INLINE_CAPACITY, view::TableView};
+use super::{TABLE_HANDLE_INLINE_CAPACITY, table_column_count_limit_error, view::TableView};
 use crate::{
     core::{
         column::Column,
-        error::{self, Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
     },
     runtime::execution_domain::ExecutionDomain,
 };
@@ -36,11 +36,54 @@ unsafe impl Sync for Table {}
 impl Table {
     fn empty_requires_runtime_error(operation: &'static str) -> Error {
         Error::new(
-            ErrorKind::InvalidOperation,
+            ErrorKind::InvalidInput,
             "creating an empty table requires an explicit runtime because no authoritative input columns exist",
         )
+        .with_code(ErrorCode::EmptyConstructionRequiresRuntime)
         .with_operation(operation)
         .with_context("remedy", "use Runtime::empty_table()")
+    }
+
+    fn row_count_mismatch_error(
+        operation: &'static str,
+        column_index: usize,
+        actual_rows: usize,
+        expected_rows: usize,
+    ) -> Error {
+        Error::new(
+            ErrorKind::InvalidInput,
+            format!("column {column_index} has {actual_rows} rows but column 0 has {expected_rows} rows"),
+        )
+        .with_code(ErrorCode::ColumnLengthMismatch)
+        .with_operation(operation)
+        .with_context("column_index", column_index.to_string())
+        .with_context("actual_rows", actual_rows.to_string())
+        .with_context("expected_rows", expected_rows.to_string())
+    }
+
+    fn validate_uniform_row_counts(columns: &[Column], operation: &'static str) -> Result<()> {
+        let Some(first) = columns.first() else {
+            return Ok(());
+        };
+
+        let first_rows = first
+            .view()
+            .map_err(|e| e.with_operation(operation).with_context("column_index", "0"))?
+            .len()
+            .map_err(|e| e.with_operation(operation).with_context("column_index", "0"))?;
+
+        for (index, column) in columns.iter().enumerate().skip(1) {
+            let rows = column
+                .view()
+                .map_err(|e| e.with_operation(operation).with_context("column_index", index.to_string()))?
+                .len()
+                .map_err(|e| e.with_operation(operation).with_context("column_index", index.to_string()))?;
+            if rows != first_rows {
+                return Err(Self::row_count_mismatch_error(operation, index, rows, first_rows));
+            }
+        }
+
+        Ok(())
     }
 
     fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
@@ -94,10 +137,10 @@ impl Table {
             return Err(Self::empty_requires_runtime_error(operation));
         };
 
+        Self::validate_uniform_row_counts(&columns, operation)?;
+
         let num_columns = i32::try_from(columns.len()).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "number of columns exceeds i32::MAX")
-                .with_operation(operation)
-                .with_context("num_columns", columns.len().to_string())
+            table_column_count_limit_error(operation, "number of columns exceeds i32::MAX", columns.len())
         })?;
         let mut retained_owners = Vec::with_capacity(columns.len());
         let mut handles: SmallVec<[*mut c_void; TABLE_HANDLE_INLINE_CAPACITY]> = SmallVec::with_capacity(columns.len());
