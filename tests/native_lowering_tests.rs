@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
     fs,
+    process::Command,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -592,4 +593,43 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
 
 fn parquet_row_group_count(path: &std::path::Path) -> usize {
     SerializedFileReader::try_from(path).unwrap().metadata().num_row_groups()
+}
+
+const RUNTIME_POLICY_BACKSTOP_CHILD: &str = "DATAFUSION_NEXUS_RUNTIME_POLICY_BACKSTOP_CHILD";
+
+#[test]
+fn cpu_lane_runtime_policy_backstop_child() {
+    if std::env::var_os(RUNTIME_POLICY_BACKSTOP_CHILD).is_none() {
+        return;
+    }
+
+    let error = cudf::Runtime::new().expect_err("CPU-lane policy must reject accidental runtime creation");
+    assert_eq!(error.code(), cudf::ErrorCode::RuntimeCreationForbidden);
+    assert_eq!(error.kind(), cudf::ErrorKind::ExecutionContext);
+    assert_eq!(error.status(), cudf::ErrorStatus::Permanent);
+    assert_eq!(error.operation(), "runtime::RuntimeBuilder::build");
+    assert_eq!(error.detail_value("policy"), Some("forbid"));
+    assert_eq!(error.detail_value("reason"), Some("runtime_creation_forbidden_by_policy"));
+    assert!(error.detail_value("remedy").is_some());
+}
+
+#[test]
+fn cpu_lane_runtime_policy_backstop_returns_typed_error_before_cuda() {
+    let output = Command::new(std::env::current_exe().expect("current native_lowering_tests executable must exist"))
+        .arg("cpu_lane_runtime_policy_backstop_child")
+        .arg("--nocapture")
+        .arg("--test-threads=1")
+        .env(RUNTIME_POLICY_BACKSTOP_CHILD, "1")
+        .env("CUDF_RUNTIME_POLICY", "forbid")
+        .env("CUDA_VISIBLE_DEVICES", "")
+        .output()
+        .expect("runtime-policy backstop child must start");
+
+    assert!(
+        output.status.success(),
+        "runtime-policy backstop child failed with status {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }

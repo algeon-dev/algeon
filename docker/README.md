@@ -29,12 +29,22 @@ The split:
 #    host tools are available).
 bash docker/build.sh                               # full: server,iceberg,cugraph,nvml
 FEATURES=server,iceberg,nvml bash docker/build.sh  # lean: cuDF only, ~3x smaller image
-SKIP_CARGO_BUILD=1 bash docker/build.sh        # reuse an existing target/release build
+SKIP_CARGO_BUILD=1 bash docker/build.sh            # reuse only hash-verified canonical artifact
 
-# 2. Build the image (feature-agnostic: bundles whatever build.sh staged,
-#    harvests only the CUDA libs the binary actually links).
-docker build -t datafusion-nexus-server docker/
+# 2. Copy and run the exact docker build command printed by build.sh. It
+#    includes baseline/profile/target and artifact/provenance hashes, e.g.
+#    docker build --build-arg CPU_BASELINE=... ... \
+#      -t datafusion-nexus-server:x86-64-v2 docker/
 ```
+
+The canonical build does not reuse ambient Cargo/C/C++ codegen configuration.
+`.config/policies/cpu-packaging.toml` supplies the target triple and exact Rust codegen
+flags. `scripts/build/cpu_packaging_policy.py` rejects any ambient codegen override,
+launches Cargo from an isolated working directory and clean `CARGO_HOME`, and
+passes only an allowlisted environment. The staged payload includes
+`cpu-provenance.json` with exact rustc/Cargo versions, target, flags, features,
+profile, policy hash, and binary hash. `SKIP_CARGO_BUILD=1` succeeds only when
+that provenance still matches the selected policy and artifact bytes.
 
 Prerequisites: the forked libs must already be built —
 `../cudf-rs/cudf-install/lib/libcudf.so` and (for cugraph)
@@ -90,14 +100,16 @@ Rust/LLVM codegen pick their instruction set at **compile time** from
 with `-C target-cpu=native` / `-march=native` on a modern build host (AVX-512 +
 AES-NI), which bakes those into unguarded code.
 
-This repo therefore pins a fixed **x86-64-v2** floor (SSE4.2 + POPCNT, ~2008+,
-covers essentially every GPU server):
+The default packaging profile therefore pins a fixed **x86-64-v2** floor
+(~2008+, covering essentially every GPU server):
 
 - **Rust**: `.cargo/config.toml` sets `target-cpu=x86-64-v2`. v2 excludes `aes`,
-  so ahash compiles its **portable fallback** hasher. `build.sh` refuses
-  host-tuned flags (`native`, `+aes`, `+avx512`). The server also calls
-  `ensure_cpu_baseline()` at startup and exits with a clear message (not SIGILL)
-  on an older CPU. The image carries `LABEL org.datafusion-nexus.cpu-baseline`.
+  so ahash compiles its **portable fallback** hasher for normal workspace
+  builds. Redistributable builds additionally use the clean, declarative
+  `portable` profile in `.config/policies/cpu-packaging.toml`; unsafe flags cannot enter
+  by another spelling because ambient flag/config variables are rejected
+  wholesale. Image baseline/profile/target labels come from that same policy
+  and are hard-checked against the staged provenance.
 - **C++ forked libs**: cuDF/cuGraph are built today with empty `CMAKE_CXX_FLAGS`
   (conservative — 0 AES-NI / 0 AVX-512 in `libcudf.so`), so they are already
   portable. Keep it that way: **never pass `-march=native`** to their builds;
@@ -105,10 +117,21 @@ covers essentially every GPU server):
   AES-NI / AVX you *do* see in the binary comes from ring/aws-lc/zstd, which are
   **runtime-dispatched** (CPU-checked before use) and safe on any x86-64.
 
-To trade portability for CPU speed, build a tuned variant locally
-(`RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release`) and ship it under a
-distinct tag — analogous to per-GPU-arch images. Not worth it for a GPU engine
-where CPU SIMD is off the hot path.
+The v2 ISA is a **host precondition**. There is deliberately no in-process
+feature check: v2 instructions may execute before `main`, so a pre-v2 machine
+can terminate with `SIGILL` before a friendly diagnostic is possible.
+
+To trade portability for CPU speed, select the separate tuned profile:
+
+```bash
+CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/build.sh
+# Run the printed command; its tag is datafusion-nexus-server:x86-64-v3-tuned.
+```
+
+This uses a separate target directory, provenance profile, label, and image
+tag. Deploy it only to hosts implementing the full x86-64-v3 ISA; never retag
+it as the portable v2 image. CPU SIMD is normally off this GPU engine's hot
+path, so the portable profile remains the default.
 - **CUDA / driver**: built against the CUDA **13.0** toolkit. The harvested
   runtime libs are minor-version forward-compatible within CUDA 13.x. The host
   needs an NVIDIA driver new enough for CUDA 13 (**≥ 580**) and the
@@ -119,12 +142,14 @@ where CPU SIMD is off the hot path.
 ## Run
 
 ```bash
-docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server
+docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:x86-64-v2
 ```
 
 `docker/run.sh` is a fuller launcher that wires the common env vars (catalog,
 memory policy, cuGraph) and forwards host AWS credentials. The complete,
-code-verified env-var reference lives in the Dockerfile header. Highlights:
+code-verified env-var reference lives in the Dockerfile header. It defaults to
+the portable `:x86-64-v2` tag; set `NEXUS_SERVER_IMAGE` explicitly to run a
+tuned tag. Highlights:
 
 - `NEXUS_SERVER_BIND` (default `0.0.0.0:50051`), `NEXUS_SERVER_LOG`,
   `NEXUS_SERVER_MAX_CONCURRENT_QUERIES`, `NEXUS_SERVER_GPU_DEVICES`.

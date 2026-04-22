@@ -509,7 +509,7 @@ async fn run_iceberg_sql_under_cpu_profile(
     tables: &[(&str, TableFormatScanPlan)],
     sql: &str,
 ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-    // The CPU-fallback profile mirrors the `scripts/run_server.sh` legacy
+    // The CPU-fallback profile mirrors the `scripts/dev/run_server.sh` legacy
     // setup the audit captured: DataFusion's defaults plus an explicit
     // multi-partition target so the EnforceDistribution rule actually injects
     // the repartition / SortPreservingMergeExec shape. `apply_session_profile(CpuFallback)` only flips

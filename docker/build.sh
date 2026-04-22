@@ -33,10 +33,12 @@
 #   bash docker/build.sh                       # server,iceberg,cugraph,nvml (full)
 #   FEATURES=server,iceberg,nvml bash docker/build.sh # lean cudf-only (~1/3 size)
 #   NO_STRIP=1 bash docker/build.sh            # keep debug symbols
-#   SKIP_CARGO_BUILD=1 bash docker/build.sh    # reuse existing target/release
+#   SKIP_CARGO_BUILD=1 bash docker/build.sh    # reuse only verified canonical artifact
+#   CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/build.sh # separate v3 artifact/tag
 #
 # Then:
-#   docker build -t datafusion-nexus-server docker/
+#   Run the exact docker build command printed by this script. Its build args
+#   bind the image labels to the staged provenance.
 #
 # The image is feature-agnostic: it bundles whatever this script staged and
 # harvests only the CUDA libs the binary actually links. A lean cuDF-only
@@ -44,11 +46,29 @@
 
 set -euo pipefail
 
+if [[ "$#" -ne 0 ]]; then
+    echo "ERROR: docker/build.sh accepts no positional or Cargo arguments; select only declared policy inputs via environment." >&2
+    exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DIST_DIR="$SCRIPT_DIR/dist"
-TARGET_ROOT="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
-FEATURES="${FEATURES:-server,iceberg,cugraph,nvml}"
+DIST_DIR="${CPU_PACKAGE_DIST_DIR:-$SCRIPT_DIR/dist}"
+POLICY_FILE="$REPO_ROOT/.config/policies/cpu-packaging.toml"
+POLICY_HELPER="$REPO_ROOT/scripts/build/cpu_packaging_policy.py"
+CPU_PACKAGE_PROFILE="${CPU_PACKAGE_PROFILE:-portable}"
+CPU_PACKAGE_TARGET_ROOT="${CPU_PACKAGE_TARGET_ROOT:-$REPO_ROOT/target/cpu-packaging}"
+FEATURES="$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" normalize-features \
+    --features "${FEATURES:-server,iceberg,cugraph,nvml}")"
+
+eval "$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" describe --profile "$CPU_PACKAGE_PROFILE")"
+
+case "${SKIP_CARGO_BUILD-0}" in
+    0 | 1) SKIP_CARGO_BUILD="${SKIP_CARGO_BUILD-0}" ;;
+    *) echo "ERROR: SKIP_CARGO_BUILD must be 0 or 1, got '${SKIP_CARGO_BUILD}'." >&2; exit 2 ;;
+esac
+
+python3 "$POLICY_HELPER" --policy "$POLICY_FILE" check-env --profile "$CPU_PACKAGE_PROFILE"
 
 # Sibling forked-lib locations (override via env if your layout differs).
 CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR:-$REPO_ROOT/../cudf-rs/cudf-install}"
@@ -61,37 +81,45 @@ want_cugraph=0
 [[ ",$FEATURES," == *",cugraph,"* ]] && want_cugraph=1
 
 echo "==> FEATURES            : $FEATURES   (cugraph=$want_cugraph)"
+echo "==> CPU package profile : $CPU_POLICY_PROFILE ($CPU_PROFILE_KIND)"
+echo "==> CPU baseline        : $CPU_BASELINE"
+echo "==> CPU target          : $CPU_TARGET_TRIPLE"
+echo "==> CPU rustflags       : $CPU_RUSTFLAGS_JSON"
+echo "==> Deployment requires : $CPU_DEPLOYMENT_REQUIREMENT"
 echo "==> CUDF_INSTALL_DIR    : $CUDF_INSTALL_DIR"
 [[ $want_cugraph -eq 1 ]] && echo "==> CUGRAPH_BUILD_DIR   : $CUGRAPH_BUILD_DIR"
 
 cd "$REPO_ROOT"
 
-# ── 0. CPU-portability guard ────────────────────────────────────────────────
-# Redistributable builds must keep a fixed CPU baseline (x86-64-v2, pinned in
-# .cargo/config.toml). Refuse host-tuned flags that bake AVX-512/AES-NI into
-# unguarded codegen (incl. ahash's AES path) and SIGILL on older deploy CPUs.
-guard_cpu_flags() {
-    local flags="${RUSTFLAGS:-} ${CARGO_ENCODED_RUSTFLAGS:-} ${CFLAGS:-} ${CXXFLAGS:-}"
-    if echo "$flags" | grep -qiE 'target-cpu=native|-march=native|\+aes|\+avx512'; then
-        echo "ERROR: host-tuned CPU flags detected -> non-portable image." >&2
-        echo "       Unset RUSTFLAGS/CFLAGS/CXXFLAGS; the x86-64-v2 floor is pinned in .cargo/config.toml." >&2
-        echo "       (offending: $(echo "$flags" | grep -oiE 'target-cpu=native|-march=native|\+aes|\+avx512' | sort -u | tr '\n' ' '))" >&2
-        exit 1
-    fi
-}
-guard_cpu_flags
-echo "==> CPU baseline        : x86-64-v2 (pinned in .cargo/config.toml; no host-tuned flags)"
+# ── 0. Compile or verify canonical artifact ─────────────────────────────────
+# The helper rejects every ambient codegen/config override, starts Cargo from
+# an isolated cwd/CARGO_HOME, and supplies the policy target + rustflags on the
+# command line. Profiles have separate target roots, so tuned artifacts cannot
+# masquerade as portable ones.
+CARGO_BUILD_ROOT="$CPU_PACKAGE_TARGET_ROOT/$CPU_ARTIFACT_DIR"
+BINARY="$CARGO_BUILD_ROOT/$CPU_TARGET_TRIPLE/$CPU_CARGO_PROFILE/datafusion_nexus_server"
+BUILD_PROVENANCE="$BINARY.cpu-provenance.json"
 
-# ── 1. Compile ──────────────────────────────────────────────────────────────
-if [[ "${SKIP_CARGO_BUILD:-0}" != "1" ]]; then
-    echo "==> Building datafusion_nexus_server (features: $FEATURES) ..."
-    cargo build --release --features "$FEATURES" --bin datafusion_nexus_server
+if [[ "$SKIP_CARGO_BUILD" == "0" ]]; then
+    echo "==> Building canonical datafusion_nexus_server artifact ..."
+    python3 "$POLICY_HELPER" --policy "$POLICY_FILE" build \
+        --profile "$CPU_PACKAGE_PROFILE" \
+        --features "$FEATURES" \
+        --target-root "$CPU_PACKAGE_TARGET_ROOT" \
+        --manifest "$REPO_ROOT/Cargo.toml" \
+        --explicit-env "CUDF_INSTALL_DIR=$CUDF_INSTALL_DIR" \
+        --explicit-env "CUGRAPH_BUILD_DIR=$CUGRAPH_BUILD_DIR"
 else
-    echo "==> SKIP_CARGO_BUILD=1 — reusing existing target/release build"
+    echo "==> SKIP_CARGO_BUILD=1 — verifying canonical artifact before reuse"
+    python3 "$POLICY_HELPER" --policy "$POLICY_FILE" verify-build \
+        --profile "$CPU_PACKAGE_PROFILE" \
+        --features "$FEATURES" \
+        --binary "$BINARY" \
+        --provenance "$BUILD_PROVENANCE"
 fi
 
-BINARY="$TARGET_ROOT/release/datafusion_nexus_server"
-[[ -f "$BINARY" ]] || { echo "ERROR: $BINARY not found — build first." >&2; exit 1; }
+[[ -f "$BINARY" ]] || { echo "ERROR: canonical artifact $BINARY not found." >&2; exit 1; }
+[[ -f "$BUILD_PROVENANCE" ]] || { echo "ERROR: build provenance $BUILD_PROVENANCE not found." >&2; exit 1; }
 
 # ── 2. Reset staging dir ────────────────────────────────────────────────────
 echo "==> Resetting $DIST_DIR ..."
@@ -114,7 +142,7 @@ for dir in "${RPATH_DIRS[@]+"${RPATH_DIRS[@]}"}"; do
     [[ -f "$dir/libcudf_rust.so" ]] && { CUDF_RUST_SO="$dir/libcudf_rust.so"; break; }
 done
 if [[ -z "$CUDF_RUST_SO" ]]; then
-    CUDF_RUST_SO=$(find "$TARGET_ROOT/release/build" \
+    CUDF_RUST_SO=$(find "$CARGO_BUILD_ROOT/$CPU_TARGET_TRIPLE/$CPU_CARGO_PROFILE/build" \
         -name libcudf_rust.so -path "*/cudf-sys-*/out/lib/*" 2>/dev/null \
         | head -1)
 fi
@@ -186,12 +214,44 @@ else
     echo "warning: patchelf absent — relying on ENV LD_LIBRARY_PATH=$RUNTIME_LIB_DIR set by the image"
 fi
 
-# ── 8. Manifest ─────────────────────────────────────────────────────────────
+# ── 8. Provenance + manifest ────────────────────────────────────────────────
+python3 "$POLICY_HELPER" --policy "$POLICY_FILE" stage \
+    --profile "$CPU_PACKAGE_PROFILE" \
+    --features "$FEATURES" \
+    --source-binary "$BINARY" \
+    --staged-binary "$DIST_DIR/bin/datafusion_nexus_server" \
+    --build-provenance "$BUILD_PROVENANCE" \
+    --output "$DIST_DIR/cpu-provenance.json" \
+    --labels-output "$DIST_DIR/cpu-provenance.labels"
+
+CPU_BINARY_SHA256=$(awk -F= '$1 == "binary_sha256" { print $2 }' "$DIST_DIR/cpu-provenance.labels")
+CPU_PROVENANCE_SHA256=$(sha256sum "$DIST_DIR/cpu-provenance.json" | awk '{print $1}')
+python3 "$POLICY_HELPER" verify-image-inputs \
+    --provenance "$DIST_DIR/cpu-provenance.json" \
+    --labels "$DIST_DIR/cpu-provenance.labels" \
+    --baseline "$CPU_BASELINE" \
+    --arch "$CPU_IMAGE_ARCH" \
+    --profile "$CPU_POLICY_PROFILE" \
+    --profile-kind "$CPU_PROFILE_KIND" \
+    --target "$CPU_TARGET_TRIPLE" \
+    --binary-sha256 "$CPU_BINARY_SHA256" \
+    --provenance-sha256 "$CPU_PROVENANCE_SHA256"
+
 echo ""
 echo "==> Staged payload ($(du -sh "$DIST_DIR" | cut -f1) total):"
 ( cd "$DIST_DIR" && find . -type f -o -type l | sort | while read -r f; do
     printf '    %-46s %s\n' "$f" "$(du -h "$f" 2>/dev/null | cut -f1)"
   done )
 echo ""
-echo "==> Next:"
-echo "    docker build -t datafusion-nexus-server docker/"
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-datafusion-nexus-server}"
+IMAGE_TAG="$IMAGE_REPOSITORY:$CPU_IMAGE_TAG_SUFFIX"
+echo "==> Canonical Docker command (labels and hashes must match provenance):"
+printf '    docker build'
+printf ' --build-arg %q' "CPU_BASELINE=$CPU_BASELINE"
+printf ' --build-arg %q' "CPU_ARCH=$CPU_IMAGE_ARCH"
+printf ' --build-arg %q' "CPU_PROFILE=$CPU_POLICY_PROFILE"
+printf ' --build-arg %q' "CPU_PROFILE_KIND=$CPU_PROFILE_KIND"
+printf ' --build-arg %q' "CPU_TARGET=$CPU_TARGET_TRIPLE"
+printf ' --build-arg %q' "CPU_BINARY_SHA256=$CPU_BINARY_SHA256"
+printf ' --build-arg %q' "CPU_PROVENANCE_SHA256=$CPU_PROVENANCE_SHA256"
+printf ' -t %q %q\n' "$IMAGE_TAG" "docker/"

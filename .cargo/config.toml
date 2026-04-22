@@ -1,24 +1,26 @@
 # ---------------------------------------------------------------------------
-# CPU portability floor for the redistributable / container build.
+# CPU portability floor for normal GNU x86-64 workspace builds.
 #
-# We promise a minimum host CPU of x86-64-v2 (SSE4.2 + POPCNT, ~Nehalem 2008+),
-# which covers essentially every GPU server. Pinning it here makes the floor
-# INTENTIONAL and UNIFORM across the entire dependency graph compiled in this
-# workspace — including `ahash` (a cudf-rs dependency).
+# Normal GNU x86-64 workspace builds require an x86-64-v2 host. Pinning the
+# floor here makes it intentional and uniform across the dependency graph,
+# including `ahash` (a cudf-rs dependency).
 #
 # Why this matters: `ahash` and all Rust/LLVM codegen choose their instruction
 # set at COMPILE time from `target_feature`, not at runtime. x86-64-v2 does NOT
 # include the `aes` feature, so ahash compiles its portable fallback hasher and
 # the binary stays runnable on any v2+ CPU.
 #
-# NEVER set `target-cpu=native` (or add `+aes`/`+avx512*`) for redistributable
-# builds: the build host (Emerald Rapids) has AVX-512 + AES-NI, and baking those
-# into unguarded codegen makes the binary SIGILL on older deploy CPUs. The
-# server also enforces this floor at startup (see ensure_cpu_baseline()).
+# This is a host precondition, not a friendly runtime check: code can execute
+# before `main`, and the compiler may use v2 instructions in any function. A
+# pre-v2 host can therefore fail with SIGILL before the server can print a
+# diagnostic.
 #
-# Override locally for a CPU-tuned, non-redistributable build, e.g.:
-#   RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release
-# (RUSTFLAGS fully replaces the flags below; it does not merge.)
+# Redistributable builds do not trust ambient Cargo flags or this developer
+# config alone. docker/build.sh uses .config/policies/cpu-packaging.toml and an
+# isolated Cargo invocation with the policy's exact target and codegen flags.
+#
+# Tuned packaging uses the separate `tuned-local-v3` policy profile, artifact
+# directory, provenance identity, image tag, and v3 deployment requirement.
 # ---------------------------------------------------------------------------
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-cpu=x86-64-v2"]

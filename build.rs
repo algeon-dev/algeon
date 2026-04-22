@@ -1,4 +1,4 @@
-#[path = "build-support/rapids.rs"]
+#[path = "scripts/build/rapids.rs"]
 mod rapids;
 
 fn main() {
@@ -9,7 +9,7 @@ fn main() {
     };
 
     rapids::configure(rapids::Config {
-        support_source: "build-support/rapids.rs",
+        support_source: "scripts/build/rapids.rs",
         link_arg_targets: rapids::LinkArgTargets::new(true, true, true),
         cugraph_runtime,
     });

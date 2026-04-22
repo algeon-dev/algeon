@@ -5,7 +5,7 @@
 # so parallel builds don't clobber each other.
 #
 # Usage:
-#   scripts/new_worktree.sh <name> [base-ref]
+#   scripts/dev/new_worktree.sh <name> [base-ref]
 #
 #   <name>     short tag used for the branch and worktree dir
 #   [base-ref] branch/sha to fork from (default: main)
@@ -33,7 +33,7 @@ if [[ ! "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
 parent_dir="$(dirname "$repo_root")"
 
 worktree_path="$parent_dir/datafusion-nexus-wt-$name"

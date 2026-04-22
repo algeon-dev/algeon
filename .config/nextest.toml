@@ -1,5 +1,5 @@
 # schema: https://nexte.st/schemas/repo-config.json
-nextest-version = { required = "0.9.133" }
+nextest-version = { required = "0.9.140" }
 
 [profile.default]
 # Match the local `cargo test --no-fail-fast` workflow while letting nextest
@@ -7,82 +7,47 @@ nextest-version = { required = "0.9.133" }
 fail-fast = false
 slow-timeout = { period = "120s" }
 
-[profile.gpu-parallel]
-# Opt-in profile used by scripts/check_all.sh when GPU_PARALLEL=1.
-fail-fast = false
-slow-timeout = { period = "120s" }
-
 [test-groups.gpu]
-# Intra-suite GPU parallelism. The outer `flock /tmp/cudf-gpu.lock` still
-# serializes the WHOLE invocation against OTHER GPU consumers (benchmarks,
-# server, E2E); this knob only bounds how many GPU tests run concurrently
-# *within* that locked invocation.
-#
-# Why 4 (not 1): these unit/contract/parity tests run on tiny fixtures and SF1
-# data, each using a small fraction of the card's VRAM, so RMM (which grows
-# on-demand, no preallocation) does not over-subscribe. Validated on a 95 GiB
-# card: 332 heavy GPU tests (native_execution + native_tpcds_parity) passed
-# 4-wide with zero failures, 909s -> 284s (3.2x). Lower to 1 only if a future
-# test asserts on the auto-sized whole-GPU device budget under concurrency.
-max-threads = 4
+# Use every CPU core available to the current environment for shared-GPU tests.
+# scripts/check_all.sh resolves the same value with `nproc` and passes it
+# explicitly through `--test-threads`. The outer GPU lock still serializes this
+# lane against other GPU consumers.
+max-threads = "num-cpus"
 
-[test-groups.gpu-parallel]
-# Opt-in higher fan-out for GPU tests (scripts/check_all.sh GPU_PARALLEL=1),
-# after the caller has acquired the repository GPU flock. Effective concurrency
-# is min(--test-threads / GPU_TEST_THREADS, this value).
-max-threads = 8
+[test-groups.gpu-exclusive]
+# Binaries that mutate process-global allocator state or require whole-device
+# isolation run in a separate locked invocation after the shared GPU lane. The
+# group cap and scripts/check_all.sh both fix their concurrency at one.
+max-threads = 1
 
-# GPU test-group membership is BINARY-LEVEL and is a deliberate, hand-maintained
-# classification -- NOT a per-test or per-module filter. This is on purpose:
-#
-#   * GPU use is a RUNTIME property reached indirectly. Most GPU tests never name
-#     `cudf::Runtime` in their own source; they drive the GPU through a DataFusion
-#     SessionContext, the cuGraph table functions, or the Flight SQL server, which
-#     create the device runtime internally in `src/`. So there is no sound static
-#     marker (grep / `test(/module::/)` path filter) for "this test uses the GPU" --
-#     such filters are unsound and rot silently on rename.
-#   * Therefore the unit of classification is the test BINARY, and a binary belongs
-#     here iff ANY of its tests can execute on the GPU. A few CPU-only tests sharing
-#     a mixed binary ride along in this group; with max-threads=4 that costs little
-#     and keeps the rule unambiguous.
-#
-# INVARIANT (enforced by scripts/check_gpu_test_lane.sh): every workspace test
-# binary is classified as either GPU (listed below) or CPU-only (allowlisted in
-# that script). Adding a new test binary -- or one that newly touches the GPU --
-# fails that check until it is classified here. Keep this list and the
-# gpu-parallel list below identical.
-#
-# Run the suite as ONE flocked invocation (no `-E group(gpu)` filter) so nothing
-# is silently skipped; the group throttles GPU tests while CPU tests run free:
-#   flock /tmp/cudf-gpu.lock cargo nextest run --all-features --no-fail-fast
+# .config/policies/test-lanes.toml owns binary admission, reasons, and resource classes.
+# This file owns only nextest scheduling mechanics; the override section below
+# is generated and byte-for-byte checked by scripts/ci/test_lane_policy.py.
+# BEGIN GENERATED TEST-LANE OVERRIDES — scripts/ci/test_lane_policy.py
+# Source: .config/policies/test-lanes.toml. Do not edit this section by hand.
+# Regenerate: python3 scripts/ci/test_lane_policy.py generate-nextest --write
+
 [[profile.default.overrides]]
 filter = '''
-(package(nexus-query-engine) & binary(native_execution_tests))
-| (package(nexus-query-engine) & kind(lib))
-| (package(nexus-query-engine) & binary(native_contract_tests))
-| (package(nexus-query-engine) & binary(query_service_allocator_lifecycle))
+(package(datafusion-nexus) & kind(lib))
 | (package(datafusion-nexus) & binary(cugraph_tests))
 | (package(datafusion-nexus) & binary(iceberg_tests))
 | (package(datafusion-nexus) & binary(native_exec_tests))
+| (package(datafusion-nexus) & binary(native_metrics_tests))
 | (package(datafusion-nexus) & binary(native_runtime_pruning_tests))
 | (package(datafusion-nexus) & binary(native_tpcds_parity_tests))
 | (package(datafusion-nexus) & binary(server_cugraph_tests))
 | (package(datafusion-nexus) & binary(server_tests))
+| (package(datafusion-nexus) & binary(session_config_tests))
+| (package(nexus-query-engine) & kind(lib))
+| (package(nexus-query-engine) & binary(native_contract_tests))
+| (package(nexus-query-engine) & binary(native_execution_tests))
 '''
 test-group = "gpu"
 
-[[profile.gpu-parallel.overrides]]
+[[profile.default.overrides]]
 filter = '''
-(package(nexus-query-engine) & binary(native_execution_tests))
-| (package(nexus-query-engine) & kind(lib))
-| (package(nexus-query-engine) & binary(native_contract_tests))
-| (package(nexus-query-engine) & binary(query_service_allocator_lifecycle))
-| (package(datafusion-nexus) & binary(cugraph_tests))
-| (package(datafusion-nexus) & binary(iceberg_tests))
-| (package(datafusion-nexus) & binary(native_exec_tests))
-| (package(datafusion-nexus) & binary(native_runtime_pruning_tests))
-| (package(datafusion-nexus) & binary(native_tpcds_parity_tests))
-| (package(datafusion-nexus) & binary(server_cugraph_tests))
-| (package(datafusion-nexus) & binary(server_tests))
+(package(nexus-query-engine) & binary(query_service_allocator_lifecycle))
 '''
-test-group = "gpu-parallel"
+test-group = "gpu-exclusive"
+# END GENERATED TEST-LANE OVERRIDES — scripts/ci/test_lane_policy.py

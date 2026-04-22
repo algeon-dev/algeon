@@ -32,12 +32,27 @@
 # to retarget a different CUDA minor / Ubuntu base / pinned digest.
 ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:13.2.1-runtime-ubuntu24.04
 ARG CUDA_BASE_IMAGE=nvidia/cuda:13.2.1-base-ubuntu24.04
+ARG CPU_BASELINE
+ARG CPU_ARCH
+ARG CPU_PROFILE
+ARG CPU_PROFILE_KIND
+ARG CPU_TARGET
+ARG CPU_BINARY_SHA256
+ARG CPU_PROVENANCE_SHA256
 
 # ===========================================================================
 # Stage 1 — harvest the CUDA toolkit subset this binary actually links
 # ===========================================================================
 FROM ${CUDA_RUNTIME_IMAGE} AS cuda-harvest
 USER root
+
+ARG CPU_BASELINE
+ARG CPU_ARCH
+ARG CPU_PROFILE
+ARG CPU_PROFILE_KIND
+ARG CPU_TARGET
+ARG CPU_BINARY_SHA256
+ARG CPU_PROVENANCE_SHA256
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -48,6 +63,19 @@ RUN apt-get update && \
 # RUNPATH (/app/lib, set by build.sh) resolves the forked libs during ldd.
 COPY dist/bin/datafusion_nexus_server /app/datafusion_nexus_server
 COPY dist/lib/                        /app/lib/
+COPY dist/cpu-provenance.json         /app/cpu-provenance.json
+COPY dist/cpu-provenance.labels       /app/cpu-provenance.labels
+
+# Refuse an image whose payload, declared policy identity, or hashes do not
+# match the clean packaging output staged by docker/build.sh.
+RUN printf '%s  %s\n' "${CPU_BINARY_SHA256}" /app/datafusion_nexus_server | sha256sum -c - && \
+    printf '%s  %s\n' "${CPU_PROVENANCE_SHA256}" /app/cpu-provenance.json | sha256sum -c - && \
+    grep -Fx "cpu_baseline=${CPU_BASELINE}" /app/cpu-provenance.labels && \
+    grep -Fx "cpu_arch=${CPU_ARCH}" /app/cpu-provenance.labels && \
+    grep -Fx "cpu_profile=${CPU_PROFILE}" /app/cpu-provenance.labels && \
+    grep -Fx "cpu_profile_kind=${CPU_PROFILE_KIND}" /app/cpu-provenance.labels && \
+    grep -Fx "cpu_target=${CPU_TARGET}" /app/cpu-provenance.labels && \
+    grep -Fx "binary_sha256=${CPU_BINARY_SHA256}" /app/cpu-provenance.labels
 
 # Resolve the binary's full dependency closure and copy only the libraries
 # that live under the CUDA toolkit prefix. The forked libs are already present
@@ -70,6 +98,14 @@ RUN set -eu; mkdir -p /cuda-collect; \
 FROM ${CUDA_BASE_IMAGE} AS runtime
 USER root
 
+ARG CPU_BASELINE
+ARG CPU_ARCH
+ARG CPU_PROFILE
+ARG CPU_PROFILE_KIND
+ARG CPU_TARGET
+ARG CPU_BINARY_SHA256
+ARG CPU_PROVENANCE_SHA256
+
 # Runtime system libs the forked RAPIDS libs need that are NOT in the CUDA
 # -base image: libgomp1 (OpenMP, cuVS/cuGraph), libbrotli1 (Arrow/Parquet in
 # libcudf), ca-certificates (TLS to S3/Glue). tini = correct PID 1 / signals.
@@ -78,11 +114,15 @@ RUN apt-get update && \
         libgomp1 libbrotli1 ca-certificates tini && \
     rm -rf /var/lib/apt/lists/*
 
-# Minimum host CPU this image's binary was compiled for. The Rust side is
-# pinned to x86-64-v2 (.cargo/config.toml) so ahash uses its portable fallback;
-# the server also enforces this at startup. See README "CPU portability".
-LABEL org.datafusion-nexus.cpu-baseline="x86-64-v2" \
-      org.datafusion-nexus.cpu-arch="amd64"
+# Policy and artifact identity are supplied only by the verified canonical
+# packaging command printed by docker/build.sh.
+LABEL org.datafusion-nexus.cpu-baseline="${CPU_BASELINE}" \
+      org.datafusion-nexus.cpu-arch="${CPU_ARCH}" \
+      org.datafusion-nexus.cpu-profile="${CPU_PROFILE}" \
+      org.datafusion-nexus.cpu-profile-kind="${CPU_PROFILE_KIND}" \
+      org.datafusion-nexus.cpu-target="${CPU_TARGET}" \
+      org.datafusion-nexus.binary-sha256="${CPU_BINARY_SHA256}" \
+      org.datafusion-nexus.provenance-sha256="${CPU_PROVENANCE_SHA256}"
 
 ARG USERNAME=appuser
 ARG USER_UID=1001
@@ -96,6 +136,7 @@ WORKDIR /app
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/lib/      /app/lib/
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /cuda-collect/ /app/lib/
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/datafusion_nexus_server /app/datafusion_nexus_server
+COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/cpu-provenance.json /app/cpu-provenance.json
 
 # RUNPATH already points at /app/lib (binary) and $ORIGIN (libs); keep
 # LD_LIBRARY_PATH as a belt-and-suspenders fallback for hosts without patchelf.

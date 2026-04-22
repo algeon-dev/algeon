@@ -11,7 +11,7 @@
 # error.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 GPU_LOCK="${GPU_LOCK:-/tmp/cudf-gpu.lock}"
 OUTPUT_DIR="${NEXUS_ADMISSION_MATRIX_OUTPUT_DIR:-target/query_service_admission_matrix}"

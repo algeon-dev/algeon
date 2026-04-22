@@ -6,7 +6,7 @@
 # Prereqs: a running cuGraph-enabled server and arrow_cli on PATH.
 #   cargo build --release --features server-cugraph --bin datafusion_nexus_server
 #   NEXUS_SERVER_CUGRAPH_ENABLED=true \
-#   NEXUS_SERVER_BIND=127.0.0.1:50051 bash scripts/run_server.sh
+#   NEXUS_SERVER_BIND=127.0.0.1:50051 bash scripts/dev/run_server.sh
 set -euo pipefail
 
 HOST="${CUGRAPH_DOCS_HOST:-127.0.0.1}"
