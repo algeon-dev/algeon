@@ -222,12 +222,10 @@ impl NativeTpchBenchmarkReport {
                     .map_or_else(|| "session_default".to_string(), |value| value.to_string())
             ),
         );
-        push_line(
+        write_native_execution_policy_metadata(
             &mut output,
-            format_args!(
-                "# tpch_benchmark_native_pipeline_execution_mode={}",
-                self.config.native_pipeline_execution_mode.as_str()
-            ),
+            self.config.native_pipeline_execution_mode,
+            self.config.native_fallback_policy,
         );
         push_line(
             &mut output,

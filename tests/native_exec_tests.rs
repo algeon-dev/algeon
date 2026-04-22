@@ -716,6 +716,169 @@ fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
 }
 
 #[test]
+fn gpu_only_count_only_probe_miss_reaches_final_native_optimizer() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-gpu-only-probe-miss");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuOnly).with_native_execution_config(bounded_config());
+    let rules = cudf_native_physical_optimizer_rules(config);
+    let count_only_probe = rules
+        .iter()
+        .find(|rule| rule.name() == "datafusion_nexus_native_count_only")
+        .expect("native optimizer rules should contain the count-only probe");
+    let final_native = rules
+        .iter()
+        .find(|rule| rule.name() == "datafusion_nexus_native")
+        .expect("native optimizer rules should contain the final native rule");
+
+    let after_probe = count_only_probe
+        .optimize(plan, &ConfigOptions::default())
+        .expect("a non-count plan must not be rejected by the GpuOnly count-only probe");
+    assert!(
+        after_probe.downcast_ref::<NativeCudfExec>().is_none(),
+        "the count-only probe should decline an analytical SUM plan"
+    );
+    let probe_report = (count_only_probe.as_ref() as &dyn std::any::Any)
+        .downcast_ref::<CudfNativePhysicalOptimizerRule>()
+        .expect("count-only optimizer rule should be native")
+        .last_report()
+        .expect("count-only probe should record its own rejection evidence");
+    assert_eq!(probe_report.rewritten_count(), 0);
+    assert_eq!(probe_report.rejected_count(), 1);
+
+    let optimized = final_native
+        .optimize(after_probe, &ConfigOptions::default())
+        .expect("the final native optimizer must run after a count-only probe miss");
+    assert!(
+        optimized.downcast_ref::<NativeCudfExec>().is_some(),
+        "the final native optimizer should rewrite the supported analytical plan"
+    );
+    let final_report = (final_native.as_ref() as &dyn std::any::Any)
+        .downcast_ref::<CudfNativePhysicalOptimizerRule>()
+        .expect("final optimizer rule should be native")
+        .last_report()
+        .expect("final optimizer should record separate native rewrite evidence");
+    assert_eq!(final_report.rewritten_count(), 1);
+    assert_eq!(final_report.rejected_count(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn gpu_only_final_rejection_replaces_count_only_probe_diagnostics_before_error() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-gpu-only-final-rejection-evidence");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
+    let rules = cudf_native_physical_optimizer_rules(
+        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuOnly).with_native_execution_config(bounded_config()),
+    );
+    let count_only_probe = rules
+        .iter()
+        .find(|rule| rule.name() == "datafusion_nexus_native_count_only")
+        .expect("native optimizer rules should contain the count-only probe");
+    let final_native = rules
+        .iter()
+        .find(|rule| rule.name() == "datafusion_nexus_native")
+        .expect("native optimizer rules should contain the final native rule");
+
+    let after_probe = count_only_probe
+        .optimize(plan, &ConfigOptions::default())
+        .expect("a normal count-only probe miss must remain non-terminal under GpuOnly");
+    let probe_report = (count_only_probe.as_ref() as &dyn std::any::Any)
+        .downcast_ref::<CudfNativePhysicalOptimizerRule>()
+        .expect("count-only optimizer rule should be native")
+        .last_report()
+        .expect("count-only probe should retain its own evidence");
+    assert!(matches!(
+        probe_report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedOperator, .. }
+    ));
+
+    final_native
+        .optimize(after_probe, &ConfigOptions::default())
+        .expect_err("the final GpuOnly boundary must reject an unsupported expression");
+    let final_report = (final_native.as_ref() as &dyn std::any::Any)
+        .downcast_ref::<CudfNativePhysicalOptimizerRule>()
+        .expect("final optimizer rule should be native")
+        .last_report()
+        .expect("final rejection should replace the probe's retained evidence before returning an error");
+    assert!(matches!(
+        final_report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn gpu_only_count_only_probe_retains_its_native_rewrite() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-gpu-only-count-probe");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let plan = count_only_sort_limit_plan(parquet_scan(&path));
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuOnly).with_native_execution_config(bounded_config());
+    let rules = cudf_native_physical_optimizer_rules(config);
+    let count_only_probe = rules
+        .iter()
+        .find(|rule| rule.name() == "datafusion_nexus_native_count_only")
+        .expect("native optimizer rules should contain the count-only probe");
+    let final_native = rules
+        .iter()
+        .find(|rule| rule.name() == "datafusion_nexus_native")
+        .expect("native optimizer rules should contain the final native rule");
+
+    let after_probe = count_only_probe
+        .optimize(plan, &ConfigOptions::default())
+        .expect("GpuOnly count-only probe should retain supported native count rewrites");
+    assert!(after_probe.downcast_ref::<NativeCudfExec>().is_some());
+    let probe_report = (count_only_probe.as_ref() as &dyn std::any::Any)
+        .downcast_ref::<CudfNativePhysicalOptimizerRule>()
+        .expect("count-only optimizer rule should be native")
+        .last_report()
+        .expect("count-only probe should record its rewrite evidence");
+    assert_eq!(probe_report.rewritten_count(), 1);
+    assert_eq!(probe_report.rejected_count(), 0);
+    let after_final = final_native
+        .optimize(after_probe, &ConfigOptions::default())
+        .expect("the final native optimizer should preserve a count-only native rewrite");
+    assert!(after_final.downcast_ref::<NativeCudfExec>().is_some());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn cpu_only_count_only_probe_cannot_bypass_cpu_policy() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-cpu-only-count-probe");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let plan = count_only_sort_limit_plan(parquet_scan(&path));
+    let rules = cudf_native_physical_optimizer_rules(
+        CudfOptimizerConfig::new(GpuFallbackPolicy::CpuOnly).with_native_execution_config(bounded_config()),
+    );
+    let count_only_probe = rules
+        .iter()
+        .find(|rule| rule.name() == "datafusion_nexus_native_count_only")
+        .expect("native optimizer rules should contain the count-only probe");
+    let final_native = rules
+        .iter()
+        .find(|rule| rule.name() == "datafusion_nexus_native")
+        .expect("native optimizer rules should contain the final native rule");
+
+    let after_probe = count_only_probe
+        .optimize(plan, &ConfigOptions::default())
+        .expect("CpuOnly count-only probe should retain the host plan");
+    assert!(after_probe.downcast_ref::<NativeCudfExec>().is_none());
+    let after_final = final_native
+        .optimize(after_probe, &ConfigOptions::default())
+        .expect("CpuOnly final optimizer should retain the host plan");
+    assert!(after_final.downcast_ref::<NativeCudfExec>().is_none());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_optimizer_rule_composes_supported_host_arrow_parent_over_native_child() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-partial-host-arrow-boundary");
     let path = dir.join("input.parquet");

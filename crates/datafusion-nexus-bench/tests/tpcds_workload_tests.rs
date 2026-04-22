@@ -15,33 +15,48 @@ use datafusion_nexus::{
 };
 use datafusion_nexus_bench::{
     report_metadata::ReportDatasetMetadataExt,
-    report_workload::tpcds::{
-        CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV,
-        CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV,
-        CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV,
-        CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV,
-        CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-        CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-        CUDF_TPCDS_NATIVE_PROFILE_ENV, CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
-        TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS, TPCDS_NATIVE_PROFILE_CONSERVATIVE,
-        TPCDS_NATIVE_PROFILE_CUSTOM, TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
-        TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
-        TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, TpcdsNativeProfileSettings, TpcdsParityProgressEvent,
-        tpcds_datafusion_planning_workload_items, tpcds_native_analytics_optimizer_config_with_profile_settings,
-        tpcds_native_cpu_preference_options_with_env, tpcds_native_optimizer_config_with_profile_settings,
-        tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
-        tpcds_parity_report_rows_with_external_oracles, tpcds_report_session_config,
+    report_workload::{
+        gpu_fallback_policy_label, parse_gpu_fallback_policy,
+        tpcds::{
+            CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV,
+            CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV,
+            CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV,
+            CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV,
+            CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+            CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+            CUDF_TPCDS_NATIVE_PROFILE_ENV, CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+            TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS, TPCDS_NATIVE_PROFILE_CONSERVATIVE,
+            TPCDS_NATIVE_PROFILE_CUSTOM, TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
+            TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
+            TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, TpcdsNativeProfileSettings, TpcdsParityProgressEvent,
+            tpcds_datafusion_planning_workload_items, tpcds_native_analytics_optimizer_config_with_profile_settings,
+            tpcds_native_cpu_preference_options_with_env, tpcds_native_optimizer_config_with_profile_settings,
+            tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
+            tpcds_parity_report_rows_with_external_oracles, tpcds_report_session_config,
+        },
     },
 };
 use datafusion_nexus_workloads::tpcds::{
     TPCDS_QUERIES, TPCDS_QUERY_COUNT, TPCDS_TABLES, describe_tpcds_dataset, tiny_tpcds_dataset_metadata,
     tpcds_query_ids, write_tiny_tpcds_parquet_dataset,
 };
+use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 #[test]
 fn tpcds_query_count_matches_official_99_queries() {
     assert_eq!(TPCDS_QUERY_COUNT, 99);
     assert_eq!(TPCDS_QUERIES.len(), 99);
+}
+
+#[test]
+fn native_workload_fallback_policy_parser_accepts_stable_spellings() {
+    assert_eq!(parse_gpu_fallback_policy("gpu_only").unwrap(), GpuFallbackPolicy::GpuOnly);
+    assert_eq!(parse_gpu_fallback_policy("gpu-preferred").unwrap(), GpuFallbackPolicy::GpuPreferred);
+    assert_eq!(parse_gpu_fallback_policy("CpuOnly").unwrap(), GpuFallbackPolicy::CpuOnly);
+    assert!(parse_gpu_fallback_policy("native_only").is_err());
+    assert_eq!(gpu_fallback_policy_label(GpuFallbackPolicy::GpuOnly), "gpu_only");
+    assert_eq!(gpu_fallback_policy_label(GpuFallbackPolicy::GpuPreferred), "gpu_preferred");
+    assert_eq!(gpu_fallback_policy_label(GpuFallbackPolicy::CpuOnly), "cpu_only");
 }
 
 #[test]
@@ -104,8 +119,8 @@ fn tpcds_production_planning_builder_preserves_order_and_retained_diagnostics() 
                 let mut report_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
                 report_ids.dedup();
                 assert_eq!(report_ids, expected_ids);
-                assert_eq!(report.accepted_count(), 129);
-                assert_eq!(report.rejected_count(), 156);
+                assert_eq!(report.accepted_count(), 99);
+                assert_eq!(report.rejected_count(), 0);
                 for query_id in ["q01", "q39", "q72"] {
                     let row = report.rows.iter().find(|row| row.query_id == query_id).unwrap();
                     assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{query_id}");
@@ -166,6 +181,7 @@ fn tpcds_native_optimizer_configs_disable_cpu_preference_for_gpu_only_sql_surfac
         !analytics_config.native_plan_preference_options().enabled,
         "TPC-DS native analytics/GPU benchmark surfaces must keep all supported plans on native GPU"
     );
+    assert_eq!(analytics_config.native_pipeline_execution_mode(), NativePipelineExecutionMode::StrictBounded);
 }
 
 #[test]

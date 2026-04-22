@@ -75,13 +75,13 @@ use nexus_query_engine::{
 
 #[path = "support/analytical_olap_workload.rs"]
 mod analytical_olap_workload;
-#[path = "support/tpch_report.rs"]
-mod tpch_report;
+#[path = "support/tpch_fallback_workload.rs"]
+mod tpch_fallback_workload;
 #[path = "support/tpch_session.rs"]
 mod tpch_session;
 
 use analytical_olap_workload::*;
-use tpch_report::tpch_fallback_pressure_workload_items;
+use tpch_fallback_workload::tpch_fallback_pressure_workload_items;
 use tpch_session::tpch_report_session_config;
 
 #[path = "native_lowering_tests/analytical_olap.rs"]

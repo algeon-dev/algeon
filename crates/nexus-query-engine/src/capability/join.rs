@@ -884,12 +884,11 @@ fn reusable_hash_prebuild_supported_for_plan(plan: &QueryPlan, join: &JoinNode) 
 }
 
 fn hash_join_prebuild_reservation_supported_type(data_type: &DataType) -> bool {
+    // Flat strings use cuDF's data-dependent exact pre-build contract; only
+    // structural nested keys are rejected here.
     !matches!(
         data_type,
-        DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Utf8View
-            | DataType::List(_)
+        DataType::List(_)
             | DataType::LargeList(_)
             | DataType::FixedSizeList(_, _)
             | DataType::Struct(_)

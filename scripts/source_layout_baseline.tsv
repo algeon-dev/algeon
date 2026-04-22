@@ -5,14 +5,14 @@ production 1150 crates/datafusion-nexus-bench/src/bin/native_iceberg_tpch_benchm
 production 915 crates/datafusion-nexus-bench/src/bin/query_service_iceberg_stress.rs
 production 1160 crates/datafusion-nexus-bench/src/bin/query_service_tpcds_stress.rs
 production 971 crates/datafusion-nexus-bench/src/bin/tpcds_outlier_triage.rs
-production 913 crates/datafusion-nexus-bench/src/iceberg_smoke/config.rs
+production 912 crates/datafusion-nexus-bench/src/iceberg_smoke/config.rs
 production 917 crates/datafusion-nexus-bench/src/iceberg_smoke/runner.rs
-production 979 crates/datafusion-nexus-bench/src/tpch_benchmark/reports.rs
+production 977 crates/datafusion-nexus-bench/src/tpch_benchmark/reports.rs
 production 1204 crates/datafusion-nexus-workloads/src/tpcds/fixture.rs
 production 1757 crates/nexus-query-engine/src/capability/admission.rs
 production 847 crates/nexus-query-engine/src/capability/aggregate.rs
 production 1408 crates/nexus-query-engine/src/capability/invariant.rs
-production 1252 crates/nexus-query-engine/src/capability/join.rs
+production 1251 crates/nexus-query-engine/src/capability/join.rs
 production 1437 crates/nexus-query-engine/src/capability/model.rs
 production 1135 crates/nexus-query-engine/src/capability/node.rs
 production 1201 crates/nexus-query-engine/src/capability/shape/access.rs
@@ -73,7 +73,7 @@ test 2280 crates/nexus-query-engine/src/runtime/query_service/tests.rs
 production 839 crates/nexus-query-engine/src/runtime/source_fetch.rs
 production 148 crates/nexus-query-engine/src/source.rs
 production 1034 crates/nexus-query-engine/src/source/parquet.rs
-test 3164 crates/nexus-query-engine/tests/native_contract_tests/bounded_join_admission.rs
+test 3146 crates/nexus-query-engine/tests/native_contract_tests/bounded_join_admission.rs
 test 2437 crates/nexus-query-engine/tests/native_contract_tests/graph_algorithm.rs
 test 3020 crates/nexus-query-engine/tests/native_contract_tests/optimizer_contracts/dynamic_filter.rs
 test 2232 crates/nexus-query-engine/tests/native_contract_tests/optimizer_contracts/shared_subplan_materialization.rs
@@ -108,6 +108,6 @@ production 1507 src/table_format/iceberg/planner.rs
 production 1295 src/table_format/iceberg/planner/tasks.rs
 production 1232 src/table_format/scan/source_resolution.rs
 test 1856 tests/iceberg/table_format_provider_tests.rs
-test 1647 tests/native_tpcds_parity_tests/sf1.rs
+test 1518 tests/native_tpcds_parity_tests/sf1.rs
 test 2469 tests/server/server_config_tests.rs
 test 1972 tests/server/server_flight_sql_tests.rs

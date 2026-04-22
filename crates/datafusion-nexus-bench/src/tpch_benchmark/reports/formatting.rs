@@ -1,5 +1,20 @@
 use super::*;
 
+pub(super) fn write_native_execution_policy_metadata(
+    output: &mut String,
+    pipeline_execution_mode: NativePipelineExecutionMode,
+    fallback_policy: GpuFallbackPolicy,
+) {
+    push_line(
+        output,
+        format_args!("# tpch_benchmark_native_pipeline_execution_mode={}", pipeline_execution_mode.as_str()),
+    );
+    push_line(
+        output,
+        format_args!("# tpch_benchmark_native_fallback_policy={}", gpu_fallback_policy_label(fallback_policy)),
+    );
+}
+
 pub(super) fn write_native_memory_policy_metadata(
     output: &mut String,
     memory_policy: NativeTpchMemoryPolicy,

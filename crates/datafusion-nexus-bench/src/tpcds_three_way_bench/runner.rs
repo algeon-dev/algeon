@@ -31,18 +31,25 @@ use datafusion_nexus::{
     },
     native_report::{NativeDataFusionExecutionMetrics, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow},
     planner::CudfNativePhysicalOptimizerRule,
+    policy::GpuFallbackPolicy,
     report::CandidateOutcome,
     session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpcds::{TPCDS_QUERIES, TpcdsQuery};
-use nexus_query_engine::{harness::max_option as max_optional_usize, mode::StatisticalAggregateExecutionMode};
+use nexus_query_engine::{
+    harness::max_option as max_optional_usize,
+    mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
+};
 
-use crate::report_workload::tpcds::{
-    CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
-    TpcdsNativeProfileSettings, register_tpcds_tables_with_native_metadata,
-    tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings,
-    tpcds_native_analytics_optimizer_config_with_profile_settings, tpcds_native_profile_settings_from_env,
-    tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
+use crate::report_workload::{
+    gpu_fallback_policy_label,
+    tpcds::{
+        CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
+        TpcdsNativeProfileSettings, register_tpcds_tables_with_native_metadata,
+        tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings,
+        tpcds_native_analytics_optimizer_config_with_profile_settings, tpcds_native_profile_settings_from_env,
+        tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
+    },
 };
 
 mod config;
@@ -53,7 +60,7 @@ use report::{NativeTimingMetrics, TSV_HEADER, print_metadata, print_progress, pr
 pub async fn run() -> Result<(), Box<dyn Error>> {
     let cfg = BenchConfig::from_env()?;
     eprintln!(
-        "[tpcds_three_way_bench] engine={} root={} queries={} warmups={} iterations={} native_profile={} native_device_budget_bytes={} native_max_source_chunk_bytes={} native_max_row_groups_per_chunk={} native_source_chunk_planning_mode={}",
+        "[tpcds_three_way_bench] engine={} root={} queries={} warmups={} iterations={} native_profile={} native_device_budget_bytes={} native_max_source_chunk_bytes={} native_max_row_groups_per_chunk={} native_source_chunk_planning_mode={} native_fallback_policy={} native_pipeline_execution_mode={}",
         cfg.engine.as_str(),
         cfg.root.display(),
         cfg.queries.iter().map(|q| q.id).collect::<Vec<_>>().join(","),
@@ -64,6 +71,8 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         cfg.native_profile.max_source_chunk_bytes,
         cfg.native_profile.max_row_groups_per_chunk,
         cfg.native_profile.source_chunk_planning_mode.as_str(),
+        gpu_fallback_policy_label(cfg.native_fallback_policy),
+        cfg.native_pipeline_execution_mode.as_str(),
     );
 
     let runtime = build_runtime(&cfg).await?;
@@ -123,6 +132,8 @@ struct BenchConfig {
     warmups: usize,
     iterations: usize,
     native_profile: TpcdsNativeProfileSettings,
+    native_fallback_policy: GpuFallbackPolicy,
+    native_pipeline_execution_mode: NativePipelineExecutionMode,
 }
 
 struct IterOutcome {

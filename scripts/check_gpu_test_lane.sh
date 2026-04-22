@@ -65,6 +65,7 @@ datafusion-nexus::table_format_scan_tests
 datafusion-nexus-bench::clickbench_workload_tests
 datafusion-nexus-bench::iceberg_bin_tests
 datafusion-nexus-bench::native_clickbench_execution_report_tests
+datafusion-nexus-bench::native_policy_run_evidence_tests
 datafusion-nexus-bench::tpcds_workload_tests
 datafusion-nexus-bench::tpch_workload_tests
 datafusion-nexus-bench::bin/cpu_tpch_profile_sweep

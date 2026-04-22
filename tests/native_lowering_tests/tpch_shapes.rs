@@ -40,7 +40,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         optimized_q2.plan
     );
     let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
-        &native_plan,
+        native_plan,
         nexus_query_engine::runtime::ExecutionBoundaryPolicy::default(),
     )
     .expect("q02 should expose modeled bounded join facts");
@@ -64,7 +64,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         optimized_q15.plan
     );
     let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
-        &native_plan,
+        native_plan,
         nexus_query_engine::runtime::ExecutionBoundaryPolicy::default(),
     )
     .expect("q15 should expose modeled bounded join facts");
@@ -84,7 +84,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         "q18 should lower to the executable resident grouped aggregate TopK pipeline:\n{native_plan}"
     );
     let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
-        &native_plan,
+        native_plan,
         nexus_query_engine::runtime::ExecutionBoundaryPolicy::default(),
     )
     .expect("q18 should expose modeled bounded join facts");
@@ -102,7 +102,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         "q20 should lower to the executable resident grouped aggregate subquery-filter pipeline:\n{native_plan}"
     );
     let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
-        &native_plan,
+        native_plan,
         nexus_query_engine::runtime::ExecutionBoundaryPolicy::default(),
     )
     .expect("q20 should expose modeled bounded join facts");
@@ -493,7 +493,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     );
     assert!(
         nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
-            &plan,
+            plan,
             nexus_query_engine::runtime::ExecutionBoundaryPolicy::default()
         )
         .is_none()

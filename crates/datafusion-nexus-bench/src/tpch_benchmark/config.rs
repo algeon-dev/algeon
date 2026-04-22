@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) const CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV: &str = "CUDF_TPCH_BENCH_NATIVE_PROFILE";
+pub(super) const CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV: &str = "CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY";
 pub(super) const CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES";
 pub(super) const CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str =
     "CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES";
@@ -34,6 +35,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
     pub(super) iterations: usize,
     pub(super) dataset_mode: NativeTpchDatasetMode,
     pub(super) parquet_pushdown_filters: Option<bool>,
+    pub(super) native_fallback_policy: GpuFallbackPolicy,
     pub(super) native_memory_policy: NativeTpchMemoryPolicy,
     pub(super) native_pipeline_execution_mode: NativePipelineExecutionMode,
     pub(super) max_source_reads_in_flight: usize,
@@ -54,6 +56,7 @@ impl NativeTpchBenchmarkConfig {
             iterations: env_usize("CUDF_TPCH_BENCH_ITERATIONS", 1)?,
             dataset_mode: NativeTpchDatasetMode::from_env("CUDF_TPCH_BENCH_DATASET_MODE")?,
             parquet_pushdown_filters: optional_env_bool("CUDF_TPCH_BENCH_PARQUET_PUSHDOWN_FILTERS")?,
+            native_fallback_policy: native_tpch_fallback_policy_from_env()?,
             native_memory_policy: NativeTpchMemoryPolicy::from_env("CUDF_TPCH_BENCH_NATIVE_MEMORY_POLICY")?,
             native_pipeline_execution_mode: native_pipeline_execution_mode_from_env(
                 "CUDF_TPCH_BENCH_NATIVE_PIPELINE_EXECUTION_MODE",
@@ -141,6 +144,24 @@ impl NativeTpchBenchmarkConfig {
     }
 }
 
+/// Resolves the native fallback policy for the benchmark's native session.
+/// The decision-grade benchmark defaults to `GpuPreferred`, while explicit
+/// GPU-only admission can be validated with `gpu_only`.
+pub(super) fn native_tpch_fallback_policy_from_env() -> DataFusionResult<GpuFallbackPolicy> {
+    match std::env::var(CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV) {
+        Ok(value) => native_tpch_fallback_policy_from_value(Some(&value)),
+        Err(std::env::VarError::NotPresent) => native_tpch_fallback_policy_from_value(None),
+        Err(error) => Err(plan_error(format!("failed to read {CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}"))),
+    }
+}
+
+pub(super) fn native_tpch_fallback_policy_from_value(value: Option<&str>) -> DataFusionResult<GpuFallbackPolicy> {
+    value.map_or(Ok(GpuFallbackPolicy::GpuPreferred), |value| {
+        crate::report_workload::parse_gpu_fallback_policy(value)
+            .map_err(|error| plan_error(format!("invalid {CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}")))
+    })
+}
+
 impl Default for NativeTpchBenchmarkConfig {
     fn default() -> Self {
         Self {
@@ -149,6 +170,7 @@ impl Default for NativeTpchBenchmarkConfig {
             iterations: 1,
             dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf1),
             parquet_pushdown_filters: None,
+            native_fallback_policy: GpuFallbackPolicy::GpuPreferred,
             native_memory_policy: NativeTpchMemoryPolicy::default(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             max_source_reads_in_flight: DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,

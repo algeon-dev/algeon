@@ -1,13 +1,8 @@
 use std::path::Path;
 
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_nexus::{
-    native_report::{NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureWorkloadItem},
-    planner::CudfOptimizerConfig,
-};
+use datafusion_nexus::native_report::NativeFallbackPressureWorkloadItem;
 use datafusion_nexus_workloads::tpch::{TpchWorkloadResult, register_tpch_tables};
-
-use crate::tpch_report::{datafusion_planning_workload_items, tpch_native_optimizer_config};
 
 pub(crate) const ANALYTICAL_OLAP_QUERY_COUNT: usize = ANALYTICAL_OLAP_QUERIES.len();
 
@@ -17,11 +12,10 @@ pub(crate) struct AnalyticalOlapQuery {
     pub(crate) sql: &'static str,
     pub(crate) workload_class: AnalyticalOlapWorkloadClass,
     pub(crate) expected_lowering: AnalyticalOlapLoweringExpectation,
-    pub(crate) current_strict_admission: AnalyticalOlapCurrentStrictAdmission,
     pub(crate) capability_first_admission: AnalyticalOlapCapabilityFirstAdmission,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum AnalyticalOlapWorkloadClass {
     StarSchemaJoin,
     SelfJoin,
@@ -30,27 +24,9 @@ pub(crate) enum AnalyticalOlapWorkloadClass {
     AggregateSortTopK,
 }
 
-impl AnalyticalOlapWorkloadClass {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::StarSchemaJoin => "star_schema_join",
-            Self::SelfJoin => "self_join",
-            Self::DecorrelatableSubquery => "decorrelatable_subquery",
-            Self::MultiJoinResidentPressure => "multi_join_resident_pressure",
-            Self::AggregateSortTopK => "aggregate_sort_topk",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AnalyticalOlapLoweringExpectation {
     NativeQueryPlan,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AnalyticalOlapCurrentStrictAdmission {
-    Accepted,
-    RejectedBeforeExecution,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +40,6 @@ pub(crate) const ANALYTICAL_OLAP_QUERIES: &[AnalyticalOlapQuery] = &[
         id: "adhoc_olap_01_customer_order_lineitem_star",
         workload_class: AnalyticalOlapWorkloadClass::StarSchemaJoin,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT c.c_mktsegment, o.o_orderstatus, SUM(l.l_extendedprice) AS revenue
@@ -80,7 +55,6 @@ LIMIT 5
         id: "adhoc_olap_02_part_supplier_supply_star",
         workload_class: AnalyticalOlapWorkloadClass::StarSchemaJoin,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT p.p_brand, s.s_nationkey, SUM(ps.ps_supplycost) AS supply_cost
@@ -96,7 +70,6 @@ LIMIT 5
         id: "adhoc_olap_03_region_nation_customer_orders",
         workload_class: AnalyticalOlapWorkloadClass::StarSchemaJoin,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT r.r_name, n.n_name, COUNT(o.o_orderkey) AS order_count
@@ -113,7 +86,6 @@ LIMIT 5
         id: "adhoc_olap_04_supplier_same_nation_self_join",
         workload_class: AnalyticalOlapWorkloadClass::SelfJoin,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT s1.s_nationkey, COUNT(*) AS supplier_pairs
@@ -129,7 +101,6 @@ LIMIT 5
         id: "adhoc_olap_05_customer_order_self_join",
         workload_class: AnalyticalOlapWorkloadClass::SelfJoin,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT o1.o_custkey, COUNT(*) AS order_pairs
@@ -145,7 +116,6 @@ LIMIT 5
         id: "adhoc_olap_06_customer_in_join_aggregate_subquery",
         workload_class: AnalyticalOlapWorkloadClass::DecorrelatableSubquery,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin,
         sql: "
 SELECT c.c_custkey, SUM(o.o_totalprice) AS customer_total
@@ -166,7 +136,6 @@ LIMIT 5
         id: "adhoc_olap_07_nested_exists_customer_orders_lineitem",
         workload_class: AnalyticalOlapWorkloadClass::DecorrelatableSubquery,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT c.c_custkey, COUNT(o.o_orderkey) AS matched_orders
@@ -186,7 +155,6 @@ LIMIT 5
         id: "adhoc_olap_08_order_revenue_reused_cte",
         workload_class: AnalyticalOlapWorkloadClass::MultiJoinResidentPressure,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin,
         sql: "
 WITH order_revenue AS (
@@ -208,7 +176,6 @@ LIMIT 5
         id: "adhoc_olap_09_nation_supplier_lineitem_topk",
         workload_class: AnalyticalOlapWorkloadClass::AggregateSortTopK,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT n.n_name, SUM(l.l_extendedprice) AS revenue
@@ -224,7 +191,6 @@ LIMIT 3
         id: "adhoc_olap_10_part_lineitem_supplier_topk",
         workload_class: AnalyticalOlapWorkloadClass::AggregateSortTopK,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT p.p_type, s.s_nationkey, SUM(l.l_quantity) AS quantity
@@ -237,10 +203,6 @@ LIMIT 5
 ",
     },
 ];
-
-pub(crate) fn analytical_olap_query_ids() -> impl Iterator<Item = &'static str> {
-    ANALYTICAL_OLAP_QUERIES.iter().map(|query| query.id)
-}
 
 pub(crate) async fn analytical_olap_fallback_pressure_workload_items(
     root: &Path,
@@ -270,30 +232,4 @@ pub(crate) async fn analytical_olap_fallback_pressure_workload_items(
         items.push(item);
     }
     Ok(items)
-}
-
-pub(crate) async fn analytical_olap_datafusion_planning_workload_items(
-    root: &Path,
-    session_config: SessionConfig,
-) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
-    analytical_olap_datafusion_planning_workload_items_with_optimizer_config(
-        root,
-        session_config,
-        tpch_native_optimizer_config(),
-    )
-    .await
-}
-
-pub(crate) async fn analytical_olap_datafusion_planning_workload_items_with_optimizer_config(
-    root: &Path,
-    session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
-) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
-    datafusion_planning_workload_items(
-        root,
-        session_config,
-        optimizer_config,
-        ANALYTICAL_OLAP_QUERIES.iter().map(|query| (query.id, query.sql)),
-    )
-    .await
 }

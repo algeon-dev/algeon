@@ -654,7 +654,7 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
 }
 
 #[test]
-fn bounded_native_query_rejects_q72_shaped_string_partitioned_hash_prebuild_before_runtime() {
+fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-q72-left-stream-aggregate");
     let left_path = dir.join("catalog_sales.parquet");
@@ -727,27 +727,22 @@ fn bounded_native_query_rejects_q72_shaped_string_partitioned_hash_prebuild_befo
     let plan = builder.finish_with_host_sink(aggregate);
     let context = bounded_join_execution_context(&runtime);
 
-    let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("string hash prebuild sizing should reject locally"),
-        Err(error) => error,
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.hash_join_build_count, 1);
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.memory_boundary == "join_hash_table"
+            && event.granted_bytes > 0
+    }));
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
     };
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(
-        error.fact_value("bounded_join_rejection_reason"),
-        Some("unsupported_hash_join_pre_build_reservation_capability")
-    );
-    assert_eq!(
-        error.fact_value("bounded_join_rejection_category"),
-        Some("unsupported_node_operator")
-    );
-    assert!(
-        error
-            .fact_value("bounded_join_rejection_facts")
-            .is_some_and(|facts| facts.contains("build_key=category")
-                && facts.contains("build_key_data_type=Utf8")
-                && facts.contains("required_contract=hash_join_pre_build_reservation_size_bytes")),
-        "error should carry the unsupported string-key prebuild contract facts: {error:?}"
-    );
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[7]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[4]);
 
     fs::remove_dir_all(dir).unwrap();
 }
