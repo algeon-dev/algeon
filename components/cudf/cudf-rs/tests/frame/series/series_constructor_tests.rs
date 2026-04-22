@@ -3,9 +3,9 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataType, Series, TypeId};
+use cudf::{DataType, ErrorCode, ErrorKind, Series, TypeId};
 
-use crate::common::scalar;
+use crate::common::{error_context_value, scalar};
 
 // ===========================================================================
 // Runtime unnamed-default constructor split
@@ -81,6 +81,22 @@ fn test_runtime_sequence_constructor() {
 
     let second = rt.sequence(1i32, 3i32, 4).unwrap();
     assert_eq!(second.to_vec_strict::<i32>().unwrap(), vec![1, 4, 7, 10]);
+}
+
+#[test]
+fn test_runtime_sequence_rejects_size_over_i32_max_with_stable_contract() {
+    let rt = cudf::Runtime::new().unwrap();
+    let size = (i32::MAX as usize) + 1;
+
+    let err = rt.sequence(0i32, 1i32, size).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "column::from_sequence_with_runtime");
+    assert_eq!(error_context_value(&err, "size"), Some(size.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "resource"), Some("size"));
+    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("reduce size to fit within i32::MAX"));
 }
 
 // ===========================================================================
@@ -224,6 +240,22 @@ fn test_from_scalar_default_is_unnamed() {
     let scalar = scalar(9i32).unwrap();
     let s = Series::from_scalar(&scalar, 2).unwrap();
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![9, 9]);
+}
+
+#[test]
+fn test_from_scalar_rejects_size_over_i32_max_with_stable_contract() {
+    let scalar = scalar(1i32).unwrap();
+    let size = (i32::MAX as usize) + 1;
+
+    let err = Series::from_scalar(&scalar, size).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "column::from_scalar");
+    assert_eq!(error_context_value(&err, "size"), Some(size.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "resource"), Some("size"));
+    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("reduce size to fit within i32::MAX"));
 }
 
 // ===========================================================================

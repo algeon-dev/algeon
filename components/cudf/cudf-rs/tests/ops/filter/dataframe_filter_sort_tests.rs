@@ -200,7 +200,7 @@ fn test_sort_mismatched_descending_count() {
     let result = df.sort_values(["id", "score"], SortOptions::new().with_descending(vec![false]));
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
 }
 
 #[test]

@@ -6,9 +6,11 @@ use arrow::{
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf::{DataFrame, ErrorKind, TypeId, testing::prelude::*};
+use cudf::{DataFrame, ErrorCode, ErrorKind, TypeId, testing::prelude::*};
 
-use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, column_from_strs_nullable};
+use crate::common::{
+    column_from_slice, column_from_slice_nullable, column_from_strs, column_from_strs_nullable, error_context_value,
+};
 
 fn import_record_batch(batch: &RecordBatch) -> cudf::Result<DataFrame> {
     let runtime = crate::common::sample_runtime();
@@ -31,8 +33,10 @@ fn test_arrow_datatype_try_from_type_id_supported_mappings() {
 fn test_arrow_datatype_try_from_type_id_rejects_unsupported_types() {
     let err =
         ArrowDataType::try_from(TypeId::List).expect_err("list columns are not supported by Arrow host-copy interop");
-    assert_eq!(err.kind(), ErrorKind::NotSupported);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "arrow::TryFrom<TypeId> for ArrowDataType");
+    assert_eq!(error_context_value(&err, "type_id"), Some("list"));
     assert!(err.message().contains("unsupported cudf type"));
 }
 
@@ -49,8 +53,10 @@ fn test_type_id_try_from_arrow_datatype_supported_mappings() {
 fn test_type_id_try_from_arrow_datatype_rejects_unsupported_types() {
     let err = TypeId::try_from(&ArrowDataType::LargeBinary)
         .expect_err("large binary arrays are not supported by cudf Arrow import");
-    assert_eq!(err.kind(), ErrorKind::NotSupported);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "arrow::TryFrom<&ArrowDataType> for TypeId");
+    assert_eq!(error_context_value(&err, "arrow_type"), Some("LargeBinary"));
     assert!(err.message().contains("unsupported Arrow type"));
 }
 
@@ -59,8 +65,15 @@ fn test_arrow_numeric_wrapper_preserves_source_chain() {
     let err = cudf::testing::trigger_numeric_to_arrow_error_for_test()
         .expect_err("expected numeric Arrow wrapper to surface a mapped error");
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
     assert_eq!(err.operation(), "arrow::numeric_to_arrow");
+    assert_eq!(error_context_value(&err, "resource"), Some("arrow_array"));
+    assert_eq!(error_context_value(&err, "reason"), Some("invalid_arrow_primitive_array"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure Arrow primitive values and null buffers have matching logical lengths")
+    );
 
     let source = std::error::Error::source(&err).expect("expected preserved Arrow source");
     assert_eq!(source.to_string(), err.message());
@@ -71,11 +84,67 @@ fn test_to_record_batch_wrapper_preserves_source_chain() {
     let err = cudf::testing::trigger_record_batch_error_for_test()
         .expect_err("expected RecordBatch wrapper to surface a mapped error");
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
     assert_eq!(err.operation(), "dataframe::to_record_batch");
+    assert_eq!(error_context_value(&err, "resource"), Some("record_batch"));
+    assert_eq!(error_context_value(&err, "reason"), Some("invalid_arrow_record_batch"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure Arrow schemas and column arrays have matching row counts and compatible field layouts")
+    );
 
     let source = std::error::Error::source(&err).expect("expected preserved Arrow source");
     assert_eq!(source.to_string(), err.message());
+}
+
+#[test]
+fn test_arrow_string_array_downcast_mismatch_uses_stable_foreign_contract() {
+    let err = cudf::testing::trigger_arrow_string_array_downcast_mismatch_for_test()
+        .expect_err("expected Utf8 downcast mismatch to surface a mapped foreign-contract error");
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "arrow::string_array_to_column");
+    assert_eq!(error_context_value(&err, "resource"), Some("arrow_array"));
+    assert_eq!(error_context_value(&err, "reason"), Some("unexpected_arrow_array_layout"));
+    assert_eq!(error_context_value(&err, "arrow_type"), Some("Utf8"));
+    assert_eq!(error_context_value(&err, "actual_arrow_type"), Some("Int32"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("ensure Utf8 fields are backed by Arrow StringArray values"));
+}
+
+#[test]
+fn test_arrow_large_string_array_downcast_mismatch_uses_same_foreign_contract_family() {
+    let err = cudf::testing::trigger_arrow_large_string_array_downcast_mismatch_for_test()
+        .expect_err("expected LargeUtf8 downcast mismatch to surface a mapped foreign-contract error");
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "arrow::large_string_array_to_column");
+    assert_eq!(error_context_value(&err, "resource"), Some("arrow_array"));
+    assert_eq!(error_context_value(&err, "reason"), Some("unexpected_arrow_array_layout"));
+    assert_eq!(error_context_value(&err, "arrow_type"), Some("LargeUtf8"));
+    assert_eq!(error_context_value(&err, "actual_arrow_type"), Some("Int32"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure LargeUtf8 fields are backed by Arrow LargeStringArray values")
+    );
+}
+
+#[test]
+fn test_from_record_batch_rejects_unsupported_arrow_array_type_with_stable_code() {
+    let schema = Schema::new(vec![Field::new("payload", ArrowDataType::LargeBinary, false)]);
+    let batch =
+        RecordBatch::try_new(Arc::new(schema), vec![Arc::new(LargeBinaryArray::from(vec![b"a".as_slice(), b"b"]))])
+            .unwrap();
+
+    let err = import_record_batch(&batch).expect_err("LargeBinary import should be rejected with a stable contract");
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(err.operation(), "arrow::arrow_array_to_column");
+    assert_eq!(error_context_value(&err, "field_name"), Some("payload"));
+    assert_eq!(error_context_value(&err, "arrow_type"), Some("LargeBinary"));
 }
 
 #[test]

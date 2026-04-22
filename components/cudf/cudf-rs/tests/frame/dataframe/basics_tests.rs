@@ -1,8 +1,8 @@
 //! Tests for the DataFrame wrapper.
 
-use cudf::{DataFrame, ErrorKind, core::Table, testing::prelude::*};
+use cudf::{DataFrame, ErrorCode, ErrorKind, core::Table, testing::prelude::*};
 
-use crate::common::{assert_missing_column_error, column_from_slice};
+use crate::common::{assert_duplicate_name_error, assert_missing_column_error, column_from_slice, error_context_value};
 
 // ---------------------------------------------------------------------------
 // Construction and column-by-name access
@@ -44,7 +44,9 @@ fn test_reject_duplicate_column_names() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_duplicate_name_error(&err, "x");
+    assert_eq!(err.operation(), "dataframe::new");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
 }
 
 #[test]
@@ -55,7 +57,13 @@ fn test_reject_mismatched_names_columns_count() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "dataframe::new");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "names_count"), None);
+    assert_eq!(error_context_value(&err, "columns_count"), None);
 }
 
 #[test]
@@ -151,7 +159,11 @@ fn test_from_table_mismatched_names_count() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "dataframe::from_table");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
 }
 
 #[test]

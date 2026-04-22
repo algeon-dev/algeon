@@ -1,10 +1,10 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
-use cudf::{DataFrame, ErrorKind, ExecutionOverrides, JoinType, MergeOptions, testing::prelude::*};
+use cudf::{DataFrame, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions, testing::prelude::*};
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
-    sample_runtime,
+    error_context_value, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
+    reset_sync_observation, sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,6 +43,14 @@ fn nullable_i32_column(df: &DataFrame, name: &str) -> Vec<Option<i32>> {
 
 fn i32_column(df: &DataFrame, name: &str) -> Vec<i32> {
     df.series(name).unwrap().to_optional_vec::<i32>().unwrap().into_iter().map(|v| v.unwrap()).collect()
+}
+
+fn assert_merge_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), operation);
+    assert_eq!(error_context_value(err, "reason"), Some(reason));
+    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
 }
 
 // ---------------------------------------------------------------------------
@@ -471,8 +479,7 @@ fn test_merge_left_on_without_right_on() {
     let right = right_df();
 
     let err = left.merge(&right, MergeOptions::new().left_on(["id"])).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert_eq!(err.operation(), "dataframe::merge");
+    assert_merge_validation_error(&err, "dataframe::merge", "left_on_without_right_on", "set right_on() or use on()");
 }
 
 #[test]
@@ -481,8 +488,7 @@ fn test_merge_right_on_without_left_on() {
     let right = right_df();
 
     let err = left.merge(&right, MergeOptions::new().right_on(["id"])).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert_eq!(err.operation(), "dataframe::merge");
+    assert_merge_validation_error(&err, "dataframe::merge", "right_on_without_left_on", "set left_on() or use on()");
 }
 
 #[test]
@@ -491,8 +497,14 @@ fn test_merge_left_on_right_on_length_mismatch() {
     let right = right_df_asym();
 
     let err = left.merge(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id", "value"])).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert_eq!(err.operation(), "dataframe::merge");
+    assert_merge_validation_error(
+        &err,
+        "dataframe::merge",
+        "join_key_count_mismatch",
+        "set left_on() and right_on() with the same number of key columns",
+    );
+    assert_eq!(error_context_value(&err, "left_on_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "right_on_count"), Some("2"));
 }
 
 #[test]
@@ -501,8 +513,59 @@ fn test_merge_no_keys_specified() {
     let right = right_df();
 
     let err = left.merge(&right, MergeOptions::new()).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_merge_validation_error(&err, "dataframe::merge", "missing_join_keys", "set on() or left_on() + right_on()");
+}
+
+#[test]
+fn test_merge_in_context_no_keys_specified() {
+    let left = left_df();
+    let right = right_df();
+    let rt = sample_runtime();
+    let ctx = ExecutionOverrides::new().with_stream(rt.stream()).with_memory_resource(rt.memory_resource());
+
+    let err = left.with_execution(&ctx).merge(&right, MergeOptions::new()).unwrap_err();
+
+    assert_merge_validation_error(
+        &err,
+        "dataframe::with_execution::merge",
+        "missing_join_keys",
+        "set on() or left_on() + right_on()",
+    );
+}
+
+#[test]
+fn test_merge_reassembly_key_count_invariant_uses_stable_error_contract() {
+    let err = cudf::testing::trigger_merge_reassembly_key_count_error_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dataframe::merge");
+    assert_eq!(error_context_value(&err, "reason"), Some("join_result_key_count_exceeds_result_columns"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some(
+            "report this as a library bug; join result schema should contain at least one column per key on each side"
+        )
+    );
+    assert_eq!(error_context_value(&err, "keys_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "left_columns"), Some("1"));
+    assert_eq!(error_context_value(&err, "right_columns"), Some("1"));
+    assert_eq!(error_context_value(&err, "num_keys"), None);
+}
+
+#[test]
+fn test_merge_rejects_ambiguous_join_key_configuration() {
+    let left = left_df();
+    let right = right_df();
+
+    let err = left.merge(&right, MergeOptions::new().on(["id"]).left_on(["id"]).right_on(["id"])).unwrap_err();
+
+    assert_merge_validation_error(
+        &err,
+        "dataframe::merge",
+        "ambiguous_join_key_configuration",
+        "use on() or left_on() + right_on(), not both",
+    );
 }
 
 #[test]
@@ -525,7 +588,7 @@ fn test_merge_rejects_duplicate_output_names_after_reassembly() {
 
     let err = left.merge(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id"])).unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "dataframe::merge");
     assert_duplicate_name_error(&err, "right_id");
 }

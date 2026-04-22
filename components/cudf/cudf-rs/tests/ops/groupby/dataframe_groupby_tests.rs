@@ -1,8 +1,18 @@
 //! Tests for DataFrame groupby aggregation.
 
-use cudf::{AggSpec, ErrorKind, GroupByAgg};
+use cudf::{AggSpec, ErrorCode, ErrorKind, GroupByAgg};
 
-use crate::common::{assert_missing_column_error, column_from_slice};
+use crate::common::{
+    arm_next_groupby_negative_total_columns_fault, assert_missing_column_error, column_from_slice, error_context_value,
+};
+
+fn assert_high_level_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), operation);
+    assert_eq!(error_context_value(err, "reason"), Some(reason));
+    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
+}
 
 // ---------------------------------------------------------------------------
 // Groupby aggregation
@@ -37,6 +47,40 @@ fn test_groupby_single_key_sum() {
     pairs.sort_by_key(|&(k, _)| k);
 
     assert_eq!(pairs, vec![(1, 40), (2, 60)]);
+}
+
+#[test]
+fn test_groupby_rejects_empty_group_keys_with_stable_contract() {
+    let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+
+    let err = df.groupby(Vec::<&str>::new()).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
+
+    assert_high_level_groupby_validation_error(
+        &err,
+        "groupby::GroupBy::agg",
+        "empty_group_keys",
+        "provide at least one group key column",
+    );
+}
+
+#[test]
+fn test_groupby_shortcuts_reject_empty_group_keys_with_stable_contract() {
+    let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+
+    let err = df.groupby(Vec::<&str>::new()).sum(["value"]).unwrap_err();
+
+    assert_high_level_groupby_validation_error(
+        &err,
+        "groupby::GroupBy::agg",
+        "empty_group_keys",
+        "provide at least one group key column",
+    );
 }
 
 #[test]
@@ -204,6 +248,30 @@ fn test_groupby_interleaved_multi_column_agg_ordering() {
 }
 
 #[test]
+fn test_groupby_high_level_rejects_negative_foreign_result_column_count_with_stable_contract() {
+    let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
+
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+
+    arm_next_groupby_negative_total_columns_fault();
+    let err = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "groupby::GroupBy::agg");
+    assert_eq!(error_context_value(&err, "resource"), Some("result_columns"));
+    assert_eq!(error_context_value(&err, "reason"), Some("negative_column_count"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure the foreign groupby backend returns a non-negative result column count")
+    );
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("-1"));
+    assert_eq!(error_context_value(&err, "out_total_columns"), None);
+}
+
+#[test]
 fn test_groupby_no_aggregations_returns_error() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
@@ -213,5 +281,71 @@ fn test_groupby_no_aggregations_returns_error() {
 
     let err = df.groupby(["key"]).agg(&[]).expect_err("expected error for empty aggregation");
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_high_level_groupby_validation_error(
+        &err,
+        "groupby::GroupBy::agg",
+        "empty_agg_specs",
+        "provide at least one AggSpec or use a shortcut like .sum([...])",
+    );
+}
+
+#[test]
+fn test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract() {
+    let err = cudf::testing::trigger_groupby_result_group_index_out_of_bounds_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "groupby::GroupBy::agg");
+    assert_eq!(error_context_value(&err, "resource"), Some("groupby_result_shape"));
+    assert_eq!(error_context_value(&err, "reason"), Some("result_group_index_out_of_bounds"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some(
+            "ensure the foreign groupby backend returns one result column per requested aggregation in stable request order"
+        )
+    );
+    assert_eq!(error_context_value(&err, "request_index"), Some("0"));
+    assert_eq!(error_context_value(&err, "group_index"), Some("1"));
+    assert_eq!(error_context_value(&err, "group_count"), Some("1"));
+}
+
+#[test]
+fn test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract() {
+    let err = cudf::testing::trigger_groupby_result_column_index_out_of_bounds_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "groupby::GroupBy::agg");
+    assert_eq!(error_context_value(&err, "resource"), Some("groupby_result_shape"));
+    assert_eq!(error_context_value(&err, "reason"), Some("result_column_index_out_of_bounds"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some(
+            "ensure the foreign groupby backend returns one result column per requested aggregation in stable request order"
+        )
+    );
+    assert_eq!(error_context_value(&err, "request_index"), Some("0"));
+    assert_eq!(error_context_value(&err, "group_index"), Some("0"));
+    assert_eq!(error_context_value(&err, "agg_index"), Some("1"));
+    assert_eq!(error_context_value(&err, "result_column_count"), Some("1"));
+}
+
+#[test]
+fn test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract() {
+    let err = cudf::testing::trigger_groupby_duplicate_result_column_consumption_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "groupby::GroupBy::agg");
+    assert_eq!(error_context_value(&err, "resource"), Some("groupby_result_shape"));
+    assert_eq!(error_context_value(&err, "reason"), Some("duplicate_result_column_consumption"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some(
+            "ensure the foreign groupby backend returns one result column per requested aggregation in stable request order"
+        )
+    );
+    assert_eq!(error_context_value(&err, "request_index"), Some("1"));
+    assert_eq!(error_context_value(&err, "group_index"), Some("0"));
+    assert_eq!(error_context_value(&err, "agg_index"), Some("0"));
 }

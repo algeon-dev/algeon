@@ -6,11 +6,11 @@
 //! All tests require a GPU.
 
 use cudf::{
-    DataFrame, DuplicateKeepOption,
+    DataFrame, DuplicateKeepOption, ErrorCode, ErrorKind,
     frame::dataframe::{DropDuplicatesOptions, DropNaHow, DropNaOptions},
 };
 
-use crate::common::{assert_missing_column_error, scalar};
+use crate::common::{assert_missing_column_error, error_context_value, scalar};
 
 // ===========================================================================
 // Helpers
@@ -144,6 +144,42 @@ fn test_dropna_invalid_column_name() {
     let opts = DropNaOptions::builder().subset(&["nonexistent"]).build();
     let err = df.dropna(opts).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
+}
+
+#[test]
+fn test_dropna_negative_thresh_uses_stable_validation_contract() {
+    let df = sample_df_with_nulls();
+    let opts = DropNaOptions::builder().subset(&["score", "tag"]).thresh(-1).build();
+
+    let err = df.dropna(opts).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "dataframe::dropna");
+    assert_eq!(error_context_value(&err, "reason"), Some("negative_keep_threshold"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("use keep_threshold >= 0"));
+    assert_eq!(error_context_value(&err, "keys_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "keep_threshold"), Some("-1"));
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "called" && value == "dataframe::drop_nulls"),
+        "expected wrapped drop_nulls call in called context, got {:?}",
+        err.context()
+    );
+}
+
+#[test]
+fn test_dropna_subset_count_limit_uses_canonical_contract() {
+    let err = cudf::testing::trigger_dataframe_dropna_subset_count_limit_error_for_test().unwrap_err();
+    let expected = usize::MAX.to_string();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "dataframe::dropna");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some(expected.as_str()));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("reduce column_name_count to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "subset_count"), None);
 }
 
 // ===========================================================================

@@ -41,7 +41,7 @@ fn test_sum_value_propagates_output_type_contract() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let err = s.sum_value::<i32>().unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::TypeError);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
 
 #[test]

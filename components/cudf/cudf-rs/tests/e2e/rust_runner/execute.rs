@@ -4,7 +4,7 @@
 //! into the shared result schema for comparison with Python cuDF output.
 
 use cudf::{
-    DataFrame, SortOptions, TypeId,
+    DataFrame, ErrorCode, SortOptions, TypeId,
     frame::dataframe::{DropNaOptions, InfoDetail},
     testing::{ColumnView, prelude::*},
 };
@@ -363,16 +363,57 @@ pub fn normalize_manifest_error(err: &cudf::Error, operation_kind: &'static str)
 }
 
 fn normalize_manifest_error_kind(err: &cudf::Error, _operation_kind: &'static str) -> String {
-    let has_column_name = err.context().iter().any(|(k, _)| *k == "column_name");
+    if matches!(err.code(), ErrorCode::NotFound | ErrorCode::MissingResource)
+        && err.context().iter().any(|(k, _)| *k == "column_name")
+    {
+        return "column_not_found".into();
+    }
 
+    normalize_manifest_error_kind_from_code(err.code())
+        .unwrap_or_else(|| normalize_manifest_error_kind_from_legacy_kind(err))
+        .into()
+}
+
+fn normalize_manifest_error_kind_from_code(code: ErrorCode) -> Option<&'static str> {
+    match code {
+        ErrorCode::InvalidInput => Some("invalid_argument"),
+        ErrorCode::NotFound => Some("unknown"),
+        ErrorCode::Unsupported => Some("invalid_argument"),
+        ErrorCode::ExecutionContext => Some("invalid_argument"),
+        ErrorCode::ResourceExhausted => Some("unknown"),
+        ErrorCode::DependencyFailure => Some("unknown"),
+        ErrorCode::InvariantViolation => Some("unknown"),
+        ErrorCode::MissingColumn => Some("column_not_found"),
+        ErrorCode::DuplicateColumnName
+        | ErrorCode::DuplicateKey
+        | ErrorCode::ColumnLengthMismatch
+        | ErrorCode::TypeMismatch
+        | ErrorCode::EmptyConstructionRequiresRuntime
+        | ErrorCode::CrossDeviceInputs
+        | ErrorCode::CrossProvenanceInputs
+        | ErrorCode::RuntimeBindingMismatch
+        | ErrorCode::ReadinessUnavailable
+        | ErrorCode::ExecutionBindingUnavailable
+        | ErrorCode::LeaseAlreadyActive
+        | ErrorCode::UnsupportedDtype
+        | ErrorCode::UnsupportedLayout
+        | ErrorCode::UnsupportedOperation
+        | ErrorCode::NullUnexpected => Some("invalid_argument"),
+        ErrorCode::IndexOutOfBounds => Some("index_out_of_bounds"),
+        ErrorCode::MissingResource
+        | ErrorCode::OutOfMemory
+        | ErrorCode::CudaRuntime
+        | ErrorCode::FatalCuda
+        | ErrorCode::IoFailure => Some("unknown"),
+        _ => Some("unknown"),
+    }
+}
+
+fn normalize_manifest_error_kind_from_legacy_kind(err: &cudf::Error) -> &'static str {
+    let has_column_name = err.context().iter().any(|(k, _)| *k == "column_name");
     match err.kind() {
-        cudf::ErrorKind::NotFound if has_column_name => "column_not_found".into(),
-        cudf::ErrorKind::InvalidArgument
-        | cudf::ErrorKind::NotSupported
-        | cudf::ErrorKind::InvalidOperation
-        | cudf::ErrorKind::TypeError
-        | cudf::ErrorKind::NullError => "invalid_argument".into(),
-        cudf::ErrorKind::IndexError => "index_out_of_bounds".into(),
-        _ => "unknown".into(),
+        cudf::ErrorKind::NotFound if has_column_name => "column_not_found",
+        cudf::ErrorKind::InvalidInput => "invalid_argument",
+        _ => "unknown",
     }
 }

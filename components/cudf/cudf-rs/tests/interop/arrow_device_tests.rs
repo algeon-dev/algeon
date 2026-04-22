@@ -8,7 +8,7 @@ use std::{
 };
 
 use cudf::{
-    DataFrame, DataType, DeviceId, ErrorKind, Runtime, Series, TypeId,
+    DataFrame, DataType, DeviceId, ErrorCode, ErrorKind, Runtime, Series, TypeId,
     core::{Column, Table},
     interop::arrow_device::{
         DeviceArrowDeviceType, DeviceArrowExportMaterialization, DeviceArrowImportMaterialization,
@@ -87,9 +87,30 @@ fn raw_cuda_event_from_handle(handle: *mut c_void) -> usize {
     out as usize
 }
 
-fn assert_fixed_width_pointer_rejected<T: std::fmt::Debug>(result: std::result::Result<T, cudf::Error>, label: &str) {
+fn assert_fixed_width_pointer_rejected<T: std::fmt::Debug>(
+    result: std::result::Result<T, cudf::Error>,
+    label: &str,
+    operation: &str,
+    column_index: Option<usize>,
+) {
     let err = result.expect_err(label);
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument, "{label}: unexpected error kind");
+    assert_eq!(err.kind(), ErrorKind::Unsupported, "{label}: unexpected error kind");
+    assert_eq!(err.code(), ErrorCode::UnsupportedLayout, "{label}: unexpected error code");
+    assert_eq!(err.operation(), operation, "{label}: unexpected operation");
+    assert_eq!(err.context_value("resource"), Some("column_layout"), "{label}: unexpected resource");
+    assert_eq!(err.context_value("reason"), Some("not_fixed_width_leaf"), "{label}: unexpected reason");
+    assert_eq!(
+        err.context_value("remedy"),
+        Some("call fixed_width_values_ptr only on supported fixed-width leaf layouts"),
+        "{label}: unexpected remedy"
+    );
+    match column_index {
+        Some(index) => {
+            let expected = index.to_string();
+            assert_eq!(err.context_value("column_index"), Some(expected.as_str()), "{label}: unexpected column_index");
+        },
+        None => assert_eq!(err.context_value("column_index"), None, "{label}: unexpected column_index"),
+    }
     assert!(err.message().contains("fixed-width"), "{label}: unexpected error message: {}", err.message());
 }
 
@@ -527,18 +548,55 @@ fn bool_column_device_arrow_export_and_import_report_bridge_owned_device_copy() 
 }
 
 #[test]
-fn bool_column_device_arrow_fixed_width_values_ptr_is_rejected() {
+fn bool_column_device_arrow_fixed_width_values_ptr_rejection_surfaces_report_stable_contract() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let column = runtime.column_from_slice(&[true, false, true]).unwrap();
+    let export = runtime.column_from_slice(&[true, false, true]).unwrap().try_prepare_device_arrow_export().unwrap();
+    assert_fixed_width_pointer_rejected(
+        export.fixed_width_values_ptr(),
+        "BOOL8 device-arrow export must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowColumnExport::fixed_width_values_ptr",
+        None,
+    );
 
-    let export = column.try_prepare_device_arrow_export().unwrap();
-    let err = export
-        .fixed_width_values_ptr()
-        .expect_err("BOOL8 device-arrow export must not expose fixed-width values pointer access");
+    let raw_parts = runtime
+        .column_from_slice(&[true, false, true])
+        .unwrap()
+        .try_prepare_device_arrow_export()
+        .unwrap()
+        .into_raw_parts();
+    assert_fixed_width_pointer_rejected(
+        raw_parts.fixed_width_values_ptr(),
+        "BOOL8 device-arrow raw parts must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowColumnRawParts::fixed_width_values_ptr",
+        None,
+    );
 
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
-    assert!(err.message().contains("fixed-width"));
+    let abi = runtime
+        .column_from_slice(&[true, false, true])
+        .unwrap()
+        .try_prepare_device_arrow_export()
+        .unwrap()
+        .into_owned_abi_parts();
+    assert_fixed_width_pointer_rejected(
+        abi.fixed_width_values_ptr(),
+        "BOOL8 device-arrow owned ABI parts must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowColumnOwnedAbiParts::fixed_width_values_ptr",
+        None,
+    );
+
+    let foreign = runtime
+        .column_from_slice(&[true, false, true])
+        .unwrap()
+        .try_prepare_device_arrow_export()
+        .unwrap()
+        .into_foreign();
+    assert_fixed_width_pointer_rejected(
+        foreign.fixed_width_values_ptr(),
+        "BOOL8 foreign device-arrow column must not expose fixed-width values pointer access",
+        "interop::arrow_device::ForeignDeviceArrowColumn::fixed_width_values_ptr",
+        None,
+    );
 }
 
 #[test]
@@ -708,8 +766,10 @@ fn foreign_device_arrow_column_from_raw_abi_parts_rejects_null_schema_and_array(
         Err(err) => err,
     };
 
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
     assert_eq!(err.operation(), "interop::arrow_device::ForeignDeviceArrowColumn::from_raw_abi_parts");
+    assert_eq!(err.context_value("resource"), Some("arrow_device_schema"));
     assert!(err.message().contains("schema pointer"));
 }
 
@@ -1036,6 +1096,8 @@ fn string_series_device_arrow_fixed_width_values_ptr_is_rejected() {
     assert_fixed_width_pointer_rejected(
         export.fixed_width_values_ptr(),
         "string device-arrow export must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowColumnExport::fixed_width_values_ptr",
+        None,
     );
 }
 
@@ -1051,6 +1113,8 @@ fn nested_series_device_arrow_fixed_width_values_ptr_is_rejected() {
     assert_fixed_width_pointer_rejected(
         list_export.fixed_width_values_ptr(),
         "list device-arrow export must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowColumnExport::fixed_width_values_ptr",
+        None,
     );
 
     let struct_frame = read_json_dataframe(
@@ -1061,6 +1125,8 @@ fn nested_series_device_arrow_fixed_width_values_ptr_is_rejected() {
     assert_fixed_width_pointer_rejected(
         struct_export.fixed_width_values_ptr(),
         "struct device-arrow export must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowColumnExport::fixed_width_values_ptr",
+        None,
     );
 
     let dictionary_frame = read_json_dataframe(
@@ -1075,6 +1141,8 @@ fn nested_series_device_arrow_fixed_width_values_ptr_is_rejected() {
     assert_fixed_width_pointer_rejected(
         dictionary_export.fixed_width_values_ptr(),
         "dictionary device-arrow export must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowColumnExport::fixed_width_values_ptr",
+        None,
     );
 }
 
@@ -1137,6 +1205,27 @@ fn numeric_table_device_arrow_export_with_deep_copy_reports_bridge_owned_device_
 }
 
 #[test]
+fn numeric_table_device_arrow_fixed_width_values_ptr_rejects_indices_outside_i64_range_with_stable_contract() {
+    let _observation_lock = lock_event_observation();
+    let runtime = Runtime::builder().build().unwrap();
+    let ids = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let scores = runtime.column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let table = Table::from_columns(vec![ids, scores]).unwrap();
+    let export = table.try_prepare_device_arrow_export().unwrap();
+
+    let err = export.fixed_width_values_ptr(usize::MAX).expect_err("oversized table column index should fail");
+
+    let expected_index = usize::MAX.to_string();
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "interop::arrow_device::DeviceArrowTableExport::fixed_width_values_ptr");
+    assert_eq!(err.context_value("column_index"), Some(expected_index.as_str()));
+    assert_eq!(err.context_value("resource"), Some("column_index"));
+    assert_eq!(err.context_value("reason"), Some("exceeds_i64_max"));
+    assert_eq!(err.context_value("remedy"), Some("reduce column_index to fit within i64::MAX"));
+}
+
+#[test]
 fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_non_fixed_width_column() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1146,13 +1235,78 @@ fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_non_fixed_width_colum
     let table = Table::from_columns(vec![words, ids]).unwrap();
 
     let export = table.try_prepare_device_arrow_export().unwrap();
-    let err = export
-        .fixed_width_values_ptr(0)
-        .expect_err("string table column must not expose fixed-width values pointer access");
-
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
-    assert!(err.message().contains("fixed-width"));
+    assert_fixed_width_pointer_rejected(
+        export.fixed_width_values_ptr(0),
+        "string table column must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowTableExport::fixed_width_values_ptr",
+        Some(0),
+    );
     assert_eq!(export.fixed_width_values_ptr(1).unwrap(), ids_ptr);
+}
+
+#[test]
+fn mixed_table_device_arrow_fixed_width_values_ptr_rejection_surfaces_report_stable_contract() {
+    let _observation_lock = lock_event_observation();
+    let runtime = Runtime::builder().build().unwrap();
+
+    let export = Table::from_columns(vec![
+        runtime.series(&["alpha", "beta"]).unwrap().as_column().deep_copy().unwrap(),
+        runtime.column_from_slice(&[1i32, 2]).unwrap(),
+    ])
+    .unwrap()
+    .try_prepare_device_arrow_export()
+    .unwrap();
+    assert_fixed_width_pointer_rejected(
+        export.fixed_width_values_ptr(0),
+        "string table export must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowTableExport::fixed_width_values_ptr",
+        Some(0),
+    );
+
+    let raw_parts = Table::from_columns(vec![
+        runtime.series(&["alpha", "beta"]).unwrap().as_column().deep_copy().unwrap(),
+        runtime.column_from_slice(&[1i32, 2]).unwrap(),
+    ])
+    .unwrap()
+    .try_prepare_device_arrow_export()
+    .unwrap()
+    .into_raw_parts();
+    assert_fixed_width_pointer_rejected(
+        raw_parts.fixed_width_values_ptr(0),
+        "string table raw parts must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowTableRawParts::fixed_width_values_ptr",
+        Some(0),
+    );
+
+    let abi = Table::from_columns(vec![
+        runtime.series(&["alpha", "beta"]).unwrap().as_column().deep_copy().unwrap(),
+        runtime.column_from_slice(&[1i32, 2]).unwrap(),
+    ])
+    .unwrap()
+    .try_prepare_device_arrow_export()
+    .unwrap()
+    .into_owned_abi_parts();
+    assert_fixed_width_pointer_rejected(
+        abi.fixed_width_values_ptr(0),
+        "string table owned ABI parts must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowTableOwnedAbiParts::fixed_width_values_ptr",
+        Some(0),
+    );
+
+    let foreign = Table::from_columns(vec![
+        runtime.series(&["alpha", "beta"]).unwrap().as_column().deep_copy().unwrap(),
+        runtime.column_from_slice(&[1i32, 2]).unwrap(),
+    ])
+    .unwrap()
+    .try_prepare_device_arrow_export()
+    .unwrap()
+    .into_foreign();
+    assert_fixed_width_pointer_rejected(
+        foreign.fixed_width_values_ptr(0),
+        "string foreign device-arrow table must not expose fixed-width values pointer access",
+        "interop::arrow_device::ForeignDeviceArrowTable::fixed_width_values_ptr",
+        Some(0),
+    );
 }
 
 #[test]
@@ -1168,6 +1322,8 @@ fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_bool_list_struct_and_
     assert_fixed_width_pointer_rejected(
         bool_export.fixed_width_values_ptr(0),
         "bool table column must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowTableExport::fixed_width_values_ptr",
+        Some(0),
     );
     assert_eq!(bool_export.fixed_width_values_ptr(1).unwrap(), flag_ids_ptr);
 
@@ -1183,6 +1339,8 @@ fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_bool_list_struct_and_
     assert_fixed_width_pointer_rejected(
         list_export.fixed_width_values_ptr(0),
         "list table column must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowTableExport::fixed_width_values_ptr",
+        Some(0),
     );
     assert_eq!(list_export.fixed_width_values_ptr(1).unwrap(), list_ids_ptr);
 
@@ -1198,6 +1356,8 @@ fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_bool_list_struct_and_
     assert_fixed_width_pointer_rejected(
         struct_export.fixed_width_values_ptr(0),
         "struct table column must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowTableExport::fixed_width_values_ptr",
+        Some(0),
     );
     assert_eq!(struct_export.fixed_width_values_ptr(1).unwrap(), struct_ids_ptr);
 
@@ -1214,6 +1374,8 @@ fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_bool_list_struct_and_
     assert_fixed_width_pointer_rejected(
         dictionary_export.fixed_width_values_ptr(0),
         "dictionary table column must not expose fixed-width values pointer access",
+        "interop::arrow_device::DeviceArrowTableExport::fixed_width_values_ptr",
+        Some(0),
     );
     assert_eq!(dictionary_export.fixed_width_values_ptr(1).unwrap(), dictionary_ids_ptr);
 }
@@ -1269,6 +1431,51 @@ fn dataframe_device_arrow_table_raw_parts_round_trip_preserves_names_and_values(
     assert_eq!(imported.column_names(), &["id", "flag"]);
     assert_eq!(imported.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![5, 6, 7]);
     assert_eq!(imported.series("flag").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
+}
+
+#[test]
+fn dataframe_device_arrow_export_rejects_interior_null_column_names_with_stable_contract() {
+    let _observation_lock = lock_event_observation();
+    let runtime = Runtime::builder().build().unwrap();
+    let ids = runtime.series(&[5i32, 6, 7]).unwrap();
+    let flags = runtime.series(&[true, false, true]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("bad\0flag", flags)]).unwrap();
+
+    let err = match df.try_prepare_device_arrow_export() {
+        Ok(_) => panic!("interior NUL column name should fail device-arrow export"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.operation(), "interop::DataFrame::try_prepare_device_arrow_export");
+    assert_eq!(err.context_value("resource"), Some("column_name"));
+    assert_eq!(err.context_value("reason"), Some("interior_null_byte"));
+    assert_eq!(err.context_value("column_name"), Some("bad\0flag"));
+    assert_eq!(err.context_value("column_index"), Some("1"));
+}
+
+#[test]
+fn dataframe_device_arrow_table_raw_parts_column_names_reject_negative_foreign_count_with_stable_contract() {
+    let _observation_lock = lock_event_observation();
+    let runtime = Runtime::builder().build().unwrap();
+    let ids = runtime.series(&[5i32, 6, 7]).unwrap();
+    let flags = runtime.series(&[true, false, true]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
+    let raw_parts = df.try_prepare_device_arrow_export().unwrap().into_raw_parts();
+
+    unsafe {
+        (*raw_parts.schema_ptr().cast::<ArrowSchema>()).n_children = -1;
+    }
+
+    let err = raw_parts.column_names().expect_err("negative foreign table column count should fail");
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "interop::arrow_device::DeviceArrowTableRawParts::column_names");
+    assert_eq!(err.context_value("resource"), Some("table_column_count"));
+    assert_eq!(err.context_value("reason"), Some("invalid_foreign_table_metadata"));
+    assert_eq!(err.context_value("table_column_count"), Some("-1"));
 }
 
 #[test]
@@ -1341,8 +1548,10 @@ fn foreign_device_arrow_table_from_raw_abi_parts_rejects_null_schema_and_array()
         Err(err) => err,
     };
 
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
     assert_eq!(err.operation(), "interop::arrow_device::ForeignDeviceArrowTable::from_raw_abi_parts");
+    assert_eq!(err.context_value("resource"), Some("arrow_device_schema"));
     assert!(err.message().contains("schema pointer"));
 }
 
@@ -1682,7 +1891,12 @@ fn table_device_arrow_import_rejects_different_runtime_device() {
     let err = Table::try_import_from_device_arrow_table_into_runtime(&foreign, &consumer_runtime)
         .expect_err("cross-device device-arrow table import should reject mismatched runtime placement");
 
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(err.kind(), ErrorKind::ExecutionContext);
+    assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
+    assert_eq!(err.operation(), "interop::Table::try_import_from_device_arrow_table_into_runtime");
+    assert_eq!(err.context_value("left_device"), Some("1"));
+    assert_eq!(err.context_value("right_device"), Some("0"));
+    assert_eq!(err.context_value("resource"), Some("foreign_device_arrow_table"));
     assert!(err.message().contains("same CUDA device"));
 }
 
@@ -1702,7 +1916,12 @@ fn device_arrow_import_rejects_different_runtime_device() {
     let err = Column::try_import_from_device_arrow_column_into_runtime(&foreign, &consumer_runtime)
         .expect_err("cross-device device-arrow import should reject mismatched runtime placement");
 
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(err.kind(), ErrorKind::ExecutionContext);
+    assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
+    assert_eq!(err.operation(), "interop::Column::try_import_from_device_arrow_column_into_runtime");
+    assert_eq!(err.context_value("left_device"), Some("1"));
+    assert_eq!(err.context_value("right_device"), Some("0"));
+    assert_eq!(err.context_value("resource"), Some("foreign_device_arrow_column"));
     assert!(err.message().contains("same CUDA device"));
 }
 
@@ -1725,9 +1944,37 @@ fn device_arrow_import_rejects_non_cuda_device_type() {
     let foreign = raw_parts.into_foreign();
     let err = Column::try_import_from_device_arrow_column_into_runtime(&foreign, &runtime)
         .expect_err("non-CUDA Arrow device roots should be rejected at the safe Rust import boundary");
+    let raw_device_type = cudf::testing::arrow_device_cpu_type_for_test().to_string();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.operation(), "interop::Column::try_import_from_device_arrow_column_into_runtime");
+    assert_eq!(err.context_value("resource"), Some("device_type"));
+    assert_eq!(err.context_value("device_type"), Some(raw_device_type.as_str()));
     assert!(err.message().contains("ARROW_DEVICE_CUDA"));
+}
+
+#[test]
+fn device_arrow_import_rejects_foreign_device_id_outside_i32_range_with_stable_contract() {
+    let _observation_lock = lock_event_observation();
+    let runtime = Runtime::builder().build().unwrap();
+    let series = runtime.series(&[1i32, 2, 3]).unwrap();
+    let raw_parts = series.try_prepare_device_arrow_export().unwrap().into_raw_parts();
+
+    unsafe {
+        (*raw_parts.device_array_ptr().cast::<ArrowDeviceArray>()).device_id = (i32::MAX as i64) + 1;
+    }
+
+    let foreign = raw_parts.into_foreign();
+    let err = Column::try_import_from_device_arrow_column_into_runtime(&foreign, &runtime)
+        .expect_err("foreign device id outside i32 range should fail");
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "interop::Column::try_import_from_device_arrow_column_into_runtime");
+    assert_eq!(err.context_value("resource"), Some("device_id"));
+    assert_eq!(err.context_value("reason"), Some("invalid_foreign_device_id"));
+    assert_eq!(err.context_value("device_id"), Some("2147483648"));
 }
 
 #[test]
@@ -1819,7 +2066,18 @@ fn series_device_arrow_import_rejects_different_runtime_device() {
     let err = Series::try_import_from_device_arrow_column_into_runtime(&foreign, &consumer_runtime)
         .expect_err("cross-device series device-arrow import should reject mismatched runtime placement");
 
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(err.kind(), ErrorKind::ExecutionContext);
+    assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
+    assert_eq!(err.operation(), "interop::Series::try_import_from_device_arrow_column_into_runtime");
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "called"
+            && value == "interop::Column::try_import_from_device_arrow_column_into_runtime"),
+        "expected inner column import operation in called context, got {:?}",
+        err.context()
+    );
+    assert_eq!(err.context_value("left_device"), Some("1"));
+    assert_eq!(err.context_value("right_device"), Some("0"));
+    assert_eq!(err.context_value("resource"), Some("foreign_device_arrow_column"));
     assert!(err.message().contains("same CUDA device"));
 }
 
@@ -1844,7 +2102,12 @@ fn table_device_arrow_import_rejects_non_cuda_device_type() {
     let foreign = raw_parts.into_foreign();
     let err = Table::try_import_from_device_arrow_table_into_runtime(&foreign, &runtime)
         .expect_err("non-CUDA Arrow device table roots should be rejected at the safe Rust import boundary");
+    let raw_device_type = cudf::testing::arrow_device_cpu_type_for_test().to_string();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.operation(), "interop::Table::try_import_from_device_arrow_table_into_runtime");
+    assert_eq!(err.context_value("resource"), Some("device_type"));
+    assert_eq!(err.context_value("device_type"), Some(raw_device_type.as_str()));
     assert!(err.message().contains("ARROW_DEVICE_CUDA"));
 }

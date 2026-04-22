@@ -2,14 +2,24 @@
 //!
 //! All tests require a GPU.
 use cudf::{
-    ErrorKind,
+    ErrorCode, ErrorKind,
     core::Table,
     io::json::{self, JsonTableReadOptions, JsonTableWriteOptions},
     testing::prelude::*,
 };
 use tempfile::TempDir;
 
-use crate::common::{column_from_slice, sample_runtime};
+use crate::common::{
+    arm_next_io_metadata_fault, column_from_slice, error_context_value, reset_io_metadata_fault, sample_runtime,
+};
+
+struct MetadataFaultReset;
+
+impl Drop for MetadataFaultReset {
+    fn drop(&mut self) {
+        reset_io_metadata_fault();
+    }
+}
 
 // ===========================================================================
 // JSON Lines (NDJSON) round-trip
@@ -118,7 +128,35 @@ fn test_json_write_rejects_column_name_with_nul_byte() {
     let write_opts = JsonTableWriteOptions::builder().filepath(&path).column_names(&["bad\0name"]).build();
     let err = json::write_json(&table, &write_opts).unwrap_err();
 
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.operation(), "io::json::write_json");
+    assert_eq!(error_context_value(&err, "column_index"), Some("0"));
+    assert_eq!(error_context_value(&err, "column_name"), Some("bad\0name"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason"), Some("interior_null_byte"));
     assert!(err.to_string().contains("null byte"), "unexpected error: {err}");
+}
+
+#[test]
+fn test_json_write_rejects_column_name_count_with_stable_contract() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bad_count.jsonl");
+
+    let c1 = column_from_slice(&[1i32]).unwrap();
+    let table = Table::from_columns(vec![c1]).unwrap();
+
+    let write_opts = JsonTableWriteOptions::builder().filepath(&path).column_names(&["only", "extra"]).build();
+    let err = json::write_json(&table, &write_opts).expect_err("column name count mismatch should fail before FFI");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "io::json::write_json");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason"), Some("mismatch_with_table_column_count"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("ensure column_name_count matches table_column_count"));
 }
 
 // ===========================================================================
@@ -134,5 +172,34 @@ fn test_json_read_nonexistent_file() {
         Err(err) => err,
     };
 
+    assert_eq!(err.code(), ErrorCode::MissingResource);
     assert_eq!(err.kind(), ErrorKind::NotFound);
+}
+
+#[test]
+fn test_json_read_metadata_negative_name_count_maps_to_invariant_violation() {
+    let _reset = MetadataFaultReset;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("metadata_fault.jsonl");
+    let rt = sample_runtime();
+
+    std::fs::write(&path, "{\"id\":1,\"value\":10}\n{\"id\":2,\"value\":20}\n").unwrap();
+
+    arm_next_io_metadata_fault(cudf_sys::CUDF_TEST_IO_METADATA_FAULT_NEGATIVE_NAME_COUNT);
+    let err = match json::read_json_table(&JsonTableReadOptions::builder().filepath(&path).with_runtime(&rt).build()) {
+        Ok(_) => panic!("malformed metadata should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "io::json::read_json_table");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("-1"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason"), Some("negative_name_count"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure the foreign reader reports a non-negative column name count")
+    );
+    assert_eq!(error_context_value(&err, "num_names"), None);
 }

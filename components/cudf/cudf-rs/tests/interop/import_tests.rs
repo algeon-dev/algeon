@@ -8,9 +8,9 @@ use cudf::{
     testing::prelude::*,
 };
 use rapids_interop::{
-    BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind, OwnedTableTransfer,
-    PhysicalValidity, PreparedColumnExport, PreparedTableExport, ProducerReadiness, SchemaNullability, SemanticColumn,
-    SemanticTable,
+    BorrowedTableView, BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind,
+    OwnedTableTransfer, PhysicalValidity, PreparedColumnExport, PreparedTableExport, ProducerReadiness,
+    SchemaNullability, SemanticColumn, SemanticTable,
 };
 use tempfile::TempDir;
 
@@ -614,6 +614,33 @@ mod table_import_contracts {
     }
 
     #[test]
+    fn borrowed_table_view_import_rejects_zero_column_non_empty_shape_with_stable_contract() {
+        let source_runtime = Runtime::builder().build().unwrap();
+        let source = two_numeric_columns_table(&source_runtime);
+        let source_view = source.testing_view().unwrap();
+        let borrowed = source_view.try_borrow_table_view().unwrap();
+        let malformed = BorrowedTableView::try_new(3, Vec::new(), borrowed.execution()).unwrap();
+        let destination_runtime = common::sample_runtime();
+
+        let err =
+            Table::try_import_from_borrowed_table_view_into_runtime(&malformed, &destination_runtime).unwrap_err();
+
+        assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+        assert_eq!(
+            interop_error_context_value(&err, "operation"),
+            Some("interop::Table::try_import_from_borrowed_table_view_into_runtime"),
+        );
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("table_shape"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("zero_column_non_empty_table"));
+        assert_eq!(interop_error_context_value(&err, "table_row_count"), Some("3"));
+        assert_eq!(
+            interop_error_context_value(&err, "remedy"),
+            Some("provide at least one semantic column or report zero rows"),
+        );
+        assert_eq!(interop_error_context_value(&err, "num_rows"), None);
+    }
+
+    #[test]
     fn prepared_device_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime() {
         let frame = dictionary_backed_nested_frame(
             "prepared_import_nested.jsonl",
@@ -790,14 +817,19 @@ mod dataframe_import_contracts {
             DataFrame::try_import_from_prepared_table_export_into_runtime(&export, &destination_runtime).unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
-        assert!(
-            err.to_string().contains("high-level DataFrame import requires schema names"),
-            "unexpected error: {err}"
+        assert_eq!(
+            interop_error_context_value(&err, "operation"),
+            Some("interop::DataFrame::try_import_from_prepared_table_export_into_runtime"),
         );
-        assert!(
-            err.to_string().contains("try_import_from_prepared_table_export_into_runtime_and_names"),
-            "unexpected error: {err}"
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("schema_names"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("missing_schema_names"));
+        assert_eq!(
+            interop_error_context_value(&err, "remedy"),
+            Some(
+                "use DataFrame::try_import_from_prepared_table_export_into_runtime_and_names when the root does not carry schema names"
+            ),
         );
+        assert_eq!(interop_error_context_value(&err, "explicit_names_variant"), None);
     }
 
     #[test]
@@ -848,14 +880,19 @@ mod dataframe_import_contracts {
             .unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
-        assert!(
-            err.to_string().contains("high-level DataFrame import requires schema names"),
-            "unexpected error: {err}"
+        assert_eq!(
+            interop_error_context_value(&err, "operation"),
+            Some("interop::DataFrame::try_import_from_owned_device_table_transfer_into_runtime"),
         );
-        assert!(
-            err.to_string().contains("try_import_from_owned_device_table_transfer_into_runtime_and_names"),
-            "unexpected error: {err}"
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("schema_names"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("missing_schema_names"));
+        assert_eq!(
+            interop_error_context_value(&err, "remedy"),
+            Some(
+                "use DataFrame::try_import_from_owned_device_table_transfer_into_runtime_and_names when the root does not carry schema names"
+            ),
         );
+        assert_eq!(interop_error_context_value(&err, "explicit_names_variant"), None);
     }
 }
 

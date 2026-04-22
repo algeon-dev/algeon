@@ -1,9 +1,28 @@
 //! Tests for the `DataFrame::groupby` high-level API: `GroupBy`, `GroupByAgg`, `AggSpec`,
 //! `GroupByOptions`.
 
-use cudf::{AggSpec, DataFrame, ErrorKind, GroupByAgg, testing::prelude::*};
+use cudf::{AggSpec, DataFrame, ErrorCode, ErrorKind, GroupByAgg, testing::prelude::*};
 
-use crate::common::{assert_missing_column_error, column_from_slice};
+use crate::common::{assert_missing_column_error, column_from_slice, error_context_value};
+
+fn assert_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), operation);
+    assert_eq!(error_context_value(err, "reason"), Some(reason));
+    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
+}
+
+fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, request_index: &str, expected_ddof: u32) {
+    assert_groupby_validation_error(
+        err,
+        operation,
+        "ddof_exceeds_i32_range",
+        "use a ddof value within libcudf's i32 range",
+    );
+    assert_eq!(error_context_value(err, "request_index"), Some(request_index));
+    assert_eq!(error_context_value(err, "ddof"), Some(expected_ddof.to_string().as_str()));
+}
 
 // ---------------------------------------------------------------------------
 // GroupBy::agg with AggSpec — basic aggregations
@@ -191,7 +210,12 @@ fn groupby_empty_agg_specs() {
 
     let err = df.groupby(["key"]).agg(&[]).expect_err("expected error for empty aggregation specs");
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_groupby_validation_error(
+        &err,
+        "groupby::GroupBy::agg",
+        "empty_agg_specs",
+        "provide at least one AggSpec or use a shortcut like .sum([...])",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -490,6 +514,20 @@ fn groupby_std_shortcut() {
 
     assert!((pairs[0].1 - 50.0f64.sqrt()).abs() < 1e-6);
     assert!((pairs[1].1 - 5000.0f64.sqrt()).abs() < 1e-6);
+}
+
+#[test]
+fn groupby_rejects_ddof_above_i32_max_with_stable_contract() {
+    let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
+    let vals = column_from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
+    let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
+
+    let err = df
+        .groupby(["key"])
+        .agg(&[AggSpec::new("value", GroupByAgg::Std { ddof: u32::MAX })])
+        .expect_err("expected error");
+
+    assert_ddof_range_validation_error(&err, "groupby::GroupBy::agg", "0", u32::MAX);
 }
 
 // ---------------------------------------------------------------------------

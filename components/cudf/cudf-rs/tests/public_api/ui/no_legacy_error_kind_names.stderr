@@ -1,0 +1,29 @@
+error[E0599]: no variant or associated item named `InvalidOperation` found for enum `cudf::ErrorKind` in the current scope
+ --> tests/public_api/ui/no_legacy_error_kind_names.rs:4:24
+  |
+4 |     let _ = ErrorKind::InvalidOperation;
+  |                        ^^^^^^^^^^^^^^^^ variant or associated item not found in `cudf::ErrorKind`
+
+error[E0599]: no variant or associated item named `TypeError` found for enum `cudf::ErrorKind` in the current scope
+ --> tests/public_api/ui/no_legacy_error_kind_names.rs:5:24
+  |
+5 |     let _ = ErrorKind::TypeError;
+  |                        ^^^^^^^^^ variant or associated item not found in `cudf::ErrorKind`
+
+error[E0599]: no variant or associated item named `NotSupported` found for enum `cudf::ErrorKind` in the current scope
+ --> tests/public_api/ui/no_legacy_error_kind_names.rs:6:24
+  |
+6 |     let _ = ErrorKind::NotSupported;
+  |                        ^^^^^^^^^^^^ variant or associated item not found in `cudf::ErrorKind`
+  |
+help: there is a variant with a similar name
+  |
+6 -     let _ = ErrorKind::NotSupported;
+6 +     let _ = ErrorKind::Unsupported;
+  |
+
+error[E0599]: no variant or associated item named `Unknown` found for enum `cudf::ErrorKind` in the current scope
+ --> tests/public_api/ui/no_legacy_error_kind_names.rs:7:24
+  |
+7 |     let _ = ErrorKind::Unknown;
+  |                        ^^^^^^^ variant or associated item not found in `cudf::ErrorKind`

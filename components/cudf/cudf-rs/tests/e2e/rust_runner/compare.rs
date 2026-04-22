@@ -680,7 +680,7 @@ mod tests {
     fn result_kind_mismatch_detected() {
         let rust = NormalizedResult::Dataframe(NormalizedDataFrame { columns: vec![], row_count: 0, rows: vec![] });
         let python = NormalizedResult::Error(NormalizedError {
-            kind: "invalid_operation".into(),
+            kind: "invalid_argument".into(),
             operation: "select".into(),
             context: vec![],
         });

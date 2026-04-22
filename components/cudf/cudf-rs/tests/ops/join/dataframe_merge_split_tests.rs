@@ -1,12 +1,12 @@
 //! Tests for `DataFrame::merge_split`.
 use cudf::{
-    DataFrame, ExecutionOverrides, MergeOptions, NullEquality, frame::dataframe::DataFrameJoinSides,
-    testing::prelude::*,
+    DataFrame, ErrorCode, ErrorKind, ExecutionOverrides, MergeOptions, NullEquality,
+    frame::dataframe::DataFrameJoinSides, testing::prelude::*,
 };
 
 use crate::common::{
-    column_from_slice, column_from_slice_nullable, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    reset_exec_observation, reset_sync_observation, sample_runtime,
+    column_from_slice, column_from_slice_nullable, error_context_value, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
 fn left_df() -> DataFrame {
@@ -39,6 +39,14 @@ fn i32_column(df: &DataFrame, name: &str) -> Vec<i32> {
 
 fn nullable_i32_column(df: &DataFrame, name: &str) -> Vec<Option<i32>> {
     df.series(name).unwrap().to_optional_vec::<i32>().unwrap()
+}
+
+fn assert_merge_split_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), operation);
+    assert_eq!(error_context_value(err, "reason"), Some(reason));
+    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
 }
 
 #[test]
@@ -259,4 +267,99 @@ fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
     assert_eq!(left_rows, vec![(2, 20), (3, 30)]);
     assert_eq!(right_rows, vec![(2, 200), (3, 300)]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
+}
+
+#[test]
+fn test_merge_split_left_on_without_right_on() {
+    let left = left_df();
+    let right = right_df();
+
+    let err = left.merge_split(&right, MergeOptions::new().left_on(["id"])).unwrap_err();
+
+    assert_merge_split_validation_error(
+        &err,
+        "dataframe::merge_split",
+        "left_on_without_right_on",
+        "set right_on() or use on()",
+    );
+}
+
+#[test]
+fn test_merge_split_right_on_without_left_on() {
+    let left = left_df();
+    let right = right_df();
+
+    let err = left.merge_split(&right, MergeOptions::new().right_on(["id"])).unwrap_err();
+
+    assert_merge_split_validation_error(
+        &err,
+        "dataframe::merge_split",
+        "right_on_without_left_on",
+        "set left_on() or use on()",
+    );
+}
+
+#[test]
+fn test_merge_split_left_on_right_on_length_mismatch() {
+    let left = left_df_asym();
+    let right = right_df_asym();
+
+    let err =
+        left.merge_split(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id", "value"])).unwrap_err();
+
+    assert_merge_split_validation_error(
+        &err,
+        "dataframe::merge_split",
+        "join_key_count_mismatch",
+        "set left_on() and right_on() with the same number of key columns",
+    );
+    assert_eq!(error_context_value(&err, "left_on_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "right_on_count"), Some("2"));
+}
+
+#[test]
+fn test_merge_split_no_keys_specified() {
+    let left = left_df();
+    let right = right_df();
+
+    let err = left.merge_split(&right, MergeOptions::new()).unwrap_err();
+
+    assert_merge_split_validation_error(
+        &err,
+        "dataframe::merge_split",
+        "missing_join_keys",
+        "set on() or left_on() + right_on()",
+    );
+}
+
+#[test]
+fn test_merge_split_rejects_ambiguous_join_key_configuration() {
+    let left = left_df();
+    let right = right_df();
+
+    let err = left.merge_split(&right, MergeOptions::new().on(["id"]).left_on(["id"]).right_on(["id"])).unwrap_err();
+
+    assert_merge_split_validation_error(
+        &err,
+        "dataframe::merge_split",
+        "ambiguous_join_key_configuration",
+        "use on() or left_on() + right_on(), not both",
+    );
+}
+
+#[test]
+fn test_merge_split_in_context_left_on_without_right_on() {
+    let left = left_df();
+    let right = right_df();
+    let rt = sample_runtime();
+    let ctx = ExecutionOverrides::new().with_stream(rt.stream()).with_memory_resource(rt.memory_resource());
+
+    let err = left.with_execution(&ctx).merge_split(&right, MergeOptions::new().left_on(["id"])).unwrap_err();
+
+    assert_merge_split_validation_error(
+        &err,
+        "dataframe::with_execution::merge_split",
+        "left_on_without_right_on",
+        "set right_on() or use on()",
+    );
 }

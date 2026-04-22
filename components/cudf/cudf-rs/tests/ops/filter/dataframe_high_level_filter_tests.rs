@@ -1,9 +1,9 @@
 //! Tests for the high-level `DataFrame::filter` that accepts `&Series` masks.
-use cudf::{DataFrame, ErrorKind, ops::filter as low_level_filter, testing::prelude::*};
+use cudf::{DataFrame, ErrorCode, ErrorKind, ops::filter as low_level_filter, testing::prelude::*};
 
 use crate::common::{
-    column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation, sample_df, sample_runtime,
+    column_from_slice, error_context_value, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation, sample_df, sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -99,8 +99,11 @@ fn test_filter_series_rejects_wrong_length_mask() {
     let result = df.filter(&mask);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.to_string().contains("length"));
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "dataframe::filter");
+    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows"), Some("5"));
 }
 
 // ---------------------------------------------------------------------------
@@ -116,8 +119,11 @@ fn test_filter_series_rejects_non_bool_mask() {
     let result = df.filter(&mask);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::TypeError);
-    assert!(err.to_string().contains("Bool8"));
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "dataframe::filter");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("bool8"));
 }
 
 // ---------------------------------------------------------------------------
@@ -178,8 +184,11 @@ fn test_advanced_low_level_filter_rejects_non_bool_mask() {
         Ok(_) => panic!("expected non-bool mask to be rejected"),
         Err(err) => err,
     };
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-    assert!(err.to_string().contains("mask") || err.to_string().contains("bool") || err.to_string().contains("BOOL"));
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "filter::apply_boolean_mask");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("bool8"));
 }
 
 #[test]
@@ -193,5 +202,9 @@ fn test_advanced_low_level_filter_rejects_wrong_length_mask() {
         Ok(_) => panic!("expected wrong-length mask to be rejected"),
         Err(err) => err,
     };
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "filter::apply_boolean_mask");
+    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows"), Some("5"));
 }

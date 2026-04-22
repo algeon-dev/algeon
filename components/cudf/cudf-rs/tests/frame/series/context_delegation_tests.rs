@@ -5,9 +5,11 @@
 //! representative operation families while the implementation shares a single
 //! context-aware core.
 
-use cudf::{ExecutionOverrides, Series, SortOptions, TypeId, testing::prelude::*};
+use cudf::{ErrorCode, ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId, testing::prelude::*};
 
-use crate::common::{last_exec_mr_value, last_exec_stream_value, reset_exec_observation, sample_runtime};
+use crate::common::{
+    error_context_value, last_exec_mr_value, last_exec_stream_value, reset_exec_observation, sample_runtime,
+};
 
 fn assert_i32_series_eq(lhs: &Series, rhs: &Series) {
     assert_eq!(lhs.dtype().unwrap().id(), rhs.dtype().unwrap().id());
@@ -114,4 +116,24 @@ fn default_series_string_namespace_and_factorization_ops_match_empty_execution_c
         factorized.codebook().keys().to_strings_strict().unwrap(),
         factorized_in_context.codebook().keys().to_strings_strict().unwrap()
     );
+}
+
+#[test]
+fn default_and_explicit_context_numeric_cast_validation_errors_match() {
+    let rt = sample_runtime();
+    let ints = rt.series(&[3i32, 1, 2, 1]).unwrap();
+    let ctx = ExecutionOverrides::new();
+
+    let default_err = ints.to_numeric(TypeId::String).unwrap_err();
+    let scoped_err = ints.to_numeric_in(TypeId::String, &ctx).unwrap_err();
+
+    assert_eq!(default_err.kind(), ErrorKind::Unsupported);
+    assert_eq!(default_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(default_err.operation(), "series::to_numeric");
+    assert_eq!(error_context_value(&default_err, "type_id"), Some("string"));
+
+    assert_eq!(scoped_err.kind(), ErrorKind::Unsupported);
+    assert_eq!(scoped_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(scoped_err.operation(), "series::to_numeric_in");
+    assert_eq!(error_context_value(&scoped_err, "type_id"), Some("string"));
 }

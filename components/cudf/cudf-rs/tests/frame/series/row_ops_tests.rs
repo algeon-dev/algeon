@@ -5,9 +5,9 @@
 //!
 //! All tests require a GPU.
 
-use cudf::Series;
+use cudf::{ErrorCode, ErrorKind, Series};
 
-use crate::common::column_from_slice;
+use crate::common::{column_from_slice, error_context_value};
 
 #[test]
 fn test_head_basic() {
@@ -155,7 +155,24 @@ fn test_filter_operation_tag_on_dtype_error() {
     let bogus = crate::common::series::<i32>("mask", &[1, 0]).unwrap();
 
     let err = s.filter(&bogus).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "series::filter");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("bool8"));
+}
+
+#[test]
+fn test_filter_length_mismatch_uses_canonical_length_contract() {
+    let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
+    let short_mask = crate::common::series::<bool>("mask", &[true, false]).unwrap();
+
+    let err = s.filter(&short_mask).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "series::filter");
+    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
 }
 
 #[test]
@@ -183,4 +200,106 @@ fn test_value_counts_with_sentinel_collision_name() {
 
     let counts = values.value_counts().unwrap();
     assert_eq!(counts.column_names(), vec!["value", "count"]);
+}
+
+#[test]
+fn test_testing_hook_locks_value_counts_missing_key_columns_contract() {
+    let err = cudf::testing::trigger_value_counts_missing_key_columns_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "series::value_counts");
+    assert_eq!(error_context_value(&err, "resource"), Some("groupby_result_shape"));
+    assert_eq!(error_context_value(&err, "reason"), Some("missing_key_columns"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some(
+            "ensure the foreign groupby backend returns one key column and one non-empty count result for value_counts"
+        )
+    );
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("0"));
+}
+
+#[test]
+fn test_testing_hook_locks_value_counts_missing_count_results_contract() {
+    let err = cudf::testing::trigger_value_counts_missing_count_results_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "series::value_counts");
+    assert_eq!(error_context_value(&err, "resource"), Some("groupby_result_shape"));
+    assert_eq!(error_context_value(&err, "reason"), Some("missing_count_results"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some(
+            "ensure the foreign groupby backend returns one key column and one non-empty count result for value_counts"
+        )
+    );
+    assert_eq!(error_context_value(&err, "result_group_count"), Some("0"));
+}
+
+#[test]
+fn test_testing_hook_locks_value_counts_empty_count_result_contract() {
+    let err = cudf::testing::trigger_value_counts_empty_count_result_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "series::value_counts");
+    assert_eq!(error_context_value(&err, "resource"), Some("groupby_result_shape"));
+    assert_eq!(error_context_value(&err, "reason"), Some("empty_count_result"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some(
+            "ensure the foreign groupby backend returns one key column and one non-empty count result for value_counts"
+        )
+    );
+    assert_eq!(error_context_value(&err, "result_column_count"), Some("0"));
+}
+
+#[test]
+fn test_testing_hook_locks_series_row_range_start_limit_contract() {
+    let err = cudf::testing::trigger_series_row_range_start_limit_error_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "series::slice");
+    assert_eq!(err.message(), "row range start exceeds i32::MAX");
+    assert_eq!(error_context_value(&err, "resource"), Some("row_range"));
+    assert_eq!(error_context_value(&err, "reason"), Some("start_exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("reduce row range bounds to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "start_row"), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "end_row"), None);
+}
+
+#[test]
+fn test_testing_hook_locks_series_row_range_end_limit_contract() {
+    let err = cudf::testing::trigger_series_row_range_end_limit_error_for_test().unwrap_err();
+    let expected_end = (i32::MAX as usize).checked_add(1).unwrap().to_string();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "series::slice");
+    assert_eq!(err.message(), "row range end exceeds i32::MAX");
+    assert_eq!(error_context_value(&err, "resource"), Some("row_range"));
+    assert_eq!(error_context_value(&err, "reason"), Some("end_exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("reduce row range bounds to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "start_row"), Some(i32::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "end_row"), Some(expected_end.as_str()));
+}
+
+#[test]
+fn test_testing_hook_locks_series_row_range_overflow_contract() {
+    let err = cudf::testing::trigger_series_row_range_overflow_error_for_test().unwrap_err();
+    let expected_end = ((i32::MAX as u128) + (usize::MAX as u128)).to_string();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "series::slice");
+    assert_eq!(err.message(), "row range end overflowed usize");
+    assert_eq!(error_context_value(&err, "resource"), Some("row_range"));
+    assert_eq!(error_context_value(&err, "reason"), Some("end_overflowed_usize"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("reduce row range bounds to fit within usize"));
+    assert_eq!(error_context_value(&err, "start_row"), Some(i32::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "end_row"), Some(expected_end.as_str()));
+    assert_eq!(error_context_value(&err, "length"), None);
 }

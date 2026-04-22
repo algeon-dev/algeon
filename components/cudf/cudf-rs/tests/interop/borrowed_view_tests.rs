@@ -332,7 +332,7 @@ fn nested_list_column_construction_is_rejected_before_interop() {
         Err(err) => err,
     };
 
-    assert_eq!(err.kind(), cudf::ErrorKind::TypeError);
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert!(err.to_string().contains("nested types"));
 }
 
@@ -343,6 +343,6 @@ fn nested_struct_series_construction_is_rejected_before_interop() {
         Err(err) => err,
     };
 
-    assert_eq!(err.kind(), cudf::ErrorKind::TypeError);
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert!(err.to_string().contains("nested types"));
 }

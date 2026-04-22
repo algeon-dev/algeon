@@ -1,13 +1,13 @@
 //! Tests for lookup semantics through the dedicated lookup operator.
 use cudf::{
-    ErrorKind, TypeId,
+    ErrorCode, ErrorKind, TypeId,
     ops::lookup::{self, LookupTable},
     testing::prelude::*,
 };
 
 use crate::common::{
-    column_from_slice, column_from_strs, explicit_i32_column, explicit_i32_series, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    column_from_slice, column_from_strs, error_context_value, explicit_i32_column, explicit_i32_series,
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
 #[test]
@@ -92,8 +92,13 @@ fn test_lookup_probe_rejects_duplicate_keys() {
         lookup::probe(&input.testing_view().unwrap(), &keys.testing_view().unwrap(), &values.testing_view().unwrap())
             .unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::DuplicateKey);
     assert_eq!(err.operation(), "lookup::probe");
+    assert_eq!(error_context_value(&err, "keys_count"), Some("3"));
+    assert_eq!(error_context_value(&err, "distinct_keys_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "key_count"), None);
+    assert_eq!(error_context_value(&err, "distinct_key_count"), None);
 }
 
 #[test]
@@ -106,9 +111,35 @@ fn test_lookup_probe_rejects_mapping_length_mismatch() {
         lookup::probe(&input.testing_view().unwrap(), &keys.testing_view().unwrap(), &values.testing_view().unwrap())
             .unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "lookup::probe");
-    assert!(err.message().contains("same length"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "keys_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "values_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "keys_type_id"), None);
+    assert_eq!(error_context_value(&err, "output_type_id"), None);
+}
+
+#[test]
+fn test_lookup_probe_rejects_dtype_mismatch_with_canonical_type_context() {
+    let input = column_from_slice(&[1i32, 2]).unwrap();
+    let keys = column_from_strs(&["1", "2"]).unwrap();
+    let values = column_from_slice(&[10i32, 20]).unwrap();
+
+    let err =
+        lookup::probe(&input.testing_view().unwrap(), &keys.testing_view().unwrap(), &values.testing_view().unwrap())
+            .unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "lookup::probe");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "output_type_id"), None);
+    assert_eq!(error_context_value(&err, "values_type_id"), None);
 }
 
 #[test]
@@ -144,8 +175,11 @@ fn test_lookup_table_rejects_duplicate_keys_at_build_time() {
 
     let err = LookupTable::new(keys, values).unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::DuplicateKey);
     assert_eq!(err.operation(), "lookup_table::new");
+    assert_eq!(error_context_value(&err, "keys_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "distinct_keys_count"), Some("1"));
 }
 
 #[test]
@@ -155,9 +189,15 @@ fn test_lookup_table_rejects_mapping_length_mismatch_at_build_time() {
 
     let err = LookupTable::new(keys, values).unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "lookup_table::new");
-    assert!(err.message().contains("same length"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "keys_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "values_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "keys_type_id"), None);
+    assert_eq!(error_context_value(&err, "output_type_id"), None);
 }
 
 #[test]
@@ -211,8 +251,14 @@ fn test_lookup_table_probe_rejects_dtype_mismatch() {
 
     let err = table.probe(&input).unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "lookup_table::probe");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "output_type_id"), None);
+    assert_eq!(error_context_value(&err, "values_type_id"), None);
 }
 
 #[test]

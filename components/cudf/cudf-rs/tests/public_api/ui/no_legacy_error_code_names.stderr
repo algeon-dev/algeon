@@ -1,0 +1,11 @@
+error[E0599]: no variant or associated item named `Unspecified` found for enum `ErrorCode` in the current scope
+ --> tests/public_api/ui/no_legacy_error_code_names.rs:4:24
+  |
+4 |     let _ = ErrorCode::Unspecified;
+  |                        ^^^^^^^^^^^ variant or associated item not found in `ErrorCode`
+
+error[E0599]: no variant or associated item named `ForeignContractViolation` found for enum `ErrorCode` in the current scope
+ --> tests/public_api/ui/no_legacy_error_code_names.rs:5:24
+  |
+5 |     let _ = ErrorCode::ForeignContractViolation;
+  |                        ^^^^^^^^^^^^^^^^^^^^^^^^ variant or associated item not found in `ErrorCode`

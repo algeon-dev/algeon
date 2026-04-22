@@ -1,9 +1,9 @@
 //! Tests for filter operations.
-use cudf::{core::Table, ops::filter, testing::prelude::*};
+use cudf::{ErrorCode, ErrorKind, core::Table, ops::filter, testing::prelude::*};
 
 use crate::common::{
-    column_from_slice, explicit_bool_column, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    column_from_slice, error_context_value, explicit_bool_column, explicit_i32_column, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
 #[test]
@@ -93,4 +93,32 @@ fn test_boolean_mask_succeeds_with_mixed_domains_and_uses_input_provenance() {
     let host = filtered.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
     assert_eq!(host, vec![10, 30]);
     assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn test_boolean_mask_rejects_non_bool_mask_with_canonical_type_contract() {
+    let table = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
+    let mask = column_from_slice(&[1i32, 0, 1]).unwrap();
+
+    let err = filter::apply_boolean_mask(&table.testing_view().unwrap(), &mask.testing_view().unwrap()).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "filter::apply_boolean_mask");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("bool8"));
+}
+
+#[test]
+fn test_boolean_mask_rejects_wrong_length_mask_with_canonical_length_contract() {
+    let table = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
+    let mask = column_from_slice(&[true, false]).unwrap();
+
+    let err = filter::apply_boolean_mask(&table.testing_view().unwrap(), &mask.testing_view().unwrap()).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "filter::apply_boolean_mask");
+    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
 }

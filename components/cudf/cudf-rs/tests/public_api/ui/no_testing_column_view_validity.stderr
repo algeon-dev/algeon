@@ -5,7 +5,7 @@ error[E0599]: no function or associated item named `validity` found for struct `
   |                                                   ^^^^^^^^ function or associated item not found in `ColumnView<'_>`
   |
 help: there is a method `to_host_validity` with a similar name
- --> src/core/column/view.rs
+ --> src/core/column/view/mod.rs
   |
   |     pub fn to_host_validity(&self) -> Result<Option<Vec<bool>>> {
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

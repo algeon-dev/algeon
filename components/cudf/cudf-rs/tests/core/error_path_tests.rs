@@ -1,6 +1,6 @@
-use cudf::{ErrorKind, core::Table, testing::prelude::*};
+use cudf::{ErrorCode, ErrorKind, core::Table, testing::prelude::*};
 
-use crate::common::column_from_slice;
+use crate::common::{column_from_slice, error_context_value};
 
 #[test]
 fn test_dataframe_new_mismatched_column_lengths() {
@@ -79,7 +79,13 @@ fn test_dataframe_new_names_columns_count_mismatch() {
     let result = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![c1]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "dataframe::new");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "names_count"), None);
+    assert_eq!(error_context_value(&err, "columns_count"), None);
 }
 
 #[test]
@@ -89,5 +95,5 @@ fn test_dataframe_new_duplicate_names() {
     let result = crate::common::dataframe_from_columns(vec!["a".to_string(), "a".to_string()], vec![c1, c2]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }

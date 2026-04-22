@@ -1,9 +1,10 @@
 //! Tests for DataFrame column-level convenience.
 
-use cudf::{DataType, ErrorKind, TypeId};
+use cudf::{DataType, ErrorCode, ErrorKind, TypeId};
 
 use crate::common::{
-    assert_missing_column_error, column_from_slice, column_from_slice_nullable, column_from_strs, scalar,
+    assert_missing_column_error, column_from_slice, column_from_slice_nullable, column_from_strs, error_context_value,
+    scalar,
 };
 
 // ---------------------------------------------------------------------------
@@ -86,7 +87,12 @@ fn test_with_column_mismatched_row_count_returns_error() {
     // New column has 2 rows, DataFrame has 3.
     let new_col = column_from_slice(&[10i32, 20]).unwrap();
     let err = df.with_column("b", new_col).expect_err("expected row count mismatch error");
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "dataframe::with_column");
+    assert_eq!(error_context_value(&err, "column_name"), Some("b"));
+    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
 }
 
 #[test]

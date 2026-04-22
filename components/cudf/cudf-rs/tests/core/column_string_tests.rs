@@ -1,8 +1,8 @@
 //! Tests for string column creation and reading.
 
-use cudf::{TypeId, testing::prelude::*};
+use cudf::{ErrorCode, ErrorKind, TypeId, testing::prelude::*};
 
-use crate::common::{column_from_slice, column_from_strs, column_from_strs_nullable};
+use crate::common::{column_from_slice, column_from_strs, column_from_strs_nullable, error_context_value};
 
 #[test]
 fn test_from_strs_basic() {
@@ -120,7 +120,7 @@ fn test_from_strs_nullable_mismatched_lengths() {
     let result = column_from_strs_nullable(strings, validity);
     assert!(result.is_err());
     let err = result.err().unwrap();
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
 }
 
 #[test]
@@ -150,7 +150,12 @@ fn test_to_strings_rejects_non_string_column() {
     let result = view.to_strings_lossy();
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::TypeError);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "column_view::to_strings_lossy");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "actual_type_id"), None);
 }
 
 #[test]
@@ -187,7 +192,52 @@ fn test_to_optional_strings_rejects_non_string_column() {
     let result = view.to_optional_strings();
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::TypeError);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "column_view::to_optional_strings");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "actual_type_id"), None);
+}
+
+#[test]
+fn test_to_strings_rejects_malformed_string_view_with_stable_foreign_contract() {
+    let view = cudf::testing::synthetic_string_view_without_children(2).unwrap();
+
+    let err = view.to_strings_lossy().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "column_view::to_strings_lossy");
+    assert_eq!(error_context_value(&err, "resource"), Some("string_view_layout"));
+    assert_eq!(error_context_value(&err, "reason"), Some("invalid_string_view_metadata"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure the STRING column view exposes valid offsets and chars metadata")
+    );
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "called" && value == "column_view::string_chars_ptr_and_size"),
+        "expected nested helper call history, got {:?}",
+        err.context()
+    );
+}
+
+#[test]
+fn test_to_optional_strings_rejects_malformed_string_view_with_same_contract() {
+    let view = cudf::testing::synthetic_string_view_without_children(2).unwrap();
+
+    let err = view.to_optional_strings().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "column_view::to_optional_strings");
+    assert_eq!(error_context_value(&err, "resource"), Some("string_view_layout"));
+    assert_eq!(error_context_value(&err, "reason"), Some("invalid_string_view_metadata"));
+    assert!(
+        err.context().iter().any(|(key, value)| *key == "called" && value == "column_view::string_chars_ptr_and_size"),
+        "expected nested helper call history, got {:?}",
+        err.context()
+    );
 }
 
 #[test]
