@@ -60,7 +60,6 @@ pub(super) fn write_run_metadata(params: &Params) -> E2eResult<()> {
             "crates/datafusion-nexus-tools/src/e2e/server_iceberg_rest_multigpu_e2e.rs",
             "crates/datafusion-nexus-tools/src/e2e/server_iceberg_rest_multigpu_e2e",
             "fixture/scripts/e2e.sh",
-            "docs/issue/2026-07-12-hardware-limit-roadmap.md",
         ],
     ) {
         fs::write(params.artifact_dir.join("source.diff"), diff)?;

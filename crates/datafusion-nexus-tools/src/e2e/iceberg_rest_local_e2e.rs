@@ -15,8 +15,8 @@
 //!   NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
 //!   NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
 //!   NEXUS_ICEBERG_S3_PATH_STYLE=true \
-//!   NEXUS_ICEBERG_S3_ACCESS_KEY_ID=cudfadmin \
-//!   NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=cudfadminsecret \
+//!   NEXUS_ICEBERG_S3_ACCESS_KEY_ID=nexusadmin \
+//!   NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=nexusadmin \
 //!   NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
 //!   cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
 //! ```

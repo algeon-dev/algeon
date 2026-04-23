@@ -1,12 +1,12 @@
-//! C1 empirical experiment for docs/issue/substrait_limitation_issue.md.
+//! Native mixed-fallback report.
 //!
-//! Verifies the intro.mdx claim that under `GpuPreferred` a query mixing
-//! supported and unsupported operators keeps supported fragments on the GPU
-//! while the unsupported remainder stays on the DataFusion CPU path, with
-//! correct results — instead of falling back the whole query.
+//! Verifies that, under `GpuPreferred`, a query with supported and unsupported
+//! operators keeps supported fragments on the GPU while DataFusion executes
+//! the unsupported remainder on the CPU. Each case must also match plain
+//! DataFusion results.
 //!
 //! Run under the GPU lock:
-//! `flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-bench --bin c1_mixed_fallback_experiment`
+//! `flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-bench --bin native_mixed_fallback_report`
 
 use std::{
     error::Error,
@@ -90,11 +90,11 @@ const CASES: &[Case] = &[
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let dir = unique_temp_dir("c1-mixed-fallback-experiment");
+    let dir = unique_temp_dir("datafusion-nexus-native-mixed-fallback-report");
     let bench = dir.join("bench.parquet");
     let bench2 = dir.join("bench2.parquet");
-    write_experiment_parquet(&bench, 0);
-    write_experiment_parquet(&bench2, 1);
+    write_report_input_parquet(&bench, 0);
+    write_report_input_parquet(&bench2, 1);
 
     let mut failures = Vec::new();
     for case in CASES {
@@ -107,10 +107,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     fs::remove_dir_all(&dir).ok();
     if failures.is_empty() {
-        println!("\nC1 VERDICT: all {} cases behaved as expected", CASES.len());
+        println!("\nSUMMARY: all {} cases behaved as expected", CASES.len());
         Ok(())
     } else {
-        Err(format!("C1 experiment failures: {failures:?}").into())
+        Err(format!("native mixed-fallback report failures: {failures:?}").into())
     }
 }
 
@@ -139,7 +139,7 @@ async fn run_case(
         .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
-        .with_config(experiment_session_config())
+        .with_config(report_session_config())
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let gpu_ctx = SessionContext::new_with_state(state);
@@ -178,7 +178,7 @@ async fn run_case(
     let gpu_batches = gpu_ctx.sql(case.sql).await?.collect().await?;
     // Execute on a plain CPU DataFusion session (no nexus rule at all).
     let cpu_ctx = SessionContext::new_with_state(
-        SessionStateBuilder::new_with_default_features().with_config(experiment_session_config()).build(),
+        SessionStateBuilder::new_with_default_features().with_config(report_session_config()).build(),
     );
     register_tables(&cpu_ctx, bench, bench2).await?;
     let cpu_batches = cpu_ctx.sql(case.sql).await?.collect().await?;
@@ -236,7 +236,7 @@ async fn register_tables(
     Ok(())
 }
 
-fn experiment_session_config() -> SessionConfig {
+fn report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
         .with_repartition_aggregations(false)
@@ -248,7 +248,7 @@ fn experiment_session_config() -> SessionConfig {
     config
 }
 
-fn write_experiment_parquet(path: &std::path::Path, salt: i64) {
+fn write_report_input_parquet(path: &std::path::Path, salt: i64) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),

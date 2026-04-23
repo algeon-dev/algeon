@@ -604,7 +604,6 @@ fn classify_datafusion_error(error: &DataFusionError) -> ErrorCode {
         | DataFusionError::ArrowError(_, _)
         | DataFusionError::IoError(_)
         | DataFusionError::External(_)
-        | DataFusionError::Substrait(_)
         | DataFusionError::ExecutionJoin(_)
         | DataFusionError::Ffi(_) => ErrorCode::Internal,
         _ => ErrorCode::Internal,
@@ -638,7 +637,6 @@ fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
         DataFusionError::ResourcesExhausted(_) => "resources_exhausted",
         DataFusionError::External(_) => "external",
         DataFusionError::Context(_, _) => "context",
-        DataFusionError::Substrait(_) => "substrait",
         DataFusionError::Diagnostic(_, _) => "diagnostic",
         DataFusionError::Collection(_) => "collection",
         DataFusionError::Shared(_) => "shared",

@@ -1,4 +1,4 @@
-# datafusion-nexus — GPU query engine container
+# GPU query engine container
 
 A drop-and-run Arrow Flight SQL service that executes DataFusion physical plans
 on the GPU via cuDF (and optionally cuGraph). This directory builds a

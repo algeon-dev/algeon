@@ -1,5 +1,4 @@
-//! Milestone 3 regression tests for the Flight SQL Iceberg fallback fix
-//! (`docs/plan/2026-05-22-flight-sql-iceberg-cpu-fallback-plan.md`).
+//! Regression tests for Flight SQL Iceberg native planning and CPU fallback.
 //!
 //! These tests pin the exact regression surface for two scenarios:
 //!

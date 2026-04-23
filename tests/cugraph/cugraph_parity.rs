@@ -6,9 +6,6 @@
 //! Python cuGraph oracle (or the curated Katz reference CSV). ECG is the
 //! exception: its randomized ensemble is checked for replay stability and
 //! partition quality against the oracle, not an exact cross-build partition.
-//! See
-//! `docs/plan/2026-05-20-cugraph-rs-full-api-support-plan.md` (Testing
-//! redesign section) for the full design.
 
 #[path = "cugraph_parity/compare.rs"]
 mod compare;

@@ -167,19 +167,19 @@ fn custom_query_file_selects_all_table_custom_mode() {
     let env = HashMap::from([
         ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
         ("NEXUS_ICEBERG_CUSTOM_WORKLOAD", "tpcds"),
-        ("NEXUS_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpcds_probe.json"),
+        ("NEXUS_ICEBERG_CUSTOM_QUERY_FILE", "custom_tpcds_probe.json"),
     ]);
     let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
     assert!(config.tpch_query_ids.is_empty());
     assert!(config.tpcds_query_ids.is_empty());
     assert_eq!(config.custom_workload, Some(CustomWorkload::Tpcds));
-    assert_eq!(config.custom_query_file.as_deref(), Some(std::path::Path::new("docs/bench/custom_tpcds_probe.json")));
+    assert_eq!(config.custom_query_file.as_deref(), Some(std::path::Path::new("custom_tpcds_probe.json")));
 }
 
 #[test]
 fn custom_query_file_requires_workload_and_is_mutually_exclusive_with_builtins() {
-    let missing_workload = HashMap::from([("NEXUS_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpcds_probe.json")]);
+    let missing_workload = HashMap::from([("NEXUS_ICEBERG_CUSTOM_QUERY_FILE", "custom_tpcds_probe.json")]);
     let error =
         IcebergNativeSmokeConfig::from_env_get(|name| missing_workload.get(name).map(|value| value.to_string()))
             .expect_err("custom query file without workload should fail");
@@ -188,7 +188,7 @@ fn custom_query_file_requires_workload_and_is_mutually_exclusive_with_builtins()
     let mixed = HashMap::from([
         ("NEXUS_ICEBERG_SMOKE_QUERY_IDS", "q06"),
         ("NEXUS_ICEBERG_CUSTOM_WORKLOAD", "tpch"),
-        ("NEXUS_ICEBERG_CUSTOM_QUERY_FILE", "docs/bench/custom_tpch_probe.json"),
+        ("NEXUS_ICEBERG_CUSTOM_QUERY_FILE", "custom_tpch_probe.json"),
     ]);
     let error = IcebergNativeSmokeConfig::from_env_get(|name| mixed.get(name).map(|value| value.to_string()))
         .expect_err("custom query file and built-in query ids should fail");

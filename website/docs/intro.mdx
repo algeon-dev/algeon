@@ -95,10 +95,8 @@ boundary in detail.
   `cpu_fallback` session profile, which reroutes every Iceberg table in the
   session.
 - **Parquet only.** Parquet is the only supported data file format for now.
-- **No Substrait input.** Queries enter as SQL text, through an embedded
-  DataFusion session or Flight SQL; Nexus does not accept serialized query
-  plans, and the Flight SQL server reports Substrait as unsupported to
-  clients.
+- **No serialized query-plan input.** Queries enter as SQL text, through an
+  embedded DataFusion session or Flight SQL.
 
 ## Repository layout
 

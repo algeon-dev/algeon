@@ -46,7 +46,7 @@ cat >"${tmp_dir}/bin/cargo" <<'SH'
 #!/usr/bin/bash
 set -u
 {
-  printf 'policy=%s cargo' "${CUDF_RUNTIME_POLICY-unset}"
+  printf 'cargo'
   printf ' <%s>' "$@"
   printf ' {rustdocflags=%s}' "${RUSTDOCFLAGS-unset}"
   printf '\n'
@@ -139,7 +139,7 @@ run_check() {
   local status=0
   : >"${log}"
   : >"${tmp_dir}/${name}.date"
-  env -u FEATURES -u TEST_RUNNER -u GPU_LOCK -u CUDF_RUNTIME_POLICY -u STRICT -u RUSTDOCFLAGS \
+  env -u FEATURES -u TEST_RUNNER -u GPU_LOCK -u STRICT -u RUSTDOCFLAGS \
     PATH="${tmp_dir}/bin:${PATH}" COMMAND_LOG="${log}" \
     CHECK_ALL_PHASE_LOG_DIR="${tmp_dir}/phase-logs" FAKE_DATE_COUNTER="${tmp_dir}/${name}.date" \
     "$@" >"${output}" 2>&1 || status=$?
@@ -321,15 +321,15 @@ echo "PASS: canonical runner requires exact cargo-nextest 0.9.140"
 run_check default /usr/bin/bash scripts/check_all.sh
 assert_status default 0
 assert_contains "${tmp_dir}/default.output" "gpu_profile=default gpu_threads=16(nproc)"
-assert_contains "${tmp_dir}/default.output" "GPU scheduling preflight: CPU runtime policy=forbid; shared: profile=default group=gpu configured_cap=num-cpus explicit_test_threads=16"
+assert_contains "${tmp_dir}/default.output" "GPU scheduling preflight: shared: profile=default group=gpu configured_cap=num-cpus explicit_test_threads=16"
 assert_contains "${tmp_dir}/default.output" "exclusive: group=gpu-exclusive configured_cap=1 explicit_test_threads=1"
-assert_contains "${tmp_dir}/default.output" "GPU scheduling final: CPU runtime policy=forbid; shared: profile=default group=gpu configured_cap=num-cpus explicit_test_threads=16"
+assert_contains "${tmp_dir}/default.output" "GPU scheduling final: shared: profile=default group=gpu configured_cap=num-cpus explicit_test_threads=16"
 assert_contains "${tmp_dir}/default.log" "cargo <nextest> <show-config> <--color> <never> <-P> <default> <test-groups> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "policy=forbid cargo <nextest> <run> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
-assert_contains "${tmp_dir}/default.log" "policy=allow cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
-assert_contains "${tmp_dir}/default.log" "policy=allow cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu-exclusive)> <--no-fail-fast> <--test-threads> <1>"
-assert_contains "${tmp_dir}/default.log" "policy=allow cargo <test> <--all-features> <--doc> <--no-fail-fast>"
-assert_contains "${tmp_dir}/default.log" "cargo <+nightly-2026-07-13> <fmt> <--all> <--check>"
+assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
+assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
+assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu-exclusive)> <--no-fail-fast> <--test-threads> <1>"
+assert_contains "${tmp_dir}/default.log" "cargo <test> <--all-features> <--doc> <--no-fail-fast>"
+assert_contains "${tmp_dir}/default.log" "cargo <+nightly> <fmt> <--all> <--check>"
 assert_contains "${tmp_dir}/default.log" "cargo <check> <--all-features>"
 assert_contains "${tmp_dir}/default.log" "cargo <clippy> <--all-targets> <--all-features>"
 assert_contains "${tmp_dir}/default.log" "cargo <check> <-p> <datafusion-nexus-tools> <--all-targets> <--all-features>"
@@ -340,11 +340,11 @@ assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_doctest_r
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_gpu_scheduling_tests.sh>"
 assert_contains "${tmp_dir}/default.output" "Phase | Command | Duration | Status | Test counts | GPU cap | Lock | Features | Log"
 assert_phase_contains "${tmp_dir}/default.output" policy-selftests "0.100s | PASS | checks=7 | - | - | all | ${tmp_dir}/phase-logs/policy-selftests.log"
-assert_phase_contains "${tmp_dir}/default.output" cpu-tests "cpu-tests | CUDF_RUNTIME_POLICY=forbid cargo nextest run --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast | 0.100s"
+assert_phase_contains "${tmp_dir}/default.output" cpu-tests "cpu-tests | cargo nextest run --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast | 0.100s"
 assert_phase_contains "${tmp_dir}/default.output" cpu-tests "0.100s | PASS | run=3 passed=3 failed=0 skipped=5 | - | - | all | ${tmp_dir}/phase-logs/cpu-tests.log"
-assert_phase_contains "${tmp_dir}/default.output" gpu-shared-tests "gpu-shared-tests | CUDF_RUNTIME_POLICY=allow flock /tmp/cudf-gpu.lock cargo nextest run -P default --all-features -E group(gpu) --no-fail-fast --test-threads 16 | 0.100s"
+assert_phase_contains "${tmp_dir}/default.output" gpu-shared-tests "gpu-shared-tests | flock /tmp/cudf-gpu.lock cargo nextest run -P default --all-features -E group(gpu) --no-fail-fast --test-threads 16 | 0.100s"
 assert_phase_contains "${tmp_dir}/default.output" gpu-shared-tests "0.100s | PASS | run=2 passed=2 failed=0 skipped=6 | 16 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-shared-tests.log"
-assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "gpu-exclusive-tests | CUDF_RUNTIME_POLICY=allow flock /tmp/cudf-gpu.lock cargo nextest run -P default --all-features -E group(gpu-exclusive) --no-fail-fast --test-threads 1 | 0.100s"
+assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "gpu-exclusive-tests | flock /tmp/cudf-gpu.lock cargo nextest run -P default --all-features -E group(gpu-exclusive) --no-fail-fast --test-threads 1 | 0.100s"
 assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "0.100s | PASS | run=1 passed=1 failed=0 skipped=7 | 1 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-exclusive-tests.log"
 assert_phase_contains "${tmp_dir}/default.output" doctests "0.100s | PASS | harnesses=1 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log"
 assert_phase_contains "${tmp_dir}/default.output" cargo-diagnostic "- | SKIPPED | - | - | - | all | -"
@@ -367,28 +367,20 @@ fi
 echo "PASS: CPU exclusion and sequential default GPU resource classes"
 echo "PASS: full surface includes pinned fmt, default compile, clippy, tools, examples, and isolated policies"
 
-run_check ambient_policy env CUDF_RUNTIME_POLICY=caller-value /usr/bin/bash scripts/check_all.sh
-assert_status ambient_policy 0
-assert_contains "${tmp_dir}/ambient_policy.log" "policy=forbid cargo <nextest> <run> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
-assert_contains "${tmp_dir}/ambient_policy.log" "policy=allow cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
-assert_contains "${tmp_dir}/ambient_policy.log" "policy=allow cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu-exclusive)> <--no-fail-fast> <--test-threads> <1>"
-assert_contains "${tmp_dir}/ambient_policy.log" "policy=allow cargo <test> <--all-features> <--doc> <--no-fail-fast>"
-echo "PASS: test lanes override ambient runtime policy"
-
 run_check feature_env env FEATURES=server /usr/bin/bash scripts/check_all.sh --lane cpu
 assert_status feature_env 0
 assert_contains "${tmp_dir}/feature_env.output" "features=features:server(env)"
-assert_contains "${tmp_dir}/feature_env.log" "policy=forbid cargo <nextest> <run> <--features> <server>"
+assert_contains "${tmp_dir}/feature_env.log" "cargo <nextest> <run> <--features> <server>"
 
 run_check lock_env env GPU_LOCK=/tmp/custom-cudf.lock /usr/bin/bash scripts/check_all.sh --lane gpu-shared
 assert_status lock_env 0
 assert_contains "${tmp_dir}/lock_env.log" "flock </tmp/custom-cudf.lock> <cargo> <nextest>"
 echo "PASS: FEATURES and GPU_LOCK compatibility values remain effective"
 
-run_check cargo_fallback env TEST_RUNNER=cargo CUDF_RUNTIME_POLICY=caller-value /usr/bin/bash scripts/check_all.sh
+run_check cargo_fallback env TEST_RUNNER=cargo /usr/bin/bash scripts/check_all.sh
 assert_status cargo_fallback 0
-assert_contains "${tmp_dir}/cargo_fallback.log" "policy=allow cargo <test> <--all-features> <--no-fail-fast> <--lib> <--bins> <--tests> <--examples> <--> <--test-threads=1>"
-echo "PASS: cargo fallback explicitly allows runtime creation"
+assert_contains "${tmp_dir}/cargo_fallback.log" "cargo <test> <--all-features> <--no-fail-fast> <--lib> <--bins> <--tests> <--examples> <--> <--test-threads=1>"
+echo "PASS: cargo fallback remains serialized under the GPU lock"
 
 run_check cargo_diagnostic_cli /usr/bin/bash scripts/check_all.sh --runner cargo-diagnostic
 assert_status cargo_diagnostic_cli 0
@@ -397,7 +389,7 @@ assert_contains "${tmp_dir}/cargo_diagnostic_cli.output" "NONCANONICAL cargo-dia
 assert_contains "${tmp_dir}/cargo_diagnostic_cli.log" "flock </tmp/cudf-gpu.lock> <cargo> <test> <--all-features> <--no-fail-fast> <--lib> <--bins> <--tests> <--examples> <--> <--test-threads=1>"
 assert_not_contains "${tmp_dir}/cargo_diagnostic_cli.log" "cargo <nextest>"
 assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" cargo-diagnostic "0.100s | PASS | run=4 passed=4 failed=0 ignored=1 measured=0 filtered=2 harnesses=1 | 1 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/cargo-diagnostic.log"
-assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" cargo-diagnostic "cargo-diagnostic | CUDF_RUNTIME_POLICY=allow RUST_TEST_THREADS=1 flock /tmp/cudf-gpu.lock cargo test --all-features --no-fail-fast --lib --bins --tests --examples -- --test-threads=1 | 0.100s"
+assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" cargo-diagnostic "cargo-diagnostic | RUST_TEST_THREADS=1 flock /tmp/cudf-gpu.lock cargo test --all-features --no-fail-fast --lib --bins --tests --examples -- --test-threads=1 | 0.100s"
 assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" cpu-tests "- | SKIPPED | - | - | - | all | -"
 echo "PASS: Cargo runner is explicit, serialized, and noncanonical"
 
@@ -411,7 +403,7 @@ echo "PASS: Cargo diagnostic failure output and counts are preserved"
 run_check twelve_cores env FAKE_NPROC_OUTPUT=12 /usr/bin/bash scripts/check_all.sh --lane gpu-shared
 assert_status twelve_cores 0
 assert_contains "${tmp_dir}/twelve_cores.output" "configured_cap=num-cpus explicit_test_threads=12"
-assert_contains "${tmp_dir}/twelve_cores.log" "policy=allow cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <12>"
+assert_contains "${tmp_dir}/twelve_cores.log" "cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <12>"
 assert_phase_contains "${tmp_dir}/twelve_cores.output" gpu-shared-tests "0.100s | PASS | run=2 passed=2 failed=0 skipped=6 | 12 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-shared-tests.log"
 echo "PASS: shared-GPU concurrency follows the available CPU count"
 
@@ -419,15 +411,15 @@ run_check cli_precedence env FEATURES=server TEST_RUNNER=cargo STRICT=1 \
   /usr/bin/bash scripts/check_all.sh --all-features --runner nextest --strict
 assert_status cli_precedence 0
 assert_contains "${tmp_dir}/cli_precedence.output" "runner=nextest(cli) features=all(cli) gpu_profile=default gpu_threads=16(nproc) strict=always(cli)"
-assert_contains "${tmp_dir}/cli_precedence.log" "policy=allow cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
+assert_contains "${tmp_dir}/cli_precedence.log" "cargo <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
 echo "PASS: validated CLI values take precedence over compatibility environment values"
 
 run_check fast /usr/bin/bash scripts/check_all.sh --fast --features server
 assert_status fast 0
 assert_contains "${tmp_dir}/fast.output" "PARTIAL SURFACE: mode=fast lane=cpu"
 assert_contains "${tmp_dir}/fast.output" "fast edit-loop surface passed"
-assert_contains "${tmp_dir}/fast.log" "cargo <+nightly-2026-07-13> <fmt> <--all> <--check>"
-assert_contains "${tmp_dir}/fast.log" "policy=forbid cargo <nextest> <run> <--features> <server> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
+assert_contains "${tmp_dir}/fast.log" "cargo <+nightly> <fmt> <--all> <--check>"
+assert_contains "${tmp_dir}/fast.log" "cargo <nextest> <run> <--features> <server> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
 assert_not_contains "${tmp_dir}/fast.log" "flock"
 assert_not_contains "${tmp_dir}/fast.log" "<doc>"
 assert_not_contains "${tmp_dir}/fast.log" "<clippy>"
@@ -441,12 +433,12 @@ echo "PASS: fast surface runs policies/fmt/structure/CPU without live inventory 
 
 run_check no_default_features /usr/bin/bash scripts/check_all.sh --lane cpu --no-default-features --features server
 assert_status no_default_features 0
-assert_contains "${tmp_dir}/no_default_features.log" "policy=forbid cargo <nextest> <run> <--no-default-features> <--features> <server>"
+assert_contains "${tmp_dir}/no_default_features.log" "cargo <nextest> <run> <--no-default-features> <--features> <server>"
 
 run_check full_narrow_features /usr/bin/bash scripts/check_all.sh --no-default-features --features server
 assert_status full_narrow_features 0
 assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <check> <--no-default-features> <--features> <server>"
-assert_contains "${tmp_dir}/full_narrow_features.log" "policy=allow cargo <test> <--no-default-features> <--features> <server> <--doc> <--no-fail-fast>"
+assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <test> <--no-default-features> <--features> <server> <--doc> <--no-fail-fast>"
 assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <doc> <--no-default-features> <--features> <server> <--no-deps> <--keep-going>"
 assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <clippy> <--all-targets> <--no-default-features> <--features> <server>"
 assert_phase_contains "${tmp_dir}/full_narrow_features.output" default-members "no-default+features:server | ${tmp_dir}/phase-logs/default-members.log"
@@ -456,7 +448,7 @@ echo "PASS: feature selectors propagate consistently"
 run_check lane_cpu /usr/bin/bash scripts/check_all.sh --lane cpu
 assert_status lane_cpu 0
 assert_contains "${tmp_dir}/lane_cpu.output" "selected lane 'cpu' passed. PARTIAL"
-assert_contains "${tmp_dir}/lane_cpu.log" "policy=forbid cargo <nextest> <run>"
+assert_contains "${tmp_dir}/lane_cpu.log" "cargo <nextest> <run>"
 assert_not_contains "${tmp_dir}/lane_cpu.log" "flock"
 assert_not_contains "${tmp_dir}/lane_cpu.log" "<clippy>"
 assert_phase_contains "${tmp_dir}/lane_cpu.output" cpu-tests "0.100s | PASS | run=3 passed=3 failed=0 skipped=5 | - | - | all | ${tmp_dir}/phase-logs/cpu-tests.log"
@@ -465,14 +457,14 @@ assert_phase_contains "${tmp_dir}/lane_cpu.output" gpu-shared-tests "- | SKIPPED
 run_check lane_shared /usr/bin/bash scripts/check_all.sh --lane gpu-shared
 assert_status lane_shared 0
 assert_contains "${tmp_dir}/lane_shared.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
-assert_not_contains "${tmp_dir}/lane_shared.log" "policy=forbid cargo <nextest> <run>"
+assert_not_contains "${tmp_dir}/lane_shared.log" "cargo <nextest> <run> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
 assert_not_contains "${tmp_dir}/lane_shared.log" "group(gpu-exclusive)"
 assert_phase_contains "${tmp_dir}/lane_shared.output" gpu-shared-tests "0.100s | PASS | run=2 passed=2 failed=0 skipped=6 | 16 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-shared-tests.log"
 
 run_check lane_exclusive /usr/bin/bash scripts/check_all.sh --lane gpu-exclusive
 assert_status lane_exclusive 0
 assert_contains "${tmp_dir}/lane_exclusive.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu-exclusive)>"
-assert_not_contains "${tmp_dir}/lane_exclusive.log" "policy=forbid cargo <nextest> <run>"
+assert_not_contains "${tmp_dir}/lane_exclusive.log" "cargo <nextest> <run> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
 assert_not_contains "${tmp_dir}/lane_exclusive.log" "<group(gpu)>"
 
 run_check lane_gpu /usr/bin/bash scripts/check_all.sh --lane gpu
@@ -482,12 +474,12 @@ if [[ $(grep -c '^flock ' "${tmp_dir}/lane_gpu.log") -ne 2 ]]; then
   sed 's/^/  /' "${tmp_dir}/lane_gpu.log" >&2
   exit 1
 fi
-assert_not_contains "${tmp_dir}/lane_gpu.log" "policy=forbid cargo <nextest> <run>"
+assert_not_contains "${tmp_dir}/lane_gpu.log" "cargo <nextest> <run> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
 
 run_check lane_all /usr/bin/bash scripts/check_all.sh --lane all
 assert_status lane_all 0
 assert_contains "${tmp_dir}/lane_all.output" "selected lane 'all' passed. PARTIAL"
-assert_contains "${tmp_dir}/lane_all.log" "policy=forbid cargo <nextest> <run>"
+assert_contains "${tmp_dir}/lane_all.log" "cargo <nextest> <run>"
 if [[ $(grep -c '^flock ' "${tmp_dir}/lane_all.log") -ne 2 ]]; then
   echo "FAIL: --lane all must run exactly two locked GPU test lanes" >&2
   sed 's/^/  /' "${tmp_dir}/lane_all.log" >&2
@@ -499,7 +491,7 @@ assert_not_contains "${tmp_dir}/lane_all.log" "<clippy>"
 run_check lane_policy /usr/bin/bash scripts/check_all.sh --lane policy
 assert_status lane_policy 0
 assert_contains "${tmp_dir}/lane_policy.output" "selected lane 'policy' passed. PARTIAL"
-assert_contains "${tmp_dir}/lane_policy.log" "cargo <+nightly-2026-07-13> <fmt> <--all> <--check>"
+assert_contains "${tmp_dir}/lane_policy.log" "cargo <+nightly> <fmt> <--all> <--check>"
 assert_not_contains "${tmp_dir}/lane_policy.log" "cargo <nextest>"
 assert_not_contains "${tmp_dir}/lane_policy.log" "flock"
 assert_phase_contains "${tmp_dir}/lane_policy.output" policy-selftests "0.100s | PASS | checks=7 | - | - | all | ${tmp_dir}/phase-logs/policy-selftests.log"

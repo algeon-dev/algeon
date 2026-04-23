@@ -24,7 +24,7 @@ cat >"${tmp_dir}/bin/cargo" <<'SH'
 #!/usr/bin/bash
 set -u
 {
-  printf 'cargo policy=%s rustdocflags=%s' "${CUDF_RUNTIME_POLICY-unset}" "${RUSTDOCFLAGS-unset}"
+  printf 'cargo rustdocflags=%s' "${RUSTDOCFLAGS-unset}"
   printf ' <%s>' "$@"
   printf '\n'
 } >>"${COMMAND_LOG}"
@@ -111,7 +111,7 @@ cat >"${tmp_dir}/bin/flock" <<'SH'
 #!/usr/bin/bash
 set -u
 {
-  printf 'flock policy=%s' "${CUDF_RUNTIME_POLICY-unset}"
+  printf 'flock'
   printf ' <%s>' "$@"
   printf '\n'
 } >>"${COMMAND_LOG}"
@@ -129,7 +129,7 @@ run_check() {
   local status=0
   : >"${log}"
   : >"${tmp_dir}/${name}.date"
-  env -u FEATURES -u TEST_RUNNER -u GPU_LOCK -u CUDF_RUNTIME_POLICY -u STRICT -u RUSTDOCFLAGS \
+  env -u FEATURES -u TEST_RUNNER -u GPU_LOCK -u STRICT -u RUSTDOCFLAGS \
     PATH="${tmp_dir}/bin:${PATH}" COMMAND_LOG="${log}" \
     CHECK_ALL_PHASE_LOG_DIR="${tmp_dir}/phase-logs" FAKE_DATE_COUNTER="${tmp_dir}/${name}.date" \
     "$@" >"${output}" 2>&1 || status=$?
@@ -182,10 +182,10 @@ assert_contains "${tmp_dir}/multi.output" "RAW_DOCTEST_STDERR"
 assert_contains "${tmp_dir}/multi.output" "DOCTEST HARNESS: name=first_crate"
 assert_contains "${tmp_dir}/multi.output" "Doctest accounting preflight for final aggregation: command_status=0 parse_status=ok harnesses=2 executed=3 passed=3 failed=0 ignored=1 measured=0 filtered=6"
 assert_contains "${tmp_dir}/multi.output" "Doctest accounting final: command_status=0 parse_status=ok harnesses=2 executed=3 passed=3 failed=0 ignored=1 measured=0 filtered=6"
-assert_contains "${tmp_dir}/multi.log" "flock policy=allow </tmp/cudf-gpu.lock> <cargo> <test> <--all-features> <--doc> <--no-fail-fast>"
-assert_contains "${tmp_dir}/multi.log" "cargo policy=unset rustdocflags=-A warnings -Cdebuginfo=0 -D warnings <doc> <--all-features> <--no-deps> <--keep-going>"
+assert_contains "${tmp_dir}/multi.log" "flock </tmp/cudf-gpu.lock> <cargo> <test> <--all-features> <--doc> <--no-fail-fast>"
+assert_contains "${tmp_dir}/multi.log" "cargo rustdocflags=-A warnings -Cdebuginfo=0 -D warnings <doc> <--all-features> <--no-deps> <--keep-going>"
 assert_phase_contains "${tmp_dir}/multi.output" doctests "0.100s | PASS | harnesses=2 executed=3 passed=3 failed=0 ignored=1 measured=0 filtered=6 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log"
-assert_phase_contains "${tmp_dir}/multi.output" doctests "doctests | CUDF_RUNTIME_POLICY=allow flock /tmp/cudf-gpu.lock cargo test --all-features --doc --no-fail-fast | 0.100s"
+assert_phase_contains "${tmp_dir}/multi.output" doctests "doctests | flock /tmp/cudf-gpu.lock cargo test --all-features --doc --no-fail-fast | 0.100s"
 assert_phase_contains "${tmp_dir}/multi.output" rustdoc "0.100s | PASS | - | - | - | all | ${tmp_dir}/phase-logs/rustdoc.log"
 assert_phase_contains "${tmp_dir}/multi.output" rustdoc "rustdoc | RUSTDOCFLAGS='-A warnings -Cdebuginfo=0 -D warnings' cargo doc --all-features --no-deps --keep-going | 0.100s"
 assert_contains "${tmp_dir}/phase-logs/doctests.log" "RAW_DOCTEST_STDERR"

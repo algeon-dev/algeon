@@ -104,11 +104,6 @@ lane = "cpu"
 reason = "The bin target has no Cargo-test GPU execution; service stress is explicit provisioned tooling."
 
 [[binary]]
-id = "datafusion-nexus-bench::bin/substrait_ingress_experiment"
-lane = "cpu"
-reason = "The bin target has no Cargo-test GPU execution; ingress experiments are explicit cargo-run commands."
-
-[[binary]]
 id = "datafusion-nexus-bench::bin/tpcds_outlier_triage"
 lane = "cpu"
 reason = "The bin target has no Cargo-test GPU execution; triage execution is an explicit benchmark command."

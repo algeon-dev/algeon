@@ -3,8 +3,8 @@
 
 The sweep drives `tpcds_three_way_bench` with a matrix of bounded native source
 profiles, writes one raw TSV per candidate, and emits a compact summary TSV
-using median measured wall time per query. Defaults match the Phase 1 matrix in
-`docs/tpcds_sf100_optimized_gpu_gap_analysis.md`.
+using median measured wall time per query. Defaults encode the native-profile
+analysis matrix.
 """
 
 from __future__ import annotations
