@@ -9,6 +9,7 @@ mod convert;
 mod device_buffer;
 mod device_slice;
 mod owned;
+mod sequence;
 mod testing_hooks;
 mod view;
 
@@ -16,6 +17,7 @@ pub(crate) use convert::copy_view_to_owned;
 pub use device_buffer::DeviceBuffer;
 pub use device_slice::DeviceSlice;
 pub use owned::Column;
+pub(crate) use sequence::position_sequence_in_domain;
 pub(crate) use testing_hooks::slice_view_for_test;
 pub use view::ColumnView;
 pub(crate) use view::{

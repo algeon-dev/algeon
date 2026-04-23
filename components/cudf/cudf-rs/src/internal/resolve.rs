@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::{
     core::{
         column::Column,
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, Result},
     },
     internal::{
         hash::{FastHashSet, FastIndexMap, fast_hash_set_with_capacity},
@@ -19,10 +19,7 @@ use crate::{
 
 pub(crate) fn missing_column_error(operation: &'static str, name: impl Into<String>) -> Error {
     let name = name.into();
-    Error::new(ErrorKind::NotFound, format!("column '{}' not found in schema", name))
-        .with_code(ErrorCode::MissingColumn)
-        .with_operation(operation)
-        .with_context("column_name", name)
+    Error::new_with(ErrorCode::MissingColumn, operation, "column not found in schema").with_column(name.clone())
 }
 
 pub(crate) fn duplicate_column_name_error_with_contract(
@@ -34,14 +31,12 @@ pub(crate) fn duplicate_column_name_error_with_contract(
     remedy: &'static str,
 ) -> Error {
     let duplicate_name = duplicate_name.into();
-    Error::new(ErrorKind::InvalidInput, message)
-        .with_code(ErrorCode::DuplicateColumnName)
-        .with_operation(operation)
-        .with_context("duplicate_name", duplicate_name)
-        .with_context("column_name_count", column_name_count.to_string())
-        .with_context("resource", "column_name")
-        .with_context("reason", reason)
-        .with_context("remedy", remedy)
+    Error::new_with(ErrorCode::DuplicateColumnName, operation, message)
+        .with_detail("duplicate_name", duplicate_name)
+        .with_detail("column_name_count", column_name_count.to_string())
+        .with_detail("resource", "column_name")
+        .with_detail("reason", reason)
+        .with_detail("remedy", remedy)
 }
 
 pub(crate) fn duplicate_column_name_error(
@@ -111,7 +106,7 @@ pub(crate) fn build_borrowed_table_view_from_columns<'a>(
                     "internal::build_borrowed_table_view_from_columns",
                     "resolved column index should always remain valid",
                 )
-                .with_context("column_index", idx.to_string())
+                .with_fact(FACT_COLUMN_INDEX, idx)
             })?;
             col.view()
         })
@@ -120,11 +115,11 @@ pub(crate) fn build_borrowed_table_view_from_columns<'a>(
     if views.is_empty() {
         let authoritative_domain =
             columns.values().next().map(|column| Arc::clone(column.execution_domain())).ok_or_else(|| {
-                Error::new(
-                    ErrorKind::InvalidInput,
+                Error::new_with(
+                    ErrorCode::EmptyConstructionRequiresRuntime,
+                    "internal::build_borrowed_table_view_from_columns",
                     "building an empty borrowed table view requires an authoritative source column",
                 )
-                .with_operation("internal::build_borrowed_table_view_from_columns")
             })?;
         return TempTableView::from_column_views_in_domain(
             views,
@@ -146,7 +141,10 @@ pub(crate) fn payload_indices(columns: &FastIndexMap<String, Arc<Column>>, key_i
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::Runtime;
+    use crate::{
+        core::error::{ErrorKind, FactKeyName, FactValue},
+        runtime::Runtime,
+    };
 
     fn empty_column(type_id: crate::core::types::TypeId) -> Arc<Column> {
         Arc::new(Runtime::new().unwrap().empty_column(type_id).unwrap())
@@ -163,7 +161,7 @@ mod tests {
         let names = vec!["a".into(), "b".into(), "a".into()];
         let err = validate_no_duplicate_names(&names, "test").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
-        assert!(err.context().iter().any(|(k, v)| *k == "duplicate_name" && v == "a"));
+        assert!(err.details().iter().any(|(k, v)| *k == "duplicate_name" && v == "a"));
     }
 
     #[test]
@@ -184,7 +182,7 @@ mod tests {
 
         let err = resolve_column_names(&map, &["missing"], "test").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::NotFound);
-        assert!(err.context().iter().any(|(k, v)| *k == "column_name" && v == "missing"));
+        assert_eq!(err.fact_value(FactKeyName::ColumnName), Some(&FactValue::Str("missing".into())));
     }
 
     #[test]

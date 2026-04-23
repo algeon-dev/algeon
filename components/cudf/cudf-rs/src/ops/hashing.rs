@@ -35,7 +35,7 @@ fn murmurhash3_x86_32_impl(
         },
         None => unsafe { cudf_sys::cudf_hashing_murmurhash3_x86_32(input.raw_handle(), seed, &mut out) },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("seed", seed.to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
@@ -55,7 +55,7 @@ fn xxhash_64_impl(
         Some(options) => unsafe { cudf_sys::cudf_hashing_xxhash_64_ex(input.raw_handle(), seed, &mut out, options) },
         None => unsafe { cudf_sys::cudf_hashing_xxhash_64(input.raw_handle(), seed, &mut out) },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("seed", seed.to_string()), ("execution_context_provided", exec_options.is_some().to_string())],

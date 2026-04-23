@@ -97,10 +97,9 @@
 //!   [`crate::core::ColumnView`], and [`crate::core::TableView`] when you
 //!   need explicit low-level ownership or borrow control.
 //! - Use [`runtime_release`] and [`arrow_device`] only for `cudf-rs`-specific
-//!   runtime-backed release helpers, CUDA handle projection, and Arrow C
-//!   Device ABI glue.
-//! - [`arrow_device`] is not the same surface as [`crate::io::arrow`]:
-//!   `crate::io::arrow` converts through host `RecordBatch` values, while
+//!   runtime-backed release helpers, CUDA handle projection, and Arrow glue.
+//! - [`arrow_host`] and [`arrow_device`] are different interop surfaces:
+//!   [`arrow_host`] converts through host `RecordBatch` values, while
 //!   [`arrow_device`] describes Arrow C Device ABI roots for existing
 //!   device-backed buffers.
 //!
@@ -135,6 +134,7 @@
 //! which hid placement as a side effect of a compute operation.
 
 pub mod arrow_device;
+pub mod arrow_host;
 mod borrowed;
 mod column;
 mod consumer_import;
@@ -148,7 +148,7 @@ mod runtime_lease;
 pub mod runtime_release;
 mod table;
 mod table_export;
-mod table_support;
+pub(crate) mod testing_hooks;
 
 use std::sync::Arc;
 
@@ -167,9 +167,9 @@ pub use frame::PartitionedDataFrameExport;
 use prepared::*;
 use projection::{prepared_column_projection_from_view, prepared_host_column_projection_from_view};
 use rapids_interop::{
-    OwnedColumnTransfer, OwnedTableTransfer, PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition,
-    ReleaseContract, ReleaseSynchronization, TransferCompletionRule, TryIntoOwnedDeviceColumnTransfer,
-    TryIntoOwnedDevicePartitionedTableTransfer, TryIntoOwnedDeviceTableTransfer,
+    OwnedColumnTransfer, OwnedTableTransfer, OwnedTableTransferParts, PartitionedOwnedTableTransfer,
+    PartitionedOwnedTableTransferPartition, ReleaseContract, ReleaseSynchronization, TransferCompletionRule,
+    TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDevicePartitionedTableTransfer, TryIntoOwnedDeviceTableTransfer,
 };
 use runtime_release::*;
 pub use table::{PartitionedLocalTableResult, PartitionedLocalTableResults};

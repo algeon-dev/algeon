@@ -30,7 +30,7 @@ use self::errors::{sort_key_count_limit_error, sort_option_count_mismatch_error}
 use crate::{
     core::{
         column::Column,
-        error::{self, Result},
+        error::{self, FACT_KEYS_COUNT, Result},
         table::{Table, TableView},
     },
     runtime::execution_domain::ExecutionDomain,
@@ -135,16 +135,13 @@ pub(crate) fn sort_table_impl(
         },
     };
 
-    error::check_status_in_with(
-        status,
-        operation,
-        [
-            ("keys_count", num_keys.to_string()),
+    error::check_status_in(status, operation).map_err(|err| {
+        err.with_fact(FACT_KEYS_COUNT, num_keys).with_details([
             ("column_order_provided", column_order.is_some().to_string()),
             ("null_precedence_provided", null_precedence.is_some().to_string()),
             ("execution_context_provided", exec_options.is_some().to_string()),
-        ],
-    )?;
+        ])
+    })?;
 
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -202,16 +199,13 @@ pub(crate) fn sort_by_key_impl(
         },
     };
 
-    error::check_status_in_with(
-        status,
-        operation,
-        [
-            ("keys_count", num_key_columns.to_string()),
+    error::check_status_in(status, operation).map_err(|err| {
+        err.with_fact(FACT_KEYS_COUNT, num_key_columns).with_details([
             ("column_order_provided", column_order.is_some().to_string()),
             ("null_precedence_provided", null_precedence.is_some().to_string()),
             ("execution_context_provided", exec_options.is_some().to_string()),
-        ],
-    )?;
+        ])
+    })?;
 
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -328,17 +322,18 @@ pub fn sorted_order(
     let num_keys_i32 = checked_num_keys("sorting::sorted_order", num_keys)?;
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
-    error::check_status_in_with(
+    error::check_status_in(
         // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
         unsafe { cudf_sys::cudf_sorted_order_ex(input.raw_handle(), co, np, num_keys_i32, &mut out, &exec_options) },
         "sorting::sorted_order",
-        [
-            ("keys_count", num_keys.to_string()),
+    )
+    .map_err(|err| {
+        err.with_fact(FACT_KEYS_COUNT, num_keys).with_details([
             ("column_order_provided", column_order.is_some().to_string()),
             ("null_precedence_provided", null_precedence.is_some().to_string()),
             ("execution_context_provided", "true".to_string()),
-        ],
-    )?;
+        ])
+    })?;
     // SAFETY: out was returned by a successful FFI call.
     unsafe { Column::from_raw_with_domain(out, output_domain) }
 }
@@ -354,16 +349,17 @@ pub fn is_sorted(
     let num_keys_i32 = checked_num_keys("sorting::is_sorted", num_keys)?;
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out: i32 = 0;
-    error::check_status_in_with(
+    error::check_status_in(
         // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
         unsafe { cudf_sys::cudf_is_sorted(input.raw_handle(), co, np, num_keys_i32, &mut out) },
         "sorting::is_sorted",
-        [
-            ("keys_count", num_keys.to_string()),
+    )
+    .map_err(|err| {
+        err.with_fact(FACT_KEYS_COUNT, num_keys).with_details([
             ("column_order_provided", column_order.is_some().to_string()),
             ("null_precedence_provided", null_precedence.is_some().to_string()),
-        ],
-    )?;
+        ])
+    })?;
     Ok(out != 0)
 }
 

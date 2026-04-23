@@ -116,7 +116,7 @@ pub(crate) fn unary_operation_impl(
         Some(options) => unsafe { cudf_sys::cudf_unary_operation_ex(input.raw_handle(), op_ffi, &mut out, options) },
         None => unsafe { cudf_sys::cudf_unary_operation(input.raw_handle(), op_ffi, &mut out) },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [
@@ -153,7 +153,7 @@ pub(crate) fn is_null_impl(
         Some(options) => unsafe { cudf_sys::cudf_is_null_ex(input.raw_handle(), &mut out, options) },
         None => unsafe { cudf_sys::cudf_is_null(input.raw_handle(), &mut out) },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
@@ -180,7 +180,7 @@ pub(crate) fn is_valid_impl(
         Some(options) => unsafe { cudf_sys::cudf_is_valid_ex(input.raw_handle(), &mut out, options) },
         None => unsafe { cudf_sys::cudf_is_valid(input.raw_handle(), &mut out) },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
@@ -213,7 +213,7 @@ pub(crate) fn cast_impl(
     };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [
@@ -238,7 +238,7 @@ pub fn is_supported_cast(from: &DataType, to: &DataType) -> Result<bool> {
         cudf_sys::cudf_data_type_destroy(from_handle);
         cudf_sys::cudf_data_type_destroy(to_handle);
     }
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         "unary::is_supported_cast",
         [
@@ -267,7 +267,7 @@ pub(crate) fn is_nan_impl(
         Some(options) => unsafe { cudf_sys::cudf_is_nan_ex(input.raw_handle(), &mut out, options) },
         None => unsafe { cudf_sys::cudf_is_nan(input.raw_handle(), &mut out) },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
@@ -294,7 +294,7 @@ pub(crate) fn is_not_nan_impl(
         Some(options) => unsafe { cudf_sys::cudf_is_not_nan_ex(input.raw_handle(), &mut out, options) },
         None => unsafe { cudf_sys::cudf_is_not_nan(input.raw_handle(), &mut out) },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],

@@ -11,7 +11,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     core::{
-        error::{self, ErrorKind, Result},
+        error::{self, FACT_COLUMN_INDEX, Result},
         schema,
         table::Table,
     },
@@ -56,7 +56,7 @@ pub fn read_json_table(options: &JsonTableReadOptions) -> Result<TableReadOutput
     let mut table_handle = ptr::null_mut();
     let mut names_ptr: *mut *mut std::os::raw::c_char = ptr::null_mut();
     let mut num_names: i32 = 0;
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         unsafe {
             cudf_sys::cudf_io_read_json_with_metadata_ex(
                 filepath.as_ptr(),
@@ -137,7 +137,6 @@ pub(crate) fn write_json_with_exec(
         let expected = table.num_columns()?;
         if options.column_names.len() != expected {
             return Err(schema::column_name_count_mismatch_error(
-                ErrorKind::InvalidInput,
                 operation,
                 format!(
                     "column name count ({}) does not match table column count ({})",
@@ -156,9 +155,9 @@ pub(crate) fn write_json_with_exec(
         .enumerate()
         .map(|(index, name)| {
             CString::new(name.as_str()).map_err(|_| {
-                super::interior_null_byte_error(operation, "column_name", "column name contains interior null byte")
-                    .with_context("column_index", index.to_string())
-                    .with_context("column_name", name.to_string())
+                error::interior_null_byte_error(operation, "column_name", "column name contains interior null byte")
+                    .with_fact(FACT_COLUMN_INDEX, index)
+                    .with_column(name.to_string())
             })
         })
         .collect::<Result<_>>()?;
@@ -166,7 +165,7 @@ pub(crate) fn write_json_with_exec(
 
     let names_ptr = if c_name_ptrs.is_empty() { ptr::null() } else { c_name_ptrs.as_ptr() };
 
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         match exec_options {
             Some(exec_options) => unsafe {
                 cudf_sys::cudf_io_write_json_ex(

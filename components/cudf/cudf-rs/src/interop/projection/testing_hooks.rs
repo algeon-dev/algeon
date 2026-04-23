@@ -59,3 +59,7 @@ pub(crate) fn trigger_host_offsets_too_small_for_test() -> Result<(), InteropErr
 pub(crate) fn trigger_missing_null_mask_for_test() -> Result<(), InteropError> {
     Err(support::projection_missing_null_mask_error("testing::interop::projection::missing_null_mask", 3))
 }
+
+pub(crate) fn trigger_struct_missing_child_for_test() -> Result<(), InteropError> {
+    Err(support::projection_struct_requires_child_error("testing::interop::projection::missing_struct_child"))
+}

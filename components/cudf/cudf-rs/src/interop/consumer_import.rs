@@ -47,13 +47,13 @@ fn order_runtime_stream_after_owned_transfer_readiness(
             let barrier_raw = barrier
                 .interop_raw_handle()
                 .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-            error::check_status_in_with(
+            error::check_status_in_with_details(
                 unsafe { cudf_sys::cudf_raw_cuda_event_record(barrier_raw, stream.as_raw()) },
                 operation,
                 [("readiness", "device_stream_ordered".to_string()), ("profile", "owned_device_transfer".to_string())],
             )
             .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-            error::check_status_in_with(
+            error::check_status_in_with_details(
                 unsafe { cudf_sys::cudf_raw_cuda_stream_wait_event(consumer_stream_raw, barrier_raw) },
                 operation,
                 [("readiness", "device_stream_ordered".to_string()), ("profile", "owned_device_transfer".to_string())],
@@ -62,7 +62,7 @@ fn order_runtime_stream_after_owned_transfer_readiness(
             Ok(Some(barrier))
         },
         ProducerReadiness::DeviceEventOrdered { event } => {
-            error::check_status_in_with(
+            error::check_status_in_with_details(
                 unsafe { cudf_sys::cudf_raw_cuda_stream_wait_event(consumer_stream_raw, event.as_raw()) },
                 operation,
                 [("readiness", "device_event_ordered".to_string()), ("profile", "owned_device_transfer".to_string())],

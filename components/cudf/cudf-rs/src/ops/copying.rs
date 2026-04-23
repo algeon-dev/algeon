@@ -27,7 +27,7 @@ pub(crate) fn gather_impl(
         },
         None => unsafe { cudf_sys::cudf_gather(input.raw_handle(), gather_map.raw_handle(), bounds_policy, &mut out) },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [
@@ -169,7 +169,7 @@ fn copy_if_else_impl(
             cudf_sys::cudf_copy_if_else_vv(lhs.raw_handle(), rhs.raw_handle(), boolean_mask.raw_handle(), &mut out)
         },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],

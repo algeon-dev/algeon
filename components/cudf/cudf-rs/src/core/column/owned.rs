@@ -13,7 +13,10 @@ use std::{
 use super::{device_slice::DeviceSlice, view::ColumnView};
 use crate::{
     core::{
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{
+            self, DeviceIdFact, Error, ErrorCode, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, FACT_LEFT_DEVICE,
+            FACT_LEFT_TYPE_ID, FACT_RIGHT_DEVICE, FACT_RIGHT_TYPE_ID, FACT_TYPE_ID, Result,
+        },
         scalar::Scalar,
         types::{
             CudfType, DataType, TypeId, count_nulls, cudf_null_mask_allocation_size_bytes, validity_to_ffi_bitmask,
@@ -24,7 +27,7 @@ use crate::{
 };
 
 fn usize_to_i32_len(len: usize, what: &'static str, operation: &'static str) -> Result<i32> {
-    i32::try_from(len).map_err(|_| error::range_limit_error(ErrorKind::InvalidInput, operation, what, "i32::MAX", len))
+    i32::try_from(len).map_err(|_| error::range_limit_error(operation, what, "i32::MAX", len))
 }
 
 fn type_id_label(type_id: TypeId) -> String {
@@ -37,23 +40,19 @@ fn fixed_width_type_required_error(
     type_id: TypeId,
     remedy: &'static str,
 ) -> Error {
-    Error::new(ErrorKind::InvalidInput, message)
-        .with_code(ErrorCode::UnsupportedDtype)
-        .with_operation(operation)
-        .with_context("type_id", type_id_label(type_id))
-        .with_context("reason", "requires_fixed_width_type")
-        .with_context("remedy", remedy)
+    Error::new_with(ErrorCode::UnsupportedDtype, operation, message)
+        .with_fact(FACT_TYPE_ID, type_id)
+        .with_detail("reason", "requires_fixed_width_type")
+        .with_detail("remedy", remedy)
 }
 
 fn null_device_ptr_error(operation: &'static str, row_count: usize, type_id: TypeId) -> Error {
-    Error::new(ErrorKind::InvalidInput, "device_ptr is null but row_count > 0")
-        .with_code(ErrorCode::NullUnexpected)
-        .with_operation(operation)
-        .with_context("resource", "device_ptr")
-        .with_context("reason", "null_pointer_with_positive_row_count")
-        .with_context("remedy", "ensure device_ptr is non-null whenever row_count is positive")
-        .with_context("row_count", row_count.to_string())
-        .with_context("type_id", type_id_label(type_id))
+    Error::new_with(ErrorCode::NullUnexpected, operation, "device_ptr is null but row_count > 0")
+        .with_fact(FACT_TYPE_ID, type_id)
+        .with_detail("resource", "device_ptr")
+        .with_detail("reason", "null_pointer_with_positive_row_count")
+        .with_detail("remedy", "ensure device_ptr is non-null whenever row_count is positive")
+        .with_detail("row_count", row_count.to_string())
 }
 
 fn checked_required_buffer_bytes(
@@ -64,18 +63,16 @@ fn checked_required_buffer_bytes(
     type_id: TypeId,
 ) -> Result<usize> {
     row_count.checked_mul(elem_size_bytes as usize).ok_or_else(|| {
-        Error::new(ErrorKind::InvalidInput, "required buffer size overflowed usize")
-            .with_code(ErrorCode::UnsupportedOperation)
-            .with_operation(operation)
-            .with_context("resource", resource)
-            .with_context("reason", "size_overflowed_usize")
-            .with_context(
+        Error::new_with(ErrorCode::UnsupportedOperation, operation, "required buffer size overflowed usize")
+            .with_fact(FACT_TYPE_ID, type_id)
+            .with_detail("resource", resource)
+            .with_detail("reason", "size_overflowed_usize")
+            .with_detail(
                 "remedy",
                 "reduce row_count or choose a smaller fixed-width type so the required buffer size fits within usize",
             )
-            .with_context("row_count", row_count.to_string())
-            .with_context("elem_size_bytes", elem_size_bytes.to_string())
-            .with_context("type_id", type_id_label(type_id))
+            .with_detail("row_count", row_count.to_string())
+            .with_detail("elem_size_bytes", elem_size_bytes.to_string())
     })
 }
 
@@ -88,16 +85,14 @@ fn buffer_size_mismatch_error(
     row_count: usize,
     type_id: TypeId,
 ) -> Error {
-    Error::new(ErrorKind::InvalidInput, message)
-        .with_code(ErrorCode::ColumnLengthMismatch)
-        .with_operation(operation)
-        .with_context("resource", resource)
-        .with_context("reason", "size_mismatch_with_row_count")
-        .with_context("remedy", format!("ensure {resource} has exactly row_count * element_size bytes"))
-        .with_context("actual_bytes", actual_bytes.to_string())
-        .with_context("expected_bytes", expected_bytes.to_string())
-        .with_context("row_count", row_count.to_string())
-        .with_context("type_id", type_id_label(type_id))
+    Error::new_with(ErrorCode::ColumnLengthMismatch, operation, message)
+        .with_fact(FACT_TYPE_ID, type_id)
+        .with_detail("resource", resource)
+        .with_detail("reason", "size_mismatch_with_row_count")
+        .with_detail("remedy", format!("ensure {resource} has exactly row_count * element_size bytes"))
+        .with_detail("actual_bytes", actual_bytes.to_string())
+        .with_detail("expected_bytes", expected_bytes.to_string())
+        .with_detail("row_count", row_count.to_string())
 }
 
 fn null_mask_buffer_too_small_error(
@@ -106,29 +101,25 @@ fn null_mask_buffer_too_small_error(
     expected_bytes: usize,
     row_count: usize,
 ) -> Error {
-    Error::new(ErrorKind::InvalidInput, "null mask buffer too small")
-        .with_code(ErrorCode::InvalidInput)
-        .with_operation(operation)
-        .with_context("resource", "null_mask_buffer")
-        .with_context("reason", "insufficient_allocation_size")
-        .with_context(
+    Error::new_with(ErrorCode::ColumnLengthMismatch, operation, "null mask buffer too small")
+        .with_detail("resource", "null_mask_buffer")
+        .with_detail("reason", "insufficient_allocation_size")
+        .with_detail(
             "remedy",
             "provide at least cudf_null_mask_allocation_size_bytes(row_count) bytes in null_mask_buffer",
         )
-        .with_context("actual_bytes", actual_bytes.to_string())
-        .with_context("expected_bytes", expected_bytes.to_string())
-        .with_context("row_count", row_count.to_string())
+        .with_detail("actual_bytes", actual_bytes.to_string())
+        .with_detail("expected_bytes", expected_bytes.to_string())
+        .with_detail("row_count", row_count.to_string())
 }
 
 fn null_count_exceeds_row_count_error(operation: &'static str, null_count: usize, row_count: usize) -> Error {
-    Error::new(ErrorKind::InvalidInput, "null_count exceeds row_count")
-        .with_code(ErrorCode::ColumnLengthMismatch)
-        .with_operation(operation)
-        .with_context("resource", "null_count")
-        .with_context("reason", "exceeds_row_count")
-        .with_context("remedy", "ensure null_count does not exceed row_count")
-        .with_context("expected_rows", row_count.to_string())
-        .with_context("actual_rows", null_count.to_string())
+    Error::new_with(ErrorCode::ColumnLengthMismatch, operation, "null_count exceeds row_count")
+        .with_fact(FACT_EXPECTED_ROWS, row_count)
+        .with_fact(FACT_ACTUAL_ROWS, null_count)
+        .with_detail("resource", "null_count")
+        .with_detail("reason", "exceeds_row_count")
+        .with_detail("remedy", "ensure null_count does not exceed row_count")
 }
 
 /// An owned GPU column backed by a `cudf::column`.
@@ -172,7 +163,7 @@ impl Column {
         }
 
         let empty_view = empty.view()?;
-        unary::cast(&empty_view, &dtype).map_err(|error| error.with_operation(operation))
+        unary::cast(&empty_view, &dtype).map_err(|error| error.reanchor(operation))
     }
 
     fn from_handle_with_domain_and_owner(
@@ -252,11 +243,13 @@ impl Column {
     ) -> Result<Self> {
         if let Some(validity) = validity {
             if data.len() != validity.len() {
-                return Err(Error::new(ErrorKind::InvalidInput, "data and validity slices must have the same length")
-                    .with_code(ErrorCode::ColumnLengthMismatch)
-                    .with_operation(operation)
-                    .with_context("expected_rows", data.len().to_string())
-                    .with_context("actual_rows", validity.len().to_string()));
+                return Err(Error::new_with(
+                    ErrorCode::ColumnLengthMismatch,
+                    operation,
+                    "data and validity slices must have the same length",
+                )
+                .with_fact(FACT_EXPECTED_ROWS, data.len())
+                .with_fact(FACT_ACTUAL_ROWS, validity.len()));
             }
         }
 
@@ -340,11 +333,13 @@ impl Column {
     pub fn device_slice<T: CudfType>(&self) -> Result<DeviceSlice<'_>> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
-            return Err(Error::new(ErrorKind::InvalidInput, "column type does not match requested type")
-                .with_code(ErrorCode::TypeMismatch)
-                .with_operation("column::device_slice")
-                .with_context("left_type_id", format!("{:?}", dt.id()).to_lowercase())
-                .with_context("right_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                "column::device_slice",
+                "column type does not match requested type",
+            )
+            .with_fact(FACT_LEFT_TYPE_ID, dt.id())
+            .with_fact(FACT_RIGHT_TYPE_ID, T::TYPE_ID));
         }
 
         let base_ptr = self.device_data_ptr()?;
@@ -506,7 +501,7 @@ impl Column {
         // SAFETY: caller guarantees device_ptr is valid for `size` elements.
         // The _ex variant does NOT synchronize — caller must keep device_ptr
         // valid until the runtime's stream completes.
-        error::check_status_in_with(
+        error::check_status_in_with_details(
             unsafe {
                 cudf_sys::cudf_column_create_from_device_data_ex(
                     type_id.to_raw(),
@@ -548,11 +543,13 @@ impl Column {
     ) -> Result<Self> {
         if let Some(validity) = validity {
             if data.len() != validity.len() {
-                return Err(Error::new(ErrorKind::InvalidInput, "data and validity slices must have the same length")
-                    .with_code(ErrorCode::ColumnLengthMismatch)
-                    .with_operation(operation)
-                    .with_context("expected_rows", data.len().to_string())
-                    .with_context("actual_rows", validity.len().to_string()));
+                return Err(Error::new_with(
+                    ErrorCode::ColumnLengthMismatch,
+                    operation,
+                    "data and validity slices must have the same length",
+                )
+                .with_fact(FACT_EXPECTED_ROWS, data.len())
+                .with_fact(FACT_ACTUAL_ROWS, validity.len()));
             }
         }
 
@@ -604,7 +601,7 @@ impl Column {
                 Self::from_strs_impl(&dummy, Some(&validity), Arc::clone(domain), operation)
             },
             _ => {
-                let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
+                let elem_size = type_id.size_in_bytes().map_err(|e| e.reanchor(operation))?.ok_or_else(|| {
                     fixed_width_type_required_error(
                         operation,
                         "null-column construction requires a fixed-width type or STRING",
@@ -625,7 +622,7 @@ impl Column {
                 let mut handle = ptr::null_mut();
                 // SAFETY: data is zeroed bytes of the correct size, null_mask marks
                 // all elements null. type_id.to_raw() is valid for fixed-width types.
-                error::check_status_in_with(
+                error::check_status_in_with_details(
                     unsafe {
                         cudf_sys::cudf_column_create_numeric_ex(
                             type_id.to_raw(),
@@ -649,7 +646,7 @@ impl Column {
         }
 
         let raw_view = raw.view()?;
-        unary::cast(&raw_view, &dtype).map_err(|error| error.with_operation(operation))
+        unary::cast(&raw_view, &dtype).map_err(|error| error.reanchor(operation))
     }
 
     /// Create an all-null column of the given type and length inside the given
@@ -683,15 +680,8 @@ impl Column {
         step: T,
         size: usize,
     ) -> Result<Self> {
-        let size_i32 = i32::try_from(size).map_err(|_| {
-            error::range_limit_error(
-                ErrorKind::InvalidInput,
-                "column::from_sequence_with_runtime",
-                "size",
-                "i32::MAX",
-                size,
-            )
-        })?;
+        let size_i32 = i32::try_from(size)
+            .map_err(|_| error::range_limit_error("column::from_sequence_with_runtime", "size", "i32::MAX", size))?;
         let init_scalar = runtime.scalar(init)?;
         let step_scalar = runtime.scalar(step)?;
         let mut handle = ptr::null_mut();
@@ -718,8 +708,8 @@ impl Column {
         domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        let size_i32 = i32::try_from(size)
-            .map_err(|_| error::range_limit_error(ErrorKind::InvalidInput, operation, "size", "i32::MAX", size))?;
+        let size_i32 =
+            i32::try_from(size).map_err(|_| error::range_limit_error(operation, "size", "i32::MAX", size))?;
         let init_scalar = Scalar::from_value_in_domain(init, &domain)?;
         let step_scalar = Scalar::from_value_in_domain(step, &domain)?;
         let mut handle = ptr::null_mut();
@@ -761,9 +751,8 @@ impl Column {
     ///
     /// Returns an error if `size` exceeds `i32::MAX` (FFI limit).
     pub fn from_scalar(scalar: &Scalar, size: usize) -> Result<Self> {
-        let size_i32 = i32::try_from(size).map_err(|_| {
-            error::range_limit_error(ErrorKind::InvalidInput, "column::from_scalar", "size", "i32::MAX", size)
-        })?;
+        let size_i32 = i32::try_from(size)
+            .map_err(|_| error::range_limit_error("column::from_scalar", "size", "i32::MAX", size))?;
         let mut handle = ptr::null_mut();
         let exec_options = scalar.domain.exec_options_raw();
         // SAFETY: scalar.raw_handle() is valid (Scalar maintains NonNull invariant).
@@ -811,16 +800,15 @@ fn require_runtime_matches_buffer_device(
 ) -> Result<Arc<ExecutionDomain>> {
     let runtime_device = runtime.device();
     if runtime_device.ordinal() as i32 != device_snapshot {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
+        return Err(Error::new_with(
+            ErrorCode::CrossDeviceInputs,
+            operation,
             "device buffer belongs to a different CUDA device than the target runtime",
         )
-        .with_code(ErrorCode::CrossDeviceInputs)
-        .with_operation(operation)
-        .with_context("left_device", runtime_device.ordinal().to_string())
-        .with_context("right_device", device_snapshot.to_string())
-        .with_context("resource", "device_buffer")
-        .with_context("remedy", "move the buffer into a Runtime bound to the same CUDA device before adopting it"));
+        .with_fact(FACT_LEFT_DEVICE, DeviceIdFact(runtime_device.ordinal() as i32))
+        .with_fact(FACT_RIGHT_DEVICE, DeviceIdFact(device_snapshot))
+        .with_detail("resource", "device_buffer")
+        .with_detail("remedy", "move the buffer into a Runtime bound to the same CUDA device before adopting it"));
     }
 
     Ok(Arc::clone(runtime.execution_domain()))
@@ -854,7 +842,7 @@ impl Column {
     ) -> Result<Self> {
         let operation = "column::from_device_buffer_with_runtime";
 
-        let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
+        let elem_size = type_id.size_in_bytes().map_err(|e| e.reanchor(operation))?.ok_or_else(|| {
             fixed_width_type_required_error(
                 operation,
                 "from_device_buffer only supports fixed-width types",
@@ -866,7 +854,7 @@ impl Column {
         let row_count_i32 = usize_to_i32_len(row_count, "row_count", operation)?;
 
         let expected_bytes = checked_required_buffer_bytes(operation, "data_buffer", row_count, elem_size, type_id)?;
-        let actual_bytes = buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
+        let actual_bytes = buffer.size_bytes().map_err(|e| e.reanchor(operation))?;
         if actual_bytes != expected_bytes {
             return Err(buffer_size_mismatch_error(
                 operation,
@@ -943,7 +931,7 @@ impl Column {
     ) -> Result<Self> {
         let operation = "column::from_device_buffer_nullable_with_runtime";
 
-        let elem_size = type_id.size_in_bytes().map_err(|e| e.with_operation(operation))?.ok_or_else(|| {
+        let elem_size = type_id.size_in_bytes().map_err(|e| e.reanchor(operation))?.ok_or_else(|| {
             fixed_width_type_required_error(
                 operation,
                 "from_device_buffer_nullable only supports fixed-width types",
@@ -954,9 +942,8 @@ impl Column {
 
         let row_count_i32 = usize_to_i32_len(row_count, "row_count", operation)?;
 
-        let null_count_i32 = i32::try_from(null_count).map_err(|_| {
-            error::range_limit_error(ErrorKind::InvalidInput, operation, "null_count", "i32::MAX", null_count)
-        })?;
+        let null_count_i32 = i32::try_from(null_count)
+            .map_err(|_| error::range_limit_error(operation, "null_count", "i32::MAX", null_count))?;
 
         if null_count > row_count {
             return Err(null_count_exceeds_row_count_error(operation, null_count, row_count));
@@ -964,7 +951,7 @@ impl Column {
 
         let expected_data_bytes =
             checked_required_buffer_bytes(operation, "data_buffer", row_count, elem_size, type_id)?;
-        let actual_data_bytes = data_buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
+        let actual_data_bytes = data_buffer.size_bytes().map_err(|e| e.reanchor(operation))?;
         if actual_data_bytes != expected_data_bytes {
             return Err(buffer_size_mismatch_error(
                 operation,
@@ -978,7 +965,7 @@ impl Column {
         }
 
         let min_mask_bytes = cudf_null_mask_allocation_size_bytes(row_count);
-        let actual_mask_bytes = null_mask_buffer.size_bytes().map_err(|e| e.with_operation(operation))?;
+        let actual_mask_bytes = null_mask_buffer.size_bytes().map_err(|e| e.reanchor(operation))?;
         if actual_mask_bytes < min_mask_bytes {
             return Err(null_mask_buffer_too_small_error(operation, actual_mask_bytes, min_mask_bytes, row_count));
         }
@@ -986,16 +973,15 @@ impl Column {
         let data_device_snapshot = data_buffer.device_snapshot();
         let mask_device_snapshot = null_mask_buffer.device_snapshot();
         if data_device_snapshot != mask_device_snapshot {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
+            return Err(Error::new_with(
+                ErrorCode::CrossDeviceInputs,
+                operation,
                 "data buffer and null mask buffer must belong to the same CUDA device",
             )
-            .with_code(ErrorCode::CrossDeviceInputs)
-            .with_operation(operation)
-            .with_context("left_device", data_device_snapshot.to_string())
-            .with_context("right_device", mask_device_snapshot.to_string())
-            .with_context("resource", "null_mask_buffer")
-            .with_context("remedy", "ensure both buffers were allocated on the same CUDA device"));
+            .with_fact(FACT_LEFT_DEVICE, DeviceIdFact(data_device_snapshot))
+            .with_fact(FACT_RIGHT_DEVICE, DeviceIdFact(mask_device_snapshot))
+            .with_detail("resource", "null_mask_buffer")
+            .with_detail("remedy", "ensure both buffers were allocated on the same CUDA device"));
         }
 
         let (raw_data, data_device_snapshot) = data_buffer.into_raw_parts();
@@ -1049,7 +1035,7 @@ impl Column {
             let out_type = binary::infer_binary_output_type(lv.data_type()?.id(), rv.data_type()?.id(), op)?;
             binary::binary_operation_vv(&lv, &rv, op, &out_type)
         })()
-        .map_err(|e| e.with_operation("column::binary_op").with_context("operator", format!("{:?}", op).to_lowercase()))
+        .map_err(|e| e.reanchor("column::binary_op").with_detail("operator", format!("{:?}", op).to_lowercase()))
     }
 
     /// Generic binary operation with explicit output type (escape hatch).
@@ -1069,9 +1055,9 @@ impl Column {
             binary::binary_operation_vv(&lv, &rv, op, output_type)
         })()
         .map_err(|e| {
-            e.with_operation("column::binary_op_with_type")
-                .with_context("operator", format!("{:?}", op).to_lowercase())
-                .with_context("output_type_id", format!("{:?}", output_type.id()).to_lowercase())
+            e.reanchor("column::binary_op_with_type")
+                .with_detail("operator", format!("{:?}", op).to_lowercase())
+                .with_detail("output_type_id", format!("{:?}", output_type.id()).to_lowercase())
         })
     }
 
@@ -1096,7 +1082,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new output column on the device.
     pub fn add(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Add).map_err(|e| e.with_operation("column::add"))
+        self.binary_op(rhs, binary::BinaryOperator::Add).map_err(|e| e.reanchor("column::add"))
     }
 
     /// Element-wise subtraction: `self - rhs`. Output type inferred.
@@ -1104,7 +1090,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new output column on the device.
     pub fn sub(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Sub).map_err(|e| e.with_operation("column::sub"))
+        self.binary_op(rhs, binary::BinaryOperator::Sub).map_err(|e| e.reanchor("column::sub"))
     }
 
     /// Element-wise multiplication: `self * rhs`. Output type inferred.
@@ -1112,7 +1098,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new output column on the device.
     pub fn mul(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Mul).map_err(|e| e.with_operation("column::mul"))
+        self.binary_op(rhs, binary::BinaryOperator::Mul).map_err(|e| e.reanchor("column::mul"))
     }
 
     /// Element-wise division: `self / rhs`. Output type inferred.
@@ -1120,7 +1106,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new output column on the device.
     pub fn div(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Div).map_err(|e| e.with_operation("column::div"))
+        self.binary_op(rhs, binary::BinaryOperator::Div).map_err(|e| e.reanchor("column::div"))
     }
 
     /// Element-wise true division (always float output).
@@ -1135,7 +1121,7 @@ impl Column {
             let out_type = DataType::new(TypeId::Float64);
             binary::binary_operation_vv(&lv, &rv, binary::BinaryOperator::TrueDiv, &out_type)
         })()
-        .map_err(|e| e.with_operation("column::true_div").with_context("operator", "true_div"))
+        .map_err(|e| e.reanchor("column::true_div").with_detail("operator", "true_div"))
     }
 
     /// Element-wise floor division.
@@ -1143,7 +1129,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new output column on the device.
     pub fn floor_div(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::FloorDiv).map_err(|e| e.with_operation("column::floor_div"))
+        self.binary_op(rhs, binary::BinaryOperator::FloorDiv).map_err(|e| e.reanchor("column::floor_div"))
     }
 
     /// Element-wise remainder: `self % rhs`.
@@ -1154,7 +1140,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new output column on the device.
     pub fn rem(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Mod).map_err(|e| e.with_operation("column::rem"))
+        self.binary_op(rhs, binary::BinaryOperator::Mod).map_err(|e| e.reanchor("column::rem"))
     }
 
     /// Element-wise modulo: `self % rhs`.
@@ -1162,7 +1148,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new output column on the device.
     pub fn modulo(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Mod).map_err(|e| e.with_operation("column::modulo"))
+        self.binary_op(rhs, binary::BinaryOperator::Mod).map_err(|e| e.reanchor("column::modulo"))
     }
 
     // -- Comparison methods ---------------------------------------------------
@@ -1172,7 +1158,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn eq(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Equal).map_err(|e| e.with_operation("column::eq"))
+        self.binary_op(rhs, binary::BinaryOperator::Equal).map_err(|e| e.reanchor("column::eq"))
     }
 
     /// Element-wise not-equal: `self != rhs`. Returns Bool8 column.
@@ -1180,7 +1166,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn ne(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::NotEqual).map_err(|e| e.with_operation("column::ne"))
+        self.binary_op(rhs, binary::BinaryOperator::NotEqual).map_err(|e| e.reanchor("column::ne"))
     }
 
     /// Element-wise less-than: `self < rhs`. Returns Bool8 column.
@@ -1188,7 +1174,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn lt(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Less).map_err(|e| e.with_operation("column::lt"))
+        self.binary_op(rhs, binary::BinaryOperator::Less).map_err(|e| e.reanchor("column::lt"))
     }
 
     /// Element-wise greater-than: `self > rhs`. Returns Bool8 column.
@@ -1196,7 +1182,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn gt(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::Greater).map_err(|e| e.with_operation("column::gt"))
+        self.binary_op(rhs, binary::BinaryOperator::Greater).map_err(|e| e.reanchor("column::gt"))
     }
 
     /// Element-wise less-or-equal: `self <= rhs`. Returns Bool8 column.
@@ -1204,7 +1190,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn le(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::LessEqual).map_err(|e| e.with_operation("column::le"))
+        self.binary_op(rhs, binary::BinaryOperator::LessEqual).map_err(|e| e.reanchor("column::le"))
     }
 
     /// Element-wise greater-or-equal: `self >= rhs`. Returns Bool8 column.
@@ -1212,7 +1198,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn ge(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, binary::BinaryOperator::GreaterEqual).map_err(|e| e.with_operation("column::ge"))
+        self.binary_op(rhs, binary::BinaryOperator::GreaterEqual).map_err(|e| e.reanchor("column::ge"))
     }
 
     // -- Scalar operations ----------------------------------------------------
@@ -1229,9 +1215,7 @@ impl Column {
             binary::binary_operation_vs(&lv, rhs, op, &out_type)
         })()
         .map(|col| col.with_execution_domain(Arc::clone(&self.domain)))
-        .map_err(|e| {
-            e.with_operation("column::binary_op_scalar").with_context("operator", format!("{:?}", op).to_lowercase())
-        })
+        .map_err(|e| e.reanchor("column::binary_op_scalar").with_detail("operator", format!("{:?}", op).to_lowercase()))
     }
 
     /// Element-wise: `self op scalar` with explicit output type.
@@ -1251,9 +1235,9 @@ impl Column {
         })()
         .map(|col| col.with_execution_domain(Arc::clone(&self.domain)))
         .map_err(|e| {
-            e.with_operation("column::binary_op_scalar_with_type")
-                .with_context("operator", format!("{:?}", op).to_lowercase())
-                .with_context("output_type_id", format!("{:?}", output_type.id()).to_lowercase())
+            e.reanchor("column::binary_op_scalar_with_type")
+                .with_detail("operator", format!("{:?}", op).to_lowercase())
+                .with_detail("output_type_id", format!("{:?}", output_type.id()).to_lowercase())
         })
     }
 
@@ -1276,7 +1260,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new output column on the device.
     pub fn add_scalar(&self, rhs: &Scalar) -> Result<Column> {
-        self.binary_op_scalar(rhs, binary::BinaryOperator::Add).map_err(|e| e.with_operation("column::add_scalar"))
+        self.binary_op_scalar(rhs, binary::BinaryOperator::Add).map_err(|e| e.reanchor("column::add_scalar"))
     }
 
     /// Element-wise: `self - scalar`.
@@ -1284,7 +1268,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new output column on the device.
     pub fn sub_scalar(&self, rhs: &Scalar) -> Result<Column> {
-        self.binary_op_scalar(rhs, binary::BinaryOperator::Sub).map_err(|e| e.with_operation("column::sub_scalar"))
+        self.binary_op_scalar(rhs, binary::BinaryOperator::Sub).map_err(|e| e.reanchor("column::sub_scalar"))
     }
 
     /// Element-wise: `self * scalar`.
@@ -1292,7 +1276,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new output column on the device.
     pub fn mul_scalar(&self, rhs: &Scalar) -> Result<Column> {
-        self.binary_op_scalar(rhs, binary::BinaryOperator::Mul).map_err(|e| e.with_operation("column::mul_scalar"))
+        self.binary_op_scalar(rhs, binary::BinaryOperator::Mul).map_err(|e| e.reanchor("column::mul_scalar"))
     }
 
     /// Element-wise: `self / scalar`.
@@ -1300,7 +1284,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new output column on the device.
     pub fn div_scalar(&self, rhs: &Scalar) -> Result<Column> {
-        self.binary_op_scalar(rhs, binary::BinaryOperator::Div).map_err(|e| e.with_operation("column::div_scalar"))
+        self.binary_op_scalar(rhs, binary::BinaryOperator::Div).map_err(|e| e.reanchor("column::div_scalar"))
     }
 
     /// Element-wise: `self == scalar`. Returns Bool8 column.
@@ -1308,7 +1292,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn eq_scalar(&self, rhs: &Scalar) -> Result<Column> {
-        self.binary_op_scalar(rhs, binary::BinaryOperator::Equal).map_err(|e| e.with_operation("column::eq_scalar"))
+        self.binary_op_scalar(rhs, binary::BinaryOperator::Equal).map_err(|e| e.reanchor("column::eq_scalar"))
     }
 
     /// Element-wise: `self != scalar`. Returns Bool8 column.
@@ -1316,7 +1300,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn ne_scalar(&self, rhs: &Scalar) -> Result<Column> {
-        self.binary_op_scalar(rhs, binary::BinaryOperator::NotEqual).map_err(|e| e.with_operation("column::ne_scalar"))
+        self.binary_op_scalar(rhs, binary::BinaryOperator::NotEqual).map_err(|e| e.reanchor("column::ne_scalar"))
     }
 
     /// Element-wise: `self < scalar`. Returns Bool8 column.
@@ -1324,7 +1308,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn lt_scalar(&self, rhs: &Scalar) -> Result<Column> {
-        self.binary_op_scalar(rhs, binary::BinaryOperator::Less).map_err(|e| e.with_operation("column::lt_scalar"))
+        self.binary_op_scalar(rhs, binary::BinaryOperator::Less).map_err(|e| e.reanchor("column::lt_scalar"))
     }
 
     /// Element-wise: `self > scalar`. Returns Bool8 column.
@@ -1332,7 +1316,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn gt_scalar(&self, rhs: &Scalar) -> Result<Column> {
-        self.binary_op_scalar(rhs, binary::BinaryOperator::Greater).map_err(|e| e.with_operation("column::gt_scalar"))
+        self.binary_op_scalar(rhs, binary::BinaryOperator::Greater).map_err(|e| e.reanchor("column::gt_scalar"))
     }
 
     /// Element-wise: `self <= scalar`. Returns Bool8 column.
@@ -1340,7 +1324,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn le_scalar(&self, rhs: &Scalar) -> Result<Column> {
-        self.binary_op_scalar(rhs, binary::BinaryOperator::LessEqual).map_err(|e| e.with_operation("column::le_scalar"))
+        self.binary_op_scalar(rhs, binary::BinaryOperator::LessEqual).map_err(|e| e.reanchor("column::le_scalar"))
     }
 
     /// Element-wise: `self >= scalar`. Returns Bool8 column.
@@ -1348,8 +1332,7 @@ impl Column {
     /// # Cost
     /// GPU-allocating: produces a new `BOOL8` output column on the device.
     pub fn ge_scalar(&self, rhs: &Scalar) -> Result<Column> {
-        self.binary_op_scalar(rhs, binary::BinaryOperator::GreaterEqual)
-            .map_err(|e| e.with_operation("column::ge_scalar"))
+        self.binary_op_scalar(rhs, binary::BinaryOperator::GreaterEqual).map_err(|e| e.reanchor("column::ge_scalar"))
     }
 }
 

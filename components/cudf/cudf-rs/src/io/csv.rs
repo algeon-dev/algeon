@@ -11,7 +11,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     core::{
-        error::{self, ErrorKind, Result},
+        error::{self, FACT_COLUMN_INDEX, Result},
         schema,
         table::Table,
     },
@@ -46,7 +46,7 @@ pub fn read_csv(options: &CsvTableReadOptions) -> Result<TableReadOutput> {
     let exec_options = output_domain.exec_options_raw();
 
     let mut table_handle = ptr::null_mut();
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         // SAFETY: filepath is a valid CString (converted above).
         unsafe {
             cudf_sys::cudf_io_read_csv_ex(
@@ -121,7 +121,6 @@ pub(crate) fn write_csv_with_exec(
         let expected = table.num_columns()?;
         if names.len() != expected {
             return Err(schema::column_name_count_mismatch_error(
-                ErrorKind::InvalidInput,
                 "io::csv::write_csv",
                 format!("column name count ({}) does not match table column count ({})", names.len(), expected),
                 names.len(),
@@ -137,14 +136,16 @@ pub(crate) fn write_csv_with_exec(
         .map(|names| {
             names
                 .iter()
-                .map(|s| {
+                .enumerate()
+                .map(|(index, s)| {
                     CString::new(s.as_str()).map_err(|_| {
-                        super::interior_null_byte_error(
+                        error::interior_null_byte_error(
                             "io::csv::write_csv",
                             "column_name",
                             "column name contains interior null byte",
                         )
-                        .with_context("column_name", s.to_string())
+                        .with_fact(FACT_COLUMN_INDEX, index)
+                        .with_column(s.to_string())
                     })
                 })
                 .collect::<Result<Vec<_>>>()
@@ -157,7 +158,7 @@ pub(crate) fn write_csv_with_exec(
     let (name_ptrs, num_cols) =
         if name_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32) };
 
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         // SAFETY: table handle is valid (NonNull). filepath is a valid CString (converted above).
         // name_ptrs is either null or a valid pointer to num_cols CString pointers.
         match exec_options {
@@ -196,12 +197,12 @@ fn read_header_names(path: &Path, delimiter: u8) -> Result<Vec<String>> {
     let operation = "io::csv::read_csv";
     let mut reader =
         ::csv::ReaderBuilder::new().has_headers(true).delimiter(delimiter).from_path(path).map_err(|source| {
-            super::map_csv_error(source, path, operation, "failed to open CSV file for header parsing")
+            super::map_path_io_error(source, path, operation, "failed to open CSV file for header parsing")
         })?;
 
     let headers = reader
         .headers()
-        .map_err(|source| super::map_csv_error(source, path, operation, "failed to read CSV header"))?;
+        .map_err(|source| super::map_path_io_error(source, path, operation, "failed to read CSV header"))?;
 
     Ok(headers.iter().map(str::to_owned).collect())
 }
@@ -209,7 +210,6 @@ fn read_header_names(path: &Path, delimiter: u8) -> Result<Vec<String>> {
 fn validate_header_name_count(name_count: usize, num_columns: usize) -> Result<()> {
     if name_count != num_columns {
         return Err(schema::column_name_count_mismatch_error(
-            ErrorKind::InvalidInput,
             "io::csv::read_csv",
             format!("header column count ({name_count}) does not match table column count ({num_columns})"),
             name_count,

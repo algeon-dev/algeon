@@ -183,37 +183,28 @@ impl DataFrame {
         let mut total_device_allocated_bytes = 0usize;
 
         for (position, (name, column)) in self.columns.iter().enumerate() {
-            let view = column
-                .view()
-                .map_err(|e| e.with_operation("dataframe::info_with").with_context("column_name", name.clone()))?;
-            let data_type = view
-                .data_type()
-                .map_err(|e| e.with_operation("dataframe::info_with").with_context("column_name", name.clone()))?;
+            let view = column.view().map_err(|e| e.reanchor("dataframe::info_with").with_column(name.clone()))?;
+            let data_type =
+                view.data_type().map_err(|e| e.reanchor("dataframe::info_with").with_column(name.clone()))?;
             *dtype_counts.entry(data_type).or_insert(0) += 1;
 
-            let nullable =
-                if include_columns {
-                    Some(view.nullable().map_err(|e| {
-                        e.with_operation("dataframe::info_with").with_context("column_name", name.clone())
-                    })?)
-                } else {
-                    None
-                };
+            let nullable = if include_columns {
+                Some(view.nullable().map_err(|e| e.reanchor("dataframe::info_with").with_column(name.clone()))?)
+            } else {
+                None
+            };
 
-            let null_count =
-                if include_columns && include_null_counts {
-                    Some(view.null_count().map_err(|e| {
-                        e.with_operation("dataframe::info_with").with_context("column_name", name.clone())
-                    })?)
-                } else {
-                    None
-                };
+            let null_count = if include_columns && include_null_counts {
+                Some(view.null_count().map_err(|e| e.reanchor("dataframe::info_with").with_column(name.clone()))?)
+            } else {
+                None
+            };
             let non_null_count = null_count.map(|count| self.row_count.saturating_sub(count));
 
             let payload_bytes = if include_payload_bytes {
                 let bytes = column
                     .payload_size_bytes()
-                    .map_err(|e| e.with_operation("dataframe::info_with").with_context("column_name", name.clone()))?;
+                    .map_err(|e| e.reanchor("dataframe::info_with").with_column(name.clone()))?;
                 total_payload_bytes += bytes;
                 Some(bytes)
             } else {
@@ -223,7 +214,7 @@ impl DataFrame {
             let device_allocated_bytes = if include_device_allocated_bytes {
                 let bytes = column
                     .device_allocated_size_bytes()
-                    .map_err(|e| e.with_operation("dataframe::info_with").with_context("column_name", name.clone()))?;
+                    .map_err(|e| e.reanchor("dataframe::info_with").with_column(name.clone()))?;
                 total_device_allocated_bytes += bytes;
                 Some(bytes)
             } else {
@@ -240,7 +231,7 @@ impl DataFrame {
                             "dataframe::info_with",
                             "nullable metadata must be populated when column details are requested",
                         )
-                        .with_context("column_name", name.clone())
+                        .with_column(name.clone())
                     })?,
                     null_count,
                     non_null_count,

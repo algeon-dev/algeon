@@ -16,7 +16,7 @@ use std::{ptr, sync::Arc};
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{self, Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
         scalar::Scalar,
         types::{DataType, TypeId},
     },
@@ -155,12 +155,10 @@ impl BinaryOperator {
 /// - Unsupported combinations → `ErrorKind::Unsupported`
 pub fn infer_binary_output_type(lhs: TypeId, rhs: TypeId, op: BinaryOperator) -> Result<DataType> {
     let make_err = |msg: &str| {
-        Err(Error::new(ErrorKind::Unsupported, msg.to_string())
-            .with_code(ErrorCode::TypeMismatch)
-            .with_operation("binary::infer_binary_output_type")
-            .with_context("left_type_id", format!("{:?}", lhs).to_lowercase())
-            .with_context("right_type_id", format!("{:?}", rhs).to_lowercase())
-            .with_context("operator", format!("{:?}", op).to_lowercase()))
+        Err(Error::new_with(ErrorCode::TypeMismatch, "binary::infer_binary_output_type", msg.to_string())
+            .with_fact(FACT_LEFT_TYPE_ID, lhs)
+            .with_fact(FACT_RIGHT_TYPE_ID, rhs)
+            .with_detail("operator", format!("{:?}", op).to_lowercase()))
     };
 
     // Comparison operators always infer Bool8.
@@ -317,7 +315,7 @@ pub(crate) fn binary_operation_vv_impl(
     };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [
@@ -384,7 +382,7 @@ pub(crate) fn binary_operation_vs_impl(
     };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [
@@ -453,7 +451,7 @@ fn binary_operation_sv_impl(
     };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [

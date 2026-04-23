@@ -8,7 +8,8 @@ use super::{
 };
 use crate::{
     core::{
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
+        row_range,
         scalar::{IntoRuntimeScalar, Scalar},
         types::{CudfType, DataType, NullPolicy, TimestampResolution, TypeId},
     },
@@ -97,7 +98,7 @@ fn value_counts_from_groupby_output(
         (SERIES_VALUE_COUNTS_FALLBACK_NAME.to_string(), Series::from_column(key_col)?),
         (SERIES_VALUE_COUNTS_COUNT_NAME.to_string(), Series::from_column(count_col)?),
     ])
-    .map_err(|e| e.with_operation(operation))
+    .map_err(|e| e.reanchor(operation))
 }
 
 macro_rules! series_forward_in {
@@ -516,22 +517,16 @@ impl Series {
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         if len == 0 {
-            let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+            let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
             let empty =
                 crate::core::column::Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
             return Series::from_column(empty);
         }
 
-        let start_i32: i32 = start.try_into().map_err(|_| error::row_range_limit_error(operation, "start", start))?;
-        let end = start.checked_add(len).ok_or_else(|| error::row_range_overflow_error(operation, start, len))?;
-        let end_i32: i32 = end.try_into().map_err(|_| {
-            error::row_range_limit_error(operation, "end", end).with_context("start_row", start.to_string())
-        })?;
-        let indices: Vec<i32> = (start_i32..end_i32).collect();
-        let map = crate::core::column::Column::from_slice_in_domain(&indices, &output_domain)?;
+        let map = row_range::gather_map_in_domain(start, len, &output_domain, operation)?;
         let map_view = map.view()?;
 
-        let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let result = crate::ops::copying::gather_impl(
@@ -554,7 +549,7 @@ impl Series {
         operation: &'static str,
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
-        let idx_cv = indices.view().map_err(|e| e.with_operation(operation))?;
+        let idx_cv = indices.view().map_err(|e| e.reanchor(operation))?;
         ExecutionDomain::require_same_device_for_mixed_inputs(
             self.column.execution_domain(),
             idx_cv.execution_domain(),
@@ -565,13 +560,13 @@ impl Series {
         }
 
         if idx_cv.is_empty()? {
-            let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+            let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
             let empty =
                 crate::core::column::Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
             return Series::from_column(empty);
         }
 
-        let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let result = crate::ops::copying::gather_impl(
@@ -598,30 +593,8 @@ impl Series {
         operation: &'static str,
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
-        let mask_cv = mask.view().map_err(|e| e.with_operation(operation))?;
-
-        let mask_dtype = mask_cv.data_type()?;
-        if mask_dtype.id() != TypeId::Bool8 {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!("filter mask must be Bool8, got {:?}", mask_dtype.id()),
-            )
-            .with_code(ErrorCode::TypeMismatch)
-            .with_operation(operation)
-            .with_context("left_type_id", format!("{:?}", mask_dtype.id()).to_lowercase())
-            .with_context("right_type_id", "bool8"));
-        }
-        let mask_len = mask_cv.len()?;
-        if mask_len != self.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!("filter mask length ({}) does not match series length ({})", mask_len, self.len()),
-            )
-            .with_code(ErrorCode::ColumnLengthMismatch)
-            .with_operation(operation)
-            .with_context("actual_rows", mask_len.to_string())
-            .with_context("expected_rows", self.len().to_string()));
-        }
+        let mask_cv = mask.view().map_err(|e| e.reanchor(operation))?;
+        crate::ops::filter::validate_boolean_mask(&mask_cv, self.len(), "series length", operation)?;
 
         ExecutionDomain::require_same_device_for_mixed_inputs(
             self.column.execution_domain(),
@@ -632,7 +605,7 @@ impl Series {
             ExecutionDomain::insert_stream_dependency(mask_cv.execution_domain(), &output_domain, operation)?;
         }
 
-        let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let result = crate::ops::filter::apply_boolean_mask_impl(
@@ -652,7 +625,7 @@ impl Series {
 
     pub(super) fn dropna_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
-        let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let result =
@@ -671,7 +644,7 @@ impl Series {
         operation: &'static str,
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
-        let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let result = stream_compaction::distinct_impl(
@@ -699,8 +672,8 @@ impl Series {
     ) -> Result<crate::DataFrame> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
 
-        let keys_view = self.column.view().map_err(|e| e.with_operation(operation))?;
-        let values_view = self.column.view().map_err(|e| e.with_operation(operation))?;
+        let keys_view = self.column.view().map_err(|e| e.reanchor(operation))?;
+        let values_view = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![keys_view])?;
         let aggs = [GroupByAgg::Count { include_nulls: false }];
         let requests = [crate::ops::groupby::AggregationRequest { values: &values_view, aggregations: &aggs }];
@@ -728,7 +701,7 @@ impl Series {
     ) -> Result<Scalar> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let input_type = self.dtype().map_err(|e| e.with_operation(operation))?;
+        let input_type = self.dtype().map_err(|e| e.reanchor(operation))?;
         let output_type = infer_reduce_output_type(&input_type, &agg, operation)?;
         let exec_options = output_domain.explicit_exec_options_raw();
         reduction::reduce_impl(&cv, &agg, &output_type, &output_domain, exec_options.as_ref(), operation)
@@ -987,13 +960,19 @@ impl Series {
         let values_cv = values.column.view()?;
         let input_type = cv.data_type()?.id();
         let values_type = values_cv.data_type()?.id();
+        let annotate_type_context = |e: Error| {
+            e.with_detail("input_type_id", format!("{:?}", input_type).to_lowercase())
+                .with_detail("values_type_id", format!("{:?}", values_type).to_lowercase())
+        };
 
         if input_type != values_type {
-            return Err(Error::new(ErrorKind::InvalidInput, "isin requires both inputs to have the same dtype")
-                .with_code(ErrorCode::TypeMismatch)
-                .with_operation(operation)
-                .with_context("left_type_id", format!("{:?}", input_type).to_lowercase())
-                .with_context("right_type_id", format!("{:?}", values_type).to_lowercase()));
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                operation,
+                "isin requires both inputs to have the same dtype",
+            )
+            .with_fact(FACT_LEFT_TYPE_ID, input_type)
+            .with_fact(FACT_RIGHT_TYPE_ID, values_type));
         }
 
         ExecutionDomain::require_same_device_for_mixed_inputs(
@@ -1001,23 +980,14 @@ impl Series {
             values.column.execution_domain(),
             operation,
         )
-        .map_err(|e| {
-            e.with_context("left_type_id", format!("{:?}", input_type).to_lowercase())
-                .with_context("right_type_id", format!("{:?}", values_type).to_lowercase())
-        })?;
+        .map_err(annotate_type_context)?;
         if !ExecutionDomain::same_provenance(values.column.execution_domain(), &output_domain) {
             ExecutionDomain::insert_stream_dependency(values.column.execution_domain(), &output_domain, operation)
-                .map_err(|e| {
-                    e.with_context("left_type_id", format!("{:?}", input_type).to_lowercase())
-                        .with_context("right_type_id", format!("{:?}", values_type).to_lowercase())
-                })?;
+                .map_err(annotate_type_context)?;
         }
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = crate::ops::search::contains_impl(&values_cv, &cv, &output_domain, exec_options.as_ref(), operation)
-            .map_err(|e| {
-                e.with_context("left_type_id", format!("{:?}", input_type).to_lowercase())
-                    .with_context("right_type_id", format!("{:?}", values_type).to_lowercase())
-            })?;
+            .map_err(annotate_type_context)?;
         Series::from_column(col)
     }
 

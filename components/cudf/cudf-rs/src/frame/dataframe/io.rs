@@ -7,10 +7,7 @@ use typed_builder::TypedBuilder;
 
 use super::owned::DataFrame;
 use crate::{
-    core::{
-        error::{ErrorKind, Result},
-        schema,
-    },
+    core::{error::Result, schema},
     io::{
         TableReadOutput,
         csv::{self, CsvTableReadOptions, CsvTableWriteOptions},
@@ -179,7 +176,6 @@ fn validate_dataframe_csv_column_name_count(
 ) -> Result<()> {
     if name_count != num_columns {
         return Err(schema::column_name_count_mismatch_error(
-            ErrorKind::InvalidInput,
             operation,
             format!("column name count ({name_count}) does not match table column count ({num_columns})"),
             name_count,
@@ -271,9 +267,9 @@ impl DataFrame {
     pub fn read_csv_with_options(options: CsvReadOptions) -> Result<Self> {
         let operation = "dataframe::read_csv_with_options";
         let table_options = options.to_table_options();
-        let result = csv::read_csv(&table_options).map_err(|error| error.with_operation(operation))?;
+        let result = csv::read_csv(&table_options).map_err(|error| error.reanchor(operation))?;
         let names = resolve_csv_column_names(&options, &result)?;
-        Self::from_table(result.table, names).map_err(|error| error.with_operation(operation))
+        Self::from_table(result.table, names).map_err(|error| error.reanchor(operation))
     }
 
     /// Write this `DataFrame` to a CSV file, preserving the DataFrame schema
@@ -340,9 +336,9 @@ impl DataFrame {
     pub fn read_parquet_with_options(options: ParquetReadOptions) -> Result<Self> {
         let operation = "dataframe::read_parquet_with_options";
         let table_options = options.to_table_options();
-        let result = parquet::read_parquet_table(&table_options).map_err(|error| error.with_operation(operation))?;
+        let result = parquet::read_parquet_table(&table_options).map_err(|error| error.reanchor(operation))?;
         let (table, names) = require_reader_schema_names(result, operation, "parquet reader")?;
-        Self::from_table(table, names).map_err(|error| error.with_operation(operation))
+        Self::from_table(table, names).map_err(|error| error.reanchor(operation))
     }
 
     /// Write this `DataFrame` to a Parquet file, embedding column names in
@@ -407,9 +403,9 @@ impl DataFrame {
     pub fn read_json_with_options(options: JsonReadOptions) -> Result<Self> {
         let operation = "dataframe::read_json_with_options";
         let table_options = options.to_table_options();
-        let result = json::read_json_table(&table_options).map_err(|error| error.with_operation(operation))?;
+        let result = json::read_json_table(&table_options).map_err(|error| error.reanchor(operation))?;
         let (table, names) = require_reader_schema_names(result, operation, "json reader")?;
-        Self::from_table(table, names).map_err(|error| error.with_operation(operation))
+        Self::from_table(table, names).map_err(|error| error.reanchor(operation))
     }
 
     /// Write this `DataFrame` to a JSON Lines (NDJSON) file, using column

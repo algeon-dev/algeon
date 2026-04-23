@@ -53,11 +53,7 @@ pub(super) fn checked_i32_from_usize(
     value: usize,
     operation: &'static str,
 ) -> Result<i32, InteropError> {
-    i32::try_from(value).map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, format!("{field} exceeds i32::MAX"))
-            .with_context("operation", operation)
-            .with_context(field, value.to_string())
-    })
+    checked_invalid_view_i32_from_usize(field, value, operation)
 }
 
 fn interop_binding_from_prepared_binding(binding: &BufferBinding<'_>) -> cudf_sys::cudf_interop_buffer_binding_t {

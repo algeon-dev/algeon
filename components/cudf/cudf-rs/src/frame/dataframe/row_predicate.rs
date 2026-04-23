@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::owned::DataFrame;
 use crate::{
     core::{
-        error::{Error, ErrorCode, ErrorKind, Result},
+        error::{Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
         scalar::Scalar,
         types::{DataType, TypeId},
     },
@@ -144,11 +144,9 @@ fn lower_row_predicate(df: &DataFrame, expr: &Expr, operation: &'static str) -> 
     let mut lowered = LoweredRowPredicate { nodes: Vec::new(), scalars: Vec::new(), root_index: -1 };
     let (root_index, output_type) = lower_expr(df, expr, &mut lowered, operation)?;
     if output_type.id() != TypeId::Bool8 {
-        return Err(Error::new(ErrorKind::InvalidInput, "row predicate must evaluate to Bool8")
-            .with_code(ErrorCode::TypeMismatch)
-            .with_operation(operation)
-            .with_context("left_type_id", format!("{:?}", output_type.id()).to_lowercase())
-            .with_context("right_type_id", "bool8"));
+        return Err(Error::new_with(ErrorCode::TypeMismatch, operation, "row predicate must evaluate to Bool8")
+            .with_fact(FACT_LEFT_TYPE_ID, output_type.id())
+            .with_fact(FACT_RIGHT_TYPE_ID, TypeId::Bool8));
     }
     lowered.root_index = root_index;
     Ok(lowered)
@@ -253,15 +251,14 @@ fn lower_binary_expr(
         },
         BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr => {
             if lhs_type.id() != TypeId::Bool8 || rhs_type.id() != TypeId::Bool8 {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
+                return Err(Error::new_with(
+                    ErrorCode::TypeMismatch,
+                    operation,
                     "logical row-predicate operators require Bool8 operands",
                 )
-                .with_code(ErrorCode::TypeMismatch)
-                .with_operation(operation)
-                .with_context("left_type_id", format!("{:?}", lhs_type.id()).to_lowercase())
-                .with_context("right_type_id", format!("{:?}", rhs_type.id()).to_lowercase())
-                .with_context("operator", format!("{:?}", op).to_lowercase()));
+                .with_fact(FACT_LEFT_TYPE_ID, lhs_type.id())
+                .with_fact(FACT_RIGHT_TYPE_ID, rhs_type.id())
+                .with_detail("operator", format!("{:?}", op).to_lowercase()));
             }
             DataType::new(TypeId::Bool8)
         },
@@ -322,12 +319,14 @@ fn validate_row_predicate_comparison_types(
         return Ok(());
     }
 
-    Err(Error::new(ErrorKind::Unsupported, "row-predicate comparison operands are not supported for fused filtering")
-        .with_code(ErrorCode::TypeMismatch)
-        .with_operation(operation)
-        .with_context("left_type_id", format!("{:?}", lhs_type).to_lowercase())
-        .with_context("right_type_id", format!("{:?}", rhs_type).to_lowercase())
-        .with_context("operator", format!("{:?}", op).to_lowercase()))
+    Err(Error::new_with(
+        ErrorCode::TypeMismatch,
+        operation,
+        "row-predicate comparison operands are not supported for fused filtering",
+    )
+    .with_fact(FACT_LEFT_TYPE_ID, lhs_type)
+    .with_fact(FACT_RIGHT_TYPE_ID, rhs_type)
+    .with_detail("operator", format!("{:?}", op).to_lowercase()))
 }
 
 fn lower_unary_expr(
@@ -341,11 +340,13 @@ fn lower_unary_expr(
     match op {
         UnaryOperator::Not => {
             if input_type.id() != TypeId::Bool8 {
-                return Err(Error::new(ErrorKind::InvalidInput, "logical row-predicate NOT requires a Bool8 operand")
-                    .with_code(ErrorCode::TypeMismatch)
-                    .with_operation(operation)
-                    .with_context("left_type_id", format!("{:?}", input_type.id()).to_lowercase())
-                    .with_context("right_type_id", "bool8"));
+                return Err(Error::new_with(
+                    ErrorCode::TypeMismatch,
+                    operation,
+                    "logical row-predicate NOT requires a Bool8 operand",
+                )
+                .with_fact(FACT_LEFT_TYPE_ID, input_type.id())
+                .with_fact(FACT_RIGHT_TYPE_ID, TypeId::Bool8));
             }
             let index = push_node(
                 lowered,
@@ -393,13 +394,15 @@ fn push_node(lowered: &mut LoweredRowPredicate, node: cudf_sys::cudf_row_predica
 }
 
 fn unsupported_predicate<T>(operation: &'static str, expr_kind: &str) -> Result<T> {
-    Err(Error::new(ErrorKind::Unsupported, "predicate expression is not supported by fused row filtering")
-        .with_code(ErrorCode::UnsupportedOperation)
-        .with_operation(operation)
-        .with_context("resource", "row_predicate")
-        .with_context("reason", "unsupported_expr_kind")
-        .with_context("expr_kind", expr_kind.to_string())
-        .with_context("remedy", "rewrite the predicate into currently supported fused-filter operators"))
+    Err(Error::new_with(
+        ErrorCode::UnsupportedOperation,
+        operation,
+        "predicate expression is not supported by fused row filtering",
+    )
+    .with_detail("resource", "row_predicate")
+    .with_detail("reason", "unsupported_expr_kind")
+    .with_detail("expr_kind", expr_kind.to_string())
+    .with_detail("remedy", "rewrite the predicate into currently supported fused-filter operators"))
 }
 
 fn expr_kind(expr: &Expr) -> &'static str {

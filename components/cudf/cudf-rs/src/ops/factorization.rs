@@ -1,13 +1,15 @@
 //! Internal factorization operators shared by high-level Series/DataFrame APIs.
 
+mod errors;
 pub(crate) mod testing_hooks;
 
 use std::sync::Arc;
 
+use self::errors::foreign_factorization_row_code_dtype_error;
 use crate::{
     core::{
-        column::{Column, ColumnView, copy_view_to_owned},
-        error::{Error, ErrorCode, ErrorKind, Result},
+        column::{Column, ColumnView, copy_view_to_owned, position_sequence_in_domain},
+        error::Result,
         table::TableView,
         types::TypeId,
     },
@@ -35,28 +37,17 @@ struct FirstSeenKeyOrder {
     ordered_keys: Column,
 }
 
-fn foreign_factorization_row_code_dtype_error(operation: &'static str, actual_type_id: TypeId) -> Error {
-    Error::new(ErrorKind::InvariantViolation, "factorization row-code dtype must be Int32")
-        .with_code(ErrorCode::InvariantViolation)
-        .with_operation(operation)
-        .with_context("resource", "row_codes")
-        .with_context("reason", "unexpected_dtype")
-        .with_context("type_id", format!("{:?}", actual_type_id).to_lowercase())
-        .with_context("remedy", "ensure the factorization backend emits Int32 row codes")
-}
-
 fn empty_code_column(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
     operation: &'static str,
 ) -> Result<Column> {
-    let input_dtype = input.data_type().map_err(|e| e.with_operation(operation))?;
+    let input_dtype = input.data_type().map_err(|e| e.reanchor(operation))?;
     if input_dtype.id() != TypeId::Int32 {
         return Err(foreign_factorization_row_code_dtype_error(operation, input_dtype.id()));
     }
 
-    Column::empty_in_domain(TypeId::Int32, Arc::clone(output_domain), operation)
-        .map_err(|e| e.with_operation(operation))
+    Column::empty_in_domain(TypeId::Int32, Arc::clone(output_domain), operation).map_err(|e| e.reanchor(operation))
 }
 
 fn ordered_first_seen_keys(
@@ -66,33 +57,27 @@ fn ordered_first_seen_keys(
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<FirstSeenKeyOrder> {
-    if row_codes.len().map_err(|e| e.with_operation(operation))? == 0 {
+    if row_codes.len().map_err(|e| e.reanchor(operation))? == 0 {
         return Ok(FirstSeenKeyOrder {
             ordered_sorted_codes: empty_code_column(row_codes, output_domain, operation)?,
-            ordered_keys: copy_view_to_owned(sorted_keys).map_err(|e| e.with_operation(operation))?,
+            ordered_keys: copy_view_to_owned(sorted_keys).map_err(|e| e.reanchor(operation))?,
         });
     }
 
-    let row_idx = Column::from_sequence_in_domain(
-        0i32,
-        1i32,
-        row_codes.len().map_err(|e| e.with_operation(operation))?,
-        Arc::clone(output_domain),
-        operation,
-    )
-    .map_err(|e| e.with_operation(operation))?;
-    let row_idx_view = row_idx.view().map_err(|e| e.with_operation(operation))?;
-    let code_and_row =
-        TableView::from_column_views(&[row_codes, &row_idx_view]).map_err(|e| e.with_operation(operation))?;
+    let row_idx =
+        position_sequence_in_domain(row_codes.len().map_err(|e| e.reanchor(operation))?, output_domain, operation)
+            .map_err(|e| e.reanchor(operation))?;
+    let row_idx_view = row_idx.view().map_err(|e| e.reanchor(operation))?;
+    let code_and_row = TableView::from_column_views(&[row_codes, &row_idx_view]).map_err(|e| e.reanchor(operation))?;
 
     let non_null_code_rows =
         stream_compaction::drop_nulls_impl(&code_and_row, &[0], 1, output_domain, exec_options, operation)
-            .map_err(|e| e.with_operation(operation))?;
-    let non_null_code_rows_view = non_null_code_rows.view().map_err(|e| e.with_operation(operation))?;
-    if non_null_code_rows_view.num_rows().map_err(|e| e.with_operation(operation))? == 0 {
+            .map_err(|e| e.reanchor(operation))?;
+    let non_null_code_rows_view = non_null_code_rows.view().map_err(|e| e.reanchor(operation))?;
+    if non_null_code_rows_view.num_rows().map_err(|e| e.reanchor(operation))? == 0 {
         return Ok(FirstSeenKeyOrder {
             ordered_sorted_codes: empty_code_column(row_codes, output_domain, operation)?,
-            ordered_keys: copy_view_to_owned(sorted_keys).map_err(|e| e.with_operation(operation))?,
+            ordered_keys: copy_view_to_owned(sorted_keys).map_err(|e| e.reanchor(operation))?,
         });
     }
 
@@ -106,26 +91,25 @@ fn ordered_first_seen_keys(
         exec_options,
         operation,
     )
-    .map_err(|e| e.with_operation(operation))?;
-    let first_code_rows_view = first_code_rows.view().map_err(|e| e.with_operation(operation))?;
-    let first_row_idx = first_code_rows_view.select_columns(&[1]).map_err(|e| e.with_operation(operation))?;
+    .map_err(|e| e.reanchor(operation))?;
+    let first_code_rows_view = first_code_rows.view().map_err(|e| e.reanchor(operation))?;
+    let first_row_idx = first_code_rows_view.select_columns(&[1]).map_err(|e| e.reanchor(operation))?;
     let ordered_code_rows = sorting::stable_sort_by_key(
         &first_code_rows_view,
         &first_row_idx,
         Some(&[Order::Ascending]),
         Some(&[NullOrder::After]),
     )
-    .map_err(|e| e.with_operation(operation))?;
+    .map_err(|e| e.reanchor(operation))?;
 
-    let mut ordered_columns = ordered_code_rows.into_columns().map_err(|e| e.with_operation(operation))?;
+    let mut ordered_columns = ordered_code_rows.into_columns().map_err(|e| e.reanchor(operation))?;
     let ordered_sorted_codes = ordered_columns.remove(0);
     let ordered_keys = {
-        let ordered_sorted_codes_view = ordered_sorted_codes.view().map_err(|e| e.with_operation(operation))?;
-        let sorted_keys_table =
-            TableView::from_column_views(&[sorted_keys]).map_err(|e| e.with_operation(operation))?;
+        let ordered_sorted_codes_view = ordered_sorted_codes.view().map_err(|e| e.reanchor(operation))?;
+        let sorted_keys_table = TableView::from_column_views(&[sorted_keys]).map_err(|e| e.reanchor(operation))?;
         let ordered_keys_table =
-            copying::gather(&sorted_keys_table, &ordered_sorted_codes_view).map_err(|e| e.with_operation(operation))?;
-        let mut ordered_key_columns = ordered_keys_table.into_columns().map_err(|e| e.with_operation(operation))?;
+            copying::gather(&sorted_keys_table, &ordered_sorted_codes_view).map_err(|e| e.reanchor(operation))?;
+        let mut ordered_key_columns = ordered_keys_table.into_columns().map_err(|e| e.reanchor(operation))?;
         ordered_key_columns.remove(0)
     };
 
@@ -141,13 +125,13 @@ pub(crate) fn keys_impl(
     operation: &'static str,
 ) -> Result<Column> {
     let dict = dictionary::encode_impl(input, indices_type, output_domain, exec_options, operation)
-        .map_err(|e| e.with_operation(operation))?;
-    let dict_view = dict.view().map_err(|e| e.with_operation(operation))?;
-    let row_codes = dictionary::indices(&dict_view).map_err(|e| e.with_operation(operation))?;
-    let sorted_keys = dictionary::keys(&dict_view).map_err(|e| e.with_operation(operation))?;
+        .map_err(|e| e.reanchor(operation))?;
+    let dict_view = dict.view().map_err(|e| e.reanchor(operation))?;
+    let row_codes = dictionary::indices(&dict_view).map_err(|e| e.reanchor(operation))?;
+    let sorted_keys = dictionary::keys(&dict_view).map_err(|e| e.reanchor(operation))?;
 
     match key_order {
-        KeyOrder::Sorted => copy_view_to_owned(&sorted_keys).map_err(|e| e.with_operation(operation)),
+        KeyOrder::Sorted => copy_view_to_owned(&sorted_keys).map_err(|e| e.reanchor(operation)),
         KeyOrder::FirstSeen => {
             ordered_first_seen_keys(&row_codes, &sorted_keys, output_domain, exec_options, operation)
                 .map(|ordered| ordered.ordered_keys)
@@ -164,40 +148,35 @@ pub(crate) fn factorize_impl(
     operation: &'static str,
 ) -> Result<FactorizationParts> {
     let dict = dictionary::encode_impl(input, indices_type, output_domain, exec_options, operation)
-        .map_err(|e| e.with_operation(operation))?;
-    let dict_view = dict.view().map_err(|e| e.with_operation(operation))?;
-    let row_codes = dictionary::indices(&dict_view).map_err(|e| e.with_operation(operation))?;
-    let sorted_keys = dictionary::keys(&dict_view).map_err(|e| e.with_operation(operation))?;
+        .map_err(|e| e.reanchor(operation))?;
+    let dict_view = dict.view().map_err(|e| e.reanchor(operation))?;
+    let row_codes = dictionary::indices(&dict_view).map_err(|e| e.reanchor(operation))?;
+    let sorted_keys = dictionary::keys(&dict_view).map_err(|e| e.reanchor(operation))?;
 
     match key_order {
         KeyOrder::Sorted => Ok(FactorizationParts {
-            row_codes: copy_view_to_owned(&row_codes).map_err(|e| e.with_operation(operation))?,
-            keys: copy_view_to_owned(&sorted_keys).map_err(|e| e.with_operation(operation))?,
+            row_codes: copy_view_to_owned(&row_codes).map_err(|e| e.reanchor(operation))?,
+            keys: copy_view_to_owned(&sorted_keys).map_err(|e| e.reanchor(operation))?,
         }),
         KeyOrder::FirstSeen => {
             let ordered = ordered_first_seen_keys(&row_codes, &sorted_keys, output_domain, exec_options, operation)?;
-            let ordered_code_count = ordered
-                .ordered_sorted_codes
-                .view()
-                .and_then(|view| view.len())
-                .map_err(|e| e.with_operation(operation))?;
+            let ordered_code_count =
+                ordered.ordered_sorted_codes.view().and_then(|view| view.len()).map_err(|e| e.reanchor(operation))?;
 
             if ordered_code_count == 0 {
                 return Ok(FactorizationParts {
-                    row_codes: copy_view_to_owned(&row_codes).map_err(|e| e.with_operation(operation))?,
+                    row_codes: copy_view_to_owned(&row_codes).map_err(|e| e.reanchor(operation))?,
                     keys: ordered.ordered_keys,
                 });
             }
 
-            let remapped_values =
-                Column::from_sequence_in_domain(0i32, 1i32, ordered_code_count, Arc::clone(output_domain), operation)
-                    .map_err(|e| e.with_operation(operation))?;
-            let ordered_sorted_codes_view =
-                ordered.ordered_sorted_codes.view().map_err(|e| e.with_operation(operation))?;
-            let remapped_values_view = remapped_values.view().map_err(|e| e.with_operation(operation))?;
+            let remapped_values = position_sequence_in_domain(ordered_code_count, output_domain, operation)
+                .map_err(|e| e.reanchor(operation))?;
+            let ordered_sorted_codes_view = ordered.ordered_sorted_codes.view().map_err(|e| e.reanchor(operation))?;
+            let remapped_values_view = remapped_values.view().map_err(|e| e.reanchor(operation))?;
             let remapped_row_codes =
                 lookup::probe_prevalidated(&row_codes, &ordered_sorted_codes_view, &remapped_values_view, operation)
-                    .map_err(|e| e.with_operation(operation))?;
+                    .map_err(|e| e.reanchor(operation))?;
 
             Ok(FactorizationParts { row_codes: remapped_row_codes, keys: ordered.ordered_keys })
         },

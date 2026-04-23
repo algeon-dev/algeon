@@ -12,7 +12,7 @@
 
 use std::sync::OnceLock;
 
-use crate::core::error::{self, Error, ErrorCode, ErrorKind, Result};
+use crate::core::error::{self, Error, ErrorCode, Result};
 
 /// A validated CUDA device ordinal.
 ///
@@ -47,17 +47,12 @@ impl DeviceId {
     pub fn new(ordinal: usize) -> Result<Self> {
         let count = Self::count()?;
         if ordinal >= count {
-            return Err(Error::new(
-                ErrorKind::NotFound,
-                format!("device ordinal {ordinal} out of range (device count: {count})"),
-            )
-            .with_code(ErrorCode::MissingResource)
-            .with_operation("DeviceId::new")
-            .with_context("resource", "cuda_device")
-            .with_context("ordinal", ordinal.to_string())
-            .with_context("device_count", count.to_string())
-            .with_context("reason", "device_ordinal_out_of_range")
-            .with_context("remedy", "choose a device ordinal less than DeviceId::count()"));
+            return Err(Error::new_with(ErrorCode::IndexOutOfBounds, "DeviceId::new", "device ordinal out of range")
+                .with_detail("resource", "cuda_device")
+                .with_detail("ordinal", ordinal.to_string())
+                .with_detail("device_count", count.to_string())
+                .with_detail("reason", "device_ordinal_out_of_range")
+                .with_detail("remedy", "choose a device ordinal less than DeviceId::count()"));
         }
         Ok(Self(ordinal as i32))
     }

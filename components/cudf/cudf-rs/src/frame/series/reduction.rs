@@ -7,7 +7,7 @@
 use super::{context::default_execution_context, owned::Series};
 use crate::{
     core::{
-        error::{Error, ErrorCode, ErrorKind, Result},
+        error::{self, Error, ErrorCode, FACT_TYPE_ID, Result},
         scalar::Scalar,
         types::{CudfType, DataType, NullPolicy, TypeId},
     },
@@ -40,10 +40,8 @@ pub(crate) fn infer_reduce_output_type(input: &DataType, agg: &ReduceAgg, operat
             TypeId::Float32 => Ok(DataType::new(TypeId::Float32)),
             TypeId::Float64 => Ok(DataType::new(TypeId::Float64)),
             id if id.is_decimal() => Ok(*input),
-            _ => Err(Error::new(ErrorKind::InvalidInput, "unsupported type for sum reduction")
-                .with_code(ErrorCode::UnsupportedDtype)
-                .with_operation(operation)
-                .with_context("type_id", format!("{:?}", input.id()).to_lowercase())),
+            _ => Err(Error::new_with(ErrorCode::UnsupportedDtype, operation, "unsupported type for sum reduction")
+                .with_fact(FACT_TYPE_ID, input.id())),
         },
 
         // min / max / product: same type as input (preserves decimal scale)
@@ -71,22 +69,23 @@ pub(crate) fn scalar_to_optional_value<T: CudfType>(scalar: Scalar) -> Result<Op
 }
 
 fn scalar_to_usize_count(scalar: Scalar, operation: &'static str) -> Result<usize> {
-    if !scalar.is_valid().map_err(|e| e.with_operation(operation))? {
+    if !scalar.is_valid().map_err(|e| e.reanchor(operation))? {
         return Ok(0);
     }
 
-    let count = scalar.value::<i32>().map_err(|e| e.with_operation(operation))?;
+    let count = scalar.value::<i32>().map_err(|e| e.reanchor(operation))?;
     usize::try_from(count).map_err(|_| negative_distinct_count_error(operation, count))
 }
 
 fn negative_distinct_count_error(operation: &'static str, count: i32) -> Error {
-    Error::new(ErrorKind::InvariantViolation, "distinct count must be >= 0")
-        .with_code(ErrorCode::InvariantViolation)
-        .with_operation(operation)
-        .with_context("distinct_count", count.to_string())
-        .with_context("resource", "distinct_count")
-        .with_context("reason", "negative_count")
-        .with_context("remedy", "ensure the foreign reduction backend returns a non-negative distinct count")
+    error::foreign_invariant_violation(
+        operation,
+        "distinct count must be >= 0",
+        "distinct_count",
+        "negative_count",
+        "ensure the foreign reduction backend returns a non-negative distinct count",
+    )
+    .with_detail("distinct_count", count.to_string())
 }
 
 pub(crate) fn trigger_nunique_negative_distinct_count_for_test() -> Result<()> {

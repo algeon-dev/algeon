@@ -1,4 +1,4 @@
-use crate::core::error::{self, Error, ErrorCode, ErrorKind};
+use crate::core::error::{Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_KEYS_COUNT};
 
 pub(super) fn unsupported_sort_validation_error(
     operation: &'static str,
@@ -6,11 +6,9 @@ pub(super) fn unsupported_sort_validation_error(
     reason: &'static str,
     remedy: &'static str,
 ) -> Error {
-    Error::new(ErrorKind::InvalidInput, message)
-        .with_code(ErrorCode::UnsupportedOperation)
-        .with_operation(operation)
-        .with_context("reason", reason)
-        .with_context("remedy", remedy)
+    Error::new_with(ErrorCode::UnsupportedOperation, operation, message)
+        .with_detail("reason", reason)
+        .with_detail("remedy", remedy)
 }
 
 pub(super) fn sort_option_count_mismatch_error(
@@ -22,14 +20,13 @@ pub(super) fn sort_option_count_mismatch_error(
     actual_count: usize,
 ) -> Error {
     unsupported_sort_validation_error(operation, message, reason, remedy)
-        .with_context("resource", "sort_options")
-        .with_context("keys_count", keys_count.to_string())
-        .with_context("actual_count", actual_count.to_string())
+        .with_detail("resource", "sort_options")
+        .with_fact(FACT_KEYS_COUNT, keys_count)
+        .with_fact(FACT_ACTUAL_COUNT, actual_count)
 }
 
 pub(super) fn sort_key_count_limit_error(operation: &'static str, keys_count: usize) -> Error {
-    error::limit_validation_error(
-        ErrorKind::InvalidInput,
+    crate::core::error::limit_validation_error(
         operation,
         "number of sort keys exceeds i32::MAX",
         "sort_keys",

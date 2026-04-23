@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::owned::{DataFrame, derive_frame_domain_from_columns};
 use crate::{
     core::{
-        error::{Error, ErrorCode, ErrorKind, Result},
+        error::{Error, ErrorCode, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, Result},
         scalar::Scalar,
         types::DataType,
     },
@@ -49,15 +49,6 @@ where S: Into<String>
     }
 }
 
-fn missing_output_name_error(operation: &'static str) -> Error {
-    Error::new(ErrorKind::InvalidInput, "expression has no output name; use .alias() to name it")
-        .with_code(ErrorCode::UnsupportedOperation)
-        .with_operation(operation)
-        .with_context("resource", "output_name")
-        .with_context("reason", "missing_output_name")
-        .with_context("remedy", "use .alias(...) or provide an explicit (name, expr) pair")
-}
-
 impl DataFrame {
     /// Return a new DataFrame with a single column added or replaced.
     ///
@@ -82,15 +73,14 @@ impl DataFrame {
 
         if let Some(self_rows) = expected_rows {
             if col_rows != self_rows {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
+                return Err(Error::new_with(
+                    ErrorCode::ColumnLengthMismatch,
+                    "dataframe::with_column",
                     format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
                 )
-                .with_code(ErrorCode::ColumnLengthMismatch)
-                .with_operation("dataframe::with_column")
-                .with_context("column_name", name.to_string())
-                .with_context("actual_rows", col_rows.to_string())
-                .with_context("expected_rows", self_rows.to_string()));
+                .with_column(name.to_string())
+                .with_fact(FACT_ACTUAL_ROWS, col_rows)
+                .with_fact(FACT_EXPECTED_ROWS, self_rows));
             }
         }
 
@@ -146,15 +136,14 @@ impl DataFrame {
 
             if let Some(self_rows) = expected_rows {
                 if series_rows != self_rows {
-                    return Err(Error::new(
-                        ErrorKind::InvalidInput,
+                    return Err(Error::new_with(
+                        ErrorCode::ColumnLengthMismatch,
+                        "dataframe::assign",
                         format!("series '{}' has {} rows but DataFrame has {} rows", name, series_rows, self_rows),
                     )
-                    .with_code(ErrorCode::ColumnLengthMismatch)
-                    .with_operation("dataframe::assign")
-                    .with_context("column_name", name.to_string())
-                    .with_context("actual_rows", series_rows.to_string())
-                    .with_context("expected_rows", self_rows.to_string()));
+                    .with_column(name.to_string())
+                    .with_fact(FACT_ACTUAL_ROWS, series_rows)
+                    .with_fact(FACT_EXPECTED_ROWS, self_rows));
                 }
             } else {
                 expected_rows = Some(series_rows);
@@ -211,11 +200,16 @@ impl DataFrame {
         let names: Vec<String> = exprs
             .iter()
             .map(|(explicit_name, expr)| {
-                explicit_name
-                    .as_deref()
-                    .or_else(|| expr.output_name())
-                    .map(str::to_string)
-                    .ok_or_else(|| missing_output_name_error("dataframe::with_columns"))
+                explicit_name.as_deref().or_else(|| expr.output_name()).map(str::to_string).ok_or_else(|| {
+                    Error::new_with(
+                        ErrorCode::UnsupportedOperation,
+                        "dataframe::with_columns",
+                        "expression has no output name; use .alias() to name it",
+                    )
+                    .with_detail("resource", "output_name")
+                    .with_detail("reason", "missing_output_name")
+                    .with_detail("remedy", "use .alias(...) or provide an explicit (name, expr) pair")
+                })
             })
             .collect::<Result<_>>()?;
 

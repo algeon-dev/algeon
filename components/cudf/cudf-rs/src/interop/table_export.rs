@@ -1,4 +1,4 @@
-use super::{table_support::checked_column_index, *};
+use super::*;
 
 fn table_dimensions(view: &TableView<'_>, operation: &'static str) -> Result<(usize, usize), InteropError> {
     let num_rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
@@ -281,18 +281,18 @@ pub(super) fn transfer_from_owned_table_with_names(
 
     let table_semantic =
         SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
-    OwnedTableTransfer::try_new_with_semantic_columns(
-        table_semantic,
+    OwnedTableTransfer::try_new_with_semantic_columns(OwnedTableTransferParts {
+        table: table_semantic,
         columns,
         semantic_columns,
         // SAFETY: `to_static_bindings` depends on this retained owner to keep
         // the source table alive for the transfer lifetime.
-        to_static_bindings(operation, bindings)?,
-        to_static_readiness(operation, readiness)?,
-        owned_transfer_diagnostics(),
-        owned_transfer_release_contract(default_device),
-        OwnedTableTransferState::new(table),
-    )
+        bindings: to_static_bindings(operation, bindings)?,
+        readiness: to_static_readiness(operation, readiness)?,
+        diagnostics: owned_transfer_diagnostics(),
+        release_contract: owned_transfer_release_contract(default_device),
+        owner: OwnedTableTransferState::new(table),
+    })
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -346,16 +346,19 @@ pub(super) fn transfer_from_owned_table_with_names_and_runtime_release_synchroni
     let table_semantic =
         SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
     let (owner, releaser) = runtime_owned_table_owner_and_releaser(table, default_device, synchronization);
-    let transfer = OwnedTableTransfer::try_new_with_semantic_columns(
-        table_semantic,
+    let transfer = OwnedTableTransfer::try_new_with_semantic_columns(OwnedTableTransferParts {
+        table: table_semantic,
         columns,
         semantic_columns,
-        to_static_bindings(operation, bindings)?,
-        to_static_readiness(operation, readiness)?,
-        owned_transfer_diagnostics(),
-        owned_transfer_runtime_release_contract_with_synchronization(default_device, synchronization)?,
+        bindings: to_static_bindings(operation, bindings)?,
+        readiness: to_static_readiness(operation, readiness)?,
+        diagnostics: owned_transfer_diagnostics(),
+        release_contract: owned_transfer_runtime_release_contract_with_synchronization(
+            default_device,
+            synchronization,
+        )?,
         owner,
-    )
+    })
     .map_err(|error| error.with_context("operation", operation))?;
 
     Ok((transfer, releaser))

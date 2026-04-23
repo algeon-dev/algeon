@@ -8,7 +8,7 @@ use self::errors::{key_index_out_of_bounds_error, unsupported_stream_compaction_
 pub use crate::core::types::NullEquality;
 use crate::{
     core::{
-        error::{self, ErrorKind, Result},
+        error::{self, FACT_KEYS_COUNT, Result},
         table::{Table, TableView},
     },
     runtime::execution_domain::ExecutionDomain,
@@ -76,9 +76,7 @@ fn checked_key_indices_i32(input: &TableView<'_>, keys: &[usize], operation: &'s
             if key >= num_columns {
                 Err(key_index_out_of_bounds_error(operation, key, num_columns))
             } else {
-                i32::try_from(key).map_err(|_| {
-                    error::range_limit_error(ErrorKind::InvalidInput, operation, "column_index", "i32::MAX", key)
-                })
+                i32::try_from(key).map_err(|_| error::range_limit_error(operation, "column_index", "i32::MAX", key))
             }
         })
         .collect()
@@ -102,8 +100,8 @@ pub(crate) fn drop_nulls_impl(
             "negative_keep_threshold",
             "use keep_threshold >= 0",
         )
-        .with_context("keys_count", keys_i32.len().to_string())
-        .with_context("keep_threshold", keep_threshold.to_string()));
+        .with_fact(FACT_KEYS_COUNT, keys_i32.len())
+        .with_detail("keep_threshold", keep_threshold.to_string()));
     }
 
     let mut out = ptr::null_mut();
@@ -122,7 +120,7 @@ pub(crate) fn drop_nulls_impl(
             cudf_sys::cudf_drop_nulls(input.raw_handle(), keys_i32.as_ptr(), keys_count, keep_threshold, &mut out)
         },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [
@@ -176,7 +174,7 @@ pub(crate) fn distinct_impl(
             )
         },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [

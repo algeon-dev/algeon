@@ -43,7 +43,6 @@ impl PartitionedDataFrameExport {
     pub fn new(names: Vec<String>, columns: Vec<Column>) -> crate::Result<Self> {
         if names.len() != columns.len() {
             return Err(crate::core::schema::column_name_count_mismatch_error(
-                crate::ErrorKind::InvalidInput,
                 "interop::PartitionedDataFrameExport::new",
                 "number of names must equal number of columns",
                 names.len(),
@@ -61,15 +60,12 @@ impl PartitionedDataFrameExport {
         for (index, column) in columns.iter().enumerate().skip(1) {
             let rows = column.view()?.len()?;
             if rows != first_rows {
-                return Err(crate::Error::new(
-                    crate::ErrorKind::InvalidInput,
-                    format!("column {index} has {rows} rows but column 0 has {first_rows} rows"),
-                )
-                .with_code(crate::ErrorCode::ColumnLengthMismatch)
-                .with_operation("interop::PartitionedDataFrameExport::new")
-                .with_context("column_index", index.to_string())
-                .with_context("actual_rows", rows.to_string())
-                .with_context("expected_rows", first_rows.to_string()));
+                return Err(crate::core::error::row_count_mismatch_error(
+                    "interop::PartitionedDataFrameExport::new",
+                    index,
+                    rows,
+                    first_rows,
+                ));
             }
         }
 

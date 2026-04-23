@@ -46,7 +46,7 @@ use std::{
 
 use super::{device::DeviceId, device_guard::DeviceGuard, event::CudaEvent, stream::CudaStream};
 use crate::core::{
-    error::{self, Error, ErrorCode, ErrorKind, Result},
+    error::{self, DeviceIdFact, Error, ErrorCode, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
     memory::DeviceMemoryResource,
 };
 
@@ -66,9 +66,12 @@ pub(crate) struct ExecutionIdentity(NonZeroU64);
 impl ExecutionIdentity {
     fn new(value: u64) -> Result<Self> {
         NonZeroU64::new(value).map(Self).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidInput, "debug retained-provenance identity must be non-zero")
-                .with_operation("execution_domain::ExecutionIdentity::new")
-                .with_context("identity", value.to_string())
+            Error::new_with(
+                ErrorCode::InvariantViolation,
+                "execution_domain::ExecutionIdentity::new",
+                "debug retained-provenance identity must be non-zero",
+            )
+            .with_detail("identity", value.to_string())
         })
     }
 
@@ -85,14 +88,12 @@ impl ExecutionDomain {
         override_device: DeviceId,
         message: &'static str,
     ) -> Error {
-        Error::new(ErrorKind::InvalidInput, message)
-            .with_code(ErrorCode::RuntimeBindingMismatch)
-            .with_operation(operation)
-            .with_context("resource", resource)
-            .with_context("left_device", input_device.ordinal().to_string())
-            .with_context("right_device", override_device.ordinal().to_string())
-            .with_context("reason", "cross_device_borrowed_override")
-            .with_context(
+        Error::new_with(ErrorCode::RuntimeBindingMismatch, operation, message)
+            .with_fact(FACT_LEFT_DEVICE, DeviceIdFact(input_device.ordinal_raw()))
+            .with_fact(FACT_RIGHT_DEVICE, DeviceIdFact(override_device.ordinal_raw()))
+            .with_detail("resource", resource)
+            .with_detail("reason", "cross_device_borrowed_override")
+            .with_detail(
                 "remedy",
                 "borrow a stream or memory resource created on the same device as the input Runtime, or relocate the input into that Runtime first",
             )
@@ -117,7 +118,7 @@ impl ExecutionDomain {
                 "execution_domain::debug_explicit",
                 "debug explicit retained-provenance cache poisoned",
             )
-            .with_context("identity", identity.to_string())
+            .with_detail("identity", identity.to_string())
         })?;
         if let Some(domain) = cache.get(&identity) {
             return Ok(Arc::clone(domain));
@@ -171,7 +172,7 @@ impl ExecutionDomain {
     pub(crate) fn synchronize_for_host_visibility(&self, operation: &'static str) -> Result<()> {
         self.stream
             .synchronize()
-            .map_err(|e| e.with_operation(operation).with_context("sync_stream", self.debug_label()))
+            .map_err(|error| error.reanchor(operation).with_detail("sync_stream", self.debug_label()))
     }
 
     /// Insert a device-side ordering dependency from `source` into `target`.
@@ -190,24 +191,24 @@ impl ExecutionDomain {
         }
 
         let _guard = DeviceGuard::new(source.device).map_err(|e| {
-            e.with_operation(operation)
-                .with_context("source_domain", source.debug_label())
-                .with_context("target_domain", target.debug_label())
+            e.reanchor(operation)
+                .with_detail("source_domain", source.debug_label())
+                .with_detail("target_domain", target.debug_label())
         })?;
         let barrier = CudaEvent::new().map_err(|e| {
-            e.with_operation(operation)
-                .with_context("source_domain", source.debug_label())
-                .with_context("target_domain", target.debug_label())
+            e.reanchor(operation)
+                .with_detail("source_domain", source.debug_label())
+                .with_detail("target_domain", target.debug_label())
         })?;
         barrier.record(source.stream.as_ref()).map_err(|e| {
-            e.with_operation(operation)
-                .with_context("source_domain", source.debug_label())
-                .with_context("target_domain", target.debug_label())
+            e.reanchor(operation)
+                .with_detail("source_domain", source.debug_label())
+                .with_detail("target_domain", target.debug_label())
         })?;
         target.stream.wait_event(&barrier).map_err(|e| {
-            e.with_operation(operation)
-                .with_context("source_domain", source.debug_label())
-                .with_context("target_domain", target.debug_label())
+            e.reanchor(operation)
+                .with_detail("source_domain", source.debug_label())
+                .with_detail("target_domain", target.debug_label())
         })
     }
 
@@ -288,17 +289,16 @@ impl ExecutionDomain {
             return Ok(());
         }
 
-        Err(Error::new(
-            ErrorKind::InvalidInput,
+        Err(Error::new_with(
+            ErrorCode::CrossDeviceInputs,
+            operation,
             "cross-device operation requires explicit relocation into one runtime before execution",
         )
-        .with_code(ErrorCode::CrossDeviceInputs)
-        .with_operation(operation)
-        .with_context("left_domain", left.debug_label())
-        .with_context("right_domain", right.debug_label())
-        .with_context("left_device", left_device.to_string())
-        .with_context("right_device", right_device.to_string())
-        .with_context(
+        .with_fact(FACT_LEFT_DEVICE, DeviceIdFact(left_device))
+        .with_fact(FACT_RIGHT_DEVICE, DeviceIdFact(right_device))
+        .with_detail("left_domain", left.debug_label())
+        .with_detail("right_domain", right.debug_label())
+        .with_detail(
             "remedy",
             "use copy_into_runtime(...) to relocate all inputs into one Runtime before calling this operation",
         ))
@@ -315,13 +315,11 @@ impl ExecutionDomain {
             return Ok(());
         }
 
-        Err(Error::new(ErrorKind::InvalidInput, message)
-            .with_code(ErrorCode::CrossProvenanceInputs)
-            .with_operation(operation)
-            .with_context("left_domain", left.debug_label())
-            .with_context("right_domain", right.debug_label())
-            .with_context("left_device", left.device_snapshot().to_string())
-            .with_context("right_device", right.device_snapshot().to_string())
-            .with_context("remedy", remedy))
+        Err(Error::new_with(ErrorCode::CrossProvenanceInputs, operation, message)
+            .with_fact(FACT_LEFT_DEVICE, DeviceIdFact(left.device_snapshot()))
+            .with_fact(FACT_RIGHT_DEVICE, DeviceIdFact(right.device_snapshot()))
+            .with_detail("left_domain", left.debug_label())
+            .with_detail("right_domain", right.debug_label())
+            .with_detail("remedy", remedy))
     }
 }

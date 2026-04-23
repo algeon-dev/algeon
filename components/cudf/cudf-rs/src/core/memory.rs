@@ -165,7 +165,7 @@ impl DeviceMemoryResource {
         let raw_maximum_pool_size = Self::raw_maximum_pool_size(maximum_pool_size);
         let mut handle = ptr::null_mut();
         // SAFETY: handle is initialized to null and set by the C shim on success.
-        error::check_status_in_with(
+        error::check_status_in_with_details(
             unsafe {
                 cudf_sys::cudf_memory_resource_create_pool(initial_pool_size, raw_maximum_pool_size, &mut handle)
             },

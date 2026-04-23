@@ -244,11 +244,13 @@ fn prepared_host_column_projection_with_current_supported_child_projection_from_
 
     let base_child_offset = host_offsets[root_offset];
     if base_child_offset < 0 {
-        return Err(InteropError::new(
-            InteropErrorKind::InvalidView,
+        return Err(invalid_view_contract_error(
+            operation,
             "list offsets child must not expose negative offsets",
+            "offsets_range",
+            "negative_offset_value",
+            "ensure projected list offsets are non-negative before host export",
         )
-        .with_context("operation", operation)
         .with_context("offset_index", root_offset.to_string())
         .with_context("offset_value", base_child_offset.to_string()));
     }
@@ -256,11 +258,13 @@ fn prepared_host_column_projection_with_current_supported_child_projection_from_
     let mut previous = base_child_offset;
     for (position, raw_offset) in host_offsets[root_offset..=root_end].iter().copied().enumerate() {
         if raw_offset < previous {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
+            return Err(invalid_view_contract_error(
+                operation,
                 "list offsets child must be monotonically non-decreasing",
+                "offsets_range",
+                "non_monotonic_offsets",
+                "ensure projected list offsets are monotonically non-decreasing before host export",
             )
-            .with_context("operation", operation)
             .with_context("offset_index", (root_offset + position).to_string())
             .with_context("previous_offset", previous.to_string())
             .with_context("offset_value", raw_offset.to_string()));
@@ -354,12 +358,7 @@ pub(super) fn prepared_host_column_projection_from_view(
 
         let child_count = num_children;
         if child_count == 0 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "struct column view must expose at least one child column",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "struct"));
+            return Err(projection_struct_requires_child_error(operation));
         }
 
         let mut next_column_id = next_column_id;

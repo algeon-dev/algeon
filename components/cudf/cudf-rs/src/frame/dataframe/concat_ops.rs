@@ -4,7 +4,10 @@ use super::owned::DataFrame;
 use crate::{
     core::{
         column::Column,
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{
+            self, Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_COLUMN_INDEX, FACT_EXPECTED_COUNT, FACT_LEFT_TYPE_ID,
+            FACT_RIGHT_TYPE_ID, Result,
+        },
         types::DataType,
     },
     frame::series::Series,
@@ -77,21 +80,20 @@ fn concat_by_name_schema(
 
     for frame in std::iter::once(self_df).chain(others.iter().copied()) {
         for name in output_names {
-            match frame.get(name).map_err(|e| e.with_operation(operation))? {
+            match frame.get(name).map_err(|e| e.reanchor(operation))? {
                 Some(series) => {
-                    let dtype = series.dtype().map_err(|e| e.with_operation(operation))?;
+                    let dtype = series.dtype().map_err(|e| e.reanchor(operation))?;
                     if let Some(existing) = dtypes.get(name) {
                         if *existing != dtype {
-                            return Err(Error::new(
-                                ErrorKind::InvalidInput,
+                            return Err(Error::new_with(
+                                ErrorCode::TypeMismatch,
+                                operation,
                                 format!("column '{name}' has incompatible dtypes for concat_by_name"),
                             )
-                            .with_code(ErrorCode::TypeMismatch)
-                            .with_operation(operation)
-                            .with_context("column_name", name.clone())
-                            .with_context("left_type_id", format!("{:?}", existing.id()).to_lowercase())
-                            .with_context("right_type_id", format!("{:?}", dtype.id()).to_lowercase())
-                            .with_context("schema_alignment", format!("{alignment:?}").to_lowercase()));
+                            .with_column(name.clone())
+                            .with_fact(FACT_LEFT_TYPE_ID, existing.id())
+                            .with_fact(FACT_RIGHT_TYPE_ID, dtype.id())
+                            .with_detail("schema_alignment", format!("{alignment:?}").to_lowercase()));
                         }
                     } else {
                         dtypes.insert(name.clone(), dtype);
@@ -99,7 +101,7 @@ fn concat_by_name_schema(
                 },
                 None if alignment == SchemaAlignment::Exact => {
                     return Err(missing_column_error(operation, name)
-                        .with_context("schema_alignment", format!("{alignment:?}").to_lowercase()));
+                        .with_detail("schema_alignment", format!("{alignment:?}").to_lowercase()));
                 },
                 None => {},
             }
@@ -111,10 +113,10 @@ fn concat_by_name_schema(
 
 fn concat_by_name_missing_planned_dtype_error(operation: &'static str, column_name: &str) -> Error {
     error::invariant_violation(operation, "aligned concat_by_name is missing a planned dtype")
-        .with_context("column_name", column_name.to_string())
-        .with_context("resource", "concat_by_name_schema")
-        .with_context("reason", "missing_planned_dtype")
-        .with_context("remedy", "ensure concat_by_name schema planning records a dtype for every output column")
+        .with_column(column_name.to_string())
+        .with_detail("resource", "concat_by_name_schema")
+        .with_detail("reason", "missing_planned_dtype")
+        .with_detail("remedy", "ensure concat_by_name schema planning records a dtype for every output column")
 }
 
 pub(crate) fn trigger_concat_by_name_missing_planned_dtype_for_test() -> Result<()> {
@@ -137,23 +139,23 @@ impl DataFrame {
         let mut columns = Vec::with_capacity(output_names.len());
 
         for name in output_names {
-            if let Some(series) = self.get(name).map_err(|e| e.with_operation(operation))? {
+            if let Some(series) = self.get(name).map_err(|e| e.reanchor(operation))? {
                 columns.push((name.clone(), series));
                 continue;
             }
 
             if alignment == SchemaAlignment::Exact {
                 return Err(missing_column_error(operation, name)
-                    .with_context("schema_alignment", format!("{alignment:?}").to_lowercase()));
+                    .with_detail("schema_alignment", format!("{alignment:?}").to_lowercase()));
             }
 
             let dtype = dtypes.get(name).ok_or_else(|| concat_by_name_missing_planned_dtype_error(operation, name))?;
             let nulls = Column::nulls_in_domain(*dtype, self.row_count, &self.domain, operation)
-                .map_err(|e| e.with_operation(operation))?;
-            columns.push((name.clone(), Series::from_column(nulls).map_err(|e| e.with_operation(operation))?));
+                .map_err(|e| e.reanchor(operation))?;
+            columns.push((name.clone(), Series::from_column(nulls).map_err(|e| e.reanchor(operation))?));
         }
 
-        DataFrame::from_columns(columns).map_err(|e| e.with_operation(operation))
+        DataFrame::from_columns(columns).map_err(|e| e.reanchor(operation))
     }
 
     /// Concatenate two DataFrames row-wise.
@@ -279,26 +281,26 @@ impl DataFrame {
 
     fn validate_concat_schema(&self, other: &DataFrame, operation: &'static str) -> Result<()> {
         if self.columns.len() != other.columns.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedOperation,
+                operation,
                 "cannot concatenate DataFrames with different column counts",
             )
-            .with_code(ErrorCode::UnsupportedOperation)
-            .with_operation(operation)
-            .with_context("left_columns", self.columns.len().to_string())
-            .with_context("right_columns", other.columns.len().to_string()));
+            .with_fact(FACT_EXPECTED_COUNT, self.columns.len())
+            .with_fact(FACT_ACTUAL_COUNT, other.columns.len())
+            .with_detail("left_columns", self.columns.len().to_string())
+            .with_detail("right_columns", other.columns.len().to_string()));
         }
 
         for (left_name, right_name) in self.columns.keys().zip(other.columns.keys()) {
             if left_name != right_name {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
+                return Err(Error::new_with(
+                    ErrorCode::UnsupportedOperation,
+                    operation,
                     format!("schema mismatch: column '{}' vs '{}'", left_name, right_name),
                 )
-                .with_code(ErrorCode::UnsupportedOperation)
-                .with_operation(operation)
-                .with_context("left_column", left_name.clone())
-                .with_context("right_column", right_name.clone()));
+                .with_detail("left_column", left_name.clone())
+                .with_detail("right_column", right_name.clone()));
             }
         }
 
@@ -306,16 +308,15 @@ impl DataFrame {
             let left_type = left_col.view()?.data_type()?.id();
             let right_type = right_col.view()?.data_type()?.id();
             if left_type != right_type {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
+                return Err(Error::new_with(
+                    ErrorCode::TypeMismatch,
+                    operation,
                     "cannot concatenate DataFrames with mismatched column types",
                 )
-                .with_code(ErrorCode::TypeMismatch)
-                .with_operation(operation)
-                .with_context("column_index", i.to_string())
-                .with_context("column_name", name.to_string())
-                .with_context("left_type_id", format!("{:?}", left_type).to_lowercase())
-                .with_context("right_type_id", format!("{:?}", right_type).to_lowercase()));
+                .with_fact(FACT_COLUMN_INDEX, i)
+                .with_column(name.to_string())
+                .with_fact(FACT_LEFT_TYPE_ID, left_type)
+                .with_fact(FACT_RIGHT_TYPE_ID, right_type));
             }
         }
 

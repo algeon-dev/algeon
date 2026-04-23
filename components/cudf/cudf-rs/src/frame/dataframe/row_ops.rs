@@ -4,7 +4,8 @@ use super::owned::DataFrame;
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::Result,
+        row_range,
     },
     frame::series::Series,
     internal::{hash::fast_index_map_with_capacity, resolve::missing_column_error},
@@ -152,29 +153,7 @@ impl DataFrame {
     }
 
     fn validate_mask_view(&self, mask: &ColumnView<'_>, operation: &'static str) -> Result<()> {
-        let mask_dtype = mask.data_type()?;
-        if mask_dtype.id() != crate::core::types::TypeId::Bool8 {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!("filter mask must be Bool8, got {:?}", mask_dtype.id()),
-            )
-            .with_code(ErrorCode::TypeMismatch)
-            .with_operation(operation)
-            .with_context("left_type_id", format!("{:?}", mask_dtype.id()).to_lowercase())
-            .with_context("right_type_id", "bool8"));
-        }
-        let mask_len = mask.len()?;
-        if mask_len != self.row_count {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!("filter mask length ({}) does not match DataFrame row count ({})", mask_len, self.row_count),
-            )
-            .with_code(ErrorCode::ColumnLengthMismatch)
-            .with_operation(operation)
-            .with_context("actual_rows", mask_len.to_string())
-            .with_context("expected_rows", self.row_count.to_string()));
-        }
-        Ok(())
+        filter::validate_boolean_mask(mask, self.row_count, "DataFrame row count", operation)
     }
 }
 
@@ -280,13 +259,7 @@ impl DataFrame {
             return self.empty_with_same_schema_in_domain(output_domain);
         }
 
-        let start_i32: i32 = start.try_into().map_err(|_| error::row_range_limit_error(operation, "start", start))?;
-        let end = start.checked_add(len).ok_or_else(|| error::row_range_overflow_error(operation, start, len))?;
-        let end_i32: i32 = end.try_into().map_err(|_| {
-            error::row_range_limit_error(operation, "end", end).with_context("start_row", start.to_string())
-        })?;
-        let indices: Vec<i32> = (start_i32..end_i32).collect();
-        let map = Column::from_slice_in_domain(&indices, &output_domain)?;
+        let map = row_range::gather_map_in_domain(start, len, &output_domain, operation)?;
         let map_view = map.view()?;
         ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, map_view.execution_domain(), operation)?;
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {

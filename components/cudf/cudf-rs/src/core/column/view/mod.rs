@@ -20,16 +20,15 @@ pub(crate) use testing_hooks::{
 use super::{convert::copy_view_to_owned, device_slice::DeviceSlice, owned::Column};
 use crate::{
     core::{
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{
+            self, Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_EXPECTED_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID,
+            FACT_TYPE_ID, Result,
+        },
         types::{CudfType, DataType, TypeId},
     },
     ops::search,
     runtime::execution_domain::ExecutionDomain,
 };
-
-fn type_id_label(type_id: TypeId) -> String {
-    format!("{type_id:?}").to_lowercase()
-}
 
 fn fixed_width_host_byte_range_overflow_error(
     operation: &'static str,
@@ -37,18 +36,16 @@ fn fixed_width_host_byte_range_overflow_error(
     elem_size_bytes: usize,
     type_id: TypeId,
 ) -> Error {
-    Error::new(ErrorKind::InvalidInput, "host byte range overflowed")
-        .with_code(ErrorCode::UnsupportedOperation)
-        .with_operation(operation)
-        .with_context("resource", "host_byte_range")
-        .with_context("reason", "size_overflowed_usize")
-        .with_context(
+    Error::new_with(ErrorCode::UnsupportedOperation, operation, "host byte range overflowed")
+        .with_fact(FACT_TYPE_ID, type_id)
+        .with_detail("resource", "host_byte_range")
+        .with_detail("reason", "size_overflowed_usize")
+        .with_detail(
             "remedy",
             "reduce row_count or choose a smaller fixed-width type so the active host byte range fits within usize",
         )
-        .with_context("row_count", row_count.to_string())
-        .with_context("elem_size_bytes", elem_size_bytes.to_string())
-        .with_context("type_id", type_id_label(type_id))
+        .with_detail("row_count", row_count.to_string())
+        .with_detail("elem_size_bytes", elem_size_bytes.to_string())
 }
 
 /// A non-owning, immutable view of a GPU column.
@@ -87,9 +84,8 @@ impl<'a> ColumnView<'a> {
 
     pub(crate) fn duplicate_with_operation(&self, operation: &'static str) -> Result<Self> {
         let row_count = self.len()?;
-        let len = i32::try_from(row_count).map_err(|_| {
-            error::range_limit_error(ErrorKind::InvalidInput, operation, "row_count", "i32::MAX", row_count)
-        })?;
+        let len = i32::try_from(row_count)
+            .map_err(|_| error::range_limit_error(operation, "row_count", "i32::MAX", row_count))?;
 
         let mut duplicated = ptr::null_mut();
         error::check_status_in(
@@ -144,7 +140,7 @@ impl<'a> ColumnView<'a> {
         .map_err(classify_column_view_metadata_error)?;
         usize::try_from(out).map_err(|_| {
             foreign_column_view_metadata_contract_error("column_view::len", "FFI returned negative column size")
-                .with_context("raw_size", out.to_string())
+                .with_detail("raw_size", out.to_string())
         })
     }
 
@@ -164,7 +160,7 @@ impl<'a> ColumnView<'a> {
         .map_err(classify_column_view_metadata_error)?;
         usize::try_from(out).map_err(|_| {
             foreign_column_view_metadata_contract_error("column_view::null_count", "column null count must be >= 0")
-                .with_context("null_count", out.to_string())
+                .with_detail("null_count", out.to_string())
         })
     }
 
@@ -191,7 +187,7 @@ impl<'a> ColumnView<'a> {
         .map_err(classify_column_view_metadata_error)?;
         usize::try_from(out).map_err(|_| {
             foreign_column_view_metadata_contract_error("column_view::num_children", "column child count must be >= 0")
-                .with_context("num_children", out.to_string())
+                .with_detail("num_children", out.to_string())
         })
     }
 
@@ -199,16 +195,17 @@ impl<'a> ColumnView<'a> {
     pub fn child(&self, index: usize) -> Result<ColumnView<'a>> {
         let num_children = self.num_children()?;
         if index >= num_children {
-            return Err(Error::new(ErrorKind::InvalidInput, "column child index out of bounds")
-                .with_code(ErrorCode::IndexOutOfBounds)
-                .with_operation("column_view::child")
-                .with_context("child_index", index.to_string())
-                .with_context("num_children", num_children.to_string()));
+            return Err(Error::new_with(
+                ErrorCode::IndexOutOfBounds,
+                "column_view::child",
+                "column child index out of bounds",
+            )
+            .with_detail("child_index", index.to_string())
+            .with_detail("num_children", num_children.to_string()));
         }
 
-        let index = i32::try_from(index).map_err(|_| {
-            error::range_limit_error(ErrorKind::InvalidInput, "column_view::child", "child_index", "i32::MAX", index)
-        })?;
+        let index = i32::try_from(index)
+            .map_err(|_| error::range_limit_error("column_view::child", "child_index", "i32::MAX", index))?;
 
         let mut child_handle = ptr::null_mut();
         // SAFETY: self.handle is valid and the child index is validated above.
@@ -284,7 +281,7 @@ impl<'a> ColumnView<'a> {
 
     fn validate_string_view_layout_for_host_materialization(&self, operation: &'static str) -> Result<()> {
         let num_children =
-            self.num_children().map_err(|e| classify_string_view_contract_error(e).with_operation(operation))?;
+            self.num_children().map_err(|e| classify_string_view_contract_error(e).reanchor(operation))?;
         if num_children >= 1 {
             return Ok(());
         }
@@ -293,9 +290,9 @@ impl<'a> ColumnView<'a> {
             "column_view::string_chars_ptr_and_size",
             "STRING column view must expose offsets and chars children",
         )
-        .with_context("expected_count", ">=1")
-        .with_context("actual_count", num_children.to_string())
-        .with_operation(operation))
+        .with_fact(FACT_EXPECTED_COUNT, 1usize)
+        .with_fact(FACT_ACTUAL_COUNT, num_children)
+        .reanchor(operation))
     }
 
     pub(crate) fn null_mask_ptr(&self) -> Result<Option<*const c_void>> {
@@ -333,11 +330,13 @@ impl<'a> ColumnView<'a> {
     pub fn to_vec<T: CudfType>(&self) -> Result<Vec<T>> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
-            return Err(Error::new(ErrorKind::InvalidInput, "column type does not match requested type")
-                .with_code(ErrorCode::TypeMismatch)
-                .with_operation("column_view::to_vec")
-                .with_context("left_type_id", format!("{:?}", dt.id()).to_lowercase())
-                .with_context("right_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                "column_view::to_vec",
+                "column type does not match requested type",
+            )
+            .with_fact(FACT_LEFT_TYPE_ID, dt.id())
+            .with_fact(FACT_RIGHT_TYPE_ID, T::TYPE_ID));
         }
 
         let size = self.len()?;
@@ -402,10 +401,12 @@ impl<'a> ColumnView<'a> {
         let dt = self.data_type()?;
         let is_one_byte = matches!(dt.id(), TypeId::Bool8 | TypeId::Int8 | TypeId::UInt8);
         if !is_one_byte {
-            return Err(Error::new(ErrorKind::InvalidInput, "to_raw_bytes requires a 1-byte type")
-                .with_code(ErrorCode::UnsupportedDtype)
-                .with_operation("column_view::to_raw_bytes")
-                .with_context("type_id", format!("{:?}", dt.id()).to_lowercase()));
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                "column_view::to_raw_bytes",
+                "to_raw_bytes requires a 1-byte type",
+            )
+            .with_fact(FACT_TYPE_ID, dt.id()));
         }
 
         let size = self.len()?;
@@ -438,9 +439,13 @@ impl<'a> ColumnView<'a> {
 
         let boxed: Box<dyn std::any::Any> = Box::new(bool_values);
         boxed.downcast::<Vec<Option<T>>>().map(|typed| *typed).map_err(|_| {
-            Error::new(ErrorKind::InvalidInput, "internal bool materialization helper requires T = bool")
-                .with_operation("column_view::to_optional_vec")
-                .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase())
+            Error::new_with(
+                ErrorCode::InvariantViolation,
+                "column_view::to_optional_vec",
+                "internal bool materialization helper requires T = bool",
+            )
+            .with_fact(FACT_TYPE_ID, T::TYPE_ID)
+            .with_detail("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase())
         })
     }
 
@@ -457,15 +462,20 @@ impl<'a> ColumnView<'a> {
         }
 
         let elem_size = usize::try_from(dt.id().size_in_bytes()?.ok_or_else(|| {
-            Error::new(ErrorKind::InvalidInput, "to_fixed_width_host_bytes requires a fixed-width type")
-                .with_code(ErrorCode::UnsupportedDtype)
-                .with_operation("column_view::to_fixed_width_host_bytes")
-                .with_context("type_id", format!("{:?}", dt.id()).to_lowercase())
+            Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                "column_view::to_fixed_width_host_bytes",
+                "to_fixed_width_host_bytes requires a fixed-width type",
+            )
+            .with_fact(FACT_TYPE_ID, dt.id())
         })?)
         .map_err(|_| {
-            Error::new(ErrorKind::InvalidInput, "fixed-width element size must be >= 0")
-                .with_operation("column_view::to_fixed_width_host_bytes")
-                .with_context("type_id", format!("{:?}", dt.id()).to_lowercase())
+            Error::new_with(
+                ErrorCode::ForeignInvariantViolation,
+                "column_view::to_fixed_width_host_bytes",
+                "fixed-width element size must be >= 0",
+            )
+            .with_fact(FACT_TYPE_ID, dt.id())
         })?;
 
         let size = self.len()?;
@@ -498,11 +508,11 @@ impl<'a> ColumnView<'a> {
     }
 
     fn to_host_null_mask_bytes_with_operation(&self, operation: &'static str) -> Result<Option<Vec<u8>>> {
-        if !self.nullable().map_err(|e| e.with_operation(operation))? {
+        if !self.nullable().map_err(|e| e.reanchor(operation))? {
             return Ok(None);
         }
 
-        let size = self.len().map_err(|e| e.with_operation(operation))?;
+        let size = self.len().map_err(|e| e.reanchor(operation))?;
         let mask_bytes = size.div_ceil(8);
         // Ensure we allocate at least the bitmask alignment size that cudf expects.
         // cudf pads to 64-byte boundaries, so allocate enough.
@@ -557,7 +567,7 @@ impl<'a> ColumnView<'a> {
             return Ok(None);
         };
 
-        let size = self.len().map_err(|e| e.with_operation("column_view::to_host_validity"))?;
+        let size = self.len().map_err(|e| e.reanchor("column_view::to_host_validity"))?;
         let validity: Vec<bool> = (0..size).map(|i| (mask[i / 8] >> (i % 8)) & 1 != 0).collect();
         Ok(Some(validity))
     }
@@ -576,7 +586,7 @@ impl<'a> ColumnView<'a> {
     /// may synchronize the bound execution domain before returning.
     pub fn to_strings_lossy(&self) -> Result<Vec<String>> {
         let strings = self.to_strings_host_raw("column_view::to_strings_lossy")?;
-        match self.to_host_validity().map_err(|e| e.with_operation("column_view::to_strings_lossy"))? {
+        match self.to_host_validity().map_err(|e| e.reanchor("column_view::to_strings_lossy"))? {
             None => Ok(strings),
             Some(valid) => Ok(strings
                 .into_iter()
@@ -589,11 +599,9 @@ impl<'a> ColumnView<'a> {
     fn to_strings_host_raw(&self, operation: &'static str) -> Result<Vec<String>> {
         let dt = self.data_type()?;
         if dt.id() != TypeId::String {
-            return Err(Error::new(ErrorKind::InvalidInput, "column type is not STRING")
-                .with_code(ErrorCode::TypeMismatch)
-                .with_operation(operation)
-                .with_context("left_type_id", format!("{:?}", dt.id()).to_lowercase())
-                .with_context("right_type_id", format!("{:?}", TypeId::String).to_lowercase()));
+            return Err(Error::new_with(ErrorCode::TypeMismatch, operation, "column type is not STRING")
+                .with_fact(FACT_LEFT_TYPE_ID, dt.id())
+                .with_fact(FACT_RIGHT_TYPE_ID, TypeId::String));
         }
 
         if self.offset()? != 0 {
@@ -613,10 +621,10 @@ impl<'a> ColumnView<'a> {
         let offsets_count = size + 1;
         let mut offsets = vec![0i32; offsets_count];
         let offsets_buf_size = std::mem::size_of_val(offsets.as_slice());
-        let (_, chars_size) = self.string_chars_ptr_and_size().map_err(|e| e.with_operation(operation))?;
+        let (_, chars_size) = self.string_chars_ptr_and_size().map_err(|e| e.reanchor(operation))?;
         let expected_total_chars_bytes = i32::try_from(chars_size).map_err(|_| {
             foreign_string_view_contract_error(operation, "string chars span exceeds i32::MAX")
-                .with_context("chars_size", chars_size.to_string())
+                .with_detail("chars_size", chars_size.to_string())
         })?;
         let mut chars = vec![0u8; chars_size];
         let exec_options = self.domain.exec_options_raw();
@@ -647,8 +655,8 @@ impl<'a> ColumnView<'a> {
                 operation,
                 "string chars size changed during host materialization",
             )
-            .with_context("expected_total_chars_bytes", expected_total_chars_bytes.to_string())
-            .with_context("actual_total_chars_bytes", total_chars_bytes.to_string()));
+            .with_detail("expected_total_chars_bytes", expected_total_chars_bytes.to_string())
+            .with_detail("actual_total_chars_bytes", total_chars_bytes.to_string()));
         }
 
         // Parse strings from offsets + chars
@@ -656,20 +664,20 @@ impl<'a> ColumnView<'a> {
         for i in 0..size {
             let start = usize::try_from(offsets[i]).map_err(|_| {
                 foreign_string_view_contract_error(operation, "string offset is negative")
-                    .with_context("row", i.to_string())
-                    .with_context("offset_value", offsets[i].to_string())
+                    .with_detail("row", i.to_string())
+                    .with_detail("offset_value", offsets[i].to_string())
             })?;
             let end = usize::try_from(offsets[i + 1]).map_err(|_| {
                 foreign_string_view_contract_error(operation, "string offset is negative")
-                    .with_context("row", (i + 1).to_string())
-                    .with_context("offset_value", offsets[i + 1].to_string())
+                    .with_detail("row", (i + 1).to_string())
+                    .with_detail("offset_value", offsets[i + 1].to_string())
             })?;
             let s = std::str::from_utf8(&chars[start..end]).map_err(|e| {
                 foreign_string_view_contract_error(
                     operation,
                     format!("invalid UTF-8 in string column at row {}: {}", i, e),
                 )
-                .with_context("row", i.to_string())
+                .with_detail("row", i.to_string())
             })?;
             result.push(s.to_string());
         }
@@ -694,7 +702,7 @@ impl<'a> ColumnView<'a> {
     /// column type is not `STRING`.
     pub fn to_optional_strings(&self) -> Result<Vec<Option<String>>> {
         let strings = self.to_strings_host_raw("column_view::to_optional_strings")?;
-        match self.to_host_validity().map_err(|e| e.with_operation("column_view::to_optional_strings"))? {
+        match self.to_host_validity().map_err(|e| e.reanchor("column_view::to_optional_strings"))? {
             None => Ok(strings.into_iter().map(Some).collect()),
             Some(valid) => Ok(strings.into_iter().zip(valid).map(|(s, v)| if v { Some(s) } else { None }).collect()),
         }
@@ -737,11 +745,13 @@ impl<'a> ColumnView<'a> {
     pub fn device_slice<T: CudfType>(&self) -> Result<DeviceSlice<'_>> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
-            return Err(Error::new(ErrorKind::InvalidInput, "column type does not match requested type")
-                .with_code(ErrorCode::TypeMismatch)
-                .with_operation("column_view::device_slice")
-                .with_context("left_type_id", format!("{:?}", dt.id()).to_lowercase())
-                .with_context("right_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                "column_view::device_slice",
+                "column type does not match requested type",
+            )
+            .with_fact(FACT_LEFT_TYPE_ID, dt.id())
+            .with_fact(FACT_RIGHT_TYPE_ID, T::TYPE_ID));
         }
 
         let base_ptr = self.device_data_ptr()?;
@@ -774,21 +784,23 @@ impl ColumnView<'_> {
     pub fn isin(&self, values: &ColumnView<'_>) -> Result<Column> {
         let input_type_id = match self.data_type() {
             Ok(dt) => dt.id(),
-            Err(e) => return Err(e.with_operation("column_view::isin")),
+            Err(e) => return Err(e.reanchor("column_view::isin")),
         };
         let input_type_id_str = format!("{:?}", input_type_id).to_lowercase();
 
-        let values_type_id = values.data_type().map_err(|e| {
-            e.with_operation("column_view::isin").with_context("left_type_id", input_type_id_str.clone())
-        })?;
+        let values_type_id = values
+            .data_type()
+            .map_err(|e| e.reanchor("column_view::isin").with_detail("input_type_id", input_type_id_str.clone()))?;
         let values_type_id_str = format!("{:?}", values_type_id.id()).to_lowercase();
 
         if input_type_id != values_type_id.id() {
-            return Err(Error::new(ErrorKind::InvalidInput, "isin requires both inputs to have the same dtype")
-                .with_code(ErrorCode::TypeMismatch)
-                .with_operation("column_view::isin")
-                .with_context("left_type_id", input_type_id_str.clone())
-                .with_context("right_type_id", values_type_id_str.clone()));
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                "column_view::isin",
+                "isin requires both inputs to have the same dtype",
+            )
+            .with_fact(FACT_LEFT_TYPE_ID, input_type_id)
+            .with_fact(FACT_RIGHT_TYPE_ID, values_type_id.id()));
         }
 
         ExecutionDomain::require_same_device_for_mixed_inputs(
@@ -797,23 +809,23 @@ impl ColumnView<'_> {
             "column_view::isin",
         )
         .map_err(|e| {
-            e.with_context("left_type_id", input_type_id_str.clone())
-                .with_context("right_type_id", values_type_id_str.clone())
+            e.with_detail("input_type_id", input_type_id_str.clone())
+                .with_detail("values_type_id", values_type_id_str.clone())
         })?;
 
         if !ExecutionDomain::same_provenance(values.execution_domain(), &self.domain) {
             ExecutionDomain::insert_stream_dependency(values.execution_domain(), &self.domain, "column_view::isin")
                 .map_err(|e| {
-                    e.with_context("left_type_id", input_type_id_str.clone())
-                        .with_context("right_type_id", values_type_id_str.clone())
+                    e.with_detail("input_type_id", input_type_id_str.clone())
+                        .with_detail("values_type_id", values_type_id_str.clone())
                 })?;
         }
 
         let exec_options = self.domain.exec_options_raw();
         search::contains_impl(values, self, &self.domain, Some(&exec_options), "column_view::isin").map_err(|e| {
-            e.with_operation("column_view::isin")
-                .with_context("left_type_id", input_type_id_str)
-                .with_context("right_type_id", values_type_id_str)
+            e.reanchor("column_view::isin")
+                .with_detail("input_type_id", input_type_id_str)
+                .with_detail("values_type_id", values_type_id_str)
         })
     }
 }

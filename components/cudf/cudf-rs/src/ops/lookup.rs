@@ -20,17 +20,16 @@ use crate::{
     Series,
     core::{
         column::{Column, ColumnView},
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{
+            self, Error, ErrorCode, FACT_DISTINCT_KEYS_COUNT, FACT_KEYS_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID,
+            FACT_TYPE_ID, Result,
+        },
         table::TableView,
         types::{DataType, TypeId},
     },
     ops::{copying, stream_compaction},
     runtime::execution_domain::ExecutionDomain,
 };
-
-fn type_label(type_id: TypeId) -> String {
-    format!("{:?}", type_id).to_lowercase()
-}
 
 struct ProbeMetadata {
     input_type_id: TypeId,
@@ -49,12 +48,12 @@ impl ProbeMetadata {
         values: &ColumnView<'_>,
         operation: &'static str,
     ) -> Result<Self> {
-        let input_dtype = input.data_type().map_err(|e| e.with_operation(operation))?;
-        let keys_dtype = keys.data_type().map_err(|e| e.with_operation(operation))?;
-        let values_dtype = values.data_type().map_err(|e| e.with_operation(operation))?;
-        let input_count = input.len().map_err(|e| e.with_operation(operation))?;
-        let keys_count = keys.len().map_err(|e| e.with_operation(operation))?;
-        let values_count = values.len().map_err(|e| e.with_operation(operation))?;
+        let input_dtype = input.data_type().map_err(|e| e.reanchor_if_needed(operation))?;
+        let keys_dtype = keys.data_type().map_err(|e| e.reanchor_if_needed(operation))?;
+        let values_dtype = values.data_type().map_err(|e| e.reanchor_if_needed(operation))?;
+        let input_count = input.len().map_err(|e| e.reanchor_if_needed(operation))?;
+        let keys_count = keys.len().map_err(|e| e.reanchor_if_needed(operation))?;
+        let values_count = values.len().map_err(|e| e.reanchor_if_needed(operation))?;
 
         Ok(Self {
             input_type_id: input_dtype.id(),
@@ -68,25 +67,21 @@ impl ProbeMetadata {
     }
 
     fn decorate(&self, err: Error, operation: &'static str) -> Error {
-        err.with_operation(operation)
-            .with_context("left_type_id", type_label(self.input_type_id))
-            .with_context("right_type_id", type_label(self.keys_type_id))
-            .with_context("type_id", type_label(self.value_type_id))
-            .with_context("input_count", self.input_count.to_string())
-            .with_context("keys_count", self.keys_count.to_string())
-            .with_context("values_count", self.values_count.to_string())
-    }
-
-    fn invalid(&self, operation: &'static str, message: impl Into<String>) -> Error {
-        self.decorate(Error::new(ErrorKind::InvalidInput, message.into()), operation)
+        let err = err.reanchor_if_needed(operation);
+        let err = err.with_fact_if_absent(FACT_LEFT_TYPE_ID, self.input_type_id);
+        let err = err.with_fact_if_absent(FACT_RIGHT_TYPE_ID, self.keys_type_id);
+        let err = err.with_fact_if_absent(FACT_TYPE_ID, self.value_type_id);
+        let err = err.with_fact_if_absent(FACT_KEYS_COUNT, self.keys_count);
+        let err = err.with_detail_if_absent("input_count", self.input_count.to_string());
+        err.with_detail_if_absent("values_count", self.values_count.to_string())
     }
 
     fn length_mismatch(&self, operation: &'static str, message: impl Into<String>) -> Error {
-        self.invalid(operation, message).with_code(ErrorCode::ColumnLengthMismatch)
+        self.decorate(Error::new_with(ErrorCode::ColumnLengthMismatch, operation, message), operation)
     }
 
     fn type_mismatch(&self, operation: &'static str, message: impl Into<String>) -> Error {
-        self.decorate(Error::new(ErrorKind::InvalidInput, message.into()).with_code(ErrorCode::TypeMismatch), operation)
+        self.decorate(Error::new_with(ErrorCode::TypeMismatch, operation, message), operation)
     }
 }
 
@@ -128,7 +123,7 @@ fn validate_probe_inputs(
 }
 
 fn ensure_unique_keys(keys: &ColumnView<'_>, key_count: usize, operation: &'static str) -> Result<()> {
-    let key_table = TableView::from_column_views(&[keys]).map_err(|e| e.with_operation(operation))?;
+    let key_table = TableView::from_column_views(&[keys]).map_err(|e| e.reanchor_if_needed(operation))?;
     let distinct = stream_compaction::distinct(
         &key_table,
         &[0],
@@ -136,19 +131,17 @@ fn ensure_unique_keys(keys: &ColumnView<'_>, key_count: usize, operation: &'stat
         stream_compaction::NullEquality::Equal,
         stream_compaction::NanEquality::AllEqual,
     )
-    .map_err(|e| e.with_operation(operation))?;
+    .map_err(|e| e.reanchor_if_needed(operation))?;
     let distinct_count = distinct
         .view()
-        .map_err(|e| e.with_operation(operation))?
+        .map_err(|e| e.reanchor_if_needed(operation))?
         .num_rows()
-        .map_err(|e| e.with_operation(operation))?;
+        .map_err(|e| e.reanchor_if_needed(operation))?;
 
     if distinct_count != key_count {
-        return Err(Error::new(ErrorKind::InvalidInput, "lookup keys must be unique")
-            .with_code(ErrorCode::DuplicateKey)
-            .with_operation(operation)
-            .with_context("keys_count", key_count.to_string())
-            .with_context("distinct_keys_count", distinct_count.to_string()));
+        return Err(Error::new_with(ErrorCode::DuplicateKey, operation, "lookup keys must be unique")
+            .with_fact(FACT_KEYS_COUNT, key_count)
+            .with_fact(FACT_DISTINCT_KEYS_COUNT, distinct_count));
     }
 
     Ok(())
@@ -169,7 +162,7 @@ impl DistinctHashJoinHandle {
     fn new(build: &TableView<'_>, domain: &Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
         let exec_options = domain.explicit_exec_options_raw();
         let mut handle = ptr::null_mut();
-        error::check_status_in_with(
+        error::check_status_in_with_details(
             unsafe {
                 cudf_sys::cudf_distinct_hash_join_create_ex(
                     build.raw_handle(),
@@ -192,7 +185,7 @@ impl DistinctHashJoinHandle {
     ) -> Result<Column> {
         let exec_options = output_domain.explicit_exec_options_raw();
         let mut handle = ptr::null_mut();
-        error::check_status_in_with(
+        error::check_status_in_with_details(
             unsafe {
                 cudf_sys::cudf_distinct_hash_join_left_join_ex(
                     self.handle.as_ptr(),
@@ -272,16 +265,24 @@ fn execute_reusable_probe(
 }
 
 fn mapping_length_error(keys: &Series, values: &Series, operation: &'static str) -> Error {
-    let keys_type_id = keys.dtype().map(|dtype| type_label(dtype.id())).unwrap_or_else(|_| "?".to_string());
-    let value_type_id = values.dtype().map(|dtype| type_label(dtype.id())).unwrap_or_else(|_| "?".to_string());
+    let mut err =
+        Error::new_with(ErrorCode::ColumnLengthMismatch, operation, "lookup keys and values must have the same length")
+            .with_fact(FACT_KEYS_COUNT, keys.len())
+            .with_detail("values_count", values.len().to_string());
 
-    Error::new(ErrorKind::InvalidInput, "lookup keys and values must have the same length")
-        .with_code(ErrorCode::ColumnLengthMismatch)
-        .with_operation(operation)
-        .with_context("right_type_id", keys_type_id)
-        .with_context("type_id", value_type_id)
-        .with_context("keys_count", keys.len().to_string())
-        .with_context("values_count", values.len().to_string())
+    if let Ok(dtype) = keys.dtype() {
+        err = err.with_fact(FACT_RIGHT_TYPE_ID, dtype.id());
+    } else {
+        err = err.with_detail("keys_type_id", "?");
+    }
+
+    if let Ok(dtype) = values.dtype() {
+        err = err.with_fact(FACT_TYPE_ID, dtype.id());
+    } else {
+        err = err.with_detail("values_type_id", "?");
+    }
+
+    err
 }
 
 /// Probe a key/value mapping with a borrowed input column.
@@ -327,15 +328,18 @@ impl LookupTable {
             operation,
         )
         .map_err(|e| {
-            e.with_context("keys_count", keys.len().to_string()).with_context("values_count", values.len().to_string())
+            let err = e.reanchor_if_needed(operation);
+            let err = err.with_fact_if_absent(FACT_KEYS_COUNT, keys.len());
+            err.with_detail_if_absent("values_count", values.len().to_string())
         })?;
 
         let backend = {
-            let keys_view = keys.view().map_err(|e| e.with_operation(operation))?;
+            let keys_view = keys.view().map_err(|e| e.reanchor_if_needed(operation))?;
             ensure_unique_keys(&keys_view, keys.len(), operation)?;
-            let build_table = TableView::from_column_views(&[&keys_view]).map_err(|e| e.with_operation(operation))?;
+            let build_table =
+                TableView::from_column_views(&[&keys_view]).map_err(|e| e.reanchor_if_needed(operation))?;
             DistinctHashJoinHandle::new(&build_table, keys.as_column().execution_domain(), operation)
-                .map_err(|e| e.with_operation(operation))?
+                .map_err(|e| e.reanchor_if_needed(operation))?
         };
 
         Ok(Self { backend: Arc::new(backend), keys, values })
@@ -359,12 +363,12 @@ impl LookupTable {
 
     pub fn probe(&self, input: &Series) -> Result<Series> {
         let operation = "lookup_table::probe";
-        let input_view = input.view().map_err(|e| e.with_operation(operation))?;
-        let keys_view = self.keys.view().map_err(|e| e.with_operation(operation))?;
-        let values_view = self.values.view().map_err(|e| e.with_operation(operation))?;
+        let input_view = input.view().map_err(|e| e.reanchor_if_needed(operation))?;
+        let keys_view = self.keys.view().map_err(|e| e.reanchor_if_needed(operation))?;
+        let values_view = self.values.view().map_err(|e| e.reanchor_if_needed(operation))?;
         let meta = validate_probe_inputs(&input_view, &keys_view, &values_view, operation)?;
         let result = execute_reusable_probe(&input_view, &values_view, self.backend.as_ref(), &meta, operation)
-            .map_err(|e| e.with_operation(operation))?;
-        Series::from_column(result).map_err(|e| e.with_operation(operation))
+            .map_err(|e| e.reanchor_if_needed(operation))?;
+        Series::from_column(result).map_err(|e| e.reanchor_if_needed(operation))
     }
 }

@@ -207,6 +207,19 @@ pub struct OwnedTableTransfer {
     _owner: OwnedTransferOwner,
 }
 
+/// Named construction parts for [`OwnedTableTransfer`] with an explicit
+/// semantic-column graph.
+pub struct OwnedTableTransferParts<Owner> {
+    pub table: SemanticTable,
+    pub columns: Vec<SemanticColumn>,
+    pub semantic_columns: Vec<SemanticColumn>,
+    pub bindings: Vec<BufferBinding<'static>>,
+    pub readiness: ProducerReadiness<'static>,
+    pub diagnostics: ExportDiagnostics,
+    pub release_contract: ReleaseContract,
+    pub owner: Owner,
+}
+
 impl OwnedTableTransfer {
     pub fn try_new<Owner>(
         table: SemanticTable,
@@ -220,31 +233,31 @@ impl OwnedTableTransfer {
     where
         Owner: Send + Sync + 'static,
     {
-        Self::try_new_with_semantic_columns(
+        Self::try_new_with_semantic_columns(OwnedTableTransferParts {
             table,
-            columns.clone(),
-            columns,
+            columns: columns.clone(),
+            semantic_columns: columns,
             bindings,
             readiness,
             diagnostics,
             release_contract,
             owner,
-        )
+        })
     }
 
-    pub fn try_new_with_semantic_columns<Owner>(
-        table: SemanticTable,
-        columns: Vec<SemanticColumn>,
-        semantic_columns: Vec<SemanticColumn>,
-        bindings: Vec<BufferBinding<'static>>,
-        readiness: ProducerReadiness<'static>,
-        diagnostics: ExportDiagnostics,
-        release_contract: ReleaseContract,
-        owner: Owner,
-    ) -> Result<Self>
-    where
-        Owner: Send + Sync + 'static,
-    {
+    pub fn try_new_with_semantic_columns<Owner>(parts: OwnedTableTransferParts<Owner>) -> Result<Self>
+    where Owner: Send + Sync + 'static {
+        let OwnedTableTransferParts {
+            table,
+            columns,
+            semantic_columns,
+            bindings,
+            readiness,
+            diagnostics,
+            release_contract,
+            owner,
+        } = parts;
+
         validate_owned_transfer_profile(diagnostics)?;
         validate_release_contract(release_contract)?;
 

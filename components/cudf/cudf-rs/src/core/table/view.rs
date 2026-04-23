@@ -11,7 +11,7 @@ use super::{TABLE_HANDLE_INLINE_CAPACITY, table_column_count_limit_error};
 use crate::{
     core::{
         column::ColumnView,
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, FACT_TABLE_COLUMN_COUNT, Result},
     },
     runtime::execution_domain::ExecutionDomain,
 };
@@ -32,54 +32,38 @@ pub struct TableView<'a> {
 
 impl<'a> TableView<'a> {
     fn foreign_negative_num_columns_error(observed: i32) -> Error {
-        Error::new(ErrorKind::InvariantViolation, "FFI returned negative table column count")
-            .with_code(ErrorCode::InvariantViolation)
-            .with_operation("table_view::num_columns")
-            .with_context("resource", "table_column_count")
-            .with_context("reason", "invalid_foreign_table_metadata")
-            .with_context("table_column_count", observed.to_string())
-            .with_context("remedy", "ensure the foreign table view reports a non-negative column count")
+        error::foreign_invariant_violation(
+            "table_view::num_columns",
+            "FFI returned negative table column count",
+            "table_column_count",
+            "invalid_foreign_table_metadata",
+            "ensure the foreign table view reports a non-negative column count",
+        )
+        .with_detail("reported_table_column_count", observed.to_string())
     }
 
     fn foreign_negative_num_rows_error(observed: i32) -> Error {
-        Error::new(ErrorKind::InvariantViolation, "FFI returned negative table row count")
-            .with_code(ErrorCode::InvariantViolation)
-            .with_operation("table_view::num_rows")
-            .with_context("resource", "table_row_count")
-            .with_context("reason", "invalid_foreign_table_metadata")
-            .with_context("table_row_count", observed.to_string())
-            .with_context("remedy", "ensure the foreign table view reports a non-negative row count")
+        error::foreign_invariant_violation(
+            "table_view::num_rows",
+            "FFI returned negative table row count",
+            "table_row_count",
+            "invalid_foreign_table_metadata",
+            "ensure the foreign table view reports a non-negative row count",
+        )
+        .with_detail("reported_table_row_count", observed.to_string())
     }
 
     fn empty_requires_authoritative_source_error(operation: &'static str) -> Error {
-        Error::new(
-            ErrorKind::InvalidInput,
+        Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            operation,
             "creating an empty table view requires an authoritative source because no input column views exist",
         )
-        .with_code(ErrorCode::UnsupportedOperation)
-        .with_operation(operation)
-        .with_context("reason", "empty_borrowed_table_view_requires_authoritative_source")
-        .with_context(
+        .with_detail("reason", "empty_borrowed_table_view_requires_authoritative_source")
+        .with_detail(
             "remedy",
             "borrow at least one column view or call view() on an authoritative Table created by a Runtime",
         )
-    }
-
-    fn row_count_mismatch_error(
-        operation: &'static str,
-        column_index: usize,
-        actual_rows: usize,
-        expected_rows: usize,
-    ) -> Error {
-        Error::new(
-            ErrorKind::InvalidInput,
-            format!("column {column_index} has {actual_rows} rows but column 0 has {expected_rows} rows"),
-        )
-        .with_code(ErrorCode::ColumnLengthMismatch)
-        .with_operation(operation)
-        .with_context("column_index", column_index.to_string())
-        .with_context("actual_rows", actual_rows.to_string())
-        .with_context("expected_rows", expected_rows.to_string())
     }
 
     fn validate_uniform_row_counts(views: &[ColumnView<'a>], operation: &'static str) -> Result<()> {
@@ -87,13 +71,12 @@ impl<'a> TableView<'a> {
             return Ok(());
         };
 
-        let first_rows = first.len().map_err(|e| e.with_operation(operation).with_context("column_index", "0"))?;
+        let first_rows = first.len().map_err(|e| e.reanchor(operation).with_fact(FACT_COLUMN_INDEX, 0))?;
 
         for (index, view) in views.iter().enumerate().skip(1) {
-            let rows =
-                view.len().map_err(|e| e.with_operation(operation).with_context("column_index", index.to_string()))?;
+            let rows = view.len().map_err(|e| e.reanchor(operation).with_fact(FACT_COLUMN_INDEX, index))?;
             if rows != first_rows {
-                return Err(Self::row_count_mismatch_error(operation, index, rows, first_rows));
+                return Err(error::row_count_mismatch_error(operation, index, rows, first_rows));
             }
         }
 
@@ -143,21 +126,17 @@ impl<'a> TableView<'a> {
     pub fn column(&self, index: usize) -> Result<ColumnView<'a>> {
         let num_columns = self.num_columns()?;
         if index >= num_columns {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
+            return Err(Error::new_with(
+                ErrorCode::IndexOutOfBounds,
+                "table_view::column",
                 format!("table column index {} out of bounds for {} columns", index, num_columns),
             )
-            .with_code(ErrorCode::IndexOutOfBounds)
-            .with_operation("table_view::column")
-            .with_context("column_index", index.to_string())
-            .with_context("table_column_count", num_columns.to_string()));
+            .with_fact(FACT_COLUMN_INDEX, index)
+            .with_fact(FACT_TABLE_COLUMN_COUNT, num_columns));
         }
 
-        let index = i32::try_from(index).map_err(|_| {
-            Error::new(ErrorKind::InvalidInput, "table column index exceeds i32::MAX")
-                .with_operation("table_view::column")
-                .with_context("column_index", index.to_string())
-        })?;
+        let index = i32::try_from(index)
+            .map_err(|_| error::range_limit_error("table_view::column", "column_index", "i32::MAX", index))?;
 
         let mut col_handle = ptr::null_mut();
         error::check_status_in(
@@ -183,19 +162,16 @@ impl<'a> TableView<'a> {
             .iter()
             .map(|&index| {
                 if index >= num_columns {
-                    Err(Error::new(
-                        ErrorKind::InvalidInput,
+                    Err(Error::new_with(
+                        ErrorCode::IndexOutOfBounds,
+                        "table_view::select_columns",
                         format!("table column index {} out of bounds for {} columns", index, num_columns),
                     )
-                    .with_code(ErrorCode::IndexOutOfBounds)
-                    .with_operation("table_view::select_columns")
-                    .with_context("column_index", index.to_string())
-                    .with_context("table_column_count", num_columns.to_string()))
+                    .with_fact(FACT_COLUMN_INDEX, index)
+                    .with_fact(FACT_TABLE_COLUMN_COUNT, num_columns))
                 } else {
                     i32::try_from(index).map_err(|_| {
-                        Error::new(ErrorKind::InvalidInput, "table column index exceeds i32::MAX")
-                            .with_operation("table_view::select_columns")
-                            .with_context("column_index", index.to_string())
+                        error::range_limit_error("table_view::select_columns", "column_index", "i32::MAX", index)
                     })
                 }
             })
@@ -232,7 +208,7 @@ impl<'a> TableView<'a> {
                     "all column views in a table view must share one retained provenance",
                     "use copy_into_runtime(...) on higher-level Series/DataFrame values or rebuild the table view from columns already placed in one Runtime before calling this operation",
                 )
-                .map_err(|e| e.with_context("column_index", index.to_string()))?;
+                .map_err(|e| e.with_fact(FACT_COLUMN_INDEX, index))?;
             }
             if let Some(authoritative_domain) = authoritative_domain.as_ref() {
                 ExecutionDomain::require_same_provenance(
