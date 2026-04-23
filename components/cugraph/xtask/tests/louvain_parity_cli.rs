@@ -17,9 +17,9 @@ fn chrono_like_now_nanos() -> u128 {
 
 fn write_small_louvain_fixture(path: &PathBuf) {
     let runtime = Runtime::new().expect("runtime");
-    let src = runtime.series("src", LOUVAIN_GRAPH_SRC_I32).expect("src");
-    let dst = runtime.series("dst", LOUVAIN_GRAPH_DST_I32).expect("dst");
-    let weight = runtime.series("weight", LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
+    let src = runtime.series(LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = runtime.series(LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weight = runtime.series(LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
     let df = DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)]).expect("dataframe");
     df.write_parquet(path).expect("write parquet");
 }
@@ -27,18 +27,12 @@ fn write_small_louvain_fixture(path: &PathBuf) {
 fn write_small_louvain_alias_string_fixture(path: &PathBuf) {
     let runtime = Runtime::new().expect("runtime");
     let subject = runtime
-        .series(
-            "sourceId",
-            &["v0", "v1", "v1", "v2", "v2", "v2", "v3", "v4", "v1", "v3", "v4", "v0", "v1", "v3", "v5", "v5"],
-        )
+        .series(&["v0", "v1", "v1", "v2", "v2", "v2", "v3", "v4", "v1", "v3", "v4", "v0", "v1", "v3", "v5", "v5"])
         .expect("sourceId");
     let object = runtime
-        .series(
-            "targetId",
-            &["v1", "v3", "v4", "v0", "v1", "v3", "v5", "v5", "v0", "v1", "v1", "v2", "v2", "v2", "v3", "v4"],
-        )
+        .series(&["v1", "v3", "v4", "v0", "v1", "v3", "v5", "v5", "v0", "v1", "v1", "v2", "v2", "v2", "v3", "v4"])
         .expect("targetId");
-    let weight = runtime.series("weight", LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
+    let weight = runtime.series(LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
     let df =
         DataFrame::from_columns([("sourceId", subject), ("targetId", object), ("weight", weight)]).expect("dataframe");
     df.write_parquet(path).expect("write parquet");
@@ -47,39 +41,30 @@ fn write_small_louvain_alias_string_fixture(path: &PathBuf) {
 fn write_small_louvain_alias_string_fixture_with_null_weights(path: &PathBuf) {
     let runtime = Runtime::new().expect("runtime");
     let subject = runtime
-        .series(
-            "sourceId",
-            &["v0", "v1", "v1", "v2", "v2", "v2", "v3", "v4", "v1", "v3", "v4", "v0", "v1", "v3", "v5", "v5"],
-        )
+        .series(&["v0", "v1", "v1", "v2", "v2", "v2", "v3", "v4", "v1", "v3", "v4", "v0", "v1", "v3", "v5", "v5"])
         .expect("sourceId");
     let object = runtime
-        .series(
-            "targetId",
-            &["v1", "v3", "v4", "v0", "v1", "v3", "v5", "v5", "v0", "v1", "v1", "v2", "v2", "v2", "v3", "v4"],
-        )
+        .series(&["v1", "v3", "v4", "v0", "v1", "v3", "v5", "v5", "v0", "v1", "v1", "v2", "v2", "v2", "v3", "v4"])
         .expect("targetId");
     let weight = runtime
-        .series_opt(
-            "weight",
-            &[
-                Some(0.1f32),
-                Some(2.1),
-                None,
-                Some(5.1),
-                Some(3.1),
-                None,
-                Some(7.2),
-                Some(3.2),
-                Some(0.1),
-                Some(2.1),
-                None,
-                Some(5.1),
-                Some(3.1),
-                Some(4.1),
-                Some(7.2),
-                None,
-            ],
-        )
+        .series_opt(&[
+            Some(0.1f32),
+            Some(2.1),
+            None,
+            Some(5.1),
+            Some(3.1),
+            None,
+            Some(7.2),
+            Some(3.2),
+            Some(0.1),
+            Some(2.1),
+            None,
+            Some(5.1),
+            Some(3.1),
+            Some(4.1),
+            Some(7.2),
+            None,
+        ])
         .expect("weight");
     let df =
         DataFrame::from_columns([("sourceId", subject), ("targetId", object), ("weight", weight)]).expect("dataframe");
