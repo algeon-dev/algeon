@@ -27,7 +27,7 @@ use cugraph::{
 #[test]
 fn device_array_view_from_slice_i64() {
     let runtime = explicit_runtime();
-    let series = runtime.series("v", &[100i64, 200, 300]).expect("series");
+    let series = runtime.series(&[100i64, 200, 300]).expect("series");
     let col_view = series.as_column();
     let slice = col_view.device_slice::<i64>().expect("device_slice");
 
@@ -38,7 +38,7 @@ fn device_array_view_from_slice_i64() {
 #[test]
 fn device_array_view_from_slice_rejects_mismatch() {
     let runtime = explicit_runtime();
-    let series = runtime.series("v", &[1i32, 2, 3]).expect("series");
+    let series = runtime.series(&[1i32, 2, 3]).expect("series");
     let col_view = series.as_column();
     let slice = col_view.device_slice::<i32>().expect("device_slice");
 
@@ -51,9 +51,9 @@ fn graph_from_series_weighted_pagerank() {
     let runtime = explicit_runtime();
     let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
 
-    let src = runtime.series("src", UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
-    let dst = runtime.series("dst", UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
-    let wgt = runtime.series("wgt", UNDIRECTED_TRIANGLE_WEIGHT_F32).expect("wgt");
+    let src = runtime.series(UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
+    let dst = runtime.series(UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
+    let wgt = runtime.series(UNDIRECTED_TRIANGLE_WEIGHT_F32).expect("wgt");
 
     let opts = SeriesGraphOptions::default().properties(GraphProperties::undirected()).renumber();
     let mut graph = graph_from_series::<Transposed>(&handle, &src, &dst, Some(&wgt), &opts).expect("graph_from_series");
@@ -72,9 +72,9 @@ fn graph_from_series_python_cugraph_weighted_undirected_simple_keeps_minimum_rec
     let runtime = explicit_runtime();
     let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
 
-    let src = runtime.series("src", &[0i32, 1, 1, 2]).expect("src");
-    let dst = runtime.series("dst", &[1i32, 0, 2, 1]).expect("dst");
-    let wgt = runtime.series("wgt", &[5.0f32, 2.0, 1.0, 1.0]).expect("wgt");
+    let src = runtime.series(&[0i32, 1, 1, 2]).expect("src");
+    let dst = runtime.series(&[1i32, 0, 2, 1]).expect("dst");
+    let wgt = runtime.series(&[5.0f32, 2.0, 1.0, 1.0]).expect("wgt");
 
     let opts = SeriesGraphOptions::default().properties(GraphProperties::undirected()).renumber();
     let mut graph = graph_from_series::<Transposed>(&handle, &src, &dst, Some(&wgt), &opts).expect("graph_from_series");
@@ -89,8 +89,8 @@ fn graph_bfs_host_slice_matches_typed_view_path() {
     let runtime = explicit_runtime();
     let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
 
-    let src = runtime.series("src", TRIANGLE_TAIL_SRC_I32).expect("src");
-    let dst = runtime.series("dst", TRIANGLE_TAIL_DST_I32).expect("dst");
+    let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
 
     let opts = SeriesGraphOptions::default().renumber();
     let mut graph = graph_from_series::<Forward>(&handle, &src, &dst, None, &opts).expect("graph_from_series");
@@ -126,13 +126,9 @@ fn into_series_bfs_results() {
     let sources_view = sources.view().expect("sources_view");
     let result = graph.bfs(&handle, &sources_view, &BfsParams::default()).expect("bfs");
 
-    let vertex_series =
-        result.vertex_ids().expect("vids").to_series("my_vertex", &runtime).expect("VertexIds::to_series");
-    let distance_series =
-        result.distances().expect("dists").to_series("my_distance", &runtime).expect("Distances::to_series");
+    let vertex_series = result.vertex_ids().expect("vids").to_series(&runtime).expect("VertexIds::to_series");
+    let distance_series = result.distances().expect("dists").to_series(&runtime).expect("Distances::to_series");
 
-    assert_eq!(vertex_series.name(), Some("my_vertex"));
-    assert_eq!(distance_series.name(), Some("my_distance"));
     assert_eq!(vertex_series.to_vec_strict::<i32>().expect("vertex vec").len(), 3);
     assert_eq!(distance_series.to_vec_strict::<i32>().expect("distance vec"), vec![0, 1, 2]);
 }
@@ -157,14 +153,10 @@ fn into_series_layout_results() {
     let params = ForceAtlas2Params { max_iter: IterationCount::new(50).unwrap(), ..Default::default() };
     let result: LayoutResult = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2");
 
-    let vertex_series =
-        result.vertex_ids().expect("vertex_ids").to_series("my_vertex", &runtime).expect("VertexIds::to_series");
-    let x_series = result.x().expect("x").to_series("my_x", &runtime).expect("ScoreValues::to_series x");
-    let y_series = result.y().expect("y").to_series("my_y", &runtime).expect("ScoreValues::to_series y");
+    let vertex_series = result.vertex_ids().expect("vertex_ids").to_series(&runtime).expect("VertexIds::to_series");
+    let x_series = result.x().expect("x").to_series(&runtime).expect("ScoreValues::to_series x");
+    let y_series = result.y().expect("y").to_series(&runtime).expect("ScoreValues::to_series y");
 
-    assert_eq!(vertex_series.name(), Some("my_vertex"));
-    assert_eq!(x_series.name(), Some("my_x"));
-    assert_eq!(y_series.name(), Some("my_y"));
     assert_eq!(vertex_series.to_vec_strict::<i32>().expect("vertex vec").len(), 3);
 
     let x_values = x_series.to_vec_strict::<f32>().expect("x vec");

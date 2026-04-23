@@ -11,11 +11,9 @@ use common::{
         bfs_graph_dataframe,
     },
 };
-use cudf::interop::{
-    prepared::InteropErrorKind,
-    transfer::{ReleaseSynchronization, TransferCompletionAuthority, TransferCompletionRule},
-};
+use cudf::interop::runtime_release::TransferCompletionAuthority;
 use cugraph::handle::ResourceHandle;
+use rapids_interop::{InteropErrorKind, ReleaseSynchronization, TransferCompletionRule};
 
 fn test_handle() -> ResourceHandle {
     let runtime = explicit_runtime();
@@ -27,9 +25,9 @@ fn owned_transfer_zero_copy_import_preserves_device_buffers_and_bfs_semantics() 
     let handle = test_handle();
     let runtime = explicit_runtime();
 
-    let src = runtime.series("src", BFS_GRAPH_SRC_I32).expect("src");
-    let dst = runtime.series("dst", BFS_GRAPH_DST_I32).expect("dst");
-    let wgt = runtime.series("weight", BFS_GRAPH_WEIGHT_F32).expect("weight");
+    let src = runtime.series(BFS_GRAPH_SRC_I32).expect("src");
+    let dst = runtime.series(BFS_GRAPH_DST_I32).expect("dst");
+    let wgt = runtime.series(BFS_GRAPH_WEIGHT_F32).expect("weight");
 
     let src_ptr = i32_series_device_ptr(&src);
     let dst_ptr = i32_series_device_ptr(&dst);

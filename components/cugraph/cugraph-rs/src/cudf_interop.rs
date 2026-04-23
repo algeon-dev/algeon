@@ -78,8 +78,9 @@
 use std::{collections::BTreeSet, ffi::c_void};
 
 use cudf::{
-    DropDuplicatesOptions, DuplicateKeepOption, Runtime, SortOptions, TypeId as CudfTypeId,
+    DuplicateKeepOption, Runtime, SortOptions, TypeId as CudfTypeId,
     core::{Column, DeviceSlice, Table, table::TableView},
+    frame::dataframe::DropDuplicatesOptions,
     io::parquet,
 };
 use rapids_interop::{
@@ -225,7 +226,7 @@ fn runtime_for_handle(handle: &ResourceHandle, operation: &'static str) -> Resul
 /// use cugraph::cudf_interop::device_array_view_from_slice;
 ///
 /// let runtime = cudf::Runtime::new().unwrap();
-/// let series = runtime.series("v", &[0i32, 1, 2]).unwrap();
+/// let series = runtime.series(&[0i32, 1, 2]).unwrap();
 /// let col = series.as_column();
 /// let slice = col.device_slice::<i32>().unwrap();
 ///
@@ -315,23 +316,19 @@ impl RawDeviceArrayViewExt for RawDeviceArrayView<'_> {
     }
 }
 
-fn named_series_from_column(column: Column, name: &str, operation: &'static str) -> Result<cudf::Series> {
-    cudf::Series::from_column(column).map(|series| series.rename(name)).map_err(|error| {
+fn series_from_column(column: Column, operation: &'static str) -> Result<cudf::Series> {
+    cudf::Series::from_column(column).map_err(|error| {
         map_cudf_error_with(
             error,
             operation,
-            format!("failed to create cudf Series '{name}' from cugraph result column"),
-            [("series_name", name.to_string())],
+            "failed to create cudf Series from cugraph result column",
+            std::iter::empty(),
         )
     })
 }
 
-fn named_series_from_column_result(
-    column: Result<Column>,
-    name: &str,
-    operation: &'static str,
-) -> Result<cudf::Series> {
-    named_series_from_column(column?, name, operation)
+fn series_from_column_result(column: Result<Column>, operation: &'static str) -> Result<cudf::Series> {
+    series_from_column(column?, operation)
 }
 
 fn dataframe_from_named_series<I, S>(series: I, operation: &'static str) -> Result<cudf::DataFrame>
@@ -362,61 +359,57 @@ where
 ///
 /// [`Series`]: cudf::Series
 pub trait IntoSeries {
-    /// Convert this GPU array to a named cudf [`Series`].
+    /// Convert this GPU array to an unnamed cudf [`Series`].
     ///
     /// [`Series`]: cudf::Series
-    fn to_series(&self, name: &str, runtime: &Runtime) -> Result<cudf::Series>;
+    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series>;
 }
 
 impl IntoSeries for VertexIds<'_> {
-    fn to_series(&self, name: &str, runtime: &Runtime) -> Result<cudf::Series> {
-        named_series_from_column_result(
+    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
+        series_from_column_result(
             match self {
                 Self::I32(v) => v.raw_view().to_cudf_column(runtime),
                 Self::I64(v) => v.raw_view().to_cudf_column(runtime),
             },
-            name,
             "VertexIds::to_series",
         )
     }
 }
 
 impl IntoSeries for ScoreValues<'_> {
-    fn to_series(&self, name: &str, runtime: &Runtime) -> Result<cudf::Series> {
-        named_series_from_column_result(
+    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
+        series_from_column_result(
             match self {
                 Self::F32(v) => v.raw_view().to_cudf_column(runtime),
                 Self::F64(v) => v.raw_view().to_cudf_column(runtime),
             },
-            name,
             "ScoreValues::to_series",
         )
     }
 }
 
 impl IntoSeries for Distances<'_> {
-    fn to_series(&self, name: &str, runtime: &Runtime) -> Result<cudf::Series> {
-        named_series_from_column_result(
+    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
+        series_from_column_result(
             match self {
                 Self::I32(v) => v.raw_view().to_cudf_column(runtime),
                 Self::I64(v) => v.raw_view().to_cudf_column(runtime),
                 Self::F32(v) => v.raw_view().to_cudf_column(runtime),
                 Self::F64(v) => v.raw_view().to_cudf_column(runtime),
             },
-            name,
             "Distances::to_series",
         )
     }
 }
 
 impl IntoSeries for DegreeValues<'_> {
-    fn to_series(&self, name: &str, runtime: &Runtime) -> Result<cudf::Series> {
-        named_series_from_column_result(
+    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
+        series_from_column_result(
             match self {
                 Self::I32(v) => v.raw_view().to_cudf_column(runtime),
                 Self::I64(v) => v.raw_view().to_cudf_column(runtime),
             },
-            name,
             "DegreeValues::to_series",
         )
     }
@@ -429,10 +422,7 @@ impl IntoSeries for DegreeValues<'_> {
 pub(crate) fn page_rank_result_to_dataframe(result: &PageRankResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "page_rank_result_to_dataframe";
     dataframe_from_named_series(
-        [
-            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
-            ("value", result.scores()?.to_series("value", runtime)?),
-        ],
+        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("value", result.scores()?.to_series(runtime)?)],
         operation,
     )
 }
@@ -443,10 +433,7 @@ pub(crate) fn betweenness_result_to_dataframe(
 ) -> Result<cudf::DataFrame> {
     let operation = "betweenness_result_to_dataframe";
     dataframe_from_named_series(
-        [
-            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
-            ("value", result.scores()?.to_series("value", runtime)?),
-        ],
+        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("value", result.scores()?.to_series(runtime)?)],
         operation,
     )
 }
@@ -454,22 +441,19 @@ pub(crate) fn betweenness_result_to_dataframe(
 pub(crate) fn louvain_result_to_dataframe(result: &LouvainResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "louvain_result_to_dataframe";
     dataframe_from_named_series(
-        [
-            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
-            ("partition", result.clusters()?.to_series("partition", runtime)?),
-        ],
+        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("partition", result.clusters()?.to_series(runtime)?)],
         operation,
     )
 }
 
 pub(crate) fn bfs_result_to_dataframe(result: &BfsResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "bfs_result_to_dataframe";
-    let vertex_series = result.vertex_ids()?.to_series("vertex", runtime)?;
-    let distance_series = result.distances()?.to_series("distance", runtime)?;
+    let vertex_series = result.vertex_ids()?.to_series(runtime)?;
+    let distance_series = result.distances()?.to_series(runtime)?;
 
     match result.predecessors()? {
         Some(predecessors) => {
-            let predecessor_series = predecessors.to_series("predecessor", runtime)?;
+            let predecessor_series = predecessors.to_series(runtime)?;
             dataframe_from_named_series(
                 [("vertex", vertex_series), ("distance", distance_series), ("predecessor", predecessor_series)],
                 operation,
@@ -481,9 +465,9 @@ pub(crate) fn bfs_result_to_dataframe(result: &BfsResult, runtime: &Runtime) -> 
 
 pub(crate) fn layout_result_to_dataframe(result: &LayoutResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "layout_result_to_dataframe";
-    let vertex_series = result.vertex_ids()?.to_series("vertex", runtime)?;
-    let x_series = result.x()?.to_series("x", runtime)?;
-    let y_series = result.y()?.to_series("y", runtime)?;
+    let vertex_series = result.vertex_ids()?.to_series(runtime)?;
+    let x_series = result.x()?.to_series(runtime)?;
+    let y_series = result.y()?.to_series(runtime)?;
 
     dataframe_from_named_series([("vertex", vertex_series), ("x", x_series), ("y", y_series)], operation)
 }
@@ -492,9 +476,9 @@ pub(crate) fn degrees_result_to_dataframe(result: &DegreesResult, runtime: &Runt
     let operation = "degrees_result_to_dataframe";
     dataframe_from_named_series(
         [
-            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
-            ("in_degree", result.in_degrees()?.to_series("in_degree", runtime)?),
-            ("out_degree", result.out_degrees()?.to_series("out_degree", runtime)?),
+            ("vertex", result.vertex_ids()?.to_series(runtime)?),
+            ("in_degree", result.in_degrees()?.to_series(runtime)?),
+            ("out_degree", result.out_degrees()?.to_series(runtime)?),
         ],
         operation,
     )
@@ -503,10 +487,7 @@ pub(crate) fn degrees_result_to_dataframe(result: &DegreesResult, runtime: &Runt
 pub(crate) fn in_degrees_result_to_dataframe(result: &InDegreesResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "in_degrees_result_to_dataframe";
     dataframe_from_named_series(
-        [
-            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
-            ("in_degree", result.in_degrees()?.to_series("in_degree", runtime)?),
-        ],
+        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("in_degree", result.in_degrees()?.to_series(runtime)?)],
         operation,
     )
 }
@@ -515,8 +496,8 @@ pub(crate) fn out_degrees_result_to_dataframe(result: &OutDegreesResult, runtime
     let operation = "out_degrees_result_to_dataframe";
     dataframe_from_named_series(
         [
-            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
-            ("out_degree", result.out_degrees()?.to_series("out_degree", runtime)?),
+            ("vertex", result.vertex_ids()?.to_series(runtime)?),
+            ("out_degree", result.out_degrees()?.to_series(runtime)?),
         ],
         operation,
     )
@@ -860,19 +841,96 @@ fn map_interop_error(error: InteropError, operation: &'static str) -> Error {
     mapped
 }
 
-fn map_cudf_error_kind(kind: cudf::ErrorKind) -> ErrorKind {
-    match kind {
-        cudf::ErrorKind::OutOfMemory => ErrorKind::OutOfMemory,
-        cudf::ErrorKind::IoError | cudf::ErrorKind::NotFound => ErrorKind::IoError,
-        cudf::ErrorKind::TypeError | cudf::ErrorKind::NotSupported => ErrorKind::UnsupportedType,
-        cudf::ErrorKind::InvalidOperation => ErrorKind::InvalidState,
-        cudf::ErrorKind::InvalidArgument | cudf::ErrorKind::NullError | cudf::ErrorKind::IndexError => {
-            ErrorKind::InvalidInput
-        },
-        cudf::ErrorKind::CudaError | cudf::ErrorKind::FatalCudaError | cudf::ErrorKind::Unknown => {
-            ErrorKind::Unexpected
+fn map_cudf_error_code(code: cudf::ErrorCode) -> ErrorKind {
+    match code {
+        cudf::ErrorCode::MissingColumn
+        | cudf::ErrorCode::DuplicateColumnName
+        | cudf::ErrorCode::DuplicateKey
+        | cudf::ErrorCode::ColumnLengthMismatch
+        | cudf::ErrorCode::TypeMismatch
+        | cudf::ErrorCode::IndexOutOfBounds
+        | cudf::ErrorCode::NullUnexpected
+        | cudf::ErrorCode::CrossDeviceInputs
+        | cudf::ErrorCode::CrossProvenanceInputs
+        | cudf::ErrorCode::ForeignInvalidArgument => ErrorKind::InvalidInput,
+        cudf::ErrorCode::EmptyConstructionRequiresRuntime
+        | cudf::ErrorCode::RuntimeBindingMismatch
+        | cudf::ErrorCode::ReadinessUnavailable
+        | cudf::ErrorCode::ExecutionBindingUnavailable
+        | cudf::ErrorCode::LeaseAlreadyActive
+        | cudf::ErrorCode::InvariantViolation
+        | cudf::ErrorCode::ForeignInvariantViolation => ErrorKind::InvalidState,
+        cudf::ErrorCode::UnsupportedDtype
+        | cudf::ErrorCode::UnsupportedLayout
+        | cudf::ErrorCode::UnsupportedOperation => ErrorKind::UnsupportedType,
+        cudf::ErrorCode::OutOfMemory | cudf::ErrorCode::ForeignResourceExhausted => ErrorKind::OutOfMemory,
+        cudf::ErrorCode::IoFailure => ErrorKind::IoError,
+        cudf::ErrorCode::CudaRuntime
+        | cudf::ErrorCode::FatalCuda
+        | cudf::ErrorCode::ForeignTransientDependencyFailure
+        | cudf::ErrorCode::ForeignPersistentDependencyFailure => ErrorKind::Unexpected,
+        _ => match cudf::core::error::kind_for_code(code) {
+            cudf::ErrorKind::InvalidInput => ErrorKind::InvalidInput,
+            cudf::ErrorKind::NotFound => ErrorKind::IoError,
+            cudf::ErrorKind::Unsupported => ErrorKind::UnsupportedType,
+            cudf::ErrorKind::ExecutionContext => ErrorKind::InvalidState,
+            cudf::ErrorKind::ResourceExhausted => ErrorKind::OutOfMemory,
+            cudf::ErrorKind::DependencyFailure => ErrorKind::Unexpected,
+            cudf::ErrorKind::InvariantViolation => ErrorKind::InvalidState,
+            _ => ErrorKind::Unexpected,
         },
     }
+}
+
+fn cudf_fact_context_key(key: cudf::core::error::FactKeyName) -> &'static str {
+    match key {
+        cudf::core::error::FactKeyName::ColumnName => "cudf_column_name",
+        cudf::core::error::FactKeyName::ColumnIndex => "cudf_column_index",
+        cudf::core::error::FactKeyName::ExpectedRows => "cudf_expected_rows",
+        cudf::core::error::FactKeyName::ActualRows => "cudf_actual_rows",
+        cudf::core::error::FactKeyName::ExpectedCount => "cudf_expected_count",
+        cudf::core::error::FactKeyName::ActualCount => "cudf_actual_count",
+        cudf::core::error::FactKeyName::LeftTypeId => "cudf_left_type_id",
+        cudf::core::error::FactKeyName::RightTypeId => "cudf_right_type_id",
+        cudf::core::error::FactKeyName::LeftDevice => "cudf_left_device",
+        cudf::core::error::FactKeyName::RightDevice => "cudf_right_device",
+        cudf::core::error::FactKeyName::TableRowCount => "cudf_table_row_count",
+        cudf::core::error::FactKeyName::TableColumnCount => "cudf_table_column_count",
+        cudf::core::error::FactKeyName::KeysCount => "cudf_keys_count",
+        cudf::core::error::FactKeyName::DistinctKeysCount => "cudf_distinct_keys_count",
+        cudf::core::error::FactKeyName::TypeId => "cudf_type_id",
+        _ => "cudf_fact",
+    }
+}
+
+fn map_cudf_status(mut mapped: Error, status: cudf::ErrorStatus) -> Error {
+    match status {
+        cudf::ErrorStatus::Permanent => mapped = mapped.set_permanent(),
+        cudf::ErrorStatus::Temporary => mapped = mapped.set_temporary(),
+        cudf::ErrorStatus::Persistent => mapped = mapped.set_persistent(),
+    }
+    mapped
+}
+
+fn attach_cudf_error_context(mut mapped: Error, error: &cudf::Error) -> Error {
+    mapped = mapped.with_context("cudf_code", error.code().to_string());
+    mapped = mapped.with_context("cudf_kind", error.kind().to_string());
+    mapped = mapped.with_context("cudf_status", error.status().to_string());
+    mapped = mapped.with_context("cudf_operation", error.operation().to_string());
+
+    for called in error.call_chain() {
+        mapped = mapped.with_context("cudf_called", (*called).to_string());
+    }
+
+    for (key, value) in error.facts().iter() {
+        mapped = mapped.with_context(cudf_fact_context_key(key), value.to_string());
+    }
+
+    for (key, value) in error.details() {
+        mapped = mapped.with_context("cudf_detail", format!("{key}={value}"));
+    }
+
+    mapped
 }
 
 #[cfg(test)]
@@ -889,26 +947,17 @@ fn map_cudf_error_with<I>(
 where
     I: IntoIterator<Item = (&'static str, String)>,
 {
-    let source_kind = error.kind();
-    let source_context = error.context().iter().map(|(key, value)| (*key, value.clone())).collect::<Vec<_>>();
-    let mut mapped =
-        Error::new(map_cudf_error_kind(source_kind), operation).with_message(message.into()).set_source(error);
-
-    match source_kind {
-        cudf::ErrorKind::OutOfMemory | cudf::ErrorKind::CudaError => mapped = mapped.set_temporary(),
-        cudf::ErrorKind::FatalCudaError => mapped = mapped.set_persistent(),
-        _ => {},
-    }
-
-    for (key, value) in source_context {
-        mapped = mapped.with_context(key, value);
-    }
+    let source_code = error.code();
+    let source_status = error.status();
+    let mut mapped = Error::new(map_cudf_error_code(source_code), operation).with_message(message.into());
+    mapped = map_cudf_status(mapped, source_status);
+    mapped = attach_cudf_error_context(mapped, &error);
 
     for (key, value) in context {
         mapped = mapped.with_context(key, value);
     }
 
-    mapped
+    mapped.set_source(error)
 }
 
 fn edge_list_dtype(type_id: InteropTypeId, name: &str, operation: &'static str) -> Result<DataType> {
@@ -1281,12 +1330,9 @@ fn canonical_edge_dataframe_from_owned_series(
     weights: Option<&cudf::Series>,
     operation: &'static str,
 ) -> Result<cudf::DataFrame> {
-    let mut pairs = vec![
-        (NORMALIZED_SRC_COL.to_string(), src.rename(NORMALIZED_SRC_COL)),
-        (NORMALIZED_DST_COL.to_string(), dst.rename(NORMALIZED_DST_COL)),
-    ];
+    let mut pairs = vec![(NORMALIZED_SRC_COL.to_string(), src.clone()), (NORMALIZED_DST_COL.to_string(), dst.clone())];
     if let Some(weights) = weights {
-        pairs.push((NORMALIZED_WEIGHT_COL.to_string(), weights.rename(NORMALIZED_WEIGHT_COL)));
+        pairs.push((NORMALIZED_WEIGHT_COL.to_string(), weights.clone()));
     }
 
     dataframe_from_named_series(pairs, operation)
@@ -1904,8 +1950,8 @@ pub fn graph_from_dataframe<T: Transposition>(
 ///
 /// let runtime = cudf::Runtime::new().unwrap();
 /// let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
-/// let src = runtime.series("src", &[0i32, 1, 2]).unwrap();
-/// let dst = runtime.series("dst", &[1i32, 2, 0]).unwrap();
+/// let src = runtime.series(&[0i32, 1, 2]).unwrap();
+/// let dst = runtime.series(&[1i32, 2, 0]).unwrap();
 ///
 /// let opts = SeriesGraphOptions::default().renumber();
 /// let graph =
@@ -2156,34 +2202,52 @@ mod tests {
     // ── map_cudf_error tests ────────────────────────────────────────────
 
     #[test]
-    fn map_cudf_error_invalid_argument() {
-        let cudf_err = cudf::Error::new(cudf::ErrorKind::InvalidArgument, "column 'foo' not found");
+    fn map_cudf_error_missing_column_is_invalid_input() {
+        let cudf_err = cudf::testing::error::new_with_for_test(
+            cudf::ErrorCode::MissingColumn,
+            "cudf::testing::missing_column",
+            "column 'foo' not found",
+        );
         let err =
             map_cudf_error_with(cudf_err, "test_op", "input adapter failed", [("column_role", "src".to_string())]);
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
-        assert!(err.is_permanent(), "invalid argument should be permanent");
+        assert!(err.is_permanent(), "missing columns should be permanent");
         assert_eq!(err.message(), "input adapter failed");
+        assert!(err.to_string().contains("cudf_code"), "mapped error should retain cudf metadata");
     }
 
     #[test]
-    fn map_cudf_error_invalid_operation_is_invalid_state() {
-        let cudf_err = cudf::Error::new(cudf::ErrorKind::InvalidOperation, "runtime must not use ambient provenance");
+    fn map_cudf_error_runtime_binding_mismatch_is_invalid_state() {
+        let cudf_err = cudf::testing::error::reanchor_for_test(
+            cudf::testing::error::new_with_for_test(
+                cudf::ErrorCode::RuntimeBindingMismatch,
+                "cudf::testing::runtime_binding::inner",
+                "runtime must not use ambient provenance",
+            ),
+            "cudf::testing::runtime_binding::outer",
+        );
         let err = map_cudf_error(cudf_err, "test_op");
         assert_eq!(err.kind(), ErrorKind::InvalidState);
-        assert!(err.is_permanent(), "invalid operation should be permanent");
+        assert!(err.is_permanent(), "runtime binding mismatches should be permanent");
+        assert!(err.to_string().contains("cudf_called"), "call-chain breadcrumbs should be preserved");
     }
 
     #[test]
-    fn map_cudf_error_cuda_error() {
-        let cudf_err = cudf::Error::new(cudf::ErrorKind::CudaError, "device launch failed");
+    fn map_cudf_error_cuda_runtime_is_temporary_unexpected() {
+        let cudf_err = cudf::testing::error::new_with_for_test(
+            cudf::ErrorCode::CudaRuntime,
+            "cudf::testing::cuda_runtime",
+            "device launch failed",
+        );
         let err = map_cudf_error(cudf_err, "test_op");
         assert_eq!(err.kind(), ErrorKind::Unexpected);
-        assert!(err.is_temporary(), "CUDA error should be temporary");
+        assert!(err.is_temporary(), "CUDA runtime failures should be temporary");
     }
 
     #[test]
     fn map_cudf_error_out_of_memory() {
-        let cudf_err = cudf::Error::new(cudf::ErrorKind::OutOfMemory, "alloc failed");
+        let cudf_err =
+            cudf::testing::error::new_with_for_test(cudf::ErrorCode::OutOfMemory, "cudf::testing::oom", "alloc failed");
         let err = map_cudf_error(cudf_err, "test_op");
         assert_eq!(err.kind(), ErrorKind::OutOfMemory);
         assert!(err.is_temporary(), "OOM should be temporary");
@@ -2191,26 +2255,32 @@ mod tests {
 
     #[test]
     fn map_cudf_error_io_error() {
-        let cudf_err = cudf::Error::new(cudf::ErrorKind::IoError, "file not found");
+        let cudf_err =
+            cudf::testing::error::new_with_for_test(cudf::ErrorCode::IoFailure, "cudf::testing::io", "file not found");
         let err = map_cudf_error(cudf_err, "test_op");
         assert_eq!(err.kind(), ErrorKind::IoError);
         assert!(err.is_permanent(), "I/O errors should be permanent by default");
     }
 
     #[test]
-    fn map_cudf_error_not_found_is_io_error() {
-        let cudf_err = cudf::Error::new(cudf::ErrorKind::NotFound, "file not found");
+    fn map_cudf_error_fatal_cuda_is_persistent_unexpected() {
+        let cudf_err = cudf::testing::error::new_with_for_test(
+            cudf::ErrorCode::FatalCuda,
+            "cudf::testing::fatal_cuda",
+            "device entered fatal state",
+        );
         let err = map_cudf_error(cudf_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::IoError);
-        assert!(err.is_permanent(), "not found should be treated as permanent I/O by default");
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert!(err.is_persistent(), "fatal CUDA failures should be persistent");
     }
 
     #[test]
-    fn map_cudf_error_unknown() {
-        let cudf_err = cudf::Error::new(cudf::ErrorKind::Unknown, "something else");
+    fn map_cudf_error_foreign_invariant_violation_is_invalid_state() {
+        let cudf_err = cudf::testing::error::foreign_invariant_violation_for_test();
         let err = map_cudf_error(cudf_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::Unexpected);
-        assert!(err.is_permanent(), "unknown should be permanent (default)");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert!(err.is_permanent(), "foreign invariant violations should be permanent");
+        assert!(err.to_string().contains("cudf_detail"), "foreign details should be preserved");
     }
 
     #[test]
