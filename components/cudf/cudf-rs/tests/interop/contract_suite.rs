@@ -10,6 +10,8 @@ mod owned_transfer_tests;
 mod partitioned_export_tests;
 #[path = "prepared_export_tests.rs"]
 mod prepared_export_tests;
+#[path = "runtime_execution_binding_tests.rs"]
+mod runtime_execution_binding_tests;
 #[path = "send_sync_contract_tests.rs"]
 mod send_sync_contract_tests;
 #[path = "single_gpu_contract_validation_tests.rs"]

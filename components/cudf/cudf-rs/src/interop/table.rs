@@ -1,5 +1,6 @@
 use super::{
     table_export::{
+        prepare_into_owned_table_root, prepare_into_owned_table_root_with_readiness,
         transfer_from_owned_table_with_runtime_release, transfer_from_owned_table_with_runtime_release_synchronization,
     },
     *,
@@ -314,6 +315,18 @@ impl Table {
         <Self as TryPrepareDeviceTableExport>::try_prepare_device_table_export(self)
     }
 
+    /// Move this owned low-level table into a producer-rooted shared prepared
+    /// device export.
+    ///
+    /// This consuming variant upgrades the table itself into the prepared
+    /// export root so the returned export can retain honest producer
+    /// ownership. Borrow-preserving table exports remain available through
+    /// [`Table::try_prepare_device_table_export`] when callers explicitly want
+    /// a non-owning projection instead.
+    pub fn try_into_prepared_device_table_export(self) -> Result<PreparedTableExport<'static>, InteropError> {
+        prepare_into_owned_table_root(self, None, "interop::Table::try_into_prepared_device_table_export")
+    }
+
     /// Project this owned low-level table into the shared RAPIDS prepared host
     /// export profile.
     ///
@@ -373,6 +386,17 @@ impl Table {
         let view = self.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let (default_device, readiness) = prepared_device_event_readiness(operation, self.execution_domain(), event)?;
         prepare_table_export_from_view_with_readiness(&view, None, operation, default_device, readiness)
+    }
+
+    /// Move this owned low-level table into a producer-rooted shared prepared
+    /// device export with explicit event-ordered readiness.
+    pub fn try_into_prepared_device_table_export_with_event(
+        self,
+        event: &CudaEvent,
+    ) -> Result<PreparedTableExport<'static>, InteropError> {
+        let operation = "interop::Table::try_into_prepared_device_table_export_with_event";
+        let readiness = prepared_device_event_readiness(operation, self.execution_domain(), event)?.1;
+        prepare_into_owned_table_root_with_readiness(self, None, operation, readiness)
     }
 }
 

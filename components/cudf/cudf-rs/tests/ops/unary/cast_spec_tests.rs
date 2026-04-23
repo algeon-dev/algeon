@@ -5,7 +5,10 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataType, ErrorCode, ErrorKind, TimestampResolution, TypeId};
+use cudf::{
+    DataType, ErrorCode, ErrorKind, TimestampResolution, TypeId,
+    core::error::{FactKeyName, FactValue},
+};
 
 // ===========================================================================
 // Integer width widening (lossless)
@@ -301,7 +304,7 @@ fn test_to_numeric_rejects_non_numeric_target() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "series::to_numeric");
-    assert_eq!(crate::common::error_context_value(&err, "type_id"), Some("string"));
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
 }
 
 #[test]

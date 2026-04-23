@@ -34,7 +34,7 @@ error[E0603]: struct `OwnedColumnTransfer` is private
 note: the struct `OwnedColumnTransfer` is defined here
  --> src/interop/mod.rs
   |
-  |     OwnedColumnTransfer, OwnedTableTransfer, PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition,
+  |     OwnedColumnTransfer, OwnedTableTransfer, OwnedTableTransferParts, PartitionedOwnedTableTransfer,
   |     ^^^^^^^^^^^^^^^^^^^
 help: import `OwnedColumnTransfer` directly
   |

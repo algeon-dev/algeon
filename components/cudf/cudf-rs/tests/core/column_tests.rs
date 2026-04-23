@@ -63,12 +63,12 @@ fn test_column_view_len_metadata_failure_maps_to_invariant_violation() {
     let err = view.len().unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "column_view::len");
-    assert_eq!(error_context_value(&err, "resource"), Some("column_view_metadata"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_foreign_column_view_metadata"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_view_metadata"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_foreign_column_view_metadata"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the foreign column view exposes valid dtype, size, null-count, child-count, and offset metadata")
     );
 }
@@ -82,14 +82,14 @@ fn test_to_host_validity_metadata_failure_preserves_top_level_operation() {
     let err = view.to_host_validity().unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "column_view::to_host_validity");
     assert!(
-        err.context().iter().any(|(key, value)| *key == "called" && value == "column_view::len"),
-        "expected helper call history, got {:?}",
-        err.context()
+        err.call_chain().contains(&"column_view::len"),
+        "expected helper call history in call_chain, got {:?}",
+        err.call_chain()
     );
-    assert_eq!(error_context_value(&err, "resource"), Some("column_view_metadata"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_view_metadata"));
 }
 
 #[test]
@@ -101,14 +101,14 @@ fn test_to_host_null_mask_bytes_metadata_failure_preserves_top_level_operation()
     let err = view.to_host_null_mask_bytes().unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "column_view::to_host_null_mask_bytes");
     assert!(
-        err.context().iter().any(|(key, value)| *key == "called" && value == "column_view::len"),
-        "expected helper call history, got {:?}",
-        err.context()
+        err.call_chain().contains(&"column_view::len"),
+        "expected helper call history in call_chain, got {:?}",
+        err.call_chain()
     );
-    assert_eq!(error_context_value(&err, "resource"), Some("column_view_metadata"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_view_metadata"));
 }
 
 #[test]
@@ -120,12 +120,12 @@ fn test_column_view_null_count_metadata_failure_maps_to_invariant_violation() {
     let err = view.null_count().unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "column_view::null_count");
-    assert_eq!(error_context_value(&err, "resource"), Some("column_view_metadata"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_foreign_column_view_metadata"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_view_metadata"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_foreign_column_view_metadata"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the foreign column view exposes valid dtype, size, null-count, child-count, and offset metadata")
     );
 }
@@ -184,10 +184,10 @@ fn test_to_optional_vec_type_mismatch_error() {
     let err = view.to_optional_vec::<i32>().unwrap_err();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("float64"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "actual_type_id"), None);
-    assert_eq!(error_context_value(&err, "requested_type_id"), None);
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("float64"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "actual_type_id").as_deref(), None);
+    assert_eq!(error_context_value(&err, "requested_type_id").as_deref(), None);
 }
 
 #[test]
@@ -227,10 +227,10 @@ fn test_mismatched_validity_length() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "column::from_slice_nullable_with_runtime");
-    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
-    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
-    assert_eq!(error_context_value(&err, "data_len"), None);
-    assert_eq!(error_context_value(&err, "validity_len"), None);
+    assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
+    assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "data_len").as_deref(), None);
+    assert_eq!(error_context_value(&err, "validity_len").as_deref(), None);
 }
 
 #[test]
@@ -347,8 +347,8 @@ fn test_child_rejects_out_of_bounds_index_without_segfault() {
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::IndexOutOfBounds);
-    assert_eq!(error_context_value(&err, "child_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "num_children"), Some("0"));
+    assert_eq!(error_context_value(&err, "child_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "num_children").as_deref(), Some("0"));
     assert!(err.to_string().contains("out of bounds"), "unexpected error: {err}");
 }
 
@@ -361,10 +361,12 @@ fn test_column_device_slice_type_mismatch_uses_canonical_type_context() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "column::device_slice");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("float64"));
-    assert_eq!(error_context_value(&err, "actual_type_id"), None);
-    assert_eq!(error_context_value(&err, "requested_type_id"), None);
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("float64"));
+    assert_eq!(err.detail_value("left_type_id"), None);
+    assert_eq!(err.detail_value("right_type_id"), None);
+    assert_eq!(error_context_value(&err, "actual_type_id").as_deref(), None);
+    assert_eq!(error_context_value(&err, "requested_type_id").as_deref(), None);
 }
 
 #[test]
@@ -377,8 +379,8 @@ fn test_child_rejects_usize_indices_outside_i32_range() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::IndexOutOfBounds);
     assert_eq!(err.operation(), "column_view::child");
-    assert_eq!(error_context_value(&err, "child_index"), Some(usize::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "num_children"), Some("0"));
+    assert_eq!(error_context_value(&err, "child_index").as_deref(), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "num_children").as_deref(), Some("0"));
 }
 
 #[test]
@@ -390,11 +392,11 @@ fn test_testing_slice_view_rejects_start_over_i32_max_with_row_range_contract() 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "testing::column::slice_view");
-    assert_eq!(error_context_value(&err, "resource"), Some("row_range"));
-    assert_eq!(error_context_value(&err, "reason"), Some("start_exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "start_row"), Some(usize::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "length"), None);
-    assert_eq!(error_context_value(&err, "row_count"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_range"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("start_exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "start_row").as_deref(), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "length").as_deref(), None);
+    assert_eq!(error_context_value(&err, "row_count").as_deref(), None);
 }
 
 #[test]
@@ -407,10 +409,10 @@ fn test_testing_slice_view_rejects_row_count_over_i32_max_with_canonical_vocabul
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "testing::column::slice_view");
-    assert_eq!(error_context_value(&err, "resource"), Some("row_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "row_count"), Some(expected.as_str()));
-    assert_eq!(error_context_value(&err, "length"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "row_count").as_deref(), Some(expected.as_str()));
+    assert_eq!(error_context_value(&err, "length").as_deref(), None);
 }
 
 #[test]
@@ -423,27 +425,27 @@ fn test_testing_slice_view_rejects_end_overflow_with_row_range_context() {
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "testing::column::slice_view");
-    assert_eq!(error_context_value(&err, "resource"), Some("row_range"));
-    assert_eq!(error_context_value(&err, "reason"), Some("end_overflowed_usize"));
-    assert_eq!(error_context_value(&err, "start_row"), Some("1"));
-    assert_eq!(error_context_value(&err, "end_row"), Some(expected_end.as_str()));
-    assert_eq!(error_context_value(&err, "length"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_range"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("end_overflowed_usize"));
+    assert_eq!(error_context_value(&err, "start_row").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "end_row").as_deref(), Some(expected_end.as_str()));
+    assert_eq!(error_context_value(&err, "length").as_deref(), None);
 }
 
 #[test]
 fn test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract() {
-    let err = cudf::testing::trigger_column_view_fixed_width_host_byte_range_overflow_for_test().unwrap_err();
+    let err = cudf::testing::column::trigger_column_view_fixed_width_host_byte_range_overflow_for_test().unwrap_err();
     let expected = usize::MAX.to_string();
 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "testing::column_view::to_fixed_width_host_bytes");
-    assert_eq!(error_context_value(&err, "resource"), Some("host_byte_range"));
-    assert_eq!(error_context_value(&err, "reason"), Some("size_overflowed_usize"));
-    assert_eq!(error_context_value(&err, "row_count"), Some(expected.as_str()));
-    assert_eq!(error_context_value(&err, "elem_size_bytes"), Some("2"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("int16"));
-    assert_eq!(error_context_value(&err, "len"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("host_byte_range"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("size_overflowed_usize"));
+    assert_eq!(error_context_value(&err, "row_count").as_deref(), Some(expected.as_str()));
+    assert_eq!(error_context_value(&err, "elem_size_bytes").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int16"));
+    assert_eq!(error_context_value(&err, "len").as_deref(), None);
 }
 
 #[test]
@@ -526,14 +528,14 @@ fn test_to_raw_bytes_rejects_non_byte_type_with_stable_contract() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
 
-    let err =
-        cudf::testing::column_view_to_raw_bytes_for_test(&view).expect_err("expected Int32 raw-byte export to fail");
+    let err = cudf::testing::column::column_view_to_raw_bytes_for_test(&view)
+        .expect_err("expected Int32 raw-byte export to fail");
 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "column_view::to_raw_bytes");
-    assert_eq!(error_context_value(&err, "type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "actual_type_id"), None);
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "actual_type_id").as_deref(), None);
 }
 
 #[test]
@@ -541,14 +543,14 @@ fn test_to_fixed_width_host_bytes_rejects_string_type_with_stable_contract() {
     let col = crate::common::column_from_strs(&["alpha", "beta"]).unwrap();
     let view = col.testing_view().unwrap();
 
-    let err = cudf::testing::column_view_to_fixed_width_host_bytes_for_test(&view)
+    let err = cudf::testing::column::column_view_to_fixed_width_host_bytes_for_test(&view)
         .expect_err("expected STRING fixed-width host export to fail");
 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "column_view::to_fixed_width_host_bytes");
-    assert_eq!(error_context_value(&err, "type_id"), Some("string"));
-    assert_eq!(error_context_value(&err, "actual_type_id"), None);
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("string"));
+    assert_eq!(error_context_value(&err, "actual_type_id").as_deref(), None);
 }
 
 #[test]
@@ -745,15 +747,15 @@ fn test_from_device_ptr_null_pointer_with_nonzero_len() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::NullUnexpected);
     assert_eq!(err.operation(), "column::from_device_ptr_with_runtime");
-    assert_eq!(error_context_value(&err, "resource"), Some("device_ptr"));
-    assert_eq!(error_context_value(&err, "reason"), Some("null_pointer_with_positive_row_count"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("device_ptr"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("null_pointer_with_positive_row_count"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure device_ptr is non-null whenever row_count is positive"),
     );
-    assert_eq!(error_context_value(&err, "row_count"), Some("5"));
-    assert_eq!(error_context_value(&err, "len"), None);
-    assert_eq!(error_context_value(&err, "type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "row_count").as_deref(), Some("5"));
+    assert_eq!(error_context_value(&err, "len").as_deref(), None);
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
 }
 
 #[test]
@@ -797,10 +799,10 @@ fn test_from_device_ptr_rejects_non_fixed_width_type() {
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "column::from_device_ptr_with_runtime");
-    assert_eq!(error_context_value(&err, "reason"), Some("requires_fixed_width_type"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("requires_fixed_width_type"));
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("string"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("use a fixed-width type when importing a raw device pointer as a cudf column"),
     );
 }
@@ -891,11 +893,11 @@ fn test_nulls_rejects_length_over_i32_max() {
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "column::nulls_with_runtime");
-    assert_eq!(error_context_value(&err, "resource"), Some("row_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "len"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "len").as_deref(), None);
     let expected = ((i32::MAX as usize) + 1).to_string();
-    assert_eq!(error_context_value(&err, "row_count"), Some(expected.as_str()));
+    assert_eq!(error_context_value(&err, "row_count").as_deref(), Some(expected.as_str()));
 }
 
 #[test]
@@ -905,10 +907,10 @@ fn test_nulls_rejects_list_type_with_stable_contract() {
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "column::nulls_with_runtime");
-    assert_eq!(error_context_value(&err, "reason"), Some("requires_fixed_width_type"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("list"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("requires_fixed_width_type"));
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("list"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("use a fixed-width type or STRING when constructing an all-null column"),
     );
 }

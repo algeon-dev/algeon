@@ -8,10 +8,10 @@ fn assert_empty_group_key_contract(err: &cudf::Error, operation: &str) {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), operation);
-    assert_eq!(error_context_value(err, "resource"), Some("group_keys"));
-    assert_eq!(error_context_value(err, "reason"), Some("empty_group_keys"));
-    assert_eq!(error_context_value(err, "remedy"), Some("provide at least one group key column"));
-    assert_eq!(error_context_value(err, "keys_count"), Some("0"));
+    assert_eq!(error_context_value(err, "resource").as_deref(), Some("group_keys"));
+    assert_eq!(error_context_value(err, "reason").as_deref(), Some("empty_group_keys"));
+    assert_eq!(error_context_value(err, "remedy").as_deref(), Some("provide at least one group key column"));
+    assert_eq!(error_context_value(err, "keys_count").as_deref(), Some("0"));
 }
 
 #[test]

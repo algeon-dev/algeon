@@ -3,6 +3,7 @@
 //! All tests require a GPU.
 use cudf::{
     DataFrame, ErrorCode, ErrorKind,
+    core::error::{FactKeyName, FactValue},
     frame::dataframe::{JsonReadOptions, JsonWriteOptions},
     testing::prelude::*,
 };
@@ -149,8 +150,8 @@ fn test_dataframe_json_read_nonexistent_file() {
     let rt = sample_runtime();
     let err = DataFrame::read_json(&rt, "/nonexistent/file.jsonl").expect_err("missing JSON file should fail");
 
-    assert_eq!(err.code(), ErrorCode::MissingResource);
-    assert_eq!(err.kind(), ErrorKind::NotFound);
+    assert_eq!(err.code(), ErrorCode::IoFailure);
+    assert_eq!(err.kind(), ErrorKind::DependencyFailure);
 }
 
 #[test]
@@ -166,14 +167,16 @@ fn test_dataframe_json_read_rejects_missing_schema_metadata_for_nonempty_table()
     let err = DataFrame::read_json(&rt, &path).expect_err("missing schema metadata should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "dataframe::read_json_with_options");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("0"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("missing_reader_schema_names"));
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(0)));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(2)));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("missing_reader_schema_names"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the reader returns one schema name per table column for non-empty results")
     );
 }

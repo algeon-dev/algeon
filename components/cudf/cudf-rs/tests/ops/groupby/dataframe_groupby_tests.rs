@@ -1,6 +1,9 @@
 //! Tests for DataFrame groupby aggregation.
 
-use cudf::{AggSpec, ErrorCode, ErrorKind, GroupByAgg};
+use cudf::{
+    AggSpec, ErrorCode, ErrorKind, GroupByAgg,
+    core::error::{FactKeyName, FactValue},
+};
 
 use crate::common::{
     arm_next_groupby_negative_total_columns_fault, assert_missing_column_error, column_from_slice, error_context_value,
@@ -10,8 +13,8 @@ fn assert_high_level_groupby_validation_error(err: &cudf::Error, operation: &str
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), operation);
-    assert_eq!(error_context_value(err, "reason"), Some(reason));
-    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
+    assert_eq!(error_context_value(err, "reason").as_deref(), Some(reason));
+    assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
 }
 
 // ---------------------------------------------------------------------------
@@ -259,16 +262,16 @@ fn test_groupby_high_level_rejects_negative_foreign_result_column_count_with_sta
     let err = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "groupby::GroupBy::agg");
-    assert_eq!(error_context_value(&err, "resource"), Some("result_columns"));
-    assert_eq!(error_context_value(&err, "reason"), Some("negative_column_count"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("result_columns"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("negative_column_count"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the foreign groupby backend returns a non-negative result column count")
     );
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("-1"));
-    assert_eq!(error_context_value(&err, "out_total_columns"), None);
+    assert_eq!(error_context_value(&err, "reported_table_column_count").as_deref(), Some("-1"));
+    assert_eq!(error_context_value(&err, "out_total_columns").as_deref(), None);
 }
 
 #[test]
@@ -291,61 +294,62 @@ fn test_groupby_no_aggregations_returns_error() {
 
 #[test]
 fn test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract() {
-    let err = cudf::testing::trigger_groupby_result_group_index_out_of_bounds_for_test().unwrap_err();
+    let err = cudf::testing::groupby::trigger_groupby_result_group_index_out_of_bounds_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "groupby::GroupBy::agg");
-    assert_eq!(error_context_value(&err, "resource"), Some("groupby_result_shape"));
-    assert_eq!(error_context_value(&err, "reason"), Some("result_group_index_out_of_bounds"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("groupby_result_shape"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("result_group_index_out_of_bounds"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some(
             "ensure the foreign groupby backend returns one result column per requested aggregation in stable request order"
         )
     );
-    assert_eq!(error_context_value(&err, "request_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "group_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "group_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "request_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "group_index").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "group_count").as_deref(), Some("1"));
 }
 
 #[test]
 fn test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract() {
-    let err = cudf::testing::trigger_groupby_result_column_index_out_of_bounds_for_test().unwrap_err();
+    let err = cudf::testing::groupby::trigger_groupby_result_column_index_out_of_bounds_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "groupby::GroupBy::agg");
-    assert_eq!(error_context_value(&err, "resource"), Some("groupby_result_shape"));
-    assert_eq!(error_context_value(&err, "reason"), Some("result_column_index_out_of_bounds"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("groupby_result_shape"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("result_column_index_out_of_bounds"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some(
             "ensure the foreign groupby backend returns one result column per requested aggregation in stable request order"
         )
     );
-    assert_eq!(error_context_value(&err, "request_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "group_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "agg_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "result_column_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "request_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "group_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "agg_index").as_deref(), Some("1"));
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(1)));
+    assert_eq!(error_context_value(&err, "result_column_count").as_deref(), Some("1"));
 }
 
 #[test]
 fn test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract() {
-    let err = cudf::testing::trigger_groupby_duplicate_result_column_consumption_for_test().unwrap_err();
+    let err = cudf::testing::groupby::trigger_groupby_duplicate_result_column_consumption_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "groupby::GroupBy::agg");
-    assert_eq!(error_context_value(&err, "resource"), Some("groupby_result_shape"));
-    assert_eq!(error_context_value(&err, "reason"), Some("duplicate_result_column_consumption"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("groupby_result_shape"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("duplicate_result_column_consumption"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some(
             "ensure the foreign groupby backend returns one result column per requested aggregation in stable request order"
         )
     );
-    assert_eq!(error_context_value(&err, "request_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "group_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "agg_index"), Some("0"));
+    assert_eq!(error_context_value(&err, "request_index").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "group_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "agg_index").as_deref(), Some("0"));
 }

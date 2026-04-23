@@ -45,8 +45,8 @@ fn assert_merge_split_validation_error(err: &cudf::Error, operation: &str, reaso
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), operation);
-    assert_eq!(error_context_value(err, "reason"), Some(reason));
-    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
+    assert_eq!(error_context_value(err, "reason").as_deref(), Some(reason));
+    assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
 }
 
 #[test]
@@ -313,8 +313,8 @@ fn test_merge_split_left_on_right_on_length_mismatch() {
         "join_key_count_mismatch",
         "set left_on() and right_on() with the same number of key columns",
     );
-    assert_eq!(error_context_value(&err, "left_on_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "right_on_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "left_on_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "right_on_count").as_deref(), Some("2"));
 }
 
 #[test]

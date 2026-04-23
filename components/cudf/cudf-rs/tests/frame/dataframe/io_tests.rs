@@ -4,7 +4,10 @@ use std::os::unix::ffi::OsStringExt;
 
 use cudf::{
     DataFrame, ErrorCode, ErrorKind,
-    core::Table,
+    core::{
+        Table,
+        error::{FactKeyName, FactValue},
+    },
     frame::dataframe::{CsvReadOptions, CsvWriteOptions, ParquetReadOptions},
     testing::prelude::*,
 };
@@ -211,11 +214,14 @@ fn test_read_csv_with_options_rejects_explicit_name_count_mismatch_with_stable_c
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "dataframe::read_csv_with_options");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("mismatch_with_table_column_count"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("ensure column_name_count matches table_column_count"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("mismatch_with_table_column_count"));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("ensure column_name_count matches table_column_count")
+    );
 }
 
 #[test]
@@ -361,8 +367,8 @@ fn test_dataframe_read_csv_nonexistent_file_reports_not_found() {
     let err = DataFrame::read_csv(&rt, "/tmp/nonexistent_cudf_test_file_12345.csv")
         .expect_err("missing CSV file should fail");
 
-    assert_eq!(err.code(), ErrorCode::MissingResource);
-    assert_eq!(err.kind(), ErrorKind::NotFound);
+    assert_eq!(err.code(), ErrorCode::IoFailure);
+    assert_eq!(err.kind(), ErrorKind::DependencyFailure);
 }
 
 #[test]
@@ -371,8 +377,8 @@ fn test_dataframe_read_parquet_nonexistent_file_reports_not_found() {
     let err = DataFrame::read_parquet(&rt, "/tmp/nonexistent_cudf_test_file_12345.parquet")
         .expect_err("missing Parquet file should fail");
 
-    assert_eq!(err.code(), ErrorCode::MissingResource);
-    assert_eq!(err.kind(), ErrorKind::NotFound);
+    assert_eq!(err.code(), ErrorCode::IoFailure);
+    assert_eq!(err.kind(), ErrorKind::DependencyFailure);
 }
 
 #[cfg(unix)]
@@ -383,12 +389,17 @@ fn test_dataframe_read_csv_rejects_non_utf8_path_with_high_level_operation_conte
     let err = DataFrame::read_csv(&rt, std::path::PathBuf::from(path))
         .expect_err("non-UTF8 paths should fail before filesystem access");
 
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    // Non-UTF-8 path is now classified as the domestic `IoFailure` leaf.
+    assert_eq!(err.code(), ErrorCode::IoFailure);
+    assert_eq!(err.kind(), ErrorKind::DependencyFailure);
     assert_eq!(err.operation(), "dataframe::read_csv_with_options");
-    assert_eq!(error_context_value(&err, "called"), Some("io::csv::read_csv"));
-    assert_eq!(error_context_value(&err, "resource"), Some("path"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_utf8"));
+    assert!(
+        err.call_chain().contains(&"io::csv::read_csv"),
+        "expected reanchor trail to include io::csv::read_csv, got {:?}",
+        err.call_chain()
+    );
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("path"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_utf8"));
 }
 
 #[test]
@@ -407,14 +418,16 @@ fn test_dataframe_read_parquet_rejects_missing_schema_metadata_for_nonempty_tabl
     let err = DataFrame::read_parquet(&rt, &path).expect_err("missing schema metadata should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "dataframe::read_parquet_with_options");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("0"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("missing_reader_schema_names"));
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(0)));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("missing_reader_schema_names"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the reader returns one schema name per table column for non-empty results")
     );
 }
@@ -435,12 +448,17 @@ fn test_dataframe_read_parquet_metadata_invalid_utf8_name_uses_canonical_fault_c
     let err = DataFrame::read_parquet(&rt, &path).expect_err("invalid UTF-8 metadata should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "dataframe::read_parquet_with_options");
-    assert_eq!(error_context_value(&err, "called"), Some("io::parquet::read_parquet_table"));
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "column_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_utf8"));
-    assert_eq!(error_context_value(&err, "name_index"), None);
+    assert!(
+        err.call_chain().contains(&"io::parquet::read_parquet_table"),
+        "expected reanchor trail to include io::parquet::read_parquet_table, got {:?}",
+        err.call_chain()
+    );
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(0)));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_utf8"));
+    assert_eq!(error_context_value(&err, "name_index").as_deref(), None);
 }

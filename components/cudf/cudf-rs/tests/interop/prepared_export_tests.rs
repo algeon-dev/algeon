@@ -11,6 +11,7 @@ use std::sync::{
 
 use cudf::{
     DataFrame, DeviceId, Runtime, TypeId,
+    core::Table,
     frame::dataframe::JsonReadOptions,
     interop::cuda_explicit_completion_required_lease_backend,
     ops::dictionary,
@@ -247,14 +248,21 @@ mod lease_contracts {
 
         let message = err.to_string();
         assert!(message.contains("device ordinal"));
-        assert!(message.contains(&invalid_device.to_string()));
+        // Under the truthful-error contract (§4.5), structured data such as the
+        // failing ordinal lives in facts/details, not string-formatted into
+        // `message`. The InteropError's top-level message is the one-line
+        // summary ("device ordinal out of range") while the numeric ordinal is
+        // asserted via the preserved cudf source's Display (which surfaces its
+        // details) and via the InteropError's context below.
         assert!(!message.contains("InvalidOperation"));
         assert!(!message.contains("at DeviceId::new"));
         assert!(!message.contains("context:"));
         assert!(!message.contains("called"));
         let source =
             std::error::Error::source(&err).expect("expected preserved cudf source when remapped into InteropError");
-        assert!(source.to_string().contains("device ordinal"));
+        let source_rendered = source.to_string();
+        assert!(source_rendered.contains("device ordinal"));
+        assert!(source_rendered.contains(&invalid_device.to_string()));
         assert!(
             err.context()
                 .iter()
@@ -413,10 +421,16 @@ mod lease_contracts {
         common::set_current_device(device0);
         let err = series.try_prepare_device_column_export_with_event(&wrong_device_event).unwrap_err();
         assert_eq!(err.kind(), InteropErrorKind::ReadinessMismatch);
-        assert_eq!(interop_error_context_value(&err, "left_device"), Some(device0.ordinal().to_string().as_str()));
-        assert_eq!(interop_error_context_value(&err, "right_device"), Some(device1.ordinal().to_string().as_str()));
-        assert_eq!(interop_error_context_value(&err, "producer_device"), None);
-        assert_eq!(interop_error_context_value(&err, "event_device"), None);
+        assert_eq!(
+            interop_error_context_value(&err, "left_device").as_deref(),
+            Some(device0.ordinal().to_string().as_str())
+        );
+        assert_eq!(
+            interop_error_context_value(&err, "right_device").as_deref(),
+            Some(device1.ordinal().to_string().as_str())
+        );
+        assert_eq!(interop_error_context_value(&err, "producer_device").as_deref(), None);
+        assert_eq!(interop_error_context_value(&err, "event_device").as_deref(), None);
     }
 
     #[test]
@@ -736,117 +750,160 @@ mod device_export_contracts {
 
     #[test]
     fn projection_active_range_overflow_hook_uses_row_count_context() {
-        let err = cudf::testing::trigger_interop_projection_active_range_overflow_for_test().unwrap_err();
+        let err = cudf::testing::interop::trigger_interop_projection_active_range_overflow_for_test().unwrap_err();
         let expected = usize::MAX.to_string();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation"),
+            interop_error_context_value(&err, "operation").as_deref(),
             Some("testing::interop::projection::active_range_overflow")
         );
-        assert_eq!(interop_error_context_value(&err, "resource"), Some("row_range"));
-        assert_eq!(interop_error_context_value(&err, "reason"), Some("end_overflowed_usize"));
-        assert_eq!(interop_error_context_value(&err, "offset"), Some(expected.as_str()));
-        assert_eq!(interop_error_context_value(&err, "row_count"), Some("1"));
-        assert_eq!(interop_error_context_value(&err, "len"), None);
+        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("row_range"));
+        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("end_overflowed_usize"));
+        assert_eq!(interop_error_context_value(&err, "offset").as_deref(), Some(expected.as_str()));
+        assert_eq!(interop_error_context_value(&err, "row_count").as_deref(), Some("1"));
+        assert_eq!(interop_error_context_value(&err, "len").as_deref(), None);
     }
 
     #[test]
     fn projection_negative_offset_hook_uses_offset_contract() {
-        let err = cudf::testing::trigger_interop_projection_negative_offset_for_test().unwrap_err();
+        let err = cudf::testing::interop::trigger_interop_projection_negative_offset_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation"),
+            interop_error_context_value(&err, "operation").as_deref(),
             Some("testing::interop::projection::negative_offset")
         );
-        assert_eq!(interop_error_context_value(&err, "resource"), Some("offset"));
-        assert_eq!(interop_error_context_value(&err, "reason"), Some("negative_value"));
+        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("offset"));
+        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("negative_value"));
         assert_eq!(
-            interop_error_context_value(&err, "remedy"),
+            interop_error_context_value(&err, "remedy").as_deref(),
             Some("normalize the view so offset >= 0 before projection")
         );
-        assert_eq!(interop_error_context_value(&err, "offset"), Some("-1"));
+        assert_eq!(interop_error_context_value(&err, "offset").as_deref(), Some("-1"));
     }
 
     #[test]
     fn projection_missing_string_offsets_child_hook_uses_child_count_contract() {
-        let err = cudf::testing::trigger_interop_projection_missing_string_offsets_child_for_test().unwrap_err();
+        let err =
+            cudf::testing::interop::trigger_interop_projection_missing_string_offsets_child_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation"),
+            interop_error_context_value(&err, "operation").as_deref(),
             Some("testing::interop::projection::missing_string_offsets_child")
         );
-        assert_eq!(interop_error_context_value(&err, "resource"), Some("child_count"));
-        assert_eq!(interop_error_context_value(&err, "reason"), Some("requires_offsets_child"));
-        assert_eq!(interop_error_context_value(&err, "type_id"), Some("string"));
-        assert_eq!(interop_error_context_value(&err, "child_count"), Some("0"));
-        assert_eq!(interop_error_context_value(&err, "required_child_count"), Some("1"));
-        assert_eq!(interop_error_context_value(&err, "num_children"), None);
+        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("child_count"));
+        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("requires_offsets_child"));
+        assert_eq!(interop_error_context_value(&err, "type_id").as_deref(), Some("string"));
+        assert_eq!(interop_error_context_value(&err, "child_count").as_deref(), Some("0"));
+        assert_eq!(interop_error_context_value(&err, "required_child_count").as_deref(), Some("1"));
+        assert_eq!(interop_error_context_value(&err, "num_children").as_deref(), None);
     }
 
     #[test]
     fn projection_list_offsets_width_mismatch_hook_uses_layout_contract() {
-        let err = cudf::testing::trigger_interop_projection_list_offsets_width_mismatch_for_test().unwrap_err();
+        let err =
+            cudf::testing::interop::trigger_interop_projection_list_offsets_width_mismatch_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation"),
+            interop_error_context_value(&err, "operation").as_deref(),
             Some("testing::interop::projection::list_offsets_width_mismatch")
         );
-        assert_eq!(interop_error_context_value(&err, "resource"), Some("offsets_layout"));
-        assert_eq!(interop_error_context_value(&err, "reason"), Some("requires_i32_width"));
-        assert_eq!(interop_error_context_value(&err, "actual_width_bytes"), Some("8"));
-        assert_eq!(interop_error_context_value(&err, "required_width_bytes"), Some("4"));
-        assert_eq!(interop_error_context_value(&err, "offsets_elem_size"), None);
+        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("offsets_layout"));
+        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("requires_i32_width"));
+        assert_eq!(interop_error_context_value(&err, "actual_width_bytes").as_deref(), Some("8"));
+        assert_eq!(interop_error_context_value(&err, "required_width_bytes").as_deref(), Some("4"));
+        assert_eq!(interop_error_context_value(&err, "offsets_elem_size").as_deref(), None);
     }
 
     #[test]
     fn projection_dictionary_indices_width_mismatch_hook_uses_layout_contract() {
-        let err = cudf::testing::trigger_interop_projection_dictionary_indices_width_mismatch_for_test().unwrap_err();
+        let err = cudf::testing::interop::trigger_interop_projection_dictionary_indices_width_mismatch_for_test()
+            .unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation"),
+            interop_error_context_value(&err, "operation").as_deref(),
             Some("testing::interop::projection::dictionary_indices_width_mismatch")
         );
-        assert_eq!(interop_error_context_value(&err, "resource"), Some("indices_layout"));
-        assert_eq!(interop_error_context_value(&err, "reason"), Some("requires_i32_width"));
-        assert_eq!(interop_error_context_value(&err, "actual_width_bytes"), Some("2"));
-        assert_eq!(interop_error_context_value(&err, "required_width_bytes"), Some("4"));
-        assert_eq!(interop_error_context_value(&err, "indices_elem_size"), None);
+        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("indices_layout"));
+        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("requires_i32_width"));
+        assert_eq!(interop_error_context_value(&err, "actual_width_bytes").as_deref(), Some("2"));
+        assert_eq!(interop_error_context_value(&err, "required_width_bytes").as_deref(), Some("4"));
+        assert_eq!(interop_error_context_value(&err, "indices_elem_size").as_deref(), None);
     }
 
     #[test]
     fn projection_host_offsets_too_small_hook_uses_offsets_range_contract() {
-        let err = cudf::testing::trigger_interop_projection_host_offsets_too_small_for_test().unwrap_err();
+        let err = cudf::testing::interop::trigger_interop_projection_host_offsets_too_small_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation"),
+            interop_error_context_value(&err, "operation").as_deref(),
             Some("testing::interop::projection::host_offsets_too_small")
         );
-        assert_eq!(interop_error_context_value(&err, "resource"), Some("offsets_range"));
-        assert_eq!(interop_error_context_value(&err, "reason"), Some("too_small_for_active_range"));
-        assert_eq!(interop_error_context_value(&err, "offset"), Some("3"));
-        assert_eq!(interop_error_context_value(&err, "row_count"), Some("2"));
-        assert_eq!(interop_error_context_value(&err, "offset_count"), Some("5"));
-        assert_eq!(interop_error_context_value(&err, "offsets_len"), None);
+        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("offsets_range"));
+        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("too_small_for_active_range"));
+        assert_eq!(interop_error_context_value(&err, "offset").as_deref(), Some("3"));
+        assert_eq!(interop_error_context_value(&err, "row_count").as_deref(), Some("2"));
+        assert_eq!(interop_error_context_value(&err, "offset_count").as_deref(), Some("5"));
+        assert_eq!(interop_error_context_value(&err, "offsets_len").as_deref(), None);
     }
 
     #[test]
     fn projection_missing_null_mask_hook_uses_null_mask_contract() {
-        let err = cudf::testing::trigger_interop_projection_missing_null_mask_for_test().unwrap_err();
+        let err = cudf::testing::interop::trigger_interop_projection_missing_null_mask_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation"),
+            interop_error_context_value(&err, "operation").as_deref(),
             Some("testing::interop::projection::missing_null_mask")
         );
-        assert_eq!(interop_error_context_value(&err, "resource"), Some("null_mask_buffer"));
-        assert_eq!(interop_error_context_value(&err, "reason"), Some("missing_for_nullable_column"));
-        assert_eq!(interop_error_context_value(&err, "row_count"), Some("3"));
+        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("null_mask_buffer"));
+        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("missing_for_nullable_column"));
+        assert_eq!(interop_error_context_value(&err, "row_count").as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn projection_struct_missing_child_hook_uses_child_count_contract() {
+        let err = cudf::testing::interop::trigger_interop_projection_struct_missing_child_for_test().unwrap_err();
+
+        assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+        assert_eq!(
+            interop_error_context_value(&err, "operation").as_deref(),
+            Some("testing::interop::projection::missing_struct_child")
+        );
+        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("child_count"));
+        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("requires_child_column"));
+        assert_eq!(
+            interop_error_context_value(&err, "remedy").as_deref(),
+            Some("expose at least one child column before projecting struct data")
+        );
+        assert_eq!(interop_error_context_value(&err, "type_id").as_deref(), Some("struct"));
+        assert_eq!(interop_error_context_value(&err, "child_count").as_deref(), Some("0"));
+        assert_eq!(interop_error_context_value(&err, "required_child_count").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn interop_column_index_limit_hook_uses_shared_i32_limit_contract() {
+        let err = cudf::testing::interop::trigger_interop_column_index_limit_for_test().unwrap_err();
+        let expected_column_index = usize::MAX.to_string();
+
+        assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+        assert_eq!(
+            interop_error_context_value(&err, "operation").as_deref(),
+            Some("testing::interop::column_index_limit")
+        );
+        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("column_index"));
+        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+        assert_eq!(
+            interop_error_context_value(&err, "remedy").as_deref(),
+            Some("reduce column_index to fit within i32::MAX")
+        );
+        assert_eq!(interop_error_context_value(&err, "column_index").as_deref(), Some(expected_column_index.as_str()));
+        assert_eq!(interop_error_context_value(&err, "index").as_deref(), None);
     }
 
     #[test]
@@ -939,6 +996,32 @@ mod device_export_contracts {
     }
 
     #[test]
+    fn owned_low_level_column_consuming_prepared_export_retains_owner() {
+        let runtime = Runtime::builder().build().unwrap();
+        let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+
+        let export = column.try_into_prepared_device_column_export().unwrap();
+
+        assert!(export.clone_retained_owner().is_some());
+        assert_eq!(export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
+        assert_device_stream_readiness(
+            export.readiness(),
+            runtime.stream().testing_raw_handle_value(),
+            runtime.device(),
+        );
+    }
+
+    #[test]
+    fn borrowed_low_level_column_prepared_export_does_not_fabricate_owner_retention() {
+        let runtime = Runtime::builder().build().unwrap();
+        let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+
+        let export = column.try_prepare_device_column_export().unwrap();
+
+        assert!(export.clone_retained_owner().is_none());
+    }
+
+    #[test]
     fn device_table_export_preserves_names_nullability_readiness_and_low_level_equivalence() {
         let runtime = Runtime::builder().build().unwrap();
         let ids = runtime.series(&[1i32, 2, 3]).unwrap();
@@ -958,6 +1041,36 @@ mod device_export_contracts {
         assert_eq!(frame_export.bindings(), table_export.bindings());
         assert_eq!(frame_export.readiness(), table_export.readiness());
         assert_device_stream_readiness(frame_export.readiness(), expected_stream, runtime.device());
+    }
+
+    #[test]
+    fn owned_low_level_table_consuming_prepared_export_retains_owner() {
+        let runtime = Runtime::builder().build().unwrap();
+        let left = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+        let right = runtime.column_from_slice(&[10i64, 20, 30]).unwrap();
+        let table = Table::from_columns(vec![left, right]).unwrap();
+
+        let export = table.try_into_prepared_device_table_export().unwrap();
+
+        assert!(export.clone_retained_owner().is_some());
+        assert_eq!(export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
+        assert_device_stream_readiness(
+            export.readiness(),
+            runtime.stream().testing_raw_handle_value(),
+            runtime.device(),
+        );
+    }
+
+    #[test]
+    fn borrowed_low_level_table_prepared_export_does_not_fabricate_owner_retention() {
+        let runtime = Runtime::builder().build().unwrap();
+        let left = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+        let right = runtime.column_from_slice(&[10i64, 20, 30]).unwrap();
+        let table = Table::from_columns(vec![left, right]).unwrap();
+
+        let export = table.try_prepare_device_table_export().unwrap();
+
+        assert!(export.clone_retained_owner().is_none());
     }
 
     #[test]

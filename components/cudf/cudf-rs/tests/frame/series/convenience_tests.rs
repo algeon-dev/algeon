@@ -7,6 +7,7 @@
 //! All tests require a GPU.
 use cudf::{
     ErrorCode, ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId,
+    core::error::{FactKeyName, FactValue},
     frame::factorization::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder},
     testing::prelude::*,
 };
@@ -256,8 +257,8 @@ fn test_isin_type_mismatch_uses_canonical_error_contract() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "series::isin");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("float64"));
+    assert_eq!(err.fact_value(FactKeyName::LeftTypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::Float64)));
 }
 
 #[test]
@@ -359,16 +360,16 @@ fn test_nunique_all_unique() {
 
 #[test]
 fn test_nunique_negative_distinct_count_uses_stable_foreign_contract() {
-    let err = cudf::testing::trigger_nunique_negative_distinct_count_for_test().unwrap_err();
+    let err = cudf::testing::series::trigger_nunique_negative_distinct_count_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "series::nunique");
-    assert_eq!(error_context_value(&err, "resource"), Some("distinct_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("negative_count"));
-    assert_eq!(error_context_value(&err, "distinct_count"), Some("-1"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("distinct_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("negative_count"));
+    assert_eq!(error_context_value(&err, "distinct_count").as_deref(), Some("-1"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the foreign reduction backend returns a non-negative distinct count")
     );
 }
@@ -432,8 +433,10 @@ fn test_lookup_rejects_duplicate_keys() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), cudf::ErrorCode::DuplicateKey);
     assert_eq!(err.operation(), "series::lookup");
-    assert_eq!(crate::common::error_context_value(&err, "keys_count"), Some("2"));
-    assert_eq!(crate::common::error_context_value(&err, "distinct_keys_count"), Some("1"));
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.fact_value(FactKeyName::DistinctKeysCount), Some(&FactValue::Usize(1)));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(err.detail_value("distinct_keys_count"), None);
 }
 
 #[test]
@@ -447,11 +450,11 @@ fn test_lookup_rejects_dtype_mismatch() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), cudf::ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "series::lookup");
-    assert_eq!(crate::common::error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(crate::common::error_context_value(&err, "right_type_id"), Some("string"));
-    assert_eq!(crate::common::error_context_value(&err, "type_id"), Some("string"));
-    assert_eq!(crate::common::error_context_value(&err, "output_type_id"), None);
-    assert_eq!(crate::common::error_context_value(&err, "values_type_id"), None);
+    assert_eq!(err.fact_value(FactKeyName::LeftTypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(crate::common::error_context_value(&err, "output_type_id").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "values_type_id").as_deref(), None);
 }
 
 #[test]
@@ -465,12 +468,13 @@ fn test_lookup_rejects_mapping_length_mismatch_with_series_operation() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), cudf::ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "series::lookup");
-    assert_eq!(crate::common::error_context_value(&err, "right_type_id"), Some("string"));
-    assert_eq!(crate::common::error_context_value(&err, "type_id"), Some("string"));
-    assert_eq!(crate::common::error_context_value(&err, "keys_count"), Some("2"));
-    assert_eq!(crate::common::error_context_value(&err, "values_count"), Some("1"));
-    assert_eq!(crate::common::error_context_value(&err, "keys_type_id"), None);
-    assert_eq!(crate::common::error_context_value(&err, "output_type_id"), None);
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.detail_value("values_count"), Some("1"));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(crate::common::error_context_value(&err, "keys_type_id").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "output_type_id").as_deref(), None);
 }
 
 #[test]
@@ -596,8 +600,9 @@ fn test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), cudf::ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "codebook::encode");
-    assert_eq!(crate::common::error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(crate::common::error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(err.fact_value(FactKeyName::LeftTypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::Int32)));
 }
 
 #[test]
@@ -686,10 +691,12 @@ fn test_codebook_from_keys_rejects_duplicate_keys() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), cudf::ErrorCode::DuplicateKey);
     assert_eq!(err.operation(), "codebook::from_keys");
-    assert_eq!(crate::common::error_context_value(&err, "keys_count"), Some("3"));
-    assert_eq!(crate::common::error_context_value(&err, "distinct_keys_count"), Some("2"));
-    assert_eq!(crate::common::error_context_value(&err, "key_count"), None);
-    assert_eq!(crate::common::error_context_value(&err, "distinct_key_count"), None);
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(3)));
+    assert_eq!(err.fact_value(FactKeyName::DistinctKeysCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(err.detail_value("distinct_keys_count"), None);
+    assert_eq!(crate::common::error_context_value(&err, "key_count").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "distinct_key_count").as_deref(), None);
     assert!(err.message().contains("unique") || err.message().contains("duplicate"), "unexpected error: {err}");
 }
 
@@ -812,16 +819,18 @@ fn test_sort_values_rejects_wrong_descending_len() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "series::sort_values");
-    assert_eq!(error_context_value(&err, "resource"), Some("sort_options"));
-    assert_eq!(error_context_value(&err, "reason"), Some("descending_length_mismatch"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("sort_options"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("descending_length_mismatch"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("provide either zero descending flags or exactly one flag per sort key"),
     );
-    assert_eq!(error_context_value(&err, "keys_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "num_keys"), None);
-    assert_eq!(error_context_value(&err, "actual_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "descending_len"), None);
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(1)));
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(error_context_value(&err, "num_keys").as_deref(), None);
+    assert_eq!(err.detail_value("actual_count"), None);
+    assert_eq!(error_context_value(&err, "descending_len").as_deref(), None);
 }
 
 // ===========================================================================

@@ -1,7 +1,10 @@
 //! Tests for Table and TableView.
 use cudf::{
     ErrorCode, Runtime, TypeId,
-    core::Table,
+    core::{
+        Table,
+        error::{FactKeyName, FactValue},
+    },
     testing::{TableView, prelude::*},
 };
 
@@ -83,7 +86,7 @@ fn test_table_from_columns_empty_requires_runtime() {
     assert_eq!(err.kind(), cudf::ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::EmptyConstructionRequiresRuntime);
     assert_eq!(err.operation(), "table::from_columns");
-    assert_eq!(error_context_value(&err, "remedy"), Some("use Runtime::empty_table()"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("use Runtime::empty_table()"));
     assert!(err.message().contains("requires an explicit runtime"), "unexpected error: {err}");
 }
 
@@ -111,24 +114,27 @@ fn test_table_from_columns_mismatched_rows_rejected() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "table::from_columns");
-    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
-    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
 
 #[test]
 fn test_testing_hook_locks_table_column_count_limit_contract() {
-    let err = cudf::testing::trigger_table_column_count_limit_error_for_test().unwrap_err();
+    let err = cudf::testing::core::trigger_table_column_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "table::from_columns");
     assert_eq!(err.message(), "number of columns exceeds i32::MAX");
-    assert_eq!(error_context_value(&err, "resource"), Some("table_column_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some(usize::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce table_column_count to fit within i32::MAX"));
-    assert_eq!(error_context_value(&err, "num_columns"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("table_column_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("reduce table_column_count to fit within i32::MAX")
+    );
+    assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
 #[test]
@@ -141,9 +147,11 @@ fn test_table_view_column_rejects_out_of_bounds_index() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::IndexOutOfBounds);
     assert_eq!(err.operation(), "table_view::column");
-    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "num_columns"), None);
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(1)));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
 #[test]
@@ -157,9 +165,11 @@ fn test_table_view_column_rejects_usize_indices_outside_i32_range() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::IndexOutOfBounds);
     assert_eq!(err.operation(), "table_view::column");
-    assert_eq!(error_context_value(&err, "column_index"), Some(expected_index.as_str()));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "num_columns"), None);
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(usize::MAX)));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some(expected_index.as_str()));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
 #[test]
@@ -219,9 +229,12 @@ fn test_table_view_from_column_views_empty() {
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "table_view::from_column_views");
-    assert_eq!(error_context_value(&err, "reason"), Some("empty_borrowed_table_view_requires_authoritative_source"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "reason").as_deref(),
+        Some("empty_borrowed_table_view_requires_authoritative_source")
+    );
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
         Some("borrow at least one column view or call view() on an authoritative Table created by a Runtime")
     );
     assert!(err.message().contains("requires an authoritative source"), "unexpected error: {err}");
@@ -239,24 +252,30 @@ fn test_table_view_from_column_views_rejects_mismatched_rows_with_stable_contrac
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "table_view::from_column_views");
-    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
-    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(1)));
+    assert_eq!(err.fact_value(FactKeyName::ActualRows), Some(&FactValue::Usize(2)));
+    assert_eq!(err.fact_value(FactKeyName::ExpectedRows), Some(&FactValue::Usize(3)));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
 
 #[test]
 fn test_testing_hook_locks_table_view_column_count_limit_contract() {
-    let err = cudf::testing::trigger_table_view_column_count_limit_error_for_test().unwrap_err();
+    let err = cudf::testing::core::trigger_table_view_column_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "table_view::from_column_views");
     assert_eq!(err.message(), "number of column views exceeds i32::MAX");
-    assert_eq!(error_context_value(&err, "resource"), Some("table_column_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some(usize::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce table_column_count to fit within i32::MAX"));
-    assert_eq!(error_context_value(&err, "num_columns"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("table_column_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("reduce table_column_count to fit within i32::MAX")
+    );
+    assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
 #[test]
@@ -284,9 +303,11 @@ fn test_table_view_select_columns_rejects_out_of_bounds_index() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::IndexOutOfBounds);
     assert_eq!(err.operation(), "table_view::select_columns");
-    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "num_columns"), None);
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(1)));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
 #[test]
@@ -299,16 +320,16 @@ fn test_table_view_num_columns_rejects_negative_foreign_count_with_stable_contra
     let err = view.num_columns().expect_err("expected malformed foreign column count to fail");
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "table_view::num_columns");
-    assert_eq!(error_context_value(&err, "resource"), Some("table_column_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_foreign_table_metadata"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("-1"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("table_column_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_foreign_table_metadata"));
+    assert_eq!(error_context_value(&err, "reported_table_column_count").as_deref(), Some("-1"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the foreign table view reports a non-negative column count"),
     );
-    assert_eq!(error_context_value(&err, "num_columns"), None);
+    assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
 #[test]
@@ -321,14 +342,14 @@ fn test_table_view_num_rows_rejects_negative_foreign_count_with_stable_contract(
     let err = view.num_rows().expect_err("expected malformed foreign row count to fail");
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "table_view::num_rows");
-    assert_eq!(error_context_value(&err, "resource"), Some("table_row_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_foreign_table_metadata"));
-    assert_eq!(error_context_value(&err, "table_row_count"), Some("-1"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("table_row_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_foreign_table_metadata"));
+    assert_eq!(error_context_value(&err, "reported_table_row_count").as_deref(), Some("-1"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the foreign table view reports a non-negative row count"),
     );
-    assert_eq!(error_context_value(&err, "num_rows"), None);
+    assert_eq!(error_context_value(&err, "num_rows").as_deref(), None);
 }

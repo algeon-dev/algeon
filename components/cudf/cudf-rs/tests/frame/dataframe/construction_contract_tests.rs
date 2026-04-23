@@ -16,9 +16,9 @@ fn assert_length_mismatch_contract(
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.operation(), operation);
-    assert_eq!(error_context_value(err, "column_name"), Some(expected_name));
-    assert_eq!(error_context_value(err, "actual_rows"), Some(actual_rows));
-    assert_eq!(error_context_value(err, "expected_rows"), Some(expected_rows));
+    assert_eq!(error_context_value(err, "column_name").as_deref(), Some(expected_name));
+    assert_eq!(error_context_value(err, "actual_rows").as_deref(), Some(actual_rows));
+    assert_eq!(error_context_value(err, "expected_rows").as_deref(), Some(expected_rows));
 }
 
 // ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ fn test_from_columns_rejects_duplicate_names() {
 
     let err = DataFrame::from_columns([("dup", a1), ("dup", a2)]).unwrap_err();
     assert_duplicate_name_error(&err, "dup");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
 }
 
 #[test]

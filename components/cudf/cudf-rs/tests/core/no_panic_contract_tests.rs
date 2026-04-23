@@ -35,6 +35,6 @@ fn scalar_type_mismatch_returns_error_instead_of_panicking() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "scalar::value");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("string"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("string"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int32"));
 }

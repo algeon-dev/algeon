@@ -1,0 +1,10 @@
+error[E0624]: associated function `new_with` is private
+ --> tests/public_api/ui/no_error_new_with_constructor.rs:6:26
+  |
+6 |     let _ = cudf::Error::new_with(cudf::ErrorCode::InvariantViolation, "downstream", "should not compile");
+  |                          ^^^^^^^^ private associated function
+  |
+ ::: src/core/error/mod.rs
+  |
+  |     pub(crate) fn new_with(code: ErrorCode, operation: &'static str, message: impl Into<String>) -> Self {
+  |     ---------------------------------------------------------------------------------------------------- private associated function defined here

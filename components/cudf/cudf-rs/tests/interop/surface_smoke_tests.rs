@@ -6,13 +6,14 @@
 
 use std::sync::Arc;
 
+use arrow::record_batch::RecordBatch;
 use cudf::{
     DataFrame, Runtime, Series,
     core::{Column, Table},
     interop::{
         PartitionedLocalTableResults,
         arrow_device::DeviceArrowColumnExport,
-        cuda_explicit_completion_required_lease_backend,
+        arrow_host, cuda_explicit_completion_required_lease_backend,
         frame::PartitionedDataFrameExport,
         runtime_release::{OwnedTableTransferReleaser, PartitionedOwnedTableTransferReleaser},
     },
@@ -105,6 +106,10 @@ fn interop_shared_authority_surface_smoke() {
 
 #[test]
 fn interop_high_level_adapter_surface_smoke() {
+    fn assert_arrow_host_record_batch_import(
+        _f: fn(&Runtime, &RecordBatch) -> std::result::Result<DataFrame, cudf::Error>,
+    ) {
+    }
     fn assert_series_prepared_import(
         _f: for<'a, 'b> fn(&'a PreparedColumnExport<'b>, &'a Runtime) -> std::result::Result<Series, InteropError>,
     ) {
@@ -142,6 +147,7 @@ fn interop_high_level_adapter_surface_smoke() {
     ) {
     }
 
+    assert_arrow_host_record_batch_import(arrow_host::dataframe_from_record_batch);
     assert_series_prepared_import(Series::try_import_from_prepared_column_export_into_runtime);
     assert_dataframe_prepared_import_with_names(
         DataFrame::try_import_from_prepared_table_export_into_runtime_and_names,
@@ -159,6 +165,10 @@ fn interop_low_level_adapter_surface_smoke() {
         _f: for<'a> fn(&'a Column) -> std::result::Result<BorrowedColumnView<'a>, InteropError>,
     ) {
     }
+    fn assert_column_prepared_root_export(
+        _f: fn(Column) -> std::result::Result<PreparedColumnExport<'static>, InteropError>,
+    ) {
+    }
     fn assert_column_device_arrow_export(_f: fn(Column) -> std::result::Result<DeviceArrowColumnExport, cudf::Error>) {}
     fn assert_column_device_arrow_export_with_deep_copy(
         _f: for<'a> fn(&'a Column) -> std::result::Result<DeviceArrowColumnExport, cudf::Error>,
@@ -173,6 +183,10 @@ fn interop_low_level_adapter_surface_smoke() {
         _f: for<'a> fn(&'a Table) -> std::result::Result<PreparedTableExport<'a>, InteropError>,
     ) {
     }
+    fn assert_table_prepared_root_export(
+        _f: fn(Table) -> std::result::Result<PreparedTableExport<'static>, InteropError>,
+    ) {
+    }
     fn assert_table_device_arrow_export_with_deep_copy(
         _f: for<'a> fn(
             &'a Table,
@@ -182,10 +196,12 @@ fn interop_low_level_adapter_surface_smoke() {
     }
 
     assert_column_borrowed_export(Column::try_borrow_column_view);
+    assert_column_prepared_root_export(Column::try_into_prepared_device_column_export);
     assert_column_device_arrow_export(Column::try_prepare_device_arrow_export);
     assert_column_device_arrow_export_with_deep_copy(Column::try_prepare_device_arrow_export_with_deep_copy);
     assert_column_owned_import(Column::try_import_from_owned_device_column_transfer_into_runtime);
     assert_table_borrowed_import(Table::try_import_from_borrowed_table_view_into_runtime);
     assert_table_prepared_export(Table::try_prepare_device_table_export);
+    assert_table_prepared_root_export(Table::try_into_prepared_device_table_export);
     assert_table_device_arrow_export_with_deep_copy(Table::try_prepare_device_arrow_export_with_deep_copy);
 }

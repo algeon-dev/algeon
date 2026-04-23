@@ -211,10 +211,10 @@ fn test_melt_rejects_column_in_both_id_vars_and_value_vars() {
 
     assert_duplicate_name_error(&err, "A");
     assert_eq!(err.operation(), "dataframe::melt");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("3"));
-    assert_eq!(error_context_value(&err, "reason"), Some("melt_name_in_both_id_and_value_vars"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("3"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("melt_name_in_both_id_and_value_vars"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("place each melt column in either id_vars or value_vars, not both")
     );
 }
@@ -230,9 +230,12 @@ fn test_melt_rejects_var_name_collision_with_id_var() {
 
     assert_duplicate_name_error(&err, "A");
     assert_eq!(err.operation(), "dataframe::melt");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("3"));
-    assert_eq!(error_context_value(&err, "reason"), Some("melt_var_name_conflicts_with_id_var"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("choose a var_name that does not collide with id_vars"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("3"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("melt_var_name_conflicts_with_id_var"));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("choose a var_name that does not collide with id_vars")
+    );
 }
 
 #[test]
@@ -246,9 +249,12 @@ fn test_melt_rejects_value_name_collision_with_id_var() {
 
     assert_duplicate_name_error(&err, "A");
     assert_eq!(err.operation(), "dataframe::melt");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("3"));
-    assert_eq!(error_context_value(&err, "reason"), Some("melt_value_name_conflicts_with_id_var"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("choose a value_name that does not collide with id_vars"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("3"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("melt_value_name_conflicts_with_id_var"));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("choose a value_name that does not collide with id_vars")
+    );
 }
 
 #[test]
@@ -263,7 +269,7 @@ fn test_melt_rejects_same_var_name_and_value_name() {
 
     assert_duplicate_name_error(&err, "melted");
     assert_eq!(err.operation(), "dataframe::melt");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "reason"), Some("melt_output_names_conflict"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("choose distinct var_name and value_name"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("melt_output_names_conflict"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("choose distinct var_name and value_name"));
 }

@@ -163,7 +163,7 @@ fn test_join_error_contains_operation_context() {
         Err(err) => err,
     };
     assert_eq!(err.operation(), "join::inner_join");
-    assert!(err.context().iter().any(|(k, _)| *k == "null_equality"));
+    assert!(err.details().iter().any(|(k, _)| *k == "null_equality"));
 }
 
 #[test]

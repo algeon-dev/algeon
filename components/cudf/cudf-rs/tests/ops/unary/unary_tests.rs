@@ -114,7 +114,7 @@ fn test_cast_error_contains_operation_context() {
     let err = unary::cast(&view, &unsupported).expect_err("expected error");
 
     assert_eq!(err.operation(), "unary::cast");
-    assert!(err.context().iter().any(|(k, _)| *k == "output_type_id"));
+    assert!(err.details().iter().any(|(k, _)| *k == "output_type_id"));
 }
 
 #[test]

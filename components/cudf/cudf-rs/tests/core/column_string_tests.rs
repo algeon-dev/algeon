@@ -153,9 +153,9 @@ fn test_to_strings_rejects_non_string_column() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "column_view::to_strings_lossy");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
-    assert_eq!(error_context_value(&err, "actual_type_id"), None);
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("string"));
+    assert_eq!(error_context_value(&err, "actual_type_id").as_deref(), None);
 }
 
 #[test]
@@ -195,48 +195,48 @@ fn test_to_optional_strings_rejects_non_string_column() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "column_view::to_optional_strings");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
-    assert_eq!(error_context_value(&err, "actual_type_id"), None);
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("string"));
+    assert_eq!(error_context_value(&err, "actual_type_id").as_deref(), None);
 }
 
 #[test]
 fn test_to_strings_rejects_malformed_string_view_with_stable_foreign_contract() {
-    let view = cudf::testing::synthetic_string_view_without_children(2).unwrap();
+    let view = cudf::testing::column::synthetic_string_view_without_children(2).unwrap();
 
     let err = view.to_strings_lossy().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "column_view::to_strings_lossy");
-    assert_eq!(error_context_value(&err, "resource"), Some("string_view_layout"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_string_view_metadata"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("string_view_layout"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_string_view_metadata"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the STRING column view exposes valid offsets and chars metadata")
     );
     assert!(
-        err.context().iter().any(|(key, value)| *key == "called" && value == "column_view::string_chars_ptr_and_size"),
-        "expected nested helper call history, got {:?}",
-        err.context()
+        err.call_chain().contains(&"column_view::string_chars_ptr_and_size"),
+        "expected nested helper call history in call_chain, got {:?}",
+        err.call_chain()
     );
 }
 
 #[test]
 fn test_to_optional_strings_rejects_malformed_string_view_with_same_contract() {
-    let view = cudf::testing::synthetic_string_view_without_children(2).unwrap();
+    let view = cudf::testing::column::synthetic_string_view_without_children(2).unwrap();
 
     let err = view.to_optional_strings().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "column_view::to_optional_strings");
-    assert_eq!(error_context_value(&err, "resource"), Some("string_view_layout"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_string_view_metadata"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("string_view_layout"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_string_view_metadata"));
     assert!(
-        err.context().iter().any(|(key, value)| *key == "called" && value == "column_view::string_chars_ptr_and_size"),
-        "expected nested helper call history, got {:?}",
-        err.context()
+        err.call_chain().contains(&"column_view::string_chars_ptr_and_size"),
+        "expected nested helper call history in call_chain, got {:?}",
+        err.call_chain()
     );
 }
 

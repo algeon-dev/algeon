@@ -1,6 +1,7 @@
 //! Tests for dictionary encode/decode.
 use cudf::{
     ErrorCode, ErrorKind, TypeId,
+    core::error::{FactKeyName, FactValue},
     ops::dictionary,
     testing::{ColumnView, prelude::*},
 };
@@ -206,8 +207,10 @@ fn test_dictionary_set_keys_type_mismatch_errors() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "dictionary::set_keys");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int64"));
+    assert_eq!(err.fact_value(FactKeyName::LeftTypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::Int64)));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int64"));
 }
 
 #[test]
@@ -227,7 +230,7 @@ fn test_dictionary_set_keys_rejects_null_keys() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::NullUnexpected);
     assert_eq!(err.operation(), "dictionary::set_keys");
-    assert_eq!(error_context_value(&err, "resource"), Some("keys"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("keys"));
 }
 
 #[test]
@@ -240,8 +243,9 @@ fn test_dictionary_set_keys_rejects_non_dictionary_input() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "dictionary::set_keys");
-    assert_eq!(error_context_value(&err, "resource"), Some("dict_column"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("int32"));
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("dict_column"));
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
 }
 
 #[test]
@@ -251,8 +255,8 @@ fn test_match_dictionaries_requires_at_least_one_input() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dictionary::match_dictionaries");
-    assert_eq!(error_context_value(&err, "reason"), Some("empty_input"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("provide at least one input dictionary column"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("empty_input"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("provide at least one input dictionary column"));
 }
 
 #[test]
@@ -267,61 +271,72 @@ fn test_match_dictionaries_rejects_non_dictionary_input() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "dictionary::match_dictionaries");
-    assert_eq!(error_context_value(&err, "column_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("int32"));
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(0)));
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
 }
 
 #[test]
 fn test_match_dictionaries_testing_hook_locks_result_count_mismatch_contract() {
-    let err = cudf::testing::trigger_match_dictionaries_result_count_mismatch_for_test().unwrap_err();
+    let err = cudf::testing::dictionary::trigger_match_dictionaries_result_count_mismatch_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "dictionary::match_dictionaries");
-    assert_eq!(error_context_value(&err, "resource"), Some("dictionary_match_result_shape"));
-    assert_eq!(error_context_value(&err, "reason"), Some("result_count_mismatch"));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(1)));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("dictionary_match_result_shape"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("result_count_mismatch"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the foreign dictionary match backend returns one output column per input dictionary column"),
     );
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "result_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "expected_count"), None);
-    assert_eq!(error_context_value(&err, "actual_count"), None);
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "result_column_count").as_deref(), Some("1"));
+    // Canonical keys are published as facts only — confirm they are not duplicated into legacy details.
+    assert_eq!(err.detail_value("expected_count"), None);
+    assert_eq!(err.detail_value("actual_count"), None);
 }
 
 #[test]
 fn test_match_dictionaries_testing_hook_locks_null_result_array_contract() {
-    let err = cudf::testing::trigger_match_dictionaries_null_result_array_for_test().unwrap_err();
+    let err = cudf::testing::dictionary::trigger_match_dictionaries_null_result_array_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "dictionary::match_dictionaries");
-    assert_eq!(error_context_value(&err, "resource"), Some("dictionary_match_result_shape"));
-    assert_eq!(error_context_value(&err, "reason"), Some("null_result_array"));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(1)));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("dictionary_match_result_shape"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("null_result_array"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the foreign dictionary match backend returns one output column per input dictionary column"),
     );
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "result_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "expected_count"), None);
-    assert_eq!(error_context_value(&err, "actual_count"), None);
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "result_column_count").as_deref(), Some("1"));
+    // Canonical keys are published as facts only — confirm they are not duplicated into legacy details.
+    assert_eq!(err.detail_value("expected_count"), None);
+    assert_eq!(err.detail_value("actual_count"), None);
 }
 
 #[test]
 fn test_match_dictionaries_testing_hook_locks_input_column_count_limit_contract() {
-    let err = cudf::testing::trigger_match_dictionaries_column_count_limit_error_for_test().unwrap_err();
+    let err = cudf::testing::dictionary::trigger_match_dictionaries_column_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dictionary::match_dictionaries");
     assert_eq!(err.message(), "dictionary column count exceeds i32::MAX");
-    assert_eq!(error_context_value(&err, "resource"), Some("table_column_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some(usize::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce table_column_count to fit within i32::MAX"));
-    assert_eq!(error_context_value(&err, "num_columns"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("table_column_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("reduce table_column_count to fit within i32::MAX")
+    );
+    assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
 #[test]

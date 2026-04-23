@@ -330,7 +330,9 @@ impl Series {
         &'a self,
         event: &'a CudaEvent,
     ) -> Result<PreparedColumnExport<'a>, InteropError> {
-        self.as_column().try_prepare_device_column_export_with_event(event)
+        self.as_column()
+            .try_prepare_device_column_export_with_event(event)
+            .map(|export| export.with_retained_owner_arc(self.arc()))
     }
 }
 
@@ -343,6 +345,7 @@ impl TryBorrowColumnView for Series {
 impl TryPrepareDeviceColumnExport for Series {
     fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
         prepare_from_owned_column(self.as_column(), "interop::Series::try_prepare_device_column_export")
+            .map(|export| export.with_retained_owner_arc(self.arc()))
     }
 }
 
@@ -536,6 +539,7 @@ impl DataFrame {
             default_device,
             readiness,
         )
+        .map(|export| export.with_retained_owner_arc(Arc::new(self.clone())))
     }
 }
 
@@ -561,6 +565,7 @@ impl TryPrepareDeviceTableExport for DataFrame {
             self.execution_domain(),
             "interop::DataFrame::try_prepare_device_table_export",
         )
+        .map(|export| export.with_retained_owner_arc(Arc::new(self.clone())))
     }
 }
 

@@ -172,47 +172,12 @@ fn e2e_opt_in_defaults_to_disabled() {
 }
 
 #[test]
-fn rust_error_normalization_uses_manifest_taxonomy_for_missing_columns_without_message_matching() {
-    let err = cudf::Error::new(cudf::ErrorKind::NotFound, "schema lookup failed")
-        .with_operation("dataframe::select")
-        .with_context("column_name", "missing");
-
-    let normalized = normalize_manifest_error(&err, "select");
-
-    assert_eq!(normalized.kind, "column_not_found");
-    assert_eq!(normalized.operation, "select");
-}
-
-#[test]
-fn rust_error_normalization_prefers_missing_column_code_over_legacy_kind_bucket() {
-    let err = cudf::Error::new(cudf::ErrorKind::InvalidInput, "schema lookup failed")
-        .with_code(cudf::ErrorCode::MissingColumn)
-        .with_operation("dataframe::select")
-        .with_context("column_name", "missing");
-
-    let normalized = normalize_manifest_error(&err, "select");
-
-    assert_eq!(normalized.kind, "column_not_found");
-    assert_eq!(normalized.operation, "select");
-}
-
-#[test]
-fn rust_error_normalization_no_longer_infers_missing_columns_from_legacy_invalid_input_bucket() {
-    let err = cudf::Error::new(cudf::ErrorKind::InvalidInput, "legacy schema lookup failure")
-        .with_operation("dataframe::select")
-        .with_context("column_name", "missing");
-
-    let normalized = normalize_manifest_error(&err, "select");
-
-    assert_eq!(normalized.kind, "invalid_argument");
-    assert_eq!(normalized.operation, "select");
-}
-
-#[test]
 fn rust_error_normalization_prefers_invalid_argument_codes_over_legacy_kind() {
-    let err = cudf::Error::new(cudf::ErrorKind::InvariantViolation, "unsupported dropna request")
-        .with_code(cudf::ErrorCode::UnsupportedOperation)
-        .with_operation("dataframe::dropna");
+    let err = cudf::testing::error::new_with_for_test(
+        cudf::ErrorCode::UnsupportedOperation,
+        "dataframe::dropna",
+        "unsupported dropna request",
+    );
 
     let normalized = normalize_manifest_error(&err, "dropna");
 
@@ -222,9 +187,11 @@ fn rust_error_normalization_prefers_invalid_argument_codes_over_legacy_kind() {
 
 #[test]
 fn rust_error_normalization_prefers_index_code_over_legacy_kind() {
-    let err = cudf::Error::new(cudf::ErrorKind::InvalidInput, "row index exceeded bounds")
-        .with_code(cudf::ErrorCode::IndexOutOfBounds)
-        .with_operation("dataframe::take");
+    let err = cudf::testing::error::new_with_for_test(
+        cudf::ErrorCode::IndexOutOfBounds,
+        "dataframe::take",
+        "row index exceeded bounds",
+    );
 
     let normalized = normalize_manifest_error(&err, "take");
 
@@ -234,25 +201,16 @@ fn rust_error_normalization_prefers_index_code_over_legacy_kind() {
 
 #[test]
 fn rust_error_normalization_uses_unknown_for_invariant_violation_code() {
-    let err = cudf::Error::new(cudf::ErrorKind::InvariantViolation, "ffi returned impossible metadata")
-        .with_code(cudf::ErrorCode::InvariantViolation)
-        .with_operation("dataframe::series");
+    let err = cudf::testing::error::new_with_for_test(
+        cudf::ErrorCode::InvariantViolation,
+        "dataframe::series",
+        "ffi returned impossible metadata",
+    );
 
     let normalized = normalize_manifest_error(&err, "series");
 
     assert_eq!(normalized.kind, "unknown");
     assert_eq!(normalized.operation, "series");
-}
-
-#[test]
-fn rust_error_normalization_falls_back_to_legacy_kind_when_using_default_family_code() {
-    let err = cudf::Error::new(cudf::ErrorKind::InvalidInput, "row predicate must evaluate to Bool8")
-        .with_operation("dataframe::filter");
-
-    let normalized = normalize_manifest_error(&err, "filter");
-
-    assert_eq!(normalized.kind, "invalid_argument");
-    assert_eq!(normalized.operation, "filter");
 }
 
 fn simple_fixture_dataframe() -> cudf::DataFrame {
@@ -394,7 +352,7 @@ fn e2e_conformance() {
                     NormalizedResult::Error(rust_runner::NormalizedError {
                         kind: format!("{:?}", e.kind()).to_lowercase(),
                         operation: e.operation().to_string(),
-                        context: e.context().iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                        context: e.details().iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
                     })
                 },
                 Err(ExecutionError::Framework(msg)) => {

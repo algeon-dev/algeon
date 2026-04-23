@@ -2,7 +2,10 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{ErrorCode, ErrorKind, TypeId};
+use cudf::{
+    ErrorCode, ErrorKind, TypeId,
+    core::error::{FactKeyName, FactValue},
+};
 
 use crate::common::error_context_value;
 
@@ -53,8 +56,8 @@ fn test_sum_string_reports_series_operation_on_type_error() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "series::sum");
-    assert_eq!(crate::common::error_context_value(&err, "type_id"), Some("string"));
-    assert_eq!(crate::common::error_context_value(&err, "input_type"), None);
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(crate::common::error_context_value(&err, "input_type").as_deref(), None);
 }
 
 // ===========================================================================
@@ -160,9 +163,13 @@ fn test_std_ddof_above_i32_max_uses_series_operation_contract() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "series::std");
-    assert_eq!(error_context_value(&err, "ddof"), Some(u32::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "reason"), Some("ddof_exceeds_i32_range"));
-    assert_eq!(error_context_value(&err, "called"), Some("reduction::create_reduce_agg_handle(std)"));
+    assert_eq!(error_context_value(&err, "ddof").as_deref(), Some(u32::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("ddof_exceeds_i32_range"));
+    assert!(
+        err.call_chain().contains(&"reduction::create_reduce_agg_handle(std)"),
+        "call_chain did not contain reduction::create_reduce_agg_handle(std): {:?}",
+        err.call_chain()
+    );
 }
 
 #[test]
@@ -174,9 +181,13 @@ fn test_var_ddof_above_i32_max_uses_series_operation_contract() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "series::var");
-    assert_eq!(error_context_value(&err, "ddof"), Some(u32::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "reason"), Some("ddof_exceeds_i32_range"));
-    assert_eq!(error_context_value(&err, "called"), Some("reduction::create_reduce_agg_handle(variance)"));
+    assert_eq!(error_context_value(&err, "ddof").as_deref(), Some(u32::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("ddof_exceeds_i32_range"));
+    assert!(
+        err.call_chain().contains(&"reduction::create_reduce_agg_handle(variance)"),
+        "call_chain did not contain reduction::create_reduce_agg_handle(variance): {:?}",
+        err.call_chain()
+    );
 }
 
 // ===========================================================================

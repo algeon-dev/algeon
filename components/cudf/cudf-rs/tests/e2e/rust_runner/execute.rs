@@ -358,30 +358,32 @@ fn type_id_to_canonical(type_id: TypeId) -> String {
 pub fn normalize_manifest_error(err: &cudf::Error, operation_kind: &'static str) -> NormalizedError {
     let kind = normalize_manifest_error_kind(err, operation_kind);
     let operation = operation_kind.to_string();
-    let context: Vec<(String, String)> = err.context().iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    // Manifest-facing context carries both canonical facts (typed, machine-readable)
+    // and free-form diagnostic details. Facts come first so downstream matchers
+    // can rely on stable canonical keys before scanning diagnostic details.
+    let mut context: Vec<(String, String)> =
+        err.facts().iter().map(|(key, value)| (key.to_string(), value.to_string())).collect();
+    context.extend(err.details().iter().map(|(k, v)| (k.to_string(), v.to_string())));
     NormalizedError { kind, operation, context }
 }
 
 fn normalize_manifest_error_kind(err: &cudf::Error, _operation_kind: &'static str) -> String {
-    if matches!(err.code(), ErrorCode::NotFound | ErrorCode::MissingResource)
-        && err.context().iter().any(|(k, _)| *k == "column_name")
-    {
+    // Prefer the canonical typed fact; also accept the transitional
+    // `with_context("column_name", ...)` detail for broader matching.
+    let has_column_name = err.fact_value(cudf::core::error::FactKeyName::ColumnName).is_some()
+        || err.detail_value("column_name").is_some();
+
+    // Any not-found-shaped failure carrying a column_name fact/detail maps to
+    // the manifest "column_not_found" bucket.
+    if err.kind() == cudf::ErrorKind::NotFound && has_column_name {
         return "column_not_found".into();
     }
 
-    normalize_manifest_error_kind_from_code(err.code())
-        .unwrap_or_else(|| normalize_manifest_error_kind_from_legacy_kind(err))
-        .into()
+    normalize_manifest_error_kind_from_code(err.code()).unwrap_or("unknown").into()
 }
 
 fn normalize_manifest_error_kind_from_code(code: ErrorCode) -> Option<&'static str> {
     match code {
-        ErrorCode::InvalidInput => Some("invalid_argument"),
-        ErrorCode::NotFound => Some("unknown"),
-        ErrorCode::Unsupported => Some("invalid_argument"),
-        ErrorCode::ExecutionContext => Some("invalid_argument"),
-        ErrorCode::ResourceExhausted => Some("unknown"),
-        ErrorCode::DependencyFailure => Some("unknown"),
         ErrorCode::InvariantViolation => Some("unknown"),
         ErrorCode::MissingColumn => Some("column_not_found"),
         ErrorCode::DuplicateColumnName
@@ -400,20 +402,9 @@ fn normalize_manifest_error_kind_from_code(code: ErrorCode) -> Option<&'static s
         | ErrorCode::UnsupportedOperation
         | ErrorCode::NullUnexpected => Some("invalid_argument"),
         ErrorCode::IndexOutOfBounds => Some("index_out_of_bounds"),
-        ErrorCode::MissingResource
-        | ErrorCode::OutOfMemory
-        | ErrorCode::CudaRuntime
-        | ErrorCode::FatalCuda
-        | ErrorCode::IoFailure => Some("unknown"),
+        ErrorCode::OutOfMemory | ErrorCode::CudaRuntime | ErrorCode::FatalCuda | ErrorCode::IoFailure => {
+            Some("unknown")
+        },
         _ => Some("unknown"),
-    }
-}
-
-fn normalize_manifest_error_kind_from_legacy_kind(err: &cudf::Error) -> &'static str {
-    let has_column_name = err.context().iter().any(|(k, _)| *k == "column_name");
-    match err.kind() {
-        cudf::ErrorKind::NotFound if has_column_name => "column_not_found",
-        cudf::ErrorKind::InvalidInput => "invalid_argument",
-        _ => "unknown",
     }
 }

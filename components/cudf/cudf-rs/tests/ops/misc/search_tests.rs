@@ -263,6 +263,6 @@ fn test_isin_type_mismatch_error_has_operation_context() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "column_view::isin");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("float64"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("float64"));
 }

@@ -1,6 +1,7 @@
 //! Tests for lookup semantics through the dedicated lookup operator.
 use cudf::{
     ErrorCode, ErrorKind, TypeId,
+    core::error::{FactKeyName, FactValue},
     ops::lookup::{self, LookupTable},
     testing::prelude::*,
 };
@@ -95,10 +96,12 @@ fn test_lookup_probe_rejects_duplicate_keys() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::DuplicateKey);
     assert_eq!(err.operation(), "lookup::probe");
-    assert_eq!(error_context_value(&err, "keys_count"), Some("3"));
-    assert_eq!(error_context_value(&err, "distinct_keys_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "key_count"), None);
-    assert_eq!(error_context_value(&err, "distinct_key_count"), None);
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(3)));
+    assert_eq!(err.fact_value(FactKeyName::DistinctKeysCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(err.detail_value("distinct_keys_count"), None);
+    assert_eq!(error_context_value(&err, "key_count").as_deref(), None);
+    assert_eq!(error_context_value(&err, "distinct_key_count").as_deref(), None);
 }
 
 #[test]
@@ -114,12 +117,13 @@ fn test_lookup_probe_rejects_mapping_length_mismatch() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "lookup::probe");
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "keys_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "values_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "keys_type_id"), None);
-    assert_eq!(error_context_value(&err, "output_type_id"), None);
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.detail_value("values_count"), Some("1"));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(error_context_value(&err, "keys_type_id").as_deref(), None);
+    assert_eq!(error_context_value(&err, "output_type_id").as_deref(), None);
 }
 
 #[test]
@@ -135,11 +139,11 @@ fn test_lookup_probe_rejects_dtype_mismatch_with_canonical_type_context() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "lookup::probe");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "output_type_id"), None);
-    assert_eq!(error_context_value(&err, "values_type_id"), None);
+    assert_eq!(err.fact_value(FactKeyName::LeftTypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(error_context_value(&err, "output_type_id").as_deref(), None);
+    assert_eq!(error_context_value(&err, "values_type_id").as_deref(), None);
 }
 
 #[test]
@@ -178,8 +182,10 @@ fn test_lookup_table_rejects_duplicate_keys_at_build_time() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::DuplicateKey);
     assert_eq!(err.operation(), "lookup_table::new");
-    assert_eq!(error_context_value(&err, "keys_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "distinct_keys_count"), Some("1"));
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.fact_value(FactKeyName::DistinctKeysCount), Some(&FactValue::Usize(1)));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(err.detail_value("distinct_keys_count"), None);
 }
 
 #[test]
@@ -192,12 +198,13 @@ fn test_lookup_table_rejects_mapping_length_mismatch_at_build_time() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "lookup_table::new");
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("string"));
-    assert_eq!(error_context_value(&err, "keys_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "values_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "keys_type_id"), None);
-    assert_eq!(error_context_value(&err, "output_type_id"), None);
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.detail_value("values_count"), Some("1"));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(error_context_value(&err, "keys_type_id").as_deref(), None);
+    assert_eq!(error_context_value(&err, "output_type_id").as_deref(), None);
 }
 
 #[test]
@@ -254,11 +261,11 @@ fn test_lookup_table_probe_rejects_dtype_mismatch() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "lookup_table::probe");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("string"));
-    assert_eq!(error_context_value(&err, "output_type_id"), None);
-    assert_eq!(error_context_value(&err, "values_type_id"), None);
+    assert_eq!(err.fact_value(FactKeyName::LeftTypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(error_context_value(&err, "output_type_id").as_deref(), None);
+    assert_eq!(error_context_value(&err, "values_type_id").as_deref(), None);
 }
 
 #[test]

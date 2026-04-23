@@ -49,8 +49,8 @@ fn assert_merge_validation_error(err: &cudf::Error, operation: &str, reason: &st
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), operation);
-    assert_eq!(error_context_value(err, "reason"), Some(reason));
-    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
+    assert_eq!(error_context_value(err, "reason").as_deref(), Some(reason));
+    assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
 }
 
 // ---------------------------------------------------------------------------
@@ -503,8 +503,8 @@ fn test_merge_left_on_right_on_length_mismatch() {
         "join_key_count_mismatch",
         "set left_on() and right_on() with the same number of key columns",
     );
-    assert_eq!(error_context_value(&err, "left_on_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "right_on_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "left_on_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "right_on_count").as_deref(), Some("2"));
 }
 
 #[test]
@@ -535,22 +535,22 @@ fn test_merge_in_context_no_keys_specified() {
 
 #[test]
 fn test_merge_reassembly_key_count_invariant_uses_stable_error_contract() {
-    let err = cudf::testing::trigger_merge_reassembly_key_count_error_for_test().unwrap_err();
+    let err = cudf::testing::join::trigger_merge_reassembly_key_count_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dataframe::merge");
-    assert_eq!(error_context_value(&err, "reason"), Some("join_result_key_count_exceeds_result_columns"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("join_result_key_count_exceeds_result_columns"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some(
             "report this as a library bug; join result schema should contain at least one column per key on each side"
         )
     );
-    assert_eq!(error_context_value(&err, "keys_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "left_columns"), Some("1"));
-    assert_eq!(error_context_value(&err, "right_columns"), Some("1"));
-    assert_eq!(error_context_value(&err, "num_keys"), None);
+    assert_eq!(error_context_value(&err, "keys_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "left_columns").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "right_columns").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "num_keys").as_deref(), None);
 }
 
 #[test]

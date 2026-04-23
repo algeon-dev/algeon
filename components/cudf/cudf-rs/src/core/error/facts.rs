@@ -1,8 +1,7 @@
 //! Typed canonical facts for the truthful error contract.
 //!
-//! Rules (see spec §5):
+//! Facts are machine-readable values that downstreams match on for policy.
 //!
-//! - Facts are machine-readable values that downstreams match on for policy.
 //! - Each `FactKeyName` binds to exactly one `FactValue` variant; the pairing
 //!   is enforced at the writer-API type layer via [`FactKey<T>`].
 //! - Duplicate insertion is a programmer error and is rejected in all build
@@ -365,9 +364,9 @@ mod tests {
     //! Crate-internal tests that lock the `Facts` writer contract.
     //!
     //! These were previously in `tests/core/error_truthful_contract_tests.rs`.
-    //! They moved here when the writer surface became `pub(crate)` per spec
-    //! §2–§3: duplicate-insert and wrong-variant behavior is a crate-internal
-    //! invariant, so the tests must live inside the crate too.
+    //! They moved here when the writer surface became `pub(crate)`.
+    //! Duplicate-insert and wrong-variant behavior are crate-internal
+    //! invariants, so the tests must live inside the crate too.
 
     use std::panic::{AssertUnwindSafe, catch_unwind};
 

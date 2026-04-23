@@ -21,8 +21,8 @@ use cudf::{
 use rapids_interop::{
     BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, CudaEventHandle, CudaStreamHandle,
     DataType as InteropDataType, ExportDiagnostics, ExportProfile, InteropErrorKind, OwnedColumnTransfer,
-    OwnedTableTransfer, PhysicalValidity, Placement, ProducerReadiness, ReleaseContract, ReleaseSynchronization,
-    SchemaNullability, SemanticColumn, SemanticTable, TableId, TransferCompletionRule,
+    OwnedTableTransfer, OwnedTableTransferParts, PhysicalValidity, Placement, ProducerReadiness, ReleaseContract,
+    ReleaseSynchronization, SchemaNullability, SemanticColumn, SemanticTable, TableId, TransferCompletionRule,
     TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDeviceTableTransfer, TypeId as InteropTypeId,
 };
 use static_assertions::assert_impl_all;
@@ -94,16 +94,16 @@ fn clone_readiness_as_static(readiness: &ProducerReadiness<'_>) -> ProducerReadi
 }
 
 fn wrap_owned_table_transfer(transfer: OwnedTableTransfer) -> OwnedTableTransfer {
-    OwnedTableTransfer::try_new_with_semantic_columns(
-        transfer.table().clone(),
-        transfer.columns().to_vec(),
-        transfer.semantic_columns().to_vec(),
-        transfer.bindings().to_vec(),
-        *transfer.readiness(),
-        *transfer.diagnostics(),
-        *transfer.release_contract(),
-        transfer,
-    )
+    OwnedTableTransfer::try_new_with_semantic_columns(OwnedTableTransferParts {
+        table: transfer.table().clone(),
+        columns: transfer.columns().to_vec(),
+        semantic_columns: transfer.semantic_columns().to_vec(),
+        bindings: transfer.bindings().to_vec(),
+        readiness: *transfer.readiness(),
+        diagnostics: *transfer.diagnostics(),
+        release_contract: *transfer.release_contract(),
+        owner: transfer,
+    })
     .unwrap()
 }
 
@@ -355,16 +355,16 @@ fn snapshot_foreign_owned_table_transfer(
         };
         (device, readiness, snapshot)
     };
-    let transfer = OwnedTableTransfer::try_new_with_semantic_columns(
-        snapshot.table.clone(),
-        snapshot.columns.clone(),
-        snapshot.semantic_columns.clone(),
-        snapshot.bindings.clone(),
+    let transfer = OwnedTableTransfer::try_new_with_semantic_columns(OwnedTableTransferParts {
+        table: snapshot.table.clone(),
+        columns: snapshot.columns.clone(),
+        semantic_columns: snapshot.semantic_columns.clone(),
+        bindings: snapshot.bindings.clone(),
         readiness,
-        manual_owned_transfer_diagnostics(),
-        manual_release_contract(device),
-        ForeignTableOwner { _table: table, _drop_flag: DropFlag { drops } },
-    )
+        diagnostics: manual_owned_transfer_diagnostics(),
+        release_contract: manual_release_contract(device),
+        owner: ForeignTableOwner { _table: table, _drop_flag: DropFlag { drops } },
+    })
     .unwrap();
     (transfer, snapshot)
 }
@@ -941,10 +941,10 @@ fn runtime_release_owned_column_transfer_rejects_wrong_device_stream_synchronous
     let other_runtime = Runtime::builder().with_device(DeviceId::new(1).unwrap()).build().unwrap();
     let err = releaser.release(TransferCompletionAuthority::same_device_stream(other_runtime.stream())).unwrap_err();
     assert_eq!(err.kind(), InteropErrorKind::ReadinessMismatch);
-    assert_eq!(interop_error_context_value(&err, "left_device"), Some("0"));
-    assert_eq!(interop_error_context_value(&err, "right_device"), Some("1"));
-    assert_eq!(interop_error_context_value(&err, "release_device"), None);
-    assert_eq!(interop_error_context_value(&err, "stream_device"), None);
+    assert_eq!(interop_error_context_value(&err, "left_device").as_deref(), Some("0"));
+    assert_eq!(interop_error_context_value(&err, "right_device").as_deref(), Some("1"));
+    assert_eq!(interop_error_context_value(&err, "release_device").as_deref(), None);
+    assert_eq!(interop_error_context_value(&err, "stream_device").as_deref(), None);
 }
 
 #[test]

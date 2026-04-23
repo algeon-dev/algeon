@@ -155,48 +155,48 @@ fn test_slice_offset_beyond_end() {
 
 #[test]
 fn test_testing_hook_locks_dataframe_row_range_start_limit_contract() {
-    let err = cudf::testing::trigger_dataframe_row_range_start_limit_error_for_test().unwrap_err();
+    let err = cudf::testing::dataframe::trigger_dataframe_row_range_start_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dataframe::gather_range");
     assert_eq!(err.message(), "row range start exceeds i32::MAX");
-    assert_eq!(error_context_value(&err, "resource"), Some("row_range"));
-    assert_eq!(error_context_value(&err, "reason"), Some("start_exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce row range bounds to fit within i32::MAX"));
-    assert_eq!(error_context_value(&err, "start_row"), Some(usize::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "end_row"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_range"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("start_exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce row range bounds to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "start_row").as_deref(), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "end_row").as_deref(), None);
 }
 
 #[test]
 fn test_testing_hook_locks_dataframe_row_range_end_limit_contract() {
-    let err = cudf::testing::trigger_dataframe_row_range_end_limit_error_for_test().unwrap_err();
+    let err = cudf::testing::dataframe::trigger_dataframe_row_range_end_limit_error_for_test().unwrap_err();
     let expected_end = (i32::MAX as usize).checked_add(1).unwrap().to_string();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dataframe::gather_range");
     assert_eq!(err.message(), "row range end exceeds i32::MAX");
-    assert_eq!(error_context_value(&err, "resource"), Some("row_range"));
-    assert_eq!(error_context_value(&err, "reason"), Some("end_exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce row range bounds to fit within i32::MAX"));
-    assert_eq!(error_context_value(&err, "start_row"), Some(i32::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "end_row"), Some(expected_end.as_str()));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_range"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("end_exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce row range bounds to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "start_row").as_deref(), Some(i32::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "end_row").as_deref(), Some(expected_end.as_str()));
 }
 
 #[test]
 fn test_testing_hook_locks_dataframe_row_range_overflow_contract() {
-    let err = cudf::testing::trigger_dataframe_row_range_overflow_error_for_test().unwrap_err();
+    let err = cudf::testing::dataframe::trigger_dataframe_row_range_overflow_error_for_test().unwrap_err();
     let expected_end = ((i32::MAX as u128) + (usize::MAX as u128)).to_string();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dataframe::gather_range");
     assert_eq!(err.message(), "row range end overflowed usize");
-    assert_eq!(error_context_value(&err, "resource"), Some("row_range"));
-    assert_eq!(error_context_value(&err, "reason"), Some("end_overflowed_usize"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce row range bounds to fit within usize"));
-    assert_eq!(error_context_value(&err, "start_row"), Some(i32::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "end_row"), Some(expected_end.as_str()));
-    assert_eq!(error_context_value(&err, "length"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_range"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("end_overflowed_usize"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce row range bounds to fit within usize"));
+    assert_eq!(error_context_value(&err, "start_row").as_deref(), Some(i32::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "end_row").as_deref(), Some(expected_end.as_str()));
+    assert_eq!(error_context_value(&err, "length").as_deref(), None);
 }

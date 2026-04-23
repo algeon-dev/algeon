@@ -9,3 +9,9 @@ error[E0599]: no variant or associated item named `ForeignContractViolation` fou
   |
 5 |     let _ = ErrorCode::ForeignContractViolation;
   |                        ^^^^^^^^^^^^^^^^^^^^^^^^ variant or associated item not found in `ErrorCode`
+  |
+help: there is a variant with a similar name
+  |
+5 -     let _ = ErrorCode::ForeignContractViolation;
+5 +     let _ = ErrorCode::ForeignInvariantViolation;
+  |

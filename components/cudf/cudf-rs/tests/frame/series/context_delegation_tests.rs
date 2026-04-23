@@ -5,11 +5,13 @@
 //! representative operation families while the implementation shares a single
 //! context-aware core.
 
-use cudf::{ErrorCode, ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId, testing::prelude::*};
-
-use crate::common::{
-    error_context_value, last_exec_mr_value, last_exec_stream_value, reset_exec_observation, sample_runtime,
+use cudf::{
+    ErrorCode, ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId,
+    core::error::{FactKeyName, FactValue},
+    testing::prelude::*,
 };
+
+use crate::common::{last_exec_mr_value, last_exec_stream_value, reset_exec_observation, sample_runtime};
 
 fn assert_i32_series_eq(lhs: &Series, rhs: &Series) {
     assert_eq!(lhs.dtype().unwrap().id(), rhs.dtype().unwrap().id());
@@ -130,10 +132,10 @@ fn default_and_explicit_context_numeric_cast_validation_errors_match() {
     assert_eq!(default_err.kind(), ErrorKind::Unsupported);
     assert_eq!(default_err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(default_err.operation(), "series::to_numeric");
-    assert_eq!(error_context_value(&default_err, "type_id"), Some("string"));
+    assert_eq!(default_err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
 
     assert_eq!(scoped_err.kind(), ErrorKind::Unsupported);
     assert_eq!(scoped_err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(scoped_err.operation(), "series::to_numeric_in");
-    assert_eq!(error_context_value(&scoped_err, "type_id"), Some("string"));
+    assert_eq!(scoped_err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
 }

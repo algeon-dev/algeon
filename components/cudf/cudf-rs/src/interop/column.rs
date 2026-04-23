@@ -42,6 +42,31 @@ fn prepare_host_from_column_view(
     .map_err(|error| error.with_context("operation", operation))
 }
 
+fn prepare_from_owned_column_root_with_readiness(
+    column: Column,
+    operation: &'static str,
+    readiness: ProducerReadiness<'_>,
+) -> Result<PreparedColumnExport<'static>, InteropError> {
+    let retained_column = Arc::new(column);
+    let view =
+        retained_column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let default_device = retained_column.execution_domain().device_id().ordinal() as i32;
+    let projection = prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?;
+    PreparedColumnExport::try_new_with_semantic_columns(
+        projection.column,
+        projection.semantic_columns,
+        to_static_bindings(operation, projection.bindings)?,
+        to_static_readiness(operation, readiness)?,
+        export_diagnostics(),
+    )
+    .map(|export| {
+        export
+            .with_lease_backend(runtime_lease::shared_cuda_lease_backend())
+            .with_retained_owner_arc(Arc::clone(&retained_column))
+    })
+    .map_err(|error| error.with_context("operation", operation))
+}
+
 pub(super) fn prepare_from_owned_column<'a>(
     column: &'a Column,
     operation: &'static str,
@@ -58,6 +83,14 @@ pub(super) fn prepare_from_owned_column<'a>(
     )
     .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
     .map_err(|error| error.with_context("operation", operation))
+}
+
+pub(super) fn prepare_into_owned_column_root(
+    column: Column,
+    operation: &'static str,
+) -> Result<PreparedColumnExport<'static>, InteropError> {
+    let readiness = prepared_device_readiness(operation, column.execution_domain())?.1;
+    prepare_from_owned_column_root_with_readiness(column, operation, readiness)
 }
 
 pub(super) fn prepare_host_from_owned_column(
@@ -281,6 +314,18 @@ impl Column {
         <Self as TryPrepareDeviceColumnExport>::try_prepare_device_column_export(self)
     }
 
+    /// Move this owned low-level column into a producer-rooted shared prepared
+    /// device export.
+    ///
+    /// Unlike the borrow-preserving [`Column::try_prepare_device_column_export`]
+    /// adapter, this consuming variant upgrades the column itself into the
+    /// prepared-export root. The returned export carries retained owner
+    /// state, so downstream consumers can defer completion honestly without
+    /// widening lifetimes through borrowed aliases.
+    pub fn try_into_prepared_device_column_export(self) -> Result<PreparedColumnExport<'static>, InteropError> {
+        prepare_into_owned_column_root(self, "interop::Column::try_into_prepared_device_column_export")
+    }
+
     /// Project this owned low-level column into the shared RAPIDS prepared
     /// host export profile.
     ///
@@ -355,6 +400,17 @@ impl Column {
         )
         .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
         .map_err(|error| error.with_context("operation", operation))
+    }
+
+    /// Move this owned low-level column into a producer-rooted shared prepared
+    /// device export with explicit event-ordered readiness.
+    pub fn try_into_prepared_device_column_export_with_event(
+        self,
+        event: &CudaEvent,
+    ) -> Result<PreparedColumnExport<'static>, InteropError> {
+        let operation = "interop::Column::try_into_prepared_device_column_export_with_event";
+        let readiness = prepared_device_event_readiness(operation, self.execution_domain(), event)?.1;
+        prepare_from_owned_column_root_with_readiness(self, operation, readiness)
     }
 }
 

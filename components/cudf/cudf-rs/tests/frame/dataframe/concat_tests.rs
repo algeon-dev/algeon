@@ -55,8 +55,8 @@ fn test_concat_mismatched_column_names_returns_error() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dataframe::concat");
-    assert_eq!(error_context_value(&err, "left_column"), Some("b"));
-    assert_eq!(error_context_value(&err, "right_column"), Some("c"));
+    assert_eq!(error_context_value(&err, "left_column").as_deref(), Some("b"));
+    assert_eq!(error_context_value(&err, "right_column").as_deref(), Some("c"));
 }
 
 #[test]
@@ -75,8 +75,8 @@ fn test_concat_mismatched_column_count_returns_error() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dataframe::concat");
-    assert_eq!(error_context_value(&err, "left_columns"), Some("1"));
-    assert_eq!(error_context_value(&err, "right_columns"), Some("2"));
+    assert_eq!(error_context_value(&err, "left_columns").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "right_columns").as_deref(), Some("2"));
 }
 
 #[test]
@@ -98,10 +98,10 @@ fn test_concat_mismatched_column_types_returns_error() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "dataframe::concat");
-    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "column_name"), Some("b"));
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int64"));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("b"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int64"));
 }
 
 #[test]
@@ -218,16 +218,16 @@ fn test_concat_by_name_appends_union_only_columns_in_first_appearance_order() {
 
 #[test]
 fn test_testing_hook_locks_concat_by_name_missing_planned_dtype_contract() {
-    let err = cudf::testing::trigger_concat_by_name_missing_planned_dtype_for_test().unwrap_err();
+    let err = cudf::testing::dataframe::trigger_concat_by_name_missing_planned_dtype_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::InvariantViolation);
     assert_eq!(err.operation(), "dataframe::concat_many_by_name");
-    assert_eq!(error_context_value(&err, "column_name"), Some("missing"));
-    assert_eq!(error_context_value(&err, "resource"), Some("concat_by_name_schema"));
-    assert_eq!(error_context_value(&err, "reason"), Some("missing_planned_dtype"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("missing"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("concat_by_name_schema"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("missing_planned_dtype"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure concat_by_name schema planning records a dtype for every output column")
     );
 }
@@ -245,9 +245,9 @@ fn test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill() {
 
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(error_context_value(&err, "column_name"), Some("id"));
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int64"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("id"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int64"));
 }
 
 #[test]
@@ -265,7 +265,7 @@ fn test_concat_by_name_exact_rejects_missing_columns() {
 
     assert_missing_column_error(&err, "score");
     assert_eq!(err.operation(), "dataframe::concat_many_by_name");
-    assert_eq!(error_context_value(&err, "schema_alignment"), Some("exact"));
+    assert_eq!(error_context_value(&err, "schema_alignment").as_deref(), Some("exact"));
 }
 
 #[test]
@@ -395,8 +395,8 @@ fn test_concat_many_mismatched_schema_returns_error() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dataframe::concat_many");
-    assert_eq!(error_context_value(&err, "left_column"), Some("a"));
-    assert_eq!(error_context_value(&err, "right_column"), Some("b"));
+    assert_eq!(error_context_value(&err, "left_column").as_deref(), Some("a"));
+    assert_eq!(error_context_value(&err, "right_column").as_deref(), Some("b"));
 }
 
 #[test]
@@ -413,10 +413,10 @@ fn test_concat_many_mismatched_types_returns_error() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "dataframe::concat_many");
-    assert_eq!(error_context_value(&err, "column_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "column_name"), Some("a"));
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int64"));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("a"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int64"));
 }
 
 #[test]
@@ -501,7 +501,7 @@ fn test_rename_to_existing_name_returns_error() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::DuplicateColumnName);
     assert_eq!(err.operation(), "dataframe::rename_column");
-    assert_eq!(error_context_value(&err, "duplicate_name"), Some("b"));
+    assert_eq!(error_context_value(&err, "duplicate_name").as_deref(), Some("b"));
 }
 
 #[test]
@@ -548,10 +548,10 @@ fn test_select_duplicate_column_names_returns_error() {
 
     let err = df.select(["a", "a"]).expect_err("expected duplicate selection error");
     crate::common::assert_duplicate_name_error(&err, "a");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "reason"), Some("duplicate_column_name"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("ensure column names are unique"));
-    assert_eq!(error_context_value(&err, "selected_column_count"), None);
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("duplicate_column_name"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("ensure column names are unique"));
+    assert_eq!(error_context_value(&err, "selected_column_count").as_deref(), None);
 }
 
 #[test]

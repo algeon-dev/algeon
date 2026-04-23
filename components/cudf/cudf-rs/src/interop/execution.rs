@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn execution_binding<'a>(
+pub(crate) fn execution_binding<'a>(
     operation: &'static str,
     domain: &Arc<ExecutionDomain>,
 ) -> Result<ExecutionBinding<'a>, InteropError> {

@@ -1,6 +1,14 @@
 //! Tests for CU-1 (unique), CU-3 (drop_nulls), CU-8 (drop_duplicates / distinct).
 
-use cudf::{ErrorCode, ErrorKind, core::Table, ops::stream_compaction, testing::prelude::*};
+use cudf::{
+    ErrorCode, ErrorKind,
+    core::{
+        Table,
+        error::{FactKeyName, FactValue},
+    },
+    ops::stream_compaction,
+    testing::prelude::*,
+};
 
 use crate::common::{column_from_slice, column_from_slice_nullable, error_context_value};
 
@@ -92,9 +100,11 @@ fn test_drop_nulls_rejects_out_of_bounds_key_index() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::IndexOutOfBounds);
     assert_eq!(err.operation(), "stream_compaction::drop_nulls");
-    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "key_index"), None);
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(1)));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
+    assert_eq!(err.detail_value("column_index"), None);
+    assert_eq!(err.detail_value("table_column_count"), None);
+    assert_eq!(error_context_value(&err, "key_index").as_deref(), None);
 }
 
 #[test]
@@ -108,11 +118,12 @@ fn test_drop_nulls_ffi_validation_uses_canonical_keys_count_context() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "stream_compaction::drop_nulls");
-    assert_eq!(error_context_value(&err, "reason"), Some("negative_keep_threshold"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("use keep_threshold >= 0"));
-    assert_eq!(error_context_value(&err, "keys_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "keep_threshold"), Some("-1"));
-    assert_eq!(error_context_value(&err, "num_keys"), None);
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("negative_keep_threshold"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("use keep_threshold >= 0"));
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(1)));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(error_context_value(&err, "keep_threshold").as_deref(), Some("-1"));
+    assert_eq!(error_context_value(&err, "num_keys").as_deref(), None);
 }
 
 // ===== CU-1: unique (single-column dedup) ====================================
@@ -280,7 +291,9 @@ fn test_distinct_rejects_out_of_bounds_key_index_with_canonical_context() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::IndexOutOfBounds);
     assert_eq!(err.operation(), "stream_compaction::distinct");
-    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "key_index"), None);
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(1)));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
+    assert_eq!(err.detail_value("column_index"), None);
+    assert_eq!(err.detail_value("table_column_count"), None);
+    assert_eq!(error_context_value(&err, "key_index").as_deref(), None);
 }
