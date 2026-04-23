@@ -107,8 +107,8 @@ fn graph_from_prepared_columns_i32_bfs() {
     let handle = test_handle();
     let runtime = explicit_runtime();
 
-    let src = runtime.series("src", TRIANGLE_TAIL_SRC_I32).expect("src");
-    let dst = runtime.series("dst", TRIANGLE_TAIL_DST_I32).expect("dst");
+    let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
 
     let src_export = src.try_prepare_device_column_export().expect("src export");
     let dst_export = dst.try_prepare_device_column_export().expect("dst export");
@@ -133,8 +133,8 @@ fn graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fa
     let handle = test_handle();
     let runtime = explicit_runtime();
 
-    let src = runtime.series("src", DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
-    let dst = runtime.series("dst", DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
+    let src = runtime.series(DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
+    let dst = runtime.series(DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
 
     let complete_calls = Arc::new(AtomicUsize::new(0));
     let drop_incomplete_calls = Arc::new(AtomicUsize::new(0));
@@ -169,9 +169,9 @@ fn graph_from_prepared_table_export_bfs() {
     let handle = test_handle();
     let runtime = explicit_runtime();
 
-    let src = runtime.series("src", TRIANGLE_TAIL_SRC_I32).expect("src");
-    let dst = runtime.series("dst", TRIANGLE_TAIL_DST_I32).expect("dst");
-    let wgt = runtime.series("weight", TRIANGLE_TAIL_WEIGHT_F32).expect("weight");
+    let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
+    let wgt = runtime.series(TRIANGLE_TAIL_WEIGHT_F32).expect("weight");
     let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", wgt)]).expect("dataframe");
 
     let export = df.try_prepare_device_table_export().expect("table export");
@@ -191,9 +191,9 @@ fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_m
     let handle = test_handle();
     let runtime = explicit_runtime();
 
-    let src = runtime.series("src", &[0i32, 1, 1, 2]).expect("src");
-    let dst = runtime.series("dst", &[1i32, 0, 2, 1]).expect("dst");
-    let wgt = runtime.series("weight", &[5.0f32, 2.0, 1.0, 1.0]).expect("weight");
+    let src = runtime.series(&[0i32, 1, 1, 2]).expect("src");
+    let dst = runtime.series(&[1i32, 0, 2, 1]).expect("dst");
+    let wgt = runtime.series(&[5.0f32, 2.0, 1.0, 1.0]).expect("weight");
 
     let src_export = src.try_prepare_device_column_export().expect("src export");
     let dst_export = dst.try_prepare_device_column_export().expect("dst export");
@@ -234,8 +234,8 @@ fn graph_from_prepared_columns_rejects_host_exports() {
     let handle = test_handle();
     let runtime = explicit_runtime();
 
-    let src = runtime.series("src", DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
-    let dst = runtime.series("dst", DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
+    let src = runtime.series(DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
+    let dst = runtime.series(DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
 
     let src_export = src.try_prepare_host_column_export().expect("src host export");
     let dst_export = dst.try_prepare_host_column_export().expect("dst host export");
@@ -257,8 +257,8 @@ fn graph_from_prepared_table_export_rejects_host_exports() {
     let handle = test_handle();
     let runtime = explicit_runtime();
 
-    let src = runtime.series("src", DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
-    let dst = runtime.series("dst", DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
+    let src = runtime.series(DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
+    let dst = runtime.series(DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
     let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
 
     let export = df.try_prepare_host_table_export().expect("host table export");

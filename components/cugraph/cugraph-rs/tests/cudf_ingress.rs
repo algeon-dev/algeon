@@ -43,9 +43,9 @@ struct LouvainShapeSummary {
 }
 
 fn louvain_fixture_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
-    let src = runtime.series("src", LOUVAIN_GRAPH_SRC_I32).expect("src");
-    let dst = runtime.series("dst", LOUVAIN_GRAPH_DST_I32).expect("dst");
-    let weight = runtime.series("weight", LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
+    let src = runtime.series(LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = runtime.series(LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weight = runtime.series(LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
     cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)]).expect("louvain graph dataframe")
 }
 
@@ -285,8 +285,8 @@ fn graph_from_dataframe_by_name() {
 #[test]
 fn graph_from_dataframe_rejects_unknown_column_name() {
     let runtime = explicit_runtime();
-    let src = runtime.series("src", &[0i32, 1]).expect("src");
-    let dst = runtime.series("dst", &[1i32, 0]).expect("dst");
+    let src = runtime.series(&[0i32, 1]).expect("src");
+    let dst = runtime.series(&[1i32, 0]).expect("dst");
     let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
 
     let handle = test_handle();

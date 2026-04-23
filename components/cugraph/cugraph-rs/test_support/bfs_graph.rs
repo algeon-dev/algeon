@@ -18,9 +18,9 @@ pub fn bfs_graph_table(runtime: &Runtime) -> Table {
 }
 
 pub fn bfs_graph_dataframe(runtime: &Runtime) -> DataFrame {
-    let src = runtime.series("src", BFS_GRAPH_SRC_I32).expect("src");
-    let dst = runtime.series("dst", BFS_GRAPH_DST_I32).expect("dst");
-    let wgt = runtime.series("weight", BFS_GRAPH_WEIGHT_F32).expect("weight");
+    let src = runtime.series(BFS_GRAPH_SRC_I32).expect("src");
+    let dst = runtime.series(BFS_GRAPH_DST_I32).expect("dst");
+    let wgt = runtime.series(BFS_GRAPH_WEIGHT_F32).expect("weight");
     DataFrame::from_columns([("src", src), ("dst", dst), ("weight", wgt)]).expect("bfs graph dataframe")
 }
 

@@ -3,7 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cudf::interop::prepared::PreparedTableExport;
 use cugraph::{
     array::DeviceArray,
     centrality::PageRankParams,
@@ -12,6 +11,7 @@ use cugraph::{
     handle::ResourceHandle,
     types::GraphProperties,
 };
+use rapids_interop::PreparedTableExport;
 
 const EDGE_COLUMN_NAMES: &[&str] = &["src", "dst", "weight"];
 
@@ -91,16 +91,16 @@ pub fn assert_score_maps_close_f32(
 }
 
 pub fn python_weighted_reciprocal_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
-    let src = runtime.series("src", &[0i32, 1, 1, 2]).expect("src");
-    let dst = runtime.series("dst", &[1i32, 0, 2, 1]).expect("dst");
-    let wgt = runtime.series("weight", &[5.0f32, 2.0, 1.0, 1.0]).expect("weight");
+    let src = runtime.series(&[0i32, 1, 1, 2]).expect("src");
+    let dst = runtime.series(&[1i32, 0, 2, 1]).expect("dst");
+    let wgt = runtime.series(&[5.0f32, 2.0, 1.0, 1.0]).expect("weight");
     cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", wgt)])
         .expect("python-weighted reciprocal dataframe")
 }
 
 pub fn python_undirected_multigraph_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
-    let src = runtime.series("src", &[0i32, 0, 1]).expect("src");
-    let dst = runtime.series("dst", &[1i32, 1, 2]).expect("dst");
+    let src = runtime.series(&[0i32, 0, 1]).expect("src");
+    let dst = runtime.series(&[1i32, 1, 2]).expect("dst");
     cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("python undirected multigraph dataframe")
 }
 

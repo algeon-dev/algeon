@@ -44,8 +44,8 @@
 //! let runtime = Runtime::new()?;
 //! let handle = ResourceHandle::for_runtime_device(&runtime)?;
 //!
-//! let src = runtime.series("src", &[0i32, 1, 2, 1, 2, 0])?;
-//! let dst = runtime.series("dst", &[1i32, 2, 0, 0, 1, 2])?;
+//! let src = runtime.series(&[0i32, 1, 2, 1, 2, 0])?;
+//! let dst = runtime.series(&[1i32, 2, 0, 0, 1, 2])?;
 //! let edges = cudf::DataFrame::from_columns([("src", src), ("dst", dst)])?;
 //!
 //! let opts = DataFrameGraphOptions::new("src", "dst")

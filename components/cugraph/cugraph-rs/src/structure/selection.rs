@@ -24,7 +24,7 @@ use crate::{
 /// let runtime = cudf::Runtime::new().unwrap();
 /// let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
 ///
-/// let device_vertices = runtime.series("vertex", &[0i32, 1]).unwrap();
+/// let device_vertices = runtime.series(&[0i32, 1]).unwrap();
 /// let column = device_vertices.as_column();
 /// let slice = column.device_slice::<i32>().unwrap();
 /// let device_view = device_array_view_from_slice::<i32>(&slice).unwrap();
