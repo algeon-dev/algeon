@@ -728,6 +728,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: true,
+            key_metadata: None,
         };
 
         let plan = iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(
@@ -804,6 +805,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: true,
+            key_metadata: None,
         };
         let second = FileScanTask { start: 2048, length: 2048, record_count: None, ..first.clone() };
 
@@ -830,6 +832,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: true,
+            key_metadata: None,
         };
 
         let identity = iceberg_task_content_identity(Some("123"), &task).unwrap();
@@ -858,6 +861,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: true,
+            key_metadata: None,
         };
 
         let plan =
@@ -973,6 +977,7 @@ mod tests {
             file_type: DataContentType::PositionDeletes,
             partition_spec_id: 0,
             equality_ids: None,
+            key_metadata: None,
         };
         let task = FileScanTask {
             file_size_in_bytes: 4096,
@@ -989,6 +994,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: true,
+            key_metadata: None,
         };
         let mut plan =
             iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default())
@@ -1152,6 +1158,7 @@ mod tests {
             file_type: DataContentType::PositionDeletes,
             partition_spec_id: 0,
             equality_ids: None,
+            key_metadata: None,
         };
         let task = FileScanTask {
             file_size_in_bytes: 4096,
@@ -1168,6 +1175,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: true,
+            key_metadata: None,
         };
 
         let plan =
@@ -1199,6 +1207,7 @@ mod tests {
             file_type: DataContentType::PositionDeletes,
             partition_spec_id: 0,
             equality_ids: None,
+            key_metadata: None,
         };
 
         append_delete_file_facts(&mut plan, &mut data_file, "data-0", 0, &delete_file, &Default::default()).unwrap();
@@ -1240,6 +1249,7 @@ mod tests {
             referenced_data_file: referenced_data_file.map(str::to_string),
             position_lower_bound: None,
             position_upper_bound: None,
+            key_metadata: None,
         }
     }
 
@@ -1298,6 +1308,7 @@ mod tests {
             file_type: DataContentType::PositionDeletes,
             partition_spec_id: 0,
             equality_ids: None,
+            key_metadata: None,
         };
         let task = FileScanTask {
             file_size_in_bytes: 4096,
@@ -1314,6 +1325,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: true,
+            key_metadata: None,
         };
 
         let plan =
@@ -1337,6 +1349,7 @@ mod tests {
             file_type: DataContentType::EqualityDeletes,
             partition_spec_id: 0,
             equality_ids: Some(vec![1]),
+            key_metadata: None,
         };
         let task = FileScanTask {
             file_size_in_bytes: 4096,
@@ -1353,6 +1366,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: true,
+            key_metadata: None,
         };
 
         let plan =
@@ -1378,6 +1392,7 @@ mod tests {
             file_type: DataContentType::EqualityDeletes,
             partition_spec_id: 0,
             equality_ids: None,
+            key_metadata: None,
         };
         let task = FileScanTask {
             file_size_in_bytes: 4096,
@@ -1394,6 +1409,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: true,
+            key_metadata: None,
         };
 
         let plan =
@@ -1423,6 +1439,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: true,
+            key_metadata: None,
         };
 
         let plan =

@@ -237,6 +237,7 @@ pub(super) struct LimitedDeleteFile {
     pub(super) referenced_data_file: Option<String>,
     pub(super) position_lower_bound: Option<u64>,
     pub(super) position_upper_bound: Option<u64>,
+    pub(super) key_metadata: Option<Box<[u8]>>,
 }
 
 impl LimitedDeleteFile {
@@ -254,6 +255,7 @@ impl LimitedDeleteFile {
             referenced_data_file: data_file.referenced_data_file(),
             position_lower_bound: iceberg_position_delete_bound(data_file.lower_bounds()),
             position_upper_bound: iceberg_position_delete_bound(data_file.upper_bounds()),
+            key_metadata: data_file.key_metadata().map(Box::from),
         }
     }
 
@@ -287,6 +289,7 @@ impl LimitedDeleteFile {
             .with_file_type(self.file_type)
             .with_partition_spec_id(self.partition_spec_id)
             .with_equality_ids(self.equality_ids.clone())
+            .with_key_metadata(self.key_metadata.clone())
             .build()
     }
 }
@@ -377,6 +380,7 @@ pub(super) fn file_scan_task_from_manifest_entry(
         .with_partition_spec(partition_spec)
         .with_name_mapping(name_mapping)
         .with_case_sensitive(case_sensitive)
+        .with_key_metadata(entry.data_file().key_metadata().map(Box::from))
         .build()
 }
 
