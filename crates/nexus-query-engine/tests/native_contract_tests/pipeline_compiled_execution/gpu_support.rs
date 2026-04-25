@@ -38,6 +38,9 @@ pub(super) fn runtime_visible_gate_for_task_kind(
         })
 }
 
+// `fixtures_plans::adaptive` is shared with the CPU contract target.  The
+// compiled GPU target still type-checks that fixture but does not invoke it.
+#[allow(dead_code)]
 pub(super) fn literal_expr_for_type(data_type: &DataType) -> Expr {
     let literal = match data_type {
         DataType::Decimal128(precision, scale) => {

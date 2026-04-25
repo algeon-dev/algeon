@@ -101,6 +101,7 @@ async fn cugraph_sql_gpu_betweenness_reservation_reports_request_calibration_and
 ///
 /// This is an explicit tools command rather than a Cargo test because it
 /// requires an external Python/cuGraph installation.
+#[allow(dead_code)]
 pub async fn run_pagerank_filter_sort_limit_acceptance() {
     let dir = unique_temp_dir("datafusion-nexus-cugraph-pagerank-compose");
     let path = dir.join("tiny_directed_edges.parquet");

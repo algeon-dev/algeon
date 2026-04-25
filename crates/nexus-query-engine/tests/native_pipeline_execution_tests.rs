@@ -3,8 +3,6 @@
 //! This target is intentionally separate from `native_contract_tests`: its
 //! cases create CUDA runtimes, while the remaining contract target is CPU-only.
 
-#![allow(dead_code, unused_imports)] // Shared fixture modules intentionally expose CPU-only helpers too.
-
 use std::{
     collections::BTreeSet,
     fs::{self, File},
@@ -19,12 +17,10 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use nexus_query_engine::{
-    adaptive_runtime::{
-        AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryObservation, AdaptiveTaskMemoryHistoryKey,
-    },
+    adaptive_runtime::{AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryObservation},
     admission::{
         CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
-        strict_bounded_pipeline_admission, strict_bounded_pipeline_rejection_projection,
+        strict_bounded_pipeline_admission,
     },
     capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
     dynamic_filter::DynamicFilterProducer,
@@ -49,13 +45,8 @@ use nexus_query_engine::{
         JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput, QueryPlan,
         QueryPlanBuilder, WindowFunction, WindowSpec,
     },
-    runtime::{
-        ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, ReservationKind, resident::GpuResidentInputMap,
-    },
-    source::{
-        GpuResidentSource, LocalParquetFile, LocalParquetSource, ParquetEqualityDeleteFile, PartitionColumn,
-        ResolvedParquetSource, SourceNode,
-    },
+    runtime::{ExecutionContext, MemoryControlPolicy, ReservationKind, resident::GpuResidentInputMap},
+    source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, PartitionColumn, SourceNode},
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<ProjectionOutput> {
@@ -70,12 +61,17 @@ fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<Projec
 #[path = "native_contract_tests/pipeline_compiled_execution/fixtures_parquet.rs"]
 mod fixtures_parquet;
 #[path = "native_contract_tests/pipeline_compiled_execution/fixtures_plans.rs"]
+// This target runs compiled GPU execution only; this shared fixture module
+// also supplies CPU-only contract cases in `native_contract_tests`.
+#[allow(dead_code)]
 mod fixtures_plans;
 #[path = "native_contract_tests/pipeline_compiled_execution/gpu_execution.rs"]
 mod gpu_execution;
 #[path = "native_contract_tests/pipeline_compiled_execution/gpu_support.rs"]
 mod gpu_support;
 #[path = "native_contract_tests/bounded_join_admission/plans/remaining_topologies.rs"]
+// The compiled GPU target uses only three of these CPU contract fixtures.
+#[allow(dead_code)]
 mod remaining_topologies;
 
 use fixtures_parquet::*;
