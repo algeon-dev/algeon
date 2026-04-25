@@ -28,8 +28,6 @@ from typing import Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_reference_REPO = REPO_ROOT.parent / "reference"
-DEFAULT_reference_BIN = DEFAULT_reference_REPO / "build" / "release" / "duckdb"
 GPU_LOCK = Path("/tmp/cudf-gpu.lock")
 
 WAIVER_QUERY_IDS = (
@@ -100,9 +98,6 @@ def main() -> int:
     rows: list[OutputRow] = []
     if "duckdb" in engines:
         rows.extend(run_duckdb_outputs(args, fixture, raw_dir, [queries[q] for q in query_ids]))
-    if "reference" in engines:
-        rows.extend(run_reference_outputs(args, fixture, out_dir, raw_dir, [queries[q] for q in query_ids]))
-
     datafusion_engines = [engine for engine in engines if engine in {"cpu_datafusion", "datafusion_nexus"}]
     if datafusion_engines:
         rows.extend(run_datafusion_outputs(args, fixture, out_dir, raw_dir, [queries[q] for q in query_ids], datafusion_engines))
@@ -130,8 +125,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--query-ids", default=",".join(DEFAULT_QUERY_IDS))
     parser.add_argument(
         "--engines",
-        default="duckdb,reference,cpu_datafusion,datafusion_nexus",
-        help="Comma-separated subset of duckdb,reference,cpu_datafusion,datafusion_nexus.",
+        default="duckdb,cpu_datafusion,datafusion_nexus",
+        help="Comma-separated subset of duckdb,cpu_datafusion,datafusion_nexus.",
     )
     parser.add_argument("--iterations", type=int, default=2)
     parser.add_argument("--timeout-seconds", type=int, default=3600)
@@ -141,24 +136,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-gpu-flock", action="store_true", help="Do not wrap native GPU runs with flock /tmp/cudf-gpu.lock.")
     parser.add_argument("--native-source-chunk-bytes", default=os.environ.get("CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES", "4294967296"))
     parser.add_argument("--native-row-groups-per-chunk", default=os.environ.get("CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK", "1024"))
-    parser.add_argument("--reference-bin", type=Path, default=Path(os.environ.get("reference_DUCKDB_BIN", DEFAULT_reference_BIN)))
-    parser.add_argument("--reference-db", type=Path, help="DuckDB database used by reference. Defaults under --out-dir.")
-    parser.add_argument("--reference-load", action="store_true", help="Drop/recreate the reference hits table from the Parquet fixture before running.")
-    parser.add_argument(
-        "--reference-config-file",
-        type=Path,
-        default=Path(os.environ.get("reference_CONFIG_FILE", "")),
-        help=(
-            "Path to a reference YAML config file for transparent GPU execution "
-            "(sets reference_CONFIG_FILE). "
-            "The new reference API routes SQL through the GPU when this is set; "
-            "the old gpu_buffer_init/gpu_processing API is no longer available."
-        ),
-    )
-    # Legacy arguments kept for backward compatibility; ignored when --reference-config-file is set.
-    parser.add_argument("--reference-caching-region-size", default="19 GB")
-    parser.add_argument("--reference-processing-region-size", default="19 GB")
-    parser.add_argument("--reference-pinned-memory-size")
     args = parser.parse_args()
     if args.iterations < 1:
         raise SystemExit("--iterations must be >= 1")
@@ -173,7 +150,7 @@ def parse_query_ids(raw: str) -> list[str]:
 
 
 def parse_engines(raw: str) -> list[str]:
-    valid = {"duckdb", "reference", "cpu_datafusion", "datafusion_nexus"}
+    valid = {"duckdb", "cpu_datafusion", "datafusion_nexus"}
     engines = dedup_preserving_order([part.strip() for part in raw.split(",") if part.strip()])
     unknown = [engine for engine in engines if engine not in valid]
     if unknown:
@@ -286,113 +263,6 @@ def duckdb_read_parquet_source(fixture: Path) -> str:
         else:
             raise SystemExit(f"no ClickBench hits parquet files under {fixture}")
     return f"read_parquet('{parquet_arg}', binary_as_string=true)"
-
-
-def run_reference_outputs(
-    args: argparse.Namespace,
-    fixture: Path,
-    out_dir: Path,
-    raw_dir: Path,
-    queries: list[Query],
-) -> list[OutputRow]:
-    reference_db = (args.reference_db or out_dir / "reference_clickbench.duckdb").resolve()
-    if args.reference_load or not reference_db.exists():
-        load_reference_database(args, fixture, reference_db, raw_dir)
-
-    rows: list[OutputRow] = []
-    for query in queries:
-        for iteration in range(1, args.iterations + 1):
-            raw_path = raw_dir / f"{query.query_id}_reference_iter{iteration}.tsv"
-            sql_path = raw_dir / f"{query.query_id}_reference_iter{iteration}.sql"
-            sql_path.write_text(reference_query_sql(args, query.sql, raw_path), encoding="utf-8")
-            started = time.monotonic()
-            proc = subprocess.run(
-                [str(args.reference_bin), str(reference_db), "-batch", "-bail", "-f", str(sql_path)],
-                cwd=args.repo_root,
-                text=True,
-                capture_output=True,
-                timeout=args.timeout_seconds,
-                env=reference_env(args),
-            )
-            elapsed_ms = monotonic_elapsed_ms(started)
-            rows.append(row_from_process(query.query_id, "reference", iteration, proc, raw_path, elapsed_ms))
-    return rows
-
-
-def load_reference_database(args: argparse.Namespace, fixture: Path, reference_db: Path, raw_dir: Path) -> None:
-    reference_db.parent.mkdir(parents=True, exist_ok=True)
-    load_sql = "\n".join(
-        [
-            "DROP TABLE IF EXISTS hits;",
-            f"CREATE TABLE hits AS {duckdb_setup_select_sql(fixture)};",
-            "",
-        ]
-    )
-    load_path = raw_dir / "reference_load_clickbench.sql"
-    load_path.write_text(load_sql, encoding="utf-8")
-    proc = subprocess.run(
-        [str(args.reference_bin), str(reference_db), "-batch", "-bail", "-f", str(load_path)],
-        cwd=args.repo_root,
-        text=True,
-        capture_output=True,
-        timeout=args.timeout_seconds,
-        env=reference_env(),
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"failed to load reference ClickBench DB {reference_db}: {compact_process_error(proc)}")
-
-
-def duckdb_setup_select_sql(fixture: Path) -> str:
-    source = duckdb_read_parquet_source(fixture)
-    return f"SELECT * EXCLUDE (EventDate), DATE '1970-01-01' + CAST(EventDate AS INTEGER) AS EventDate FROM {source}"
-
-
-def reference_query_sql(args: argparse.Namespace, query_sql: str, raw_path: Path) -> str:
-    if _reference_config_file(args):
-        # New reference API: transparent GPU execution routed via reference_CONFIG_FILE.
-        # Plain SQL — no gpu_buffer_init/gpu_processing calls needed.
-        return "\n".join(
-            [
-                ".mode tabs",
-                ".headers on",
-                ".nullvalue NULL",
-                f".once {raw_path}",
-                f"{query_sql};",
-                "",
-            ]
-        )
-    # Legacy reference API (gpu_buffer_init + gpu_processing).
-    pinned = ""
-    if args.reference_pinned_memory_size:
-        pinned = f", pinned_memory_size = '{quote_sql_literal(args.reference_pinned_memory_size)}'"
-    return "\n".join(
-        [
-            ".mode tabs",
-            ".headers on",
-            ".nullvalue NULL",
-            f"call gpu_buffer_init('{quote_sql_literal(args.reference_caching_region_size)}', '{quote_sql_literal(args.reference_processing_region_size)}'{pinned});",
-            f".once {raw_path}",
-            f"call gpu_processing('{quote_sql_literal(query_sql)}');",
-            "",
-        ]
-    )
-
-
-def _reference_config_file(args: argparse.Namespace) -> Path | None:
-    p = getattr(args, "reference_config_file", None)
-    if p is None or str(p) == "":
-        return None
-    return p
-
-
-def reference_env(args: argparse.Namespace | None = None) -> dict[str, str]:
-    env = os.environ.copy()
-    env.setdefault("reference_DISABLE", "1")
-    if args is not None:
-        config = _reference_config_file(args)
-        if config is not None:
-            env["reference_CONFIG_FILE"] = str(config)
-    return env
 
 
 def run_datafusion_outputs(
@@ -641,8 +511,6 @@ def write_manifest(
         "tsv": str(tsv_path),
         "jsonl": str(jsonl_path),
         "duckdb_bin": args.duckdb_bin,
-        "reference_bin": str(args.reference_bin),
-        "reference_load": args.reference_load,
         "cargo_bin": args.cargo_bin,
         "cargo_release": args.release,
     }
