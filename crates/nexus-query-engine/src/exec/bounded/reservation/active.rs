@@ -1,0 +1,468 @@
+use super::*;
+
+/// Controls whether an active reservation charges capacity itself or only
+/// keeps already-charged bytes alive through another reservation lineage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::exec) enum ActiveReservationSemantics {
+    /// Charged bytes backing a resident frame or source read. Aliases may keep
+    /// those bytes reserved after the owner is released.
+    OwnedResident,
+    /// Charged scratch or intermediate work space. It can be transferred to a
+    /// later reservation without creating a second capacity charge.
+    Work,
+    /// Non-charging view of existing bytes. Releasing the last alias also
+    /// releases any owner charge that was deferred while aliases were alive.
+    Alias,
+}
+
+#[derive(Debug)]
+pub(super) struct ActiveReservationLineage {
+    pub(super) alias_count: Cell<usize>,
+    pub(super) deferred_charged_release_bytes: Cell<u64>,
+}
+
+impl ActiveReservationLineage {
+    pub(super) fn new() -> Self {
+        Self { alias_count: Cell::new(0), deferred_charged_release_bytes: Cell::new(0) }
+    }
+}
+
+pub(in crate::exec) struct ActiveReservation {
+    pub(super) memory_space: MemorySpaceId,
+    pub(super) reserved_bytes: Rc<Cell<u64>>,
+    pub(super) live_accounting: Option<MemoryGrant>,
+    pub(super) protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+    pub(super) source_cache_key: Option<GpuLocalParquetSourceCacheKey>,
+    pub(super) source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
+    pub(super) event_context: ActiveReservationEventContext,
+    pub(super) reservation_projection_ledger: ReservationProjectionLedgerHandle,
+    pub(super) observation: Option<ReservationObservation>,
+    pub(super) semantics: ActiveReservationSemantics,
+    pub(super) lineage: Option<Rc<ActiveReservationLineage>>,
+    pub(super) release_action: MemoryReservationEventAction,
+    pub(super) bytes: u64,
+    pub(super) charged_bytes: u64,
+    pub(super) released: bool,
+}
+
+impl ActiveReservation {
+    pub(super) fn owned_resident(
+        memory_space: MemorySpaceId,
+        reserved_bytes: Rc<Cell<u64>>,
+        live_accounting: Option<MemoryGrant>,
+        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+        bytes: u64,
+        request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
+    ) -> Self {
+        Self::charged(
+            memory_space,
+            reserved_bytes,
+            live_accounting,
+            protected_source_cache_keys,
+            bytes,
+            request,
+            reservation_projection_ledger,
+            observation,
+            ActiveReservationSemantics::OwnedResident,
+        )
+    }
+
+    pub(super) fn work(
+        memory_space: MemorySpaceId,
+        reserved_bytes: Rc<Cell<u64>>,
+        live_accounting: Option<MemoryGrant>,
+        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+        bytes: u64,
+        request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
+    ) -> Self {
+        Self::charged(
+            memory_space,
+            reserved_bytes,
+            live_accounting,
+            protected_source_cache_keys,
+            bytes,
+            request,
+            reservation_projection_ledger,
+            observation,
+            ActiveReservationSemantics::Work,
+        )
+    }
+
+    pub(super) fn charged(
+        memory_space: MemorySpaceId,
+        reserved_bytes: Rc<Cell<u64>>,
+        live_accounting: Option<MemoryGrant>,
+        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+        bytes: u64,
+        request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
+        semantics: ActiveReservationSemantics,
+    ) -> Self {
+        Self {
+            memory_space,
+            reserved_bytes,
+            live_accounting,
+            protected_source_cache_keys,
+            source_cache_key: None,
+            source_cache_pin: None,
+            event_context: ActiveReservationEventContext::from_request(request),
+            reservation_projection_ledger,
+            observation,
+            semantics,
+            lineage: Some(Rc::new(ActiveReservationLineage::new())),
+            release_action: MemoryReservationEventAction::Release,
+            bytes,
+            charged_bytes: bytes,
+            released: false,
+        }
+    }
+
+    pub(super) fn borrowed_source_cache(
+        memory_space: MemorySpaceId,
+        reserved_bytes: Rc<Cell<u64>>,
+        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+        source_cache_key: GpuLocalParquetSourceCacheKey,
+        source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
+        bytes: u64,
+        request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
+    ) -> Self {
+        {
+            let mut protected = protected_source_cache_keys.borrow_mut();
+            let count = protected.entry(source_cache_key.clone()).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+        Self {
+            memory_space,
+            reserved_bytes,
+            live_accounting: None,
+            protected_source_cache_keys,
+            source_cache_key: Some(source_cache_key),
+            source_cache_pin,
+            event_context: ActiveReservationEventContext::from_request(request).with_alias(),
+            reservation_projection_ledger,
+            observation,
+            semantics: ActiveReservationSemantics::Alias,
+            lineage: Some(Rc::new(ActiveReservationLineage::new())),
+            release_action: MemoryReservationEventAction::AliasRelease,
+            bytes,
+            charged_bytes: 0,
+            released: false,
+        }
+    }
+
+    pub(super) fn borrowed_resident(
+        memory_space: MemorySpaceId,
+        reserved_bytes: Rc<Cell<u64>>,
+        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+        bytes: u64,
+        request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
+    ) -> Self {
+        Self {
+            memory_space,
+            reserved_bytes,
+            live_accounting: None,
+            protected_source_cache_keys,
+            source_cache_key: None,
+            source_cache_pin: None,
+            event_context: ActiveReservationEventContext::from_request(request).with_alias(),
+            reservation_projection_ledger,
+            observation,
+            semantics: ActiveReservationSemantics::Alias,
+            lineage: Some(Rc::new(ActiveReservationLineage::new())),
+            release_action: MemoryReservationEventAction::AliasRelease,
+            bytes,
+            charged_bytes: 0,
+            released: false,
+        }
+    }
+
+    pub(super) fn alias(
+        memory_space: MemorySpaceId,
+        reserved_bytes: Rc<Cell<u64>>,
+        live_accounting: Option<MemoryGrant>,
+        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+        source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
+        lineage: Rc<ActiveReservationLineage>,
+        bytes: u64,
+        request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
+    ) -> Self {
+        lineage.alias_count.set(lineage.alias_count.get().saturating_add(1));
+        Self {
+            memory_space,
+            reserved_bytes,
+            live_accounting,
+            protected_source_cache_keys,
+            source_cache_key: None,
+            source_cache_pin,
+            event_context: ActiveReservationEventContext::from_request(request).with_alias(),
+            reservation_projection_ledger,
+            observation,
+            semantics: ActiveReservationSemantics::Alias,
+            lineage: Some(lineage),
+            release_action: MemoryReservationEventAction::AliasRelease,
+            bytes,
+            charged_bytes: 0,
+            released: false,
+        }
+    }
+
+    pub(in crate::exec) fn memory_space(&self) -> MemorySpaceId {
+        self.memory_space
+    }
+
+    pub(in crate::exec) fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    pub(in crate::exec) fn charged_bytes(&self) -> u64 {
+        self.charged_bytes
+    }
+
+    pub(in crate::exec) fn retain_grant_live_reservation(&self) -> Option<MemoryGrantLiveReservation> {
+        self.live_accounting.as_ref().and_then(|grant| grant.retain_live_reservation(self.charged_bytes))
+    }
+
+    pub(in crate::exec) fn is_alias(&self) -> bool {
+        matches!(self.semantics, ActiveReservationSemantics::Alias)
+    }
+
+    pub(super) fn transferred(mut self, request: &MemoryReservationRequest) -> Self {
+        assert!(!self.released, "cannot transfer a released reservation");
+        assert!(!self.is_alias(), "cannot transfer an alias reservation");
+        let charged_bytes = self.charged_bytes;
+        let semantics = self.semantics;
+        self.charged_bytes = 0;
+        self.released = true;
+        Self {
+            memory_space: self.memory_space,
+            reserved_bytes: Rc::clone(&self.reserved_bytes),
+            live_accounting: self.live_accounting.clone(),
+            protected_source_cache_keys: Rc::clone(&self.protected_source_cache_keys),
+            source_cache_key: None,
+            source_cache_pin: None,
+            event_context: ActiveReservationEventContext::from_request(request),
+            reservation_projection_ledger: self.reservation_projection_ledger.clone(),
+            observation: self.observation.clone(),
+            semantics,
+            lineage: self.lineage.clone(),
+            release_action: MemoryReservationEventAction::Release,
+            bytes: request.requested_bytes,
+            charged_bytes,
+            released: false,
+        }
+    }
+
+    pub(super) fn relabeled_alias(mut self, request: &MemoryReservationRequest) -> Self {
+        assert!(!self.released, "cannot relabel a released reservation");
+        assert!(self.is_alias(), "cannot relabel a non-alias reservation as an alias");
+        let source_cache_key = self.source_cache_key.take();
+        let source_cache_pin = self.source_cache_pin.take();
+        let lineage = self.lineage.clone();
+        self.released = true;
+        Self {
+            memory_space: self.memory_space,
+            reserved_bytes: Rc::clone(&self.reserved_bytes),
+            live_accounting: self.live_accounting.clone(),
+            protected_source_cache_keys: Rc::clone(&self.protected_source_cache_keys),
+            source_cache_key,
+            source_cache_pin,
+            event_context: ActiveReservationEventContext::from_request(request).with_alias(),
+            reservation_projection_ledger: self.reservation_projection_ledger.clone(),
+            observation: self.observation.clone(),
+            semantics: ActiveReservationSemantics::Alias,
+            lineage,
+            release_action: MemoryReservationEventAction::AliasRelease,
+            bytes: request.requested_bytes,
+            charged_bytes: 0,
+            released: false,
+        }
+    }
+
+    pub(super) fn release(&mut self, disposition: RuntimeReservationDisposition) -> Option<MemoryReservationEvent> {
+        if self.released {
+            return None;
+        }
+        if let Some(source_cache_key) = self.source_cache_key.take() {
+            let mut protected = self.protected_source_cache_keys.borrow_mut();
+            if let Some(count) = protected.get_mut(&source_cache_key) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    protected.remove(&source_cache_key);
+                }
+            }
+        }
+        self.source_cache_pin.take();
+        if self.source_cache_key.is_none() {
+            match (self.semantics, self.lineage.as_ref()) {
+                (ActiveReservationSemantics::Alias, Some(lineage)) => {
+                    lineage.alias_count.set(lineage.alias_count.get().saturating_sub(1));
+                    let deferred_release = if lineage.alias_count.get() == 0 {
+                        let bytes = lineage.deferred_charged_release_bytes.get();
+                        lineage.deferred_charged_release_bytes.set(0);
+                        bytes
+                    } else {
+                        0
+                    };
+                    if deferred_release > 0 {
+                        self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(deferred_release));
+                        self.record_live_delta(-i128::from(deferred_release));
+                        self.released = true;
+                        if let Some(observation) = &self.observation {
+                            observation.record(
+                                &self.event_context,
+                                runtime_release_action(disposition),
+                                disposition,
+                                self.bytes,
+                                0,
+                                -i128::from(deferred_release),
+                                self.reserved_bytes.get(),
+                            );
+                        }
+                        return Some(self.event_context.event(
+                            self.release_action,
+                            self.bytes,
+                            -i128::from(deferred_release),
+                            self.reserved_bytes.get(),
+                        ));
+                    }
+                },
+                (_, Some(lineage)) => {
+                    if lineage.alias_count.get() > 0 {
+                        lineage
+                            .deferred_charged_release_bytes
+                            .set(lineage.deferred_charged_release_bytes.get().saturating_add(self.charged_bytes));
+                        self.charged_bytes = 0;
+                    }
+                },
+                (_, None) => {},
+            }
+        }
+        let charged_delta_bytes = -i128::from(self.charged_bytes);
+        self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(self.charged_bytes));
+        self.record_live_delta(charged_delta_bytes);
+        self.released = true;
+        if let Some(observation) = &self.observation {
+            let disposition = if charged_delta_bytes == 0
+                && !self.is_alias()
+                && self.lineage.as_ref().is_some_and(|lineage| lineage.alias_count.get() > 0)
+            {
+                RuntimeReservationDisposition::AliasDeferred
+            } else {
+                disposition
+            };
+            observation.record(
+                &self.event_context,
+                runtime_release_action(disposition),
+                disposition,
+                self.bytes,
+                0,
+                charged_delta_bytes,
+                self.reserved_bytes.get(),
+            );
+        }
+        Some(self.event_context.event(self.release_action, self.bytes, charged_delta_bytes, self.reserved_bytes.get()))
+    }
+
+    pub(super) fn retarget_observation(
+        &mut self,
+        task_attempt_id: Option<TaskAttemptId>,
+        span_id: Option<RuntimeSpanId>,
+    ) {
+        if let Some(observation) = &mut self.observation {
+            observation.retarget(task_attempt_id, span_id);
+        }
+    }
+
+    pub(super) fn grow(&mut self, bytes: u64) -> u64 {
+        if bytes == 0 {
+            return 0;
+        }
+        assert!(!self.released, "cannot grow a released reservation");
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.charged_bytes = self.charged_bytes.saturating_add(bytes);
+        bytes
+    }
+
+    pub(super) fn shrink_to(&mut self, bytes: u64) -> u64 {
+        if bytes >= self.bytes {
+            return 0;
+        }
+        assert!(!self.released, "cannot shrink a released reservation");
+        let refunded = (self.bytes - bytes).min(self.charged_bytes);
+        self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(refunded));
+        self.record_live_delta(-i128::from(refunded));
+        self.bytes = bytes;
+        self.charged_bytes = self.charged_bytes.saturating_sub(refunded);
+        refunded
+    }
+
+    pub(super) fn promote_charged_bytes_to_baseline(&mut self, promoted_bytes: u64) {
+        if promoted_bytes == 0 {
+            return;
+        }
+        assert!(!self.released, "cannot promote a released reservation");
+        let promoted_charged_bytes = promoted_bytes.min(self.charged_bytes);
+        self.charged_bytes = self.charged_bytes.saturating_sub(promoted_charged_bytes);
+    }
+
+    pub(super) fn record_live_delta(&self, delta_bytes: i128) {
+        if let Some(grant) = &self.live_accounting {
+            grant.record_live_reservation_delta(delta_bytes);
+        }
+    }
+}
+
+impl Drop for ActiveReservation {
+    fn drop(&mut self) {
+        let disposition = if std::thread::panicking() {
+            RuntimeReservationDisposition::UnwindRelease
+        } else {
+            RuntimeReservationDisposition::DropRelease
+        };
+        if let Some(event) = self.release(disposition) {
+            self.reservation_projection_ledger.record_implicit_release(event, self.event_context.task_kind.clone());
+        }
+    }
+}
+
+pub(super) fn runtime_release_action(disposition: RuntimeReservationDisposition) -> RuntimeReservationAction {
+    if disposition == RuntimeReservationDisposition::RollbackRelease {
+        RuntimeReservationAction::Rollback
+    } else {
+        RuntimeReservationAction::Release
+    }
+}
+
+pub(in crate::exec) struct ResidentGpuFrame {
+    pub(in crate::exec) frame: GpuDataFrame,
+    pub(in crate::exec) reservation: ActiveReservation,
+}
+
+pub(in crate::exec) type CommittedPartial = ResidentGpuFrame;
+
+pub(in crate::exec::bounded) fn reconcile_work_reservation_to_output(
+    reservations: &mut ReservationTracker,
+    work_reservation: &mut ActiveReservation,
+    output_bytes: u64,
+    output_request: &MemoryReservationRequest,
+    metrics: &mut QueryMetrics,
+) -> Result<()> {
+    if output_bytes > work_reservation.bytes() {
+        let delta = output_bytes.saturating_sub(work_reservation.bytes());
+        reservations.try_grow(work_reservation, output_request.clone().with_requested_bytes(delta), metrics)?;
+    } else {
+        reservations.shrink_to_observed_with_request(work_reservation, output_bytes, output_request.clone(), metrics);
+    }
+    Ok(())
+}

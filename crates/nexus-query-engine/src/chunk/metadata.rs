@@ -10,7 +10,6 @@ use parquet::file::{
     reader::{FileReader, SerializedFileReader},
 };
 
-use super::{source_file_needs_footer_metadata, source_file_requires_footer_metadata};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     parquet_metadata::{fetch_object_store_parquet_metadata, read_parquet_footer_sidecar},
@@ -350,11 +349,11 @@ fn load_local_parquet_footer_metadata(file: &LocalParquetFile) -> Option<Arc<Par
     })
 }
 
-pub(super) fn sidecar_content_identity(file: &LocalParquetFile) -> &str {
+pub(crate) fn sidecar_content_identity(file: &LocalParquetFile) -> &str {
     file.resolved_source.content_identity.as_deref().unwrap_or(file.stable_id.as_str())
 }
 
-pub(super) fn local_parquet_footer_metadata_path(file: &LocalParquetFile) -> Option<&std::path::Path> {
+pub(crate) fn local_parquet_footer_metadata_path(file: &LocalParquetFile) -> Option<&std::path::Path> {
     if let Some(path) = file.location.as_local_path() {
         return Some(path);
     }
@@ -521,7 +520,7 @@ fn parse_s3_metadata_source_uri(uri: &str, storage_profile_id: Option<String>) -
 
 // Cache identity for footer metadata, including source resolution contracts.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct SourceMetadataCacheKey {
+pub(crate) struct SourceMetadataCacheKey {
     location: ParquetSourceLocation,
     path: PathBuf,
     stable_id: String,
@@ -550,6 +549,140 @@ pub(super) struct FooterMetadataLoad {
     pub(super) metadata: Option<Arc<ParquetMetaData>>,
     pub(super) load_time: Duration,
     pub(super) load_count: u64,
+}
+
+use super::{
+    decimal::{
+        object_store_decimal_reader_predicate_requires_footer_contract, parquet_reader_decimal_types,
+        reader_decimal_type_metadata_unavailable_error, validate_object_store_reader_decimal_types,
+        validate_supplied_reader_decimal_types_match_footer,
+    },
+    row_group::{RowGroupMetadata, row_group_metadata_from_footer, source_row_group_metadata},
+};
+use crate::source::ParquetReaderDecimalType;
+
+pub(super) struct SourceMetadataLoad {
+    pub(super) metadata: Option<RowGroupMetadata>,
+    pub(super) load_time: Duration,
+    pub(super) load_count: u64,
+    pub(super) reader_decimal_types: Vec<ParquetReaderDecimalType>,
+    pub(super) reader_decimal_types_footer_verified: bool,
+}
+
+pub(super) fn read_parquet_metadata(
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    metadata_cache: &mut SourceMetadataCache,
+    metadata_load_context: Option<&SourceMetadataLoadContext<'_>>,
+) -> Result<SourceMetadataLoad> {
+    let needs_object_store_decimal_contract =
+        object_store_decimal_reader_predicate_requires_footer_contract(source, file);
+    let footer_load = if source_file_needs_footer_metadata(source, file) {
+        metadata_cache.footer_metadata(source, file, metadata_load_context)?
+    } else {
+        FooterMetadataLoad { metadata: None, load_time: Duration::ZERO, load_count: 0 }
+    };
+    let footer_reader_decimal_types =
+        footer_load.metadata.as_ref().map(|metadata| parquet_reader_decimal_types(metadata, source));
+    let reader_decimal_types = if needs_object_store_decimal_contract {
+        let Some(footer_reader_decimal_types) = footer_reader_decimal_types else {
+            return Err(reader_decimal_type_metadata_unavailable_error(source, file));
+        };
+        validate_supplied_reader_decimal_types_match_footer(
+            source,
+            file,
+            &file.reader_decimal_types,
+            &footer_reader_decimal_types,
+        )?;
+        footer_reader_decimal_types
+    } else if file.reader_decimal_types.is_empty() {
+        footer_reader_decimal_types.unwrap_or_default()
+    } else {
+        file.reader_decimal_types.clone()
+    };
+    let reader_decimal_types_footer_verified = needs_object_store_decimal_contract;
+    validate_object_store_reader_decimal_types(source, file, &reader_decimal_types)?;
+    let footer_metadata =
+        footer_load.metadata.as_ref().map(|metadata| row_group_metadata_from_footer(metadata, source));
+    Ok(SourceMetadataLoad {
+        metadata: source_row_group_metadata(file, footer_metadata),
+        load_time: footer_load.load_time,
+        load_count: footer_load.load_count,
+        reader_decimal_types,
+        reader_decimal_types_footer_verified,
+    })
+}
+
+pub(super) fn source_file_needs_footer_metadata(source: &LocalParquetSource, file: &LocalParquetFile) -> bool {
+    file.row_group_bytes.is_none()
+        || file.projected_row_group_compressed_bytes.is_none()
+        || file.projected_row_group_uncompressed_bytes.is_none()
+        || file.pure_filter_row_group_compressed_bytes.is_none()
+        || file.pure_filter_row_group_uncompressed_bytes.is_none()
+        || file.row_group_rows.is_none()
+        || object_store_decimal_reader_predicate_requires_footer_contract(source, file)
+        || (file.reader_decimal_types.is_empty()
+            && source
+                .reader_predicate
+                .as_ref()
+                .is_some_and(|predicate| source.reader_predicate_requires_source_contract(predicate)))
+}
+
+pub(super) fn source_file_requires_footer_metadata(source: &LocalParquetSource, file: &LocalParquetFile) -> bool {
+    source.scan_limit.is_some()
+        || source.is_zero_column_count_source()
+        || file.has_position_delete_files()
+        || object_store_decimal_reader_predicate_requires_footer_contract(source, file)
+}
+
+pub(crate) fn footer_verified_object_store_reader_decimal_types(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+) -> Result<Option<Vec<ParquetReaderDecimalType>>> {
+    footer_verified_object_store_reader_decimal_types_with_supplied(context, source, file, &file.reader_decimal_types)
+}
+
+pub(crate) fn footer_verified_object_store_reader_decimal_types_with_supplied(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    supplied_reader_decimal_types: &[ParquetReaderDecimalType],
+) -> Result<Option<Vec<ParquetReaderDecimalType>>> {
+    let mut metadata_cache = SourceMetadataCache::default();
+    footer_verified_object_store_reader_decimal_types_with_supplied_cache(
+        context,
+        source,
+        file,
+        supplied_reader_decimal_types,
+        &mut metadata_cache,
+    )
+}
+
+pub(crate) fn footer_verified_object_store_reader_decimal_types_with_supplied_cache(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    supplied_reader_decimal_types: &[ParquetReaderDecimalType],
+    metadata_cache: &mut SourceMetadataCache,
+) -> Result<Option<Vec<ParquetReaderDecimalType>>> {
+    if !object_store_decimal_reader_predicate_requires_footer_contract(source, file) {
+        return Ok(None);
+    }
+    let file_with_supplied_types;
+    let file = if supplied_reader_decimal_types == file.reader_decimal_types {
+        file
+    } else {
+        file_with_supplied_types = file.clone().with_reader_decimal_types(supplied_reader_decimal_types.to_vec());
+        &file_with_supplied_types
+    };
+    let metadata_load = read_parquet_metadata(
+        source,
+        file,
+        metadata_cache,
+        Some(&SourceMetadataLoadContext { execution_context: context }),
+    )?;
+    Ok(Some(metadata_load.reader_decimal_types))
 }
 
 #[cfg(test)]

@@ -18,7 +18,7 @@ mod flight;
 #[path = "server_iceberg_rest_multigpu_e2e/probe.rs"]
 mod probe;
 #[cfg(feature = "server-runtime-observability-e2e")]
-#[path = "server_iceberg_rest_multigpu_e2e/runtime_observability.rs"]
+#[path = "server_iceberg_rest_multigpu_e2e/runtime_observability/mod.rs"]
 mod runtime_observability;
 #[path = "server_iceberg_rest_multigpu_e2e/server.rs"]
 mod server;

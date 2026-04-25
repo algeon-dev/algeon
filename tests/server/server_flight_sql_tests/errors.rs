@@ -1,0 +1,159 @@
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn statement_update_invalid_sql_uses_server_error_presentation() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let error = client.execute_update("selekt 1".to_string(), None).await.unwrap_err();
+
+    server.abort();
+
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_query_id_metadata(&status);
+    assert_error_metadata(&status, "sql_parse", "invalid_input", "permanent");
+    assert_no_diagnostic_fields(status.message());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn statement_update_rejects_transaction_id_with_structured_error() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let txn_id = prost::bytes::Bytes::from_static(b"fake-txn");
+    let error = client
+        .execute_update("CREATE VIEW tx_update_probe AS SELECT 1 AS x".to_string(), Some(txn_id))
+        .await
+        .unwrap_err();
+
+    server.abort();
+
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::Unimplemented);
+    assert_query_id_metadata(&status);
+    assert_error_metadata(&status, "unsupported_operator", "unsupported", "permanent");
+    assert!(status.message().contains("transactions are not supported"));
+    assert_no_diagnostic_fields(status.message());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn statement_update_rejects_select_without_side_effect_path() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let error = client.execute_update("SELECT 1 AS one".to_string(), None).await.unwrap_err();
+
+    server.abort();
+
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_query_id_metadata(&status);
+    assert_error_metadata(&status, "invalid_request", "invalid_input", "permanent");
+    assert!(status.message().contains("statement query endpoint"));
+    assert_no_diagnostic_fields(status.message());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn statement_query_rejects_sql_prepare_namespace() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let error = client.execute("PREPARE local_stmt AS SELECT 1".to_string(), None).await.unwrap_err();
+
+    server.abort();
+
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_query_id_metadata(&status);
+    assert_error_metadata(&status, "invalid_request", "invalid_input", "permanent");
+    assert!(status.message().contains("SQL PREPARE"));
+    assert_no_diagnostic_fields(status.message());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn statement_planning_errors_include_query_id_metadata() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let error = client.execute("selekt 1".to_string(), None).await.unwrap_err();
+
+    server.abort();
+
+    let FlightError::Tonic(status) = error else {
+        panic!("expected tonic status, got {error:?}");
+    };
+    assert_eq!(status.code(), Code::InvalidArgument);
+    let query_id = status.metadata().get(QUERY_ID_METADATA_KEY).expect("query_id metadata must be present");
+    let query_id = query_id.to_str().expect("query_id metadata must be ASCII");
+    assert!(!query_id.is_empty());
+    assert_error_metadata(&status, "sql_parse", "invalid_input", "permanent");
+    assert_no_diagnostic_fields(status.message());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_table_errors_are_not_found_with_structured_code() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let error = client.execute("select * from does_not_exist".to_string(), None).await.unwrap_err();
+
+    server.abort();
+
+    let FlightError::Tonic(status) = error else {
+        panic!("expected tonic status, got {error:?}");
+    };
+    assert_eq!(status.code(), Code::NotFound);
+    let query_id = status.metadata().get(QUERY_ID_METADATA_KEY).expect("query_id metadata must be present");
+    let query_id = query_id.to_str().expect("query_id metadata must be ASCII");
+    assert!(!query_id.is_empty());
+    assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
+    assert!(status.message().contains("does_not_exist"));
+    assert_no_diagnostic_fields(status.message());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_column_errors_are_invalid_input_with_structured_code() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let error = client.execute("select missing from (select 1 as one) as t".to_string(), None).await.unwrap_err();
+
+    server.abort();
+
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::InvalidArgument);
+    let query_id = status.metadata().get(QUERY_ID_METADATA_KEY).expect("query_id metadata must be present");
+    let query_id = query_id.to_str().expect("query_id metadata must be ASCII");
+    assert!(!query_id.is_empty());
+    assert_error_metadata(&status, "field_not_found", "invalid_input", "permanent");
+    assert!(status.message().contains("missing"), "missing field absent from message: {}", status.message());
+    assert!(status.message().contains("one"), "valid field absent from message: {}", status.message());
+    assert_no_diagnostic_fields(status.message());
+}
