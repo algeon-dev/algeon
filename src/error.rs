@@ -6,7 +6,11 @@
 //! keep their original classification in `native_*` facts while this layer maps
 //! them into adapter-level [`ErrorCode`] values suitable for DataFusion.
 
-use std::{collections::BTreeMap, error::Error as StdError, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error as StdError,
+    fmt,
+};
 
 use datafusion::common::DataFusionError;
 
@@ -17,24 +21,95 @@ pub use code::{ErrorCode, ErrorKind, ErrorStatus, kind_for_code, status_for_code
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
 const NATIVE_FACT_COLLISION_KEYS: &str = "native_fact_collision_keys";
+const FACT_COLLISION_KEYS: &str = "fact_collision_keys";
+const EMPTY_FACT_KEY: &str = "<empty>";
+const FALLBACK_OPERATION: &str = "datafusion_nexus.error.unspecified_operation";
+const FALLBACK_MESSAGE: &str = "datafusion-nexus error without a message";
 
 /// Adapter result type used before conversion to `DataFusionError`.
 pub type Result<T> = std::result::Result<T, Error>;
 
 const MAX_SOURCE_CHAIN_DEPTH: usize = 32;
+const MAX_NEXUS_ERROR_TRAVERSAL_DEPTH: usize = 64;
+const MAX_NEXUS_ERROR_TRAVERSAL_NODES: usize = 256;
+const MAX_LOG_SAFE_FACT_COUNT: usize = 16;
+const MAX_LOG_SAFE_FACT_VALUE_BYTES: usize = 256;
+const MAX_LOG_SAFE_FACTS_RENDERED_BYTES: usize = 2_048;
+pub(crate) const ERROR_FACTS_TRUNCATED_KEY: &str = "error_facts_truncated";
+
+/// DataFusion error inspection helpers provided by datafusion-nexus.
+pub trait DataFusionErrorExt {
+    /// Finds the first Nexus [`Error`] in this DataFusion error tree.
+    ///
+    /// Traversal is deterministic depth-first pre-order. Generic
+    /// [`std::error::Error::source`] links are followed, while every
+    /// [`DataFusionError::Collection`] branch is visited in collection order.
+    /// The first match in that order is returned. Traversal is bounded
+    /// defensively by both depth and total node count.
+    fn find_nexus_error(&self) -> Option<&Error>;
+}
+
+impl DataFusionErrorExt for DataFusionError {
+    fn find_nexus_error(&self) -> Option<&Error> {
+        let mut visited_nodes = 0;
+        find_nexus_error_in(self, 0, &mut visited_nodes)
+    }
+}
+
+fn find_nexus_error_in<'a>(
+    error: &'a (dyn StdError + 'static),
+    depth: usize,
+    visited_nodes: &mut usize,
+) -> Option<&'a Error> {
+    if *visited_nodes >= MAX_NEXUS_ERROR_TRAVERSAL_NODES {
+        return None;
+    }
+    *visited_nodes += 1;
+
+    if let Some(error) = error.downcast_ref::<Error>() {
+        return Some(error);
+    }
+    if depth >= MAX_NEXUS_ERROR_TRAVERSAL_DEPTH {
+        return None;
+    }
+
+    if let Some(DataFusionError::Collection(errors)) = error.downcast_ref::<DataFusionError>() {
+        return errors.iter().find_map(|error| find_nexus_error_in(error, depth + 1, visited_nodes));
+    }
+
+    error.source().and_then(|source| find_nexus_error_in(source, depth + 1, visited_nodes))
+}
 
 /// Machine-readable facts attached to an [`Error`].
 ///
 /// Fact keys are static strings so they can be treated as a documented contract
 /// by tests, reports, and callers. Values are stringified with [`ToString`].
 /// Iteration is sorted by key because facts are stored in a [`BTreeMap`].
+/// Raw lookup and iteration preserve every value exactly. [`fmt::Debug`]
+/// exposes only facts explicitly approved through [`Error::with_log_safe_fact`],
+/// using the same sanitized and bounded projection as server observability.
 ///
-/// Empty keys and duplicate inserts panic. The adapter reserves `cudf_*` for
-/// cuDF classification and `native_*` for wrapped `nexus-query-engine` errors;
+/// Empty keys are ignored and duplicate inserts preserve the first value and
+/// disclosure choice. Rejected keys are reported deterministically under
+/// `fact_collision_keys`. The adapter reserves `cudf_*` for cuDF
+/// classification and `native_*` for wrapped `nexus-query-engine` errors;
 /// colliding native facts are reported under `native_fact_collision_keys`.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Facts {
-    values: BTreeMap<&'static str, String>,
+    values: BTreeMap<&'static str, FactValue>,
+    collision_keys: BTreeSet<&'static str>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct FactValue {
+    value: String,
+    log_safe: bool,
+}
+
+/// Sanitized, bounded facts approved for logs and retained diagnostics.
+pub(crate) struct LogSafeFactProjection {
+    entries: Vec<(&'static str, String)>,
+    truncated: bool,
 }
 
 impl Facts {
@@ -45,22 +120,173 @@ impl Facts {
 
     /// Returns the string value for `key` when present.
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.values.get(key).map(String::as_str)
+        self.values.get(key).map(|fact| fact.value.as_str())
     }
 
     /// Iterates facts in sorted key order.
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, &str)> {
-        self.values.iter().map(|(key, value)| (*key, value.as_str()))
+        self.values.iter().map(|(key, fact)| (*key, fact.value.as_str()))
     }
 
     fn insert(&mut self, key: &'static str, value: String) {
-        assert!(!key.is_empty(), "datafusion-nexus error fact key must not be empty");
-        let previous = self.values.insert(key, value);
-        assert!(previous.is_none(), "datafusion-nexus error fact key inserted twice: {key}");
+        self.insert_with_log_safety(key, value, false);
+    }
+
+    pub(crate) fn insert_log_safe(&mut self, key: &'static str, value: String) {
+        // The truncation marker is owned by the projection. Preserve a caller's
+        // raw typed value, but never let it opt itself into disclosure or spoof
+        // the synthetic retained marker.
+        self.insert_with_log_safety(key, value, key != ERROR_FACTS_TRUNCATED_KEY);
+    }
+
+    fn insert_with_log_safety(&mut self, key: &'static str, value: String, log_safe: bool) {
+        if key.is_empty() {
+            self.record_collision(EMPTY_FACT_KEY);
+            return;
+        }
+        if key == FACT_COLLISION_KEYS || self.values.contains_key(key) {
+            self.record_collision(key);
+            return;
+        }
+        self.values.insert(key, FactValue { value, log_safe });
+    }
+
+    fn record_collision(&mut self, key: &'static str) {
+        self.collision_keys.insert(key);
+        let value = self.collision_keys.iter().copied().collect::<Vec<_>>().join(",");
+        self.values.insert(FACT_COLLISION_KEYS, FactValue { value, log_safe: true });
+    }
+
+    pub(crate) fn log_safe_projection(&self) -> LogSafeFactProjection {
+        let safe_facts = self
+            .values
+            .iter()
+            .filter(|(key, fact)| **key != ERROR_FACTS_TRUNCATED_KEY && fact.log_safe)
+            .map(|(key, fact)| (*key, fact.value.as_str()))
+            .collect::<Vec<_>>();
+        let mut truncated = safe_facts.len() > MAX_LOG_SAFE_FACT_COUNT;
+        let mut entries = Vec::with_capacity(safe_facts.len().min(MAX_LOG_SAFE_FACT_COUNT));
+        let mut rendered_bytes = 0usize;
+
+        for (key, raw_value) in safe_facts.into_iter().take(MAX_LOG_SAFE_FACT_COUNT) {
+            let sanitized = sanitize_log_fact_value(raw_value);
+            let (mut value, value_truncated) = truncate_with_marker(&sanitized, MAX_LOG_SAFE_FACT_VALUE_BYTES);
+            truncated |= value_truncated;
+
+            let separator_bytes = usize::from(!entries.is_empty()) * 2;
+            let fixed_bytes = separator_bytes.saturating_add(key.len()).saturating_add(1);
+            let Some(value_budget) = MAX_LOG_SAFE_FACTS_RENDERED_BYTES
+                .checked_sub(rendered_bytes)
+                .and_then(|remaining| remaining.checked_sub(fixed_bytes))
+            else {
+                truncated = true;
+                break;
+            };
+            let (total_capped_value, total_truncated) = truncate_with_marker(&value, value_budget);
+            value = total_capped_value;
+            truncated |= total_truncated;
+            rendered_bytes = rendered_bytes.saturating_add(fixed_bytes).saturating_add(value.len());
+            entries.push((key, value));
+            if total_truncated {
+                break;
+            }
+        }
+
+        LogSafeFactProjection { entries, truncated }
     }
 }
 
+impl fmt::Debug for Facts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let projection = self.log_safe_projection();
+        f.debug_struct("Facts")
+            .field("values", &projection.entries)
+            .field(ERROR_FACTS_TRUNCATED_KEY, &projection.truncated)
+            .finish()
+    }
+}
+
+impl LogSafeFactProjection {
+    #[cfg(any(feature = "server", test))]
+    pub(crate) fn retained_entries(&self) -> Vec<(String, String)> {
+        let mut entries =
+            self.entries.iter().map(|(key, value)| ((*key).to_string(), value.clone())).collect::<Vec<_>>();
+        if self.truncated {
+            entries.push((ERROR_FACTS_TRUNCATED_KEY.to_string(), "true".to_string()));
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+        }
+        entries
+    }
+
+    #[cfg(any(feature = "server", test))]
+    pub(crate) fn rendered(&self) -> Option<String> {
+        (!self.entries.is_empty())
+            .then(|| self.entries.iter().map(|(key, value)| format!("{key}={value}")).collect::<Vec<_>>().join(", "))
+    }
+
+    #[cfg(any(feature = "server", test))]
+    pub(crate) fn truncated(&self) -> bool {
+        self.truncated
+    }
+}
+
+fn sanitize_log_fact_value(value: &str) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.split_whitespace().any(is_credential_token) {
+        return "<redacted-credential>".to_string();
+    }
+    normalized
+        .split_whitespace()
+        .map(|token| if token.contains("://") { "<redacted-uri>" } else { token })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_credential_token(token: &str) -> bool {
+    let token = token
+        .trim_matches(|ch: char| matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '"' | '\''))
+        .to_ascii_lowercase();
+    let key = token.split_once(['=', ':']).map_or(token.as_str(), |(key, _)| key);
+    let normalized_key = key.chars().filter(|ch| !matches!(ch, '-' | '_' | '.')).collect::<String>();
+    matches!(
+        normalized_key.as_str(),
+        "authorization"
+            | "proxyauthorization"
+            | "cookie"
+            | "setcookie"
+            | "password"
+            | "passwd"
+            | "apikey"
+            | "accesskey"
+            | "secret"
+            | "token"
+            | "clientsecret"
+            | "refreshtoken"
+            | "awssecretaccesskey"
+            | "secretaccesskey"
+    )
+}
+
+fn truncate_with_marker(value: &str, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value.to_string(), false);
+    }
+    const MARKER: &str = "...";
+    if max_bytes <= MARKER.len() {
+        return (MARKER[..max_bytes].to_string(), true);
+    }
+    let mut end = max_bytes - MARKER.len();
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    (format!("{}{MARKER}", &value[..end]), true)
+}
+
 /// Structured adapter error with stable classification and facts.
+///
+/// [`fmt::Display`] renders only the human-facing [`Self::message`]. Consumers
+/// that need machine-readable diagnostics should use the typed accessors or
+/// [`fmt::Debug`] rather than parsing display text.
 pub struct Error {
     code: ErrorCode,
     operation: &'static str,
@@ -138,8 +364,8 @@ impl Error {
     /// diagnostic text. Add machine-readable context with [`Self::with_fact`].
     pub fn new(code: ErrorCode, operation: &'static str, message: impl Into<String>) -> Self {
         let message = message.into();
-        assert!(!operation.is_empty(), "datafusion-nexus error operation must not be empty");
-        assert!(!message.is_empty(), "datafusion-nexus error message must not be empty");
+        let operation = if operation.is_empty() { FALLBACK_OPERATION } else { operation };
+        let message = if message.is_empty() { FALLBACK_MESSAGE.to_string() } else { message };
         Self { code, operation, message, facts: Facts::new(), source: None }
     }
 
@@ -147,25 +373,66 @@ impl Error {
     ///
     /// `key` must be a non-empty static string and should be treated as part of
     /// the diagnostic contract once exposed. `value` is stringified with
-    /// [`ToString`]. Duplicate keys panic.
+    /// [`ToString`]. Empty keys are ignored. Duplicate keys preserve the first
+    /// value and are recorded under `fact_collision_keys`. Facts added here
+    /// remain raw and are hidden from logs, retained diagnostics, and
+    /// [`Facts`]'s [`fmt::Debug`] output unless the caller instead makes the explicit
+    /// [`Self::with_log_safe_fact`] disclosure choice.
     #[must_use]
     pub fn with_fact(mut self, key: &'static str, value: impl ToString) -> Self {
         self.facts.insert(key, value.to_string());
         self
     }
 
-    /// Attaches the source error, replacing any source already present.
+    /// Adds a fact that may be projected into logs and retained diagnostics.
+    ///
+    /// This is an explicit disclosure contract, not a convenience alias for
+    /// [`Self::with_fact`]. Use it only for bounded operational classification
+    /// values that contain no credentials, identifiers, paths, query literals,
+    /// backend details, or other sensitive/user-provided data. The projection
+    /// still redacts URI and credential-like tokens and enforces size caps as
+    /// defense in depth, but sanitization does not make an unsafe value safe to
+    /// opt in. Ordinary and externally supplied facts must use
+    /// [`Self::with_fact`] and remain hidden by default. The reserved
+    /// `error_facts_truncated` key remains available through raw typed lookup,
+    /// but cannot be opted into the projection; only the projection itself may
+    /// emit that retained marker.
+    /// Empty and duplicate keys follow [`Self::with_fact`]'s first-write
+    /// collision policy.
     #[must_use]
-    pub fn with_source<E>(mut self, source: E) -> Self
-    where E: StdError + Send + Sync + 'static {
-        self.source = Some(Box::new(source));
+    pub fn with_log_safe_fact(mut self, key: &'static str, value: impl ToString) -> Self {
+        self.facts.insert_log_safe(key, value.to_string());
         self
     }
 
-    /// Attaches an already boxed source error, replacing any source already present.
+    #[cfg(feature = "server")]
+    pub(crate) fn with_preserved_facts(mut self, facts: Facts) -> Self {
+        self.facts = facts;
+        self
+    }
+
+    /// Attaches the source error when no source is already present.
+    ///
+    /// A second source is discarded so error decoration cannot replace the
+    /// original causal chain.
+    #[must_use]
+    pub fn with_source<E>(mut self, source: E) -> Self
+    where E: StdError + Send + Sync + 'static {
+        if self.source.is_none() {
+            self.source = Some(Box::new(source));
+        }
+        self
+    }
+
+    /// Attaches an already boxed source error when no source is already present.
+    ///
+    /// A second source is discarded so error decoration cannot replace the
+    /// original causal chain.
     #[must_use]
     pub fn with_boxed_source(mut self, source: Box<dyn StdError + Send + Sync + 'static>) -> Self {
-        self.source = Some(source);
+        if self.source.is_none() {
+            self.source = Some(source);
+        }
         self
     }
 
@@ -178,10 +445,10 @@ impl Error {
     pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
         let code = code_for_cudf_error(&source);
         let error = Self::new(code, operation, message)
-            .with_fact("cudf_code", source.code())
-            .with_fact("cudf_kind", source.kind())
-            .with_fact("cudf_status", source.status())
-            .with_fact("cudf_operation", source.operation());
+            .with_log_safe_fact("cudf_code", source.code())
+            .with_log_safe_fact("cudf_kind", source.kind())
+            .with_log_safe_fact("cudf_status", source.status())
+            .with_log_safe_fact("cudf_operation", source.operation());
         match cudf_message_fact(&source) {
             Some(cudf_message) => error.with_fact("cudf_message", cudf_message),
             None => error,
@@ -209,10 +476,10 @@ impl Error {
     ) -> Self {
         let code = code_for_native_error(&source);
         let mut error = Self::new(code, operation, message)
-            .with_fact("native_code", source.code())
-            .with_fact("native_kind", source.kind())
-            .with_fact("native_status", source.status())
-            .with_fact("native_operation", source.operation())
+            .with_log_safe_fact("native_code", source.code())
+            .with_log_safe_fact("native_kind", source.kind())
+            .with_log_safe_fact("native_status", source.status())
+            .with_log_safe_fact("native_operation", source.operation())
             .with_fact("native_message", source.message());
         let mut collision_keys = Vec::new();
         for (key, value) in source.facts().iter() {
@@ -223,7 +490,7 @@ impl Error {
             error.facts.insert(key, value.to_string());
         }
         if !collision_keys.is_empty() {
-            error.facts.insert(NATIVE_FACT_COLLISION_KEYS, collision_keys.join(","));
+            error.facts.insert_log_safe(NATIVE_FACT_COLLISION_KEYS, collision_keys.join(","));
         }
         error.with_source(source)
     }
@@ -241,6 +508,13 @@ impl Error {
     /// Returns the retry/remediation status derived from [`Self::code`].
     pub fn status(&self) -> ErrorStatus {
         self.code.status()
+    }
+
+    /// Returns whether this error is eligible for automatic retry.
+    ///
+    /// This is an exact alias for `self.status() == ErrorStatus::Temporary`.
+    pub fn is_retryable(&self) -> bool {
+        self.status() == ErrorStatus::Temporary
     }
 
     /// Returns the stable dotted operation id that produced the error.
@@ -271,39 +545,13 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "code={} kind={} status={} operation={} message={}",
-            self.code(),
-            self.kind(),
-            self.status(),
-            self.operation(),
-            quote(&self.message),
-        )?;
-
-        if self.facts.values.is_empty() {
-            f.write_str(" facts={}")?;
-        } else {
-            f.write_str(" facts={")?;
-            for (index, (key, value)) in self.facts.iter().enumerate() {
-                if index > 0 {
-                    f.write_str(", ")?;
-                }
-                write!(f, "{key}={}", quote(value))?;
-            }
-            f.write_str("}")?;
-        }
-
-        if let Some(source) = &self.source {
-            write!(f, " source={}", quote(&source.to_string()))?;
-        }
-
-        Ok(())
+        f.write_str(&self.message)
     }
 }
 
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let source = self.source.as_ref().map(|_| "<source omitted>");
         f.debug_struct("Error")
             .field("code", &self.code)
             .field("kind", &self.kind())
@@ -311,7 +559,7 @@ impl fmt::Debug for Error {
             .field("operation", &self.operation)
             .field("message", &self.message)
             .field("facts", &self.facts)
-            .field("source", &self.source.as_ref().map(|source| source.to_string()))
+            .field("source", &source)
             .finish()
     }
 }
@@ -331,11 +579,6 @@ impl From<Error> for DataFusionError {
     }
 }
 
-// cuDF classification priority is resource exhaustion first, then retry status
-// (`Temporary`/`Persistent`), then permanent failures by cuDF kind. Notable
-// permanent mappings: `NotFound` is treated as invalid input,
-// `ExecutionContext` is treated as an invariant violation, and unknown kinds
-// fall back to dependency failure.
 /// Returns the trimmed foreign cuDF message, redacting URI-like tokens.
 fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
     let message = source.message().trim();
@@ -354,6 +597,12 @@ fn redact_uri_tokens(message: &str) -> String {
         .join(" ")
 }
 
+// cuDF classification priority is resource exhaustion first, then retry status
+// (`Temporary`/`Persistent`), then permanent failures by cuDF kind. This keeps
+// cuDF's action contract intact: only Temporary is automatically retryable;
+// Persistent requires escalation or intervention. Notable permanent mappings:
+// `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
+// invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
     if error.kind() == cudf::ErrorKind::ResourceExhausted {
         return ErrorCode::CudfResourceExhausted;
@@ -404,14 +653,6 @@ fn code_for_native_error(error: &nexus_query_engine::error::QueryError) -> Error
     }
 }
 
-fn quote(value: &str) -> String {
-    if value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '(' | ')')) {
-        value.to_string()
-    } else {
-        format!("{value:?}")
-    }
-}
-
 fn diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {
     if let Some(error) = error.downcast_ref::<Error>() {
         return normalize_diagnostic_message(error.message());
@@ -420,24 +661,30 @@ fn diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {
         return normalize_diagnostic_message(error.message());
     }
     if let Some(error) = error.downcast_ref::<DataFusionError>() {
-        return datafusion_current_error_message(error);
+        return datafusion_error_human_message(error);
     }
     normalize_diagnostic_message(&error.to_string())
 }
 
-fn datafusion_current_error_message(error: &DataFusionError) -> String {
+/// Returns human-facing text for the current DataFusion error layer.
+///
+/// DataFusion 54 renders SQL parser errors with `Debug` in
+/// [`DataFusionError::message`]. This extractor uses the parser's `Display`
+/// representation so Rust enum syntax does not leak into diagnostics.
+pub(crate) fn datafusion_error_human_message(error: &DataFusionError) -> String {
     match error {
         DataFusionError::Context(message, _) => normalize_diagnostic_message(message),
         DataFusionError::Diagnostic(diagnostic, _) => normalize_diagnostic_message(&diagnostic.message),
         DataFusionError::External(source) => diagnostic_error_message(source.as_ref()),
+        DataFusionError::SQL(parser, _) => normalize_diagnostic_message(&parser.to_string()),
         DataFusionError::Collection(errors) => match errors.first() {
             Some(first) => {
-                let first = datafusion_current_error_message(first);
+                let first = datafusion_error_human_message(first);
                 normalize_diagnostic_message(&format!("DataFusion error collection ({} errors): {first}", errors.len()))
             },
             None => "DataFusion error collection (0 errors)".to_string(),
         },
-        DataFusionError::Shared(source) => datafusion_current_error_message(source.as_ref()),
+        DataFusionError::Shared(source) => datafusion_error_human_message(source.as_ref()),
         _ => normalize_diagnostic_message(&error.message()),
     }
 }
@@ -448,6 +695,11 @@ fn normalize_diagnostic_message(message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arrow::error::ArrowError;
+    use datafusion::common::Diagnostic;
+
     use super::*;
 
     #[derive(Debug)]
@@ -476,6 +728,318 @@ mod tests {
         fn source(&self) -> Option<&(dyn StdError + 'static)> {
             self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
         }
+    }
+
+    fn nexus_error(operation: &'static str) -> Error {
+        Error::new(ErrorCode::Internal, operation, "test Nexus error")
+    }
+
+    #[test]
+    fn construction_and_fact_collisions_do_not_unwind_and_preserve_first_values() {
+        let error = std::panic::catch_unwind(|| {
+            Error::new(ErrorCode::Internal, "", "")
+                .with_fact("", "ignored-empty-key")
+                .with_fact("unsafe_first", "first-unsafe")
+                .with_log_safe_fact("unsafe_first", "second-safe")
+                .with_log_safe_fact("safe_first", "first-safe")
+                .with_fact("safe_first", "second-unsafe")
+        })
+        .expect("constructing an error must not unwind");
+
+        assert_eq!(error.operation(), FALLBACK_OPERATION);
+        assert_eq!(error.message(), FALLBACK_MESSAGE);
+        assert_eq!(error.fact_value(""), None);
+        assert_eq!(error.fact_value("unsafe_first"), Some("first-unsafe"));
+        assert_eq!(error.fact_value("safe_first"), Some("first-safe"));
+        assert_eq!(error.fact_value(FACT_COLLISION_KEYS), Some("<empty>,safe_first,unsafe_first"));
+
+        let projection = error.facts().log_safe_projection();
+        assert_eq!(
+            projection.entries,
+            vec![
+                (FACT_COLLISION_KEYS, "<empty>,safe_first,unsafe_first".to_string()),
+                ("safe_first", "first-safe".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn repeated_source_attachment_does_not_unwind_or_replace_the_first_source() {
+        let first_typed = std::panic::catch_unwind(|| {
+            Error::new(ErrorCode::Internal, "datafusion_nexus.test.source", "source test")
+                .with_source(TestSourceError::leaf("first typed source"))
+                .with_boxed_source(Box::new(TestSourceError::leaf("second boxed source")))
+        })
+        .expect("attaching a second boxed source must not unwind");
+        assert_eq!(first_typed.source_error().map(ToString::to_string).as_deref(), Some("first typed source"));
+
+        let first_boxed = std::panic::catch_unwind(|| {
+            Error::new(ErrorCode::Internal, "datafusion_nexus.test.source", "source test")
+                .with_boxed_source(Box::new(TestSourceError::leaf("first boxed source")))
+                .with_source(TestSourceError::leaf("second typed source"))
+        })
+        .expect("attaching a second typed source must not unwind");
+        assert_eq!(first_boxed.source_error().map(ToString::to_string).as_deref(), Some("first boxed source"));
+    }
+
+    #[test]
+    fn log_safe_fact_projection_sanitizes_and_sorts_without_changing_raw_facts() {
+        let error = Error::new(ErrorCode::Internal, "datafusion_nexus.test.facts", "fact projection test")
+            .with_log_safe_fact("z_newline", "first\nsecond\tthird")
+            .with_log_safe_fact("a_uri", "read s3://user:secret@bucket/path?token=value now")
+            .with_log_safe_fact("b_credential", "Authorization=Bearer-secret")
+            .with_log_safe_fact("c_client_secret", "CLIENT-SECRET=client-secret-value")
+            .with_log_safe_fact("d_refresh_token", "Refresh.Token:refresh-token-value")
+            .with_log_safe_fact("e_aws_secret", "AWS_SECRET_ACCESS_KEY=aws-secret-value")
+            .with_fact("literal", "customer-secret")
+            .with_fact("path", "/private/customer.parquet")
+            .with_fact("config_value", "super-secret-config")
+            .with_fact("native_message", "native secret")
+            .with_fact("cudf_message", "cudf secret");
+
+        assert_eq!(error.fact_value("literal"), Some("customer-secret"));
+        assert_eq!(error.fact_value("path"), Some("/private/customer.parquet"));
+        let projection = error.facts().log_safe_projection();
+        assert_eq!(
+            projection.entries,
+            vec![
+                ("a_uri", "read <redacted-uri> now".to_string()),
+                ("b_credential", "<redacted-credential>".to_string()),
+                ("c_client_secret", "<redacted-credential>".to_string()),
+                ("d_refresh_token", "<redacted-credential>".to_string()),
+                ("e_aws_secret", "<redacted-credential>".to_string()),
+                ("z_newline", "first second third".to_string()),
+            ]
+        );
+        assert!(!projection.truncated());
+        let rendered = projection.rendered().expect("safe facts must render");
+        assert_eq!(
+            rendered,
+            "a_uri=read <redacted-uri> now, b_credential=<redacted-credential>, c_client_secret=<redacted-credential>, d_refresh_token=<redacted-credential>, e_aws_secret=<redacted-credential>, z_newline=first second third"
+        );
+        for hidden in
+            ["customer-secret", "/private/customer.parquet", "super-secret-config", "native secret", "cudf secret"]
+        {
+            assert!(!rendered.contains(hidden), "safe projection leaked {hidden}");
+        }
+    }
+
+    #[test]
+    fn log_safe_fact_projection_caps_values_count_and_total_size() {
+        let long_value = "v".repeat(MAX_LOG_SAFE_FACT_VALUE_BYTES + 20);
+        let value_capped = Error::new(ErrorCode::Internal, "datafusion_nexus.test.value_cap", "value cap")
+            .with_log_safe_fact("long", &long_value);
+        let projection = value_capped.facts().log_safe_projection();
+        assert!(projection.truncated());
+        assert_eq!(projection.entries.len(), 1);
+        assert_eq!(projection.entries[0].1.len(), MAX_LOG_SAFE_FACT_VALUE_BYTES);
+        assert!(projection.entries[0].1.ends_with("..."));
+
+        let keys = [
+            "fact_00", "fact_01", "fact_02", "fact_03", "fact_04", "fact_05", "fact_06", "fact_07", "fact_08",
+            "fact_09", "fact_10", "fact_11", "fact_12", "fact_13", "fact_14", "fact_15", "fact_16",
+        ];
+        let mut count_capped = Error::new(ErrorCode::Internal, "datafusion_nexus.test.count_cap", "count cap");
+        for key in keys {
+            count_capped = count_capped.with_log_safe_fact(key, "safe");
+        }
+        let projection = count_capped.facts().log_safe_projection();
+        assert_eq!(projection.entries.len(), MAX_LOG_SAFE_FACT_COUNT);
+        assert!(projection.truncated());
+        assert_eq!(projection.retained_entries()[0], (ERROR_FACTS_TRUNCATED_KEY.to_string(), "true".to_string()));
+
+        let mut total_capped = Error::new(ErrorCode::Internal, "datafusion_nexus.test.total_cap", "total cap");
+        for key in keys.into_iter().take(10) {
+            total_capped = total_capped.with_log_safe_fact(key, "x".repeat(MAX_LOG_SAFE_FACT_VALUE_BYTES));
+        }
+        let projection = total_capped.facts().log_safe_projection();
+        let rendered = projection.rendered().expect("partially projected facts must render");
+        assert!(projection.truncated());
+        assert!(projection.entries.len() < 10);
+        assert!(rendered.len() <= MAX_LOG_SAFE_FACTS_RENDERED_BYTES);
+    }
+
+    #[test]
+    fn reserved_truncation_marker_cannot_spoof_retained_projection() {
+        let not_truncated = Error::new(ErrorCode::Internal, "datafusion_nexus.test.marker", "marker")
+            .with_log_safe_fact(ERROR_FACTS_TRUNCATED_KEY, "true")
+            .with_log_safe_fact("safe", "classification");
+        assert_eq!(not_truncated.fact_value(ERROR_FACTS_TRUNCATED_KEY), Some("true"));
+        let projection = not_truncated.facts().log_safe_projection();
+        assert_eq!(projection.entries, vec![("safe", "classification".to_string())]);
+        assert!(!projection.truncated());
+        assert!(projection.retained_entries().iter().all(|(key, _)| key != ERROR_FACTS_TRUNCATED_KEY));
+
+        let actually_truncated = Error::new(ErrorCode::Internal, "datafusion_nexus.test.marker", "marker")
+            .with_log_safe_fact(ERROR_FACTS_TRUNCATED_KEY, "false")
+            .with_log_safe_fact("long", "x".repeat(MAX_LOG_SAFE_FACT_VALUE_BYTES + 1));
+        assert_eq!(actually_truncated.fact_value(ERROR_FACTS_TRUNCATED_KEY), Some("false"));
+        let projection = actually_truncated.facts().log_safe_projection();
+        assert!(projection.truncated());
+        assert!(projection.entries.iter().all(|(key, _)| *key != ERROR_FACTS_TRUNCATED_KEY));
+        let retained = projection.retained_entries();
+        assert_eq!(
+            retained.iter().filter(|(key, _)| key == ERROR_FACTS_TRUNCATED_KEY).collect::<Vec<_>>(),
+            vec![&(ERROR_FACTS_TRUNCATED_KEY.to_string(), "true".to_string())]
+        );
+    }
+
+    #[test]
+    fn facts_debug_uses_only_the_sanitized_capped_projection() {
+        let error = Error::new(ErrorCode::Internal, "datafusion_nexus.test.debug", "debug projection")
+            .with_fact("literal", "never-log-this-literal")
+            .with_log_safe_fact("safe", "line one\nhttps://user:password@example.test/private line two")
+            .with_log_safe_fact("long", "z".repeat(MAX_LOG_SAFE_FACT_VALUE_BYTES + 1));
+
+        let debug = format!("{:?}", error.facts());
+        assert!(!debug.contains("never-log-this-literal"), "{debug}");
+        assert!(!debug.contains("user:password"), "{debug}");
+        assert!(!debug.contains('\n'), "{debug}");
+        assert!(debug.contains("<redacted-uri>"), "{debug}");
+        assert!(debug.contains("error_facts_truncated: true"), "{debug}");
+    }
+
+    #[test]
+    fn foreign_wrappers_only_expose_audited_classification_facts() {
+        let native = nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.test.safe_projection",
+            "native-message-must-stay-hidden",
+        )
+        .with_fact("literal", "native-user-literal")
+        .with_fact("path", "/private/native.parquet");
+        let native_adapter =
+            Error::from_native("datafusion_nexus.test.safe_projection", "wrapped native error", native);
+        let projection = native_adapter.facts().log_safe_projection();
+        assert_eq!(
+            projection.entries.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            vec!["native_code", "native_kind", "native_operation", "native_status"]
+        );
+        let rendered = projection.rendered().unwrap();
+        for hidden in ["native-message-must-stay-hidden", "native-user-literal", "/private/native.parquet"] {
+            assert!(!rendered.contains(hidden), "{rendered}");
+        }
+
+        let cudf = cudf::io::parquet::RemoteParquetSource::s3("gs://user:password@bucket/private.parquet")
+            .expect_err("non-s3 scheme must fail");
+        let cudf_adapter = Error::from_cudf("datafusion_nexus.test.safe_projection", "wrapped cudf error", cudf);
+        let projection = cudf_adapter.facts().log_safe_projection();
+        assert_eq!(
+            projection.entries.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            vec!["cudf_code", "cudf_kind", "cudf_operation", "cudf_status"]
+        );
+        assert!(!projection.rendered().unwrap().contains("password"));
+    }
+
+    #[test]
+    fn error_debug_omits_native_and_cudf_source_payloads_but_keeps_typed_access() {
+        let native = nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.test.debug_source",
+            "native-source-message-secret",
+        )
+        .with_fact("literal", "native-source-fact-secret");
+        let native_adapter = Error::from_native("datafusion_nexus.test.debug_source", "native wrapper", native);
+        let native_source = native_adapter
+            .source_error()
+            .and_then(|source| source.downcast_ref::<nexus_query_engine::error::QueryError>())
+            .expect("native source must remain typed");
+        assert_eq!(native_source.fact_value("literal"), Some("native-source-fact-secret"));
+        let native_debug = format!("{native_adapter:?}");
+        assert!(native_debug.contains("<source omitted>"), "{native_debug}");
+        assert!(!native_debug.contains("native-source-message-secret"), "{native_debug}");
+        assert!(!native_debug.contains("native-source-fact-secret"), "{native_debug}");
+
+        let cudf = cudf::testing::error::new_with_for_test(
+            cudf::ErrorCode::ForeignInvalidArgument,
+            "cudf.test.debug_source",
+            "cudf-source-detail-secret client_secret=cudf-secret-value",
+        );
+        let cudf_adapter = Error::from_cudf("datafusion_nexus.test.debug_source", "cudf wrapper", cudf);
+        let cudf_source = cudf_adapter
+            .source_error()
+            .and_then(|source| source.downcast_ref::<cudf::Error>())
+            .expect("cuDF source must remain typed");
+        assert_eq!(cudf_source.message(), "cudf-source-detail-secret client_secret=cudf-secret-value");
+        let cudf_debug = format!("{cudf_adapter:?}");
+        assert!(cudf_debug.contains("<source omitted>"), "{cudf_debug}");
+        assert!(!cudf_debug.contains("cudf-source-detail-secret"), "{cudf_debug}");
+        assert!(!cudf_debug.contains("cudf-secret-value"), "{cudf_debug}");
+    }
+
+    #[test]
+    fn find_nexus_error_finds_direct_external_error() {
+        let error = DataFusionError::External(Box::new(nexus_error("datafusion_nexus.test.direct")));
+
+        assert_eq!(error.find_nexus_error().map(Error::operation), Some("datafusion_nexus.test.direct"));
+    }
+
+    #[test]
+    fn find_nexus_error_traverses_context() {
+        let error = DataFusionError::Context(
+            "context".to_string(),
+            Box::new(DataFusionError::External(Box::new(nexus_error("datafusion_nexus.test.context")))),
+        );
+
+        assert_eq!(error.find_nexus_error().map(Error::operation), Some("datafusion_nexus.test.context"));
+    }
+
+    #[test]
+    fn find_nexus_error_traverses_diagnostic() {
+        let error = DataFusionError::Diagnostic(
+            Box::new(Diagnostic::new_error("diagnostic", None)),
+            Box::new(DataFusionError::External(Box::new(nexus_error("datafusion_nexus.test.diagnostic")))),
+        );
+
+        assert_eq!(error.find_nexus_error().map(Error::operation), Some("datafusion_nexus.test.diagnostic"));
+    }
+
+    #[test]
+    fn find_nexus_error_traverses_shared() {
+        let error = DataFusionError::Shared(Arc::new(DataFusionError::External(Box::new(nexus_error(
+            "datafusion_nexus.test.shared",
+        )))));
+
+        assert_eq!(error.find_nexus_error().map(Error::operation), Some("datafusion_nexus.test.shared"));
+    }
+
+    #[test]
+    fn find_nexus_error_traverses_nested_collection_in_deterministic_order() {
+        let error = DataFusionError::Collection(vec![
+            DataFusionError::Plan("no Nexus error".to_string()),
+            DataFusionError::Collection(vec![
+                DataFusionError::Execution("still no Nexus error".to_string()),
+                DataFusionError::External(Box::new(nexus_error("datafusion_nexus.test.first"))),
+            ]),
+            DataFusionError::External(Box::new(nexus_error("datafusion_nexus.test.second"))),
+        ]);
+
+        assert_eq!(error.find_nexus_error().map(Error::operation), Some("datafusion_nexus.test.first"));
+    }
+
+    #[test]
+    fn find_nexus_error_traverses_collection_inside_arrow_external_wrapper() {
+        let collection = DataFusionError::Collection(vec![
+            DataFusionError::Plan("no Nexus error".to_string()),
+            DataFusionError::External(Box::new(nexus_error("datafusion_nexus.test.arrow_collection"))),
+        ]);
+        let arrow = ArrowError::from_external_error(Box::new(collection));
+        let error = DataFusionError::ArrowError(Box::new(arrow), None);
+
+        assert_eq!(error.find_nexus_error().map(Error::operation), Some("datafusion_nexus.test.arrow_collection"));
+    }
+
+    #[test]
+    fn find_nexus_error_returns_none_without_match() {
+        let error = DataFusionError::Collection(vec![
+            DataFusionError::Plan("planning failed".to_string()),
+            DataFusionError::Context(
+                "context".to_string(),
+                Box::new(DataFusionError::Execution("execution failed".to_string())),
+            ),
+        ]);
+
+        assert!(error.find_nexus_error().is_none());
     }
 
     #[test]

@@ -505,9 +505,9 @@ async fn drop_table_on_view_reports_object_type_mismatch() {
         payload.contains("operation=datafusion_nexus.server.flight.get_flight_info_statement.create_logical_plan"),
         "{payload}"
     );
-    assert!(payload.contains("fact.object_name=drop_view_probe"), "{payload}");
     assert!(payload.contains("fact.requested_table_type=TABLE"), "{payload}");
     assert!(payload.contains("fact.actual_table_type=VIEW"), "{payload}");
+    assert!(!payload.contains("fact.object_name="), "raw object name must not be retained: {payload}");
 
     let error = client.execute_update("DROP TABLE IF EXISTS drop_view_probe".to_string(), None).await.unwrap_err();
     let status = unwrap_flight_status(error);

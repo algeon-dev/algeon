@@ -40,7 +40,7 @@ pub(super) struct FailureDetails {
 
 impl FailureDetails {
     pub(super) fn from_datafusion_error(error: &DataFusionError) -> Self {
-        adapter_error_from_datafusion(error).map(Self::from_adapter_error).unwrap_or_default()
+        error.find_nexus_error().map(Self::from_adapter_error).unwrap_or_default()
     }
 
     fn from_adapter_error(error: &AdapterError) -> Self {
@@ -550,16 +550,4 @@ fn cpu_started(error: DataFusionError) -> CpuRunFailure {
 fn cpu_not_started(error: DataFusionError) -> CpuRunFailure {
     let details = FailureDetails::from_datafusion_error(&error);
     CpuRunFailure { runtime_started: false, message: error.to_string(), details }
-}
-
-fn adapter_error_from_datafusion(error: &DataFusionError) -> Option<&AdapterError> {
-    match error {
-        DataFusionError::External(source) => source.downcast_ref::<AdapterError>(),
-        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => {
-            adapter_error_from_datafusion(source)
-        },
-        DataFusionError::Collection(errors) => errors.iter().find_map(adapter_error_from_datafusion),
-        DataFusionError::Shared(source) => adapter_error_from_datafusion(source),
-        _ => None,
-    }
 }

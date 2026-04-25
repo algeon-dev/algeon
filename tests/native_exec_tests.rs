@@ -17,7 +17,7 @@ use datafusion::{
     },
 };
 use datafusion_nexus::{
-    error::ErrorCode,
+    error::{DataFusionErrorExt, ErrorCode},
     native::lower_physical_plan_to_native,
     native_exec::{NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec},
     planner::{
@@ -702,15 +702,11 @@ fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
     let error = rule
         .optimize(plan, &ConfigOptions::default())
         .expect_err("GpuOnly native optimizer must fail when a native candidate is rejected");
-    let DataFusionError::External(source) = &error else {
-        panic!("GpuOnly native rejection should preserve the typed adapter error");
-    };
-    let adapter_error =
-        source.downcast_ref::<datafusion_nexus::error::Error>().expect("expected datafusion-nexus Error");
+    assert!(error.to_string().contains("cuDF native candidate rejected by adapter policy"));
+    let adapter_error = error.find_nexus_error().expect("GpuOnly rejection must preserve the typed Nexus error");
 
     assert_eq!(adapter_error.code(), ErrorCode::NativeCandidateRejected);
     assert_eq!(adapter_error.fact_value("fallback_reason"), Some("unsupported_expression"));
-    assert!(error.to_string().contains("unsupported_expression"));
 
     fs::remove_dir_all(dir).unwrap();
 }

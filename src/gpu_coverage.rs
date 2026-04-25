@@ -6,7 +6,6 @@
 
 use std::{
     collections::hash_map::DefaultHasher,
-    error::Error as StdError,
     hash::{Hash, Hasher},
     ops::ControlFlow,
     sync::Arc,
@@ -37,7 +36,7 @@ use serde_json::{Value, json};
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphAlgoExec;
 use crate::{
-    error::{Error, ErrorCode, ErrorSourceDiagnostics},
+    error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
     native_exec::{NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec},
     native_report::{NativeDataFusionPostNativeExecutionPath, post_native_plan_coverage},
     physical_plan::physical_plan_shape,
@@ -533,7 +532,7 @@ impl QueryGpuRejection {
     }
 
     fn from_datafusion_error(phase: QueryGpuRejectionPhase, error: &DataFusionError) -> Self {
-        if let Some(adapter_error) = find_adapter_error(error) {
+        if let Some(adapter_error) = error.find_nexus_error() {
             let reason_code = adapter_error
                 .fact_value(GPU_COVERAGE_REJECTION_REASON_FACT)
                 .or_else(|| adapter_error.fact_value("fallback_reason"))
@@ -544,7 +543,7 @@ impl QueryGpuRejection {
             return Self::new(
                 phase,
                 reason_code,
-                matches!(adapter_error.status(), crate::error::ErrorStatus::Temporary),
+                adapter_error.is_retryable(),
                 diagnostics.chain().unwrap_or_else(|| adapter_error.message()).to_string(),
             );
         }
@@ -1169,7 +1168,7 @@ fn object_name_is_coverage_table_function(name: &ObjectName) -> bool {
 }
 
 fn classify_physical_planning_error(error: &DataFusionError) -> QueryGpuRejectionPhase {
-    let Some(adapter_error) = find_adapter_error(error) else {
+    let Some(adapter_error) = error.find_nexus_error() else {
         return QueryGpuRejectionPhase::PhysicalPlanning;
     };
     match adapter_error.code() {
@@ -1474,17 +1473,6 @@ fn fallback_reason_is_table_format(reason: FallbackReason) -> bool {
             | FallbackReason::IcebergSnapshotUnsupported
             | FallbackReason::TableFormatGpuOnlyLeafNotRewritten
     )
-}
-
-fn find_adapter_error<'a>(error: &'a (dyn StdError + 'static)) -> Option<&'a Error> {
-    let mut current = Some(error);
-    while let Some(error) = current {
-        if let Some(adapter) = error.downcast_ref::<Error>() {
-            return Some(adapter);
-        }
-        current = error.source();
-    }
-    None
 }
 
 fn fingerprint_debug(value: &impl std::fmt::Debug) -> String {

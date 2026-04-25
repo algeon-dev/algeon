@@ -242,7 +242,7 @@ impl DatafusionCudfFlightSqlService {
         error: &DataFusionError,
     ) {
         let diagnostics = ErrorSourceDiagnostics::from_error(error);
-        if let Some(adapter_error) = find_adapter_error(error) {
+        if let Some(adapter_error) = error.find_nexus_error() {
             tracing::warn!(
                 catalog = %catalog_name,
                 schema = %schema_name,

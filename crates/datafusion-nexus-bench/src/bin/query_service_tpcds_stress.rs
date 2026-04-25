@@ -13,7 +13,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_nexus::{
-    error::Error as AdapterError,
+    error::{DataFusionErrorExt, Error as AdapterError},
     native_exec::NativeCudfExecutionConfig,
     native_report::{
         NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
@@ -311,7 +311,7 @@ impl StructuredFailure {
     }
 
     fn from_datafusion_error(error: &DataFusionError) -> Self {
-        adapter_error_from_datafusion(error).map(Self::from_adapter_error).unwrap_or_else(|| Self {
+        error.find_nexus_error().map(Self::from_adapter_error).unwrap_or_else(|| Self {
             code: Some("datafusion_error".to_string()),
             message: Some(error.to_string()),
             ..Self::default()
@@ -1043,18 +1043,6 @@ fn default_device_capacity_bytes(legacy_tenant_budget_bytes: Option<u64>, max_co
 
 fn grant_fraction_bytes(device_capacity_bytes: u64, numerator: u64, denominator: u64) -> u64 {
     device_capacity_bytes.saturating_mul(numerator) / denominator
-}
-
-fn adapter_error_from_datafusion(error: &DataFusionError) -> Option<&AdapterError> {
-    match error {
-        DataFusionError::External(source) => source.downcast_ref::<AdapterError>(),
-        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => {
-            adapter_error_from_datafusion(source)
-        },
-        DataFusionError::Collection(errors) => errors.iter().find_map(adapter_error_from_datafusion),
-        DataFusionError::Shared(source) => adapter_error_from_datafusion(source),
-        _ => None,
-    }
 }
 
 fn format_facts(facts: &BTreeMap<String, String>) -> String {

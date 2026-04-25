@@ -13,7 +13,7 @@ use datafusion::{
 use nexus_query_engine::{metrics::QueryMetrics, runtime::LakehouseCacheFillEventSnapshot};
 
 use crate::{
-    error::{Error, ErrorCode, ErrorSourceDiagnostics},
+    error::{Error, ErrorCode, ErrorSourceDiagnostics, Facts},
     native_exec::{NativeCudfMetrics, NativeMetricsCaptureSink, admission::QueryAdmissionFacts},
     native_report::{
         NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem,
@@ -510,13 +510,14 @@ pub(super) struct CapturedError {
 impl CapturedError {
     pub(super) fn from_adapter_error(error: &Error) -> Self {
         let source_diagnostics = ErrorSourceDiagnostics::from_source(error.source_error());
+        let safe_facts = error.facts().log_safe_projection();
         Self {
             code: error.code().as_str().to_string(),
             kind: error.kind().as_str().to_string(),
             status: error.status().as_str().to_string(),
             operation: error.operation().to_string(),
             message: error.message().to_string(),
-            facts: error.facts().iter().map(|(key, value)| (key.to_string(), value.to_string())).collect(),
+            facts: safe_facts.retained_entries(),
             diagnostic: source_diagnostics.chain().unwrap_or_else(|| error.message()).to_string(),
             source_chain: source_diagnostics.chain().map(str::to_string),
             root_cause: source_diagnostics.root_cause().map(str::to_string),
@@ -528,10 +529,11 @@ impl CapturedError {
         code: ErrorCode,
         operation: &'static str,
         message: String,
-        facts: Vec<(&'static str, String)>,
+        facts: Facts,
     ) -> Self {
         let source_diagnostics = ErrorSourceDiagnostics::from_error(error);
         let diagnostic = source_diagnostics.chain().map(str::to_string).unwrap_or_else(|| message.clone());
+        let safe_facts = facts.log_safe_projection();
         Self {
             code: code.as_str().to_string(),
             kind: code.kind().as_str().to_string(),
@@ -539,7 +541,7 @@ impl CapturedError {
             operation: operation.to_string(),
             diagnostic,
             message,
-            facts: facts.into_iter().map(|(key, value)| (key.to_string(), value)).collect(),
+            facts: safe_facts.retained_entries(),
             source_chain: source_diagnostics.chain().map(str::to_string),
             root_cause: source_diagnostics.root_cause().map(str::to_string),
         }

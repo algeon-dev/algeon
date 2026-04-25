@@ -1,11 +1,15 @@
 use super::*;
 
+pub(super) fn tracing_correlation_id(correlation_id: Option<&str>) -> Option<&str> {
+    correlation_id.filter(|value| !value.is_empty())
+}
+
 impl DatafusionCudfFlightSqlService {
     pub(super) fn query_span(query_id: &str, correlation_id: Option<&str>, operation: &'static str) -> tracing::Span {
         tracing::info_span!(
             "datafusion_nexus.flight_sql.query",
             query_id,
-            correlation_id = correlation_id.unwrap_or(""),
+            correlation_id = tracing_correlation_id(correlation_id),
             operation
         )
     }
@@ -21,13 +25,13 @@ impl DatafusionCudfFlightSqlService {
                 parent: parent,
                 "datafusion_nexus.flight_sql.stage",
                 query_id,
-                correlation_id = correlation_id.unwrap_or(""),
+                correlation_id = tracing_correlation_id(correlation_id),
                 stage
             ),
             None => tracing::info_span!(
                 "datafusion_nexus.flight_sql.stage",
                 query_id,
-                correlation_id = correlation_id.unwrap_or(""),
+                correlation_id = tracing_correlation_id(correlation_id),
                 stage
             ),
         }
@@ -99,6 +103,13 @@ mod correlation_tests {
             #[cfg(feature = "cugraph")]
             None,
         )
+    }
+
+    #[test]
+    fn tracing_correlation_field_omits_absent_and_empty_values() {
+        assert_eq!(tracing_correlation_id(None), None);
+        assert_eq!(tracing_correlation_id(Some("")), None);
+        assert_eq!(tracing_correlation_id(Some("corr-123")), Some("corr-123"));
     }
 
     #[test]

@@ -16,8 +16,9 @@
 
 use datafusion::common::DataFusionError;
 
-use super::{config::ServerSessionProfile, datafusion_error::find_adapter_error};
+use super::config::ServerSessionProfile;
 use crate::{
+    error::DataFusionErrorExt,
     policy::FallbackReason,
     report::{CandidateOutcome, DataLayoutFixableRejection, PlanningReport},
 };
@@ -231,7 +232,7 @@ pub(crate) struct DataLayoutFixablePlanningEventFields<'a> {
 /// when the leaf survives because of a structural mixed-plan context rather
 /// than a native-rule rejection).
 pub(crate) fn leaf_guard_event_fields(error: &DataFusionError) -> Option<LeafGuardEventFields<'_>> {
-    let adapter = find_adapter_error(error)?;
+    let adapter = error.find_nexus_error()?;
     let facts = adapter.facts();
     let fallback_reason = facts.get("fallback_reason")?;
     if fallback_reason != FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code() {
@@ -400,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn find_adapter_error_recurses_through_context_and_collection() {
+    fn find_nexus_error_recurses_through_context_and_collection() {
         let inner = Error::new(
             ErrorCode::NativeCandidateRejected,
             "datafusion_nexus.planner.table_format_gpu_only_leaf_guard",
@@ -410,7 +411,7 @@ mod tests {
         let df_error: DataFusionError = inner.into();
         let wrapped = DataFusionError::Context("optimizer rule".to_string(), Box::new(df_error));
 
-        let found = find_adapter_error(&wrapped).expect("nested adapter error must be discoverable");
+        let found = wrapped.find_nexus_error().expect("nested adapter error must be discoverable");
         assert_eq!(
             found.fact_value("fallback_reason"),
             Some(FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code()),

@@ -13,7 +13,7 @@ impl DatafusionCudfFlightSqlService {
         let _query_enter = query_span.enter();
         tracing::info!(
             query_id,
-            correlation_id = correlation_id.as_deref().unwrap_or(""),
+            correlation_id = tracing_correlation_id(correlation_id.as_deref()),
             sql,
             statement_kind = ?statement_kind,
             "executing Flight SQL update statement"
@@ -224,8 +224,8 @@ impl DatafusionCudfFlightSqlService {
             .with_fact("target_catalog", resolved.catalog.as_ref())
             .with_fact("target_schema", resolved.schema.as_ref())
             .with_fact("target_table", resolved.table.as_ref())
-            .with_fact("statement_kind", statement_kind)
-            .with_fact("iceberg_enabled", self.catalog_diagnostics.iceberg_enabled);
+            .with_log_safe_fact("statement_kind", statement_kind)
+            .with_log_safe_fact("iceberg_enabled", self.catalog_diagnostics.iceberg_enabled);
         if let Some(workspace_catalog) = &self.catalog_diagnostics.workspace_catalog {
             error = error.with_fact("workspace_catalog", workspace_catalog);
         }
@@ -312,8 +312,8 @@ pub(super) async fn reject_drop_object_type_mismatch(
         ),
     )
     .with_fact("object_name", object_name)
-    .with_fact("requested_table_type", table_type_to_flight_sql(expected_table_type))
-    .with_fact("actual_table_type", table_type_to_flight_sql(actual_table_type)))
+    .with_log_safe_fact("requested_table_type", table_type_to_flight_sql(expected_table_type))
+    .with_log_safe_fact("actual_table_type", table_type_to_flight_sql(actual_table_type)))
 }
 
 pub(super) fn table_type_client_label(table_type: TableType) -> &'static str {

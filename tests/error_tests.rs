@@ -1,9 +1,105 @@
-use datafusion::common::DataFusionError;
-use datafusion_nexus::error::{Error, ErrorCode, ErrorKind, ErrorStatus};
+use std::sync::Arc;
+
+use arrow::error::ArrowError;
+use datafusion::common::{DataFusionError, Diagnostic, Result as DataFusionResult};
+use datafusion_nexus::error::{DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorStatus};
 use nexus_query_engine::{
-    error::{QueryError, QueryErrorCode},
+    error::{QueryError, QueryErrorCode, QueryErrorStatus},
     triage::{TriageCode, TriageVerdict},
 };
+
+const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
+    (ErrorCode::Cancelled, ErrorStatus::Permanent),
+    (ErrorCode::SqlParse, ErrorStatus::Permanent),
+    (ErrorCode::InvalidRequest, ErrorStatus::Permanent),
+    (ErrorCode::DataFusionPlanning, ErrorStatus::Permanent),
+    (ErrorCode::PlanningTimeout, ErrorStatus::Permanent),
+    (ErrorCode::ObjectNotFound, ErrorStatus::Permanent),
+    (ErrorCode::SourceAccessDenied, ErrorStatus::Permanent),
+    (ErrorCode::SourceUnauthenticated, ErrorStatus::Permanent),
+    (ErrorCode::SourceObjectNotFound, ErrorStatus::Permanent),
+    (ErrorCode::SourceTemporaryFailure, ErrorStatus::Temporary),
+    (ErrorCode::FieldNotFound, ErrorStatus::Permanent),
+    (ErrorCode::NativeCandidateRejected, ErrorStatus::Permanent),
+    (ErrorCode::UnsupportedOperator, ErrorStatus::Permanent),
+    (ErrorCode::UnsupportedExpression, ErrorStatus::Permanent),
+    (ErrorCode::UnsupportedType, ErrorStatus::Permanent),
+    (ErrorCode::InvalidExecutionPlan, ErrorStatus::Permanent),
+    (ErrorCode::InvalidChildCount, ErrorStatus::Permanent),
+    (ErrorCode::CudfInvalidInput, ErrorStatus::Permanent),
+    (ErrorCode::CudfUnsupported, ErrorStatus::Permanent),
+    (ErrorCode::CudfResourceExhausted, ErrorStatus::Temporary),
+    (ErrorCode::CudfTemporaryFailure, ErrorStatus::Temporary),
+    (ErrorCode::CudfPersistentFailure, ErrorStatus::Persistent),
+    (ErrorCode::CudfDependencyFailure, ErrorStatus::Permanent),
+    (ErrorCode::CudfInvariantViolation, ErrorStatus::Permanent),
+    (ErrorCode::MemoryReservationFailed, ErrorStatus::Temporary),
+    (ErrorCode::ServiceOverloaded, ErrorStatus::Temporary),
+    (ErrorCode::ServerTransportFailure, ErrorStatus::Permanent),
+    (ErrorCode::Internal, ErrorStatus::Permanent),
+];
+
+const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatus)] = &[
+    (QueryErrorCode::Cancelled, ErrorCode::Cancelled, QueryErrorStatus::Permanent),
+    (QueryErrorCode::UnsupportedPlanShape, ErrorCode::UnsupportedOperator, QueryErrorStatus::Permanent),
+    (QueryErrorCode::UnsupportedOperator, ErrorCode::UnsupportedOperator, QueryErrorStatus::Permanent),
+    (QueryErrorCode::UnsupportedExpression, ErrorCode::UnsupportedExpression, QueryErrorStatus::Permanent),
+    (QueryErrorCode::UnsupportedType, ErrorCode::UnsupportedType, QueryErrorStatus::Permanent),
+    (QueryErrorCode::InvalidPlan, ErrorCode::InvalidExecutionPlan, QueryErrorStatus::Permanent),
+    (QueryErrorCode::CudfInvalidInput, ErrorCode::CudfInvalidInput, QueryErrorStatus::Permanent),
+    (QueryErrorCode::CudfUnsupported, ErrorCode::CudfUnsupported, QueryErrorStatus::Permanent),
+    (QueryErrorCode::CudfResourceExhausted, ErrorCode::CudfResourceExhausted, QueryErrorStatus::Temporary),
+    (QueryErrorCode::CudfTemporaryFailure, ErrorCode::CudfTemporaryFailure, QueryErrorStatus::Temporary),
+    (QueryErrorCode::CudfPersistentFailure, ErrorCode::CudfPersistentFailure, QueryErrorStatus::Persistent),
+    (QueryErrorCode::CudfDependencyFailure, ErrorCode::CudfDependencyFailure, QueryErrorStatus::Permanent),
+    (QueryErrorCode::SourceAccessDenied, ErrorCode::SourceAccessDenied, QueryErrorStatus::Permanent),
+    (QueryErrorCode::SourceUnauthenticated, ErrorCode::SourceUnauthenticated, QueryErrorStatus::Permanent),
+    (QueryErrorCode::SourceObjectNotFound, ErrorCode::SourceObjectNotFound, QueryErrorStatus::Permanent),
+    (QueryErrorCode::SourceTemporaryFailure, ErrorCode::SourceTemporaryFailure, QueryErrorStatus::Temporary),
+    (QueryErrorCode::CudfInvariantViolation, ErrorCode::CudfInvariantViolation, QueryErrorStatus::Permanent),
+    (QueryErrorCode::MemoryReservationFailed, ErrorCode::MemoryReservationFailed, QueryErrorStatus::Temporary),
+    (QueryErrorCode::ServiceOverloaded, ErrorCode::ServiceOverloaded, QueryErrorStatus::Temporary),
+    (QueryErrorCode::Internal, ErrorCode::Internal, QueryErrorStatus::Permanent),
+];
+
+#[test]
+fn every_adapter_code_has_the_expected_retry_status() {
+    assert_eq!(ADAPTER_STATUS_CASES.len(), 28, "update the complete adapter status policy table");
+
+    for &(code, expected_status) in ADAPTER_STATUS_CASES {
+        let error = Error::new(code, "datafusion_nexus.test.retry_policy", "retry policy test");
+
+        assert_eq!(code.status(), expected_status, "unexpected status for {code}");
+        assert_eq!(error.status(), expected_status, "Error disagrees with its code for {code}");
+        assert_eq!(
+            error.is_retryable(),
+            expected_status == ErrorStatus::Temporary,
+            "is_retryable must be an exact Temporary alias for {code}"
+        );
+    }
+}
+
+#[test]
+fn every_native_status_is_preserved_at_the_adapter_boundary() {
+    assert_eq!(NATIVE_ADAPTER_STATUS_CASES.len(), 20, "update the complete native status policy table");
+
+    for &(native_code, expected_adapter_code, expected_native_status) in NATIVE_ADAPTER_STATUS_CASES {
+        let native = QueryError::new(native_code, "nexus_query_engine.test.retry_policy", "retry policy test");
+        assert_eq!(native_code.status(), expected_native_status, "unexpected native status for {native_code}");
+        assert_eq!(native.status(), expected_native_status, "QueryError disagrees with its code for {native_code}");
+        assert_eq!(
+            native.is_retryable(),
+            expected_native_status == QueryErrorStatus::Temporary,
+            "native is_retryable must be an exact Temporary alias for {native_code}"
+        );
+
+        let adapter = Error::from_native("datafusion_nexus.test.retry_policy", "wrapped native failure", native);
+        assert_eq!(adapter.code(), expected_adapter_code, "unexpected adapter mapping for {native_code}");
+        assert_eq!(adapter.status().as_str(), expected_native_status.as_str(), "status changed for {native_code}");
+        assert_eq!(adapter.is_retryable(), expected_native_status == QueryErrorStatus::Temporary);
+        assert_eq!(adapter.fact_value("native_status"), Some(expected_native_status.as_str()));
+    }
+}
 
 #[test]
 fn error_code_projections_are_stable_policy_contracts() {
@@ -254,14 +350,15 @@ fn native_fact_collisions_preserve_adapter_facts_and_record_skipped_keys() {
 }
 
 #[test]
-fn error_keeps_machine_code_operation_and_context_facts() {
+fn error_display_is_human_only_while_typed_fields_remain_available() {
     let error = Error::new(
         ErrorCode::NativeCandidateRejected,
         "datafusion_nexus.native.optimize_plan",
         "cuDF native candidate rejected by adapter policy",
     )
     .with_fact("fallback_reason", "unsupported_expression")
-    .with_fact("candidate_shape", "SortExec(fetch)(AggregateExec(LocalParquetScan))");
+    .with_fact("candidate_shape", "SortExec(fetch)(AggregateExec(LocalParquetScan))")
+    .with_source(std::io::Error::other("sensitive dependency source"));
 
     assert_eq!(error.code(), ErrorCode::NativeCandidateRejected);
     assert_eq!(error.kind(), ErrorKind::Planning);
@@ -269,10 +366,170 @@ fn error_keeps_machine_code_operation_and_context_facts() {
     assert_eq!(error.operation(), "datafusion_nexus.native.optimize_plan");
     assert_eq!(error.fact_value("fallback_reason"), Some("unsupported_expression"));
 
-    let display = error.to_string();
-    assert!(display.contains("code=native_candidate_rejected"));
-    assert!(display.contains("operation=datafusion_nexus.native.optimize_plan"));
-    assert!(display.contains("fallback_reason=unsupported_expression"));
+    assert_eq!(error.to_string(), "cuDF native candidate rejected by adapter policy");
+    for hidden in [
+        "native_candidate_rejected",
+        "datafusion_nexus.native.optimize_plan",
+        "unsupported_expression",
+        "SortExec",
+        "sensitive dependency source",
+    ] {
+        assert!(!error.to_string().contains(hidden), "Display leaked structured or source data: {hidden}");
+    }
+    let debug = format!("{error:?}");
+    assert!(debug.contains("NativeCandidateRejected"), "{debug}");
+    assert!(debug.contains("datafusion_nexus.native.optimize_plan"), "{debug}");
+    assert!(!debug.contains("fallback_reason"), "{debug}");
+    assert!(!debug.contains("unsupported_expression"), "{debug}");
+}
+
+fn nexus_error(operation: &'static str, message: &'static str) -> Error {
+    Error::new(ErrorCode::CudfDependencyFailure, operation, message)
+        .with_fact("device_ordinal", 2)
+        .with_source(std::io::Error::other("CUDA dependency detail"))
+}
+
+#[test]
+fn nexus_error_uses_exact_datafusion_external_prose_and_preserves_structured_fields() {
+    let error: DataFusionError = nexus_error("datafusion_nexus.native.execute", "native GPU execution failed").into();
+
+    assert!(matches!(error, DataFusionError::External(_)));
+    assert_eq!(error.to_string(), "External error: native GPU execution failed");
+    for hidden in ["cudf_dependency_failure", "device_ordinal", "CUDA dependency detail"] {
+        assert!(!error.to_string().contains(hidden), "DataFusion Display leaked structured or source data: {hidden}");
+    }
+
+    let nexus = error.find_nexus_error().expect("typed Nexus error must remain discoverable");
+    assert_eq!(nexus.code(), ErrorCode::CudfDependencyFailure);
+    assert_eq!(nexus.kind(), ErrorKind::DependencyFailure);
+    assert_eq!(nexus.status(), ErrorStatus::Permanent);
+    assert_eq!(nexus.operation(), "datafusion_nexus.native.execute");
+    assert_eq!(nexus.fact_value("device_ordinal"), Some("2"));
+    assert!(nexus.source_error().is_some());
+}
+
+#[test]
+fn plain_pre_nexus_datafusion_failure_keeps_its_variant_and_prose() {
+    let error = DataFusionError::Plan("unknown function plain_udf".to_string());
+
+    assert!(matches!(error, DataFusionError::Plan(_)));
+    assert_eq!(error.to_string(), "Error during planning: unknown function plain_udf");
+    assert!(matches!(error.find_root(), DataFusionError::Plan(_)));
+    assert!(error.find_nexus_error().is_none());
+}
+
+fn nexus_control_plane_failure() -> datafusion_nexus::error::Result<()> {
+    Err(nexus_error("datafusion_nexus.control_plane.open", "failed to open Nexus backend"))
+}
+
+fn datafusion_owned_surface() -> DataFusionResult<()> {
+    nexus_control_plane_failure()?;
+    Ok(())
+}
+
+#[test]
+fn question_mark_converts_nexus_result_at_datafusion_boundary() {
+    let error = datafusion_owned_surface().expect_err("Nexus failure must propagate");
+
+    let DataFusionError::External(source) = &error else {
+        panic!("Nexus Result must convert exactly at the DataFusion-owned boundary: {error:?}");
+    };
+    assert!(source.downcast_ref::<Error>().is_some(), "External must preserve the typed Nexus source");
+    assert_eq!(error.to_string(), "External error: failed to open Nexus backend");
+    assert_eq!(error.find_nexus_error().map(Error::operation), Some("datafusion_nexus.control_plane.open"));
+}
+
+fn external_nexus_error(operation: &'static str) -> DataFusionError {
+    nexus_error(operation, "wrapped native GPU execution failed").into()
+}
+
+#[test]
+fn datafusion_wrappers_keep_find_root_behavior_and_nexus_discovery() {
+    let wrappers = [
+        DataFusionError::Context(
+            "query context".to_string(),
+            Box::new(external_nexus_error("datafusion_nexus.test.context")),
+        ),
+        DataFusionError::Diagnostic(
+            Box::new(Diagnostic::new_error("query diagnostic", None)),
+            Box::new(external_nexus_error("datafusion_nexus.test.diagnostic")),
+        ),
+        DataFusionError::Shared(Arc::new(external_nexus_error("datafusion_nexus.test.shared"))),
+        DataFusionError::ArrowError(
+            Box::new(ArrowError::from_external_error(Box::new(external_nexus_error("datafusion_nexus.test.arrow")))),
+            None,
+        ),
+    ];
+
+    for (error, expected_operation) in wrappers.into_iter().zip([
+        "datafusion_nexus.test.context",
+        "datafusion_nexus.test.diagnostic",
+        "datafusion_nexus.test.shared",
+        "datafusion_nexus.test.arrow",
+    ]) {
+        assert!(
+            matches!(error.find_root(), DataFusionError::External(_)),
+            "DataFusion find_root must still stop at its deepest DataFusion error: {error:?}"
+        );
+        assert_eq!(error.find_nexus_error().map(Error::operation), Some(expected_operation));
+    }
+}
+
+#[test]
+fn collection_preserves_datafusion_root_and_uses_documented_nexus_order() {
+    let error = DataFusionError::Collection(vec![
+        DataFusionError::Plan("plain first branch".to_string()),
+        DataFusionError::Collection(vec![
+            DataFusionError::Execution("plain nested branch".to_string()),
+            external_nexus_error("datafusion_nexus.test.first"),
+        ]),
+        external_nexus_error("datafusion_nexus.test.second"),
+    ]);
+
+    assert!(matches!(error.find_root(), DataFusionError::Plan(message) if message == "plain first branch"));
+    assert_eq!(error.find_nexus_error().map(Error::operation), Some("datafusion_nexus.test.first"));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BackendDisposition {
+    Nexus(ErrorCode),
+    DataFusionPlanning,
+    DataFusionResourceExhausted,
+    DataFusionOther,
+}
+
+fn existing_datafusion_handler(error: &DataFusionError) -> BackendDisposition {
+    match error.find_root() {
+        DataFusionError::Plan(_) => BackendDisposition::DataFusionPlanning,
+        DataFusionError::ResourcesExhausted(_) => BackendDisposition::DataFusionResourceExhausted,
+        _ => BackendDisposition::DataFusionOther,
+    }
+}
+
+fn nexus_aware_backend_handler(error: &DataFusionError) -> BackendDisposition {
+    if let Some(nexus) = error.find_nexus_error() {
+        return BackendDisposition::Nexus(nexus.code());
+    }
+    existing_datafusion_handler(error)
+}
+
+#[test]
+fn backend_handler_adds_nexus_branch_then_reuses_existing_datafusion_fallback() {
+    let nexus =
+        DataFusionError::Context("query".to_string(), Box::new(external_nexus_error("datafusion_nexus.test.backend")));
+    assert_eq!(nexus_aware_backend_handler(&nexus), BackendDisposition::Nexus(ErrorCode::CudfDependencyFailure));
+
+    for plain in [
+        DataFusionError::Plan("plain planning failure".to_string()),
+        DataFusionError::ArrowError(
+            Box::new(ArrowError::from_external_error(Box::new(DataFusionError::ResourcesExhausted(
+                "plain memory pressure".to_string(),
+            )))),
+            None,
+        ),
+    ] {
+        assert_eq!(nexus_aware_backend_handler(&plain), existing_datafusion_handler(&plain));
+    }
 }
 
 #[test]

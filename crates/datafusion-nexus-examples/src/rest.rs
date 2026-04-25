@@ -19,12 +19,12 @@ use datafusion::{
     execution::SessionStateBuilder,
 };
 use datafusion_nexus::{
-    error::{Error, ErrorCode, ErrorKind, ErrorStatus},
+    error::{DataFusionErrorExt, Error, ErrorCode, ErrorKind},
     planner::CudfNativePhysicalOptimizerRule,
     report::PlanningReport,
     session::CudfSessionStateBuilderExt,
 };
-use nexus_query_engine::error::{QueryError, QueryErrorKind, QueryErrorStatus};
+use nexus_query_engine::error::{QueryError, QueryErrorKind};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -216,7 +216,10 @@ impl AppError {
     }
 
     fn from_datafusion(error: DataFusionError) -> Self {
-        if let Some(adapter) = find_adapter_error(&error) {
+        // Enrich errors produced by Nexus first. If no typed Nexus error is
+        // discoverable, keep this application's existing DataFusion policy;
+        // ordinary DataFusion errors do not acquire a Nexus identity.
+        if let Some(adapter) = error.find_nexus_error() {
             return Self::from_adapter_error(adapter);
         }
         if find_datafusion_resources_exhausted(&error) {
@@ -238,25 +241,26 @@ impl AppError {
     }
 
     fn from_native(error: QueryError) -> Self {
-        let status =
-            if error.kind() == QueryErrorKind::ResourceExhausted && error.status() == QueryErrorStatus::Temporary {
-                StatusCode::TOO_MANY_REQUESTS
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
+        let status = if error.kind() == QueryErrorKind::ResourceExhausted && error.is_retryable() {
+            StatusCode::TOO_MANY_REQUESTS
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
         let retry_after_secs = (status == StatusCode::TOO_MANY_REQUESTS).then_some(1);
         Self {
             status,
             code: error.code().as_str().to_string(),
             message: error.message().to_string(),
             retry_after_secs,
-            facts: error.facts().iter().map(|(key, value)| (key.to_string(), value.to_string())).collect(),
+            // Native facts are raw in-process diagnostics, not an HTTP
+            // disclosure contract. Select client fields explicitly instead.
+            facts: Vec::new(),
         }
     }
 
     fn from_adapter_error(error: &Error) -> Self {
         let status = match error.kind() {
-            ErrorKind::ResourceExhausted if error.status() == ErrorStatus::Temporary => StatusCode::TOO_MANY_REQUESTS,
+            ErrorKind::ResourceExhausted if error.is_retryable() => StatusCode::TOO_MANY_REQUESTS,
             ErrorKind::Planning | ErrorKind::InvalidInput | ErrorKind::Unsupported | ErrorKind::NotFound => {
                 StatusCode::BAD_REQUEST
             },
@@ -267,7 +271,9 @@ impl AppError {
             code: error.code().as_str().to_string(),
             message: error.message().to_string(),
             retry_after_secs: (status == StatusCode::TOO_MANY_REQUESTS).then_some(1),
-            facts: error.facts().iter().map(|(key, value)| (key.to_string(), value.to_string())).collect(),
+            // Error facts remain available to trusted typed policy through
+            // `error.facts()`. This example does not forward them wholesale.
+            facts: Vec::new(),
         }
     }
 
@@ -305,16 +311,6 @@ struct ErrorPayload {
     message: String,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     facts: std::collections::BTreeMap<String, String>,
-}
-
-fn find_adapter_error(error: &DataFusionError) -> Option<&Error> {
-    match error {
-        DataFusionError::External(source) => source.downcast_ref::<Error>(),
-        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => find_adapter_error(source),
-        DataFusionError::Collection(errors) => errors.iter().find_map(find_adapter_error),
-        DataFusionError::Shared(source) => find_adapter_error(source),
-        _ => None,
-    }
 }
 
 fn find_datafusion_resources_exhausted(error: &DataFusionError) -> bool {
