@@ -8,9 +8,10 @@ pub struct DatafusionCudfFlightSqlService {
     /// when the testing-only `cpu_fallback` profile is active.
     pub(super) session_profile: ServerSessionProfile,
     pub(super) admission: Arc<QueryAdmission>,
+    pub(super) io_lifecycle: Arc<crate::server::io_lifecycle::ServerIoLifecycle>,
     pub(super) cancellations: Arc<QueryCancellation>,
-    pub(super) observability: Arc<QueryObservability>,
-    pub(super) tickets: Arc<DashMap<String, StatementTicket>>,
+    pub(super) coordinator: Arc<QueryCoordinator>,
+    pub(super) runtime_observation_config: RuntimeObservationConfig,
     /// Map of prepared-statement handle → [`PreparedStatementEntry`].
     /// Populated by `do_action_create_prepared_statement` and removed by
     /// `do_action_close_prepared_statement` (or replaced when the same
@@ -66,6 +67,40 @@ fn server_config_iceberg_enabled(_config: &crate::server::config::ServerConfig) 
 /// will plan it. The native rule reference is kept alive for the lifetime of
 /// planning so [`CudfNativePhysicalOptimizerRule::last_report`] can be read
 impl DatafusionCudfFlightSqlService {
+    pub(super) fn register_new_query(
+        &self,
+        sql: String,
+        correlation_id: Option<String>,
+    ) -> Result<(String, QueryPlanningLease), (String, Status)> {
+        self.coordinator
+            .register_new(sql, correlation_id.clone(), correlation_id, self.runtime_observation_config)
+            .map_err(|error| {
+                let query_id = error
+                    .query_id()
+                    .expect("coordinator-owned registration failures retain their allocated query id")
+                    .to_string();
+                let status = adapter_error_status(
+                    error.adapter_error("datafusion_nexus.server.flight.query_coordinator.register"),
+                );
+                (query_id, status)
+            })
+    }
+
+    #[cfg(test)]
+    pub(super) fn register_query(
+        &self,
+        query_id: String,
+        sql: String,
+        correlation_id: Option<String>,
+    ) -> Result<QueryPlanningLease, Status> {
+        self.coordinator
+            .register_with_id(query_id, sql, correlation_id.clone(), correlation_id, self.runtime_observation_config)
+            .map_err(|error| {
+                adapter_error_status(error.adapter_error("datafusion_nexus.server.flight.query_coordinator.register"))
+            })
+    }
+
+    #[cfg(test)]
     pub fn new(
         ctx: Arc<SessionContext>,
         native_optimizer_config: CudfOptimizerConfig,
@@ -75,14 +110,50 @@ impl DatafusionCudfFlightSqlService {
         auth: AuthInterceptor,
         #[cfg(feature = "cugraph")] cugraph_sql_config: Option<CugraphSqlConfig>,
     ) -> Self {
+        let io_lifecycle = Arc::new(crate::server::io_lifecycle::ServerIoLifecycle::new());
+        Self::new_with_io_lifecycle(
+            ctx,
+            native_optimizer_config,
+            session_profile,
+            admission,
+            statement_ticket_ttl,
+            auth,
+            io_lifecycle,
+            #[cfg(feature = "cugraph")]
+            cugraph_sql_config,
+        )
+    }
+
+    pub(in crate::server) fn new_with_io_lifecycle(
+        ctx: Arc<SessionContext>,
+        native_optimizer_config: CudfOptimizerConfig,
+        session_profile: ServerSessionProfile,
+        admission: Arc<QueryAdmission>,
+        statement_ticket_ttl: Duration,
+        auth: AuthInterceptor,
+        io_lifecycle: Arc<crate::server::io_lifecycle::ServerIoLifecycle>,
+        #[cfg(feature = "cugraph")] cugraph_sql_config: Option<CugraphSqlConfig>,
+    ) -> Self {
+        let native_execution_config = native_optimizer_config
+            .native_execution_config()
+            .clone()
+            .with_io_lifecycle(io_lifecycle.handle())
+            .with_host_output_memory_pool_accounting(true);
+        let native_optimizer_config =
+            native_optimizer_config.with_native_execution_config(native_execution_config.clone());
+        #[cfg(feature = "cugraph")]
+        let cugraph_sql_config =
+            cugraph_sql_config.map(|config| config.with_native_execution_config(native_execution_config));
+        let observability_config = crate::server::config::ServerObservabilityConfig::default();
         Self {
             ctx,
             native_optimizer_config,
             session_profile,
             admission,
+            io_lifecycle,
             cancellations: Arc::default(),
-            observability: Arc::default(),
-            tickets: Arc::default(),
+            coordinator: QueryCoordinator::new(QueryCoordinatorConfig::from_observability(&observability_config)),
+            runtime_observation_config: RuntimeObservationConfig::native_execution(),
             prepared_statements: Arc::default(),
             statement_ticket_ttl,
             shutdown_token: CancellationToken::new(),
@@ -98,6 +169,8 @@ impl DatafusionCudfFlightSqlService {
         config: &crate::server::config::ServerConfig,
     ) -> Self {
         self.catalog_diagnostics = ServerCatalogDiagnostics::from_server_config(config);
+        self.runtime_observation_config = config.observability.runtime_observation_config();
+        self.coordinator = QueryCoordinator::new(QueryCoordinatorConfig::from_observability(&config.observability));
         self
     }
 
@@ -274,8 +347,16 @@ impl DatafusionCudfFlightSqlService {
         &self.admission
     }
 
+    pub(crate) fn io_lifecycle(&self) -> &Arc<crate::server::io_lifecycle::ServerIoLifecycle> {
+        &self.io_lifecycle
+    }
+
     pub(crate) fn cancellations(&self) -> &Arc<QueryCancellation> {
         &self.cancellations
+    }
+
+    pub(crate) fn coordinator(&self) -> &Arc<QueryCoordinator> {
+        &self.coordinator
     }
 
     pub(crate) fn shutdown_token(&self) -> &CancellationToken {

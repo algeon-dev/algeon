@@ -9,7 +9,8 @@ use super::*;
 pub struct QueryAdmissionWaiter {
     pub(super) service: QueryService,
     pub(super) tenant_id: TenantId,
-    pub(super) request_id: u64,
+    pub(super) admission_request_id: AdmissionRequestId,
+    pub(super) observation: RuntimeObservationHandle,
     pub(super) requested_at: Instant,
     pub(super) deadline: Instant,
     pub(super) grant_policy: TenantGrantPolicy,
@@ -25,7 +26,7 @@ pub(super) struct AdmissionState {
     /// released capacity is not reusable until cleanup drops the device slot.
     pub(super) cleanup_in_progress: usize,
     pub(super) queued: VecDeque<AdmissionRequest>,
-    pub(super) active_adaptive_grants: HashMap<u64, ActiveAdaptiveGrant>,
+    pub(super) active_adaptive_grants: HashMap<AdmissionRequestId, ActiveAdaptiveGrant>,
     pub(super) next_tenant_index: usize,
     pub(super) closed: bool,
 }
@@ -40,14 +41,17 @@ pub(super) struct ActiveAdaptiveGrant {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AdaptiveGrowthCandidate {
-    pub(super) query_id: u64,
+    pub(super) admission_request_id: AdmissionRequestId,
     pub(super) missing_bytes: u64,
     pub(super) weight: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct AdmissionRequest {
-    pub(super) request_id: u64,
+    pub(super) admission_request_id: AdmissionRequestId,
+    pub(super) observation: RuntimeObservationHandle,
+    pub(super) observation_owner: Option<RuntimeObservationOwner>,
+    pub(super) observation_activity: Option<QueryActivityLease>,
     pub(super) tenant_id: TenantId,
     pub(super) grant_policy: TenantGrantPolicy,
     #[cfg(feature = "cugraph")]
@@ -70,7 +74,7 @@ pub(super) struct PlacedQuery {
 pub(super) fn weighted_adaptive_growth_allocations(
     candidates: &[AdaptiveGrowthCandidate],
     available_bytes: u64,
-) -> Vec<(u64, u64)> {
+) -> Vec<(AdmissionRequestId, u64)> {
     if available_bytes == 0 || candidates.is_empty() {
         return Vec::new();
     }
@@ -79,16 +83,16 @@ pub(super) fn weighted_adaptive_growth_allocations(
         .iter()
         .filter_map(|candidate| {
             (candidate.missing_bytes > 0).then_some(AdaptiveGrowthCandidate {
-                query_id: candidate.query_id,
+                admission_request_id: candidate.admission_request_id,
                 missing_bytes: candidate.missing_bytes,
                 weight: candidate.weight.max(QueryQos::DEFAULT_BUDGET_WEIGHT),
             })
         })
         .collect::<Vec<_>>();
-    remaining.sort_by_key(|candidate| candidate.query_id);
+    remaining.sort_by_key(|candidate| candidate.admission_request_id);
 
     let mut available = available_bytes;
-    let mut allocations = BTreeMap::<u64, u64>::new();
+    let mut allocations = BTreeMap::<AdmissionRequestId, u64>::new();
     while available > 0 && !remaining.is_empty() {
         let total_weight = remaining.iter().map(|candidate| u128::from(candidate.weight)).sum::<u128>().max(1);
         let mut round_allocations = vec![0u64; remaining.len()];
@@ -100,7 +104,12 @@ pub(super) fn weighted_adaptive_growth_allocations(
             round_allocations[index] = base_share;
             round_total = round_total.saturating_add(base_share);
             if base_share < candidate.missing_bytes {
-                remainders.push((index, weighted_available % total_weight, candidate.weight, candidate.query_id));
+                remainders.push((
+                    index,
+                    weighted_available % total_weight,
+                    candidate.weight,
+                    candidate.admission_request_id,
+                ));
             }
         }
 
@@ -136,7 +145,7 @@ pub(super) fn weighted_adaptive_growth_allocations(
             }
             let candidate = &mut remaining[index];
             let bytes = bytes.min(candidate.missing_bytes);
-            let allocation = allocations.entry(candidate.query_id).or_default();
+            let allocation = allocations.entry(candidate.admission_request_id).or_default();
             *allocation = allocation.saturating_add(bytes);
             candidate.missing_bytes = candidate.missing_bytes.saturating_sub(bytes);
         }
@@ -161,32 +170,56 @@ impl QueryAdmissionWaiter {
                 "query admission waiter has already completed",
             )
             .with_fact("tenant_id", self.tenant_id.as_str())
-            .with_fact("query_id", self.request_id)
+            .with_fact("admission_request_id", self.admission_request_id)
             .with_fact("reason", "admission_waiter_completed"));
         }
 
         let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let mut state = self.service.lock_admission()?;
-        if state.closed {
-            self.service.remove_queued_request_without_admission_locked(&mut state, self.request_id);
+        if self.service.admission_is_closed(&state) {
+            let removed =
+                self.service.remove_queued_request_without_admission_locked(&mut state, self.admission_request_id);
             self.queued = false;
             self.service.inner.notify_admission_available();
+            if removed.is_some() {
+                record_admission_lifecycle(
+                    &self.observation,
+                    self.admission_request_id,
+                    &self.tenant_id,
+                    AdmissionLifecycleState::Rejected { reason: "admission_closed".to_string() },
+                    state.queued.len(),
+                    None,
+                    None,
+                );
+            }
             return Err(service_closed_error(&self.tenant_id));
         }
-        let request_is_admissible = match self.service.request_is_admissible(&mut state, self.request_id) {
+        let request_is_admissible = match self.service.request_is_admissible(&mut state, self.admission_request_id) {
             Ok(admissible) => admissible,
             Err(error) => {
-                self.service.abandon_queued_request_locked(&mut state, self.request_id);
+                let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
                 self.queued = false;
+                if removed.is_some() {
+                    record_admission_lifecycle(
+                        &self.observation,
+                        self.admission_request_id,
+                        &self.tenant_id,
+                        admission_rejection(&error),
+                        state.queued.len(),
+                        None,
+                        None,
+                    );
+                }
                 return Err(error);
             },
         };
         if request_is_admissible
-            && let Some(position) = state.queued.iter().position(|queued| queued.request_id == self.request_id)
+            && let Some(position) =
+                state.queued.iter().position(|queued| queued.admission_request_id == self.admission_request_id)
         {
             let placed_query = match self.service.try_place_query(
                 &self.tenant_id,
-                self.request_id,
+                self.admission_request_id,
                 self.grant_policy,
                 #[cfg(feature = "cugraph")]
                 state.queued[position].warm_graph_grant_policy,
@@ -198,8 +231,19 @@ impl QueryAdmissionWaiter {
             ) {
                 Ok(placed_query) => placed_query,
                 Err(error) => {
-                    self.service.abandon_queued_request_locked(&mut state, self.request_id);
+                    let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
                     self.queued = false;
+                    if removed.is_some() {
+                        record_admission_lifecycle(
+                            &self.observation,
+                            self.admission_request_id,
+                            &self.tenant_id,
+                            admission_rejection(&error),
+                            state.queued.len(),
+                            None,
+                            None,
+                        );
+                    }
                     return Err(error);
                 },
             };
@@ -208,13 +252,35 @@ impl QueryAdmissionWaiter {
                     .service
                     .request_adaptive_grant_shrink_for_blocked_request_locked(&state, &state.queued[position])
                 {
-                    self.service.abandon_queued_request_locked(&mut state, self.request_id);
+                    let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
                     self.queued = false;
+                    if removed.is_some() {
+                        record_admission_lifecycle(
+                            &self.observation,
+                            self.admission_request_id,
+                            &self.tenant_id,
+                            admission_rejection(&error),
+                            state.queued.len(),
+                            None,
+                            None,
+                        );
+                    }
                     return Err(error);
                 }
                 if Instant::now() >= self.deadline {
-                    self.service.abandon_queued_request_locked(&mut state, self.request_id);
+                    let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
                     self.queued = false;
+                    if removed.is_some() {
+                        record_admission_lifecycle(
+                            &self.observation,
+                            self.admission_request_id,
+                            &self.tenant_id,
+                            AdmissionLifecycleState::TimedOut,
+                            state.queued.len(),
+                            None,
+                            None,
+                        );
+                    }
                     return Err(self.service.memory_grant_wait_timeout_error(
                         &self.tenant_id,
                         self.grant_policy,
@@ -224,12 +290,51 @@ impl QueryAdmissionWaiter {
                 return Ok(None);
             };
             let admitted = state.queued.remove(position).expect("admissible request exists");
-            self.service.attach_admission_release_wakeup(&placed_query.memory_grant)?;
-            self.service.attach_admission_budget_decrease_wakeup(&placed_query.memory_grant)?;
+            if let Err(error) = self.service.attach_admission_release_wakeup(&placed_query.memory_grant) {
+                record_admission_lifecycle(
+                    &admitted.observation,
+                    self.admission_request_id,
+                    &self.tenant_id,
+                    admission_rejection(&error),
+                    state.queued.len(),
+                    None,
+                    None,
+                );
+                self.queued = false;
+                return Err(error);
+            }
+            if let Err(error) = self.service.attach_admission_budget_decrease_wakeup(&placed_query.memory_grant) {
+                record_admission_lifecycle(
+                    &admitted.observation,
+                    self.admission_request_id,
+                    &self.tenant_id,
+                    admission_rejection(&error),
+                    state.queued.len(),
+                    None,
+                    None,
+                );
+                self.queued = false;
+                return Err(error);
+            }
+            if self.service.admission_is_closed(&state) {
+                let error = service_closed_error(&self.tenant_id);
+                record_admission_lifecycle(
+                    &admitted.observation,
+                    self.admission_request_id,
+                    &self.tenant_id,
+                    admission_rejection(&error),
+                    state.queued.len(),
+                    None,
+                    None,
+                );
+                self.queued = false;
+                self.service.inner.notify_admission_available();
+                return Err(error);
+            }
             state.active_queries = state.active_queries.saturating_add(1);
             self.service.register_active_adaptive_grant(
                 &mut state,
-                self.request_id,
+                self.admission_request_id,
                 placed_query.device_ordinal,
                 placed_query.grant_policy,
                 &placed_query.memory_grant,
@@ -245,11 +350,23 @@ impl QueryAdmissionWaiter {
             let service = Arc::clone(&self.service.inner);
             let device_budget_bytes = placed_query.memory_grant.budget_bytes();
             let device_ordinal = placed_query.device_ordinal;
+            record_admission_lifecycle(
+                &self.observation,
+                self.admission_request_id,
+                &self.tenant_id,
+                AdmissionLifecycleState::Admitted,
+                state.queued.len(),
+                Some(device_ordinal),
+                Some(device_budget_bytes),
+            );
             return Ok(Some(QueryHandle {
                 lifetime: QueryHandleLifetime::new(
                     Arc::clone(&service),
                     self.tenant_id.clone(),
-                    self.request_id,
+                    self.admission_request_id,
+                    admitted.observation,
+                    admitted.observation_owner,
+                    admitted.observation_activity,
                     placed_query.memory_grant,
                     placed_query.device_slot,
                     #[cfg(feature = "cugraph")]
@@ -257,7 +374,7 @@ impl QueryAdmissionWaiter {
                 ),
                 service,
                 tenant_id: self.tenant_id.clone(),
-                query_id: self.request_id,
+                admission_request_id: self.admission_request_id,
                 admission_sequence,
                 admission_wait: self.requested_at.elapsed(),
                 device_budget_bytes,
@@ -266,8 +383,19 @@ impl QueryAdmissionWaiter {
         }
 
         if Instant::now() >= self.deadline {
-            self.service.abandon_queued_request_locked(&mut state, self.request_id);
+            let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
             self.queued = false;
+            if removed.is_some() {
+                record_admission_lifecycle(
+                    &self.observation,
+                    self.admission_request_id,
+                    &self.tenant_id,
+                    AdmissionLifecycleState::TimedOut,
+                    state.queued.len(),
+                    None,
+                    None,
+                );
+            }
             return Err(service_overloaded_error(
                 "admission_wait_timeout",
                 &self.tenant_id,
@@ -292,8 +420,29 @@ impl Drop for QueryAdmissionWaiter {
         }
         match self.service.inner.admission.lock() {
             Ok(mut state) => {
-                self.service.remove_queued_request_without_admission_locked(&mut state, self.request_id);
+                let removed =
+                    self.service.remove_queued_request_without_admission_locked(&mut state, self.admission_request_id);
                 self.service.inner.notify_admission_available();
+                if removed.is_some() {
+                    record_admission_lifecycle(
+                        &self.observation,
+                        self.admission_request_id,
+                        &self.tenant_id,
+                        AdmissionLifecycleState::CancellationRequested,
+                        state.queued.len(),
+                        None,
+                        None,
+                    );
+                    record_admission_lifecycle(
+                        &self.observation,
+                        self.admission_request_id,
+                        &self.tenant_id,
+                        AdmissionLifecycleState::Cancelled,
+                        state.queued.len(),
+                        None,
+                        None,
+                    );
+                }
             },
             Err(_error) => {
                 eprintln!("[nexus-query-engine] warning: failed to remove queued query service admission request");
@@ -302,8 +451,12 @@ impl Drop for QueryAdmissionWaiter {
     }
 }
 
-pub(super) fn remove_queued_request(state: &mut AdmissionState, request_id: u64) -> Option<AdmissionRequest> {
-    if let Some(position) = state.queued.iter().position(|request| request.request_id == request_id) {
+pub(super) fn remove_queued_request(
+    state: &mut AdmissionState,
+    admission_request_id: AdmissionRequestId,
+) -> Option<AdmissionRequest> {
+    if let Some(position) = state.queued.iter().position(|request| request.admission_request_id == admission_request_id)
+    {
         state.queued.remove(position)
     } else {
         None

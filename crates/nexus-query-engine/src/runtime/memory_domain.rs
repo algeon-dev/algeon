@@ -31,7 +31,7 @@ pub(super) fn create_grant_reservation_arena(
                 "memory grant reservation arena device does not match execution runtime device",
             )
             .with_fact("grant_id", grant.grant_id())
-            .with_fact("query_id", grant.query_id())
+            .with_fact("admission_request_id", grant.admission_request_id())
             .with_fact("arena_device_ordinal", arena.device().ordinal())
             .with_fact("runtime_device_ordinal", runtime.device().ordinal()));
         }
@@ -46,7 +46,7 @@ pub(super) fn create_grant_reservation_arena(
             "memory grant budget exceeds platform usize range",
         )
         .with_fact("grant_id", grant.grant_id())
-        .with_fact("query_id", grant.query_id())
+        .with_fact("admission_request_id", grant.admission_request_id())
         .with_fact("budget_bytes", grant.budget_bytes())
     })?;
     let manager = runtime.device_memory_manager().map_err(|error| {
@@ -56,7 +56,7 @@ pub(super) fn create_grant_reservation_arena(
             error,
         )
         .with_fact("grant_id", grant.grant_id())
-        .with_fact("query_id", grant.query_id())
+        .with_fact("admission_request_id", grant.admission_request_id())
     })?;
     let arena = manager.reservation_arena(grant.grant_id(), limit_bytes).map_err(|error| {
         QueryError::from_cudf(
@@ -65,7 +65,7 @@ pub(super) fn create_grant_reservation_arena(
             error,
         )
         .with_fact("grant_id", grant.grant_id())
-        .with_fact("query_id", grant.query_id())
+        .with_fact("admission_request_id", grant.admission_request_id())
         .with_fact("budget_bytes", grant.budget_bytes())
     })?;
     let arena = Arc::new(arena);
@@ -99,7 +99,7 @@ pub(super) fn create_grant_memory_domain(
             "grant query memory domain creation mutex was poisoned",
         )
         .with_fact("grant_id", grant.grant_id())
-        .with_fact("query_id", grant.query_id())
+        .with_fact("admission_request_id", grant.admission_request_id())
     })?;
     let existing_domain = {
         let mut registry = grant_memory_domain_registry().lock().map_err(|_error| {
@@ -124,7 +124,7 @@ pub(super) fn create_grant_memory_domain(
                 "memory grant query domain device does not match execution runtime device",
             )
             .with_fact("grant_id", grant.grant_id())
-            .with_fact("query_id", grant.query_id())
+            .with_fact("admission_request_id", grant.admission_request_id())
             .with_fact("domain_device_ordinal", domain.device().ordinal())
             .with_fact("runtime_device_ordinal", runtime.device().ordinal()));
         }
@@ -142,7 +142,7 @@ pub(super) fn create_grant_memory_domain(
             "memory grant budget exceeds platform usize range",
         )
         .with_fact("grant_id", grant.grant_id())
-        .with_fact("query_id", grant.query_id())
+        .with_fact("admission_request_id", grant.admission_request_id())
         .with_fact("budget_bytes", grant_bytes_u64)
     })?;
     let ceiling_bytes = usize::try_from(ceiling_bytes_u64).map_err(|_error| {
@@ -152,7 +152,7 @@ pub(super) fn create_grant_memory_domain(
             "memory grant query domain ceiling exceeds platform usize range",
         )
         .with_fact("grant_id", grant.grant_id())
-        .with_fact("query_id", grant.query_id())
+        .with_fact("admission_request_id", grant.admission_request_id())
         .with_fact("ceiling_bytes", ceiling_bytes_u64)
     })?;
     let manager = runtime.device_memory_manager().map_err(|error| {
@@ -162,7 +162,7 @@ pub(super) fn create_grant_memory_domain(
             error,
         )
         .with_fact("grant_id", grant.grant_id())
-        .with_fact("query_id", grant.query_id())
+        .with_fact("admission_request_id", grant.admission_request_id())
     })?;
     let domain = manager
         .query_memory_domain(
@@ -176,7 +176,7 @@ pub(super) fn create_grant_memory_domain(
                 error,
             )
             .with_fact("grant_id", grant.grant_id())
-            .with_fact("query_id", grant.query_id())
+            .with_fact("admission_request_id", grant.admission_request_id())
             .with_fact("budget_bytes", grant_bytes_u64)
             .with_fact("ceiling_bytes", ceiling_bytes_u64)
         })?;

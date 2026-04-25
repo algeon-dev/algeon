@@ -124,9 +124,6 @@ impl QueryMetrics {
         context_facts: BTreeMap<String, String>,
     ) {
         self.max_task_observed_peak_bytes = max_option(self.max_task_observed_peak_bytes, allocator_high_water_bytes);
-        if let Some(compiled_task_id) = self.current_compiled_task_id.clone() {
-            self.record_task_budget_observation(&compiled_task_id, allocator_high_water_bytes, None);
-        }
         self.budgeted_execution_events.push(BudgetedExecutionEvent {
             query_id: self.inherited_query_id(),
             operation: operation.into(),

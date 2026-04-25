@@ -22,6 +22,7 @@ pub(in crate::exec) fn try_execute_strict_bounded_pipeline(
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
+    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<Option<QueryOutput>> {
     let Some(admission) = strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
         plan,
@@ -31,5 +32,5 @@ pub(in crate::exec) fn try_execute_strict_bounded_pipeline(
         return Ok(None);
     };
     debug_assert_eq!(admission.native_mode(), NativePipelineExecutionMode::StrictBounded);
-    execute_compiled_pipeline(context, plan, admission.pipeline(), gpu_inputs, metrics).map(Some)
+    execute_compiled_pipeline(context, plan, admission.pipeline(), gpu_inputs, metrics, observation_scope).map(Some)
 }

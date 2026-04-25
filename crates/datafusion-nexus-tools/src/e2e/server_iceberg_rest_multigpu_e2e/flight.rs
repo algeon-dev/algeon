@@ -345,14 +345,25 @@ pub(super) async fn get_admission_stats(channel: &Channel) -> E2eResult<String> 
 }
 
 async fn action_payload(channel: &Channel, action_type: &str, body: Vec<u8>) -> E2eResult<String> {
+    let mut frames = action_frames(channel, action_type, body).await?;
+    if frames.len() != 1 {
+        return Err(format!("{action_type} returned {} results, expected exactly one", frames.len()).into());
+    }
+    Ok(String::from_utf8(frames.remove(0))?)
+}
+
+pub(super) async fn action_frames(channel: &Channel, action_type: &str, body: Vec<u8>) -> E2eResult<Vec<Vec<u8>>> {
     let mut client = FlightSqlServiceClient::new(channel.clone());
     let action = arrow_flight::Action { r#type: action_type.to_string(), body: body.into() };
     let mut stream = client.do_action(action).await?;
-    let result = stream.message().await?.ok_or_else(|| format!("{action_type} returned no result"))?;
-    if stream.message().await?.is_some() {
-        return Err(format!("{action_type} returned more than one result").into());
+    let mut frames = Vec::new();
+    while let Some(result) = stream.message().await? {
+        frames.push(result.body.to_vec());
     }
-    Ok(String::from_utf8(result.body.to_vec())?)
+    if frames.is_empty() {
+        return Err(format!("{action_type} returned no result").into());
+    }
+    Ok(frames)
 }
 
 pub(super) async fn lightweight_get_flight_info(channel: &Channel) -> E2eResult<FlightInfo> {

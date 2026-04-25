@@ -50,7 +50,8 @@ pub(in crate::exec) fn prepare_filtered_aggregate_frame(
             })
             .map(|outcome| budgeted_value(outcome, metrics, "nexus_query_engine.aggregate.filter_inputs"))?,
         None => {
-            let overrides = execution_overrides(context);
+            let overrides_lease = execution_overrides(context)?;
+            let overrides = overrides_lease.overrides();
             frame.with_execution(&overrides).with_columns(expressions).map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.aggregate.filter_inputs",

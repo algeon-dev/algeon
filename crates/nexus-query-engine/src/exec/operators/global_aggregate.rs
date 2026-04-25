@@ -53,7 +53,8 @@ fn execute_global_aggregate_impl(
 ) -> Result<GpuDataFrame> {
     validate_global_aggregate_capability(spec, output_schema)?;
     let frame = input.into_frame();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let mut columns = Vec::with_capacity(spec.aggr_exprs.len());
     for (index, expr) in spec.aggr_exprs.iter().enumerate() {
@@ -259,7 +260,7 @@ fn reduce_global_aggregate_column_impl(
     };
     match token {
         Some(token) => context
-            .runtime()
+            .runtime()?
             .series_from_scalar_with_budget(&scalar, 1, token)
             .map_err(|error| {
                 QueryError::from_cudf_with_budget_details(
@@ -271,7 +272,7 @@ fn reduce_global_aggregate_column_impl(
                 .with_fact_if_absent("budget_operation", "runtime::series_from_scalar_with_budget")
             })
             .map(|outcome| budgeted_value(outcome, metrics, "nexus_query_engine.global_aggregate.output")),
-        None => context.runtime().series_from_scalar(&scalar, 1).map_err(|error| {
+        None => context.runtime()?.series_from_scalar(&scalar, 1).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.global_aggregate.output",
                 "failed to construct native global aggregate output column",
@@ -392,7 +393,7 @@ fn global_null_output_series_impl(
     })?;
     match token {
         Some((token, metrics)) => context
-            .runtime()
+            .runtime()?
             .nulls_with_budget(dtype, 1, token)
             .map_err(|error| {
                 QueryError::from_cudf_with_budget_details(
@@ -405,7 +406,7 @@ fn global_null_output_series_impl(
                 .with_fact_if_absent("budget_operation", "runtime::nulls_with_budget")
             })
             .map(|outcome| budgeted_value(outcome, metrics, "nexus_query_engine.global_aggregate.null_output")),
-        None => context.runtime().nulls(dtype, 1).map_err(|error| {
+        None => context.runtime()?.nulls(dtype, 1).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.global_aggregate.null_output",
                 "failed to construct native global aggregate null output column",

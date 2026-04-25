@@ -44,6 +44,8 @@ pub mod metrics;
 pub mod mode;
 /// Stable name-generation helpers shared across native planning code.
 pub mod naming;
+/// DataFusion-free runtime observation records, bounded capture, and JSONL export.
+pub mod observability;
 pub mod optimizer;
 pub(crate) mod parquet_metadata;
 /// Shared Parquet footer/statistics helpers for native pruning and sizing.

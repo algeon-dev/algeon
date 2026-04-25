@@ -7,7 +7,7 @@ use crate::runtime::cache::resident_graph::{
 /// the graph, and runs `f` with the cudf runtime, entered context, and graph.
 ///
 /// Centralizes the shared graph-algorithm execution shape and keeps
-/// `context.runtime()` as the ingress/execution/egress domain.
+/// `context.runtime()?` as the ingress/execution/egress domain.
 ///
 /// If a future path routes graph results into a different `cudf::Runtime`
 /// stream, insert a device-side `cudaEventRecord` + `cudaStreamWaitEvent`
@@ -176,7 +176,7 @@ where
     ) -> Result<GraphAlgorithmExecutionResult>,
 {
     const BUILD_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-    let runtime = cache.companion_runtime_for_context(context, operation)?;
+    let (cache_runtime, runtime) = cache.runtimes_for_context(context, operation)?;
     let budget = graph_execution_budget_with_runtime(
         context,
         graph_memory_limit_bytes,
@@ -184,10 +184,11 @@ where
         operation,
         std::sync::Arc::clone(&runtime),
     )?;
-    let handle = cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).map_err(map_cugraph_error(
-        "nexus_query_engine.graph_algorithm.resource_handle",
-        "failed to bind cuGraph resource handle to the resident graph cache runtime",
-    ))?;
+    let handle =
+        cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&cache_runtime)).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.resource_handle",
+            "failed to bind cuGraph resource handle to the resident graph cache runtime",
+        ))?;
     let entered = handle.enter(operation).map_err(map_cugraph_error(
         "nexus_query_engine.graph_algorithm.enter",
         "failed to enter cuGraph resident graph cache execution context",

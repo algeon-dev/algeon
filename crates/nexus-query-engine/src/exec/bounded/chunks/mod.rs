@@ -1434,8 +1434,11 @@ pub(super) fn chunk_reservation_request(
         max_attempts,
     );
     if let Some(operator_kind) = legacy_bounded_chunk_operator_kind(kind, memory_boundary) {
-        request =
-            request.with_compiled_task_id(legacy_bounded_chunk_task_id(operator_kind, memory_boundary, chunk, attempt));
+        request = request.with_task_registration(
+            legacy_bounded_chunk_task_id(operator_kind, memory_boundary, chunk, attempt),
+            u32::try_from(attempt).unwrap_or(u32::MAX),
+            operator_kind,
+        );
     }
     request
 }

@@ -21,7 +21,7 @@ pub(super) fn execution_budget_token_for_boundary(
     })?;
     context.execution_budget_token(ExecutionBudgetRequest::new(budget).with_boundary(budget_boundary)).map_err(
         |error| {
-            QueryError::from_cudf_with_budget_details(operation, message, error)
+            error
                 .with_fact_if_absent("budget_boundary", budget_boundary)
                 .with_fact_if_absent("budget_bytes", budget_bytes)
         },
@@ -53,7 +53,8 @@ pub(super) fn execute_filter(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let frame = input.frame().clone();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = if let Some((column, values)) = literal_in_list_filter_series(context, &node.predicate, &overrides)? {
         frame.with_execution(&overrides).filter_isin(&column, &values).map_err(|error| {
@@ -139,7 +140,7 @@ fn literal_in_list_filter_series(
             }) else {
                 return Ok(None);
             };
-            context.runtime().series_in(&values, overrides)
+            context.runtime()?.series_in(&values, overrides)
         },
         LiteralValue::Int64(_) => {
             let Some(values) = collect_in_list_literals(list, |value| match value {
@@ -148,7 +149,7 @@ fn literal_in_list_filter_series(
             }) else {
                 return Ok(None);
             };
-            context.runtime().series_in(&values, overrides)
+            context.runtime()?.series_in(&values, overrides)
         },
         LiteralValue::UInt32(_) => {
             let Some(values) = collect_in_list_literals(list, |value| match value {
@@ -157,7 +158,7 @@ fn literal_in_list_filter_series(
             }) else {
                 return Ok(None);
             };
-            context.runtime().series_in(&values, overrides)
+            context.runtime()?.series_in(&values, overrides)
         },
         LiteralValue::UInt64(_) => {
             let Some(values) = collect_in_list_literals(list, |value| match value {
@@ -166,7 +167,7 @@ fn literal_in_list_filter_series(
             }) else {
                 return Ok(None);
             };
-            context.runtime().series_in(&values, overrides)
+            context.runtime()?.series_in(&values, overrides)
         },
         _ => return Ok(None),
     }
@@ -210,7 +211,8 @@ pub(super) fn execute_sort_on_frame(
 ) -> Result<GpuDataFrame> {
     let sort = lower_sort_spec(&node.spec)?;
     let options = CudfSortOptions::new().with_descending(sort.descending).with_nulls_first(sort.nulls_first);
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).sort_values(sort.columns, options).map_err(|error| {
         QueryError::from_cudf("nexus_query_engine.sort.execute", "failed to execute native cudf sort", error)
@@ -256,7 +258,8 @@ pub(super) fn execute_union(
     let input_count = frames.len();
     let first = frames.remove(0);
     let rest = frames.iter().collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = first.with_execution(&overrides).concat_many(&rest).map_err(|error| {
         QueryError::from_cudf("nexus_query_engine.union.concat", "failed to concatenate native union inputs", error)
@@ -400,8 +403,10 @@ fn execute_partition_window_aggregate(
         .iter()
         .map(|expr| lower_column_expr(expr, "nexus_query_engine.window.aggregate.merge_key"))
         .collect::<Result<Vec<_>>>()?;
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let output = frame
-        .with_execution(&execution_overrides(context))
+        .with_execution(&overrides)
         .merge(
             &aggregate_frame,
             cudf::MergeOptions::new().how(cudf::JoinType::Left).on(keys.iter().map(String::as_str)),
@@ -455,6 +460,8 @@ fn execute_cumulative_window_aggregate(
     frame: DataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     if node.spec.order_by.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
@@ -495,15 +502,13 @@ fn execute_cumulative_window_aggregate(
         nulls_first.push(sort_expr.nulls_first);
     }
     let sort_options = CudfSortOptions::new().with_descending(descending).with_nulls_first(nulls_first);
-    working = working.with_execution(&execution_overrides(context)).sort_values(sort_columns, sort_options).map_err(
-        |error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.window.cumulative.sort",
-                "failed to sort cumulative window input",
-                error,
-            )
-        },
-    )?;
+    working = working.with_execution(&overrides).sort_values(sort_columns, sort_options).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.window.cumulative.sort",
+            "failed to sort cumulative window input",
+            error,
+        )
+    })?;
 
     for (function_index, function) in node.spec.functions.iter().enumerate() {
         let crate::plan::WindowFunction::Aggregate {
@@ -518,14 +523,13 @@ fn execute_cumulative_window_aggregate(
         let scan_agg = cumulative_scan_agg(*function)?;
         let value_name = unique_temp_column_name(&working, &format!("__cudf_window_cumulative_value_{function_index}"));
         let value_expr = lower_expr(expr)?.alias(value_name.as_str());
-        working =
-            working.with_execution(&execution_overrides(context)).with_columns([value_expr]).map_err(|error| {
-                QueryError::from_cudf(
-                    "nexus_query_engine.window.cumulative.value",
-                    "failed to materialize cumulative window input expression",
-                    error,
-                )
-            })?;
+        working = working.with_execution(&overrides).with_columns([value_expr]).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.window.cumulative.value",
+                "failed to materialize cumulative window input expression",
+                error,
+            )
+        })?;
         temp_columns.push(value_name.clone());
 
         let scan_name = unique_temp_column_name(&working, &format!("__cudf_window_cumulative_scan_{function_index}"));
@@ -649,6 +653,8 @@ fn execute_rank_window(
     alias: &str,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     if node.spec.order_by.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
@@ -690,7 +696,7 @@ fn execute_rank_window(
     let rank_expr = (col(partition_rank_name.as_str()).cast(uint64) + lit(1u64)
         - col(peer_rank_name.as_str()).cast(uint64))
     .alias(alias);
-    output = output.with_execution(&execution_overrides(context)).with_columns([rank_expr]).map_err(|error| {
+    output = output.with_execution(&overrides).with_columns([rank_expr]).map_err(|error| {
         QueryError::from_cudf("nexus_query_engine.window.rank.output", "failed to append rank output column", error)
     })?;
     temp_columns.push(partition_rank_name);
@@ -709,6 +715,8 @@ fn execute_row_number_window(
     alias: &str,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let mut output = frame;
     let mut temp_columns = Vec::new();
@@ -734,7 +742,7 @@ fn execute_row_number_window(
 
     let uint64 = cudf::DataType::new(cudf::TypeId::UInt64);
     let row_number_expr = (col(partition_rank_name.as_str()).cast(uint64) + lit(1u64)).alias(alias);
-    output = output.with_execution(&execution_overrides(context)).with_columns([row_number_expr]).map_err(|error| {
+    output = output.with_execution(&overrides).with_columns([row_number_expr]).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.window.row_number.output",
             "failed to append row_number output column",
@@ -766,6 +774,8 @@ fn execute_lag_lead_window(
     direction: crate::plan::ShiftDirection,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
 
     let output_field = output_schema.field_with_name(alias).map_err(|error| {
@@ -811,35 +821,31 @@ fn execute_lag_lead_window(
         nulls_first.push(sort_expr.nulls_first);
     }
     let sort_options = CudfSortOptions::new().with_descending(descending).with_nulls_first(nulls_first);
-    let sorted = working
-        .with_execution(&execution_overrides(context))
-        .sort_values(sort_columns, sort_options)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.window.lag_lead.sort",
-                "failed to sort LAG / LEAD window input",
-                error,
-            )
-        })?;
+    let sorted = working.with_execution(&overrides).sort_values(sort_columns, sort_options).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.window.lag_lead.sort",
+            "failed to sort LAG / LEAD window input",
+            error,
+        )
+    })?;
 
     // 4. Materialize the shifted value column on the sorted frame.
     let value_name = unique_temp_column_name(&sorted, "__cudf_window_lag_lead_value");
     let value_expr_cudf = lower_expr(value_expr)?.alias(value_name.as_str());
-    let sorted =
-        sorted.with_execution(&execution_overrides(context)).with_columns([value_expr_cudf]).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.window.lag_lead.value",
-                "failed to materialize LAG / LEAD value column",
-                error,
-            )
-        })?;
+    let sorted = sorted.with_execution(&overrides).with_columns([value_expr_cudf]).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.window.lag_lead.value",
+            "failed to materialize LAG / LEAD value column",
+            error,
+        )
+    })?;
 
     // 5. Build fill scalars. The shifted value's fill is the user-supplied
     //    default (or NULL of the output type). The row_index column is shifted
     //    by 0, so its fill value is never observed; we still construct a
     //    matching Int32 scalar so libcudf sees a well-typed pair.
     let value_fill = build_lag_lead_value_fill_scalar(context, default, &output_arrow_dtype)?;
-    let row_index_fill = context.runtime().scalar(0i32).map_err(|error| {
+    let row_index_fill = context.runtime()?.scalar(0i32).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.window.lag_lead.row_index_fill",
             "failed to construct LAG / LEAD row index fill scalar",
@@ -906,7 +912,7 @@ fn execute_lag_lead_window(
     let shifted_row_index_column = format!("{row_index_name}_shift");
     let shifted_value_column = format!("{value_name}_shift");
     let restored = shifted
-        .with_execution(&execution_overrides(context))
+        .with_execution(&overrides)
         .sort_values(
             [shifted_row_index_column.as_str()],
             CudfSortOptions::new().with_descending(vec![false]).with_nulls_first(vec![false]).with_stable(true),
@@ -946,7 +952,7 @@ fn build_lag_lead_value_fill_scalar(
     output_arrow_dtype: &ArrowDataType,
 ) -> Result<CudfScalar> {
     use crate::expr::LiteralValue::*;
-    let runtime = context.runtime();
+    let runtime = context.runtime()?;
     let null_for_output = || {
         let cudf_dtype = crate::datatypes::cudf_dtype_from_arrow_type(output_arrow_dtype).ok_or_else(|| {
             QueryError::new(
@@ -1056,7 +1062,8 @@ pub(super) fn execute_limit_spec_on_frame(
         return Ok(GpuDataFrame::new(frame));
     }
 
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).slice(offset, length).map_err(|error| {
         QueryError::from_cudf("nexus_query_engine.limit.execute", "failed to execute native cudf limit", error)

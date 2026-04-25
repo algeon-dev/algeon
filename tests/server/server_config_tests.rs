@@ -36,10 +36,14 @@ use datafusion_nexus::{
         NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
         NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
         NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
-        NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
-        NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
-        NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, NEXUS_SERVER_WORKSPACE_CATALOG_ENV,
-        NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, ServerConfig, ServerNativeConfigScope,
+        NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
+        NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
+        NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
+        NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
+        NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
+        NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV,
+        NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV,
+        NEXUS_SERVER_WORKSPACE_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, ServerConfig, ServerNativeConfigScope,
     },
     session_config::{DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig},
 };
@@ -77,6 +81,13 @@ fn server_config_defaults_to_two_native_query_admissions() {
     assert_eq!(config.gpu_devices, vec![0]);
     assert_eq!(config.device_budget_fraction, None);
     assert_eq!(config.statement_ticket_ttl.as_secs(), 300);
+    assert_eq!(config.observability.per_query_max_records, 65_536);
+    assert_eq!(config.observability.per_query_max_bytes, 8 * 1024 * 1024);
+    assert_eq!(config.observability.active_logical_capture_max_bytes, 1024 * 1024 * 1024);
+    assert_eq!(config.observability.global_sealed_max_count, 1_024);
+    assert_eq!(config.observability.global_sealed_max_bytes, 1024 * 1024 * 1024);
+    assert_eq!(config.observability.sealed_ttl, Duration::from_secs(60 * 60));
+    assert_eq!(config.observability.shutdown_grace, Duration::from_secs(30));
     assert_eq!(config.log_filter, "info");
     assert!(
         config.native_optimizer_config.native_execution_config().memory_control_policy().is_bounded(),
@@ -702,6 +713,45 @@ fn server_config_accepts_statement_ticket_ttl() {
 }
 
 #[test]
+fn server_config_accepts_runtime_observability_limits() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV, "123".to_string()),
+        (NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV, "4567".to_string()),
+        (NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV, "7654".to_string()),
+        (NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV, "8".to_string()),
+        (NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, "9999".to_string()),
+        (NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, "42".to_string()),
+        (NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV, "7".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.observability.per_query_max_records, 123);
+    assert_eq!(config.observability.per_query_max_bytes, 4567);
+    assert_eq!(config.observability.active_logical_capture_max_bytes, 7654);
+    assert_eq!(config.observability.global_sealed_max_count, 8);
+    assert_eq!(config.observability.global_sealed_max_bytes, 9999);
+    assert_eq!(config.observability.sealed_ttl, Duration::from_secs(42));
+    assert_eq!(config.observability.shutdown_grace, Duration::from_secs(7));
+}
+
+#[test]
+fn server_config_rejects_zero_runtime_observability_limits() {
+    for field in [
+        NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
+        NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV,
+        NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
+        NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
+        NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV,
+        NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV,
+        NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
+    ] {
+        let env = BTreeMap::from([(field, "0".to_string())]);
+        let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+        assert!(error.to_string().contains(field), "{error}");
+    }
+}
+
+#[test]
 fn server_config_accepts_workspace_overlay_defaults_and_aliases() {
     let env = BTreeMap::from([
         (NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, "glue".to_string()),
@@ -764,6 +814,15 @@ fn server_config_rejects_zero_statement_ticket_ttl() {
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV));
+}
+
+#[test]
+fn server_config_rejects_unrepresentable_statement_ticket_ttl() {
+    let env = BTreeMap::from([(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, u64::MAX.to_string())]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV), "{error}");
+    assert!(error.to_string().contains("monotonic clock range"), "{error}");
 }
 
 #[test]
@@ -1419,6 +1478,74 @@ statistical_aggregate_execution_mode = "gpu_native"
         let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
         assert!(error.to_string().contains(field), "expected {field} in error: {error}");
+    }
+}
+
+#[test]
+fn server_config_loads_runtime_observability_toml_and_env_overrides_it() {
+    let (_dir, mut env) = env_with_server_toml(
+        r#"
+[observability]
+per_query_max_records = 10
+per_query_max_bytes = 20
+active_logical_capture_max_bytes = 30
+global_sealed_max_count = 3
+global_sealed_max_bytes = 40
+sealed_ttl_secs = 50
+shutdown_grace_secs = 60
+"#,
+    );
+    env.insert(NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV, "11".to_string());
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.observability.per_query_max_records, 11);
+    assert_eq!(config.observability.per_query_max_bytes, 20);
+    assert_eq!(config.observability.active_logical_capture_max_bytes, 30);
+    assert_eq!(config.observability.global_sealed_max_count, 3);
+    assert_eq!(config.observability.global_sealed_max_bytes, 40);
+    assert_eq!(config.observability.sealed_ttl, Duration::from_secs(50));
+    assert_eq!(config.observability.shutdown_grace, Duration::from_secs(60));
+}
+
+#[test]
+fn server_config_rejects_zero_runtime_observability_toml_values() {
+    for (field, diagnostic) in [
+        ("per_query_max_records", NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV),
+        ("per_query_max_bytes", NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV),
+        ("active_logical_capture_max_bytes", NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV),
+        ("global_sealed_max_count", NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV),
+        ("global_sealed_max_bytes", NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV),
+        ("sealed_ttl_secs", NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV),
+        ("shutdown_grace_secs", NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV),
+    ] {
+        let body = format!("[observability]\n{field} = 0\n");
+        let (_dir, env) = env_with_server_toml(&body);
+
+        let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+        assert!(error.to_string().contains(diagnostic), "expected {diagnostic} in error: {error}");
+    }
+}
+
+#[test]
+fn server_config_rejects_unrepresentable_runtime_observability_durations_from_env_and_toml() {
+    for field in [NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV] {
+        let env = BTreeMap::from([(field, u64::MAX.to_string())]);
+        let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+        assert!(error.to_string().contains(field), "{error}");
+        assert!(error.to_string().contains("monotonic clock range"), "{error}");
+    }
+
+    for (field, diagnostic) in [
+        ("sealed_ttl_secs", NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV),
+        ("shutdown_grace_secs", NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV),
+    ] {
+        let body = format!("[observability]\n{field} = {}\n", u64::MAX);
+        let (_dir, env) = env_with_server_toml(&body);
+        let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+        assert!(error.to_string().contains(diagnostic), "{error}");
+        assert!(error.to_string().contains("monotonic clock range"), "{error}");
     }
 }
 

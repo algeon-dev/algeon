@@ -49,7 +49,8 @@ impl FinalSortExecutor<'_> {
         let sorted_order_reservation = self.reservations.try_reserve(sorted_order_request, self.metrics)?;
 
         let timer = Instant::now();
-        let materialize_overrides = execution_overrides(self.context);
+        let materialize_overrides_lease = execution_overrides(self.context)?;
+        let materialize_overrides = materialize_overrides_lease.overrides();
         let materialized_output_bytes = prepared_sort
             .materialized_output_reservation_size_bytes_in(&materialize_overrides)
             .map_err(|error| {

@@ -11,6 +11,7 @@ pub(super) struct GovernorClaimLease {
 struct GovernorClaimLeaseInner {
     ordinals: Vec<usize>,
     slot_guarantee: SlotGuarantee,
+    released: AtomicBool,
 }
 
 #[derive(Debug, Default)]
@@ -21,6 +22,15 @@ struct GovernorClaimState {
 
 impl Drop for GovernorClaimLeaseInner {
     fn drop(&mut self) {
+        self.release();
+    }
+}
+
+impl GovernorClaimLeaseInner {
+    fn release(&self) {
+        if self.released.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let claims = governor_claims();
         let Ok(mut claims) = claims.lock() else {
             eprintln!("[nexus-query-engine] warning: failed to release query-service governor claims");
@@ -38,6 +48,12 @@ impl Drop for GovernorClaimLeaseInner {
                 claims.remove(ordinal);
             }
         }
+    }
+}
+
+impl GovernorClaimLease {
+    pub(super) fn release(&self) {
+        self._inner.release();
     }
 }
 
@@ -77,7 +93,13 @@ pub(super) fn claim_governor_ordinals(ordinals: &[usize], slot_guarantee: SlotGu
             SlotGuarantee::Optimistic => state.optimistic_claims = state.optimistic_claims.saturating_add(1),
         }
     }
-    Ok(GovernorClaimLease { _inner: Arc::new(GovernorClaimLeaseInner { ordinals: ordinals.to_vec(), slot_guarantee }) })
+    Ok(GovernorClaimLease {
+        _inner: Arc::new(GovernorClaimLeaseInner {
+            ordinals: ordinals.to_vec(),
+            slot_guarantee,
+            released: AtomicBool::new(false),
+        }),
+    })
 }
 
 fn governor_claim_conflicts(state: &GovernorClaimState, requested: SlotGuarantee) -> bool {

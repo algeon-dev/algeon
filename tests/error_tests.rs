@@ -29,12 +29,15 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::CudfInvalidInput, ErrorStatus::Permanent),
     (ErrorCode::CudfUnsupported, ErrorStatus::Permanent),
     (ErrorCode::CudfResourceExhausted, ErrorStatus::Temporary),
+    (ErrorCode::SizeOverflow, ErrorStatus::Permanent),
+    (ErrorCode::HostMaterializationLimitExceeded, ErrorStatus::Permanent),
     (ErrorCode::CudfTemporaryFailure, ErrorStatus::Temporary),
     (ErrorCode::CudfPersistentFailure, ErrorStatus::Persistent),
     (ErrorCode::CudfDependencyFailure, ErrorStatus::Permanent),
     (ErrorCode::CudfInvariantViolation, ErrorStatus::Permanent),
     (ErrorCode::MemoryReservationFailed, ErrorStatus::Temporary),
     (ErrorCode::ServiceOverloaded, ErrorStatus::Temporary),
+    (ErrorCode::FlightFrameTooLarge, ErrorStatus::Permanent),
     (ErrorCode::ServerTransportFailure, ErrorStatus::Permanent),
     (ErrorCode::Internal, ErrorStatus::Permanent),
 ];
@@ -49,6 +52,12 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
     (QueryErrorCode::CudfInvalidInput, ErrorCode::CudfInvalidInput, QueryErrorStatus::Permanent),
     (QueryErrorCode::CudfUnsupported, ErrorCode::CudfUnsupported, QueryErrorStatus::Permanent),
     (QueryErrorCode::CudfResourceExhausted, ErrorCode::CudfResourceExhausted, QueryErrorStatus::Temporary),
+    (QueryErrorCode::SizeOverflow, ErrorCode::SizeOverflow, QueryErrorStatus::Permanent),
+    (
+        QueryErrorCode::HostMaterializationLimitExceeded,
+        ErrorCode::HostMaterializationLimitExceeded,
+        QueryErrorStatus::Permanent,
+    ),
     (QueryErrorCode::CudfTemporaryFailure, ErrorCode::CudfTemporaryFailure, QueryErrorStatus::Temporary),
     (QueryErrorCode::CudfPersistentFailure, ErrorCode::CudfPersistentFailure, QueryErrorStatus::Persistent),
     (QueryErrorCode::CudfDependencyFailure, ErrorCode::CudfDependencyFailure, QueryErrorStatus::Permanent),
@@ -64,7 +73,7 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
 
 #[test]
 fn every_adapter_code_has_the_expected_retry_status() {
-    assert_eq!(ADAPTER_STATUS_CASES.len(), 28, "update the complete adapter status policy table");
+    assert_eq!(ADAPTER_STATUS_CASES.len(), 31, "update the complete adapter status policy table");
 
     for &(code, expected_status) in ADAPTER_STATUS_CASES {
         let error = Error::new(code, "datafusion_nexus.test.retry_policy", "retry policy test");
@@ -81,7 +90,7 @@ fn every_adapter_code_has_the_expected_retry_status() {
 
 #[test]
 fn every_native_status_is_preserved_at_the_adapter_boundary() {
-    assert_eq!(NATIVE_ADAPTER_STATUS_CASES.len(), 20, "update the complete native status policy table");
+    assert_eq!(NATIVE_ADAPTER_STATUS_CASES.len(), 22, "update the complete native status policy table");
 
     for &(native_code, expected_adapter_code, expected_native_status) in NATIVE_ADAPTER_STATUS_CASES {
         let native = QueryError::new(native_code, "nexus_query_engine.test.retry_policy", "retry policy test");
@@ -151,6 +160,14 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::CudfResourceExhausted.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(ErrorCode::CudfResourceExhausted.status(), ErrorStatus::Temporary);
 
+    assert_eq!(ErrorCode::SizeOverflow.as_str(), "size_overflow");
+    assert_eq!(ErrorCode::SizeOverflow.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(ErrorCode::SizeOverflow.status(), ErrorStatus::Permanent);
+
+    assert_eq!(ErrorCode::HostMaterializationLimitExceeded.as_str(), "host_materialization_limit_exceeded");
+    assert_eq!(ErrorCode::HostMaterializationLimitExceeded.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(ErrorCode::HostMaterializationLimitExceeded.status(), ErrorStatus::Permanent);
+
     assert_eq!(ErrorCode::CudfPersistentFailure.as_str(), "cudf_persistent_failure");
     assert_eq!(ErrorCode::CudfPersistentFailure.kind(), ErrorKind::DependencyFailure);
     assert_eq!(ErrorCode::CudfPersistentFailure.status(), ErrorStatus::Persistent);
@@ -162,6 +179,10 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::ServiceOverloaded.as_str(), "service_overloaded");
     assert_eq!(ErrorCode::ServiceOverloaded.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(ErrorCode::ServiceOverloaded.status(), ErrorStatus::Temporary);
+
+    assert_eq!(ErrorCode::FlightFrameTooLarge.as_str(), "flight_frame_too_large");
+    assert_eq!(ErrorCode::FlightFrameTooLarge.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(ErrorCode::FlightFrameTooLarge.status(), ErrorStatus::Permanent);
 
     assert_eq!(ErrorCode::ServerTransportFailure.as_str(), "server_transport_failure");
     assert_eq!(ErrorCode::ServerTransportFailure.kind(), ErrorKind::DependencyFailure);

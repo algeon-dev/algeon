@@ -53,8 +53,8 @@ fn query_service_places_concurrent_runtime_handles_on_distinct_devices_when_avai
     assert_eq!(second.device_ordinal(), 1);
     let first_context = first.acquire_context().unwrap();
     let second_context = second.acquire_context().unwrap();
-    assert_eq!(first_context.context().runtime().device().ordinal(), first.device_ordinal());
-    assert_eq!(second_context.context().runtime().device().ordinal(), second.device_ordinal());
+    assert_eq!(first_context.context().runtime().unwrap().device().ordinal(), first.device_ordinal());
+    assert_eq!(second_context.context().runtime().unwrap().device().ordinal(), second.device_ordinal());
 
     let reports = service.memory_governor_reports().unwrap();
     assert_eq!(reports.len(), 2);
@@ -64,6 +64,64 @@ fn query_service_places_concurrent_runtime_handles_on_distinct_devices_when_avai
     assert_eq!(reports[1].capacity_bytes, TEST_DEVICE_CAPACITY_BYTES);
     assert_eq!(reports[0].outstanding_bytes, first.device_budget_bytes());
     assert_eq!(reports[1].outstanding_bytes, second.device_budget_bytes());
+}
+
+#[test]
+fn alternating_multi_device_stream_cleanup_returns_each_pool_before_reuse() {
+    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 2,
+        max_queries_per_device: Some(1),
+        max_admission_queue_len: 8,
+        stream_pool_size: Some(6),
+        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
+        admission_wait_timeout: Duration::from_millis(500),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0, 1],
+        vec![QueryServiceTenantConfig::new("tenant", TEST_DEVICE_CAPACITY_BYTES)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let first = service.admit_query("tenant").unwrap();
+    let first_context = first.acquire_context().unwrap();
+    let second = service.admit_query("tenant").unwrap();
+    let second_context = second.acquire_context().unwrap();
+    assert_eq!((first.device_ordinal(), second.device_ordinal()), (0, 1));
+    let mut active = [Some((first, first_context)), Some((second, second_context))];
+
+    for released_ordinal in [0usize, 1, 0, 1, 0, 1] {
+        let retained_ordinal = 1 - released_ordinal;
+        let (released, released_context) = active[released_ordinal].take().expect("selected device has one query");
+        drop(released_context);
+        released.finish();
+        drop(released);
+        service
+            .wait_for_stream_pools_quiescent(&[(retained_ordinal, 1)], Duration::from_secs(5))
+            .expect("released device cleanup completes while the other root lease remains checked out");
+
+        let replacement = service.admit_query("tenant").expect("released device admits replacement");
+        assert_eq!(replacement.device_ordinal(), released_ordinal);
+        let replacement_context = replacement.acquire_context().unwrap();
+        assert_eq!(replacement_context.context().runtime().unwrap().device().ordinal(), released_ordinal);
+        active[released_ordinal] = Some((replacement, replacement_context));
+    }
+
+    for entry in &mut active {
+        let (handle, context) = entry.take().unwrap();
+        drop(context);
+        handle.finish();
+        drop(handle);
+    }
+    service.wait_for_stream_pools_idle(Duration::from_secs(5)).unwrap();
+    service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
 }
 
 #[test]
@@ -259,9 +317,10 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
     let token = context
         .context()
         .runtime()
+        .unwrap()
         .execution_budget_token(cudf::ExecutionBudgetRequest::new(1).with_boundary("nexus_failure_callback"))
         .unwrap();
-    let error = context.context().runtime().series_from_value_with_budget(1i32, 1024, &token).unwrap_err();
+    let error = context.context().runtime().unwrap().series_from_value_with_budget(1i32, 1024, &token).unwrap_err();
     assert_eq!(error.kind(), cudf::ErrorKind::ResourceExhausted);
 
     let report = service.device_memory_failure_reports().into_iter().next().unwrap();
@@ -408,7 +467,7 @@ fn max_queries_per_device_release_wakes_waiter_in_other_service() {
 }
 
 #[test]
-fn max_queries_per_device_releases_with_handle_even_when_context_retains_grant() {
+fn max_queries_per_device_waits_for_escaped_context_after_handle_finish() {
     if cudf::DeviceId::count().unwrap_or(0) < 1 {
         return;
     }
@@ -438,9 +497,56 @@ fn max_queries_per_device_releases_with_handle_even_when_context_retains_grant()
     drop(tenant_context);
     first.finish();
 
-    let second = service.admit_query("tenant").expect("ordered cleanup should free per-device cap");
-    assert_eq!(second.device_ordinal(), 0);
+    assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
+    assert!(
+        service.try_admit_query("tenant").unwrap().is_none(),
+        "the escaped context must retain the first query's device slot and grant"
+    );
     drop(retained_context);
+    let second = service.admit_query("tenant").expect("the final context anchor should wake admission");
+    assert_eq!(second.device_ordinal(), 0);
+}
+
+#[test]
+fn escaped_query_anchor_blocks_only_its_selected_device() {
+    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 3,
+        max_queries_per_device: Some(1),
+        max_admission_queue_len: 3,
+        stream_pool_size: Some(9),
+        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
+        admission_wait_timeout: Duration::from_millis(500),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        placement_policy: QueryPlacementPolicy::BestFit,
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0, 1],
+        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    assert_eq!(first.device_ordinal(), 0);
+    let tenant_context = first.acquire_context().unwrap();
+    let escaped_context = tenant_context.context().clone();
+    drop(tenant_context);
+    first.finish();
+
+    let second = service.try_admit_query("tenant").unwrap().expect("other device remains available");
+    assert_eq!(second.device_ordinal(), 1);
+    assert!(service.try_admit_query("tenant").unwrap().is_none());
+
+    drop(escaped_context);
+    let third = service.admit_query("tenant").expect("the escaped device-zero anchor eventually drains");
+    assert_eq!(third.device_ordinal(), 0);
 }
 
 #[test]

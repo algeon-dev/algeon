@@ -1,8 +1,20 @@
 use super::*;
 pub(super) use crate::util::comma_separated_usize;
 
-pub(super) fn execution_overrides(context: &ExecutionContext) -> ExecutionOverrides<'_> {
-    ExecutionOverrides::new().with_stream(context.stream()).with_memory_resource(context.memory_resource())
+pub(super) struct ExecutionOverridesLease {
+    runtime: cudf::Runtime,
+}
+
+impl ExecutionOverridesLease {
+    pub(super) fn overrides(&self) -> ExecutionOverrides<'_> {
+        ExecutionOverrides::new()
+            .with_stream(self.runtime.stream())
+            .with_memory_resource(self.runtime.memory_resource())
+    }
+}
+
+pub(super) fn execution_overrides(context: &ExecutionContext) -> Result<ExecutionOverridesLease> {
+    context.runtime().map(|runtime| ExecutionOverridesLease { runtime })
 }
 
 pub(super) fn observe_device_memory_bytes(frame: &GpuDataFrame, metrics: &mut QueryMetrics) -> Result<u64> {

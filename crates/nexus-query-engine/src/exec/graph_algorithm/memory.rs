@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg(feature = "cugraph")]
 pub(super) fn graph_pool_usage_snapshot(context: &ExecutionContext) -> Option<cudf::DeviceMemoryPoolUsage> {
-    context.runtime().device_memory_manager().ok()?.pool_usage().ok()
+    context.runtime().ok()?.device_memory_manager().ok()?.pool_usage().ok()
 }
 
 #[cfg(feature = "cugraph")]
@@ -109,7 +109,7 @@ pub(in crate::exec) fn graph_memory_reservation_report(
 
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) fn graph_device_total_memory_bytes(context: &ExecutionContext) -> Result<Option<u64>> {
-    context.runtime().device().available_memory().map(|memory| Some(memory.total_bytes)).map_err(|error| {
+    context.runtime()?.device().available_memory().map(|memory| Some(memory.total_bytes)).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.graph_memory_device",
             "failed to query CUDA device memory metadata for graph memory pricing",
@@ -217,9 +217,10 @@ pub(super) fn graph_execution_budget(
     operation: &'static str,
 ) -> Result<GraphExecutionBudget> {
     let token = graph_execution_budget_token(context, graph_memory_limit_bytes, budget_boundary, operation)?;
+    let source_runtime = context.runtime()?;
     let runtime = cudf::Runtime::builder()
-        .with_device(context.runtime().device())
-        .with_stream(context.runtime().stream().clone())
+        .with_device(source_runtime.device())
+        .with_stream(source_runtime.stream().clone())
         .with_memory_resource(token.memory_resource().clone())
         .build()
         .map_err(|error| {
@@ -231,6 +232,16 @@ pub(super) fn graph_execution_budget(
             .with_fact("operation", operation)
             .with_fact("budget_boundary", budget_boundary)
             .with_fact("graph_memory_limit_bytes", graph_memory_limit_bytes.unwrap_or(usize::MAX as u64))
+        })?
+        .inherit_retained_lifetime_from(&source_runtime)
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.graph_algorithm.execution_budget",
+                "failed to retain query-service lifetime for cuGraph execution runtime",
+                error,
+            )
+            .with_fact("operation", operation)
+            .with_fact("budget_boundary", budget_boundary)
         })?;
     Ok(GraphExecutionBudget { runtime: std::sync::Arc::new(runtime), token: Some(token) })
 }
@@ -268,14 +279,10 @@ fn graph_execution_budget_token(
     })?;
     context.execution_budget_token(cudf::ExecutionBudgetRequest::new(limit).with_boundary(budget_boundary)).map_err(
         |error| {
-            QueryError::from_cudf_with_budget_details(
-                "nexus_query_engine.graph_algorithm.execution_budget",
-                "failed to attach graph execution memory reservation",
-                error,
-            )
-            .with_fact("operation", operation)
-            .with_fact("budget_boundary", budget_boundary)
-            .with_fact("graph_memory_limit_bytes", limit_bytes)
+            error
+                .with_fact("operation", operation)
+                .with_fact("budget_boundary", budget_boundary)
+                .with_fact("graph_memory_limit_bytes", limit_bytes)
         },
     )
 }

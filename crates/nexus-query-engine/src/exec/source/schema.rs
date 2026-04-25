@@ -77,33 +77,33 @@ fn missing_column_series(
     }
 
     let scalar = match &missing_column.data_type {
-        ArrowDataType::Boolean => context.runtime().null_scalar::<bool>(),
-        ArrowDataType::Int8 => context.runtime().null_scalar::<i8>(),
-        ArrowDataType::Int16 => context.runtime().null_scalar::<i16>(),
-        ArrowDataType::Int32 => context.runtime().null_scalar::<i32>(),
-        ArrowDataType::Int64 => context.runtime().null_scalar::<i64>(),
-        ArrowDataType::UInt8 => context.runtime().null_scalar::<u8>(),
-        ArrowDataType::UInt16 => context.runtime().null_scalar::<u16>(),
-        ArrowDataType::UInt32 => context.runtime().null_scalar::<u32>(),
-        ArrowDataType::UInt64 => context.runtime().null_scalar::<u64>(),
-        ArrowDataType::Float32 => context.runtime().null_scalar::<f32>(),
-        ArrowDataType::Float64 => context.runtime().null_scalar::<f64>(),
+        ArrowDataType::Boolean => context.runtime()?.null_scalar::<bool>(),
+        ArrowDataType::Int8 => context.runtime()?.null_scalar::<i8>(),
+        ArrowDataType::Int16 => context.runtime()?.null_scalar::<i16>(),
+        ArrowDataType::Int32 => context.runtime()?.null_scalar::<i32>(),
+        ArrowDataType::Int64 => context.runtime()?.null_scalar::<i64>(),
+        ArrowDataType::UInt8 => context.runtime()?.null_scalar::<u8>(),
+        ArrowDataType::UInt16 => context.runtime()?.null_scalar::<u16>(),
+        ArrowDataType::UInt32 => context.runtime()?.null_scalar::<u32>(),
+        ArrowDataType::UInt64 => context.runtime()?.null_scalar::<u64>(),
+        ArrowDataType::Float32 => context.runtime()?.null_scalar::<f32>(),
+        ArrowDataType::Float64 => context.runtime()?.null_scalar::<f64>(),
         ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => {
-            context.runtime().null_string_scalar()
+            context.runtime()?.null_string_scalar()
         },
         ArrowDataType::Decimal128(_precision, scale) => {
-            context.runtime().null_decimal128_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
+            context.runtime()?.null_decimal128_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
         },
-        ArrowDataType::Date32 => context.runtime().null_timestamp_raw_scalar(cudf::TimestampResolution::Days),
-        ArrowDataType::Date64 => context.runtime().null_timestamp_raw_scalar(cudf::TimestampResolution::Milliseconds),
+        ArrowDataType::Date32 => context.runtime()?.null_timestamp_raw_scalar(cudf::TimestampResolution::Days),
+        ArrowDataType::Date64 => context.runtime()?.null_timestamp_raw_scalar(cudf::TimestampResolution::Milliseconds),
         ArrowDataType::Time32(unit) | ArrowDataType::Time64(unit) => {
-            context.runtime().null_duration_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
+            context.runtime()?.null_duration_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
         },
         ArrowDataType::Timestamp(unit, _) => {
-            context.runtime().null_timestamp_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
+            context.runtime()?.null_timestamp_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
         },
         ArrowDataType::Duration(unit) => {
-            context.runtime().null_duration_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
+            context.runtime()?.null_duration_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
         },
         data_type => {
             return Err(QueryError::new(
@@ -123,7 +123,7 @@ fn missing_column_series(
         )
     })?;
 
-    context.runtime().series_from_scalar(&scalar, rows).map_err(|error| {
+    context.runtime()?.series_from_scalar(&scalar, rows).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.local_parquet_source.missing_column",
             "failed to construct native parquet missing nullable column",

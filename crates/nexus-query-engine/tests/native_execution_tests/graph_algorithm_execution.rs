@@ -245,9 +245,10 @@ fn assert_query_service_exact_runtime_warm_pricing(mode: NativePipelineExecution
         let cold_handle = service.admit_query_with_request(tenant_id.clone(), admission_request()).unwrap();
         assert_eq!(cold_handle.device_budget_bytes(), cold_grant);
         let cold_context = cold_handle.acquire_context().unwrap();
-        let cold_frame =
-            GpuDataFrame::new(DataFrame::from_record_batch(cold_context.context().runtime(), &edge_batch).unwrap())
-                .with_graph_residency(descriptor.clone());
+        let cold_frame = GpuDataFrame::new(
+            DataFrame::from_record_batch(&cold_context.context().runtime().unwrap(), &edge_batch).unwrap(),
+        )
+        .with_graph_residency(descriptor.clone());
         let mut cold_inputs = GpuResidentInputMap::new();
         cold_inputs.insert(
             "edges".to_string(),
@@ -290,9 +291,10 @@ fn assert_query_service_exact_runtime_warm_pricing(mode: NativePipelineExecution
         let warm_handle = service.admit_query_with_request(tenant_id.clone(), admission_request()).unwrap();
         assert_eq!(warm_handle.device_budget_bytes(), warm_grant);
         let warm_context = warm_handle.acquire_context().unwrap();
-        let warm_frame =
-            GpuDataFrame::new(DataFrame::from_record_batch(warm_context.context().runtime(), &edge_batch).unwrap())
-                .with_graph_residency(descriptor);
+        let warm_frame = GpuDataFrame::new(
+            DataFrame::from_record_batch(&warm_context.context().runtime().unwrap(), &edge_batch).unwrap(),
+        )
+        .with_graph_residency(descriptor);
         let mut warm_inputs = GpuResidentInputMap::new();
         warm_inputs.insert(
             "edges".to_string(),
@@ -341,7 +343,7 @@ fn bounded_bfs_resident_graph_cache_reuses_parked_forward_graph() {
     let capacity = 64 * 1024 * 1024;
     let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
     let governor = MemoryGovernor::new(0, capacity).unwrap();
-    let grant = governor.request(GrantRequest::new(99, capacity, capacity)).unwrap();
+    let grant = governor.request(GrantRequest::new(AdmissionRequestId::new(99), capacity, capacity)).unwrap();
     let cache = Arc::new(GpuResidentGraphCache::new_governor_backed(capacity, governor.clone()));
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -895,7 +897,9 @@ fn bounded_bfs_counts_gpu_tables_without_graph_memory_reservation() {
 fn graph_budget_uses_grant_arena_member_stream_reservation() {
     let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
     let governor = MemoryGovernor::new(runtime.device().ordinal(), 512 * 1024 * 1024).unwrap();
-    let grant = governor.request(GrantRequest::new(10_001, 256 * 1024 * 1024, 256 * 1024 * 1024)).unwrap();
+    let grant = governor
+        .request(GrantRequest::new(AdmissionRequestId::new(10_001), 256 * 1024 * 1024, 256 * 1024 * 1024))
+        .unwrap();
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_grant(grant)

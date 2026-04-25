@@ -1,4 +1,11 @@
-use std::{fs, sync::Arc, time::Duration};
+use std::{
+    fs,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use arrow::compute::SortOptions as ArrowSortOptions;
 use datafusion::{
@@ -225,7 +232,18 @@ fn native_composed_host_output_memory_pool_accounting_fails_fast() {
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let schema = parquet_file_schema();
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let device_to_host_boundaries = Arc::new(AtomicUsize::new(0));
+    let observed_device_to_host_boundaries = Arc::clone(&device_to_host_boundaries);
+    let runtime = Arc::new(
+        cudf::Runtime::builder()
+            .with_boundary_observer(move |observation: cudf::BoundaryObservation| {
+                if observation.kind == cudf::BoundaryKind::DeviceToHost {
+                    observed_device_to_host_boundaries.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+            .build()
+            .unwrap(),
+    );
     let config = NativeCudfExecutionConfig::unbounded()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_host_output_memory_pool_accounting(true);
@@ -236,7 +254,11 @@ fn native_composed_host_output_memory_pool_accounting_fails_fast() {
     let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
     let composed = Arc::new(NativeCudfComposedExec::try_new(consumer_plan, vec![producer_child], config).unwrap())
         as Arc<dyn ExecutionPlan>;
-    let runtime_env = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1, 1.0).build().unwrap());
+    // The four source columns contain only 72 logical cuDF payload bytes, but
+    // their four Arrow destination buffers retain 4 * 64 = 256 bytes. A
+    // 128-byte pool therefore proves admission uses the destination estimate:
+    // source-payload accounting would incorrectly allow the D2H copy.
+    let runtime_env = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(128, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime_env)));
 
     let error = futures::executor::block_on(collect(composed, task_context))
@@ -249,6 +271,11 @@ fn native_composed_host_output_memory_pool_accounting_fails_fast() {
     assert!(
         error.to_string().contains("NativeCudfComposedExec[host-output]"),
         "error should identify the composed native host-output memory consumer: {error}"
+    );
+    assert_eq!(
+        device_to_host_boundaries.load(Ordering::SeqCst),
+        0,
+        "host memory reservation denial must happen before D2H"
     );
     assert_eq!(runtime_env.memory_pool.reserved(), 0);
 
@@ -274,7 +301,10 @@ fn native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan() {
         )
         .unwrap(),
     ) as Arc<dyn ExecutionPlan>;
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1, 1.0).build().unwrap());
+    // Source payload is 72 bytes; final Arrow buffer capacity is 256 bytes.
+    // The limit intentionally lies between them to lock pre-D2H destination
+    // accounting rather than source-payload accounting.
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(128, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
 
     let error = futures::executor::block_on(collect(Arc::clone(&hybrid_plan), task_context))

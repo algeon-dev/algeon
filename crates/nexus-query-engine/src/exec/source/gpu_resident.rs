@@ -30,8 +30,8 @@ pub fn read_gpu_resident_source(
         .with_fact("actual_fields", handle.schema().fields().len()));
     }
 
-    let context_runtime = context.shared_runtime();
-    if !std::sync::Arc::ptr_eq(handle.runtime(), &context_runtime) {
+    let context_runtime = context.shared_runtime()?;
+    if !cudf::Runtime::shares_affinity(handle.runtime(), &context_runtime) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.gpu_resident_source.read",
@@ -39,11 +39,11 @@ pub fn read_gpu_resident_source(
         )
         .with_fact("input_name", source.input_name.as_str())
         .with_fact("source_device", handle.runtime().device().ordinal())
-        .with_fact("context_device", context.runtime().device().ordinal()));
+        .with_fact("context_device", context.runtime()?.device().ordinal()));
     }
 
     if handle.device_placement() != context.device_placement()
-        || handle.placement().device != context.runtime().device()
+        || handle.placement().device != context.runtime()?.device()
     {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -52,7 +52,7 @@ pub fn read_gpu_resident_source(
         )
         .with_fact("input_name", source.input_name.as_str())
         .with_fact("source_device", handle.placement().device.ordinal())
-        .with_fact("context_device", context.runtime().device().ordinal()));
+        .with_fact("context_device", context.runtime()?.device().ordinal()));
     }
 
     metrics.boundary.record_gpu_resident_input_handoff();

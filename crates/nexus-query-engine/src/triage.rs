@@ -86,7 +86,9 @@ impl From<QueryErrorCode> for TriageCode {
             QueryErrorCode::InvalidPlan => Self::InvalidPlan,
             QueryErrorCode::CudfInvalidInput => Self::InvalidInput,
             QueryErrorCode::MemoryReservationFailed => Self::MemoryReservationDenied,
-            QueryErrorCode::CudfResourceExhausted => Self::ResourceExhausted,
+            QueryErrorCode::CudfResourceExhausted
+            | QueryErrorCode::SizeOverflow
+            | QueryErrorCode::HostMaterializationLimitExceeded => Self::ResourceExhausted,
             QueryErrorCode::ServiceOverloaded => Self::ServiceOverloaded,
             QueryErrorCode::SourceAccessDenied
             | QueryErrorCode::SourceUnauthenticated

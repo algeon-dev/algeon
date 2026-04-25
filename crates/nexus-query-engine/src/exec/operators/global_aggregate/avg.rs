@@ -80,7 +80,8 @@ fn finalize_avg_output_columns_impl(
             })
             .map(|outcome| budgeted_value(outcome, metrics, "nexus_query_engine.aggregate.finalize_avg")),
         None => {
-            let overrides = execution_overrides(context);
+            let overrides_lease = execution_overrides(context)?;
+            let overrides = overrides_lease.overrides();
             frame.with_execution(&overrides).with_columns(avg_exprs).map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.aggregate.finalize_avg",

@@ -1,4 +1,5 @@
 use super::{node::projected_schema, *};
+
 pub(super) struct PreparedCugraphInputs {
     pub(super) execution_spec: CugraphAlgorithmSpec,
     pub(super) edge_schema: SchemaRef,
@@ -32,6 +33,11 @@ pub(super) fn prepare_bfs_logical_gpu_inputs(
             logical_codebook: None,
         });
     }
+    let runtime = counted_cudf_runtime(
+        context,
+        "datafusion_nexus.cugraph_sql.logical_mapping.runtime",
+        "query service closed before cuGraph logical mapping acquired its runtime",
+    )?;
     if spec.edge_id_col.is_some() || params.predicates.include_edge_ids.is_some() {
         return Err(plan_error(
             "cuGraph BFS logical vertex-id mapping does not yet support edge_id_col or include_edge_ids predicates",
@@ -87,7 +93,7 @@ pub(super) fn prepare_bfs_logical_gpu_inputs(
             .encode(&source_series)
             .map_err(cudf_logical_mapping_error)?
             .into_series()
-            .copy_into_runtime(context.runtime())
+            .copy_into_runtime(&runtime)
             .map_err(cudf_logical_mapping_error)?;
         let source_frame =
             DataFrame::from_series([("__source_vertex", source_code)]).map_err(cudf_logical_mapping_error)?;
@@ -186,7 +192,12 @@ pub(super) fn bfs_literal_string_source_series(
             CugraphBfsSourceVertex::Int64(_) => Err(plan_error("string BFS source list contained a numeric value")),
         })
         .collect::<Result<Vec<_>>>()?;
-    context.runtime().series(values.as_slice()).map(Some).map_err(|error| {
+    let runtime = counted_cudf_runtime(
+        context,
+        "datafusion_nexus.cugraph_sql.logical_mapping.runtime",
+        "query service closed before cuGraph logical mapping acquired its runtime",
+    )?;
+    runtime.series(values.as_slice()).map(Some).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.logical_mapping",
             "failed to create GPU source-vertices series for cuGraph logical BFS mapping",
@@ -402,30 +413,31 @@ pub(super) fn decode_bfs_logical_gpu_output(
     codebook: &Codebook,
     output_schema: SchemaRef,
 ) -> Result<GpuResultHandle> {
+    let runtime = counted_cudf_runtime(
+        context,
+        "datafusion_nexus.cugraph_sql.logical_mapping.runtime",
+        "query service closed before cuGraph logical output mapping acquired its runtime",
+    )?;
     let raw_frame = handle.into_gpu_frame();
     let raw = raw_frame.frame();
-    let vertex = decode_code_column(raw, "vertex", codebook)?
-        .copy_into_runtime(context.runtime())
-        .map_err(cudf_logical_mapping_error)?;
-    let distance =
-        cudf_series(raw, "distance")?.copy_into_runtime(context.runtime()).map_err(cudf_logical_mapping_error)?;
+    let vertex =
+        decode_code_column(raw, "vertex", codebook)?.copy_into_runtime(&runtime).map_err(cudf_logical_mapping_error)?;
+    let distance = cudf_series(raw, "distance")?.copy_into_runtime(&runtime).map_err(cudf_logical_mapping_error)?;
     let predecessor = decode_bfs_predecessor_code_column(raw, codebook)?
-        .copy_into_runtime(context.runtime())
+        .copy_into_runtime(&runtime)
         .map_err(cudf_logical_mapping_error)?;
     let mut columns = vec![("vertex", vertex), ("distance", distance), ("predecessor", predecessor)];
     let raw_column_names = raw.column_names();
     if raw_column_names.contains(&"reachable") {
         let reachable =
-            cudf_series(raw, "reachable")?.copy_into_runtime(context.runtime()).map_err(cudf_logical_mapping_error)?;
+            cudf_series(raw, "reachable")?.copy_into_runtime(&runtime).map_err(cudf_logical_mapping_error)?;
         columns.push(("reachable", reachable));
     }
     if raw_column_names.contains(&"target_found") {
-        let target_found = cudf_series(raw, "target_found")?
-            .copy_into_runtime(context.runtime())
-            .map_err(cudf_logical_mapping_error)?;
-        let target_distance = cudf_series(raw, "target_distance")?
-            .copy_into_runtime(context.runtime())
-            .map_err(cudf_logical_mapping_error)?;
+        let target_found =
+            cudf_series(raw, "target_found")?.copy_into_runtime(&runtime).map_err(cudf_logical_mapping_error)?;
+        let target_distance =
+            cudf_series(raw, "target_distance")?.copy_into_runtime(&runtime).map_err(cudf_logical_mapping_error)?;
         columns.push(("target_found", target_found));
         columns.push(("target_distance", target_distance));
     }
@@ -467,6 +479,7 @@ pub(super) fn decode_bfs_predecessor_code_column(frame: &DataFrame, codebook: &C
 
 pub(super) fn apply_gpu_projection_limit(
     context: &ExecutionContext,
+    metrics: &mut GraphExecutionMetrics<'_>,
     handle: GpuResultHandle,
     schema: SchemaRef,
     projection: Option<&Vec<usize>>,
@@ -500,14 +513,14 @@ pub(super) fn apply_gpu_projection_limit(
         root = builder.add_limit(root, LimitSpec::fetch(limit), Arc::clone(&root_schema));
     }
     let plan = builder.finish_gpu_resident(root);
-    let result = execute_query_plan_with_gpu_inputs(context, &plan, &inputs).map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "datafusion_nexus.cugraph_sql.logical_output",
-            "failed to apply GPU projection/limit to decoded cuGraph logical BFS output",
-            error,
-        ))
-    })?;
-    let (output, _) = result.into_parts();
+    let outcome =
+        execute_query_plan_with_gpu_inputs_observed(context, &plan, &inputs, metrics.runtime_observation_config());
+    let output = finalize_graph_query_outcome(
+        metrics,
+        outcome,
+        "datafusion_nexus.cugraph_sql.logical_output",
+        "failed to apply GPU projection/limit to decoded cuGraph logical BFS output",
+    )?;
     let QueryOutput::GpuResident(handle) = output else {
         return Err(plan_error("decoded cuGraph logical BFS projection did not produce a GPU output"));
     };

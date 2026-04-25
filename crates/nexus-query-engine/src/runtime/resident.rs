@@ -11,7 +11,10 @@ use std::{
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use cudf::{
     DataFrame, DataFrameFilteredJoin, DataFrameHashJoin, DataType, ExecutionPlacement,
-    frame::dataframe::{ColumnMemoryIdentity, GpuRecordBatch, InfoDetail},
+    frame::dataframe::{
+        ColumnMemoryIdentity, GpuRecordBatch, HostBatchCursor as CudfHostBatchCursor, HostBatchCursorConfig,
+        InfoDetail, PreparedHostBatch as CudfPreparedHostBatch,
+    },
 };
 
 use crate::{
@@ -19,7 +22,7 @@ use crate::{
     naming::is_datafusion_order_column_name,
     plan::{GraphResidencyDescriptor, JoinNullEquality},
     runtime::{
-        DevicePlacement, ExecutionContext, cache::local_parquet::GpuLocalParquetSourceCachePin,
+        DevicePlacement, ExecutionCancellation, ExecutionContext, cache::local_parquet::GpuLocalParquetSourceCachePin,
         gpu::governor::MemoryGrantLiveReservation,
     },
 };
@@ -49,8 +52,8 @@ impl GpuDataFrame {
         Self::new_with_live_reservation(frame, None)
     }
 
-    /// Wrap a derived cuDF frame and retain source residency according to the
-    /// observed column-owner relationship with `source`.
+    /// Wrap a derived cuDF frame with identity-aware live-byte accounting and
+    /// the source's transitive cache safety lifetime.
     pub fn try_new_with_source_residency(frame: DataFrame, source: &Self) -> Result<Self> {
         if source.live_reservation.is_none() && source.source_cache_pin.is_none() {
             return Ok(Self::new(frame));
@@ -77,7 +80,13 @@ impl GpuDataFrame {
             },
             None => None,
         };
-        let source_cache_pin = aliases_source.then(|| source.source_cache_pin.clone()).flatten();
+        // A source-cache pin is a safety lifetime, not a byte-accounting
+        // projection. Keep it transitively across derived frames even when an
+        // operator relocates or wraps columns and their immediate owner
+        // identities change. Live reservations remain identity-aware above;
+        // the conservative pin only prevents the cache allocation from being
+        // evicted before the escaping derived result is dropped.
+        let source_cache_pin = source.source_cache_pin.clone();
         Ok(Self::new_with_residency(frame, live_reservation, source_cache_pin))
     }
 
@@ -190,6 +199,120 @@ pub struct GpuResultHandle {
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
 }
 
+/// Query-neutral GPU allocation retained by the service local-Parquet cache.
+///
+/// The cache runtime owns a distinct stream in the same stable affinity as the
+/// pooled query runtime. Insertion therefore performs a real device-to-device
+/// ownership copy instead of retaining column provenance from the inserting
+/// query. Checkout re-anchors the frame to a current-query runtime without
+/// exposing any API that can detach a query lifetime from arbitrary results.
+#[derive(Clone)]
+pub(crate) struct GpuLocalParquetCachedResult {
+    batch: GpuRecordBatch,
+    runtime: Arc<cudf::Runtime>,
+    device_placement: DevicePlacement,
+}
+
+/// Bounded native GPU-to-host cursor retaining every owner required by the
+/// resident result until the final chunk is materialized or the cursor drops.
+pub struct GpuHostBatchCursor {
+    cursor: CudfHostBatchCursor,
+    cancellation: ExecutionCancellation,
+    _runtime: Arc<cudf::Runtime>,
+    _device_placement: DevicePlacement,
+    _live_reservation: Option<MemoryGrantLiveReservation>,
+    _source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
+    _graph_residency: Option<Arc<GraphResidencyDescriptor>>,
+}
+
+/// Metadata-sized GPU output chunk awaiting a reserved device-to-host copy.
+#[derive(Debug)]
+pub struct GpuPreparedHostBatch {
+    prepared: CudfPreparedHostBatch,
+}
+
+impl GpuPreparedHostBatch {
+    /// Conservative final Arrow buffer capacity that must be reserved before
+    /// materializing this chunk.
+    pub fn estimated_materialization_bytes(&self) -> usize {
+        self.prepared.estimated_materialization_bytes()
+    }
+
+    pub fn num_rows(&self) -> usize {
+        self.prepared.num_rows()
+    }
+}
+
+fn host_batch_prepare_error(error: cudf::Error) -> QueryError {
+    const HARD_LIMIT_REASON: &str = "host_materialization_hard_limit_exceeded";
+    let hard_limit_details = (error.detail_value("reason") == Some(HARD_LIMIT_REASON)).then(|| {
+        [
+            ("reason", HARD_LIMIT_REASON.to_string()),
+            ("row_offset", error.detail_value("row_offset").unwrap_or("unknown").to_string()),
+            ("candidate_rows", error.detail_value("candidate_rows").unwrap_or("unknown").to_string()),
+            (
+                "estimated_materialization_bytes",
+                error.detail_value("estimated_materialization_bytes").unwrap_or("unknown").to_string(),
+            ),
+            (
+                "max_materialization_bytes",
+                error.detail_value("max_materialization_bytes").unwrap_or("unknown").to_string(),
+            ),
+        ]
+    });
+    let mut error = QueryError::from_cudf(
+        "nexus_query_engine.host_batch_cursor.prepare",
+        "failed to size bounded native output chunk before host materialization",
+        error,
+    );
+    if let Some(details) = hard_limit_details {
+        for (key, value) in details {
+            error = error.with_fact(key, value);
+        }
+    }
+    error
+}
+
+impl GpuHostBatchCursor {
+    /// Size the next bounded host chunk without copying GPU values to host.
+    pub fn prepare_next_batch(&self) -> Result<Option<GpuPreparedHostBatch>> {
+        if !self.cursor.has_next_batch() {
+            return Ok(None);
+        }
+        self.cancellation.check("nexus_query_engine.host_batch_cursor.prepare")?;
+        self.cursor
+            .prepare_next_batch()
+            .map(|prepared| prepared.map(|prepared| GpuPreparedHostBatch { prepared }))
+            .map_err(host_batch_prepare_error)
+    }
+
+    /// Materialize one prepared chunk. Cancellation is checked after the host
+    /// reservation is acquired and immediately before the device-to-host copy.
+    pub fn materialize_prepared_batch(&mut self, prepared: GpuPreparedHostBatch) -> Result<RecordBatch> {
+        self.cancellation.check("nexus_query_engine.host_batch_cursor.materialize")?;
+        self.cursor.materialize_prepared_batch(prepared.prepared).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.host_batch_cursor.materialize",
+                "failed to materialize bounded native output chunk to host Arrow",
+                error,
+            )
+        })
+    }
+
+    /// Materialize the next bounded host chunk. Cancellation is checked before
+    /// any new cuDF slice or device-to-host copy starts.
+    pub fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
+        let Some(prepared) = self.prepare_next_batch()? else {
+            return Ok(None);
+        };
+        self.materialize_prepared_batch(prepared).map(Some)
+    }
+
+    pub fn remaining_rows(&self) -> usize {
+        self.cursor.remaining_rows()
+    }
+}
+
 impl GpuResultHandle {
     /// Bind a GPU frame to a schema and the runtime from `context`.
     ///
@@ -205,14 +328,14 @@ impl GpuResultHandle {
         schema: SchemaRef,
         live_reservation: Option<MemoryGrantLiveReservation>,
     ) -> Result<Self> {
-        if frame.placement().device != context.runtime().device() {
+        if frame.placement().device != context.runtime()?.device() {
             return Err(QueryError::new(
                 crate::error::QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu_result_handle",
                 "native GPU result frame device does not match the execution context",
             )
             .with_fact("frame_device", frame.placement().device.ordinal())
-            .with_fact("runtime_device", context.runtime().device().ordinal()));
+            .with_fact("runtime_device", context.runtime()?.device().ordinal()));
         }
         let frame = strip_hidden_datafusion_order_columns(frame, &schema)?;
         let (frame, frame_live_reservation, source_cache_pin, graph_residency) = frame.into_frame_and_residency();
@@ -226,7 +349,7 @@ impl GpuResultHandle {
         })?;
         Ok(Self {
             batch,
-            runtime: context.shared_runtime(),
+            runtime: context.shared_runtime()?,
             device_placement: context.device_placement(),
             live_reservation,
             source_cache_pin,
@@ -275,10 +398,46 @@ impl GpuResultHandle {
         self.graph_residency.as_deref()
     }
 
-    pub(in crate::runtime) fn with_source_cache_pin(mut self, pin: GpuLocalParquetSourceCachePin) -> Self {
-        debug_assert!(self.source_cache_pin.is_none(), "source-cache entry handles must not already carry pins");
-        self.source_cache_pin = Some(pin);
-        self
+    pub(crate) fn copy_for_local_parquet_cache(
+        &self,
+        cache_runtime: Arc<cudf::Runtime>,
+    ) -> Result<GpuLocalParquetCachedResult> {
+        let operation = "nexus_query_engine.gpu_local_parquet_source_cache.copy_for_cache";
+        if self.live_reservation.is_some() || self.source_cache_pin.is_some() || self.graph_residency.is_some() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                operation,
+                "local Parquet cache input carries query-owned residency",
+            )
+            .with_fact("reason", "query_owned_residency_in_cache_input"));
+        }
+        if !cudf::Runtime::shares_affinity(&self.runtime, &cache_runtime)
+            || self.runtime.device() != cache_runtime.device()
+        {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                operation,
+                "local Parquet cache runtime does not match the source runtime affinity",
+            )
+            .with_fact("reason", "local_parquet_cache_runtime_affinity_mismatch")
+            .with_fact("source_device", self.runtime.device().ordinal())
+            .with_fact("cache_device", cache_runtime.device().ordinal()));
+        }
+        if self.runtime.binding_id() == cache_runtime.binding_id() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                operation,
+                "local Parquet cache runtime must use an independent execution binding",
+            )
+            .with_fact("reason", "local_parquet_cache_runtime_binding_not_independent"));
+        }
+        let frame = self.batch.frame().copy_into_runtime(&cache_runtime).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to copy local Parquet source into service cache ownership", error)
+        })?;
+        let batch = GpuRecordBatch::new(frame, Arc::clone(self.schema())).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to bind query-neutral local Parquet cache value", error)
+        })?;
+        Ok(GpuLocalParquetCachedResult { batch, runtime: cache_runtime, device_placement: self.device_placement })
     }
 
     /// Current cuDF execution placement for the underlying batch.
@@ -304,6 +463,91 @@ impl GpuResultHandle {
                 "failed to materialize native cudf output to host Arrow",
                 error,
             )
+        })
+    }
+
+    /// Consume this result into a bounded incremental host materializer.
+    pub fn into_host_batch_cursor(
+        self,
+        cancellation: ExecutionCancellation,
+        config: HostBatchCursorConfig,
+    ) -> Result<GpuHostBatchCursor> {
+        let Self { batch, runtime, device_placement, live_reservation, source_cache_pin, graph_residency } = self;
+        let cursor = batch.into_host_batch_cursor(config).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.host_batch_cursor.create",
+                "failed to create bounded native host-output cursor",
+                error,
+            )
+        })?;
+        Ok(GpuHostBatchCursor {
+            cursor,
+            cancellation,
+            _runtime: runtime,
+            _device_placement: device_placement,
+            _live_reservation: live_reservation,
+            _source_cache_pin: source_cache_pin,
+            _graph_residency: graph_residency,
+        })
+    }
+}
+
+impl GpuLocalParquetCachedResult {
+    pub(crate) fn schema(&self) -> &SchemaRef {
+        self.batch.schema()
+    }
+
+    pub(crate) fn runtime(&self) -> &Arc<cudf::Runtime> {
+        &self.runtime
+    }
+
+    pub(crate) fn device_placement(&self) -> DevicePlacement {
+        self.device_placement
+    }
+
+    pub(crate) fn placement(&self) -> ExecutionPlacement {
+        self.batch.placement()
+    }
+
+    pub(crate) fn device_allocated_size_bytes(&self) -> Result<u64> {
+        let info = self.batch.frame().info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.gpu_local_parquet_source_cache.device_memory",
+                "failed to inspect cached local Parquet device memory",
+                error,
+            )
+        })?;
+        let bytes =
+            info.memory_accounting.and_then(|accounting| accounting.device_allocated_bytes).ok_or_else(|| {
+                QueryError::new(
+                    crate::error::QueryErrorCode::Internal,
+                    "nexus_query_engine.gpu_local_parquet_source_cache.device_memory",
+                    "cached local Parquet memory accounting did not include device-allocated bytes",
+                )
+            })?;
+        Ok(bytes as u64)
+    }
+
+    pub(crate) fn checkout(
+        &self,
+        context: &ExecutionContext,
+        pin: GpuLocalParquetSourceCachePin,
+    ) -> Result<GpuResultHandle> {
+        let operation = "nexus_query_engine.gpu_local_parquet_source_cache.checkout";
+        let query_runtime = context.local_parquet_cache_query_runtime(&self.runtime, operation)?;
+        let frame = self.batch.frame().copy_into_runtime(&query_runtime).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to re-anchor cached local Parquet source to current query", error)
+        })?;
+        let batch = GpuRecordBatch::new(frame, Arc::clone(self.schema())).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to bind current-query local Parquet cache checkout", error)
+        })?;
+        Ok(GpuResultHandle {
+            batch,
+            runtime: query_runtime,
+            device_placement: context.device_placement(),
+            live_reservation: None,
+            source_cache_pin: Some(pin),
+            graph_residency: None,
         })
     }
 }
@@ -374,14 +618,14 @@ impl GpuFilteredJoinBuildHandle {
         filtered_join: DataFrameFilteredJoin,
         null_equality: JoinNullEquality,
     ) -> Result<Self> {
-        if filtered_join.build().placement().device != context.runtime().device() {
+        if filtered_join.build().placement().device != context.runtime()?.device() {
             return Err(QueryError::new(
                 crate::error::QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu_filtered_join_build_handle",
                 "native GPU filtered-join build artifact device does not match the execution context",
             )
             .with_fact("build_device", filtered_join.build().placement().device.ordinal())
-            .with_fact("runtime_device", context.runtime().device().ordinal()));
+            .with_fact("runtime_device", context.runtime()?.device().ordinal()));
         }
         let device_allocated_size_bytes =
             filtered_join.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
@@ -396,7 +640,7 @@ impl GpuFilteredJoinBuildHandle {
         Ok(Self {
             build_keys: filtered_join.build_keys().to_vec(),
             filtered_join,
-            runtime: context.shared_runtime(),
+            runtime: context.shared_runtime()?,
             device_placement: context.device_placement(),
             null_equality,
             device_allocated_size_bytes,
@@ -444,14 +688,14 @@ impl GpuHashJoinBuildHandle {
         hash_join: DataFrameHashJoin,
         null_equality: JoinNullEquality,
     ) -> Result<Self> {
-        if hash_join.build().placement().device != context.runtime().device() {
+        if hash_join.build().placement().device != context.runtime()?.device() {
             return Err(QueryError::new(
                 crate::error::QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu_hash_join_build_handle",
                 "native GPU hash-join build artifact device does not match the execution context",
             )
             .with_fact("build_device", hash_join.build().placement().device.ordinal())
-            .with_fact("runtime_device", context.runtime().device().ordinal()));
+            .with_fact("runtime_device", context.runtime()?.device().ordinal()));
         }
         let device_allocated_size_bytes =
             hash_join.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
@@ -468,7 +712,7 @@ impl GpuHashJoinBuildHandle {
             build_keys: hash_join.build_keys().to_vec(),
             build_columns,
             hash_join,
-            runtime: context.shared_runtime(),
+            runtime: context.shared_runtime()?,
             device_placement: context.device_placement(),
             null_equality,
             device_allocated_size_bytes,
@@ -516,8 +760,8 @@ impl GpuHashJoinBuildHandle {
         build_columns: &[GpuHashJoinBuildColumn],
         null_equality: JoinNullEquality,
     ) -> Result<()> {
-        let context_runtime = context.shared_runtime();
-        if !Arc::ptr_eq(&self.runtime, &context_runtime) {
+        let context_runtime = context.shared_runtime()?;
+        if !cudf::Runtime::shares_affinity(&self.runtime, &context_runtime) {
             return Err(QueryError::new(
                 crate::error::QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu_hash_join_build_handle.reuse",
@@ -525,7 +769,7 @@ impl GpuHashJoinBuildHandle {
             )
             .with_fact("reason", "runtime_mismatch")
             .with_fact("artifact_device", self.runtime.device().ordinal())
-            .with_fact("runtime_device", context.runtime().device().ordinal()));
+            .with_fact("runtime_device", context.runtime()?.device().ordinal()));
         }
         if self.device_placement != context.device_placement() {
             return Err(QueryError::new(
@@ -620,14 +864,18 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::{
-        array::Int32Array,
+        array::{Array, Int32Array, StringArray},
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
     use cudf::{DataFrame, ops::expr::col};
 
     use super::*;
-    use crate::runtime::gpu::governor::{GrantRequest, MemoryGovernor, MemoryGrant};
+    use crate::{
+        error::{QueryErrorCode, QueryErrorKind, QueryErrorStatus},
+        observability::AdmissionRequestId,
+        runtime::gpu::governor::{GrantRequest, MemoryGovernor, MemoryGrant},
+    };
 
     fn single_i32_frame(runtime: &Arc<cudf::Runtime>, name: &str, values: Vec<i32>) -> DataFrame {
         let schema = Arc::new(Schema::new(vec![Field::new(name, DataType::Int32, false)]));
@@ -648,10 +896,97 @@ mod tests {
     }
 
     #[test]
+    fn host_batch_cursor_observes_cancellation_before_starting_the_next_device_to_host_copy() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let cancellation = ExecutionCancellation::new();
+        let context = ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_cancellation(cancellation.clone())
+            .build()
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let frame = GpuDataFrame::new(single_i32_frame(&runtime, "id", vec![1, 2, 3]));
+        let handle = GpuResultHandle::new(&context, frame, schema).unwrap();
+        let mut cursor = handle
+            .into_host_batch_cursor(
+                cancellation.clone(),
+                HostBatchCursorConfig { target_materialization_bytes: 1024, max_rows: 1, ..Default::default() },
+            )
+            .unwrap();
+
+        assert_eq!(cursor.next_batch().unwrap().unwrap().num_rows(), 1);
+        cancellation.cancel();
+        let error = cursor.next_batch().expect_err("cancellation must stop the next host chunk");
+        assert_eq!(error.code(), crate::error::QueryErrorCode::Cancelled);
+        assert_eq!(cursor.remaining_rows(), 2);
+    }
+
+    #[test]
+    fn host_batch_cursor_preserves_structured_hard_limit_facts() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let cancellation = ExecutionCancellation::new();
+        let context = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).build().unwrap();
+        let value = "x".repeat(16 * 1024 * 1024);
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(StringArray::from(vec![value.as_str()])) as Arc<dyn Array>],
+        )
+        .unwrap();
+        let frame = GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap());
+        let handle = GpuResultHandle::new(&context, frame, schema).unwrap();
+        let cursor = handle.into_host_batch_cursor(cancellation, HostBatchCursorConfig::default()).unwrap();
+
+        let error = cursor.prepare_next_batch().expect_err("oversized scalar must reject before D2H");
+        assert_eq!(error.code(), QueryErrorCode::HostMaterializationLimitExceeded);
+        assert_eq!(error.kind(), QueryErrorKind::ResourceExhausted);
+        assert_eq!(error.status(), QueryErrorStatus::Permanent);
+        assert!(!error.is_retryable());
+        assert_eq!(error.fact_value("reason"), Some("host_materialization_hard_limit_exceeded"));
+        assert_eq!(error.fact_value("candidate_rows"), Some("1"));
+        assert_eq!(
+            error.fact_value("max_materialization_bytes"),
+            Some(HostBatchCursorConfig::DEFAULT_MAX_MATERIALIZATION_BYTES.to_string().as_str())
+        );
+        assert!(
+            error.fact_value("estimated_materialization_bytes").unwrap().parse::<usize>().unwrap()
+                > HostBatchCursorConfig::DEFAULT_MAX_MATERIALIZATION_BYTES
+        );
+    }
+
+    #[test]
+    fn host_batch_cursor_reports_clean_eof_when_cancelled_after_final_chunk() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let cancellation = ExecutionCancellation::new();
+        let context = ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_cancellation(cancellation.clone())
+            .build()
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let frame = GpuDataFrame::new(single_i32_frame(&runtime, "id", vec![1]));
+        let handle = GpuResultHandle::new(&context, frame, schema).unwrap();
+        let mut cursor = handle
+            .into_host_batch_cursor(
+                cancellation.clone(),
+                HostBatchCursorConfig { target_materialization_bytes: 1024, max_rows: 1, ..Default::default() },
+            )
+            .unwrap();
+
+        assert_eq!(cursor.next_batch().unwrap().unwrap().num_rows(), 1);
+        assert_eq!(cursor.remaining_rows(), 0);
+        cancellation.cancel();
+        assert!(cursor.next_batch().unwrap().is_none());
+    }
+
+    #[test]
     fn source_residency_clones_live_reservation_for_pure_alias_output() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let governor = MemoryGovernor::new(runtime.device().ordinal(), 128 * 1024 * 1024).unwrap();
-        let grant = governor.try_request(GrantRequest::new(1, 64 * 1024 * 1024, 64 * 1024 * 1024)).unwrap().unwrap();
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(1), 64 * 1024 * 1024, 64 * 1024 * 1024))
+            .unwrap()
+            .unwrap();
         let (source, source_bytes) = frame_with_live_reservation(&runtime, &grant, "id", vec![1, 2, 3]);
         assert!(source_bytes > 0);
         assert_eq!(grant.live_reserved_bytes(), source_bytes);
@@ -670,7 +1005,10 @@ mod tests {
     fn source_residency_retains_derived_live_reservation_for_fresh_output() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let governor = MemoryGovernor::new(runtime.device().ordinal(), 128 * 1024 * 1024).unwrap();
-        let grant = governor.try_request(GrantRequest::new(2, 64 * 1024 * 1024, 64 * 1024 * 1024)).unwrap().unwrap();
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(2), 64 * 1024 * 1024, 64 * 1024 * 1024))
+            .unwrap()
+            .unwrap();
         let (source, source_bytes) = frame_with_live_reservation(&runtime, &grant, "id", vec![1, 2, 3]);
         let fresh = single_i32_frame(&runtime, "fresh", vec![10, 20, 30]);
         let fresh_bytes = GpuDataFrame::new(fresh.clone()).device_allocated_size_bytes().unwrap();
@@ -689,7 +1027,10 @@ mod tests {
     fn source_residency_retains_full_output_for_mixed_alias_output() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let governor = MemoryGovernor::new(runtime.device().ordinal(), 128 * 1024 * 1024).unwrap();
-        let grant = governor.try_request(GrantRequest::new(3, 64 * 1024 * 1024, 64 * 1024 * 1024)).unwrap().unwrap();
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(3), 64 * 1024 * 1024, 64 * 1024 * 1024))
+            .unwrap()
+            .unwrap();
         let (source, source_bytes) = frame_with_live_reservation(&runtime, &grant, "id", vec![1, 2, 3]);
         let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();
         let fresh_only = mixed.select(["fresh"]).unwrap();

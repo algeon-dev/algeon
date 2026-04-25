@@ -214,3 +214,115 @@ impl NativeDataFusionExecutionReport {
         output
     }
 }
+
+/// Compact execution-report template retained by the server after planning.
+///
+/// Planning-only fields are flattened into exact-size strings so the original
+/// physical plan and diagnostics can be dropped before execution. Runtime
+/// fields are projected from bounded metric handles when the artifact is read.
+#[derive(Debug)]
+pub(crate) struct NativeDataFusionExecutionTsvTemplate {
+    rows: Box<[NativeDataFusionExecutionTsvTemplateRow]>,
+    retained_capacity_bytes: u64,
+}
+
+#[derive(Debug)]
+struct NativeDataFusionExecutionTsvTemplateRow {
+    prefix: Box<[Box<str>]>,
+    rejected_before_execution: bool,
+}
+
+impl NativeDataFusionExecutionTsvTemplate {
+    const RUNTIME_FIELD_START: usize = 16;
+
+    pub(crate) fn from_report(report: NativeDataFusionExecutionReport) -> Self {
+        let rows = report
+            .rows
+            .into_iter()
+            .map(|row| {
+                let rejected_before_execution = row.rejected_before_execution;
+                let fields = row.fields();
+                debug_assert_eq!(fields.len(), NativeDataFusionExecutionRow::COLUMNS.len());
+                let prefix = fields
+                    .into_iter()
+                    .take(Self::RUNTIME_FIELD_START)
+                    .map(String::into_boxed_str)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice();
+                NativeDataFusionExecutionTsvTemplateRow { prefix, rejected_before_execution }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let retained_capacity_bytes = rows.iter().fold(0u64, |total, row| {
+            let strings = row
+                .prefix
+                .iter()
+                .fold(0u64, |bytes, field| bytes.saturating_add(u64::try_from(field.len()).unwrap_or(u64::MAX)));
+            total.saturating_add(strings).saturating_add(
+                u64::try_from(row.prefix.len().saturating_mul(std::mem::size_of::<Box<str>>())).unwrap_or(u64::MAX),
+            )
+        });
+        Self { rows, retained_capacity_bytes }
+    }
+
+    pub(crate) const fn retained_capacity_bytes(&self) -> u64 {
+        self.retained_capacity_bytes
+    }
+
+    pub(crate) fn to_tsv(&self, runtime: NativeDataFusionRuntime) -> String {
+        let runtime_summary = NativeDataFusionRuntimeSummary::from_runtime(runtime);
+        let mut output = String::new();
+        output.push_str(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER);
+        output.push('\n');
+        for row in &self.rows {
+            for (index, field) in row.prefix.iter().enumerate() {
+                if index > 0 {
+                    output.push('\t');
+                }
+                output.push_str(field);
+            }
+            let summary = if row.rejected_before_execution {
+                NativeDataFusionRuntimeSummary::from_runtime(NativeDataFusionRuntime::NotStarted)
+            } else {
+                runtime_summary.clone()
+            };
+            let runtime_fields = runtime_fields(row.prefix.first().map_or("", |value| value.as_ref()), summary);
+            for field in runtime_fields {
+                output.push('\t');
+                output.push_str(&field);
+            }
+            output.push('\n');
+        }
+        output
+    }
+}
+
+fn runtime_fields(query_id: &str, summary: NativeDataFusionRuntimeSummary) -> Vec<String> {
+    let row = NativeDataFusionExecutionRow {
+        query_id: query_id.to_string(),
+        physical_root: String::new(),
+        physical_shape: String::new(),
+        native_candidate_shape: None,
+        native_candidate_shape_family: None,
+        planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+        reason_code: None,
+        unsupported_category: None,
+        strict_bounded_contract_rows: Vec::new(),
+        strict_bounded_compiled_graphs: Vec::new(),
+        adaptive_pipeline_rows: Vec::new(),
+        source_diagnostics: Vec::new(),
+        post_native_plan_root: String::new(),
+        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        native_plan_fragment_count: 0,
+        host_datafusion_boundary_count: 0,
+        rejected_before_execution: false,
+        native_runtime_started: summary.started,
+        runtime_outcome: summary.outcome,
+        runtime_failure: summary.failure,
+        output_batches: summary.output_batches,
+        output_rows: summary.output_rows,
+        output_bytes: summary.output_bytes,
+        metrics: summary.metrics,
+    };
+    row.fields().into_iter().skip(NativeDataFusionExecutionTsvTemplate::RUNTIME_FIELD_START).collect()
+}

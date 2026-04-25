@@ -13,9 +13,11 @@ pub mod cache;
 mod cache_events;
 mod cache_fill;
 mod context;
+mod deadline;
 pub mod gpu;
 mod gpu_execution_pool;
 mod io_capability;
+mod io_lifecycle;
 mod memory_domain;
 mod object_store;
 mod policy;
@@ -43,7 +45,9 @@ pub use cache_fill::{
     default_lakehouse_cache_fill_budget_bytes,
 };
 pub use context::{
-    ExecutionCancellation, ExecutionContext, ExecutionContextBuilder, LeasedExecutionContext, SourceSchedulerPolicy,
+    ExecutionCancellation, ExecutionContext, ExecutionContextBuilder, LeasedExecutionContext, QueryServiceStreamPool,
+    RuntimeObservationBuildError, RuntimeObservedExecutionContext, RuntimeObservedExecutionContextBuilder,
+    SourceSchedulerPolicy,
 };
 pub use gpu::{
     BestFitPlacement, CudfInventory, CudfNvmlTelemetry, DeviceContext, DeviceFacts, DeviceMemoryFailureReport,
@@ -61,13 +65,14 @@ pub use io_capability::{
     DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus, KVIKIO_COMPAT_MODE_ENV,
     KvikioCompatModeStatus, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
 };
+pub use io_lifecycle::{IoLifecycle, IoLifecycleLease};
 pub(crate) use object_store::S3ObjectStoreKey;
 pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile};
 pub use policy::{
     DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind, SourceChunkPlanningMode,
 };
 pub use query_service::{
-    QueryAdmissionRequest, QueryAdmissionWaiter, QueryGrantBand, QueryGrantRequest, QueryHandle,
+    QueryActivityLease, QueryAdmissionRequest, QueryAdmissionWaiter, QueryGrantBand, QueryGrantRequest, QueryHandle,
     QueryMemoryDomainPolicy, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
     QueryServiceDeviceAdmissionSnapshot, QueryServiceGraphCacheSnapshot, QueryServiceTenantConfig, SlotGuarantee,
     TenantId, TenantQueryContext, TenantQueueDepth,

@@ -1,11 +1,9 @@
 //! Native execution context state and query-local runtime controls.
 
-#[cfg(feature = "cugraph")]
-use std::sync::Mutex;
 use std::{
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -21,6 +19,7 @@ use super::{
     cache_events::{LakehouseCacheFillEventSink, LakehouseCacheFillEventSnapshot},
     cache_fill::{CacheFillConcurrencyGate, CacheFillOperationPermit},
     default_service_stream_pool_size_for_device,
+    io_lifecycle::{IoLifecycle, IoLifecycleLease},
     object_store::{
         ObjectStoreCustomFetchResult, ObjectStoreFetchResult, S3ObjectStoreKey, SourceObjectStoreRegistry,
         default_object_store_control_runtime,
@@ -34,12 +33,16 @@ use crate::{
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
+    observability::{
+        RuntimeObservationHandle, RuntimeObservationSession, RuntimeStreamLeaseScope, RuntimeTaskId, RuntimeTraceId,
+        RuntimeWorkerId,
+    },
 };
 
 mod builder;
 
-pub use builder::ExecutionContextBuilder;
 pub(super) use builder::validate_service_stream_pool_device;
+pub use builder::{ExecutionContextBuilder, RuntimeObservationBuildError, RuntimeObservedExecutionContextBuilder};
 
 /// Shared cooperative cancellation flag for native query execution.
 ///
@@ -85,6 +88,472 @@ impl ExecutionCancellation {
 impl Default for ExecutionCancellation {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+type QueryServiceEpochIdleCallback = Arc<dyn Fn() + Send + Sync>;
+type QueryResourceEpochIdleCallback = Arc<dyn Fn() + Send + Sync>;
+
+/// Revocable lifetime shared by every resource derived from one query service.
+#[derive(Clone)]
+pub(crate) struct QueryServiceEpoch {
+    inner: Arc<QueryServiceEpochInner>,
+}
+
+struct QueryServiceEpochInner {
+    open: AtomicBool,
+    active_users: AtomicUsize,
+    idle_state: Mutex<QueryServiceEpochIdleState>,
+    idle_changed: Condvar,
+}
+
+struct QueryServiceEpochIdleState {
+    on_idle: Option<QueryServiceEpochIdleCallback>,
+    complete: bool,
+}
+
+impl std::fmt::Debug for QueryServiceEpoch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QueryServiceEpoch")
+            .field("open", &self.inner.open.load(Ordering::Acquire))
+            .field("active_users", &self.inner.active_users.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
+impl QueryServiceEpoch {
+    pub(crate) fn new(on_idle: Option<QueryServiceEpochIdleCallback>) -> Self {
+        Self {
+            inner: Arc::new(QueryServiceEpochInner {
+                open: AtomicBool::new(true),
+                active_users: AtomicUsize::new(0),
+                idle_state: Mutex::new(QueryServiceEpochIdleState { on_idle, complete: false }),
+                idle_changed: Condvar::new(),
+            }),
+        }
+    }
+
+    pub(crate) fn retain_existing_user(&self) -> QueryServiceEpochUser {
+        self.inner.active_users.fetch_add(1, Ordering::AcqRel);
+        QueryServiceEpochUser { epoch: self.clone() }
+    }
+
+    fn acquire(&self, operation: &'static str) -> Result<QueryServiceEpochUser> {
+        if !self.inner.open.load(Ordering::Acquire) {
+            return Err(query_service_epoch_closed(operation));
+        }
+        let user = self.retain_existing_user();
+        if !self.inner.open.load(Ordering::Acquire) {
+            drop(user);
+            return Err(query_service_epoch_closed(operation));
+        }
+        Ok(user)
+    }
+
+    pub(crate) fn check_open(&self, operation: &'static str) -> Result<()> {
+        if self.inner.open.load(Ordering::Acquire) { Ok(()) } else { Err(query_service_epoch_closed(operation)) }
+    }
+
+    pub(crate) fn invalidate(&self) {
+        self.inner.open.store(false, Ordering::Release);
+        self.inner.idle_changed.notify_all();
+    }
+
+    fn release_user(&self) {
+        let previous = self.inner.active_users.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "query service epoch user count underflow");
+        if previous == 1 {
+            self.release_if_idle();
+        }
+    }
+
+    fn release_if_idle(&self) {
+        if self.inner.open.load(Ordering::Acquire) || self.inner.active_users.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        let mut state = self.inner.idle_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.complete_idle_locked(&mut state);
+    }
+
+    fn complete_idle_locked(&self, state: &mut QueryServiceEpochIdleState) {
+        if state.complete
+            || self.inner.open.load(Ordering::Acquire)
+            || self.inner.active_users.load(Ordering::Acquire) != 0
+        {
+            return;
+        }
+        let callback = state.on_idle.take();
+        if let Some(callback) = callback {
+            callback();
+        }
+        state.complete = true;
+        self.inner.idle_changed.notify_all();
+    }
+
+    pub(crate) fn wait_for_idle_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
+        let mut state = match crate::runtime::deadline::mutex_lock_until(&self.inner.idle_state, deadline) {
+            Ok(state) => state,
+            Err(crate::runtime::deadline::DeadlineMutexLockError::Poisoned) => {
+                return Err(QueryError::new(
+                    QueryErrorCode::Internal,
+                    operation,
+                    "query service resource epoch idle mutex was poisoned during shutdown",
+                ));
+            },
+            Err(crate::runtime::deadline::DeadlineMutexLockError::TimedOut) => {
+                return Err(query_service_epoch_idle_timeout(
+                    operation,
+                    self.inner.active_users.load(Ordering::Acquire),
+                ));
+            },
+        };
+        let mut waited_for_idle = false;
+        let mut completed_here = false;
+        loop {
+            if !state.complete
+                && !self.inner.open.load(Ordering::Acquire)
+                && self.inner.active_users.load(Ordering::Acquire) == 0
+            {
+                self.complete_idle_locked(&mut state);
+                completed_here = true;
+            }
+            if state.complete {
+                if (waited_for_idle || completed_here) && crate::runtime::deadline::deadline_expired(deadline) {
+                    return Err(query_service_epoch_idle_timeout(
+                        operation,
+                        self.inner.active_users.load(Ordering::Acquire),
+                    ));
+                }
+                return Ok(());
+            }
+            if crate::runtime::deadline::deadline_expired(deadline) {
+                return Err(query_service_epoch_idle_timeout(
+                    operation,
+                    self.inner.active_users.load(Ordering::Acquire),
+                ));
+            }
+            let Some(remaining) = crate::runtime::deadline::deadline_remaining(deadline) else {
+                return Err(query_service_epoch_idle_timeout(
+                    operation,
+                    self.inner.active_users.load(Ordering::Acquire),
+                ));
+            };
+            waited_for_idle = true;
+            let (next, _timeout) = self.inner.idle_changed.wait_timeout(state, remaining).map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    operation,
+                    "query service resource epoch condition variable was poisoned during shutdown",
+                )
+            })?;
+            state = next;
+        }
+    }
+}
+
+fn query_service_epoch_closed(operation: &'static str) -> QueryError {
+    QueryError::new(QueryErrorCode::Cancelled, operation, "query service execution epoch is closed")
+        .with_fact("reason", "query_service_epoch_closed")
+}
+
+fn query_service_epoch_idle_timeout(operation: &'static str, active_users: usize) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ServiceOverloaded,
+        operation,
+        "timed out waiting for query service resource epoch to become idle",
+    )
+    .with_fact("reason", "query_service_resource_epoch_timeout")
+    .with_fact("active_resource_users", active_users)
+}
+
+#[cfg(test)]
+mod query_service_epoch_tests {
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    use super::*;
+
+    #[test]
+    fn invalidate_is_nonblocking_during_idle_state_lock_contention() {
+        let epoch = QueryServiceEpoch::new(None);
+        let state = epoch.inner.idle_state.lock().unwrap();
+        let invalidating_epoch = epoch.clone();
+        let (invalidated_tx, invalidated_rx) = mpsc::channel();
+        let invalidation = std::thread::spawn(move || {
+            invalidating_epoch.invalidate();
+            invalidated_tx.send(()).unwrap();
+        });
+
+        invalidated_rx
+            .recv_timeout(Duration::from_millis(50))
+            .expect("epoch invalidation must not wait for the idle-state mutex");
+        drop(state);
+        invalidation.join().unwrap();
+        assert!(!epoch.inner.open.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn idle_lock_contention_returns_timeout_before_post_deadline_release() {
+        let epoch = QueryServiceEpoch::new(None);
+        let mut state = epoch.inner.idle_state.lock().unwrap();
+        epoch.invalidate();
+
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let waiting_epoch = epoch.clone();
+        let (result_tx, result_rx) = mpsc::channel();
+        let wait = std::thread::spawn(move || {
+            result_tx.send(waiting_epoch.wait_for_idle_until(deadline, "test.epoch.shutdown")).unwrap();
+        });
+
+        let result = result_rx.recv_timeout(Duration::from_millis(200));
+        state.complete = true;
+        epoch.inner.idle_changed.notify_all();
+        drop(state);
+        wait.join().unwrap();
+
+        let error = result
+            .expect("epoch shutdown must return its mutex timeout before the contended lock is released")
+            .expect_err("completion after the deadline must not be accepted");
+        assert_eq!(error.fact_value("reason"), Some("query_service_resource_epoch_timeout"));
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct QueryServiceEpochUser {
+    epoch: QueryServiceEpoch,
+}
+
+/// Revocable lifetime shared by resources derived from one admitted query.
+///
+/// The epoch owns only revocation and drain accounting. Each counted anchor
+/// owns the query lifetime separately, so the epoch cannot form a cycle with
+/// the query's uncounted root-context template.
+#[derive(Clone)]
+pub(crate) struct QueryResourceEpoch {
+    inner: Arc<QueryResourceEpochInner>,
+}
+
+struct QueryResourceEpochInner {
+    open: AtomicBool,
+    active_users: AtomicUsize,
+    on_idle: Mutex<Option<QueryResourceEpochIdleCallback>>,
+}
+
+impl std::fmt::Debug for QueryResourceEpoch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QueryResourceEpoch")
+            .field("open", &self.inner.open.load(Ordering::Acquire))
+            .field("active_users", &self.inner.active_users.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
+impl QueryResourceEpoch {
+    pub(crate) fn new(on_idle: Option<QueryResourceEpochIdleCallback>) -> Self {
+        Self {
+            inner: Arc::new(QueryResourceEpochInner {
+                open: AtomicBool::new(true),
+                active_users: AtomicUsize::new(0),
+                on_idle: Mutex::new(on_idle),
+            }),
+        }
+    }
+
+    pub(crate) fn acquire(
+        &self,
+        owner: Arc<dyn Send + Sync>,
+        operation: &'static str,
+    ) -> Result<Arc<QueryResourceAnchor>> {
+        self.check_open(operation)?;
+        self.inner.active_users.fetch_add(1, Ordering::AcqRel);
+        let anchor = Arc::new(QueryResourceAnchor { epoch: self.clone(), _owner: owner });
+        if let Err(error) = self.check_open(operation) {
+            drop(anchor);
+            return Err(error);
+        }
+        Ok(anchor)
+    }
+
+    pub(crate) fn check_open(&self, operation: &'static str) -> Result<()> {
+        if self.inner.open.load(Ordering::Acquire) { Ok(()) } else { Err(query_resource_epoch_closed(operation)) }
+    }
+
+    pub(crate) fn invalidate(&self) {
+        self.inner.open.store(false, Ordering::Release);
+        self.notify_if_idle();
+    }
+
+    pub(crate) fn is_idle(&self) -> bool {
+        self.inner.active_users.load(Ordering::Acquire) == 0
+    }
+
+    fn release_user(&self) {
+        let previous = self.inner.active_users.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "query resource epoch user count underflow");
+        if previous == 1 {
+            self.notify_if_idle();
+        }
+    }
+
+    fn notify_if_idle(&self) {
+        if self.inner.open.load(Ordering::Acquire) || !self.is_idle() {
+            return;
+        }
+        let callback = match self.inner.on_idle.lock() {
+            Ok(mut callback) => callback.take(),
+            Err(error) => error.into_inner().take(),
+        };
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+}
+
+/// One counted outward ownership root for an admitted query.
+///
+/// Clones of the surrounding context/resource share this anchor. The owner is
+/// deliberately held by the anchor rather than by [`QueryResourceEpoch`].
+pub(crate) struct QueryResourceAnchor {
+    epoch: QueryResourceEpoch,
+    _owner: Arc<dyn Send + Sync>,
+}
+
+impl QueryResourceAnchor {
+    fn check_open(&self, operation: &'static str) -> Result<()> {
+        self.epoch.check_open(operation)
+    }
+
+    fn belongs_to(&self, epoch: &QueryResourceEpoch) -> bool {
+        Arc::ptr_eq(&self.epoch.inner, &epoch.inner)
+    }
+}
+
+impl std::fmt::Debug for QueryResourceAnchor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("QueryResourceAnchor").field("epoch", &self.epoch).finish_non_exhaustive()
+    }
+}
+
+impl Drop for QueryResourceAnchor {
+    fn drop(&mut self) {
+        // Drop runs while `_owner` is still live, so the idle callback can
+        // always upgrade its weak query-lifetime reference.
+        self.epoch.release_user();
+    }
+}
+
+fn query_resource_epoch_closed(operation: &'static str) -> QueryError {
+    QueryError::new(QueryErrorCode::Cancelled, operation, "query resource epoch is closed")
+        .with_fact("reason", "query_handle_released")
+}
+
+/// Shared counted owner attached to cloneable service-derived resources.
+#[derive(Debug)]
+pub(crate) struct QueryServiceResourceEpoch {
+    epoch: QueryServiceEpoch,
+    _user: QueryServiceEpochUser,
+    query_anchor: Option<Arc<QueryResourceAnchor>>,
+}
+
+impl QueryServiceResourceEpoch {
+    pub(crate) fn acquire(
+        epoch: &QueryServiceEpoch,
+        query_anchor: Option<&Arc<QueryResourceAnchor>>,
+        operation: &'static str,
+    ) -> Result<Arc<Self>> {
+        let user = epoch.acquire(operation)?;
+        let query_anchor = query_anchor.cloned();
+        if let Some(anchor) = &query_anchor
+            && let Err(error) = anchor.check_open(operation)
+        {
+            drop(user);
+            return Err(error);
+        }
+        Ok(Arc::new(Self { epoch: epoch.clone(), _user: user, query_anchor }))
+    }
+
+    pub(crate) fn check_open(&self, operation: &'static str) -> Result<()> {
+        self.epoch.check_open(operation)?;
+        if let Some(anchor) = &self.query_anchor {
+            anchor.check_open(operation)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for QueryServiceEpochUser {
+    fn drop(&mut self) {
+        self.epoch.release_user();
+    }
+}
+
+/// Revocable context-scoped access to a service stream pool.
+///
+/// Query-service handles retain their query admission anchor even before a
+/// stream is acquired. Each acquisition atomically checks both the query and
+/// service epochs and gives the returned stream lease a counted owner that
+/// survives derived runtime clones.
+#[derive(Debug, Clone)]
+pub struct QueryServiceStreamPool {
+    pool: ServiceStreamPool,
+    service_epoch: Option<QueryServiceEpoch>,
+    query_anchor: Option<Arc<QueryResourceAnchor>>,
+}
+
+impl QueryServiceStreamPool {
+    pub fn device(&self) -> cudf::DeviceId {
+        self.pool.device()
+    }
+
+    pub fn pool_size(&self) -> usize {
+        self.pool.pool_size()
+    }
+
+    pub fn acquire(&self) -> Result<StreamLease> {
+        let operation = "nexus_query_engine.runtime.context.service_stream_pool.acquire";
+        let resource_epoch = self.acquire_resource_epoch(operation)?;
+        let lease = self.pool.acquire()?;
+        if let Some(epoch) = &resource_epoch {
+            epoch.check_open(operation)?;
+        }
+        Ok(self.attach_resource_epoch(lease, resource_epoch))
+    }
+
+    fn acquire_observed_with_cancellation(
+        &self,
+        cancellation: &ExecutionCancellation,
+        operation: &'static str,
+        observation: RuntimeObservationHandle,
+        scope: RuntimeStreamLeaseScope,
+    ) -> Result<StreamLease> {
+        let resource_epoch = self.acquire_resource_epoch(operation)?;
+        let lease = self.pool.acquire_observed_with_cancellation(cancellation, operation, observation, scope)?;
+        if let Some(epoch) = &resource_epoch {
+            epoch.check_open(operation)?;
+        }
+        Ok(self.attach_resource_epoch(lease, resource_epoch))
+    }
+
+    fn acquire_resource_epoch(&self, operation: &'static str) -> Result<Option<Arc<QueryServiceResourceEpoch>>> {
+        self.service_epoch
+            .as_ref()
+            .map(|epoch| QueryServiceResourceEpoch::acquire(epoch, self.query_anchor.as_ref(), operation))
+            .transpose()
+    }
+
+    fn attach_resource_epoch(
+        &self,
+        lease: StreamLease,
+        resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
+    ) -> StreamLease {
+        match resource_epoch {
+            Some(resource_epoch) => lease.with_resource_epoch(resource_epoch),
+            None => lease,
+        }
     }
 }
 
@@ -150,10 +619,26 @@ impl Default for SourceSchedulerPolicy {
 /// keeps the same runtime/cache handles.
 #[derive(Debug, Clone)]
 pub struct ExecutionContext {
+    /// Revocable service lifetime for runtime/resource acquisition.
+    service_epoch: Option<QueryServiceEpoch>,
+    /// Revocable lifetime for this admitted query's outward resources.
+    query_epoch: Option<QueryResourceEpoch>,
+    /// Counted query owner attached only to outward contexts, never the root template.
+    query_anchor: Option<Arc<QueryResourceAnchor>>,
+    /// Optional server-generation gate for file-backed native I/O.
+    io_lifecycle: Option<IoLifecycle>,
     /// Optional caller-provided query-wide diagnostic correlation id.
     query_id: Option<QueryId>,
     /// Optional parent trace id used to group related query executions.
     trace_id: Option<TraceId>,
+    /// Shared query-local bounded runtime observation session.
+    runtime_observation: RuntimeObservationHandle,
+    /// Shared terminal owner carried by query-service contexts.
+    runtime_observation_owner: Option<crate::observability::RuntimeObservationOwner>,
+    /// Current plan-execution scope installed while native execution runs.
+    runtime_execution_scope: Option<crate::observability::RuntimeExecutionObservationScope>,
+    /// Explicit plan/GPU correlation inherited by service-stream acquisitions.
+    runtime_stream_lease_scope: RuntimeStreamLeaseScope,
     /// Shared cudf runtime used for GPU work.
     ///
     /// Runtime ownership is explicit: callers may inject an `Arc` to share a
@@ -250,6 +735,37 @@ pub struct LeasedExecutionContext {
     context: ExecutionContext,
 }
 
+/// Root execution context paired with the unique runtime observation owner.
+///
+/// Clones obtained from [`Self::context`] contain only the recording handle.
+/// The owner remains here until query-owned cleanup can seal it.
+#[derive(Debug)]
+pub struct RuntimeObservedExecutionContext {
+    context: ExecutionContext,
+    observation: RuntimeObservationSession,
+}
+
+impl RuntimeObservedExecutionContext {
+    pub(super) fn new(context: ExecutionContext, observation: RuntimeObservationSession) -> Self {
+        Self { context, observation }
+    }
+
+    /// Returns the cloneable execution context carrying recording access only.
+    pub fn context(&self) -> &ExecutionContext {
+        &self.context
+    }
+
+    /// Returns the owner-only terminal-seal capability.
+    pub fn observation(&self) -> &RuntimeObservationSession {
+        &self.observation
+    }
+
+    /// Separates the cloneable execution context from its owner capability.
+    pub fn into_parts(self) -> (ExecutionContext, RuntimeObservationSession) {
+        (self.context, self.observation)
+    }
+}
+
 impl LeasedExecutionContext {
     fn new(context: ExecutionContext) -> Self {
         Self { context }
@@ -263,8 +779,16 @@ impl LeasedExecutionContext {
 
 #[derive(Debug)]
 pub(super) struct ExecutionContextParts {
+    pub(super) service_epoch: Option<QueryServiceEpoch>,
+    pub(super) query_epoch: Option<QueryResourceEpoch>,
+    pub(super) query_anchor: Option<Arc<QueryResourceAnchor>>,
+    pub(super) io_lifecycle: Option<IoLifecycle>,
     pub(super) query_id: Option<QueryId>,
     pub(super) trace_id: Option<TraceId>,
+    pub(super) runtime_observation: RuntimeObservationHandle,
+    pub(super) runtime_observation_owner: Option<crate::observability::RuntimeObservationOwner>,
+    pub(super) runtime_execution_scope: Option<crate::observability::RuntimeExecutionObservationScope>,
+    pub(super) runtime_stream_lease_scope: RuntimeStreamLeaseScope,
     pub(super) runtime: Arc<cudf::Runtime>,
     pub(super) gpu_execution_pool: GpuExecutionPool,
     pub(super) memory_policy: MemoryResourcePolicy,
@@ -350,8 +874,16 @@ impl ExecutionContext {
         let gpu_execution_pool =
             GpuExecutionPool::shared_for_device(runtime.device().ordinal(), service_stream_pool.pool_size())?;
         Ok(Self::from_parts(ExecutionContextParts {
+            service_epoch: None,
+            query_epoch: None,
+            query_anchor: None,
+            io_lifecycle: None,
             query_id: None,
             trace_id: None,
+            runtime_observation: RuntimeObservationHandle::disabled(),
+            runtime_observation_owner: None,
+            runtime_execution_scope: None,
+            runtime_stream_lease_scope: RuntimeStreamLeaseScope::default(),
             runtime,
             gpu_execution_pool,
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
@@ -397,8 +929,16 @@ impl ExecutionContext {
             "execution context cannot carry both grant reservation arena and query memory domain"
         );
         Self {
+            service_epoch: parts.service_epoch,
+            query_epoch: parts.query_epoch,
+            query_anchor: parts.query_anchor,
+            io_lifecycle: parts.io_lifecycle,
             query_id: parts.query_id,
             trace_id: parts.trace_id,
+            runtime_observation: parts.runtime_observation,
+            runtime_observation_owner: parts.runtime_observation_owner,
+            runtime_execution_scope: parts.runtime_execution_scope,
+            runtime_stream_lease_scope: parts.runtime_stream_lease_scope,
             runtime: parts.runtime,
             gpu_execution_pool: parts.gpu_execution_pool,
             memory_policy: parts.memory_policy,
@@ -435,32 +975,155 @@ impl ExecutionContext {
         }
     }
 
+    /// Attaches one counted query owner to a clone of the internal root template.
+    pub(super) fn with_query_resource_anchor(&self, anchor: Arc<QueryResourceAnchor>) -> Self {
+        debug_assert!(
+            self.query_epoch.as_ref().is_some_and(|epoch| anchor.belongs_to(epoch)),
+            "query resource anchor must belong to the context query epoch"
+        );
+        let mut context = self.clone();
+        context.query_anchor = Some(anchor);
+        context
+    }
+
+    fn acquire_resource_epoch(&self, operation: &'static str) -> Result<Option<Arc<QueryServiceResourceEpoch>>> {
+        let Some(service_epoch) = &self.service_epoch else {
+            if let Some(query_epoch) = &self.query_epoch {
+                query_epoch.check_open(operation)?;
+            }
+            return Ok(None);
+        };
+        QueryServiceResourceEpoch::acquire(service_epoch, self.query_anchor.as_ref(), operation).map(Some)
+    }
+
+    /// Derives the service-only base runtime used to establish local-Parquet
+    /// cache affinity without retaining the current query admission anchor.
+    pub(super) fn local_parquet_cache_owner_runtime(&self, operation: &'static str) -> Result<Arc<cudf::Runtime>> {
+        self.check_service_epoch(operation)?;
+        let Some(service_epoch) = &self.service_epoch else {
+            return Ok(Arc::clone(&self.runtime));
+        };
+        let resource_epoch = QueryServiceResourceEpoch::acquire(service_epoch, None, operation)?;
+        let retained: Arc<dyn Send + Sync> = resource_epoch;
+        self.runtime.with_retained_lifetime(retained).map(Arc::new).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to derive local Parquet cache owner runtime", error)
+        })
+    }
+
+    /// Attaches the current query anchor to a query-neutral local-Parquet
+    /// cache runtime while preserving its exact stream and allocator binding.
+    pub(super) fn local_parquet_cache_query_runtime(
+        &self,
+        cache_runtime: &Arc<cudf::Runtime>,
+        operation: &'static str,
+    ) -> Result<Arc<cudf::Runtime>> {
+        self.check_service_epoch(operation)?;
+        if !cudf::Runtime::shares_affinity(&self.runtime, cache_runtime) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "local Parquet cache runtime does not share the current query runtime affinity",
+            )
+            .with_fact("reason", "local_parquet_cache_runtime_affinity_mismatch")
+            .with_fact("query_runtime_affinity_id", self.runtime.affinity_id().get())
+            .with_fact("cache_runtime_affinity_id", cache_runtime.affinity_id().get()));
+        }
+        let Some(resource_epoch) = self.acquire_resource_epoch(operation)? else {
+            return Ok(Arc::clone(cache_runtime));
+        };
+        let retained: Arc<dyn Send + Sync> = resource_epoch;
+        cache_runtime.with_retained_lifetime(retained).map(Arc::new).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to derive query-scoped local Parquet cache runtime", error)
+        })
+    }
+
+    /// Derives the service-only runtime used to own resident graph cache state.
+    ///
+    /// This is intentionally visible only inside `runtime`: cache-owned native
+    /// state must retain the service execution domain without inheriting the
+    /// admitted query anchor carried by the outward context.
+    #[cfg(feature = "cugraph")]
+    pub(super) fn resident_graph_cache_owner_runtime(&self, operation: &'static str) -> Result<Arc<cudf::Runtime>> {
+        self.check_service_epoch(operation)?;
+        let Some(service_epoch) = &self.service_epoch else {
+            return Ok(Arc::clone(&self.runtime));
+        };
+        let resource_epoch = QueryServiceResourceEpoch::acquire(service_epoch, None, operation)?;
+        let retained: Arc<dyn Send + Sync> = resource_epoch;
+        self.runtime.with_retained_lifetime(retained).map(Arc::new).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to derive resident graph cache owner runtime", error)
+        })
+    }
+
+    /// Attaches the current query anchor to a query-neutral resident-cache runtime.
+    #[cfg(feature = "cugraph")]
+    pub(super) fn resident_graph_query_runtime(
+        &self,
+        cache_runtime: &Arc<cudf::Runtime>,
+        operation: &'static str,
+    ) -> Result<Arc<cudf::Runtime>> {
+        self.check_service_epoch(operation)?;
+        if !cudf::Runtime::shares_affinity(&self.runtime, cache_runtime) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "resident graph cache runtime does not share the current query runtime affinity",
+            )
+            .with_fact("reason", "resident_graph_cache_runtime_affinity_mismatch")
+            .with_fact("query_runtime_affinity_id", self.runtime.affinity_id().get())
+            .with_fact("cache_runtime_affinity_id", cache_runtime.affinity_id().get()));
+        }
+        let Some(resource_epoch) = self.acquire_resource_epoch(operation)? else {
+            return Ok(Arc::clone(cache_runtime));
+        };
+        let retained: Arc<dyn Send + Sync> = resource_epoch;
+        cache_runtime.with_retained_lifetime(retained).map(Arc::new).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to derive query-scoped resident graph execution runtime", error)
+        })
+    }
+
     /// Returns the cudf runtime used for all GPU operations.
-    pub fn runtime(&self) -> &cudf::Runtime {
-        &self.runtime
+    pub fn runtime(&self) -> Result<cudf::Runtime> {
+        let operation = "nexus_query_engine.runtime.context.runtime";
+        let Some(resource_epoch) = self.acquire_resource_epoch(operation)? else {
+            return Ok(self.runtime.as_ref().clone());
+        };
+        let retained: Arc<dyn Send + Sync> = resource_epoch;
+        self.runtime
+            .with_retained_lifetime(retained)
+            .map_err(|error| QueryError::from_cudf(operation, "failed to derive a counted query runtime", error))
     }
 
-    /// Returns the CUDA stream owned by the runtime.
-    pub fn stream(&self) -> &cudf::runtime::CudaStream {
-        self.runtime.stream()
+    /// Acquire permission for one file-backed native I/O call.
+    ///
+    /// Standalone library contexts without a server lifecycle remain
+    /// unrestricted. Server contexts carry one generation gate and reject
+    /// acquisitions after graceful shutdown begins.
+    pub fn acquire_io_lease(&self, operation: &'static str) -> Result<Option<IoLifecycleLease>> {
+        self.io_lifecycle.as_ref().map(|lifecycle| lifecycle.acquire(operation)).transpose()
     }
 
-    /// Returns the device memory resource owned by the runtime.
-    pub fn memory_resource(&self) -> &cudf::core::memory::DeviceMemoryResource {
-        self.runtime.memory_resource()
+    /// Attach a server-generation I/O lifecycle to this context clone.
+    pub fn with_io_lifecycle(mut self, lifecycle: IoLifecycle) -> Self {
+        self.io_lifecycle = Some(lifecycle);
+        self
     }
 
     /// Returns a shared handle to the runtime.
     ///
     /// The caller receives the same runtime object, not a new runtime with
     /// copied configuration.
-    pub fn shared_runtime(&self) -> Arc<cudf::Runtime> {
-        Arc::clone(&self.runtime)
+    pub fn shared_runtime(&self) -> Result<Arc<cudf::Runtime>> {
+        self.runtime().map(Arc::new)
     }
 
     /// Returns the dedicated executor for synchronous GPU work on this context's device.
-    pub fn gpu_execution_pool(&self) -> GpuExecutionPool {
-        self.gpu_execution_pool.clone()
+    pub fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
+        let resource_epoch = self.acquire_resource_epoch("nexus_query_engine.runtime.context.gpu_execution_pool")?;
+        Ok(match resource_epoch {
+            Some(resource_epoch) => self.gpu_execution_pool.with_resource_epoch(resource_epoch),
+            None => self.gpu_execution_pool.clone(),
+        })
     }
 
     /// Returns the query-wide diagnostic correlation id.
@@ -473,25 +1136,99 @@ impl ExecutionContext {
         self.trace_id.as_ref()
     }
 
-    /// Returns a cloned context with a different diagnostic query id.
-    pub fn with_query_id(&self, query_id: impl Into<QueryId>) -> Self {
+    /// Returns the shared recording handle without terminal-seal authority.
+    pub fn runtime_observation(&self) -> &RuntimeObservationHandle {
+        &self.runtime_observation
+    }
+
+    /// Returns the shared observation owner carried from query admission.
+    pub fn runtime_observation_owner(&self) -> Option<crate::observability::RuntimeObservationOwner> {
+        self.runtime_observation_owner.clone()
+    }
+
+    /// Returns the active native plan-execution scope.
+    pub fn runtime_execution_scope(&self) -> Option<&crate::observability::RuntimeExecutionObservationScope> {
+        self.runtime_execution_scope.as_ref()
+    }
+
+    /// Returns a clone carrying one invocation's recording handle.
+    ///
+    /// Seal authority remains with the execution lifecycle that supplied the
+    /// handle. Identity is validated before the clone can reach workers.
+    pub(crate) fn with_runtime_observation_handle(&self, observation: RuntimeObservationHandle) -> Result<Self> {
+        if let Some(query_id) = &self.query_id {
+            validate_runtime_observation_query_id(&observation, query_id)?;
+        }
+        if let Some(trace_id) = &self.trace_id {
+            validate_runtime_observation_trace_id(&observation, trace_id)?;
+        }
         let mut context = self.clone();
-        context.query_id = Some(query_id.into());
+        context.runtime_observation = observation;
+        Ok(context)
+    }
+
+    /// Returns a clone carrying the shared owner created before admission.
+    pub(crate) fn with_runtime_observation_owner(
+        &self,
+        owner: crate::observability::RuntimeObservationOwner,
+    ) -> Result<Self> {
+        let mut context = self.with_runtime_observation_handle(owner.handle())?;
+        context.runtime_observation_owner = Some(owner);
+        Ok(context)
+    }
+
+    /// Returns a clone scoped to one native plan invocation.
+    pub(crate) fn with_runtime_execution_scope(
+        &self,
+        scope: crate::observability::RuntimeExecutionObservationScope,
+    ) -> Result<Self> {
+        let mut context = self.with_runtime_observation_handle(scope.observation().clone())?;
+        context.runtime_stream_lease_scope.plan_execution_id = Some(scope.plan_execution_id().clone());
+        context.runtime_execution_scope = Some(scope);
+        Ok(context)
+    }
+
+    /// Returns a clone carrying explicit GPU job/worker correlation.
+    pub fn with_runtime_gpu_stream_scope(&self, scope: RuntimeStreamLeaseScope) -> Self {
+        let mut context = self.clone();
+        context.runtime_stream_lease_scope.gpu_job_id = scope.gpu_job_id;
+        context.runtime_stream_lease_scope.gpu_worker_id = scope.gpu_worker_id;
         context
     }
 
-    /// Returns a cloned context with a different diagnostic trace id.
-    pub fn with_trace_id(&self, trace_id: impl Into<TraceId>) -> Self {
+    /// Returns a cloned context with a diagnostic query id consistent with observation identity.
+    pub fn with_query_id(&self, query_id: impl Into<QueryId>) -> Result<Self> {
         let mut context = self.clone();
-        context.trace_id = Some(trace_id.into());
-        context
+        let query_id = query_id.into();
+        validate_runtime_observation_query_id(&context.runtime_observation, &query_id)?;
+        context.query_id = Some(query_id);
+        Ok(context)
+    }
+
+    /// Returns a cloned context with a trace id consistent with observation identity.
+    pub fn with_trace_id(&self, trace_id: impl Into<TraceId>) -> Result<Self> {
+        let mut context = self.clone();
+        let trace_id = trace_id.into();
+        validate_runtime_observation_trace_id(&context.runtime_observation, &trace_id)?;
+        context.trace_id = Some(trace_id);
+        Ok(context)
     }
 
     /// Acquires a same-device leased context for a scheduled source-read worker.
-    pub(crate) fn acquire_source_read_lease(&self) -> Result<SourceReadStreamLease> {
-        let stream_lease = self
-            .service_stream_pool
-            .acquire_with_cancellation(&self.cancellation, "nexus_query_engine.runtime.source_read_stream.acquire")?;
+    pub(crate) fn acquire_source_read_lease(
+        &self,
+        source_worker: Option<(RuntimeTaskId, RuntimeWorkerId)>,
+    ) -> Result<SourceReadStreamLease> {
+        let mut stream_scope = self.runtime_stream_lease_scope.clone();
+        if let Some((task_id, worker_id)) = source_worker {
+            stream_scope = stream_scope.with_source_worker(task_id, worker_id);
+        }
+        let stream_lease = self.service_stream_pool().acquire_observed_with_cancellation(
+            &self.cancellation,
+            "nexus_query_engine.runtime.source_read_stream.acquire",
+            self.runtime_observation.clone(),
+            stream_scope,
+        )?;
         let context = self.with_stream_lease(&stream_lease)?;
         Ok(SourceReadStreamLease::new(context, stream_lease))
     }
@@ -503,11 +1240,20 @@ impl ExecutionContext {
     /// caller must keep `stream_lease` alive until all work submitted through
     /// the returned context has completed.
     pub fn with_stream_lease(&self, stream_lease: &StreamLease) -> Result<Self> {
+        self.check_service_epoch("nexus_query_engine.runtime.context.with_stream_lease")?;
         validate_service_stream_pool_device(stream_lease.pool(), self.runtime.device())?;
         Ok(Self::from_parts(ExecutionContextParts {
+            service_epoch: self.service_epoch.clone(),
+            query_epoch: self.query_epoch.clone(),
+            query_anchor: self.query_anchor.clone(),
+            io_lifecycle: self.io_lifecycle.clone(),
             query_id: self.query_id.clone(),
             trace_id: self.trace_id.clone(),
-            runtime: stream_lease.shared_runtime(),
+            runtime_observation: self.runtime_observation.clone(),
+            runtime_observation_owner: self.runtime_observation_owner.clone(),
+            runtime_execution_scope: self.runtime_execution_scope.clone(),
+            runtime_stream_lease_scope: self.runtime_stream_lease_scope.clone(),
+            runtime: stream_lease.shared_runtime()?,
             gpu_execution_pool: self.gpu_execution_pool.clone(),
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy,
@@ -570,6 +1316,17 @@ impl ExecutionContext {
         self.query_service_admitted
     }
 
+    pub(super) fn install_root_stream_cleanup_completion(&self, completion: impl FnOnce() + Send + 'static) -> bool {
+        let Some(stream_lease) = &self.stream_lease_guard else {
+            return false;
+        };
+        stream_lease.install_cleanup_completion(completion)
+    }
+
+    pub(super) fn has_root_stream_lease(&self) -> bool {
+        self.stream_lease_guard.is_some()
+    }
+
     /// Returns the cooperative cancellation flag for this execution.
     pub fn cancellation(&self) -> &ExecutionCancellation {
         &self.cancellation
@@ -577,7 +1334,15 @@ impl ExecutionContext {
 
     /// Fails with a structured cancellation error if the execution was cancelled.
     pub fn check_cancellation(&self, operation: &'static str) -> Result<()> {
+        self.check_service_epoch(operation)?;
         self.cancellation.check(operation)
+    }
+
+    fn check_service_epoch(&self, operation: &'static str) -> Result<()> {
+        if let Some(epoch) = &self.service_epoch {
+            epoch.check_open(operation)?;
+        }
+        self.query_epoch.as_ref().map_or(Ok(()), |epoch| epoch.check_open(operation))
     }
 
     /// Reports the effective device placement derived from the runtime.
@@ -619,8 +1384,15 @@ impl ExecutionContext {
     }
 
     /// Returns the soft governor grant carried by this context, when present.
-    pub fn memory_grant(&self) -> Option<&MemoryGrant> {
-        self.memory_grant.as_ref()
+    pub fn memory_grant(&self) -> Result<Option<MemoryGrant>> {
+        let Some(grant) = self.memory_grant.as_ref() else {
+            return Ok(None);
+        };
+        let resource_epoch = self.acquire_resource_epoch("nexus_query_engine.runtime.context.memory_grant")?;
+        Ok(Some(match resource_epoch {
+            Some(resource_epoch) => grant.with_resource_epoch(resource_epoch),
+            None => grant.clone(),
+        }))
     }
 
     /// Creates a hard execution-budget token for this context's runtime stream.
@@ -628,18 +1400,35 @@ impl ExecutionContext {
     /// Contexts carrying a memory grant attach the token as a member of the
     /// grant-backed arena. Other contexts use the runtime's standalone stream
     /// reservation path.
-    pub fn execution_budget_token(
-        &self,
-        request: cudf::ExecutionBudgetRequest,
-    ) -> cudf::Result<cudf::ExecutionBudgetToken> {
+    pub fn execution_budget_token(&self, request: cudf::ExecutionBudgetRequest) -> Result<cudf::ExecutionBudgetToken> {
+        let runtime = self.runtime()?;
         match (self.grant_memory_domain.as_ref(), self.grant_reservation_arena.as_ref()) {
             (Some(domain), None) | (Some(domain), Some(_)) => {
-                cudf::ExecutionBudgetToken::from_runtime_in_query_domain(self.runtime(), request, domain.as_ref())
+                cudf::ExecutionBudgetToken::from_runtime_in_query_domain(&runtime, request, domain.as_ref()).map_err(
+                    |error| {
+                        QueryError::from_cudf(
+                            "nexus_query_engine.runtime.context.execution_budget_token",
+                            "failed to create query-domain execution budget token",
+                            error,
+                        )
+                    },
+                )
             },
-            (None, Some(arena)) => {
-                cudf::ExecutionBudgetToken::from_runtime_in_arena(self.runtime(), request, arena.as_ref())
-            },
-            _ => self.runtime().execution_budget_token(request),
+            (None, Some(arena)) => cudf::ExecutionBudgetToken::from_runtime_in_arena(&runtime, request, arena.as_ref())
+                .map_err(|error| {
+                    QueryError::from_cudf(
+                        "nexus_query_engine.runtime.context.execution_budget_token",
+                        "failed to create arena execution budget token",
+                        error,
+                    )
+                }),
+            _ => runtime.execution_budget_token(request).map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.runtime.context.execution_budget_token",
+                    "failed to create execution budget token",
+                    error,
+                )
+            }),
         }
     }
 
@@ -672,8 +1461,12 @@ impl ExecutionContext {
     }
 
     /// Returns the service-level CUDA stream pool used by source-read workers.
-    pub fn service_stream_pool(&self) -> ServiceStreamPool {
-        self.service_stream_pool.clone()
+    pub fn service_stream_pool(&self) -> QueryServiceStreamPool {
+        QueryServiceStreamPool {
+            pool: self.service_stream_pool.clone(),
+            service_epoch: self.service_epoch.clone(),
+            query_anchor: self.query_anchor.clone(),
+        }
     }
 
     /// Timeout used by blocking lakehouse cache maintenance resource acquisition.
@@ -981,6 +1774,41 @@ impl ExecutionContext {
             .map_err(|_error| warm_graph_reservation_error("preparation_pin_lock_poisoned"))?;
         pin.take().map(Some).ok_or_else(|| warm_graph_reservation_error("preparation_pin_already_consumed"))
     }
+}
+
+fn validate_runtime_observation_query_id(observation: &RuntimeObservationHandle, query_id: &QueryId) -> Result<()> {
+    let Some(observation_query_id) = observation.query_id() else {
+        return Ok(());
+    };
+    if observation_query_id.as_str() == query_id.as_str() {
+        return Ok(());
+    }
+    Err(QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.runtime_observation.identity",
+        "execution context query id conflicts with its runtime observation session",
+    )
+    .with_fact("reason", "runtime_observation_query_id_mismatch")
+    .with_fact("context_query_id", query_id)
+    .with_fact("observation_query_id", observation_query_id))
+}
+
+fn validate_runtime_observation_trace_id(observation: &RuntimeObservationHandle, trace_id: &TraceId) -> Result<()> {
+    if !observation.is_enabled() {
+        return Ok(());
+    }
+    let observation_trace_id = observation.trace_id().map(RuntimeTraceId::as_str);
+    if observation_trace_id == Some(trace_id.as_str()) {
+        return Ok(());
+    }
+    Err(QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.runtime_observation.identity",
+        "execution context trace id conflicts with its runtime observation session",
+    )
+    .with_fact("reason", "runtime_observation_trace_id_mismatch")
+    .with_fact("context_trace_id", trace_id)
+    .with_fact("observation_trace_id", observation_trace_id.unwrap_or("none")))
 }
 
 #[cfg(feature = "cugraph")]

@@ -2,22 +2,7 @@ use super::*;
 
 impl DatafusionCudfFlightSqlService {
     pub(super) fn expire_stale_tickets(&self, now: Instant) {
-        let ttl = self.statement_ticket_ttl;
-        self.tickets.retain(|query_id, ticket| {
-            let age = now.saturating_duration_since(ticket.issued_at);
-            if age < ttl {
-                return true;
-            }
-            self.cancellations.remove(query_id);
-            self.observability.seal(query_id);
-            tracing::warn!(
-                query_id = query_id.as_str(),
-                ticket_age_ms = age.as_millis(),
-                statement_ticket_ttl_ms = ttl.as_millis(),
-                "expired abandoned Flight SQL statement ticket"
-            );
-            false
-        });
+        self.coordinator.maintenance_at(now);
     }
 
     pub(super) async fn execute_ticket(
@@ -26,35 +11,46 @@ impl DatafusionCudfFlightSqlService {
         request_correlation_id: Option<String>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.expire_stale_tickets(Instant::now());
-        let (_, ticket) = self.tickets.remove(&query_id).ok_or_else(|| {
-            let status = status_with_query_id_and_correlation_id(
-                adapter_error_status(Error::new(
-                    ErrorCode::InvalidRequest,
-                    "datafusion_nexus.server.flight.execute_ticket.resolve",
-                    "unknown, expired, or already consumed statement ticket",
-                )),
-                &query_id,
-                request_correlation_id.as_deref(),
-            );
-            log_statement_status(&query_id, "ticket", Instant::now(), &status);
-            status
-        })?;
+        let (mut execution_lease, ticket) =
+            self.coordinator.consume_ticket(&query_id, Instant::now()).map_err(|error| {
+                let status = status_with_query_id_and_correlation_id(
+                    adapter_error_status(
+                        Error::new(
+                            ErrorCode::InvalidRequest,
+                            "datafusion_nexus.server.flight.execute_ticket.resolve",
+                            "unknown, expired, or already consumed statement ticket",
+                        )
+                        .with_log_safe_fact("query_coordinator_error", error.kind().as_str()),
+                    ),
+                    &query_id,
+                    request_correlation_id.as_deref(),
+                );
+                log_statement_status(&query_id, "ticket", Instant::now(), &status);
+                status
+            })?;
 
         // Derive from `shutdown_token` so cancellation cascades to statements
         // that race in between ticket consumption and cancellation registry insert.
         let token = self.shutdown_token.child_token();
-        let StatementTicket {
-            query_id,
+        let CoordinatorTicketPayload {
             sql,
             correlation_id,
-            ticket_kind,
             prepared_handle,
+            kind,
             native_cancellation,
             started_at,
             ..
         } = ticket;
+        let ticket_kind = match StatementTicketKind::from_code(kind) {
+            Ok(ticket_kind) => ticket_kind,
+            Err(status) => {
+                let captured = CapturedError::from_status(&status);
+                execution_lease.finish_captured("ticket", &status, captured);
+                return Err(status);
+            },
+        };
         let correlation_id = correlation_id.or(request_correlation_id);
-        self.observability.record_correlation_id(&query_id, correlation_id.as_deref());
+        self.coordinator.record_correlation_id(&query_id, correlation_id.as_deref());
         let query_span = Self::query_span(&query_id, correlation_id.as_deref(), "do_get_statement");
         {
             let _query_enter = query_span.enter();
@@ -64,6 +60,19 @@ impl DatafusionCudfFlightSqlService {
                 "executing Flight SQL statement ticket"
             );
         }
+        let observation = match execution_lease.observation_handle() {
+            Ok(observation) => observation,
+            Err(error) => {
+                let (status, captured) = adapter_error_to_status_and_capture(
+                    error.adapter_error("datafusion_nexus.server.flight.execute_ticket.observation_handle"),
+                );
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                execution_lease.finish_captured("planning", &status, captured);
+                return Err(status);
+            },
+        };
+        let output_counters = execution_lease.hot_counters();
+        let activity_factory = execution_lease.activity_factory();
         self.cancellations.insert(query_id.clone(), token.clone(), native_cancellation.clone());
         let native_cancellation_for_bridge = native_cancellation.clone();
         let token_for_bridge = token.clone();
@@ -75,32 +84,25 @@ impl DatafusionCudfFlightSqlService {
             token_for_bridge.cancelled().await;
             native_cancellation_for_bridge.cancel();
         });
-        let lifecycle = Arc::new(QueryLifecycle::new(query_id.clone(), started_at));
+        let coordinator_terminal = CoordinatorExecutionTerminal::new(execution_lease, query_id.clone(), started_at);
         // Construct the guard before any post-ticket branch so cancellation
         // registration and observability cleanup stay tied together after the
-        // ticket leaves `self.tickets`.
+        // ticket leaves the coordinator's ticketed state.
         let guard = QueryExecutionGuard {
             query_id: query_id.clone(),
             correlation_id: correlation_id.clone(),
             cancellations: Arc::clone(&self.cancellations),
-            observability: Arc::clone(&self.observability),
             flight_token: token.clone(),
             native_cancellation: native_cancellation.clone(),
             native_cancel_bridge,
             shutdown_token: self.shutdown_token.clone(),
-            lifecycle: Arc::clone(&lifecycle),
+            terminal: Arc::clone(&coordinator_terminal),
         };
         if token.is_cancelled() {
             native_cancellation.cancel();
-            let status = finish_adapter_error_status_with_correlation_id(
-                self.observability.as_ref(),
-                &query_id,
-                correlation_id.as_deref(),
-                "planning",
-                cancellation_error(&self.shutdown_token),
-            );
-            lifecycle.finish_status("planning", &status);
-            self.observability.seal(&query_id);
+            let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            coordinator_terminal.finish_captured("planning", &status, captured);
             return Err(status);
         }
 
@@ -117,32 +119,37 @@ impl DatafusionCudfFlightSqlService {
                 prepared_statement_handle = handle.as_str(),
                 "deduplicated repeated prepared DDL execution on the query channel; returning an empty result"
             );
-            lifecycle.finish_success("stream");
-            self.observability.finish_success(&query_id);
-            self.observability.seal(&query_id);
+            coordinator_terminal.finish_success("stream");
             drop(guard);
             let query_id_for_encode = query_id.clone();
             let correlation_id_for_encode = correlation_id.clone();
-            let stream = FlightDataEncoderBuilder::new()
-                .with_schema(Arc::new(Schema::empty()))
-                .build(futures::stream::empty::<Result<arrow::record_batch::RecordBatch, FlightError>>())
-                .map_err(move |error| {
-                    status_with_query_id_and_correlation_id(
-                        arrow_flight_error_to_status_for_operation(
-                            error,
-                            "datafusion_nexus.server.flight.execute_ticket.empty_ddl_encode",
-                            "failed to encode empty Flight SQL DDL result stream",
-                        ),
-                        &query_id_for_encode,
-                        correlation_id_for_encode.as_deref(),
-                    )
-                });
+            let stream = encode_flight_data_stream(
+                Arc::new(Schema::empty()),
+                futures::stream::empty::<Result<arrow::record_batch::RecordBatch, FlightError>>(),
+            )
+            .map_err(move |error| {
+                status_with_query_id_and_correlation_id(
+                    arrow_flight_error_to_status_for_operation(
+                        error,
+                        "datafusion_nexus.server.flight.execute_ticket.empty_ddl_encode",
+                        "failed to encode empty Flight SQL DDL result stream",
+                    ),
+                    &query_id_for_encode,
+                    correlation_id_for_encode.as_deref(),
+                )
+            });
             let mut response = Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream);
             attach_query_response_metadata(&mut response, &query_id, correlation_id.as_deref());
             return Ok(response);
         }
 
-        let planning = self.query_planning(&query_id, correlation_id.as_deref(), native_cancellation.clone());
+        let planning = self.coordinated_query_planning(
+            &query_id,
+            correlation_id.as_deref(),
+            native_cancellation.clone(),
+            observation,
+            activity_factory,
+        );
         let query_ctx = &planning.ctx;
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
@@ -156,47 +163,33 @@ impl DatafusionCudfFlightSqlService {
                 Ok(plan) => plan,
                 Err(error) => {
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
-                    self.observability.finish_failed(
-                        &query_id,
-                        "planning",
-                        datafusion_error_to_captured_error(&error, ticket_kind.sql_operation()),
-                    );
-                    let status = status_with_query_id(
-                        datafusion_error_to_status_for_operation(error, ticket_kind.sql_operation()),
-                        &query_id,
-                    );
+                    let (status, captured) =
+                        datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
+                    let status = status_with_query_id(status, &query_id);
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    lifecycle.finish_status("planning", &status);
-                    self.observability.seal(&query_id);
+                    coordinator_terminal.finish_captured("planning", &status, captured);
                     return Err(status);
                 },
             },
             _ = token.cancelled() => {
                 native_cancellation.cancel();
-                let status = finish_adapter_error_status_with_correlation_id(
-                    self.observability.as_ref(),
+                let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
+                let status = status_with_query_id_and_correlation_id(
+                    status,
                     &query_id,
                     correlation_id.as_deref(),
-                    "planning",
-                    cancellation_error(&self.shutdown_token),
                 );
-                lifecycle.finish_status("planning", &status);
-                self.observability.seal(&query_id);
+                coordinator_terminal.finish_captured("planning", &status, captured);
                 return Err(status);
             },
         };
         if let Err(error) =
             reject_drop_object_type_mismatch(query_ctx, &logical_plan, ticket_kind.sql_operation()).await
         {
-            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
-            let status = status_with_query_id_and_correlation_id(
-                adapter_error_status(error),
-                &query_id,
-                correlation_id.as_deref(),
-            );
-            lifecycle.finish_status("planning", &status);
-            self.observability.seal(&query_id);
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            coordinator_terminal.finish_captured("planning", &status, captured);
             return Err(status);
         }
         let df = tokio::select! {
@@ -216,31 +209,24 @@ impl DatafusionCudfFlightSqlService {
                     // planning-time adapter error that does carry the
                     // leaf-guard facts gets the structured warn line.
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
-                    self.observability.finish_failed(
-                        &query_id,
-                        "planning",
-                        datafusion_error_to_captured_error(&error, ticket_kind.sql_operation()),
-                    );
-                    let status = status_with_query_id(
-                        datafusion_error_to_status_for_operation(error, ticket_kind.sql_operation()),
-                        &query_id,
-                    );
+                    let (status, captured) =
+                        datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
+                    let status = status_with_query_id(status, &query_id);
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    lifecycle.finish_status("planning", &status);
+                    coordinator_terminal.finish_captured("planning", &status, captured);
                     return Err(status);
                 },
             },
             _ = token.cancelled() => {
                 native_cancellation.cancel();
-                let status = finish_adapter_error_status_with_correlation_id(
-                    self.observability.as_ref(),
+                let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
+                let status = status_with_query_id_and_correlation_id(
+                    status,
                     &query_id,
                     correlation_id.as_deref(),
-                    "planning",
-                    cancellation_error(&self.shutdown_token),
                 );
-                lifecycle.finish_status("planning", &status);
+                coordinator_terminal.finish_captured("planning", &status, captured);
                 return Err(status);
             },
         };
@@ -254,13 +240,9 @@ impl DatafusionCudfFlightSqlService {
             entry.mark_executed();
         }
         if let Some(error) = fast_fail_unsupported_table_format_operator_plan(df.logical_plan()) {
-            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
-            let status = status_with_query_id_and_correlation_id(
-                adapter_error_status(error),
-                &query_id,
-                correlation_id.as_deref(),
-            );
-            lifecycle.finish_status("planning", &status);
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            coordinator_terminal.finish_captured("planning", &status, captured);
             return Err(status);
         }
         let schema = df.schema().as_arrow().clone();
@@ -286,37 +268,30 @@ impl DatafusionCudfFlightSqlService {
                         &logical_plan_tables,
                     );
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
-                    self.observability.capture_planning_failure(
+                    self.coordinator.capture_planning_failure(
                         &query_id,
                         "physical_planning",
                         "physical_planning_failed",
                         error.to_string(),
                     );
-                    self.observability.finish_failed(
-                        &query_id,
-                        "execute_stream",
-                        datafusion_error_to_captured_error(&error, ticket_kind.execute_stream_operation()),
-                    );
-                    let status = status_with_query_id(
-                        datafusion_error_to_status_for_operation(error, ticket_kind.execute_stream_operation()),
-                        &query_id,
-                    );
+                    let (status, captured) =
+                        datafusion_error_to_status_and_capture(error, ticket_kind.execute_stream_operation());
+                    let status = status_with_query_id(status, &query_id);
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    lifecycle.finish_status("execute_stream", &status);
+                    coordinator_terminal.finish_captured("execute_stream", &status, captured);
                     return Err(status);
                 },
             },
             _ = token.cancelled() => {
                 native_cancellation.cancel();
-                let status = finish_adapter_error_status_with_correlation_id(
-                    self.observability.as_ref(),
+                let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
+                let status = status_with_query_id_and_correlation_id(
+                    status,
                     &query_id,
                     correlation_id.as_deref(),
-                    "execute_stream",
-                    cancellation_error(&self.shutdown_token),
                 );
-                lifecycle.finish_status("execute_stream", &status);
+                coordinator_terminal.finish_captured("execute_stream", &status, captured);
                 return Err(status);
             },
         };
@@ -326,43 +301,44 @@ impl DatafusionCudfFlightSqlService {
             diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
             &logical_plan_tables,
         );
-        self.observability.capture_planning(&query_id, diagnostics, Arc::clone(&plan));
+        self.coordinator.capture_planning(&query_id, diagnostics, Arc::clone(&plan));
         let native_execution_span =
             Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "native_execution");
         let stream = match execute_physical_stream(Arc::clone(&plan), task_ctx) {
             Ok(stream) => stream,
             Err(error) => {
                 log_leaf_guard_rejection(&query_id, &error, self.session_profile);
-                self.observability.finish_failed(
-                    &query_id,
-                    "execute_stream",
-                    datafusion_error_to_captured_error(&error, ticket_kind.execute_stream_operation()),
-                );
-                let status = status_with_query_id(
-                    datafusion_error_to_status_for_operation(error, ticket_kind.execute_stream_operation()),
-                    &query_id,
-                );
+                let (status, captured) =
+                    datafusion_error_to_status_and_capture(error, ticket_kind.execute_stream_operation());
+                let status = status_with_query_id(status, &query_id);
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                lifecycle.finish_status("execute_stream", &status);
+                coordinator_terminal.finish_captured("execute_stream", &status, captured);
                 return Err(status);
             },
         };
-        let mut native_stream = stream;
+        let mut native_stream = Some(stream);
         let native_execution_span_for_poll = native_execution_span.clone();
         let stream = futures::stream::poll_fn(move |context| {
             let _native_enter = native_execution_span_for_poll.enter();
-            native_stream.as_mut().poll_next(context)
+            let poll = native_stream
+                .as_mut()
+                .map_or(std::task::Poll::Ready(None), |stream| stream.as_mut().poll_next(context));
+            if matches!(&poll, std::task::Poll::Ready(None)) {
+                // Reaching EOF is the execution-resource boundary. Do not
+                // retain the exhausted DataFusion stream (and its admission
+                // ticket) until tonic later drops the response wrapper.
+                native_stream = None;
+            }
+            poll
         });
         let cancel_token_for_tail = token.clone();
         let shutdown_token_for_tail = self.shutdown_token.clone();
         let query_id_for_tail = query_id.clone();
         let correlation_id_for_tail = correlation_id.clone();
-        let lifecycle_for_body = Arc::clone(&lifecycle);
+        let terminal_for_body = Arc::clone(&coordinator_terminal);
         let query_id_for_body = query_id.clone();
         let correlation_id_for_body = correlation_id.clone();
-        let observability_for_body = Arc::clone(&self.observability);
-        let query_id_for_output = query_id.clone();
-        let observability_for_output = Arc::clone(&self.observability);
+        let output_counters_for_output = Arc::clone(&output_counters);
         let streaming_span =
             Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "result_streaming");
         let streaming_span_for_output = streaming_span.clone();
@@ -372,7 +348,7 @@ impl DatafusionCudfFlightSqlService {
         let body = stream
             .map_ok(move |batch| {
                 let _stream_enter = streaming_span_for_output.enter();
-                observability_for_output.record_output_batch(&query_id_for_output, &batch);
+                output_counters_for_output.record_output(batch.num_rows(), batch.get_array_memory_size());
                 batch
             })
             .map_err(move |error| {
@@ -383,36 +359,27 @@ impl DatafusionCudfFlightSqlService {
                     "result_streaming",
                 )
                 .entered();
-                observability_for_body.finish_failed(
-                    &query_id_for_body,
-                    "stream",
-                    datafusion_error_to_captured_error(&error, stream_operation),
-                );
-                datafusion_error_to_flight_error(error, &query_id_for_body, &lifecycle_for_body, stream_operation)
+                datafusion_error_to_flight_error(error, &query_id_for_body, &terminal_for_body, stream_operation)
             })
             .take_until(token.cancelled_owned());
-        let lifecycle_for_tail = Arc::clone(&lifecycle);
-        let observability_for_tail = Arc::clone(&self.observability);
+        let terminal_for_tail = Arc::clone(&coordinator_terminal);
         let tail = futures::stream::once(async move {
             cancel_token_for_tail.is_cancelled().then(|| {
-                let status = finish_adapter_error_status_with_correlation_id(
-                    observability_for_tail.as_ref(),
+                let (status, captured) =
+                    adapter_error_to_status_and_capture(cancellation_error(&shutdown_token_for_tail));
+                let status = status_with_query_id_and_correlation_id(
+                    status,
                     &query_id_for_tail,
                     correlation_id_for_tail.as_deref(),
-                    "stream",
-                    cancellation_error(&shutdown_token_for_tail),
                 );
-                lifecycle_for_tail.finish_status("stream", &status);
+                terminal_for_tail.finish_captured("stream", &status, captured);
                 Err(FlightError::from(status))
             })
         })
         .filter_map(|opt| async move { opt });
-        let lifecycle_for_end = Arc::clone(&lifecycle);
-        let observability_for_end = Arc::clone(&self.observability);
-        let query_id_for_end = query_id.clone();
+        let terminal_for_end = Arc::clone(&coordinator_terminal);
         let end = futures::stream::once(async move {
-            lifecycle_for_end.finish_success("stream");
-            observability_for_end.finish_success(&query_id_for_end);
+            terminal_for_end.finish_success("stream");
             None::<Result<arrow::record_batch::RecordBatch, FlightError>>
         })
         .filter_map(|opt| async move { opt });
@@ -426,25 +393,23 @@ impl DatafusionCudfFlightSqlService {
             let _stream_enter = result_streaming_span_for_poll.enter();
             stream.as_mut().poll_next(context)
         });
-        let lifecycle_for_encode = Arc::clone(&lifecycle);
+        let terminal_for_encode = Arc::clone(&coordinator_terminal);
         let query_id_for_encode = query_id.clone();
         let correlation_id_for_encode = correlation_id.clone();
-        let observability_for_encode = Arc::clone(&self.observability);
-        let stream =
-            FlightDataEncoderBuilder::new().with_schema(Arc::new(schema)).build(stream).map_err(move |error| {
-                let status = status_with_query_id_and_correlation_id(
-                    arrow_flight_error_to_status_for_operation(
-                        error,
-                        "datafusion_nexus.server.flight.execute_ticket.result_encode",
-                        "failed to encode Flight SQL result stream",
-                    ),
-                    &query_id_for_encode,
-                    correlation_id_for_encode.as_deref(),
-                );
-                observability_for_encode.finish_status(&query_id_for_encode, "flight_encode", &status);
-                lifecycle_for_encode.finish_status("flight_encode", &status);
-                status
-            });
+        let stream = encode_flight_data_stream(Arc::new(schema), stream).map_err(move |error| {
+            let (status, captured) = arrow_flight_error_to_status_and_capture(
+                error,
+                "datafusion_nexus.server.flight.execute_ticket.result_encode",
+                "failed to encode Flight SQL result stream",
+            );
+            let status = status_with_query_id_and_correlation_id(
+                status,
+                &query_id_for_encode,
+                correlation_id_for_encode.as_deref(),
+            );
+            terminal_for_encode.finish_captured("flight_encode", &status, captured);
+            status
+        });
 
         let mut response = Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream);
         attach_query_response_metadata(&mut response, &query_id, correlation_id.as_deref());
@@ -503,20 +468,12 @@ impl DatafusionCudfFlightSqlService {
                 error,
             )
         })?;
-        if let Some((_, ticket)) = self.tickets.remove(query_id) {
-            ticket.native_cancellation.cancel();
-            let error = cancellation_error(&self.shutdown_token);
-            self.observability.finish_failed(query_id, "cancel_query", CapturedError::from_adapter_error(&error));
-            self.observability.seal(query_id);
+        let error = cancellation_error(&self.shutdown_token);
+        if self.coordinator.cancel_ticket(query_id, CapturedError::from_adapter_error(&error)) {
             tracing::info!(query_id, outcome = "cancelled", stage = "ticket", "cancelled Flight SQL statement ticket");
             return Ok(true);
         }
         let cancelled = self.cancellations.cancel(query_id);
-        if cancelled {
-            let error = cancellation_error(&self.shutdown_token);
-            self.observability.finish_failed(query_id, "cancel_query", CapturedError::from_adapter_error(&error));
-            self.observability.seal(query_id);
-        }
         Ok(cancelled)
     }
 }

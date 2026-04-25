@@ -164,6 +164,8 @@ impl JoinMaterializationTxn {
     }
 
     pub(in crate::exec) fn rollback(mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        let _rollback_observation_scope = reservations
+            .enter_release_observation_scope(crate::observability::RuntimeReservationDisposition::RollbackRelease);
         self.release_uncommitted(reservations, metrics);
     }
 

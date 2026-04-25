@@ -516,7 +516,7 @@ fn empty_resident_frame_for_schema(
         .with_fact("node_id", node_id)
         .with_source(error)
     })?;
-    let frame = DataFrame::from_record_batch(context.runtime(), &batch).map_err(|error| {
+    let frame = DataFrame::from_record_batch(&context.runtime()?, &batch).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.bounded.aggregate.empty_input",
             "failed to upload zero-row aggregate input",

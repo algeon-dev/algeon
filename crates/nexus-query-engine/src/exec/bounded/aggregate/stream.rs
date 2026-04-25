@@ -893,7 +893,8 @@ fn split_compiled_aggregate_stream_frame(
     }
     let source_reservation = input.reservation;
     let source_frame = input.frame.into_frame();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let left = match source_frame.with_execution(&overrides).slice(0, split_at) {
         Ok(left) => left,
         Err(error) => {

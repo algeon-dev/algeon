@@ -30,14 +30,17 @@ pub struct DeploymentIoCapability {
 impl DeploymentIoCapability {
     /// Probes the current host and returns a non-failing diagnostic summary.
     ///
-    /// Always runs the cuFile driver probe. Per-query paths should use
+    /// Skips the cuFile driver probe when `nvidia-fs` is absent or KvikIO
+    /// compatibility is forced. Per-query paths should use
     /// [`DeploymentIoCapability::cached_current_host`].
     pub fn probe_current_host() -> Self {
-        Self::from_probe_inputs(
-            probe_nvidia_fs_status(),
-            KvikioCompatModeStatus::from_env_value(std::env::var(KVIKIO_COMPAT_MODE_ENV).ok().as_deref()),
-            probe_cudf_gds_driver(),
-        )
+        let nvidia_fs_status = probe_nvidia_fs_status();
+        let kvikio_compat_mode =
+            KvikioCompatModeStatus::from_env_value(std::env::var(KVIKIO_COMPAT_MODE_ENV).ok().as_deref());
+        configure_kvikio_compatibility(&nvidia_fs_status, &kvikio_compat_mode);
+        let gds_driver_probe_status =
+            probe_cudf_gds_driver_if_eligible(&nvidia_fs_status, &kvikio_compat_mode, probe_cudf_gds_driver);
+        Self::from_probe_inputs(nvidia_fs_status, kvikio_compat_mode, gds_driver_probe_status)
     }
 
     /// Returns a process-wide cached host capability summary, probing once.
@@ -221,6 +224,10 @@ pub enum GdsDriverProbeStatus {
     Available,
     /// No clean cudf-rs/libcudf probe boundary exists in this build.
     ProbeUnimplemented,
+    /// The probe was skipped because `nvidia-fs` is absent.
+    SkippedDriverMissing,
+    /// The probe was skipped because compatibility mode is forced on.
+    SkippedCompatModeForced,
     /// The cuFile driver-open probe failed.
     Unavailable {
         /// Stable cudf-rs error code.
@@ -238,6 +245,8 @@ impl GdsDriverProbeStatus {
         match self {
             Self::Available => "available",
             Self::ProbeUnimplemented => "probe_unimplemented",
+            Self::SkippedDriverMissing => "skipped_driver_missing",
+            Self::SkippedCompatModeForced => "skipped_compat_mode_forced",
             Self::Unavailable { .. } => "unavailable",
         }
     }
@@ -266,6 +275,29 @@ fn probe_cudf_gds_driver() -> GdsDriverProbeStatus {
     }
 }
 
+fn probe_cudf_gds_driver_if_eligible(
+    nvidia_fs_status: &NvidiaFsProbeStatus,
+    kvikio_compat_mode: &KvikioCompatModeStatus,
+    probe: impl FnOnce() -> GdsDriverProbeStatus,
+) -> GdsDriverProbeStatus {
+    if matches!(nvidia_fs_status, NvidiaFsProbeStatus::DriverMissing) {
+        return GdsDriverProbeStatus::SkippedDriverMissing;
+    }
+    if kvikio_compat_mode.is_forced_on() {
+        return GdsDriverProbeStatus::SkippedCompatModeForced;
+    }
+    probe()
+}
+
+fn configure_kvikio_compatibility(nvidia_fs_status: &NvidiaFsProbeStatus, kvikio_compat_mode: &KvikioCompatModeStatus) {
+    if !matches!(nvidia_fs_status, NvidiaFsProbeStatus::DriverMissing) && !kvikio_compat_mode.is_forced_on() {
+        return;
+    }
+    if let Err(error) = cudf::io::set_kvikio_compat_mode(cudf::io::KvikioCompatMode::On) {
+        eprintln!("[nexus-query-engine] warning: failed to configure KvikIO compatibility mode: {error}");
+    }
+}
+
 fn gds_availability_status(
     nvidia_fs_status: &NvidiaFsProbeStatus,
     kvikio_compat_mode: &KvikioCompatModeStatus,
@@ -280,6 +312,8 @@ fn gds_availability_status(
     match gds_driver_probe_status {
         GdsDriverProbeStatus::Available => GdsAvailabilityStatus::Available,
         GdsDriverProbeStatus::ProbeUnimplemented => GdsAvailabilityStatus::ProbeUnimplemented,
+        GdsDriverProbeStatus::SkippedDriverMissing => GdsAvailabilityStatus::DriverMissing,
+        GdsDriverProbeStatus::SkippedCompatModeForced => GdsAvailabilityStatus::CompatModeForced,
         GdsDriverProbeStatus::Unavailable { .. } => GdsAvailabilityStatus::DriverUnavailable,
     }
 }
@@ -348,5 +382,31 @@ mod tests {
         assert_eq!(missing, NvidiaFsProbeStatus::DriverMissing);
         let present = probe_nvidia_fs_status_from_paths([Path::new(".")]);
         assert!(matches!(present, NvidiaFsProbeStatus::Present { .. }));
+    }
+
+    #[test]
+    fn gds_driver_probe_is_skipped_before_cufile_when_ineligible() {
+        let mut called = false;
+        let status = probe_cudf_gds_driver_if_eligible(
+            &NvidiaFsProbeStatus::DriverMissing,
+            &KvikioCompatModeStatus::Unset,
+            || {
+                called = true;
+                GdsDriverProbeStatus::Available
+            },
+        );
+        assert_eq!(status, GdsDriverProbeStatus::SkippedDriverMissing);
+        assert!(!called);
+
+        let status = probe_cudf_gds_driver_if_eligible(
+            &NvidiaFsProbeStatus::Present { path: PathBuf::from(NVIDIA_FS_PROC_PATH) },
+            &KvikioCompatModeStatus::ForcedOn { raw_value: "ON".to_string() },
+            || {
+                called = true;
+                GdsDriverProbeStatus::Available
+            },
+        );
+        assert_eq!(status, GdsDriverProbeStatus::SkippedCompatModeForced);
+        assert!(!called);
     }
 }

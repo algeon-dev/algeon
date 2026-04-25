@@ -11,7 +11,8 @@ pub(super) fn execute_compiled_keyless_join_materialize(
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let residual_columns = residual_input_columns(node)?;
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let predicate = lower_join_residual_predicate(context, node, &residual_columns)?;
     let options = dataframe_predicate_join_options(&residual_columns);
     let timer = Instant::now();

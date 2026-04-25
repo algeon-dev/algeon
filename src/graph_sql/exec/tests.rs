@@ -1,4 +1,6 @@
 use std::{fs::File, sync::Arc};
+#[cfg(feature = "server")]
+use std::{sync::Mutex, time::Duration};
 
 use arrow::{
     array::{ArrayRef, Float64Array, Int64Array, StringArray},
@@ -10,22 +12,33 @@ use datafusion::{
     execution::context::TaskContext,
     logical_expr::Operator,
     physical_expr::expressions::{binary, col, lit},
-    physical_plan::{empty::EmptyExec, filter::FilterExec},
+    physical_plan::{collect, empty::EmptyExec, filter::FilterExec},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use nexus_query_engine::{
     expr::{Expr, SortExpr, SortSpec},
+    observability::RuntimeTerminalOutcome,
     plan::ProjectionOutput,
     runtime::{
-        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
-        QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+        DeploymentIoCapability, ExecutionCancellation, GdsDriverProbeStatus, KvikioCompatModeStatus,
+        NvidiaFsProbeStatus, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
     },
     source::{LiteralBatchSource, LocalParquetFile, LocalParquetSource},
+};
+#[cfg(feature = "server")]
+use nexus_query_engine::{
+    observability::{RuntimeObservationConfig, RuntimeObservationSession, SealedRuntimeObservationSnapshot},
+    runtime::LakehouseCacheFillEventSnapshot,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
 use super::*;
+#[cfg(feature = "server")]
+use crate::native_exec::admission::QueryAdmissionFacts;
+#[cfg(feature = "server")]
+use crate::native_exec::{NativeMetricsCapture, NativeMetricsCaptureSink};
 use crate::{
+    error::{DataFusionErrorExt, ErrorCode},
     graph_sql::{
         CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphOptions, CugraphPageRankParams, CugraphSqlConfig,
         CugraphTableReference, CugraphTriangleCountAllParams, result_schema_for_params,
@@ -288,6 +301,303 @@ fn bfs_utf8_spec() -> CugraphAlgorithmSpec {
         output_schema: result_schema_for_params(CugraphAlgorithm::Bfs, &params),
         params,
     }
+}
+
+#[cfg(feature = "server")]
+#[derive(Default)]
+struct GraphCaptureSink {
+    query_metrics: Mutex<Vec<QueryMetrics>>,
+}
+
+#[cfg(feature = "server")]
+impl NativeMetricsCaptureSink for GraphCaptureSink {
+    fn record_admission_facts(&self, _query_id: &str, _facts: QueryAdmissionFacts) {}
+
+    fn record_query_metrics(&self, _query_id: &str, metrics: &QueryMetrics) {
+        self.query_metrics.lock().unwrap().push(metrics.clone());
+    }
+
+    fn record_lakehouse_cache_fill_events(&self, _query_id: &str, _events: &[LakehouseCacheFillEventSnapshot]) {}
+}
+
+#[cfg(feature = "server")]
+fn native_literal_edge_source(config: &NativeCudfExecutionConfig, utf8: bool) -> Arc<dyn ExecutionPlan> {
+    let (schema, columns): (Arc<Schema>, Vec<ArrayRef>) = if utf8 {
+        (
+            string_edge_schema(),
+            vec![
+                Arc::new(StringArray::from(vec!["alice", "bob", "carol"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["bob", "carol", "alice"])) as ArrayRef,
+            ],
+        )
+    } else {
+        (
+            edge_schema(),
+            vec![
+                Arc::new(Int64Array::from(vec![0, 1, 2])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![1, 2, 0])) as ArrayRef,
+                Arc::new(Float64Array::from(vec![1.0, 1.0, 1.0])) as ArrayRef,
+            ],
+        )
+    };
+    let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+    Arc::new(NativeCudfExec::try_new(builder.finish_with_host_sink(source), config.clone()).unwrap())
+        as Arc<dyn ExecutionPlan>
+}
+
+#[cfg(feature = "server")]
+fn observed_graph_exec(
+    query_id: &'static str,
+    spec: CugraphAlgorithmSpec,
+    cancellation: ExecutionCancellation,
+) -> (Arc<CugraphAlgoExec>, Arc<GraphCaptureSink>) {
+    let sink = Arc::new(GraphCaptureSink::default());
+    let erased_sink: Arc<dyn NativeMetricsCaptureSink> = sink.clone();
+    let config = NativeCudfExecutionConfig::unbounded()
+        .with_cancellation(cancellation)
+        .with_metrics_capture(NativeMetricsCapture::new(query_id, erased_sink));
+    let edge_source = native_literal_edge_source(&config, false);
+    (
+        Arc::new(
+            CugraphAlgoExec::try_new(spec, edge_source, vec![], None, None, config)
+                .expect("observed graph exec builds"),
+        ),
+        sink,
+    )
+}
+
+#[cfg(feature = "server")]
+fn sealed_graph_stage(query_id: &str, outcome: RuntimeTerminalOutcome) -> SealedRuntimeObservationSnapshot {
+    RuntimeObservationSession::new(query_id, None, RuntimeObservationConfig::bounded(8, 4096))
+        .seal(outcome)
+        .expect("enabled graph-stage observation seals")
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn graph_execution_accumulator_merges_stages_and_publishes_exactly_once() {
+    let sink = Arc::new(GraphCaptureSink::default());
+    let erased_sink: Arc<dyn NativeMetricsCaptureSink> = sink.clone();
+    let capture = NativeMetricsCapture::new("graph-stage-merge", erased_sink).new_execution();
+    let owner = capture.clone();
+    let metrics_set = ExecutionPlanMetricsSet::new();
+    let native_metrics = NativeCudfMetrics::new_with_capture(&metrics_set, 0, Some(capture));
+    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, RuntimeObservationConfig::native_execution());
+
+    let mut edge = QueryMetrics::default().with_query_id("graph-stage-merge");
+    edge.input_batches = 2;
+    edge.input_rows = 7;
+    edge.peak_device_memory_bytes = Some(90);
+    edge.max_task_reservation_bytes = 120;
+    edge.record_task_execution("shared-task", "graph_stage");
+    edge.record_task_elapsed("shared-task", "graph_stage", Duration::from_nanos(5));
+    edge.task_runtime_metrics.get_mut("shared-task").unwrap().max_observed_peak_bytes = Some(70);
+    edge.task_operator_metrics.get_mut("graph_stage").unwrap().max_observed_peak_bytes = Some(80);
+
+    let mut graph = QueryMetrics::default().with_query_id("graph-stage-merge");
+    graph.input_batches = 3;
+    graph.input_rows = 11;
+    graph.peak_device_memory_bytes = Some(40);
+    graph.max_task_reservation_bytes = 200;
+    graph.record_task_execution("shared-task", "graph_stage");
+    graph.record_task_elapsed("shared-task", "graph_stage", Duration::from_nanos(7));
+    graph.task_runtime_metrics.get_mut("shared-task").unwrap().max_observed_peak_bytes = Some(130);
+    graph.task_operator_metrics.get_mut("graph_stage").unwrap().max_observed_peak_bytes = Some(60);
+
+    graph_metrics
+        .merge_stage_evidence(edge, Some(sealed_graph_stage("graph-stage-merge", RuntimeTerminalOutcome::Succeeded)));
+    graph_metrics
+        .merge_stage_evidence(graph, Some(sealed_graph_stage("graph-stage-merge", RuntimeTerminalOutcome::Succeeded)));
+
+    let accumulated = graph_metrics.accumulated().clone();
+    assert_eq!(accumulated.input_batches, 5, "additive fields sum across stages");
+    assert_eq!(accumulated.input_rows, 18, "additive fields sum across stages");
+    assert_eq!(accumulated.peak_device_memory_bytes, Some(90), "query peaks take max, not sum");
+    assert_eq!(accumulated.max_task_reservation_bytes, 200, "task maxima take max, not sum");
+    assert_eq!(accumulated.task_runtime_metrics.len(), 1, "task-id map rows merge by key");
+    assert_eq!(accumulated.task_operator_metrics.len(), 1, "operator map rows merge by key");
+    let task = &accumulated.task_runtime_metrics["shared-task"];
+    assert_eq!(task.elapsed_time, Duration::from_nanos(12));
+    assert_eq!(task.max_observed_peak_bytes, Some(130), "task peak takes max, not sum");
+    let operator = &accumulated.task_operator_metrics["graph_stage"];
+    assert_eq!(operator.task_count, 2);
+    assert_eq!(operator.elapsed_time, Duration::from_nanos(12));
+    assert_eq!(operator.max_observed_peak_bytes, Some(80), "operator peak takes max, not sum");
+    assert!(sink.query_metrics.lock().unwrap().is_empty(), "stages do not publish independently");
+    assert_eq!(owner.runtime_observations().len(), 2, "capture owner retains every stage snapshot");
+
+    graph_metrics.publish();
+    graph_metrics.publish();
+
+    let published = sink.query_metrics.lock().unwrap();
+    assert_eq!(published.len(), 1, "terminal publication is idempotent");
+    assert_eq!(published[0], accumulated);
+    drop(published);
+    let datafusion_metrics = metrics_set.clone_inner();
+    assert_eq!(datafusion_metrics.sum_by_name("input_rows").unwrap().as_usize(), 18);
+    assert_eq!(datafusion_metrics.sum_by_name("peak_device_memory_bytes").unwrap().as_usize(), 90);
+    assert_eq!(datafusion_metrics.sum_by_name("native_task_operator_rows").unwrap().as_usize(), 1);
+    assert_eq!(datafusion_metrics.sum_by_name("native_task_runtime_rows").unwrap().as_usize(), 1);
+}
+
+#[cfg(feature = "server")]
+#[tokio::test]
+async fn graph_success_retains_every_drainable_sealed_observation_without_duplicate_metrics() {
+    let (exec, sink) = observed_graph_exec("graph-observation-success", triangle_spec(), ExecutionCancellation::new());
+    let owner = exec.metrics_capture.clone().expect("graph wrapper owns local evidence");
+
+    let batches = collect(exec.clone(), Arc::new(TaskContext::default())).await.expect("graph query succeeds");
+
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+    let retained = owner.runtime_observations();
+    assert_eq!(retained.len(), 2, "native edge and graph stages each retain their sealed snapshot");
+    for snapshot in &retained {
+        assert_eq!(snapshot.manifest().query_id.as_str(), "graph-observation-success");
+        assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
+        assert!(snapshot.footer().complete);
+        assert!(!snapshot.events().is_empty());
+    }
+    assert_eq!(sink.query_metrics.lock().unwrap().len(), 1, "successful graph execution publishes once");
+    assert_eq!(
+        exec.metrics()
+            .expect("graph metrics registered")
+            .sum_by_name("native_graph_runtime_rows")
+            .expect("graph runtime row metric registered")
+            .as_usize(),
+        1,
+        "observed finalization must not re-record merged graph metrics",
+    );
+    drop(retained);
+
+    let drained = owner.drain_runtime_observations();
+    assert_eq!(drained.len(), 2);
+    assert!(owner.runtime_observations().is_empty());
+    assert_eq!(owner.retention_stats().drained_total, 2);
+}
+
+#[cfg(feature = "server")]
+#[tokio::test]
+async fn graph_native_failure_retains_failed_evidence_and_original_error() {
+    let mut spec = pagerank_spec();
+    let CugraphAlgorithmParams::PageRank(params) = &mut spec.params else { unreachable!("PageRank test spec") };
+    params.alpha = 1.5;
+    let (exec, sink) = observed_graph_exec("graph-observation-failure", spec, ExecutionCancellation::new());
+    let owner = exec.metrics_capture.clone().expect("graph wrapper owns local evidence");
+
+    let error = collect(exec.clone(), Arc::new(TaskContext::default()))
+        .await
+        .expect_err("invalid native PageRank alpha remains a query failure");
+
+    let nexus = error.find_nexus_error().expect("DataFusion boundary preserves the typed adapter error");
+    assert_eq!(nexus.code(), ErrorCode::CudfInvalidInput);
+    assert_eq!(nexus.operation(), "datafusion_nexus.cugraph_sql.execute");
+    assert_eq!(nexus.fact_value("native_code"), Some("cudf_invalid_input"));
+    assert_eq!(nexus.fact_value("native_operation"), Some("nexus_query_engine.graph_algorithm.pagerank_params"));
+    let retained = owner.runtime_observations();
+    assert_eq!(retained.len(), 2, "successful native edge and failed graph stages are both retained");
+    assert_eq!(retained[0].manifest().query_id.as_str(), "graph-observation-failure");
+    assert_eq!(retained[0].footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
+    assert_eq!(
+        retained[1].footer().terminal,
+        Some(RuntimeTerminalOutcome::Failed { error_code: "cudf_invalid_input".to_string() })
+    );
+    assert!(retained[1].footer().complete);
+    assert!(retained[1].events().len() >= 2, "failure retains query and plan start evidence");
+    assert_eq!(
+        sink.query_metrics.lock().unwrap().len(),
+        1,
+        "mid-stage failure publishes prior and partial metrics once"
+    );
+    assert_eq!(
+        exec.metrics()
+            .expect("graph metrics registered")
+            .sum_by_name("native_graph_runtime_rows")
+            .expect("graph runtime row metric registered")
+            .as_usize(),
+        0,
+        "invalid graph parameters are rejected before a runtime row is emitted",
+    );
+}
+
+#[cfg(feature = "server")]
+#[tokio::test]
+async fn graph_cancellation_retains_cancelled_evidence_and_original_error() {
+    let cancellation = ExecutionCancellation::new();
+    cancellation.cancel();
+    let (exec, sink) = observed_graph_exec("graph-observation-cancelled", bfs_spec(), cancellation);
+    let owner = exec.metrics_capture.clone().expect("graph wrapper owns local evidence");
+
+    let error =
+        collect(exec, Arc::new(TaskContext::default())).await.expect_err("pre-cancelled graph query remains cancelled");
+
+    let nexus = error.find_nexus_error().expect("DataFusion boundary preserves the typed cancellation");
+    assert_eq!(nexus.code(), ErrorCode::Cancelled);
+    assert_eq!(nexus.fact_value("native_code"), Some("cancelled"));
+    let retained = owner.runtime_observations();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].manifest().query_id.as_str(), "graph-observation-cancelled");
+    assert_eq!(retained[0].footer().terminal, Some(RuntimeTerminalOutcome::Cancelled));
+    assert!(retained[0].footer().complete);
+    assert!(!retained[0].events().is_empty());
+    assert_eq!(sink.query_metrics.lock().unwrap().len(), 1, "cancelled edge stage publishes once");
+}
+
+#[cfg(feature = "server")]
+#[tokio::test]
+async fn graph_logical_bfs_gpu_projection_retains_three_stages_and_publishes_once() {
+    let server_observability = crate::server::ServerObservabilityConfig {
+        per_query_max_records: 17,
+        per_query_max_bytes: 2048,
+        active_logical_capture_max_bytes: 16 * 1024,
+        global_sealed_max_count: 8,
+        global_sealed_max_bytes: 64 * 1024,
+        sealed_ttl: Duration::from_secs(60),
+        shutdown_grace: Duration::from_secs(30),
+    };
+    let observation_config = server_observability.runtime_observation_config();
+    let sink = Arc::new(GraphCaptureSink::default());
+    let erased_sink: Arc<dyn NativeMetricsCaptureSink> = sink.clone();
+    let config = NativeCudfExecutionConfig::unbounded().with_metrics_capture(
+        NativeMetricsCapture::new("graph-bfs-projection", erased_sink)
+            .with_runtime_observation_config(observation_config),
+    );
+    let edge_source = native_literal_edge_source(&config, true);
+    let exec = CugraphAlgoExec::try_new(bfs_utf8_spec(), edge_source, vec![], Some(vec![0, 1]), Some(2), config)
+        .expect("logical BFS projection graph exec builds");
+    let owner = exec.metrics_capture.clone().expect("graph wrapper owns local evidence");
+    let context_lease = exec.native_execution_config.execution_context().expect("graph context builds");
+
+    let (_, handle) = GpuResidentProducer::execute_gpu_result_with_context(
+        &exec,
+        context_lease.context(),
+        0,
+        Arc::new(TaskContext::default()),
+    )
+    .await
+    .expect("logical BFS GPU projection succeeds");
+    let batch = handle.to_host_record_batch().expect("projected graph result materializes");
+
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(batch.num_columns(), 2);
+    let retained = owner.runtime_observations();
+    assert_eq!(retained.len(), 3, "native edge, graph, and BFS projection snapshots are retained");
+    assert!(retained.iter().all(|snapshot| {
+        snapshot.manifest().query_id.as_str() == "graph-bfs-projection"
+            && snapshot.footer().terminal == Some(RuntimeTerminalOutcome::Succeeded)
+            && snapshot.manifest().limits == observation_config.limits()
+    }));
+    assert_eq!(sink.query_metrics.lock().unwrap().len(), 1, "BFS projection path publishes once");
+    assert_eq!(
+        exec.metrics()
+            .expect("graph metrics registered")
+            .sum_by_name("native_graph_runtime_rows")
+            .expect("graph runtime row metric registered")
+            .as_usize(),
+        1,
+        "merged publication preserves the single graph runtime row",
+    );
 }
 
 fn singleflight_test_exec_with_options(

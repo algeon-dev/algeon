@@ -34,10 +34,14 @@ use datafusion::{
 };
 use futures::{TryStreamExt, future::BoxFuture};
 use nexus_query_engine::{
-    exec::{execute_query_plan, execute_query_plan_with_gpu_inputs, output::QueryOutput},
+    exec::{
+        execute_query_plan_observed, execute_query_plan_with_gpu_inputs_observed,
+        output::{QueryExecutionOutcome, QueryOutput},
+    },
     expr::{BinaryOp, CaseWhen, Expr as NativeExpr, LimitSpec, LiteralValue},
     graph_memory::{graph_edge_list_output_rows_for_plan, graph_memory_estimate_for_edge_list},
     metrics::{GraphAlgorithmRuntimeMetrics, QueryMetrics},
+    observability::RuntimeObservationConfig,
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
         GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
@@ -68,7 +72,7 @@ use crate::{
     error::{Error, ErrorCode},
     native_exec::{
         NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
-        NativeCudfMetrics,
+        NativeCudfMetrics, NativeExecutionMetricsCapture,
         admission::task_context_with_query_admission_ticket,
         graph::{
             GraphAdmissionModelAsk, GraphBfsFollowerOutcome, GraphBfsLeader, GraphBfsSingleflightJoin,
@@ -83,6 +87,14 @@ use crate::{
 };
 
 static NEXT_CUGRAPH_GPU_RESULT_INPUT_ID: AtomicU64 = AtomicU64::new(0);
+
+fn counted_cudf_runtime(
+    context: &ExecutionContext,
+    operation: &'static str,
+    message: &'static str,
+) -> Result<cudf::Runtime> {
+    context.runtime().map_err(|error| DataFusionError::from(Error::from_native(operation, message, error)))
+}
 
 mod admission;
 mod bfs_mapping;
@@ -103,3 +115,82 @@ use lowering::*;
 pub use node::CugraphAlgoExec;
 use path::*;
 use residency::*;
+
+pub(super) struct GraphExecutionMetrics<'a> {
+    sink: &'a NativeCudfMetrics,
+    runtime_observation_config: RuntimeObservationConfig,
+    accumulated: QueryMetrics,
+    stage_count: usize,
+    published: bool,
+}
+
+impl<'a> GraphExecutionMetrics<'a> {
+    pub(super) fn new(sink: &'a NativeCudfMetrics, runtime_observation_config: RuntimeObservationConfig) -> Self {
+        Self {
+            sink,
+            runtime_observation_config,
+            accumulated: QueryMetrics::default(),
+            stage_count: 0,
+            published: false,
+        }
+    }
+
+    fn runtime_observation_config(&self) -> RuntimeObservationConfig {
+        self.runtime_observation_config
+    }
+
+    fn merge_stage_evidence(
+        &mut self,
+        metrics: QueryMetrics,
+        observation: Option<nexus_query_engine::observability::SealedRuntimeObservationSnapshot>,
+    ) {
+        if self.stage_count == 0 {
+            self.accumulated = metrics;
+        } else {
+            self.accumulated.merge_from(metrics);
+        }
+        self.stage_count = self.stage_count.saturating_add(1);
+        if let Some(observation) = observation {
+            self.sink.record_runtime_observation(Arc::new(observation));
+        }
+    }
+
+    fn merge_outcome(
+        &mut self,
+        outcome: QueryExecutionOutcome,
+    ) -> std::result::Result<QueryOutput, nexus_query_engine::error::QueryError> {
+        let (result, metrics, observation) = outcome.into_parts();
+        self.merge_stage_evidence(metrics, observation);
+        if result.is_err() {
+            self.publish();
+        }
+        result
+    }
+
+    pub(super) fn finish<T>(&mut self, result: Result<T>) -> Result<T> {
+        self.publish();
+        result
+    }
+
+    fn publish(&mut self) {
+        if self.published {
+            return;
+        }
+        self.sink.record_query_metrics(&self.accumulated);
+        self.published = true;
+    }
+
+    #[cfg(test)]
+    fn accumulated(&self) -> &QueryMetrics {
+        &self.accumulated
+    }
+}
+
+pub(super) fn finalize_graph_query_outcome(
+    metrics: &mut GraphExecutionMetrics<'_>,
+    outcome: QueryExecutionOutcome,
+    operation: &'static str,
+    message: &'static str,
+) -> Result<QueryOutput> {
+    metrics.merge_outcome(outcome).map_err(|error| DataFusionError::from(Error::from_native(operation, message, error)))
+}

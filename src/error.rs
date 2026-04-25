@@ -597,13 +597,21 @@ fn redact_uri_tokens(message: &str) -> String {
         .join(" ")
 }
 
-// cuDF classification priority is resource exhaustion first, then retry status
-// (`Temporary`/`Persistent`), then permanent failures by cuDF kind. This keeps
+// cuDF classification preserves permanent size/host-limit codes first, then
+// generic resource exhaustion, retry status (`Temporary`/`Persistent`), and
+// permanent failures by cuDF kind. This keeps
 // cuDF's action contract intact: only Temporary is automatically retryable;
 // Persistent requires escalation or intervention. Notable permanent mappings:
 // `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
 // invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
+    match error.code() {
+        cudf::ErrorCode::SizeOverflow => return ErrorCode::SizeOverflow,
+        cudf::ErrorCode::HostMaterializationLimitExceeded => {
+            return ErrorCode::HostMaterializationLimitExceeded;
+        },
+        _ => {},
+    }
     if error.kind() == cudf::ErrorKind::ResourceExhausted {
         return ErrorCode::CudfResourceExhausted;
     }
@@ -638,6 +646,10 @@ fn code_for_native_error(error: &nexus_query_engine::error::QueryError) -> Error
         nexus_query_engine::error::QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
         nexus_query_engine::error::QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
         nexus_query_engine::error::QueryErrorCode::CudfResourceExhausted => ErrorCode::CudfResourceExhausted,
+        nexus_query_engine::error::QueryErrorCode::SizeOverflow => ErrorCode::SizeOverflow,
+        nexus_query_engine::error::QueryErrorCode::HostMaterializationLimitExceeded => {
+            ErrorCode::HostMaterializationLimitExceeded
+        },
         nexus_query_engine::error::QueryErrorCode::CudfTemporaryFailure => ErrorCode::CudfTemporaryFailure,
         nexus_query_engine::error::QueryErrorCode::CudfPersistentFailure => ErrorCode::CudfPersistentFailure,
         nexus_query_engine::error::QueryErrorCode::CudfDependencyFailure => ErrorCode::CudfDependencyFailure,

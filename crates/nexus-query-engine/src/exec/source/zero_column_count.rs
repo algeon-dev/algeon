@@ -52,7 +52,7 @@ pub(super) fn zero_column_count_frame(
         })
         .collect::<Result<Vec<_>>>()?;
     let timer = Instant::now();
-    let series = context.runtime().series(counts.as_slice()).map_err(|error| {
+    let series = context.runtime()?.series(counts.as_slice()).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.zero_column_count.frame",
             "failed to construct native zero-column count input",
@@ -100,17 +100,13 @@ pub(super) fn zero_column_count_chunk_frame_with_budget(
     let token = context
         .execution_budget_token(ExecutionBudgetRequest::new(budget).with_boundary(budget_boundary))
         .map_err(|error| {
-            QueryError::from_cudf_with_budget_details(
-                "nexus_query_engine.local_parquet_chunk.zero_column_count_budget",
-                "failed to create bounded native zero-column count source budget token",
-                error,
-            )
-            .with_fact_if_absent("budget_boundary", budget_boundary)
-            .with_fact_if_absent("budget_bytes", budget_bytes)
+            error
+                .with_fact_if_absent("budget_boundary", budget_boundary)
+                .with_fact_if_absent("budget_bytes", budget_bytes)
         })?;
 
     let timer = Instant::now();
-    let outcome = context.runtime().series_from_value_with_budget(count, 1, &token).map_err(|error| {
+    let outcome = context.runtime()?.series_from_value_with_budget(count, 1, &token).map_err(|error| {
         QueryError::from_cudf_with_budget_details(
             "nexus_query_engine.local_parquet_chunk.zero_column_count",
             "failed to construct bounded native zero-column count input",

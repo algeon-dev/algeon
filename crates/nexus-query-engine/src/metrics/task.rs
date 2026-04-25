@@ -35,6 +35,14 @@ pub struct TaskOperatorMetrics {
 }
 
 impl TaskOperatorMetrics {
+    pub(super) fn reset_reservation_projection(&mut self) {
+        self.reservation_requested_bytes = 0;
+        self.reservation_granted_bytes = 0;
+        self.reservation_released_bytes = 0;
+        self.reservation_live_peak_bytes = 0;
+        self.live_reserved_bytes = 0;
+    }
+
     fn record_reservation_event(&mut self, event: &MemoryReservationEvent) {
         if matches!(event.action, MemoryReservationEventAction::Reserve | MemoryReservationEventAction::Grow) {
             self.reservation_requested_bytes = self.reservation_requested_bytes.saturating_add(event.requested_bytes);
@@ -91,6 +99,14 @@ pub struct TaskRuntimeMetrics {
 }
 
 impl TaskRuntimeMetrics {
+    pub(super) fn reset_reservation_projection(&mut self) {
+        self.reservation_requested_bytes = 0;
+        self.reservation_granted_bytes = 0;
+        self.reservation_released_bytes = 0;
+        self.reservation_live_peak_bytes = 0;
+        self.live_reserved_bytes = 0;
+    }
+
     fn record_reservation_event(&mut self, event: &MemoryReservationEvent) {
         if matches!(event.action, MemoryReservationEventAction::Reserve | MemoryReservationEventAction::Grow) {
             self.reservation_requested_bytes = self.reservation_requested_bytes.saturating_add(event.requested_bytes);
@@ -178,14 +194,6 @@ impl BudgetedExecutionEvent {
     }
 }
 
-fn is_legacy_bounded_task_id(task_id: &str) -> bool {
-    task_id.starts_with("legacy_bounded.")
-}
-
-fn legacy_bounded_operator_kind_from_task_id(task_id: &str) -> Option<&str> {
-    task_id.strip_prefix("legacy_bounded.")?.split('.').next()
-}
-
 impl QueryMetrics {
     /// Records a lower-level cuDF execution-budget report.
     pub fn record_budgeted_execution(&mut self, operation: impl Into<String>, report: &ExecutionBudgetReport) {
@@ -193,12 +201,36 @@ impl QueryMetrics {
         let retained_bytes = report.retained_bytes().map(|bytes| bytes as u64);
         self.max_task_observed_peak_bytes = max_option(self.max_task_observed_peak_bytes, observed_peak_bytes);
         self.max_task_retained_bytes = max_option(self.max_task_retained_bytes, retained_bytes);
-        if let Some(compiled_task_id) = self.current_compiled_task_id.clone() {
-            self.record_task_budget_observation(&compiled_task_id, observed_peak_bytes, retained_bytes);
-        }
         let mut event = BudgetedExecutionEvent::new(operation, report);
         event.query_id = self.inherited_query_id();
         self.budgeted_execution_events.push(event);
+    }
+
+    /// Returns the explicit cursor used by one compiled task to delimit its
+    /// lower-level budget reports.
+    pub fn budgeted_execution_event_count(&self) -> usize {
+        self.budgeted_execution_events.len()
+    }
+
+    /// Projects reports emitted after `start` onto one explicit compiled task.
+    pub fn record_task_budget_observations_since(&mut self, compiled_task_id: impl ToString, start: usize) {
+        let observed_peak_bytes = self
+            .budgeted_execution_events
+            .get(start..)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|event| event.allocator_high_water_bytes)
+            .max();
+        let retained_bytes = self
+            .budgeted_execution_events
+            .get(start..)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|event| event.retained_bytes)
+            .max();
+        if observed_peak_bytes.is_some() || retained_bytes.is_some() {
+            self.record_task_budget_observation(&compiled_task_id.to_string(), observed_peak_bytes, retained_bytes);
+        }
     }
 
     /// Records execution of a compiled pipeline task.
@@ -212,22 +244,32 @@ impl QueryMetrics {
 
     /// Records execution of a task id and operator kind.
     pub fn record_task_execution(&mut self, task_id: impl ToString, operator_kind: impl Into<String>) {
+        self.register_task_definition(task_id, operator_kind);
+    }
+
+    /// Registers one explicit task definition, incrementing operator task count
+    /// only when the task id is first observed.
+    pub fn register_task_definition(&mut self, task_id: impl ToString, operator_kind: impl Into<String>) {
         let compiled_task_id = task_id.to_string();
         let operator_kind = operator_kind.into();
         let query_id = self.inherited_query_id();
-        self.task_kind_by_compiled_task_id.insert(compiled_task_id.clone(), operator_kind.clone());
-        self.task_runtime_metrics.entry(compiled_task_id.clone()).or_insert_with(|| TaskRuntimeMetrics {
+        let first_definition =
+            self.task_kind_by_compiled_task_id.insert(compiled_task_id.clone(), operator_kind.clone()).is_none();
+        let task = self.task_runtime_metrics.entry(compiled_task_id.clone()).or_insert_with(|| TaskRuntimeMetrics {
             query_id: query_id.clone(),
             compiled_task_id,
             operator_kind: operator_kind.clone(),
             ..Default::default()
         });
+        task.operator_kind = operator_kind.clone();
         let row = self.task_operator_metrics.entry(operator_kind.clone()).or_insert_with(|| TaskOperatorMetrics {
             query_id: query_id.clone(),
             operator_kind,
             ..Default::default()
         });
-        row.task_count = row.task_count.saturating_add(1);
+        if first_definition {
+            row.task_count = row.task_count.saturating_add(1);
+        }
     }
 
     /// Records a diagnostic mapping between a compiled task and its source plan node.
@@ -269,35 +311,10 @@ impl QueryMetrics {
         operator.elapsed_time += elapsed;
     }
 
-    /// Sets the compiled task id associated with subsequent budget reports.
-    pub fn set_current_compiled_task(&mut self, compiled_task_id: impl ToString) {
-        self.set_current_task(compiled_task_id);
-    }
-
-    /// Sets the task id associated with subsequent budget reports.
-    pub fn set_current_task(&mut self, task_id: impl ToString) {
-        self.current_compiled_task_id = Some(task_id.to_string());
-    }
-
-    /// Clears the current compiled task id.
-    pub fn clear_current_compiled_task(&mut self) {
-        self.clear_current_task();
-    }
-
-    /// Clears the current task id.
-    pub fn clear_current_task(&mut self) {
-        self.current_compiled_task_id = None;
-    }
-
     pub(super) fn record_task_reservation_event(&mut self, event: &MemoryReservationEvent) {
         let Some(compiled_task_id) = event.compiled_task_id.as_ref().map(|value| value.as_str()) else {
             return;
         };
-        if !self.task_kind_by_compiled_task_id.contains_key(compiled_task_id)
-            && let Some(operator_kind) = legacy_bounded_operator_kind_from_task_id(compiled_task_id)
-        {
-            self.task_kind_by_compiled_task_id.insert(compiled_task_id.to_string(), operator_kind.to_string());
-        }
         self.record_task_runtime_reservation_event(compiled_task_id, event);
         if matches!(
             event.action,
@@ -336,8 +353,6 @@ impl QueryMetrics {
     fn record_task_runtime_reservation_event(&mut self, compiled_task_id: &str, event: &MemoryReservationEvent) {
         let operator_kind =
             self.task_kind_by_compiled_task_id.get(compiled_task_id).cloned().unwrap_or_else(|| "unknown".to_string());
-        let is_new_legacy_task =
-            is_legacy_bounded_task_id(compiled_task_id) && !self.task_runtime_metrics.contains_key(compiled_task_id);
         let query_id = event.query_id.clone().or_else(|| self.inherited_query_id());
         let row = self.task_runtime_metrics.entry(compiled_task_id.to_string()).or_insert_with(|| TaskRuntimeMetrics {
             query_id: query_id.clone(),
@@ -358,9 +373,6 @@ impl QueryMetrics {
         });
         if operator.query_id.is_none() {
             operator.query_id = query_id;
-        }
-        if is_new_legacy_task {
-            operator.task_count = operator.task_count.saturating_add(1);
         }
         operator.record_reservation_event(event);
     }

@@ -153,7 +153,8 @@ pub(super) fn execute_join(
 
     let left = select_join_input(left, &left_columns, "left")?;
     let right = select_join_input(right, &right_columns, "right")?;
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let input = JoinIndexInput {
         context,
@@ -272,7 +273,8 @@ fn execute_cross_join(
     }
 
     let options = dataframe_cross_join_options(&node.spec.output_projection);
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = left.with_execution(&overrides).cross_join_projected(&right, options).map_err(|error| {
         QueryError::from_cudf("nexus_query_engine.join.cross", "failed to execute native cudf cross join", error)

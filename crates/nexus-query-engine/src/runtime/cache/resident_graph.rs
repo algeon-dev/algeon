@@ -1,5 +1,7 @@
 //! Runtime-owned resident cuGraph cache and singleflight coordination.
 
+#[cfg(feature = "cugraph")]
+use std::sync::TryLockError;
 use std::{
     collections::HashMap,
     marker::PhantomData,
@@ -109,14 +111,15 @@ impl GpuResidentGraphTransposition for cugraph::Transposed {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct GpuResidentGraphCacheEntryKey {
     resident_key: ResidentGraphKey,
-    runtime_key: usize,
+    runtime_key: u64,
 }
 
 #[cfg(feature = "cugraph")]
 impl GpuResidentGraphCacheEntryKey {
-    fn for_context(resident_key: ResidentGraphKey, context: &ExecutionContext) -> Self {
-        let runtime = context.shared_runtime();
-        Self { resident_key, runtime_key: Arc::as_ptr(&runtime) as usize }
+    fn for_context(resident_key: ResidentGraphKey, context: &ExecutionContext) -> Result<Self> {
+        let runtime =
+            context.resident_graph_cache_owner_runtime("nexus_query_engine.gpu_resident_graph_cache.entry_key")?;
+        Ok(Self { resident_key, runtime_key: runtime.affinity_id().get() })
     }
 }
 
@@ -125,7 +128,7 @@ struct GpuResidentGraphCacheEntry {
     graph: GpuResidentGraphEntry,
     retained_device_bytes: u64,
     last_access_epoch: u64,
-    runtime_owner: Weak<cudf::Runtime>,
+    runtime_lease: cudf::runtime::RuntimeLeaseAnchor,
 }
 
 #[cfg(feature = "cugraph")]
@@ -138,13 +141,13 @@ struct GpuResidentGraphCacheEviction {
 #[cfg(feature = "cugraph")]
 struct GpuResidentGraphCheckedOut {
     retained_device_bytes: u64,
-    runtime_owner: Weak<cudf::Runtime>,
+    runtime_lease: cudf::runtime::RuntimeLeaseAnchor,
 }
 
 #[cfg(feature = "cugraph")]
 struct GpuResidentGraphCompanionRuntime {
-    pooled_runtime: Weak<cudf::Runtime>,
-    companion: Arc<cudf::Runtime>,
+    pooled_runtime_lease: cudf::runtime::RuntimeLeaseAnchor,
+    companion: Weak<cudf::Runtime>,
 }
 
 #[cfg(feature = "cugraph")]
@@ -166,7 +169,7 @@ struct GpuResidentGraphCacheState {
     available: HashMap<GpuResidentGraphCacheEntryKey, GpuResidentGraphCacheEntry>,
     checked_out: HashMap<GpuResidentGraphCacheEntryKey, GpuResidentGraphCheckedOut>,
     preparation_pins: HashMap<GpuResidentGraphCacheEntryKey, u64>,
-    companion_runtimes: HashMap<usize, GpuResidentGraphCompanionRuntime>,
+    companion_runtimes: HashMap<u64, GpuResidentGraphCompanionRuntime>,
     builds: HashMap<ResidentGraphKey, Arc<GpuResidentGraphBuildFlight>>,
     retained_device_bytes: u64,
     next_access_epoch: u64,
@@ -175,6 +178,7 @@ struct GpuResidentGraphCacheState {
     misses: u64,
     evictions: u64,
     build_waits: u64,
+    closed: bool,
 }
 
 #[cfg(feature = "cugraph")]
@@ -183,6 +187,8 @@ struct GpuResidentGraphCacheInner {
     max_copies_per_key: usize,
     governor: Option<MemoryGovernor>,
     state: Mutex<GpuResidentGraphCacheState>,
+    #[cfg(test)]
+    close_and_drain_delay: Mutex<Option<Duration>>,
 }
 
 #[cfg(feature = "cugraph")]
@@ -263,6 +269,8 @@ impl GpuResidentGraphCache {
                 max_copies_per_key,
                 governor,
                 state: Mutex::new(GpuResidentGraphCacheState::default()),
+                #[cfg(test)]
+                close_and_drain_delay: Mutex::new(None),
             }),
         }
     }
@@ -345,11 +353,11 @@ impl GpuResidentGraphCache {
         Ok(state
             .available
             .iter()
-            .any(|(key, entry)| &key.resident_key == resident_key && entry.runtime_owner.upgrade().is_some())
+            .any(|(key, entry)| &key.resident_key == resident_key && entry.runtime_lease.is_current())
             || state
                 .checked_out
                 .iter()
-                .any(|(key, entry)| &key.resident_key == resident_key && entry.runtime_owner.upgrade().is_some()))
+                .any(|(key, entry)| &key.resident_key == resident_key && entry.runtime_lease.is_current()))
     }
 
     /// Pin an available graph for an imminent exact-runtime checkout.
@@ -363,7 +371,8 @@ impl GpuResidentGraphCache {
         resident_key: &ResidentGraphKey,
         context: &ExecutionContext,
     ) -> Result<Option<GpuResidentGraphPreparationPin>> {
-        let context_runtime = context.shared_runtime();
+        let context_runtime =
+            context.resident_graph_cache_owner_runtime("nexus_query_engine.gpu_resident_graph_cache.prepare_pin")?;
         self.try_pin_available_key_for_runtime(resident_key, &context_runtime)
     }
 
@@ -374,11 +383,14 @@ impl GpuResidentGraphCache {
     ) -> Result<Option<GpuResidentGraphPreparationPin>> {
         let entry_key = GpuResidentGraphCacheEntryKey {
             resident_key: resident_key.clone(),
-            runtime_key: Arc::as_ptr(runtime) as usize,
+            runtime_key: runtime.affinity_id().get(),
         };
         let mut state = self.lock()?;
+        if state.closed {
+            return Ok(None);
+        }
         let available =
-            state.available.get(&entry_key).is_some_and(|entry| runtime_owner_matches(&entry.runtime_owner, runtime));
+            state.available.get(&entry_key).is_some_and(|entry| runtime_lease_matches(&entry.runtime_lease, runtime));
         if !available || state.preparation_pins.contains_key(&entry_key) {
             return Ok(None);
         }
@@ -389,6 +401,9 @@ impl GpuResidentGraphCache {
 
     pub(crate) fn join_build(&self, resident_key: &ResidentGraphKey) -> Result<GpuResidentGraphBuildJoin> {
         let mut state = self.lock()?;
+        if state.closed {
+            return Err(resident_graph_cache_closed("nexus_query_engine.gpu_resident_graph_cache.join_build"));
+        }
         if let Some(flight) = state.builds.get(resident_key).cloned() {
             state.build_waits = state.build_waits.saturating_add(1);
             return Ok(GpuResidentGraphBuildJoin::Follower(GpuResidentGraphBuildFollower { flight }));
@@ -409,42 +424,83 @@ impl GpuResidentGraphCache {
         context: &ExecutionContext,
         operation: &'static str,
     ) -> Result<Arc<cudf::Runtime>> {
-        let pooled_runtime = context.shared_runtime();
-        let runtime_key = Arc::as_ptr(&pooled_runtime) as usize;
-        if let Some(companion) = self.lock()?.companion_runtimes.get(&runtime_key)
-            && runtime_owner_matches(&companion.pooled_runtime, &pooled_runtime)
+        let pooled_runtime = context.resident_graph_cache_owner_runtime(operation)?;
+        let runtime_key = pooled_runtime.affinity_id().get();
+        let device_ordinal = pooled_runtime.device().ordinal();
         {
-            return Ok(Arc::clone(&companion.companion));
+            let state = self.lock()?;
+            if state.closed {
+                return Err(resident_graph_cache_closed(operation));
+            }
+            if let Some(companion) = state.companion_runtimes.get(&runtime_key)
+                && runtime_lease_matches(&companion.pooled_runtime_lease, &pooled_runtime)
+                && let Some(companion) = companion.companion.upgrade()
+            {
+                return Ok(companion);
+            }
         }
-        let companion = Arc::new(
-            cudf::Runtime::builder()
-                .with_device(context.runtime().device())
-                .with_stream(context.runtime().stream().clone())
-                .with_device_memory_manager()
-                .build()
-                .map_err(|error| {
-                    QueryError::from_cudf(
-                        operation,
-                        "failed to build stable companion runtime for resident graph cache",
-                        error,
-                    )
-                    .with_fact("device_ordinal", context.runtime().device().ordinal())
-                })?,
-        );
+        let companion_runtime = cudf::Runtime::builder()
+            .with_device(pooled_runtime.device())
+            .with_stream(pooled_runtime.stream().clone())
+            .with_device_memory_manager()
+            .build()
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    operation,
+                    "failed to build stable companion runtime for resident graph cache",
+                    error,
+                )
+                .with_fact("device_ordinal", device_ordinal)
+            })?
+            .inherit_affinity_from(pooled_runtime.as_ref())
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    operation,
+                    "failed to inherit base runtime affinity for resident graph companion runtime",
+                    error,
+                )
+                .with_fact("device_ordinal", device_ordinal)
+            })?
+            .inherit_retained_lifetime_from(pooled_runtime.as_ref())
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    operation,
+                    "failed to retain service lifetime for resident graph companion runtime",
+                    error,
+                )
+                .with_fact("device_ordinal", device_ordinal)
+            })?;
+        let companion = Arc::new(companion_runtime);
         let mut state = self.lock()?;
+        if state.closed {
+            return Err(resident_graph_cache_closed(operation));
+        }
         if let Some(existing) = state.companion_runtimes.get(&runtime_key)
-            && runtime_owner_matches(&existing.pooled_runtime, &pooled_runtime)
+            && runtime_lease_matches(&existing.pooled_runtime_lease, &pooled_runtime)
+            && let Some(existing) = existing.companion.upgrade()
         {
-            return Ok(Arc::clone(&existing.companion));
+            return Ok(existing);
         }
         state.companion_runtimes.insert(
             runtime_key,
             GpuResidentGraphCompanionRuntime {
-                pooled_runtime: Arc::downgrade(&pooled_runtime),
-                companion: Arc::clone(&companion),
+                pooled_runtime_lease: pooled_runtime.lease_anchor(),
+                companion: Arc::downgrade(&companion),
             },
         );
         Ok(companion)
+    }
+
+    /// Resolves the query-neutral cache owner and a same-binding execution
+    /// runtime that retains only the current query's outward work.
+    pub(crate) fn runtimes_for_context(
+        &self,
+        context: &ExecutionContext,
+        operation: &'static str,
+    ) -> Result<(Arc<cudf::Runtime>, Arc<cudf::Runtime>)> {
+        let cache_runtime = self.companion_runtime_for_context(context, operation)?;
+        let query_runtime = context.resident_graph_query_runtime(&cache_runtime, operation)?;
+        Ok((cache_runtime, query_runtime))
     }
 
     pub(crate) fn checkout<T>(
@@ -456,8 +512,11 @@ impl GpuResidentGraphCache {
     where
         T: GpuResidentGraphTransposition,
     {
-        let entry_key = GpuResidentGraphCacheEntryKey::for_context(resident_key.clone(), context);
+        let entry_key = GpuResidentGraphCacheEntryKey::for_context(resident_key.clone(), context)?;
         let mut state = self.lock()?;
+        if state.closed {
+            return Err(resident_graph_cache_closed("nexus_query_engine.gpu_resident_graph_cache.checkout"));
+        }
         if !state.available.contains_key(&entry_key)
             || !state.consume_checkout_preparation_pin(&entry_key, preparation_pin_id)
         {
@@ -466,9 +525,10 @@ impl GpuResidentGraphCache {
         let Some(entry) = state.available.remove(&entry_key) else {
             unreachable!("available resident graph entry checked immediately before removal")
         };
-        let context_runtime = context.shared_runtime();
+        let context_runtime =
+            context.resident_graph_cache_owner_runtime("nexus_query_engine.gpu_resident_graph_cache.checkout")?;
         let retained_device_bytes = entry.retained_device_bytes;
-        if !runtime_owner_matches(&entry.runtime_owner, &context_runtime) {
+        if !runtime_lease_matches(&entry.runtime_lease, &context_runtime) {
             state.retained_device_bytes = state.retained_device_bytes.saturating_sub(retained_device_bytes);
             drop(state);
             let released = self.release_governor_evictable_bytes(retained_device_bytes);
@@ -484,7 +544,7 @@ impl GpuResidentGraphCache {
         };
         state.checked_out.insert(
             entry_key.clone(),
-            GpuResidentGraphCheckedOut { retained_device_bytes, runtime_owner: entry.runtime_owner },
+            GpuResidentGraphCheckedOut { retained_device_bytes, runtime_lease: entry.runtime_lease },
         );
         state.hits = state.hits.saturating_add(1);
         Ok(Some(GpuResidentGraphCheckout {
@@ -507,20 +567,24 @@ impl GpuResidentGraphCache {
     where
         T: GpuResidentGraphTransposition,
     {
-        let context_runtime = context.shared_runtime();
-        let entry_key = GpuResidentGraphCacheEntryKey::for_context(resident_key, context);
+        let context_runtime =
+            context.resident_graph_cache_owner_runtime("nexus_query_engine.gpu_resident_graph_cache.insert")?;
+        let entry_key = GpuResidentGraphCacheEntryKey::for_context(resident_key, context)?;
         if retained_device_bytes > self.inner.max_retained_device_bytes {
             return Ok(GpuResidentGraphCacheInsert::CapacitySkipped);
         }
         let mut state = self.lock()?;
+        if state.closed {
+            return Err(resident_graph_cache_closed("nexus_query_engine.gpu_resident_graph_cache.insert"));
+        }
         if state.available.contains_key(&entry_key) || state.checked_out.contains_key(&entry_key) {
             return Ok(GpuResidentGraphCacheInsert::AlreadyPresent);
         }
         if state.copy_count_for_resident_key(&entry_key.resident_key) >= self.inner.max_copies_per_key {
             return Ok(GpuResidentGraphCacheInsert::CopyLimitSkipped);
         }
-        let memory_grant = context.memory_grant();
-        if !self.governor_can_admit_after_cache_eviction(&state, retained_device_bytes, memory_grant)? {
+        let memory_grant = context.memory_grant()?;
+        if !self.governor_can_admit_after_cache_eviction(&state, retained_device_bytes, memory_grant.as_ref())? {
             return Ok(GpuResidentGraphCacheInsert::CapacitySkipped);
         }
         let eviction = state.evict_until_fits(self.inner.max_retained_device_bytes, retained_device_bytes);
@@ -538,7 +602,7 @@ impl GpuResidentGraphCache {
             drop(eviction);
             return Ok(GpuResidentGraphCacheInsert::CapacitySkipped);
         }
-        let reserved = match self.reserve_governor_evictable_bytes(retained_device_bytes, memory_grant) {
+        let reserved = match self.reserve_governor_evictable_bytes(retained_device_bytes, memory_grant.as_ref()) {
             Ok(reserved) => reserved,
             Err(error) => {
                 drop(state);
@@ -558,13 +622,103 @@ impl GpuResidentGraphCache {
                 graph: T::into_entry(parked),
                 retained_device_bytes,
                 last_access_epoch,
-                runtime_owner: Arc::downgrade(&context_runtime),
+                runtime_lease: context_runtime.lease_anchor(),
             },
         );
         state.retained_device_bytes = state.retained_device_bytes.saturating_add(retained_device_bytes);
         drop(state);
         drop(eviction);
         Ok(GpuResidentGraphCacheInsert::Inserted)
+    }
+
+    /// Close the cache and release every cache-owned parked graph.
+    ///
+    /// Checked-out graphs are owned by their checkout/live graph values and
+    /// are intentionally not detached here. Their runtime-bound handle leases
+    /// keep the service resource epoch counted until those GPU objects drop.
+    #[cfg(test)]
+    pub(crate) fn close_and_drain(&self) -> Result<()> {
+        let (entries, flights, released_device_bytes) = {
+            let mut state = self.lock()?;
+            state.closed = true;
+            state.preparation_pins.clear();
+            let entries = state.available.drain().map(|(_key, entry)| entry).collect::<Vec<_>>();
+            let released_device_bytes =
+                entries.iter().map(|entry| entry.retained_device_bytes).fold(0u64, u64::saturating_add);
+            state.retained_device_bytes = state.retained_device_bytes.saturating_sub(released_device_bytes);
+            let flights = state.builds.drain().map(|(_key, flight)| flight).collect::<Vec<_>>();
+            (entries, flights, released_device_bytes)
+        };
+
+        for flight in flights {
+            if let Ok(mut state) = flight.state.lock() {
+                state.finished = true;
+                flight.changed.notify_all();
+            }
+        }
+        // Parked graphs own the counted runtime/epoch token. Destroy them
+        // before clearing companion lookup metadata.
+        drop(entries);
+        let release_result = self.release_governor_evictable_bytes(released_device_bytes);
+        self.lock()?.companion_runtimes.clear();
+        release_result.map(|_| ())
+    }
+
+    /// Close and drain under one server-owned absolute shutdown deadline.
+    pub(crate) fn close_and_drain_until(&self, deadline: Instant) -> Result<()> {
+        const OPERATION: &str = "nexus_query_engine.gpu_resident_graph_cache.close_and_drain";
+        let (entries, flights, released_device_bytes) = {
+            let mut state = self.lock_until(deadline, OPERATION)?;
+            state.closed = true;
+            state.preparation_pins.clear();
+            let entries = state.available.drain().map(|(_key, entry)| entry).collect::<Vec<_>>();
+            let released_device_bytes =
+                entries.iter().map(|entry| entry.retained_device_bytes).fold(0u64, u64::saturating_add);
+            state.retained_device_bytes = state.retained_device_bytes.saturating_sub(released_device_bytes);
+            let flights = state.builds.drain().map(|(_key, flight)| flight).collect::<Vec<_>>();
+            (entries, flights, released_device_bytes)
+        };
+
+        let mut timed_out = Instant::now() >= deadline;
+        for flight in flights {
+            loop {
+                match flight.state.try_lock() {
+                    Ok(mut state) => {
+                        state.finished = true;
+                        flight.changed.notify_all();
+                        break;
+                    },
+                    Err(TryLockError::Poisoned(_)) => break,
+                    Err(TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                        timed_out = true;
+                        break;
+                    },
+                    Err(TryLockError::WouldBlock) => std::thread::yield_now(),
+                }
+            }
+        }
+        #[cfg(test)]
+        if let Some(delay) = *self.inner.close_and_drain_delay.lock().unwrap() {
+            std::thread::sleep(delay);
+        }
+        drop(entries);
+        let release_result = self.release_governor_evictable_bytes(released_device_bytes);
+        match self.lock_until(deadline, OPERATION) {
+            Ok(mut state) => state.companion_runtimes.clear(),
+            Err(error) if error.fact_value("reason") == Some("resident_graph_cache_drain_timeout") => {
+                timed_out = true;
+            },
+            Err(error) => return Err(error),
+        }
+        if timed_out || Instant::now() >= deadline {
+            return Err(resident_graph_cache_drain_timeout(OPERATION));
+        }
+        release_result.map(|_| ())
+    }
+
+    #[cfg(test)]
+    fn set_close_and_drain_delay_for_test(&self, delay: Duration) {
+        *self.inner.close_and_drain_delay.lock().unwrap() = Some(delay);
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, GpuResidentGraphCacheState>> {
@@ -575,6 +729,23 @@ impl GpuResidentGraphCache {
                 "native GPU resident graph cache lock was poisoned",
             )
         })
+    }
+
+    fn lock_until(
+        &self,
+        deadline: Instant,
+        operation: &'static str,
+    ) -> Result<std::sync::MutexGuard<'_, GpuResidentGraphCacheState>> {
+        loop {
+            match self.inner.state.try_lock() {
+                Ok(state) => return Ok(state),
+                Err(TryLockError::Poisoned(_)) => return self.lock(),
+                Err(TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                    return Err(resident_graph_cache_drain_timeout(operation));
+                },
+                Err(TryLockError::WouldBlock) => std::thread::yield_now(),
+            }
+        }
     }
 
     fn handle_memory_pressure(&self, pressure: EvictableMemoryPressure) -> Result<u64> {
@@ -743,8 +914,20 @@ impl GpuResidentGraphCacheState {
 }
 
 #[cfg(feature = "cugraph")]
-fn runtime_owner_matches(owner: &Weak<cudf::Runtime>, runtime: &Arc<cudf::Runtime>) -> bool {
-    owner.upgrade().is_some_and(|owner| Arc::ptr_eq(&owner, runtime))
+fn runtime_lease_matches(lease: &cudf::runtime::RuntimeLeaseAnchor, runtime: &Arc<cudf::Runtime>) -> bool {
+    runtime.matches_lease_anchor(lease)
+}
+
+#[cfg(feature = "cugraph")]
+fn resident_graph_cache_closed(operation: &'static str) -> QueryError {
+    QueryError::new(QueryErrorCode::Cancelled, operation, "resident graph cache is closed")
+        .with_fact("reason", "resident_graph_cache_closed")
+}
+
+#[cfg(feature = "cugraph")]
+fn resident_graph_cache_drain_timeout(operation: &'static str) -> QueryError {
+    QueryError::new(QueryErrorCode::ServiceOverloaded, operation, "timed out draining the resident graph cache")
+        .with_fact("reason", "resident_graph_cache_drain_timeout")
 }
 
 #[cfg(feature = "cugraph")]
@@ -895,6 +1078,17 @@ where T: GpuResidentGraphTransposition
                 "resident graph checkout was not registered",
             ));
         };
+        if state.closed {
+            state.retained_device_bytes = state.retained_device_bytes.saturating_sub(checked_out.retained_device_bytes);
+            let governor = self.cache.governor.clone();
+            self.completed = true;
+            drop(state);
+            drop(parked);
+            if let Some(governor) = governor {
+                governor.release_evictable_bytes(checked_out.retained_device_bytes)?;
+            }
+            return Ok(());
+        }
         let last_access_epoch = state.next_epoch();
         state.available.insert(
             self.entry_key.clone(),
@@ -902,7 +1096,7 @@ where T: GpuResidentGraphTransposition
                 graph: T::into_entry(parked),
                 retained_device_bytes: checked_out.retained_device_bytes,
                 last_access_epoch,
-                runtime_owner: checked_out.runtime_owner,
+                runtime_lease: checked_out.runtime_lease,
             },
         );
         self.completed = true;
@@ -943,6 +1137,8 @@ mod tests {
     };
 
     use arrow::datatypes::{DataType, Field, Schema};
+    #[cfg(feature = "cugraph")]
+    use cugraph::cudf_interop::{SeriesGraphOptions, graph_from_series};
 
     use super::*;
     use crate::{
@@ -950,6 +1146,10 @@ mod tests {
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
             GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyOrientation, GraphResidencyPlanAnalysis,
             QueryPlanBuilder, graph_residency_descriptor_for_edge_plan,
+        },
+        runtime::{
+            DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
+            QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee,
         },
         source::{LocalParquetFile, LocalParquetSource, SourceNode},
     };
@@ -985,6 +1185,63 @@ mod tests {
             resident_key: descriptor.resident_key(&spec, GraphResidencyOrientation::Forward),
             runtime_key: 1,
         }
+    }
+
+    #[cfg(feature = "cugraph")]
+    fn test_graph_context(cache: &Arc<GpuResidentGraphCache>) -> ExecutionContext {
+        let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
+        ExecutionContext::builder()
+            .with_shared_runtime(runtime)
+            .with_resident_graph_cache(Arc::clone(cache))
+            .build()
+            .unwrap()
+    }
+
+    #[cfg(feature = "cugraph")]
+    fn test_parked_forward_graph(
+        cache: &GpuResidentGraphCache,
+        context: &ExecutionContext,
+    ) -> (cugraph::ParkedGraph<cugraph::Forward>, Weak<cudf::Runtime>) {
+        let runtime =
+            cache.companion_runtime_for_context(context, "nexus_query_engine.graph_cache.test_companion").unwrap();
+        let runtime_owner = Arc::downgrade(&runtime);
+        let handle = cugraph::ResourceHandle::for_runtime(Arc::clone(&runtime)).unwrap();
+        let entered = handle.enter("nexus_query_engine.graph_cache.test_graph").unwrap();
+        let src = runtime.series(&[0_i32, 1, 2]).unwrap();
+        let dst = runtime.series(&[1_i32, 2, 0]).unwrap();
+        let graph = graph_from_series::<cugraph::Forward>(
+            &entered,
+            &src,
+            &dst,
+            None,
+            &SeriesGraphOptions::default().renumber(),
+        )
+        .unwrap();
+        let parked = graph.park(&entered).unwrap();
+        drop(entered);
+        drop(handle);
+        drop(runtime);
+        (parked, runtime_owner)
+    }
+
+    #[cfg(feature = "cugraph")]
+    fn guaranteed_graph_cache_service() -> Result<QueryService> {
+        QueryService::new_with_deployment(
+            QueryServiceConfig {
+                max_concurrent_queries: 1,
+                max_admission_queue_len: 8,
+                admission_wait_timeout: Duration::from_millis(500),
+                slot_guarantee: SlotGuarantee::GuaranteedMinimum,
+                resident_graph_cache_max_retained_bytes: Some(64 * 1024 * 1024),
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::new("tenant", 8 * 1024 * 1024)],
+            DeploymentIoCapability::from_probe_inputs(
+                NvidiaFsProbeStatus::DriverMissing,
+                KvikioCompatModeStatus::Unset,
+                GdsDriverProbeStatus::ProbeUnimplemented,
+            ),
+        )
     }
 
     #[cfg(feature = "cugraph")]
@@ -1086,5 +1343,199 @@ mod tests {
 
         assert_eq!(outcome, GpuResidentGraphBuildWait::DeadlineExpired);
         assert_eq!(cache.snapshot().unwrap().build_waits, 1);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn resident_graph_close_and_drain_is_idempotent_and_rejects_new_builds() {
+        let resident_key = test_resident_graph_entry_key().resident_key;
+        let cache = GpuResidentGraphCache::new(1);
+        let _leader = match cache.join_build(&resident_key).unwrap() {
+            GpuResidentGraphBuildJoin::Leader(leader) => leader,
+            GpuResidentGraphBuildJoin::Follower(_) => panic!("first join must lead"),
+        };
+        let follower = match cache.join_build(&resident_key).unwrap() {
+            GpuResidentGraphBuildJoin::Follower(follower) => follower,
+            GpuResidentGraphBuildJoin::Leader(_) => panic!("second simultaneous join must follow"),
+        };
+
+        cache.close_and_drain_until(Instant::now() + Duration::from_secs(1)).unwrap();
+        let outcome = follower
+            .wait(
+                &crate::runtime::ExecutionCancellation::new(),
+                Instant::now() + Duration::from_secs(1),
+                "nexus_query_engine.graph_cache.test_close_and_drain",
+            )
+            .unwrap();
+        assert_eq!(outcome, GpuResidentGraphBuildWait::LeaderFinished);
+
+        cache.close_and_drain().unwrap();
+        let snapshot = cache.snapshot().unwrap();
+        assert_eq!(snapshot.entries, 0);
+        assert_eq!(snapshot.builds_in_flight, 0);
+        let error = match cache.join_build(&resident_key) {
+            Ok(_) => panic!("closed cache must reject a new build"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), QueryErrorCode::Cancelled);
+        assert_eq!(error.fact_value("reason"), Some("resident_graph_cache_closed"));
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn resident_graph_drain_overrun_is_reported_after_non_preemptible_drop_phase() {
+        let cache = GpuResidentGraphCache::new(1);
+        cache.set_close_and_drain_delay_for_test(Duration::from_millis(40));
+
+        let error = cache
+            .close_and_drain_until(Instant::now() + Duration::from_millis(10))
+            .expect_err("resident graph drain that overruns the shared deadline must not report success");
+
+        assert_eq!(error.fact_value("reason"), Some("resident_graph_cache_drain_timeout"));
+        assert_eq!(cache.snapshot().unwrap().entries, 0);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn resident_graph_close_destroys_available_parked_graph_and_companion() {
+        let cache = Arc::new(GpuResidentGraphCache::new(64 * 1024 * 1024));
+        let context = test_graph_context(&cache);
+        let resident_key = test_resident_graph_entry_key().resident_key;
+        let (parked, companion) = test_parked_forward_graph(&cache, &context);
+        assert_eq!(
+            cache.insert_if_absent(resident_key, &context, parked, 1024).unwrap(),
+            GpuResidentGraphCacheInsert::Inserted
+        );
+        assert!(companion.upgrade().is_some());
+
+        cache.close_and_drain().unwrap();
+
+        assert!(companion.upgrade().is_none(), "available graph destruction releases its companion runtime");
+        assert_eq!(cache.snapshot().unwrap().entries, 0);
+        assert_eq!(cache.snapshot().unwrap().resident_bytes, 0);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn resident_graph_checked_out_return_after_close_is_not_reinserted() {
+        let cache = Arc::new(GpuResidentGraphCache::new(64 * 1024 * 1024));
+        let context = test_graph_context(&cache);
+        let resident_key = test_resident_graph_entry_key().resident_key;
+        let (parked, companion) = test_parked_forward_graph(&cache, &context);
+        cache.insert_if_absent(resident_key.clone(), &context, parked, 1024).unwrap();
+        let mut checkout = cache.checkout::<cugraph::Forward>(&resident_key, &context, None).unwrap().unwrap();
+        let parked = checkout.take_parked();
+
+        cache.close_and_drain().unwrap();
+        assert!(companion.upgrade().is_some(), "the checked-out graph still owns its companion runtime");
+        checkout.return_parked(parked).unwrap();
+
+        assert!(companion.upgrade().is_none(), "closed-cache return destroys the parked graph");
+        assert_eq!(cache.snapshot().unwrap().entries, 0);
+        assert_eq!(cache.snapshot().unwrap().resident_bytes, 0);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn cached_graph_owner_is_query_neutral_while_current_outputs_retain_query() {
+        let service = guaranteed_graph_cache_service().expect("graph-cache service");
+        let first = service.admit_query("tenant").unwrap();
+        let first_tenant_context = first.acquire_context().unwrap();
+        let first_context = first_tenant_context.context().clone();
+        let cache = first_context.resident_graph_cache().expect("service graph cache");
+        let resident_key = test_resident_graph_entry_key().resident_key;
+        let (parked, companion) = test_parked_forward_graph(&cache, &first_context);
+        assert_eq!(
+            cache.insert_if_absent(resident_key.clone(), &first_context, parked, 1024).unwrap(),
+            GpuResidentGraphCacheInsert::Inserted
+        );
+        drop(first_context);
+        drop(first_tenant_context);
+        first.finish();
+        drop(first);
+
+        service
+            .wait_for_stream_pools_idle(Duration::from_secs(5))
+            .expect("first query cleanup returns its pooled runtime");
+        let second = service.admit_query("tenant").expect("cache entry must not retain the first query slot");
+        let second_tenant_context = second.acquire_context().unwrap();
+        let second_context = second_tenant_context.context().clone();
+        let mut checkout = cache
+            .checkout::<cugraph::Forward>(&resident_key, &second_context, None)
+            .unwrap()
+            .expect("second query reuses the first query's parked graph");
+        let parked = checkout.take_parked();
+        let (cache_runtime, query_runtime) =
+            cache.runtimes_for_context(&second_context, "nexus_query_engine.graph_cache.test_query_neutral").unwrap();
+        assert!(Arc::ptr_eq(&cache_runtime, &companion.upgrade().expect("cached graph retains its neutral companion")));
+        let handle = cugraph::ResourceHandle::for_runtime(Arc::clone(&cache_runtime)).unwrap();
+        let entered = handle.enter("nexus_query_engine.graph_cache.test_query_neutral").unwrap();
+        let graph = parked.resume(&entered).unwrap();
+        checkout.return_parked(graph.park(&entered).unwrap()).unwrap();
+        let output = query_runtime.series(&[7_i32, 11, 13]).unwrap();
+        drop(entered);
+        drop(handle);
+        drop(query_runtime);
+        drop(cache_runtime);
+        drop(second_tenant_context);
+        second.finish();
+        let error = match cache
+            .runtimes_for_context(&second_context, "nexus_query_engine.graph_cache.test_post_finish_derivation")
+        {
+            Ok(_) => panic!("closed query epoch must reject cache runtime derivation"),
+            Err(error) => error,
+        };
+        assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
+        drop(second_context);
+        drop(second);
+
+        assert!(
+            service.try_admit_query("tenant").unwrap().is_none(),
+            "current-query output provenance must retain the second query"
+        );
+        drop(output);
+        let third = service.admit_query("tenant").expect("dropping the current output releases the second query");
+        drop(third);
+
+        service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
+        assert!(companion.upgrade().is_none(), "cache shutdown destroys graph before its service companion");
+        assert_eq!(cache.snapshot().unwrap().entries, 0);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn escaped_checked_out_graph_retains_service_epoch_and_claim_until_drop() {
+        let service = guaranteed_graph_cache_service().expect("first guaranteed graph-cache service");
+        let handle = service.admit_query("tenant").unwrap();
+        let tenant_context = handle.acquire_context().unwrap();
+        let context = tenant_context.context().clone();
+        let cache = context.resident_graph_cache().expect("service graph cache");
+        let resident_key = test_resident_graph_entry_key().resident_key;
+        let (parked, companion) = test_parked_forward_graph(&cache, &context);
+        cache.insert_if_absent(resident_key.clone(), &context, parked, 1024).unwrap();
+        let mut checkout = cache.checkout::<cugraph::Forward>(&resident_key, &context, None).unwrap().unwrap();
+        let parked = checkout.take_parked();
+        drop(context);
+        drop(tenant_context);
+        drop(handle);
+
+        let replacement_query = service
+            .admit_query("tenant")
+            .expect("escaped query-neutral parked graph must not retain the first query slot");
+        drop(replacement_query);
+
+        service.close().unwrap();
+        cache.close_and_drain().unwrap();
+        let error = guaranteed_graph_cache_service()
+            .expect_err("escaped parked graph companion must retain the prior guaranteed claim");
+        assert_eq!(error.fact_value("reason"), Some("shared_governor_guaranteed_minimum_conflict"));
+        assert!(companion.upgrade().is_some());
+
+        drop(parked);
+        drop(checkout);
+        service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
+        assert!(companion.upgrade().is_none());
+        let replacement = guaranteed_graph_cache_service().expect("last escaped graph owner releases the claim");
+        drop(replacement);
     }
 }

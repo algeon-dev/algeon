@@ -82,7 +82,8 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
     let chunk_count = input_reservations.len();
     let first_frame = frames.remove(0);
     let rest_frame_refs = frames.iter().collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = match first_frame.with_execution(&overrides).concat_many(&rest_frame_refs) {
         Ok(output) => output,
@@ -808,7 +809,7 @@ pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
     let handle = GpuResultHandle::new(context, frame.clone(), schema)?;
     let protected_keys = reservations.source_cache_protected_keys_with(&key);
     let insert =
-        cache.insert_if_absent_protecting(key.clone(), handle, retained_device_bytes, &protected_keys, None)?;
+        cache.insert_if_absent_protecting(context, key.clone(), handle, retained_device_bytes, &protected_keys)?;
     if !cache.is_governor_backed() {
         reservations.release_source_cache_baseline_bytes(insert.evicted_device_bytes, metrics);
     }

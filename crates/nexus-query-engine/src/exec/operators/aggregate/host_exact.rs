@@ -346,7 +346,7 @@ pub(in crate::exec) fn upload_datafusion_exact_host_aggregate_output(
     context: &ExecutionContext,
     output: &RecordBatch,
 ) -> Result<DataFrame> {
-    DataFrame::from_record_batch(context.runtime(), output).map_err(|error| {
+    DataFrame::from_record_batch(&context.runtime()?, output).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.aggregate.stddev_exact.output",
             "failed to upload DataFusion-exact stddev aggregate output",

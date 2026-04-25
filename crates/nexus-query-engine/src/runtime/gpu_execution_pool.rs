@@ -13,7 +13,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex, OnceLock, Weak,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
 };
@@ -25,7 +25,15 @@ use tokio::{
     task::{JoinError, JoinHandle},
 };
 
-use crate::error::{QueryError, QueryErrorCode, Result};
+use crate::{
+    error::{QueryError, QueryErrorCode, Result},
+    observability::{
+        GpuJobLifecycleState, JobDefinitionRow, RuntimeGpuJobObservation, RuntimeJobId, RuntimeObservationHandle,
+        RuntimeObservationPayload, RuntimeStreamLeaseScope, RuntimeTopologyRecord, RuntimeWorkerId,
+        WorkerDefinitionRow,
+    },
+    runtime::context::QueryServiceResourceEpoch,
+};
 
 const BUILD_OPERATION: &str = "nexus_query_engine.gpu_execution_pool.build";
 const RUN_OPERATION: &str = "nexus_query_engine.gpu_execution_pool.run";
@@ -35,6 +43,7 @@ static NEXT_POOL_ID: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
     static CURRENT_POOL_ID: Cell<Option<u64>> = const { Cell::new(None) };
+    static CURRENT_WORKER_INDEX: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 /// Classifies work submitted to a [`GpuExecutionPool`].
@@ -126,6 +135,7 @@ impl GpuExecutionQueryTracker {
 #[derive(Clone)]
 pub struct GpuExecutionPool {
     inner: Arc<GpuExecutionPoolInner>,
+    resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
 }
 
 impl GpuExecutionPool {
@@ -143,11 +153,22 @@ impl GpuExecutionPool {
         validate_worker_count(device_ordinal, worker_count)?;
 
         let id = NEXT_POOL_ID.fetch_add(1, Ordering::Relaxed);
+        let next_worker_index = Arc::new(AtomicUsize::new(0));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(worker_count)
             .thread_name(format!("nexus-gpu-{device_ordinal}"))
-            .on_thread_start(move || CURRENT_POOL_ID.with(|current| current.set(Some(id))))
-            .on_thread_stop(move || CURRENT_POOL_ID.with(|current| current.set(None)))
+            .on_thread_start({
+                let next_worker_index = Arc::clone(&next_worker_index);
+                move || {
+                    CURRENT_POOL_ID.with(|current| current.set(Some(id)));
+                    CURRENT_WORKER_INDEX
+                        .with(|current| current.set(Some(next_worker_index.fetch_add(1, Ordering::Relaxed))));
+                }
+            })
+            .on_thread_stop(move || {
+                CURRENT_WORKER_INDEX.with(|current| current.set(None));
+                CURRENT_POOL_ID.with(|current| current.set(None));
+            })
             .enable_all()
             .build()
             .map_err(|error| {
@@ -173,7 +194,9 @@ impl GpuExecutionPool {
                 concurrency: Arc::new(Semaphore::new(worker_count)),
                 counters: Arc::new(PoolCounters::default()),
                 query_tracker,
+                next_job_id: AtomicU64::new(1),
             }),
+            resource_epoch: None,
         })
     }
 
@@ -211,7 +234,7 @@ impl GpuExecutionPool {
                 .with_fact("requested_worker_count", worker_count)
                 .with_fact("reason", "worker_count_conflict"));
             }
-            return Ok(Self { inner });
+            return Ok(Self { inner, resource_epoch: None });
         }
 
         let pool = Self::new(device_ordinal, worker_count)?;
@@ -230,26 +253,87 @@ impl GpuExecutionPool {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
+        self.run_observed(kind, RuntimeObservationHandle::disabled(), future).await
+    }
+
+    /// Runs one job while emitting host-side queue and worker lifecycle evidence.
+    ///
+    /// These events describe executor submission and host execution only. They
+    /// do not claim CUDA kernel duration.
+    pub async fn run_observed<F, T>(
+        &self,
+        kind: GpuExecutionJobKind,
+        observation: RuntimeObservationHandle,
+        future: F,
+    ) -> Result<T>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.run_observed_scoped(kind, observation, move |_scope| future).await
+    }
+
+    /// Runs one observed job and passes its explicit job/worker correlation to
+    /// work that may acquire a service-stream lease.
+    pub async fn run_observed_scoped<B, F, T>(
+        &self,
+        kind: GpuExecutionJobKind,
+        observation: RuntimeObservationHandle,
+        build_future: B,
+    ) -> Result<T>
+    where
+        B: FnOnce(RuntimeStreamLeaseScope) -> F + Send + 'static,
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.check_resource_epoch(RUN_OPERATION)?;
+        let job = self.new_job_observation(kind, observation);
         if current_pool_id() == Some(self.inner.id) {
-            return AssertUnwindSafe(future)
-                .catch_unwind()
-                .await
-                .map_err(|_panic| job_panic_error(self.inner.device_ordinal, kind));
+            let worker_id = job.started(current_worker_index());
+            let mut terminal = JobTerminalGuard::inline(Arc::clone(&job));
+            let scope = RuntimeStreamLeaseScope::default().with_gpu_worker(job.job_id.clone(), worker_id);
+            return match AssertUnwindSafe(build_future(scope)).catch_unwind().await {
+                Ok(value) => {
+                    terminal.terminal(GpuJobLifecycleState::Finished);
+                    Ok(value)
+                },
+                Err(_panic) => {
+                    terminal.terminal(GpuJobLifecycleState::Panicked);
+                    Err(job_panic_error(self.inner.device_ordinal, kind))
+                },
+            };
         }
 
-        let job_guard = JobCounterGuard::new(kind, Arc::clone(&self.inner.counters), self.inner.query_tracker.clone());
+        let job_guard = JobCounterGuard::new(
+            kind,
+            Arc::clone(&self.inner.counters),
+            self.inner.query_tracker.clone(),
+            Arc::clone(&job),
+        );
         let concurrency = Arc::clone(&self.inner.concurrency);
+        let resource_epoch = self.resource_epoch.clone();
         let task = self.inner.handle.spawn(async move {
+            let _resource_epoch = resource_epoch;
             let permit = concurrency.acquire_owned().await;
             let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
-            run_counted_job(job_guard, permit, future).await
+            run_counted_job_scoped(job_guard, permit, build_future).await
         });
 
-        match AbortOnDropJoinHandle::new(task).await {
+        match AbortOnDropJoinHandle::new(task, Arc::clone(&job)).await {
             Ok(Ok(value)) => Ok(value),
-            Ok(Err(_panic)) => Err(job_panic_error(self.inner.device_ordinal, kind)),
-            Err(error) if error.is_cancelled() => Err(job_cancelled_error(self.inner.device_ordinal, kind, error)),
-            Err(error) => Err(job_join_panic_error(self.inner.device_ordinal, kind, error)),
+            Ok(Err(_panic)) => {
+                job.terminal(GpuJobLifecycleState::Panicked);
+                Err(job_panic_error(self.inner.device_ordinal, kind))
+            },
+            Err(error) if error.is_cancelled() => {
+                job.cancellation_requested();
+                job.terminal(GpuJobLifecycleState::Cancelled);
+                Err(job_cancelled_error(self.inner.device_ordinal, kind, error))
+            },
+            Err(error) => {
+                job.terminal(GpuJobLifecycleState::Failed { error_code: QueryErrorCode::Internal.to_string() });
+                Err(job_join_panic_error(self.inner.device_ordinal, kind, error))
+            },
         }
     }
 
@@ -260,14 +344,79 @@ impl GpuExecutionPool {
     /// it completes, panics, or is cancelled during runtime shutdown.
     pub fn spawn<F>(&self, kind: GpuExecutionJobKind, future: F) -> Result<()>
     where F: Future<Output = ()> + Send + 'static {
-        let job_guard = JobCounterGuard::new(kind, Arc::clone(&self.inner.counters), self.inner.query_tracker.clone());
+        self.spawn_observed(kind, RuntimeObservationHandle::disabled(), future)
+    }
+
+    /// Detaches one observed job onto the device pool.
+    pub fn spawn_observed<F>(
+        &self,
+        kind: GpuExecutionJobKind,
+        observation: RuntimeObservationHandle,
+        future: F,
+    ) -> Result<()>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.check_resource_epoch(RUN_OPERATION)?;
+        let job = self.new_job_observation(kind, observation);
+        let job_guard =
+            JobCounterGuard::new(kind, Arc::clone(&self.inner.counters), self.inner.query_tracker.clone(), job);
         let concurrency = Arc::clone(&self.inner.concurrency);
+        let resource_epoch = self.resource_epoch.clone();
         self.inner.handle.spawn(async move {
+            let _resource_epoch = resource_epoch;
             let permit = concurrency.acquire_owned().await;
             let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
             let _ = run_counted_job(job_guard, permit, future).await;
         });
         Ok(())
+    }
+
+    /// Detaches one observed job and invokes `completion` after its terminal
+    /// job event, including cancellation or panic cleanup.
+    pub(crate) fn spawn_observed_with_completion<F, C>(
+        &self,
+        kind: GpuExecutionJobKind,
+        observation: RuntimeObservationHandle,
+        future: F,
+        completion: C,
+    ) where
+        F: Future<Output = ()> + Send + 'static,
+        C: FnOnce() + Send + 'static,
+    {
+        let job = self.new_job_observation(kind, observation);
+        let job_guard = JobCounterGuard::new_with_completion(
+            kind,
+            Arc::clone(&self.inner.counters),
+            self.inner.query_tracker.clone(),
+            job,
+            Box::new(completion),
+        );
+        let concurrency = Arc::clone(&self.inner.concurrency);
+        let resource_epoch = self.resource_epoch.clone();
+        self.inner.handle.spawn(async move {
+            let _resource_epoch = resource_epoch;
+            let permit = concurrency.acquire_owned().await;
+            let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
+            let _ = run_counted_job(job_guard, permit, future).await;
+        });
+    }
+
+    fn new_job_observation(
+        &self,
+        kind: GpuExecutionJobKind,
+        observation: RuntimeObservationHandle,
+    ) -> Arc<JobObservation> {
+        let sequence = self.inner.next_job_id.fetch_add(1, Ordering::Relaxed);
+        let job = Arc::new(JobObservation {
+            observation,
+            job_id: RuntimeJobId::new(format!("gpu-pool-{}-job-{sequence}", self.inner.id)),
+            job_kind: kind,
+            device_ordinal: u32::try_from(self.inner.device_ordinal).unwrap_or(u32::MAX),
+            lifecycle: AtomicU8::new(JOB_LIFECYCLE_PENDING),
+        });
+        job.enqueued();
+        job
     }
 
     /// Returns device-local execution counters.
@@ -292,6 +441,14 @@ impl GpuExecutionPool {
     pub fn query_tracker(&self) -> GpuExecutionQueryTracker {
         self.inner.query_tracker.clone()
     }
+
+    pub(crate) fn with_resource_epoch(&self, resource_epoch: Arc<QueryServiceResourceEpoch>) -> Self {
+        Self { inner: Arc::clone(&self.inner), resource_epoch: Some(resource_epoch) }
+    }
+
+    fn check_resource_epoch(&self, operation: &'static str) -> Result<()> {
+        self.resource_epoch.as_ref().map_or(Ok(()), |epoch| epoch.check_open(operation))
+    }
 }
 
 impl std::fmt::Debug for GpuExecutionPool {
@@ -309,6 +466,7 @@ struct GpuExecutionPoolInner {
     concurrency: Arc<Semaphore>,
     counters: Arc<PoolCounters>,
     query_tracker: GpuExecutionQueryTracker,
+    next_job_id: AtomicU64,
 }
 
 impl Drop for GpuExecutionPoolInner {
@@ -319,6 +477,127 @@ impl Drop for GpuExecutionPoolInner {
             // always use Tokio's explicitly non-blocking shutdown path.
             runtime.shutdown_background();
         }
+    }
+}
+
+struct JobObservation {
+    observation: RuntimeObservationHandle,
+    job_id: RuntimeJobId,
+    job_kind: GpuExecutionJobKind,
+    device_ordinal: u32,
+    lifecycle: AtomicU8,
+}
+
+const JOB_LIFECYCLE_PENDING: u8 = 0;
+const JOB_LIFECYCLE_CANCELLATION_RECORDING: u8 = 1;
+const JOB_LIFECYCLE_CANCELLATION_REQUESTED: u8 = 2;
+const JOB_LIFECYCLE_TERMINAL: u8 = 3;
+
+impl JobObservation {
+    fn enqueued(&self) {
+        self.observation.record_topology(crate::observability::RuntimeObservationRecordClass::JobDefinition, || {
+            RuntimeTopologyRecord::JobDefinition(JobDefinitionRow {
+                plan_execution_id: None,
+                job_id: self.job_id.clone(),
+                job_kind: self.job_kind.as_str().to_string(),
+                device_ordinal: self.device_ordinal,
+            })
+        });
+        self.record(GpuJobLifecycleState::Enqueued, None);
+    }
+
+    fn started(&self, worker_index: Option<usize>) -> RuntimeWorkerId {
+        let worker_id = RuntimeWorkerId::new(format!(
+            "{}-worker-{}",
+            self.job_id.as_str(),
+            worker_index.map_or_else(|| "inline".to_string(), |index| index.to_string())
+        ));
+        self.observation.record_topology(crate::observability::RuntimeObservationRecordClass::WorkerDefinition, || {
+            RuntimeTopologyRecord::WorkerDefinition(WorkerDefinitionRow {
+                plan_execution_id: None,
+                worker_id: worker_id.clone(),
+                worker_kind: "gpu_execution_pool".to_string(),
+                device_ordinal: Some(self.device_ordinal),
+            })
+        });
+        self.record(GpuJobLifecycleState::Started, Some(worker_id.clone()));
+        worker_id
+    }
+
+    /// Requests cancellation unless a terminal transition already won.
+    ///
+    /// Returns whether the child may still need to be aborted. The transient
+    /// recording state prevents a racing terminal event from being retained
+    /// before its preceding cancellation request.
+    fn cancellation_requested(&self) -> bool {
+        loop {
+            match self.lifecycle.load(Ordering::Acquire) {
+                JOB_LIFECYCLE_TERMINAL => return false,
+                JOB_LIFECYCLE_CANCELLATION_REQUESTED => return true,
+                JOB_LIFECYCLE_CANCELLATION_RECORDING => std::hint::spin_loop(),
+                JOB_LIFECYCLE_PENDING => {
+                    if self
+                        .lifecycle
+                        .compare_exchange(
+                            JOB_LIFECYCLE_PENDING,
+                            JOB_LIFECYCLE_CANCELLATION_RECORDING,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        self.record(GpuJobLifecycleState::CancellationRequested, None);
+                        self.lifecycle.store(JOB_LIFECYCLE_CANCELLATION_REQUESTED, Ordering::Release);
+                        return true;
+                    }
+                },
+                unexpected => unreachable!("invalid GPU job lifecycle state {unexpected}"),
+            }
+        }
+    }
+
+    fn terminal(&self, lifecycle: GpuJobLifecycleState) {
+        loop {
+            let current = self.lifecycle.load(Ordering::Acquire);
+            match current {
+                JOB_LIFECYCLE_TERMINAL => return,
+                JOB_LIFECYCLE_CANCELLATION_RECORDING => std::hint::spin_loop(),
+                JOB_LIFECYCLE_PENDING | JOB_LIFECYCLE_CANCELLATION_REQUESTED => {
+                    if self
+                        .lifecycle
+                        .compare_exchange(current, JOB_LIFECYCLE_TERMINAL, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        self.record(lifecycle, None);
+                        return;
+                    }
+                },
+                unexpected => unreachable!("invalid GPU job lifecycle state {unexpected}"),
+            }
+        }
+    }
+
+    fn is_terminal(&self) -> bool {
+        self.lifecycle.load(Ordering::Acquire) == JOB_LIFECYCLE_TERMINAL
+    }
+
+    fn has_cancellation_request(&self) -> bool {
+        matches!(
+            self.lifecycle.load(Ordering::Acquire),
+            JOB_LIFECYCLE_CANCELLATION_RECORDING | JOB_LIFECYCLE_CANCELLATION_REQUESTED
+        )
+    }
+
+    fn record(&self, lifecycle: GpuJobLifecycleState, worker_id: Option<RuntimeWorkerId>) {
+        self.observation.record(|| {
+            RuntimeObservationPayload::GpuJob(Box::new(RuntimeGpuJobObservation {
+                job_id: self.job_id.clone(),
+                job_kind: self.job_kind.as_str().to_string(),
+                device_ordinal: self.device_ordinal,
+                worker_id,
+                lifecycle,
+            }))
+        });
     }
 }
 
@@ -349,28 +628,60 @@ struct JobCounterGuard {
     counters: Arc<PoolCounters>,
     query_tracker: GpuExecutionQueryTracker,
     state: JobCounterState,
+    terminal: JobTerminalGuard,
+    completion: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 impl JobCounterGuard {
-    fn new(kind: GpuExecutionJobKind, counters: Arc<PoolCounters>, query_tracker: GpuExecutionQueryTracker) -> Self {
+    fn new(
+        kind: GpuExecutionJobKind,
+        counters: Arc<PoolCounters>,
+        query_tracker: GpuExecutionQueryTracker,
+        observation: Arc<JobObservation>,
+    ) -> Self {
         increment_with_peak(&counters.queued, &counters.peak_queued);
-        Self { kind, counters, query_tracker, state: JobCounterState::Queued }
+        Self {
+            kind,
+            counters,
+            query_tracker,
+            state: JobCounterState::Queued,
+            terminal: JobTerminalGuard::spawned(observation),
+            completion: None,
+        }
     }
 
-    fn activate(&mut self) {
+    fn new_with_completion(
+        kind: GpuExecutionJobKind,
+        counters: Arc<PoolCounters>,
+        query_tracker: GpuExecutionQueryTracker,
+        observation: Arc<JobObservation>,
+        completion: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Self {
+        let mut guard = Self::new(kind, counters, query_tracker, observation);
+        guard.completion = Some(completion);
+        guard
+    }
+
+    fn activate(&mut self) -> RuntimeStreamLeaseScope {
         debug_assert_eq!(self.state, JobCounterState::Queued);
         decrement(&self.counters.queued);
+        let worker_id = self.terminal.observation.started(current_worker_index());
         increment_with_peak(&self.counters.active, &self.counters.peak_active);
         if self.kind == GpuExecutionJobKind::QueryExecution {
             increment_with_peak(&self.counters.active_queries, &self.counters.peak_active_queries);
             self.query_tracker.start_query();
         }
         self.state = JobCounterState::Active;
+        RuntimeStreamLeaseScope::default().with_gpu_worker(self.terminal.observation.job_id.clone(), worker_id)
     }
 }
 
 impl Drop for JobCounterGuard {
     fn drop(&mut self) {
+        // Publish the terminal transition before counters expose pool
+        // quiescence. Callers use those counters as a completion fence and
+        // must never observe an active count of zero with a nonterminal job.
+        self.terminal.finish_drop();
         match self.state {
             JobCounterState::Queued => decrement(&self.counters.queued),
             JobCounterState::Active => {
@@ -381,6 +692,50 @@ impl Drop for JobCounterGuard {
                 decrement(&self.counters.active);
             },
         }
+        if let Some(completion) = self.completion.take() {
+            completion();
+        }
+    }
+}
+
+struct JobTerminalGuard {
+    observation: Arc<JobObservation>,
+    cancellation_on_drop: bool,
+}
+
+impl JobTerminalGuard {
+    fn spawned(observation: Arc<JobObservation>) -> Self {
+        Self { observation, cancellation_on_drop: false }
+    }
+
+    fn inline(observation: Arc<JobObservation>) -> Self {
+        Self { observation, cancellation_on_drop: true }
+    }
+
+    fn terminal(&mut self, lifecycle: GpuJobLifecycleState) {
+        self.observation.terminal(lifecycle);
+    }
+
+    fn finish_drop(&mut self) {
+        if self.observation.is_terminal() {
+            return;
+        }
+        if std::thread::panicking() {
+            self.observation.terminal(GpuJobLifecycleState::Panicked);
+        } else if self.cancellation_on_drop {
+            self.observation.cancellation_requested();
+            self.observation.terminal(GpuJobLifecycleState::Cancelled);
+        } else if self.observation.has_cancellation_request() {
+            self.observation.terminal(GpuJobLifecycleState::Cancelled);
+        } else {
+            self.observation.terminal(GpuJobLifecycleState::Dropped);
+        }
+    }
+}
+
+impl Drop for JobTerminalGuard {
+    fn drop(&mut self) {
+        self.finish_drop();
     }
 }
 
@@ -392,21 +747,58 @@ async fn run_counted_job<F, T>(
 where
     F: Future<Output = T>,
 {
-    guard.activate();
-    AssertUnwindSafe(future).catch_unwind().await.map_err(|_panic| ())
+    let _scope = guard.activate();
+    match AssertUnwindSafe(future).catch_unwind().await {
+        Ok(value) => {
+            guard.terminal.terminal(GpuJobLifecycleState::Finished);
+            Ok(value)
+        },
+        Err(_panic) => {
+            guard.terminal.terminal(GpuJobLifecycleState::Panicked);
+            Err(())
+        },
+    }
+}
+
+async fn run_counted_job_scoped<B, F, T>(
+    mut guard: JobCounterGuard,
+    _permit: OwnedSemaphorePermit,
+    build_future: B,
+) -> std::result::Result<T, ()>
+where
+    B: FnOnce(RuntimeStreamLeaseScope) -> F,
+    F: Future<Output = T>,
+{
+    let scope = guard.activate();
+    match AssertUnwindSafe(build_future(scope)).catch_unwind().await {
+        Ok(value) => {
+            guard.terminal.terminal(GpuJobLifecycleState::Finished);
+            Ok(value)
+        },
+        Err(_panic) => {
+            guard.terminal.terminal(GpuJobLifecycleState::Panicked);
+            Err(())
+        },
+    }
 }
 
 fn current_pool_id() -> Option<u64> {
     CURRENT_POOL_ID.with(Cell::get)
 }
 
+fn current_worker_index() -> Option<usize> {
+    CURRENT_WORKER_INDEX.with(Cell::get)
+}
+
 struct AbortOnDropJoinHandle<T> {
     handle: JoinHandle<T>,
+    observation: Arc<JobObservation>,
+    completed: bool,
 }
 
 impl<T> AbortOnDropJoinHandle<T> {
-    fn new(handle: JoinHandle<T>) -> Self {
-        Self { handle }
+    fn new(handle: JoinHandle<T>, observation: Arc<JobObservation>) -> Self {
+        Self { handle, observation, completed: false }
     }
 }
 
@@ -414,13 +806,19 @@ impl<T> Future for AbortOnDropJoinHandle<T> {
     type Output = std::result::Result<T, JoinError>;
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.handle).poll(context)
+        let result = Pin::new(&mut self.handle).poll(context);
+        if result.is_ready() {
+            self.completed = true;
+        }
+        result
     }
 }
 
 impl<T> Drop for AbortOnDropJoinHandle<T> {
     fn drop(&mut self) {
-        self.handle.abort();
+        if !self.completed && self.observation.cancellation_requested() {
+            self.handle.abort();
+        }
     }
 }
 
@@ -473,10 +871,13 @@ mod tests {
         sync::{
             Condvar,
             atomic::{AtomicBool, Ordering},
+            mpsc,
         },
         thread,
         time::{Duration, Instant},
     };
+
+    use futures::task::{ArcWake, waker_ref};
 
     use super::*;
 
@@ -508,12 +909,236 @@ mod tests {
         }
     }
 
+    struct WakeFlag(AtomicBool);
+
+    impl ArcWake for WakeFlag {
+        fn wake_by_ref(flag: &Arc<Self>) {
+            flag.0.store(true, Ordering::Release);
+        }
+    }
+
     async fn wait_until(mut predicate: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !predicate() {
             assert!(Instant::now() < deadline, "condition was not satisfied before the test deadline");
             tokio::task::yield_now().await;
         }
+    }
+
+    fn observed_job_states(owner: &crate::observability::RuntimeObservationOwner) -> Vec<GpuJobLifecycleState> {
+        owner
+            .live_snapshot()
+            .expect("observation remains live")
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                RuntimeObservationPayload::GpuJob(observation) => Some(observation.lifecycle.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn observed_job_defines_worker_and_records_host_lifecycle() {
+        let pool = GpuExecutionPool::new(0, 1).unwrap();
+        let owner = crate::observability::RuntimeObservationOwner::new(
+            "gpu-job-success",
+            None,
+            crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
+        );
+
+        let value =
+            pool.run_observed(GpuExecutionJobKind::QueryExecution, owner.handle(), async { 7_u8 }).await.unwrap();
+
+        assert_eq!(value, 7);
+        assert_eq!(
+            observed_job_states(&owner),
+            vec![GpuJobLifecycleState::Enqueued, GpuJobLifecycleState::Started, GpuJobLifecycleState::Finished]
+        );
+        let snapshot = owner.live_snapshot().unwrap();
+        crate::observability::assert_live_topology_references_resolve(&snapshot);
+        assert_eq!(snapshot.topology().filter(|row| matches!(row, RuntimeTopologyRecord::JobDefinition(_))).count(), 1);
+        assert_eq!(
+            snapshot.topology().filter(|row| matches!(row, RuntimeTopologyRecord::WorkerDefinition(_))).count(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn observed_job_abort_records_one_cancel_terminal() {
+        let pool = GpuExecutionPool::new(0, 1).unwrap();
+        let owner = crate::observability::RuntimeObservationOwner::new(
+            "gpu-job-cancel",
+            None,
+            crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
+        );
+        let task = {
+            let pool = pool.clone();
+            let observation = owner.handle();
+            tokio::spawn(async move {
+                pool.run_observed(GpuExecutionJobKind::QueryExecution, observation, std::future::pending::<()>()).await
+            })
+        };
+        wait_until(|| pool.snapshot().active_jobs == 1).await;
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        wait_until(|| pool.snapshot().active_jobs == 0).await;
+
+        let states = observed_job_states(&owner);
+        assert_eq!(
+            states,
+            vec![
+                GpuJobLifecycleState::Enqueued,
+                GpuJobLifecycleState::Started,
+                GpuJobLifecycleState::CancellationRequested,
+                GpuJobLifecycleState::Cancelled,
+            ]
+        );
+        assert_eq!(
+            states
+                .iter()
+                .filter(|state| matches!(state, GpuJobLifecycleState::Cancelled | GpuJobLifecycleState::Dropped))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn dropping_woken_outer_after_child_finished_emits_no_post_terminal_cancel() {
+        let pool = GpuExecutionPool::new(0, 1).unwrap();
+        let owner = crate::observability::RuntimeObservationOwner::new(
+            "gpu-job-finished-before-outer-drop",
+            None,
+            crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
+        );
+        let gate = Arc::new(BlockingGate::default());
+        let child_gate = Arc::clone(&gate);
+        let (started_sender, started_receiver) = mpsc::sync_channel(0);
+        let mut outer = Box::pin(pool.run_observed(GpuExecutionJobKind::QueryExecution, owner.handle(), async move {
+            started_sender.send(()).unwrap();
+            child_gate.wait();
+            7_u8
+        }));
+        let wake_flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+        let waker = waker_ref(&wake_flag);
+        let mut context = Context::from_waker(&waker);
+
+        assert!(matches!(outer.as_mut().poll(&mut context), Poll::Pending));
+        started_receiver.recv().unwrap();
+        wake_flag.0.store(false, Ordering::Release);
+        gate.release();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !wake_flag.0.load(Ordering::Acquire)
+            || !observed_job_states(&owner).iter().any(|state| matches!(state, GpuJobLifecycleState::Finished))
+        {
+            assert!(Instant::now() < deadline, "child did not finish and wake the outer future");
+            thread::yield_now();
+        }
+        drop(outer);
+
+        assert_eq!(
+            observed_job_states(&owner),
+            vec![GpuJobLifecycleState::Enqueued, GpuJobLifecycleState::Started, GpuJobLifecycleState::Finished]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_polled_reentrant_job_records_one_observed_cancellation() {
+        let pool = GpuExecutionPool::new(0, 1).unwrap();
+        let owner = crate::observability::RuntimeObservationOwner::new(
+            "gpu-inline-cancel",
+            None,
+            crate::observability::RuntimeObservationConfig::bounded(64, 64 * 1024),
+        );
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = {
+            let outer_pool = pool.clone();
+            let nested_pool = pool.clone();
+            let outer_observation = owner.handle();
+            let nested_observation = owner.handle();
+            tokio::spawn(async move {
+                outer_pool
+                    .run_observed(GpuExecutionJobKind::QueryExecution, outer_observation, async move {
+                        nested_pool
+                            .run_observed(GpuExecutionJobKind::ContextSetup, nested_observation, async move {
+                                let _ = started_tx.send(());
+                                std::future::pending::<()>().await;
+                            })
+                            .await
+                    })
+                    .await
+            })
+        };
+        started_rx.await.unwrap();
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        wait_until(|| pool.snapshot().active_jobs == 0).await;
+
+        let states = owner
+            .live_snapshot()
+            .unwrap()
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                RuntimeObservationPayload::GpuJob(observation)
+                    if observation.job_kind == GpuExecutionJobKind::ContextSetup.as_str() =>
+                {
+                    Some(observation.lifecycle.clone())
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            vec![
+                GpuJobLifecycleState::Enqueued,
+                GpuJobLifecycleState::Started,
+                GpuJobLifecycleState::CancellationRequested,
+                GpuJobLifecycleState::Cancelled,
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn panicking_reentrant_job_records_exactly_one_panic_terminal() {
+        let pool = GpuExecutionPool::new(0, 1).unwrap();
+        let owner = crate::observability::RuntimeObservationOwner::new(
+            "gpu-inline-panic",
+            None,
+            crate::observability::RuntimeObservationConfig::bounded(64, 64 * 1024),
+        );
+        let nested_pool = pool.clone();
+        let nested_observation = owner.handle();
+        let nested = pool
+            .run(GpuExecutionJobKind::QueryExecution, async move {
+                nested_pool
+                    .run_observed(GpuExecutionJobKind::ContextSetup, nested_observation, async move {
+                        panic!("inline job panic")
+                    })
+                    .await
+            })
+            .await
+            .unwrap();
+        assert_eq!(nested.unwrap_err().code(), QueryErrorCode::Internal);
+
+        let terminals = owner
+            .live_snapshot()
+            .unwrap()
+            .events()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.payload,
+                    RuntimeObservationPayload::GpuJob(observation)
+                        if observation.job_kind == GpuExecutionJobKind::ContextSetup.as_str()
+                            && observation.lifecycle == GpuJobLifecycleState::Panicked
+                )
+            })
+            .count();
+        assert_eq!(terminals, 1);
     }
 
     #[test]

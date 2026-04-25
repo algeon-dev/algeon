@@ -15,7 +15,6 @@ use arrow::{
 };
 use arrow_flight::{
     FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, SchemaAsIpc, Ticket,
-    encode::FlightDataEncoderBuilder,
     error::FlightError,
     flight_service_server::FlightService,
     sql::{
@@ -42,21 +41,30 @@ use datafusion::{
     prelude::SessionContext,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
-use nexus_query_engine::runtime::ExecutionCancellation;
+use nexus_query_engine::{
+    observability::{RuntimeObservationConfig, RuntimeObservationHandle},
+    runtime::ExecutionCancellation,
+};
 use prost::Message;
 use tokio_util::sync::CancellationToken;
 use tonic::{Code, Request, Response, Status, Streaming, metadata::MetadataValue};
 use tracing::Instrument;
-use uuid::Uuid;
 
+#[cfg(test)]
+use super::coordinator::CoordinatorArtifact;
+#[cfg(all(test, feature = "iceberg"))]
+use super::coordinator::RetainedUnavailableReason;
 use super::{
     admission::QueryAdmission,
     auth::{AuthInterceptor, handle_handshake},
     cancel::QueryCancellation,
     config::ServerSessionProfile,
+    coordinator::{
+        CoordinatorTicketPayload, QueryCoordinator, QueryCoordinatorConfig, QueryExecutionLease, QueryPlanningLease,
+    },
     diagnostics::{log_leaf_guard_rejection, log_native_planning_report_for_tables},
     error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
-    observability::{CapturedError, QueryObservability},
+    observability::CapturedError,
     table_format_operator_fast_fail::fast_fail_unsupported_table_format_operator_plan,
 };
 #[cfg(feature = "cugraph")]
@@ -65,7 +73,7 @@ use crate::graph_sql::CugraphSqlConfig;
 use crate::session::CudfSessionStateBuilderExt;
 use crate::{
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
-    native_exec::{NativeMetricsCapture, NativeMetricsCaptureSink},
+    native_exec::{NativeMetricsCapture, NativeObservationActivityFactory},
     planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
     session::install_cudf_native_rule_with_session_config,
     session_config::DataFusionNexusSessionConfig,
@@ -74,6 +82,7 @@ use crate::{
 mod correlation;
 mod ddl;
 mod execution;
+mod frame_limiter;
 mod metadata;
 mod prepared;
 mod rpc;
@@ -89,6 +98,7 @@ use correlation::{finish_adapter_error_status_with_correlation_id, tracing_corre
 use ddl::{referenced_table_names, reject_drop_object_type_mismatch};
 #[cfg(all(test, feature = "iceberg"))]
 use execution::cancel_invalid_argument_status;
+use frame_limiter::encode_flight_data_stream;
 use metadata::*;
 use prepared::PreparedStatementEntry;
 pub use service::DatafusionCudfFlightSqlService;
@@ -101,6 +111,7 @@ const FLIGHT_SQL_CANCEL_RESULT_CANCELLING: i32 = 2;
 const FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE: i32 = 3;
 const GET_ADMISSION_STATS_ACTION: &str = "GetAdmissionStats";
 const GET_QUERY_STATS_ACTION: &str = "GetQueryStats";
+const GET_QUERY_RUNTIME_ARTIFACT_ACTION: &str = "GetQueryRuntimeArtifact";
 const NO_UPDATED_RECORDS_COUNT: i64 = 0;
 const SQL_ANSI92_ENTRY_SQL_BIT_INDEX: i32 = 0;
 const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";

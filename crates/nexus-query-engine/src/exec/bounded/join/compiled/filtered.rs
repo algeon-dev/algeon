@@ -86,7 +86,8 @@ fn build_filtered_join_artifact(
     let input_build_rows = build.rows;
     let input_build_bytes = build.bytes;
     let build = deduplicate_filtered_join_build_keys(context, node_id, build, &right_keys, reservations, metrics)?;
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let filtered_options =
         cudf::DataFrameFilteredJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
     let hash_table_reservation_bytes = build
@@ -266,7 +267,8 @@ pub(super) fn execute_compiled_filtered_join_probe_from_frame(
         reservations,
         metrics,
     )?;
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let (probe_state, probe_state_reservation, probe_state_bytes) = begin_filtered_join_probe_state(
         node_id,
         node,
@@ -298,7 +300,8 @@ pub(super) fn execute_compiled_filtered_join_probe_from_resident_frame(
         reservations,
         metrics,
     )?;
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let (probe_state, probe_state_reservation, probe_state_bytes) = begin_filtered_join_probe_state(
         node_id,
         node,
@@ -373,7 +376,8 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
         reservations,
         metrics,
     )?;
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let (probe_state, probe_state_reservation, probe_state_bytes) = begin_filtered_join_probe_state(
         node_id,
         node,
@@ -524,7 +528,8 @@ pub(super) fn execute_compiled_filtered_join_materialize(
 ) -> Result<ResidentGpuFrame> {
     let BoundedCompiledFilteredJoinProbeState { build, probe, probe_state, probe_state_reservation, probe_state_bytes } =
         state;
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let gather_map_reservation_bytes =
         probe_state.probe_gather_map_reservation_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
             QueryError::from_cudf(

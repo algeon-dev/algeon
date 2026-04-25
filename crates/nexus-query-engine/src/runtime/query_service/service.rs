@@ -55,6 +55,41 @@ pub struct QueryServiceGraphCacheSnapshot {
     pub build_waits: u64,
 }
 
+fn unhealthy_placement_device_error(device: cudf::DeviceId, health: cudf::runtime::DeviceHealthSnapshot) -> QueryError {
+    let mut error = QueryError::new(
+        QueryErrorCode::CudfPersistentFailure,
+        "nexus_query_engine.query_service.placement",
+        "CUDA device is unhealthy and cannot admit new queries",
+    )
+    .with_fact("device_ordinal", device.ordinal())
+    .with_fact("device_health", "unhealthy")
+    .with_fact("device_fault_count", health.fault_count())
+    .with_fact("reason", "device_health_rejected_admission");
+    if let Some(first_fault) = health.first_fault() {
+        error = error
+            .with_fact("first_device_fault_kind", format!("{:?}", first_fault.kind()))
+            .with_fact("first_device_fault_operation", first_fault.operation());
+    }
+    error
+}
+
+fn resolve_fallback_placement_device(device_ordinal: usize) -> Result<cudf::DeviceId> {
+    #[cfg(test)]
+    if let Ok(raw_ordinal) = i32::try_from(device_ordinal)
+        && let Some(device) = cudf::testing::device_safety::injected_device_id(raw_ordinal)
+    {
+        return Ok(device);
+    }
+
+    cudf::DeviceId::new(device_ordinal).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.query_service.placement",
+            "failed to resolve fallback CUDA device during query placement",
+            error,
+        )
+    })
+}
+
 /// Per-tenant queue depth in a [`QueryServiceAdmissionSnapshot`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantQueueDepth {
@@ -105,7 +140,7 @@ impl QueryGrantRequest {
 }
 
 /// Complete request-scoped metadata for one query-service admission attempt.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct QueryAdmissionRequest {
     /// Priority and adaptive budget-growth metadata.
@@ -121,6 +156,59 @@ pub struct QueryAdmissionRequest {
     /// Device-level cache presence alone never selects this price.
     #[cfg(feature = "cugraph")]
     pub warm_graph_grant_request: Option<QueryGrantRequest>,
+    runtime_observation: RuntimeObservationHandle,
+    runtime_observation_owner: Option<RuntimeObservationOwner>,
+    runtime_observation_activity: Option<Result<QueryActivityLease>>,
+}
+
+struct AdmissionObservation {
+    handle: RuntimeObservationHandle,
+    owner: Option<RuntimeObservationOwner>,
+    activity: Option<QueryActivityLease>,
+    activity_error: Option<QueryError>,
+}
+
+impl AdmissionObservation {
+    fn as_ref(&self) -> &RuntimeObservationHandle {
+        &self.handle
+    }
+
+    fn reject_activity_error(&mut self, admission_request_id: AdmissionRequestId, tenant_id: &TenantId) -> Result<()> {
+        let Some(error) = self.activity_error.take() else {
+            return Ok(());
+        };
+        record_admission_lifecycle(
+            &self.handle,
+            admission_request_id,
+            tenant_id,
+            admission_rejection(&error),
+            0,
+            None,
+            None,
+        );
+        Err(error)
+    }
+}
+
+/// Opaque RAII token retained until query-service cleanup is complete.
+///
+/// The native engine never invokes the value. Dropping it returns activity
+/// ownership to the adapter coordinator after queued admission, contexts,
+/// grants, device slots, and cleanup work have all been released.
+pub struct QueryActivityLease {
+    _lease: Box<dyn Send + Sync>,
+}
+
+impl QueryActivityLease {
+    pub fn new(lease: impl Send + Sync + 'static) -> Self {
+        Self { _lease: Box::new(lease) }
+    }
+}
+
+impl std::fmt::Debug for QueryActivityLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("QueryActivityLease").finish_non_exhaustive()
+    }
 }
 
 impl QueryAdmissionRequest {
@@ -145,6 +233,49 @@ impl QueryAdmissionRequest {
     pub fn with_placement_hint(mut self, placement_hint: QueryPlacementHint) -> Self {
         self.placement_hint = placement_hint;
         self
+    }
+
+    /// Attaches the query observation owner created by the adapter before enqueue.
+    pub fn with_runtime_observation_owner(mut self, owner: RuntimeObservationOwner) -> Self {
+        self.runtime_observation = owner.handle();
+        self.runtime_observation_owner = Some(owner);
+        self
+    }
+
+    /// Attaches coordinator-owned recording access without query-seal authority.
+    pub fn with_runtime_observation_handle(mut self, observation: RuntimeObservationHandle) -> Self {
+        self.runtime_observation = observation;
+        self.runtime_observation_owner = None;
+        self
+    }
+
+    /// Retains an adapter-owned activity token through delayed native cleanup.
+    pub fn with_runtime_observation_activity(mut self, activity: QueryActivityLease) -> Self {
+        self.runtime_observation_activity = Some(Ok(activity));
+        self
+    }
+
+    /// Carries fallible adapter activity acquisition into native admission.
+    ///
+    /// Coordinated callers must pass acquisition failure through this field so
+    /// admission rejects structurally instead of silently omitting the lease.
+    pub fn with_runtime_observation_activity_result(mut self, activity: Result<QueryActivityLease>) -> Self {
+        self.runtime_observation_activity = Some(activity);
+        self
+    }
+
+    fn into_runtime_observation(self) -> AdmissionObservation {
+        let (activity, activity_error) = match self.runtime_observation_activity {
+            Some(Ok(activity)) => (Some(activity), None),
+            Some(Err(error)) => (None, Some(error)),
+            None => (None, None),
+        };
+        AdmissionObservation {
+            handle: self.runtime_observation,
+            owner: self.runtime_observation_owner,
+            activity,
+            activity_error,
+        }
     }
 
     /// Sets the grant request that is valid only for a reserved exact-runtime
@@ -173,10 +304,14 @@ pub(super) struct QueryServiceInner {
     max_tenant_min_bytes: u64,
     fallback_memory_governor: MemoryGovernor,
     pub(super) resources: Option<QueryServiceResources>,
+    pub(super) service_epoch: QueryServiceEpoch,
+    admission_open: AtomicBool,
     pub(super) admission: Mutex<AdmissionState>,
     admission_available: Condvar,
     admission_notify: Notify,
-    next_query_id: AtomicU64,
+    #[cfg(test)]
+    pub(super) shutdown_waiters: AtomicUsize,
+    next_admission_request_id: AtomicU64,
     pub(super) next_admission_sequence: AtomicU64,
 }
 
@@ -520,6 +655,10 @@ impl QueryService {
         }
         let fallback_memory_governor = MemoryGovernor::new(config.device_ordinal, device_capacity_bytes)?;
 
+        let governor_claim = resources.as_ref().and_then(|resources| resources._governor_claim.as_ref()).cloned();
+        let service_epoch = QueryServiceEpoch::new(
+            governor_claim.map(|claim| Arc::new(move || claim.release()) as Arc<dyn Fn() + Send + Sync>),
+        );
         let inner = Arc::new(QueryServiceInner {
             config,
             tenant_grants,
@@ -527,10 +666,14 @@ impl QueryService {
             max_tenant_min_bytes,
             fallback_memory_governor,
             resources,
+            service_epoch,
+            admission_open: AtomicBool::new(true),
             admission: Mutex::new(AdmissionState::default()),
             admission_available: Condvar::new(),
             admission_notify: Notify::new(),
-            next_query_id: AtomicU64::new(1),
+            #[cfg(test)]
+            shutdown_waiters: AtomicUsize::new(0),
+            next_admission_request_id: AtomicU64::new(1),
             next_admission_sequence: AtomicU64::new(1),
         });
         register_shared_device_admission_waiters(&inner)?;
@@ -598,19 +741,56 @@ impl QueryService {
         request: QueryAdmissionRequest,
     ) -> Result<QueryHandle> {
         let tenant_id = tenant_id.into();
-        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, request.grant_request)?;
+        let grant_request = request.grant_request;
         #[cfg(feature = "cugraph")]
-        let warm_graph_grant_policy = request
-            .warm_graph_grant_request
-            .map(|request| self.tenant_grant_policy_for_request(&tenant_id, request))
-            .transpose()?;
+        let warm_graph_grant_request = request.warm_graph_grant_request;
         let qos = request.qos;
-        let placement_hint = request.placement_hint;
-        let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
+        let placement_hint = request.placement_hint.clone();
+        let mut observation_owner = request.into_runtime_observation();
+        let admission_request_id =
+            AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
+        observation_owner.reject_activity_error(admission_request_id, &tenant_id)?;
+        let grant_policy = match self.tenant_grant_policy_for_request(&tenant_id, grant_request) {
+            Ok(grant_policy) => grant_policy,
+            Err(error) => {
+                record_admission_lifecycle(
+                    observation_owner.as_ref(),
+                    admission_request_id,
+                    &tenant_id,
+                    admission_rejection(&error),
+                    0,
+                    None,
+                    None,
+                );
+                return Err(error);
+            },
+        };
+        #[cfg(feature = "cugraph")]
+        let warm_graph_grant_policy = match warm_graph_grant_request
+            .map(|request| self.tenant_grant_policy_for_request(&tenant_id, request))
+            .transpose()
+        {
+            Ok(grant_policy) => grant_policy,
+            Err(error) => {
+                record_admission_lifecycle(
+                    observation_owner.as_ref(),
+                    admission_request_id,
+                    &tenant_id,
+                    admission_rejection(&error),
+                    0,
+                    None,
+                    None,
+                );
+                return Err(error);
+            },
+        };
         let requested_at = Instant::now();
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
         let request = AdmissionRequest {
-            request_id,
+            admission_request_id,
+            observation: observation_owner.handle.clone(),
+            observation_owner: observation_owner.owner.clone(),
+            observation_activity: observation_owner.activity.take(),
             tenant_id: tenant_id.clone(),
             grant_policy,
             #[cfg(feature = "cugraph")]
@@ -622,39 +802,91 @@ impl QueryService {
 
         let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let mut state = self.lock_admission()?;
-        if state.closed {
-            return Err(service_closed_error(&tenant_id));
+        if self.admission_is_closed(&state) {
+            let error = service_closed_error(&tenant_id);
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                &tenant_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
         }
         self.sweep_expired_queued_requests_locked(&mut state);
         if state.queued.len() >= self.inner.config.max_admission_queue_len {
-            return Err(service_overloaded_error(
+            let error = service_overloaded_error(
                 "admission_queue_full",
                 &tenant_id,
                 state.queued.len(),
                 self.inner.config.max_admission_queue_len,
-            ));
+            );
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                &tenant_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
         }
         state.queued.push_back(request);
+        record_admission_lifecycle(
+            observation_owner.as_ref(),
+            admission_request_id,
+            &tenant_id,
+            AdmissionLifecycleState::Enqueued,
+            state.queued.len(),
+            None,
+            None,
+        );
 
         loop {
-            if state.closed {
-                self.remove_queued_request_without_admission_locked(&mut state, request_id);
+            if self.admission_is_closed(&state) {
+                let removed = self.remove_queued_request_without_admission_locked(&mut state, admission_request_id);
                 self.inner.notify_admission_available();
+                if removed.is_some() {
+                    record_admission_lifecycle(
+                        observation_owner.as_ref(),
+                        admission_request_id,
+                        &tenant_id,
+                        AdmissionLifecycleState::Rejected { reason: "admission_closed".to_string() },
+                        state.queued.len(),
+                        None,
+                        None,
+                    );
+                }
                 return Err(service_closed_error(&tenant_id));
             }
-            let request_is_admissible = match self.request_is_admissible(&mut state, request_id) {
+            let request_is_admissible = match self.request_is_admissible(&mut state, admission_request_id) {
                 Ok(admissible) => admissible,
                 Err(error) => {
-                    self.abandon_queued_request_locked(&mut state, request_id);
+                    let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
+                    if removed.is_some() {
+                        record_admission_lifecycle(
+                            observation_owner.as_ref(),
+                            admission_request_id,
+                            &tenant_id,
+                            admission_rejection(&error),
+                            state.queued.len(),
+                            None,
+                            None,
+                        );
+                    }
                     return Err(error);
                 },
             };
             if request_is_admissible
-                && let Some(position) = state.queued.iter().position(|queued| queued.request_id == request_id)
+                && let Some(position) =
+                    state.queued.iter().position(|queued| queued.admission_request_id == admission_request_id)
             {
                 let placed_query = match self.try_place_query(
                     &tenant_id,
-                    request_id,
+                    admission_request_id,
                     grant_policy,
                     #[cfg(feature = "cugraph")]
                     state.queued[position].warm_graph_grant_policy,
@@ -666,7 +898,18 @@ impl QueryService {
                 ) {
                     Ok(placed_query) => placed_query,
                     Err(error) => {
-                        self.abandon_queued_request_locked(&mut state, request_id);
+                        let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
+                        if removed.is_some() {
+                            record_admission_lifecycle(
+                                observation_owner.as_ref(),
+                                admission_request_id,
+                                &tenant_id,
+                                admission_rejection(&error),
+                                state.queued.len(),
+                                None,
+                                None,
+                            );
+                        }
                         return Err(error);
                     },
                 };
@@ -674,20 +917,42 @@ impl QueryService {
                     if let Err(error) =
                         self.request_adaptive_grant_shrink_for_blocked_request_locked(&state, &state.queued[position])
                     {
-                        self.abandon_queued_request_locked(&mut state, request_id);
+                        let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
+                        if removed.is_some() {
+                            record_admission_lifecycle(
+                                observation_owner.as_ref(),
+                                admission_request_id,
+                                &tenant_id,
+                                admission_rejection(&error),
+                                state.queued.len(),
+                                None,
+                                None,
+                            );
+                        }
                         return Err(error);
                     }
                     if slot_notifications.has_pending() {
                         drop(state);
                         slot_notifications.notify();
                         state = self.lock_admission()?;
-                        if state.closed {
+                        if self.admission_is_closed(&state) {
                             continue;
                         }
                     }
                     let now = Instant::now();
                     if now >= deadline {
-                        self.abandon_queued_request_locked(&mut state, request_id);
+                        let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
+                        if removed.is_some() {
+                            record_admission_lifecycle(
+                                observation_owner.as_ref(),
+                                admission_request_id,
+                                &tenant_id,
+                                AdmissionLifecycleState::TimedOut,
+                                state.queued.len(),
+                                None,
+                                None,
+                            );
+                        }
                         return Err(self.memory_grant_wait_timeout_error(&tenant_id, grant_policy, state.queued.len()));
                     }
                     let wait = deadline.saturating_duration_since(now);
@@ -701,18 +966,65 @@ impl QueryService {
                         })?;
                     state = next_state;
                     if timeout.timed_out() {
-                        self.abandon_queued_request_locked(&mut state, request_id);
+                        let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
+                        if removed.is_some() {
+                            record_admission_lifecycle(
+                                observation_owner.as_ref(),
+                                admission_request_id,
+                                &tenant_id,
+                                AdmissionLifecycleState::TimedOut,
+                                state.queued.len(),
+                                None,
+                                None,
+                            );
+                        }
                         return Err(self.memory_grant_wait_timeout_error(&tenant_id, grant_policy, state.queued.len()));
                     }
                     continue;
                 };
                 let admitted = state.queued.remove(position).expect("admissible request exists");
-                self.attach_admission_release_wakeup(&placed_query.memory_grant)?;
-                self.attach_admission_budget_decrease_wakeup(&placed_query.memory_grant)?;
+                if let Err(error) = self.attach_admission_release_wakeup(&placed_query.memory_grant) {
+                    record_admission_lifecycle(
+                        &admitted.observation,
+                        admission_request_id,
+                        &tenant_id,
+                        admission_rejection(&error),
+                        state.queued.len(),
+                        None,
+                        None,
+                    );
+                    return Err(error);
+                }
+                if let Err(error) = self.attach_admission_budget_decrease_wakeup(&placed_query.memory_grant) {
+                    record_admission_lifecycle(
+                        &admitted.observation,
+                        admission_request_id,
+                        &tenant_id,
+                        admission_rejection(&error),
+                        state.queued.len(),
+                        None,
+                        None,
+                    );
+                    return Err(error);
+                }
+                if self.admission_is_closed(&state) {
+                    let error = service_closed_error(&tenant_id);
+                    record_admission_lifecycle(
+                        &admitted.observation,
+                        admission_request_id,
+                        &tenant_id,
+                        admission_rejection(&error),
+                        state.queued.len(),
+                        None,
+                        None,
+                    );
+                    self.inner.notify_admission_available();
+                    return Err(error);
+                }
                 state.active_queries = state.active_queries.saturating_add(1);
                 self.register_active_adaptive_grant(
                     &mut state,
-                    request_id,
+                    admission_request_id,
                     placed_query.device_ordinal,
                     placed_query.grant_policy,
                     &placed_query.memory_grant,
@@ -727,11 +1039,23 @@ impl QueryService {
                 let service = Arc::clone(&self.inner);
                 let device_budget_bytes = placed_query.memory_grant.budget_bytes();
                 let device_ordinal = placed_query.device_ordinal;
+                record_admission_lifecycle(
+                    &admitted.observation,
+                    admission_request_id,
+                    &tenant_id,
+                    AdmissionLifecycleState::Admitted,
+                    state.queued.len(),
+                    Some(device_ordinal),
+                    Some(device_budget_bytes),
+                );
                 return Ok(QueryHandle {
                     lifetime: QueryHandleLifetime::new(
                         Arc::clone(&service),
                         tenant_id.clone(),
-                        request_id,
+                        admission_request_id,
+                        admitted.observation,
+                        admitted.observation_owner,
+                        admitted.observation_activity,
                         placed_query.memory_grant,
                         placed_query.device_slot,
                         #[cfg(feature = "cugraph")]
@@ -739,7 +1063,7 @@ impl QueryService {
                     ),
                     service,
                     tenant_id,
-                    query_id: request_id,
+                    admission_request_id,
                     admission_sequence,
                     admission_wait: requested_at.elapsed(),
                     device_budget_bytes,
@@ -749,7 +1073,18 @@ impl QueryService {
 
             let now = Instant::now();
             if now >= deadline {
-                self.abandon_queued_request_locked(&mut state, request_id);
+                let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
+                if removed.is_some() {
+                    record_admission_lifecycle(
+                        observation_owner.as_ref(),
+                        admission_request_id,
+                        &tenant_id,
+                        AdmissionLifecycleState::TimedOut,
+                        state.queued.len(),
+                        None,
+                        None,
+                    );
+                }
                 return Err(service_overloaded_error(
                     "admission_wait_timeout",
                     &tenant_id,
@@ -767,7 +1102,18 @@ impl QueryService {
             })?;
             state = next_state;
             if timeout.timed_out() {
-                self.abandon_queued_request_locked(&mut state, request_id);
+                let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
+                if removed.is_some() {
+                    record_admission_lifecycle(
+                        observation_owner.as_ref(),
+                        admission_request_id,
+                        &tenant_id,
+                        AdmissionLifecycleState::TimedOut,
+                        state.queued.len(),
+                        None,
+                        None,
+                    );
+                }
                 return Err(service_overloaded_error(
                     "admission_wait_timeout",
                     &tenant_id,
@@ -835,9 +1181,6 @@ impl QueryService {
         request: QueryAdmissionRequest,
     ) -> Result<QueryHandle> {
         let tenant_id = tenant_id.into();
-        if let Some(handle) = self.try_admit_query_with_request(tenant_id.clone(), request.clone())? {
-            return Ok(handle);
-        }
         let mut waiter = self.enqueue_admission_with_request(tenant_id, request)?;
         loop {
             let notified = self.inner.admission_notify.notified();
@@ -896,32 +1239,89 @@ impl QueryService {
         request: QueryAdmissionRequest,
     ) -> Result<QueryAdmissionWaiter> {
         let tenant_id = tenant_id.into();
-        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, request.grant_request)?;
+        let grant_request = request.grant_request;
         #[cfg(feature = "cugraph")]
-        let warm_graph_grant_policy = request
-            .warm_graph_grant_request
-            .map(|request| self.tenant_grant_policy_for_request(&tenant_id, request))
-            .transpose()?;
+        let warm_graph_grant_request = request.warm_graph_grant_request;
         let qos = request.qos;
-        let placement_hint = request.placement_hint;
-        let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
+        let placement_hint = request.placement_hint.clone();
+        let mut observation_owner = request.into_runtime_observation();
+        let admission_request_id =
+            AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
+        observation_owner.reject_activity_error(admission_request_id, &tenant_id)?;
+        let grant_policy = match self.tenant_grant_policy_for_request(&tenant_id, grant_request) {
+            Ok(grant_policy) => grant_policy,
+            Err(error) => {
+                record_admission_lifecycle(
+                    observation_owner.as_ref(),
+                    admission_request_id,
+                    &tenant_id,
+                    admission_rejection(&error),
+                    0,
+                    None,
+                    None,
+                );
+                return Err(error);
+            },
+        };
+        #[cfg(feature = "cugraph")]
+        let warm_graph_grant_policy = match warm_graph_grant_request
+            .map(|request| self.tenant_grant_policy_for_request(&tenant_id, request))
+            .transpose()
+        {
+            Ok(grant_policy) => grant_policy,
+            Err(error) => {
+                record_admission_lifecycle(
+                    observation_owner.as_ref(),
+                    admission_request_id,
+                    &tenant_id,
+                    admission_rejection(&error),
+                    0,
+                    None,
+                    None,
+                );
+                return Err(error);
+            },
+        };
         let requested_at = Instant::now();
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
         let mut state = self.lock_admission()?;
-        if state.closed {
-            return Err(service_closed_error(&tenant_id));
+        if self.admission_is_closed(&state) {
+            let error = service_closed_error(&tenant_id);
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                &tenant_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
         }
         self.sweep_expired_queued_requests_locked(&mut state);
         if state.queued.len() >= self.inner.config.max_admission_queue_len {
-            return Err(service_overloaded_error(
+            let error = service_overloaded_error(
                 "admission_queue_full",
                 &tenant_id,
                 state.queued.len(),
                 self.inner.config.max_admission_queue_len,
-            ));
+            );
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                &tenant_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
         }
         state.queued.push_back(AdmissionRequest {
-            request_id,
+            admission_request_id,
+            observation: observation_owner.handle.clone(),
+            observation_owner: observation_owner.owner.clone(),
+            observation_activity: observation_owner.activity.take(),
             tenant_id: tenant_id.clone(),
             grant_policy,
             #[cfg(feature = "cugraph")]
@@ -930,11 +1330,21 @@ impl QueryService {
             placement_hint,
             deadline,
         });
+        record_admission_lifecycle(
+            observation_owner.as_ref(),
+            admission_request_id,
+            &tenant_id,
+            AdmissionLifecycleState::Enqueued,
+            state.queued.len(),
+            None,
+            None,
+        );
         self.inner.notify_admission_available();
         Ok(QueryAdmissionWaiter {
             service: self.clone(),
             tenant_id,
-            request_id,
+            admission_request_id,
+            observation: observation_owner.handle,
             requested_at,
             deadline,
             grant_policy,
@@ -993,27 +1403,71 @@ impl QueryService {
         request: QueryAdmissionRequest,
     ) -> Result<Option<QueryHandle>> {
         let tenant_id = tenant_id.into();
-        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, request.grant_request)?;
+        let grant_request = request.grant_request;
         #[cfg(feature = "cugraph")]
-        let warm_graph_grant_policy = request
-            .warm_graph_grant_request
-            .map(|request| self.tenant_grant_policy_for_request(&tenant_id, request))
-            .transpose()?;
+        let warm_graph_grant_request = request.warm_graph_grant_request;
         let qos = request.qos;
-        let placement_hint = request.placement_hint;
+        let placement_hint = request.placement_hint.clone();
+        let mut observation_owner = request.into_runtime_observation();
+        let admission_request_id =
+            AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
+        observation_owner.reject_activity_error(admission_request_id, &tenant_id)?;
+        let grant_policy = match self.tenant_grant_policy_for_request(&tenant_id, grant_request) {
+            Ok(grant_policy) => grant_policy,
+            Err(error) => {
+                record_admission_lifecycle(
+                    observation_owner.as_ref(),
+                    admission_request_id,
+                    &tenant_id,
+                    admission_rejection(&error),
+                    0,
+                    None,
+                    None,
+                );
+                return Err(error);
+            },
+        };
+        #[cfg(feature = "cugraph")]
+        let warm_graph_grant_policy = match warm_graph_grant_request
+            .map(|request| self.tenant_grant_policy_for_request(&tenant_id, request))
+            .transpose()
+        {
+            Ok(grant_policy) => grant_policy,
+            Err(error) => {
+                record_admission_lifecycle(
+                    observation_owner.as_ref(),
+                    admission_request_id,
+                    &tenant_id,
+                    admission_rejection(&error),
+                    0,
+                    None,
+                    None,
+                );
+                return Err(error);
+            },
+        };
         let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let mut state = self.lock_admission()?;
-        if state.closed {
-            return Err(service_closed_error(&tenant_id));
+        if self.admission_is_closed(&state) {
+            let error = service_closed_error(&tenant_id);
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                &tenant_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
         }
         self.sweep_expired_queued_requests_locked(&mut state);
         if state.active_queries >= self.inner.config.max_concurrent_queries || !state.queued.is_empty() {
             return Ok(None);
         }
-        let query_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
-        let Some(placed_query) = self.try_place_query(
+        let placed_query = match self.try_place_query(
             &tenant_id,
-            query_id,
+            admission_request_id,
             grant_policy,
             #[cfg(feature = "cugraph")]
             warm_graph_grant_policy,
@@ -1022,16 +1476,65 @@ impl QueryService {
             None,
             state.active_queries,
             &mut slot_notifications,
-        )?
-        else {
+        ) {
+            Ok(placed_query) => placed_query,
+            Err(error) => {
+                record_admission_lifecycle(
+                    observation_owner.as_ref(),
+                    admission_request_id,
+                    &tenant_id,
+                    admission_rejection(&error),
+                    state.queued.len(),
+                    None,
+                    None,
+                );
+                return Err(error);
+            },
+        };
+        let Some(placed_query) = placed_query else {
             return Ok(None);
         };
-        self.attach_admission_release_wakeup(&placed_query.memory_grant)?;
-        self.attach_admission_budget_decrease_wakeup(&placed_query.memory_grant)?;
+        if let Err(error) = self.attach_admission_release_wakeup(&placed_query.memory_grant) {
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                &tenant_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
+        }
+        if let Err(error) = self.attach_admission_budget_decrease_wakeup(&placed_query.memory_grant) {
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                &tenant_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
+        }
+        if self.admission_is_closed(&state) {
+            let error = service_closed_error(&tenant_id);
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                &tenant_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
+        }
         state.active_queries = state.active_queries.saturating_add(1);
         self.register_active_adaptive_grant(
             &mut state,
-            query_id,
+            admission_request_id,
             placed_query.device_ordinal,
             placed_query.grant_policy,
             &placed_query.memory_grant,
@@ -1041,11 +1544,23 @@ impl QueryService {
         let service = Arc::clone(&self.inner);
         let device_budget_bytes = placed_query.memory_grant.budget_bytes();
         let device_ordinal = placed_query.device_ordinal;
+        record_admission_lifecycle(
+            observation_owner.as_ref(),
+            admission_request_id,
+            &tenant_id,
+            AdmissionLifecycleState::Admitted,
+            state.queued.len(),
+            Some(device_ordinal),
+            Some(device_budget_bytes),
+        );
         Ok(Some(QueryHandle {
             lifetime: QueryHandleLifetime::new(
                 Arc::clone(&service),
                 tenant_id.clone(),
-                query_id,
+                admission_request_id,
+                observation_owner.handle,
+                observation_owner.owner,
+                observation_owner.activity,
                 placed_query.memory_grant,
                 placed_query.device_slot,
                 #[cfg(feature = "cugraph")]
@@ -1053,7 +1568,7 @@ impl QueryService {
             ),
             service,
             tenant_id,
-            query_id,
+            admission_request_id,
             admission_sequence,
             admission_wait: Duration::ZERO,
             device_budget_bytes,
@@ -1063,11 +1578,118 @@ impl QueryService {
 
     /// Closes admission and wakes every queued waiter.
     ///
-    /// Active query handles keep their slots until dropped or finished.
+    /// The atomic gate closes before the best-effort mutex update, so this
+    /// signal never waits behind an admission transaction. Commit paths
+    /// recheck the gate while holding the admission mutex. Active query
+    /// handles keep their slots until dropped or finished.
     pub fn close(&self) -> Result<()> {
-        let mut state = self.lock_admission()?;
-        state.closed = true;
+        self.inner.admission_open.store(false, Ordering::Release);
+        let close_result = match self.inner.admission.try_lock() {
+            Ok(mut state) => {
+                state.closed = true;
+                Ok(())
+            },
+            Err(std::sync::TryLockError::Poisoned(_)) => Err(QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.query_service.admission",
+                "query service admission mutex was poisoned",
+            )),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(()),
+        };
+        self.inner.service_epoch.invalidate();
+        let stream_pool_close_result =
+            self.inner.resources.as_ref().map_or(Ok(()), QueryServiceResources::close_stream_pools);
         self.inner.notify_admission_available();
+        close_result.and(stream_pool_close_result)
+    }
+
+    /// Closes admission and waits for every admitted handle and queued waiter
+    /// to leave the service.
+    ///
+    /// This is the synchronous teardown boundary used when an async server
+    /// future is cancelled: returning guarantees no query cleanup still owns
+    /// service runtime resources or the process-wide governor claim.
+    pub fn close_and_wait_for_quiescence(&self, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
+        self.close_and_wait_for_quiescence_until(deadline)
+    }
+
+    /// Closes admission and waits for complete cleanup under one caller-owned
+    /// absolute deadline.
+    ///
+    /// Time spent acquiring the admission lock or closing the service consumes
+    /// this same deadline instead of starting a second grace period.
+    pub fn close_and_wait_for_quiescence_until(&self, deadline: Instant) -> Result<()> {
+        let operation = "nexus_query_engine.query_service.close_and_wait_for_quiescence";
+        self.inner.admission_open.store(false, Ordering::Release);
+        self.inner.service_epoch.invalidate();
+        let stream_pool_close_result =
+            self.inner.resources.as_ref().map_or(Ok(()), QueryServiceResources::close_stream_pools);
+        self.inner.notify_admission_available();
+        // Local-Parquet cache checkouts may outlive their query handle. Drain
+        // cache ownership before waiting for those query-scoped overlays so a
+        // pinned escaped output cannot form a shutdown ordering cycle.
+        let local_cache_result = self
+            .inner
+            .resources
+            .as_ref()
+            .map_or(Ok(()), |resources| resources.close_and_drain_local_parquet_source_caches_until(deadline));
+        let mut state = self.lock_admission_until(deadline, operation)?;
+        state.closed = true;
+        let mut waited_for_quiescence = false;
+        loop {
+            if state.active_queries == 0 && state.cleanup_in_progress == 0 && state.queued.is_empty() {
+                if waited_for_quiescence && crate::runtime::deadline::deadline_expired(deadline) {
+                    return Err(query_service_shutdown_timeout(operation, Some(&state), "admission_quiescence"));
+                }
+                break;
+            }
+            if crate::runtime::deadline::deadline_expired(deadline) {
+                return Err(query_service_shutdown_timeout(operation, Some(&state), "admission_quiescence"));
+            }
+            let Some(remaining) = crate::runtime::deadline::deadline_remaining(deadline) else {
+                return Err(query_service_shutdown_timeout(operation, Some(&state), "admission_quiescence"));
+            };
+            waited_for_quiescence = true;
+            #[cfg(test)]
+            self.inner.shutdown_waiters.fetch_add(1, Ordering::AcqRel);
+            let waited = self.inner.admission_available.wait_timeout(state, remaining);
+            #[cfg(test)]
+            self.inner.shutdown_waiters.fetch_sub(1, Ordering::AcqRel);
+            let (next, timeout) = waited.map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    operation,
+                    "query service admission condition variable was poisoned during shutdown",
+                )
+            })?;
+            state = next;
+            if timeout.timed_out() {
+                return Err(query_service_shutdown_timeout(operation, Some(&state), "admission_quiescence"));
+            }
+        }
+        drop(state);
+        #[cfg(feature = "cugraph")]
+        let resident_cache_result = self
+            .inner
+            .resources
+            .as_ref()
+            .map_or(Ok(()), |resources| resources.close_and_drain_resident_graph_caches_until(deadline));
+        let stream_pool_drain_result = self
+            .inner
+            .resources
+            .as_ref()
+            .map_or(Ok(()), |resources| resources.close_and_drain_stream_pools_until(deadline));
+        let epoch_result = self.inner.service_epoch.wait_for_idle_until(deadline, operation);
+        stream_pool_close_result?;
+        local_cache_result?;
+        #[cfg(feature = "cugraph")]
+        resident_cache_result?;
+        stream_pool_drain_result?;
+        epoch_result?;
+        if crate::runtime::deadline::deadline_expired(deadline) {
+            return Err(query_service_shutdown_timeout(operation, None, "final_completion"));
+        }
         Ok(())
     }
 
@@ -1515,7 +2137,7 @@ impl QueryService {
     fn try_grant_from_governor(
         &self,
         governor: &MemoryGovernor,
-        query_id: u64,
+        admission_request_id: AdmissionRequestId,
         grant_policy: TenantGrantPolicy,
         qos: QueryQos,
         deadline: Option<Instant>,
@@ -1530,7 +2152,7 @@ impl QueryService {
         else {
             return Ok(None);
         };
-        let mut request = GrantRequest::new(query_id, grant_policy.min_bytes, want_bytes);
+        let mut request = GrantRequest::new(admission_request_id, grant_policy.min_bytes, want_bytes);
         request = request.with_qos(qos);
         if let Some(deadline) = deadline {
             request = request.with_deadline(deadline);
@@ -1541,7 +2163,7 @@ impl QueryService {
     pub(super) fn try_place_query(
         &self,
         tenant_id: &TenantId,
-        query_id: u64,
+        admission_request_id: AdmissionRequestId,
         grant_policy: TenantGrantPolicy,
         #[cfg(feature = "cugraph")] warm_graph_grant_policy: Option<TenantGrantPolicy>,
         qos: QueryQos,
@@ -1551,12 +2173,17 @@ impl QueryService {
         slot_notifications: &mut PendingDeviceSlotNotifications,
     ) -> Result<Option<PlacedQuery>> {
         let Some(resources) = &self.inner.resources else {
+            let fallback_device = resolve_fallback_placement_device(self.inner.config.device_ordinal)?;
+            let health = cudf::runtime::device_health_snapshot(fallback_device);
+            if health.status() == cudf::runtime::DeviceHealthStatus::Unhealthy {
+                return Err(unhealthy_placement_device_error(fallback_device, health));
+            }
             if !self.fallback_active_query_cap_allows(active_queries) {
                 return Ok(None);
             }
             let Some(memory_grant) = self.try_grant_from_governor(
                 &self.inner.fallback_memory_governor,
-                query_id,
+                admission_request_id,
                 grant_policy,
                 qos,
                 deadline,
@@ -1579,7 +2206,15 @@ impl QueryService {
             .with_tenant_id(tenant_id.as_str())
             .with_placement_hint(placement_hint.clone());
         let mut any_device_can_fit_minimum = false;
+        let mut healthy_candidates = 0usize;
+        let mut first_unhealthy = None;
         for device in self.placement_candidates(resources, &placement_request)? {
+            let health = cudf::runtime::device_health_snapshot(device);
+            if health.status() == cudf::runtime::DeviceHealthStatus::Unhealthy {
+                first_unhealthy.get_or_insert((device, health));
+                continue;
+            }
+            healthy_candidates = healthy_candidates.saturating_add(1);
             let context = resources.devices.context(device)?;
             if context.capacity_bytes() >= grant_policy.min_bytes {
                 any_device_can_fit_minimum = true;
@@ -1616,7 +2251,7 @@ impl QueryService {
                 slot_notifications.release_slot(device_slot);
                 continue;
             };
-            let mut request = GrantRequest::new(query_id, selected_grant_policy.min_bytes, want_bytes);
+            let mut request = GrantRequest::new(admission_request_id, selected_grant_policy.min_bytes, want_bytes);
             request = request.with_qos(qos);
             if let Some(deadline) = deadline {
                 request = request.with_deadline(deadline);
@@ -1641,6 +2276,11 @@ impl QueryService {
         }
         if any_device_can_fit_minimum {
             return Ok(None);
+        }
+        if healthy_candidates == 0
+            && let Some((device, health)) = first_unhealthy
+        {
+            return Err(unhealthy_placement_device_error(device, health));
         }
         Err(QueryError::new(
             QueryErrorCode::ServiceOverloaded,
@@ -1699,7 +2339,7 @@ impl QueryService {
     pub(super) fn register_active_adaptive_grant(
         &self,
         state: &mut AdmissionState,
-        query_id: u64,
+        admission_request_id: AdmissionRequestId,
         device_ordinal: usize,
         grant_policy: TenantGrantPolicy,
         memory_grant: &MemoryGrant,
@@ -1711,7 +2351,7 @@ impl QueryService {
             return;
         }
         state.active_adaptive_grants.insert(
-            query_id,
+            admission_request_id,
             ActiveAdaptiveGrant {
                 device_ordinal,
                 min_bytes: memory_grant.min_bytes(),
@@ -1751,13 +2391,15 @@ impl QueryService {
                 continue;
             }
             let mut candidates = Vec::new();
-            let query_ids = state
+            let admission_request_ids = state
                 .active_adaptive_grants
                 .iter()
-                .filter_map(|(query_id, active)| (active.device_ordinal == device_ordinal).then_some(*query_id))
+                .filter_map(|(admission_request_id, active)| {
+                    (active.device_ordinal == device_ordinal).then_some(*admission_request_id)
+                })
                 .collect::<Vec<_>>();
-            for query_id in query_ids {
-                let Some(active) = state.active_adaptive_grants.get(&query_id) else {
+            for admission_request_id in admission_request_ids {
+                let Some(active) = state.active_adaptive_grants.get(&admission_request_id) else {
                     continue;
                 };
                 let current_bytes = active.memory_grant.budget_bytes();
@@ -1766,13 +2408,15 @@ impl QueryService {
                     continue;
                 }
                 candidates.push(AdaptiveGrowthCandidate {
-                    query_id,
+                    admission_request_id,
                     missing_bytes: target_bytes.saturating_sub(current_bytes),
                     weight: active.memory_grant.qos().budget_weight(),
                 });
             }
-            for (query_id, allocated_bytes) in weighted_adaptive_growth_allocations(&candidates, available_bytes) {
-                let Some(active) = state.active_adaptive_grants.get(&query_id).cloned() else {
+            for (admission_request_id, allocated_bytes) in
+                weighted_adaptive_growth_allocations(&candidates, available_bytes)
+            {
+                let Some(active) = state.active_adaptive_grants.get(&admission_request_id).cloned() else {
                     continue;
                 };
                 let current_bytes = active.memory_grant.budget_bytes();
@@ -1907,16 +2551,18 @@ impl QueryService {
         if deficit_bytes == 0 {
             return Ok(());
         }
-        let mut query_ids = state
+        let mut admission_request_ids = state
             .active_adaptive_grants
             .iter()
-            .filter_map(|(query_id, active)| (active.device_ordinal == device_ordinal).then_some(*query_id))
+            .filter_map(|(admission_request_id, active)| {
+                (active.device_ordinal == device_ordinal).then_some(*admission_request_id)
+            })
             .collect::<Vec<_>>();
-        query_ids.sort_unstable();
+        admission_request_ids.sort_unstable();
 
         let mut remaining_deficit = deficit_bytes;
-        for query_id in query_ids {
-            let Some(active) = state.active_adaptive_grants.get(&query_id) else {
+        for admission_request_id in admission_request_ids {
+            let Some(active) = state.active_adaptive_grants.get(&admission_request_id) else {
                 continue;
             };
             let current_bytes = active.memory_grant.budget_bytes();
@@ -1953,9 +2599,9 @@ impl QueryService {
     pub(super) fn remove_queued_request_without_admission_locked(
         &self,
         state: &mut AdmissionState,
-        request_id: u64,
+        admission_request_id: AdmissionRequestId,
     ) -> Option<AdmissionRequest> {
-        let removed = remove_queued_request(state, request_id);
+        let removed = remove_queued_request(state, admission_request_id);
         if removed.is_some() {
             self.refresh_active_adaptive_shrink_requests_locked(state);
             if state.queued.is_empty() {
@@ -1968,9 +2614,9 @@ impl QueryService {
     pub(super) fn abandon_queued_request_locked(
         &self,
         state: &mut AdmissionState,
-        request_id: u64,
+        admission_request_id: AdmissionRequestId,
     ) -> Option<AdmissionRequest> {
-        let removed = self.remove_queued_request_without_admission_locked(state, request_id);
+        let removed = self.remove_queued_request_without_admission_locked(state, admission_request_id);
         if removed.is_some() {
             self.inner.notify_admission_available();
         }
@@ -2186,7 +2832,29 @@ impl QueryService {
         })
     }
 
-    pub(super) fn request_is_admissible(&self, state: &mut AdmissionState, request_id: u64) -> Result<bool> {
+    pub(super) fn admission_is_closed(&self, state: &AdmissionState) -> bool {
+        !self.inner.admission_open.load(Ordering::Acquire) || state.closed
+    }
+
+    fn lock_admission_until(
+        &self,
+        deadline: Instant,
+        operation: &'static str,
+    ) -> Result<std::sync::MutexGuard<'_, AdmissionState>> {
+        match crate::runtime::deadline::mutex_lock_until(&self.inner.admission, deadline) {
+            Ok(state) => Ok(state),
+            Err(crate::runtime::deadline::DeadlineMutexLockError::Poisoned) => self.lock_admission(),
+            Err(crate::runtime::deadline::DeadlineMutexLockError::TimedOut) => {
+                Err(query_service_shutdown_timeout(operation, None, "admission_mutex"))
+            },
+        }
+    }
+
+    pub(super) fn request_is_admissible(
+        &self,
+        state: &mut AdmissionState,
+        admission_request_id: AdmissionRequestId,
+    ) -> Result<bool> {
         self.sweep_expired_queued_requests_locked(state);
         if state.active_queries >= self.inner.config.max_concurrent_queries {
             return Ok(false);
@@ -2194,19 +2862,38 @@ impl QueryService {
         let Some(position) = self.select_next_request_position(state)? else {
             return Ok(false);
         };
-        Ok(state.queued[position].request_id == request_id)
+        Ok(state.queued[position].admission_request_id == admission_request_id)
     }
 
     fn sweep_expired_queued_requests_locked(&self, state: &mut AdmissionState) {
         let now = Instant::now();
-        let before = state.queued.len();
-        state.queued.retain(|request| request.deadline > now);
-        if state.queued.len() != before {
+        let mut expired = Vec::new();
+        let mut retained = VecDeque::with_capacity(state.queued.len());
+        while let Some(request) = state.queued.pop_front() {
+            if request.deadline <= now {
+                expired.push(request);
+            } else {
+                retained.push_back(request);
+            }
+        }
+        state.queued = retained;
+        if !expired.is_empty() {
             self.refresh_active_adaptive_shrink_requests_locked(state);
             if state.queued.is_empty() {
                 self.grow_active_adaptive_grants_locked(state);
             }
             self.inner.notify_admission_available();
+            for request in expired {
+                record_admission_lifecycle(
+                    &request.observation,
+                    request.admission_request_id,
+                    &request.tenant_id,
+                    AdmissionLifecycleState::TimedOut,
+                    state.queued.len(),
+                    None,
+                    None,
+                );
+            }
         }
     }
 
@@ -2298,6 +2985,27 @@ impl QueryService {
         if let Some(index) = self.inner.tenant_order.iter().position(|candidate| candidate == tenant_id) {
             state.next_tenant_index = (index + 1) % self.inner.tenant_order.len();
         }
+    }
+}
+
+fn query_service_shutdown_timeout(
+    operation: &'static str,
+    state: Option<&AdmissionState>,
+    deadline_stage: &'static str,
+) -> QueryError {
+    let error = QueryError::new(
+        QueryErrorCode::ServiceOverloaded,
+        operation,
+        "timed out waiting for query service shutdown cleanup",
+    )
+    .with_fact("reason", "query_service_shutdown_timeout")
+    .with_fact("deadline_stage", deadline_stage);
+    match state {
+        Some(state) => error
+            .with_fact("active_queries", state.active_queries)
+            .with_fact("cleanup_in_progress", state.cleanup_in_progress)
+            .with_fact("queued_queries", state.queued.len()),
+        None => error,
     }
 }
 

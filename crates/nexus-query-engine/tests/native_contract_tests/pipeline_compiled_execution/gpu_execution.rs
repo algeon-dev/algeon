@@ -23,7 +23,7 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
 
     let (state, compiled_batch) = {
         let mut executor =
-            CompiledGpuTaskExecutor::new(&context, &compiled_plan, &pipeline, &gpu_inputs, &mut compiled_metrics)
+            CompiledGpuTaskExecutor::new(&context, &compiled_plan, &pipeline, &gpu_inputs, &mut compiled_metrics, None)
                 .unwrap();
         let state = scheduler.run(&mut executor).expect("compiled root hash join should execute");
         let output = executor.take_host_output().expect("compiled host sink should materialize");
@@ -80,7 +80,8 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
     let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();
 
     let (state, compiled_batch) = {
-        let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
         let state = scheduler.run(&mut executor).expect("compiled shared-source join should execute");
         let output = executor.take_host_output().expect("compiled host sink should materialize");
         (state, output)
@@ -167,7 +168,8 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
     let gpu_inputs = GpuResidentInputMap::new();
 
     let (state, batch) = {
-        let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
         let state = scheduler.run(&mut executor).expect("compiled aggregate join input should execute");
         let output = executor.take_host_output().expect("compiled host sink should materialize");
         (state, output)
@@ -216,7 +218,8 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
     let gpu_inputs = GpuResidentInputMap::new();
 
     let (state, batch) = {
-        let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
         let state = scheduler.run(&mut executor).expect("shared source aggregate should execute");
         let output = executor.take_host_output().expect("compiled host sink should materialize");
         (state, output)
@@ -296,6 +299,96 @@ fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
     assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert_eq!(metrics.hash_join_build_count, 1);
+}
+
+#[test]
+fn observed_compiled_root_join_replays_typed_reservations_with_registered_tasks() {
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let dir = unique_temp_dir("nexus-query-engine-observed-compiled-root");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+    let plan = root_join_data_plan(&left_path, &right_path);
+    let pipeline = compile_pipeline(&plan, &plan.capability_analysis()).expect("observed root join compiles");
+    let context = bounded_context(Arc::new(runtime));
+
+    let outcome = nexus_query_engine::exec::execute_query_plan_observed(
+        &context,
+        &plan,
+        nexus_query_engine::observability::RuntimeObservationConfig::native_execution(),
+    );
+    assert!(matches!(outcome.result(), Ok(QueryOutput::HostArrow(_))));
+    let metrics = outcome.metrics();
+    let snapshot = outcome.observation().expect("observed compiled execution seals evidence");
+    let typed_reservations = snapshot
+        .events()
+        .iter()
+        .filter_map(|event| match &event.payload {
+            nexus_query_engine::observability::RuntimeObservationPayload::Reservation(observation) => {
+                Some((&observation.task_attempt_id, &observation.task_kind, observation.charged_delta_bytes))
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(!typed_reservations.is_empty());
+    assert_eq!(metrics.reservation_events.len(), typed_reservations.len());
+    assert_eq!(typed_reservations.iter().map(|event| event.2).sum::<i128>(), 0);
+    assert_eq!(metrics.reservation_events.last().map(|event| event.current_reserved_bytes), Some(0));
+    assert!(typed_reservations.iter().all(|(attempt, kind, _)| attempt.is_none() || kind.is_some()));
+    assert!(metrics.task_runtime_metrics.values().all(|task| task.operator_kind != "unknown"));
+    assert!(metrics.reservation_events.iter().all(|event| {
+        event.query_id.as_ref().is_some_and(|query_id| query_id == metrics.query_id())
+            && event
+                .compiled_task_id
+                .as_ref()
+                .is_none_or(|task_id| metrics.task_runtime_metrics.contains_key(task_id.as_str()))
+    }));
+    assert!(snapshot.topology().any(|record| {
+        matches!(record, nexus_query_engine::observability::RuntimeTopologyRecord::TaskDefinition(_))
+    }));
+    let tasks = snapshot
+        .topology()
+        .filter_map(|record| match record {
+            nexus_query_engine::observability::RuntimeTopologyRecord::TaskDefinition(row) => {
+                Some((row.plan_execution_id.clone(), row.task_id.clone()))
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(tasks.len(), pipeline.tasks().len());
+    assert_eq!(tasks.iter().cloned().collect::<std::collections::BTreeSet<_>>().len(), tasks.len());
+
+    let barriers = snapshot
+        .topology()
+        .filter_map(|record| match record {
+            nexus_query_engine::observability::RuntimeTopologyRecord::BarrierDefinition(row) => {
+                Some((row.plan_execution_id.clone(), row.barrier_id.to_string()))
+            },
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let sinks = snapshot
+        .topology()
+        .filter_map(|record| match record {
+            nexus_query_engine::observability::RuntimeTopologyRecord::SinkDefinition(row) => {
+                Some((row.plan_execution_id.clone(), row.sink_id.to_string()))
+            },
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(barriers.len(), pipeline.barriers().len());
+    assert_eq!(sinks.len(), 1);
+    for record in snapshot.topology() {
+        let nexus_query_engine::observability::RuntimeTopologyRecord::ReservationGate(gate) = record else {
+            continue;
+        };
+        match gate.owner_kind.as_str() {
+            "barrier" => assert!(barriers.contains(&(gate.plan_execution_id.clone(), gate.owner_id.clone()))),
+            "sink" => assert!(sinks.contains(&(gate.plan_execution_id.clone(), gate.owner_id.clone()))),
+            _ => {},
+        }
+    }
 }
 
 #[test]
@@ -1257,7 +1350,8 @@ fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() 
     let context = bounded_context(Arc::new(runtime));
     let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();
     let mut metrics = QueryMetrics::default();
-    let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
+    let mut executor =
+        CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
 
     let error = executor.take_host_output().expect_err("empty host sink should be a structured invariant error");
     let rendered = error.to_string();

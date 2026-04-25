@@ -728,7 +728,7 @@ fn producerize_native_fragments(
         let producer = NativeCudfGpuProducerExec::try_new_with_metrics_capture_and_shape(
             input_name,
             native_plan,
-            native_execution_config.metrics_capture(),
+            native_execution_config.metrics_capture_factory(),
             native
                 .execution_config()
                 .plan_task_mapping_datafusion_shape()

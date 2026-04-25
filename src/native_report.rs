@@ -78,6 +78,7 @@ pub use metrics::{
     NativeJoinStrategyMetricRow, NativeLakehouseCacheFillEventMetricRow, NativePlanTaskMappingMetricRow,
     NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
 };
+pub(crate) use reports::NativeDataFusionExecutionTsvTemplate;
 pub use reports::{NativeDataFusionExecutionReport, NativeDataFusionPlanningReport, NativeFallbackPressureReport};
 pub use rows::{
     NativeDataFusionExecutionRow, NativeDataFusionPlanCoverage, NativeDataFusionPlanningOutcome,

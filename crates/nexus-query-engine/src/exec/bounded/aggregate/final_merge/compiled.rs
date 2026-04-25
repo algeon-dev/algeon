@@ -257,7 +257,11 @@ fn execute_compiled_partitioned_final_aggregate_merge(
             .with_memory_boundary("compiled_partitioned_final_aggregate_merge_output")
             .with_node_id(node_id)
             .with_stage("compiled_partitioned_final_merge")
-            .with_compiled_task_id(partitioned_final_merge_task_id(node_id, "compiled_combined_output")),
+            .with_task_registration(
+                partitioned_final_merge_task_id(node_id, "compiled_combined_output"),
+                1,
+                "aggregate",
+            ),
         metrics,
     );
     Ok(merged)
@@ -283,7 +287,7 @@ fn execute_compiled_partitioned_final_merge_group(
             .with_node_id(node_id)
             .with_stage("compiled_partitioned_final_merge")
             .with_attempt(1, 1)
-            .with_compiled_task_id(task_id.clone()),
+            .with_task_registration(task_id.clone(), 1, "aggregate"),
         metrics,
     ) {
         Ok(reservation) => reservation,
@@ -339,7 +343,7 @@ fn execute_compiled_partitioned_final_merge_group(
             .with_node_id(node_id)
             .with_stage("compiled_partitioned_final_merge")
             .with_attempt(1, 1)
-            .with_compiled_task_id(task_id),
+            .with_task_registration(task_id, 1, "aggregate"),
         metrics,
     )?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
@@ -411,10 +415,11 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
         .with_node_id(node_id)
         .with_stage("compiled_partitioned_final_merge")
         .with_attempt(1, 1)
-        .with_compiled_task_id(partitioned_final_merge_task_id(
-            node_id,
-            format!("compiled_merge.partition{partition_index}"),
-        ));
+        .with_task_registration(
+            partitioned_final_merge_task_id(node_id, format!("compiled_merge.partition{partition_index}")),
+            1,
+            "aggregate",
+        );
         if let Err(error) = reservations.try_grow(merge_reservation, grow_request, metrics) {
             release_partials_reverse(reservations, partials, metrics);
             return Err(error);
@@ -874,7 +879,8 @@ fn execute_final_aggregate_for_plan(
 
     let frame = input.into_frame();
     let input_rows = frame.num_rows() as u64;
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let mut output = execute_groupby_aggregate_with_budget(
         &overrides,

@@ -135,7 +135,11 @@ fn execute_final_merge_group_attempt(
             .with_node_id(bounded.aggregate_id)
             .with_stage("final_merge")
             .with_attempt(attempt, max_attempts)
-            .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, group_index, attempt));
+            .with_task_registration(
+                legacy_bounded_final_merge_task_id(bounded.aggregate_id, group_index, attempt),
+                u32::try_from(attempt).unwrap_or(u32::MAX),
+                "aggregate",
+            );
     let mut merge_reservation = reservations.try_reserve(merge_request, metrics)?;
     let merge_token_budget = reservations.available_bytes_including(&merge_reservation);
     let merge_token = match execution_budget_token_for_boundary(
@@ -212,7 +216,11 @@ fn execute_final_merge_group_attempt(
             .with_node_id(bounded.aggregate_id)
             .with_stage("final_merge")
             .with_attempt(attempt, max_attempts)
-            .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, group_index, attempt));
+            .with_task_registration(
+                legacy_bounded_final_merge_task_id(bounded.aggregate_id, group_index, attempt),
+                u32::try_from(attempt).unwrap_or(u32::MAX),
+                "aggregate",
+            );
     let output_reservation = reservations.try_reserve(output_request, metrics)?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
@@ -256,7 +264,11 @@ fn merge_final_aggregate_partials(
         .with_node_id(bounded.aggregate_id)
         .with_stage("final_merge")
         .with_attempt(attempt, max_attempts)
-        .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, group_index, attempt));
+        .with_task_registration(
+            legacy_bounded_final_merge_task_id(bounded.aggregate_id, group_index, attempt),
+            u32::try_from(attempt).unwrap_or(u32::MAX),
+            "aggregate",
+        );
         reservations.try_grow(merge_reservation, grow_request, metrics)?;
     }
 
@@ -386,7 +398,11 @@ fn execute_partitioned_final_aggregate_merge(
             .with_memory_boundary("partitioned_final_aggregate_merge_output")
             .with_node_id(bounded.aggregate_id)
             .with_stage("partitioned_final_merge")
-            .with_compiled_task_id(partitioned_final_merge_task_id(bounded.aggregate_id, "combined_output")),
+            .with_task_registration(
+                partitioned_final_merge_task_id(bounded.aggregate_id, "combined_output"),
+                1,
+                "aggregate",
+            ),
         metrics,
     );
     Ok(merged)
@@ -410,7 +426,7 @@ fn execute_partitioned_final_merge_group(
             .with_node_id(bounded.aggregate_id)
             .with_stage("partitioned_final_merge")
             .with_attempt(1, 1)
-            .with_compiled_task_id(task_id.clone()),
+            .with_task_registration(task_id.clone(), 1, "aggregate"),
         metrics,
     ) {
         Ok(reservation) => reservation,
@@ -464,7 +480,7 @@ fn execute_partitioned_final_merge_group(
             .with_node_id(bounded.aggregate_id)
             .with_stage("partitioned_final_merge")
             .with_attempt(1, 1)
-            .with_compiled_task_id(task_id),
+            .with_task_registration(task_id, 1, "aggregate"),
         metrics,
     )?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
@@ -513,10 +529,11 @@ fn merge_partitioned_final_aggregate_partials(
         .with_node_id(bounded.aggregate_id)
         .with_stage("partitioned_final_merge")
         .with_attempt(1, 1)
-        .with_compiled_task_id(partitioned_final_merge_task_id(
-            bounded.aggregate_id,
-            format!("merge.partition{partition_index}"),
-        ));
+        .with_task_registration(
+            partitioned_final_merge_task_id(bounded.aggregate_id, format!("merge.partition{partition_index}")),
+            1,
+            "aggregate",
+        );
         reservations.try_grow(merge_reservation, grow_request, metrics)?;
     } else {
         reservations.shrink_to_observed(merge_reservation, concatenated_bytes, metrics);

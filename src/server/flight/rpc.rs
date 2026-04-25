@@ -18,9 +18,11 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     ) -> Result<Response<FlightInfo>, Status> {
         self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
-        let query_id = Uuid::new_v4().hyphenated().to_string();
         let sql = query.query;
-        self.observability.start_query_with_correlation_id(query_id.clone(), sql.clone(), correlation_id.clone());
+        let (query_id, planning_lease) =
+            self.register_new_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
+                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+            })?;
         let query_span =
             DatafusionCudfFlightSqlService::query_span(&query_id, correlation_id.as_deref(), "get_flight_info");
         let _query_enter = query_span.enter();
@@ -32,20 +34,16 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             "planning Flight SQL statement"
         );
         if query.transaction_id.is_some() {
-            let status = finish_adapter_error_status_with_correlation_id(
-                self.observability.as_ref(),
-                &query_id,
-                correlation_id.as_deref(),
-                "planning",
-                flight_sql_transactions_unsupported_error(),
-            );
+            let (status, captured) = adapter_error_to_status_and_capture(flight_sql_transactions_unsupported_error());
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
             log_statement_status(&query_id, "planning", planning_started_at, &status);
-            self.observability.seal(&query_id);
+            planning_lease.fail("planning", captured);
             return Err(status);
         }
         drop(_query_enter);
         let info = match self
             .statement_flight_info(
+                planning_lease,
                 query_id.clone(),
                 sql,
                 correlation_id.clone(),
@@ -61,8 +59,6 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             Err(status) => {
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                 log_statement_status(&query_id, "planning", planning_started_at, &status);
-                self.observability.finish_status(&query_id, "planning", &status);
-                self.observability.seal(&query_id);
                 return Err(status);
             },
         };
@@ -78,8 +74,10 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     ) -> Result<Response<FlightInfo>, Status> {
         self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
-        let query_id = Uuid::new_v4().hyphenated().to_string();
-        self.observability.start_query_with_correlation_id(query_id.clone(), "", correlation_id.clone());
+        let (query_id, planning_lease) =
+            self.register_new_query(String::new(), correlation_id.clone()).map_err(|(query_id, status)| {
+                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+            })?;
         let query_span = DatafusionCudfFlightSqlService::query_span(
             &query_id,
             correlation_id.as_deref(),
@@ -94,13 +92,10 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                     "datafusion_nexus.server.flight.get_flight_info_prepared_statement.handle",
                     format!("prepared statement handle is not valid UTF-8: {error}"),
                 );
-                self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
-                self.observability.seal(&query_id);
-                return Err(status_with_query_id_and_correlation_id(
-                    adapter_error_status(error),
-                    &query_id,
-                    correlation_id.as_deref(),
-                ));
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                planning_lease.fail("planning", captured);
+                return Err(status);
             },
         };
         let sql = match self.prepared_statements.get(&handle).map(|entry| entry.sql.clone()) {
@@ -111,16 +106,13 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                     "datafusion_nexus.server.flight.get_flight_info_prepared_statement.resolve",
                     format!("unknown prepared statement handle: {handle}"),
                 );
-                self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
-                self.observability.seal(&query_id);
-                return Err(status_with_query_id_and_correlation_id(
-                    adapter_error_status(error),
-                    &query_id,
-                    correlation_id.as_deref(),
-                ));
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                planning_lease.fail("planning", captured);
+                return Err(status);
             },
         };
-        self.observability.start_query_with_correlation_id(query_id.clone(), sql.clone(), correlation_id.clone());
+        self.coordinator.set_sql(&query_id, sql.clone());
 
         let planning_started_at = Instant::now();
         tracing::info!(
@@ -133,6 +125,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         drop(_query_enter);
         let info = match self
             .statement_flight_info(
+                planning_lease,
                 query_id.clone(),
                 sql,
                 correlation_id.clone(),
@@ -148,8 +141,6 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             Err(status) => {
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                 log_statement_status(&query_id, "planning", planning_started_at, &status);
-                self.observability.finish_status(&query_id, "planning", &status);
-                self.observability.seal(&query_id);
                 return Err(status);
             },
         };
@@ -401,16 +392,13 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         let builder = query.into_builder(&sql_info);
         let schema = builder.schema();
         let batch = builder.build();
-        let stream = FlightDataEncoderBuilder::new()
-            .with_schema(schema)
-            .build(futures::stream::once(async { batch }))
-            .map_err(|error| {
-                arrow_flight_error_to_status_for_operation(
-                    error,
-                    "datafusion_nexus.server.flight.do_get_sql_info.encode",
-                    "failed to encode Flight SQL SqlInfo response",
-                )
-            });
+        let stream = encode_flight_data_stream(schema, futures::stream::once(async { batch })).map_err(|error| {
+            arrow_flight_error_to_status_for_operation(
+                error,
+                "datafusion_nexus.server.flight.do_get_sql_info.encode",
+                "failed to encode Flight SQL SqlInfo response",
+            )
+        });
         Ok(Response::new(Box::pin(stream)))
     }
 
@@ -510,21 +498,18 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     ) -> Result<i64, Status> {
         self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
-        let query_id = Uuid::new_v4().hyphenated().to_string();
         let sql = query.query;
-        self.observability.start_query_with_correlation_id(query_id.clone(), sql.clone(), correlation_id.clone());
+        let (query_id, planning_lease) =
+            self.register_new_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
+                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+            })?;
         if query.transaction_id.is_some() {
-            let status = finish_adapter_error_status_with_correlation_id(
-                self.observability.as_ref(),
-                &query_id,
-                correlation_id.as_deref(),
-                "planning",
-                flight_sql_transactions_unsupported_error(),
-            );
-            self.observability.seal(&query_id);
+            let (status, captured) = adapter_error_to_status_and_capture(flight_sql_transactions_unsupported_error());
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.fail("planning", captured);
             return Err(status);
         }
-        self.execute_update_sql(query_id, sql, correlation_id, UpdateStatementKind::Statement).await
+        self.execute_update_sql(planning_lease, sql, correlation_id, UpdateStatementKind::Statement).await
     }
 
     async fn do_put_prepared_statement_update(
@@ -534,8 +519,10 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     ) -> Result<i64, Status> {
         self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
-        let query_id = Uuid::new_v4().hyphenated().to_string();
-        self.observability.start_query_with_correlation_id(query_id.clone(), "", correlation_id.clone());
+        let (query_id, planning_lease) =
+            self.register_new_query(String::new(), correlation_id.clone()).map_err(|(query_id, status)| {
+                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+            })?;
         let handle = match std::str::from_utf8(&query.prepared_statement_handle) {
             Ok(handle) => handle.to_string(),
             Err(error) => {
@@ -544,13 +531,10 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                     "datafusion_nexus.server.flight.do_put_prepared_statement_update.handle",
                     format!("prepared statement handle is not valid UTF-8: {error}"),
                 );
-                self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
-                self.observability.seal(&query_id);
-                return Err(status_with_query_id_and_correlation_id(
-                    adapter_error_status(error),
-                    &query_id,
-                    correlation_id.as_deref(),
-                ));
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                planning_lease.fail("planning", captured);
+                return Err(status);
             },
         };
         let (sql, already_executed) = match self
@@ -565,16 +549,13 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                     "datafusion_nexus.server.flight.do_put_prepared_statement_update.resolve",
                     format!("unknown prepared statement handle: {handle}"),
                 );
-                self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
-                self.observability.seal(&query_id);
-                return Err(status_with_query_id_and_correlation_id(
-                    adapter_error_status(error),
-                    &query_id,
-                    correlation_id.as_deref(),
-                ));
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                planning_lease.fail("planning", captured);
+                return Err(status);
             },
         };
-        self.observability.start_query_with_correlation_id(query_id.clone(), sql.clone(), correlation_id.clone());
+        self.coordinator.set_sql(&query_id, sql.clone());
 
         // DataGrip-class clients may re-run the held handle after executing a
         // DDL through executeUpdate. A no-result-set DDL handle that already
@@ -586,14 +567,21 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                 prepared_statement_handle = handle.as_str(),
                 "deduplicated repeated prepared DDL execution on the update channel; returning a no-op"
             );
-            self.observability.finish_success(&query_id);
-            self.observability.seal(&query_id);
-            self.observability.delete(&query_id);
+            match planning_lease.into_execution() {
+                Ok(execution) => execution.succeed(),
+                Err(error) => {
+                    let status = adapter_error_status(error.adapter_error(
+                        "datafusion_nexus.server.flight.do_put_prepared_statement_update.into_execution",
+                    ));
+                    return Err(status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref()));
+                },
+            }
             return Ok(NO_UPDATED_RECORDS_COUNT);
         }
 
-        let record_count =
-            self.execute_update_sql(query_id, sql, correlation_id, UpdateStatementKind::PreparedStatement).await?;
+        let record_count = self
+            .execute_update_sql(planning_lease, sql, correlation_id, UpdateStatementKind::PreparedStatement)
+            .await?;
         if let Some(entry) = self.prepared_statements.get(&handle) {
             entry.mark_executed();
         }
@@ -607,9 +595,11 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     ) -> Result<ActionCreatePreparedStatementResult, Status> {
         self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
-        let query_id = Uuid::new_v4().hyphenated().to_string();
         let sql = query.query;
-        self.observability.start_query_with_correlation_id(query_id.clone(), sql.clone(), correlation_id.clone());
+        let (query_id, mut planning_lease) =
+            self.register_new_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
+                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+            })?;
         let query_span = DatafusionCudfFlightSqlService::query_span(
             &query_id,
             correlation_id.as_deref(),
@@ -617,14 +607,9 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         );
         let _query_enter = query_span.enter();
         if query.transaction_id.is_some() {
-            let status = finish_adapter_error_status_with_correlation_id(
-                self.observability.as_ref(),
-                &query_id,
-                correlation_id.as_deref(),
-                "planning",
-                flight_sql_transactions_unsupported_error(),
-            );
-            self.observability.seal(&query_id);
+            let (status, captured) = adapter_error_to_status_and_capture(flight_sql_transactions_unsupported_error());
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("planning", &status, captured);
             return Err(status);
         }
         if self.prepared_statements.len() >= MAX_PREPARED_STATEMENTS {
@@ -633,14 +618,11 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                 "datafusion_nexus.server.flight.do_action_create_prepared_statement.admission",
                 format!("too many live prepared statements (limit {MAX_PREPARED_STATEMENTS})"),
             )
-            .with_fact("limit", MAX_PREPARED_STATEMENTS);
-            self.observability.finish_failed(&query_id, "admission", CapturedError::from_adapter_error(&error));
-            self.observability.seal(&query_id);
-            return Err(status_with_query_id_and_correlation_id(
-                adapter_error_status(error),
-                &query_id,
-                correlation_id.as_deref(),
-            ));
+            .with_log_safe_fact("limit", MAX_PREPARED_STATEMENTS);
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("admission", &status, captured);
+            return Err(status);
         }
         // Plan logically to derive the result-set schema the client needs
         // up-front. This does *not* run the physical optimizer rule and does
@@ -656,35 +638,31 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                     correlation_id.as_deref(),
                     "planning",
                 )) => {
-                result.map_err(|error| {
-                    self.observability.finish_failed(
-                        &query_id,
-                        "planning",
-                        datafusion_error_to_captured_error(
-                            &error,
-                            "datafusion_nexus.server.flight.do_action_create_prepared_statement.create_logical_plan",
-                        ),
-                    );
-                    self.observability.seal(&query_id);
-                    status_with_query_id_and_correlation_id(
-                        datafusion_error_to_status_for_operation(
+                match result {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        let (status, captured) = datafusion_error_to_status_and_capture(
                             error,
                             "datafusion_nexus.server.flight.do_action_create_prepared_statement.create_logical_plan",
-                        ),
-                        &query_id,
-                        correlation_id.as_deref(),
-                    )
-                })?
+                        );
+                        let status = status_with_query_id_and_correlation_id(
+                            status,
+                            &query_id,
+                            correlation_id.as_deref(),
+                        );
+                        planning_lease.finish_captured("planning", &status, captured);
+                        return Err(status);
+                    },
+                }
             },
             _ = self.shutdown_token.cancelled() => {
-                let status = finish_adapter_error_status_with_correlation_id(
-                    self.observability.as_ref(),
+                let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
+                let status = status_with_query_id_and_correlation_id(
+                    status,
                     &query_id,
                     correlation_id.as_deref(),
-                    "planning",
-                    server_shutdown_error(),
                 );
-                self.observability.seal(&query_id);
+                planning_lease.finish_captured("planning", &status, captured);
                 return Err(status);
             }
         };
@@ -692,51 +670,34 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             &logical_plan,
             "datafusion_nexus.server.flight.do_action_create_prepared_statement.parameter_binding",
         ) {
-            self.observability.finish_failed(
-                &query_id,
-                "planning",
-                datafusion_error_to_captured_error(
-                    &error,
-                    "datafusion_nexus.server.flight.do_action_create_prepared_statement.parameter_binding",
-                ),
+            let (status, captured) = datafusion_error_to_status_and_capture(
+                error,
+                "datafusion_nexus.server.flight.do_action_create_prepared_statement.parameter_binding",
             );
-            self.observability.seal(&query_id);
-            return Err(status_with_query_id_and_correlation_id(
-                datafusion_error_to_status_for_operation(
-                    error,
-                    "datafusion_nexus.server.flight.do_action_create_prepared_statement.parameter_binding",
-                ),
-                &query_id,
-                correlation_id.as_deref(),
-            ));
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("planning", &status, captured);
+            return Err(status);
         }
         let dataset_schema = match self.dataset_schema_for_prepared_statement(&logical_plan) {
             Ok(schema) => schema,
             Err(error) => {
-                self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
-                self.observability.seal(&query_id);
-                return Err(status_with_query_id_and_correlation_id(
-                    adapter_error_status(error),
-                    &query_id,
-                    correlation_id.as_deref(),
-                ));
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                planning_lease.finish_captured("planning", &status, captured);
+                return Err(status);
             },
         };
         let dataset_schema_ipc = if self.prepared_statement_has_result_set(&logical_plan) {
             match schema_to_ipc_bytes(&dataset_schema) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    let status = status_with_query_id_and_correlation_id(
-                        arrow_error_to_status_for_operation(
-                            error,
-                            "datafusion_nexus.server.flight.do_action_create_prepared_statement.dataset_schema_ipc",
-                            "failed to encode Flight SQL prepared-statement dataset schema",
-                        ),
-                        &query_id,
-                        correlation_id.as_deref(),
+                    let (status, captured) = arrow_error_to_status_and_capture(
+                        error,
+                        "datafusion_nexus.server.flight.do_action_create_prepared_statement.dataset_schema_ipc",
+                        "failed to encode Flight SQL prepared-statement dataset schema",
                     );
-                    self.observability.finish_status(&query_id, "planning", &status);
-                    self.observability.seal(&query_id);
+                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                    planning_lease.finish_captured("planning", &status, captured);
                     return Err(status);
                 },
             }
@@ -754,8 +715,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         let handle = query_id.clone();
         self.prepared_statements.insert(handle.clone(), PreparedStatementEntry::new(sql, no_result_ddl));
         tracing::info!(prepared_statement_handle = handle.as_str(), "created Flight SQL prepared statement");
-        self.observability.finish_success(&query_id);
-        self.observability.seal(&query_id);
+        planning_lease.succeed();
 
         Ok(ActionCreatePreparedStatementResult {
             prepared_statement_handle: handle.into_bytes().into(),
@@ -808,6 +768,10 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                     .to_string(),
             }),
             Ok(arrow_flight::ActionType {
+                r#type: GET_QUERY_RUNTIME_ARTIFACT_ACTION.to_string(),
+                description: "Returns a versioned control frame and sealed native runtime JSONL artifact".to_string(),
+            }),
+            Ok(arrow_flight::ActionType {
                 r#type: GET_ADMISSION_STATS_ACTION.to_string(),
                 description: "Returns current datafusion-nexus admission and memory-governor diagnostics".to_string(),
             }),
@@ -828,24 +792,54 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             let output = futures::stream::iter(vec![Ok(arrow_flight::Result { body: payload.into_bytes().into() })]);
             return Ok(Response::new(Box::pin(output) as <Self as FlightService>::DoActionStream));
         }
+        if action_type == GET_QUERY_RUNTIME_ARTIFACT_ACTION {
+            self.expire_stale_tickets(Instant::now());
+            let query_id = std::str::from_utf8(&request.get_ref().body)
+                .map_err(|error| {
+                    Status::invalid_argument(format!("GetQueryRuntimeArtifact query_id body is not UTF-8: {error}"))
+                })?
+                .trim();
+            if query_id.is_empty() {
+                return Err(Status::invalid_argument("GetQueryRuntimeArtifact query_id body is empty"));
+            }
+            let response = self
+                .coordinator
+                .lease_runtime_artifact(query_id)
+                .map_err(|error| {
+                    crate::server::error::adapter_error_to_status(
+                        &error.adapter_error("datafusion_nexus.server.flight.get_query_runtime_artifact.egress"),
+                    )
+                })?
+                .ok_or_else(|| Status::not_found(format!("unknown or expired query_id: {query_id}")))?;
+            let output = futures::stream::unfold(response, |mut response| async move {
+                response.next_frame().map(|body| (Ok(arrow_flight::Result { body }), response))
+            });
+            return Ok(Response::new(Box::pin(output) as <Self as FlightService>::DoActionStream));
+        }
         if action_type != GET_QUERY_STATS_ACTION {
             return Err(Status::invalid_argument(format!(
                 "do_action: The defined request is invalid: {action_type:?}"
             )));
         }
+        self.expire_stale_tickets(Instant::now());
         let query_id = std::str::from_utf8(&request.get_ref().body)
             .map_err(|error| Status::invalid_argument(format!("GetQueryStats query_id body is not UTF-8: {error}")))?
             .trim();
         if query_id.is_empty() {
             return Err(Status::invalid_argument("GetQueryStats query_id body is empty"));
         }
-        let captured = self
-            .observability
-            .get(query_id)
+        let response = self
+            .coordinator
+            .lease_query_stats(query_id)
+            .map_err(|error| {
+                crate::server::error::adapter_error_to_status(
+                    &error.adapter_error("datafusion_nexus.server.flight.get_query_stats.egress"),
+                )
+            })?
             .ok_or_else(|| Status::not_found(format!("unknown or expired query_id: {query_id}")))?;
-        let output = futures::stream::iter(vec![Ok(arrow_flight::Result {
-            body: captured.to_query_stats_payload().into_bytes().into(),
-        })]);
+        let output = futures::stream::unfold(response, |mut response| async move {
+            response.next_frame().map(|body| (Ok(arrow_flight::Result { body }), response))
+        });
         Ok(Response::new(Box::pin(output) as <Self as FlightService>::DoActionStream))
     }
 

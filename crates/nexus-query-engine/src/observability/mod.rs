@@ -1,0 +1,215 @@
+//! DataFusion-free typed runtime observations and bounded query-local capture.
+
+mod clock;
+mod jsonl;
+mod lifecycle;
+mod model;
+mod recorder;
+
+pub use clock::{DeterministicRuntimeObservationClock, RuntimeObservationClock, SystemRuntimeObservationClock};
+pub use jsonl::{
+    RuntimeObservationExportError, RuntimeObservationExportErrorKind, RuntimeObservationExportErrorStatus,
+    write_runtime_observation_jsonl,
+};
+pub use lifecycle::{
+    RuntimeExecutionObservationScope, RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle, RuntimeTaskLifecycle,
+    task_attempt_id,
+};
+pub(crate) use model::LogicalRetainedBytes;
+pub use model::{
+    AdmissionLifecycleState, AdmissionRequestId, BarrierDefinitionRow, CompiledEdgeRow, GpuJobLifecycleState,
+    JobDefinitionRow, ObservationSequence, PlanEdgeRow, PlanExecutionBoundaryKind, PlanExecutionId, PlanNodeRow,
+    QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, ReservationGateRow, RuntimeAdmissionObservation,
+    RuntimeAttemptId, RuntimeBarrierId, RuntimeCleanupFailureObservation, RuntimeClockDomain, RuntimeGpuJobObservation,
+    RuntimeJobId, RuntimeMeasurementQuality, RuntimeMeasurementScope, RuntimeMeasurementSource,
+    RuntimeObservationClassLoss, RuntimeObservationFooter, RuntimeObservationLimits, RuntimeObservationLossReason,
+    RuntimeObservationManifest, RuntimeObservationPayload, RuntimeObservationReasonLoss, RuntimeObservationRecord,
+    RuntimeObservationRecordClass, RuntimePipelineEdgeId, RuntimePlanNodeId, RuntimeQueryId, RuntimeReservationAction,
+    RuntimeReservationDisposition, RuntimeReservationGateId, RuntimeReservationId, RuntimeReservationObservation,
+    RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceMeasurementObservation, RuntimeResourceRow, RuntimeSinkId,
+    RuntimeSourceLocationId, RuntimeSourceReadObservation, RuntimeSpanId, RuntimeStreamLeaseObservation,
+    RuntimeStreamLeaseScope, RuntimeTaskId, RuntimeTaskLifecycleObservation, RuntimeTerminalOutcome,
+    RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId, RuntimeWorkerId, SinkDefinitionRow,
+    SourceReadLifecycleState, StreamLeaseAcquisition, StreamLeaseLifecycleState, TaskAttemptId, TaskDefinitionRow,
+    TaskLifecycleState, WorkerDefinitionRow,
+};
+pub use recorder::{
+    LiveRuntimeObservationSnapshot, RuntimeEventContext, RuntimeObservationConfig, RuntimeObservationHandle,
+    RuntimeObservationOwner, RuntimeObservationRecordDisposition, RuntimeObservationSession,
+    SealedRuntimeObservationSnapshot,
+};
+
+#[cfg(test)]
+pub(crate) fn assert_live_topology_references_resolve(snapshot: &LiveRuntimeObservationSnapshot) {
+    use std::collections::BTreeSet;
+
+    let mut plan_nodes = BTreeSet::new();
+    let mut tasks = BTreeSet::new();
+    let mut edges = BTreeSet::new();
+    let mut barriers = BTreeSet::new();
+    let mut sinks = BTreeSet::new();
+    let mut gates = BTreeSet::new();
+    let mut jobs = BTreeSet::new();
+    let mut workers = BTreeSet::new();
+    let mut resources = BTreeSet::new();
+    for record in snapshot.topology() {
+        let inserted = match record {
+            RuntimeTopologyRecord::PlanNode(row) => {
+                plan_nodes.insert((row.plan_execution_id.clone(), row.node_id.clone()))
+            },
+            RuntimeTopologyRecord::TaskDefinition(row) => {
+                tasks.insert((row.plan_execution_id.clone(), row.task_id.clone()))
+            },
+            RuntimeTopologyRecord::CompiledEdge(row) => {
+                edges.insert((row.plan_execution_id.clone(), row.edge_id.clone()))
+            },
+            RuntimeTopologyRecord::BarrierDefinition(row) => {
+                barriers.insert((row.plan_execution_id.clone(), row.barrier_id.clone()))
+            },
+            RuntimeTopologyRecord::SinkDefinition(row) => {
+                sinks.insert((row.plan_execution_id.clone(), row.sink_id.clone()))
+            },
+            RuntimeTopologyRecord::ReservationGate(row) => {
+                gates.insert((row.plan_execution_id.clone(), row.gate_id.clone()))
+            },
+            RuntimeTopologyRecord::JobDefinition(row) => {
+                jobs.insert((row.plan_execution_id.clone(), row.job_id.clone()))
+            },
+            RuntimeTopologyRecord::WorkerDefinition(row) => {
+                workers.insert((row.plan_execution_id.clone(), row.worker_id.clone()))
+            },
+            RuntimeTopologyRecord::Resource(row) => {
+                resources.insert((row.plan_execution_id.clone(), row.resource_id.clone()))
+            },
+            RuntimeTopologyRecord::PlanEdge(_) => true,
+        };
+        assert!(inserted, "topology identity must be unique within its plan-execution scope: {record:?}");
+    }
+
+    for record in snapshot.topology() {
+        match record {
+            RuntimeTopologyRecord::PlanEdge(row) => {
+                assert!(plan_nodes.contains(&(row.plan_execution_id.clone(), row.from_node_id.clone())));
+                assert!(plan_nodes.contains(&(row.plan_execution_id.clone(), row.to_node_id.clone())));
+            },
+            RuntimeTopologyRecord::TaskDefinition(row) => {
+                if let Some(node_id) = &row.plan_node_id {
+                    assert!(plan_nodes.contains(&(row.plan_execution_id.clone(), node_id.clone())));
+                }
+            },
+            RuntimeTopologyRecord::CompiledEdge(row) => {
+                assert!(tasks.contains(&(row.plan_execution_id.clone(), row.from_task_id.clone())));
+                assert!(tasks.contains(&(row.plan_execution_id.clone(), row.to_task_id.clone())));
+                for resource_id in &row.resource_ids {
+                    assert!(resources.contains(&(Some(row.plan_execution_id.clone()), resource_id.clone())));
+                }
+                for gate_id in &row.gate_ids {
+                    assert!(gates.contains(&(row.plan_execution_id.clone(), gate_id.clone())));
+                }
+            },
+            RuntimeTopologyRecord::BarrierDefinition(row) => {
+                for task_id in row.upstream_task_ids.iter().chain(&row.downstream_task_ids) {
+                    assert!(tasks.contains(&(row.plan_execution_id.clone(), task_id.clone())));
+                }
+                for gate_id in &row.gate_ids {
+                    assert!(gates.contains(&(row.plan_execution_id.clone(), gate_id.clone())));
+                }
+            },
+            RuntimeTopologyRecord::SinkDefinition(row) => {
+                assert!(tasks.contains(&(row.plan_execution_id.clone(), row.input_task_id.clone())));
+                for gate_id in &row.gate_ids {
+                    assert!(gates.contains(&(row.plan_execution_id.clone(), gate_id.clone())));
+                }
+            },
+            RuntimeTopologyRecord::ReservationGate(row) if row.owner_kind == "task" => {
+                assert!(
+                    tasks
+                        .iter()
+                        .any(|(plan, task)| { plan == &row.plan_execution_id && task.as_str() == row.owner_id })
+                );
+            },
+            RuntimeTopologyRecord::ReservationGate(row) if row.owner_kind == "edge" => {
+                assert!(
+                    edges
+                        .iter()
+                        .any(|(plan, edge)| { plan == &row.plan_execution_id && edge.as_str() == row.owner_id })
+                );
+            },
+            RuntimeTopologyRecord::ReservationGate(row) if row.owner_kind == "barrier" => {
+                assert!(
+                    barriers
+                        .iter()
+                        .any(|(plan, barrier)| { plan == &row.plan_execution_id && barrier.as_str() == row.owner_id })
+                );
+            },
+            RuntimeTopologyRecord::ReservationGate(row) if row.owner_kind == "sink" => {
+                assert!(
+                    sinks.iter().any(|(plan, sink)| plan == &row.plan_execution_id && sink.as_str() == row.owner_id)
+                );
+            },
+            RuntimeTopologyRecord::Resource(row) => {
+                if let Some(plan_execution_id) = &row.plan_execution_id {
+                    if let Some(producer) = &row.producer_task_id {
+                        assert!(tasks.contains(&(plan_execution_id.clone(), producer.clone())));
+                    }
+                    for consumer in &row.consumer_task_ids {
+                        assert!(tasks.contains(&(plan_execution_id.clone(), consumer.clone())));
+                    }
+                }
+            },
+            RuntimeTopologyRecord::PlanNode(_)
+            | RuntimeTopologyRecord::ReservationGate(_)
+            | RuntimeTopologyRecord::JobDefinition(_)
+            | RuntimeTopologyRecord::WorkerDefinition(_) => {},
+        }
+    }
+
+    for event in snapshot.events() {
+        match &event.payload {
+            RuntimeObservationPayload::TaskLifecycle(observation) => {
+                let plan = event.plan_execution_id.clone().expect("task event has plan execution scope");
+                assert!(tasks.contains(&(plan, observation.attempt_id.task_id.clone())));
+            },
+            RuntimeObservationPayload::GpuJob(observation) => {
+                assert!(jobs.contains(&(event.plan_execution_id.clone(), observation.job_id.clone())));
+                if let Some(worker_id) = &observation.worker_id {
+                    assert!(workers.contains(&(event.plan_execution_id.clone(), worker_id.clone())));
+                }
+            },
+            RuntimeObservationPayload::StreamLease(observation) => {
+                assert!(resources.contains(&(event.plan_execution_id.clone(), observation.lease_id.clone())));
+                if let Some(task_id) = &observation.scope.task_id {
+                    let plan = event.plan_execution_id.clone().expect("task-correlated stream has plan scope");
+                    assert!(tasks.contains(&(plan, task_id.clone())));
+                }
+                if let Some(worker_id) = &observation.scope.source_worker_id {
+                    assert!(workers.iter().any(|(_, candidate)| candidate == worker_id));
+                }
+                if let Some(job_id) = &observation.scope.gpu_job_id {
+                    assert!(jobs.iter().any(|(_, candidate)| candidate == job_id));
+                }
+                if let Some(worker_id) = &observation.scope.gpu_worker_id {
+                    assert!(workers.iter().any(|(_, candidate)| candidate == worker_id));
+                }
+            },
+            RuntimeObservationPayload::ResourceMeasurement(observation) => {
+                assert!(resources.contains(&(event.plan_execution_id.clone(), observation.resource_id.clone())));
+            },
+            RuntimeObservationPayload::SourceRead(observation) => {
+                let plan = event.plan_execution_id.clone().expect("source event has plan execution scope");
+                assert!(tasks.contains(&(plan.clone(), observation.task_id.clone())));
+                assert!(workers.contains(&(Some(plan), observation.worker_id.clone())));
+            },
+            RuntimeObservationPayload::Reservation(observation) => {
+                if let Some(attempt) = &observation.task_attempt_id {
+                    let plan = event.plan_execution_id.clone().expect("task reservation has plan execution scope");
+                    assert!(tasks.contains(&(plan, attempt.task_id.clone())));
+                }
+            },
+            RuntimeObservationPayload::QueryBoundary { .. }
+            | RuntimeObservationPayload::PlanExecutionBoundary { .. }
+            | RuntimeObservationPayload::Admission(_)
+            | RuntimeObservationPayload::CleanupFailure(_) => {},
+        }
+    }
+}

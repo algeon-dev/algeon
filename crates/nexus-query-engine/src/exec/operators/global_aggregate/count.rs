@@ -65,7 +65,7 @@ fn global_count_series_impl(
     })?;
     match token {
         Some((token, metrics)) => context
-            .runtime()
+            .runtime()?
             .series_from_value_with_budget(count, 1, token)
             .map_err(|error| {
                 QueryError::from_cudf_with_budget_details(
@@ -78,7 +78,7 @@ fn global_count_series_impl(
             })
             .map(|outcome| budgeted_value(outcome, metrics, "nexus_query_engine.global_aggregate.count_output")),
         None => {
-            let scalar = context.runtime().scalar(count).map_err(|error| {
+            let scalar = context.runtime()?.scalar(count).map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.global_aggregate.count",
                     "failed to construct native global count scalar",
@@ -86,7 +86,7 @@ fn global_count_series_impl(
                 )
                 .with_fact("alias", expr.alias.as_str())
             })?;
-            context.runtime().series_from_scalar(&scalar, 1).map_err(|error| {
+            context.runtime()?.series_from_scalar(&scalar, 1).map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.global_aggregate.count_output",
                     "failed to construct native global count output column",

@@ -17,6 +17,9 @@ mod churn;
 mod flight;
 #[path = "server_iceberg_rest_multigpu_e2e/probe.rs"]
 mod probe;
+#[cfg(feature = "server-runtime-observability-e2e")]
+#[path = "server_iceberg_rest_multigpu_e2e/runtime_observability.rs"]
+mod runtime_observability;
 #[path = "server_iceberg_rest_multigpu_e2e/server.rs"]
 mod server;
 #[path = "server_iceberg_rest_multigpu_e2e/validation.rs"]
@@ -76,6 +79,11 @@ pub async fn run() -> E2eResult<()> {
 
     println!("server_iceberg_rest_multigpu_e2e ok: {}", params.artifact_dir.display());
     Ok(())
+}
+
+#[cfg(feature = "server-runtime-observability-e2e")]
+pub async fn run_runtime_observability(args: Vec<String>) -> E2eResult<()> {
+    runtime_observability::run(args).await
 }
 
 async fn run_acceptance(

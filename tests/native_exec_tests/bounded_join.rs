@@ -372,6 +372,63 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
 }
 
 #[test]
+fn native_composed_exec_preserves_deferred_host_materialization_facts_on_runtime_rejection() {
+    let dir = unique_temp_dir("datafusion-nexus-native-composed-bounded-join-rejection");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_parquet_file(&left);
+    write_parquet_file(&right);
+    let input_schema = parquet_file_schema();
+
+    let left_producer = Arc::new(
+        NativeCudfGpuProducerExec::try_new(
+            "left_input",
+            local_parquet_gpu_resident_plan(&left, Arc::clone(&input_schema)),
+        )
+        .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+    let right_producer = Arc::new(
+        NativeCudfGpuProducerExec::try_new(
+            "right_input",
+            local_parquet_gpu_resident_plan(&right, Arc::clone(&input_schema)),
+        )
+        .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+    let consumer_plan =
+        bounded_gpu_resident_left_build_left_semi_join_host_sink_plan("left_input", "right_input", input_schema);
+    let exec = Arc::new(
+        NativeCudfComposedExec::try_new(consumer_plan, vec![left_producer, right_producer], bounded_config()).unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+
+    let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
+    let adapter_error = adapter_error(&error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::UnsupportedOperator);
+    assert_eq!(adapter_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
+    assert_eq!(adapter_error.fact_value("result_materialization_boundary"), Some("explicit_sink"));
+    assert!(
+        adapter_error
+            .fact_value("modeled_reservations")
+            .is_some_and(|value| value.split(',').any(|kind| kind == "materialization")),
+        "composed runtime rejection must retain the caller-visible host materialization reservation: {adapter_error}"
+    );
+    assert!(
+        adapter_error
+            .fact_value("bounded_join_reservation_statuses")
+            .is_some_and(|value| value.split(',').any(|status| status == "materialization:modeled")),
+        "composed runtime rejection must retain the modeled materialization status: {adapter_error}"
+    );
+    assert!(
+        adapter_error.fact_value("bounded_join_reservation_requirements").is_some_and(|value| value.contains(
+            "materialization:query_engine_explicit_sink_materialization_reservation:query_engine_owned_boundary"
+        )),
+        "composed runtime rejection must retain the explicit sink materialization requirement: {adapter_error}"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection_still_reports_legacy_error_facts() {
     let dir = unique_temp_dir("datafusion-nexus-bounded-join-rejection-split");
     let left = dir.join("left.parquet");

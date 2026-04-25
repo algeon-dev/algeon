@@ -230,13 +230,6 @@ impl FinalSortExecutor<'_> {
         let budget = usize::try_from(budget_bytes).unwrap_or(usize::MAX);
         self.context
             .execution_budget_token(ExecutionBudgetRequest::new(budget).with_boundary(boundary))
-            .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
-                    "nexus_query_engine.final_sort.budget_token",
-                    "failed to create bounded native final sort budget token",
-                    error,
-                )
-            })
             .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))
     }
 

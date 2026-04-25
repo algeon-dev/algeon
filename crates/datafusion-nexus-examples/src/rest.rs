@@ -115,7 +115,7 @@ async fn gpu(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
             "free_bytes": report.free_bytes,
             "grants": report.grants.into_iter().map(|grant| json!({
                 "grant_id": grant.grant_id,
-                "query_id": grant.query_id,
+                "admission_request_id": grant.admission_request_id,
                 "priority": grant.priority,
                 "budget_bytes": grant.budget_bytes
             })).collect::<Vec<_>>()

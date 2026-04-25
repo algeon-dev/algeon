@@ -16,7 +16,8 @@ use datafusion::{
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
-    exec::{execute_query_plan, output::QueryOutput},
+    exec::{execute_query_plan_observed, output::QueryOutput},
+    observability::RuntimeObservationConfig,
     plan::QueryPlan,
     runtime::{ExecutionContext, SourceStorageProfile, resident::GpuResultHandle},
 };
@@ -26,7 +27,7 @@ use super::{
         comma_separated, conservative_properties, gpu_resident_source_names, native_plan_one_line,
         native_query_runtime_error, write_native_plan_tree,
     },
-    metrics::{NativeCudfMetrics, NativeMetricsCapture},
+    metrics::{NativeCudfMetrics, NativeExecutionMetricsCapture, NativeMetricsCapture},
 };
 use crate::error::{Error, ErrorCode};
 
@@ -80,7 +81,7 @@ pub fn register_gpu_resident_producer_discovery(discovery: GpuResidentProducerDi
 pub struct NativeCudfGpuProducerExec {
     input_name: String,
     plan: QueryPlan,
-    metrics_capture: Option<NativeMetricsCapture>,
+    metrics_capture: Option<NativeExecutionMetricsCapture>,
     plan_task_mapping_datafusion_shape: Option<String>,
     lakehouse_footer_pruning: bool,
     source_storage_profiles: Vec<SourceStorageProfile>,
@@ -139,6 +140,11 @@ impl NativeCudfGpuProducerExec {
             .with_fact("gpu_resident_sources", comma_separated(source_names.iter().map(String::as_str))));
         }
 
+        let metrics_capture = Some(
+            metrics_capture
+                .unwrap_or_else(|| NativeMetricsCapture::without_sink("unassigned-producer"))
+                .new_execution(),
+        );
         Ok(Self {
             input_name,
             cache: conservative_properties(Arc::clone(plan.output_schema())),
@@ -157,6 +163,21 @@ impl NativeCudfGpuProducerExec {
 
     pub fn native_plan(&self) -> &QueryPlan {
         &self.plan
+    }
+
+    pub(crate) fn with_metrics_capture(mut self, metrics_capture: Option<NativeExecutionMetricsCapture>) -> Self {
+        self.metrics_capture = metrics_capture;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
+        self.metrics_capture.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_test_query_metrics(&self, metrics: &nexus_query_engine::metrics::QueryMetrics) {
+        NativeCudfMetrics::new(&self.metrics, 0).record_query_metrics(metrics);
     }
 
     /// Execute this producer inside a composed exec's shared native context.
@@ -186,15 +207,18 @@ impl NativeCudfGpuProducerExec {
             self.plan_task_mapping_datafusion_shape.as_deref(),
         );
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-        let result = execute_query_plan(native_context, plan).map_err(|error| {
+        let runtime_observation_config = self.metrics_capture.as_ref().map_or_else(
+            RuntimeObservationConfig::native_execution,
+            NativeExecutionMetricsCapture::runtime_observation_config,
+        );
+        let outcome = execute_query_plan_observed(native_context, plan, runtime_observation_config);
+        let output = metrics.finalize_query_outcome(outcome).map_err(|error| {
             DataFusionError::from(native_query_runtime_error(
                 "datafusion_nexus.native_gpu_producer.execute_gpu",
                 "native cudf GPU-resident fragment execution failed",
                 error,
             ))
         })?;
-        let (output, query_metrics) = result.into_parts();
-        metrics.record_query_metrics(&query_metrics);
         let QueryOutput::GpuResident(handle) = output else {
             return Err(DataFusionError::from(
                 Error::new(

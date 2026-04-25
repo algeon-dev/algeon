@@ -374,7 +374,7 @@ fn adaptive_task_memory_history_records_compiled_task_observations() {
     let mut metrics = QueryMetrics::default();
     metrics.record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
     let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 96, 1024)
-        .with_compiled_task_id(task.id())
+        .with_task_registration(task.id(), 1, task.kind().as_str())
         .with_memory_boundary("source_read");
     metrics.record_reservation_granted_timeline_event(&request, MemoryReservationEventAction::Reserve, 96, 96, 96);
     metrics.record_reservation_timeline_event(nexus_query_engine::metrics::MemoryReservationEvent::from_request(

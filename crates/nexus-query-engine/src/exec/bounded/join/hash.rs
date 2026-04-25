@@ -86,7 +86,8 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_frame(
         JoinSide::Left => &left_keys,
         JoinSide::Right => &right_keys,
     };
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let build = prepare_bounded_join_side_input_from_shared_frame(
         input,
@@ -154,7 +155,8 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_reside
         JoinSide::Left => &left_keys,
         JoinSide::Right => &right_keys,
     };
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let build = prepare_bounded_join_side_input_from_resident_frame(
         input,
@@ -228,7 +230,8 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
         JoinSide::Left => &build.left_keys,
         JoinSide::Right => &build.right_keys,
     };
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let (probe, indices, gather_map_reservation, gather_map_bytes) =
         if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
             execute_bounded_root_hash_join_single_pass_inner_probe_indices(
@@ -649,7 +652,8 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
         JoinSide::Left => &build.left_keys,
         JoinSide::Right => &build.right_keys,
     };
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let (probe, indices, gather_map_reservation, gather_map_bytes) =
         if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
             execute_bounded_root_hash_join_single_pass_inner_probe_indices(
@@ -730,7 +734,8 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_strea
         JoinSide::Left => &build.left_keys,
         JoinSide::Right => &build.right_keys,
     };
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     if reusable_hash_join_single_pass_inner_probe_supported(node, build) {
         let (probe, indices, gather_map_reservation, gather_map_bytes) =
@@ -872,7 +877,8 @@ fn materialize_bounded_root_hash_join_probe_chunk(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let build_side = build.build_side;
     let probe_side = build.probe_side;
     let hash_table_bytes = build.hash_table_bytes;
@@ -1085,7 +1091,8 @@ fn materialize_bounded_root_hash_join_probe_stream(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<Vec<ResidentGpuFrame>> {
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let build_side = build.build_side;
     let probe_side = build.probe_side;
     let hash_table_bytes = build.hash_table_bytes;
@@ -1335,7 +1342,8 @@ impl RootHashJoinMaterializeStreamSource {
             JoinSide::Left => (&build.build, probe),
             JoinSide::Right => (probe, &build.build),
         };
-        let overrides = execution_overrides(&self.context);
+        let overrides_lease = execution_overrides(&self.context)?;
+        let overrides = overrides_lease.overrides();
         let slice_outputs = materialize_bounded_root_hash_join_index_slice(
             &self.context,
             self.node_id,

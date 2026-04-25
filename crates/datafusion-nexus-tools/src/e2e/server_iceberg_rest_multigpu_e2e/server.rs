@@ -1,8 +1,8 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     net::TcpListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -178,26 +178,27 @@ fn unix_seconds() -> u64 {
 pub(super) struct ServerChild {
     child: Child,
     stopped: bool,
-    artifact_dir: PathBuf,
+    artifact_dir: Option<PathBuf>,
+}
+
+pub(super) struct ServerSpawnConfig {
+    pub(super) server_binary: PathBuf,
+    pub(super) stdout_path: PathBuf,
+    pub(super) stderr_path: PathBuf,
+    pub(super) env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ProcessExit {
+    pub(super) success: bool,
+    pub(super) code: Option<i32>,
+    pub(super) signal: Option<i32>,
+    pub(super) display: String,
 }
 
 impl ServerChild {
     pub(super) fn spawn(params: &Params) -> E2eResult<Self> {
-        let stdout = File::create(params.artifact_dir.join("server.stdout.log"))?;
-        let stderr = File::create(params.artifact_dir.join("server.stderr.log"))?;
-        let mut command = Command::new(&params.server_binary);
-        command.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).kill_on_drop(true);
-
-        for (name, _) in std::env::vars() {
-            if name.starts_with("NEXUS_SERVER_")
-                || name.starts_with("NEXUS_ICEBERG_")
-                || name.starts_with("NEXUS_LAKEHOUSE_")
-                || name == "TOKIO_WORKER_THREADS"
-            {
-                command.env_remove(name);
-            }
-        }
-        command.envs([
+        let env = BTreeMap::from([
             ("TOKIO_WORKER_THREADS", "1".to_string()),
             ("NEXUS_SERVER_BIND", params.server_addr.to_string()),
             ("NEXUS_SERVER_LOG", "info".to_string()),
@@ -220,20 +221,54 @@ impl ServerChild {
             ("NEXUS_ICEBERG_S3_PATH_STYLE", "true".to_string()),
             ("NEXUS_ICEBERG_S3_ACCESS_KEY_ID", params.s3_access_key.clone()),
             ("NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY", params.s3_secret_key.clone()),
-        ]);
-        command.env_remove("NEXUS_ICEBERG_S3_SESSION_TOKEN");
-        command.env_remove("AWS_SESSION_TOKEN");
-        command.env_remove("AWS_SECURITY_TOKEN");
+        ])
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect();
 
         eprintln!("starting release Flight SQL server at {} with devices {}", params.server_addr, params.device_csv());
+        let mut child = Self::spawn_config(ServerSpawnConfig {
+            server_binary: params.server_binary.clone(),
+            stdout_path: params.artifact_dir.join("server.stdout.log"),
+            stderr_path: params.artifact_dir.join("server.stderr.log"),
+            env,
+        })?;
+        child.artifact_dir = Some(params.artifact_dir.clone());
+        Ok(child)
+    }
+
+    pub(super) fn spawn_config(config: ServerSpawnConfig) -> E2eResult<Self> {
+        ensure_parent(&config.stdout_path)?;
+        ensure_parent(&config.stderr_path)?;
+        let stdout = File::create(&config.stdout_path)?;
+        let stderr = File::create(&config.stderr_path)?;
+        let mut command = Command::new(&config.server_binary);
+        command.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).kill_on_drop(true);
+        for (name, _) in std::env::vars() {
+            if name.starts_with("NEXUS_SERVER_")
+                || name.starts_with("NEXUS_ICEBERG_")
+                || name.starts_with("NEXUS_LAKEHOUSE_")
+                || name == "TOKIO_WORKER_THREADS"
+            {
+                command.env_remove(name);
+            }
+        }
+        for name in ["NEXUS_ICEBERG_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN"] {
+            command.env_remove(name);
+        }
+        command.envs(config.env);
         let child = command.spawn()?;
-        Ok(Self { child, stopped: false, artifact_dir: params.artifact_dir.clone() })
+        Ok(Self { child, stopped: false, artifact_dir: None })
     }
 
     pub(super) async fn connect(&mut self, url: &str) -> E2eResult<Channel> {
+        self.connect_with_timeout(url, Duration::from_secs(120)).await
+    }
+
+    pub(super) async fn connect_with_timeout(&mut self, url: &str, timeout: Duration) -> E2eResult<Channel> {
         connect_with_retry(
             url,
-            ConnectionRetryConfig::fixed_timeout(Duration::from_secs(120), Duration::from_millis(100)),
+            ConnectionRetryConfig::fixed_timeout(timeout, Duration::from_millis(100)),
             || {
                 Ok(match self.child.try_wait()? {
                     Some(status) => BeforeConnect::Abort(format!(
@@ -249,22 +284,69 @@ impl ServerChild {
     }
 
     pub(super) async fn shutdown(&mut self) -> E2eResult<()> {
+        let exit = self.terminate("TERM", Duration::from_secs(30)).await?;
+        if let Some(artifact_dir) = &self.artifact_dir {
+            std::fs::write(artifact_dir.join("server.exit.txt"), format!("{}\n", exit.display))?;
+        }
+        if !exit.success {
+            return Err(format!("release server exited unsuccessfully after SIGTERM: {}", exit.display).into());
+        }
+        Ok(())
+    }
+
+    pub(super) async fn terminate(&mut self, signal: &str, timeout: Duration) -> E2eResult<ProcessExit> {
         let Some(pid) = self.child.id() else {
             return Err("release server child has no process id".into());
         };
-        let signal_status = std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status()?;
+        let signal_status =
+            std::process::Command::new("kill").args([format!("-{signal}"), pid.to_string()]).status()?;
         if !signal_status.success() {
-            return Err(format!("failed to send SIGTERM to release server pid {pid}: {signal_status}").into());
+            return Err(format!("failed to send SIG{signal} to release server pid {pid}: {signal_status}").into());
         }
-        let status = tokio::time::timeout(Duration::from_secs(30), self.child.wait())
+        let status = tokio::time::timeout(timeout, self.child.wait())
             .await
-            .map_err(|_| format!("release server pid {pid} did not drain within 30 seconds"))??;
+            .map_err(|_| format!("release server pid {pid} did not exit within {} seconds", timeout.as_secs()))??;
         self.stopped = true;
-        std::fs::write(self.artifact_dir.join("server.exit.txt"), format!("{status}\n"))?;
-        if !status.success() {
-            return Err(format!("release server exited unsuccessfully after SIGTERM: {status}").into());
+        let exit = process_exit(status);
+        Ok(exit)
+    }
+
+    pub(super) fn process_id(&self) -> Option<u32> {
+        self.child.id()
+    }
+
+    pub(super) fn try_exit(&mut self) -> E2eResult<Option<ProcessExit>> {
+        Ok(self.child.try_wait()?.map(process_exit))
+    }
+
+    pub(super) fn require_running(&mut self, context: &str) -> E2eResult<()> {
+        if let Some(exit) = self.try_exit()? {
+            return Err(format!("{context}: server exited unexpectedly: {}", exit.display).into());
         }
         Ok(())
+    }
+}
+
+fn ensure_parent(path: &Path) -> E2eResult<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+fn process_exit(status: std::process::ExitStatus) -> ProcessExit {
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    ProcessExit {
+        success: status.success(),
+        code: status.code(),
+        #[cfg(unix)]
+        signal: status.signal(),
+        #[cfg(not(unix))]
+        signal: None,
+        display: status.to_string(),
     }
 }
 

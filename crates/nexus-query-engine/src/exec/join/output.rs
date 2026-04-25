@@ -235,15 +235,15 @@ pub(in crate::exec) fn materialize_mark_join_output_projection(
     mark_column_name: &str,
 ) -> Result<DataFrame> {
     let probe_rows = probe.num_rows();
-    let runtime = context.runtime();
+    let runtime = context.runtime()?;
 
     // The probe frame may live on a separate Runtime bundle from
-    // `context.runtime()` because the bounded compiled pipeline allocates
+    // `context.runtime()?` because the bounded compiled pipeline allocates
     // per-task bundles for the filtered-join probe state. Pre-relocate the
     // probe onto the construction runtime so the resulting DataFrame is built
     // from a single retained provenance. This is a no-op when the probe is
     // already in the construction runtime's provenance.
-    let probe = probe.copy_into_runtime(runtime).map_err(|error| {
+    let probe = probe.copy_into_runtime(&runtime).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.join.mark_output",
             "failed to relocate probe frame into mark-output runtime",

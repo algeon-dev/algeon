@@ -6,14 +6,28 @@ pub(super) struct QueryPlanning {
     pub(super) native_rule: Arc<CudfNativePhysicalOptimizerRule>,
 }
 impl DatafusionCudfFlightSqlService {
-    pub(super) fn query_planning(
+    pub(super) fn coordinated_query_planning(
         &self,
         query_id: &str,
         correlation_id: Option<&str>,
         cancellation: ExecutionCancellation,
+        observation: RuntimeObservationHandle,
+        activity_factory: NativeObservationActivityFactory,
     ) -> QueryPlanning {
-        let observability: Arc<dyn NativeMetricsCaptureSink> = self.observability.clone();
-        let metrics_capture = NativeMetricsCapture::new(query_id.to_string(), observability);
+        self.query_planning_with_capture(
+            correlation_id,
+            cancellation,
+            NativeMetricsCapture::coordinated(query_id.to_string(), observation)
+                .with_observation_activity_factory(activity_factory),
+        )
+    }
+
+    fn query_planning_with_capture(
+        &self,
+        correlation_id: Option<&str>,
+        cancellation: ExecutionCancellation,
+        metrics_capture: NativeMetricsCapture,
+    ) -> QueryPlanning {
         let mut execution_config = self
             .native_optimizer_config
             .native_execution_config()
@@ -50,6 +64,7 @@ impl DatafusionCudfFlightSqlService {
 
     pub(super) async fn statement_flight_info(
         &self,
+        mut planning_lease: QueryPlanningLease,
         query_id: String,
         sql: String,
         correlation_id: Option<String>,
@@ -58,64 +73,79 @@ impl DatafusionCudfFlightSqlService {
         ticket_kind: StatementTicketKind,
         prepared_handle: Option<String>,
     ) -> Result<FlightInfo, Status> {
+        self.expire_stale_tickets(Instant::now());
         // Before ticket issuance there is no per-query token, so planning
         // observes the server shutdown token directly. The native flag is still
         // shared with the optimizer rule, but `do_action_cancel_query` cannot
         // reach it until the ticket is registered.
         let native_cancellation = ExecutionCancellation::new();
-        let planning = self.query_planning(&query_id, correlation_id.as_deref(), native_cancellation.clone());
+        let observation = match planning_lease.observation_handle() {
+            Ok(observation) => observation,
+            Err(error) => {
+                let (status, captured) = adapter_error_to_status_and_capture(
+                    error.adapter_error("datafusion_nexus.server.flight.statement.observation_handle"),
+                );
+                planning_lease.finish_captured("planning", &status, captured);
+                return Err(status);
+            },
+        };
+        let activity_factory = planning_lease.activity_factory();
+        let planning = self.coordinated_query_planning(
+            &query_id,
+            correlation_id.as_deref(),
+            native_cancellation.clone(),
+            observation,
+            activity_factory,
+        );
         let query_ctx = &planning.ctx;
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
             result = query_state.create_logical_plan(&sql)
                 .instrument(Self::query_stage_span(None, &query_id, correlation_id.as_deref(), "planning")) => {
-                result.map_err(|error| {
-                    self.observability.finish_failed(
-                        &query_id,
-                        "planning",
-                        datafusion_error_to_captured_error(&error, ticket_kind.create_logical_plan_operation()),
-                    );
-                    datafusion_error_to_status_for_operation(error, ticket_kind.create_logical_plan_operation())
-                })?
+                match result {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        let (status, captured) = datafusion_error_to_status_and_capture(
+                            error,
+                            ticket_kind.create_logical_plan_operation(),
+                        );
+                        planning_lease.finish_captured("planning", &status, captured);
+                        return Err(status);
+                    },
+                }
             },
             _ = self.shutdown_token.cancelled() => {
                 native_cancellation.cancel();
-                let status = finish_adapter_error_status_with_correlation_id(
-                    self.observability.as_ref(),
+                let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
+                let status = status_with_query_id_and_correlation_id(
+                    status,
                     &query_id,
                     correlation_id.as_deref(),
-                    "planning",
-                    server_shutdown_error(),
                 );
+                planning_lease.finish_captured("planning", &status, captured);
                 return Err(status);
             }
         };
         if let Err(error) = verify_flight_info_plan(&logical_plan, ticket_kind) {
-            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
-            return Err(status_with_query_id_and_correlation_id(
-                adapter_error_status(error),
-                &query_id,
-                correlation_id.as_deref(),
-            ));
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("planning", &status, captured);
+            return Err(status);
         }
         if let Err(error) =
             reject_drop_object_type_mismatch(query_ctx, &logical_plan, ticket_kind.create_logical_plan_operation())
                 .await
         {
-            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
-            return Err(status_with_query_id_and_correlation_id(
-                adapter_error_status(error),
-                &query_id,
-                correlation_id.as_deref(),
-            ));
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("planning", &status, captured);
+            return Err(status);
         }
         if let Some(error) = fast_fail_unsupported_table_format_operator_plan(&logical_plan) {
-            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
-            return Err(status_with_query_id_and_correlation_id(
-                adapter_error_status(error),
-                &query_id,
-                correlation_id.as_deref(),
-            ));
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("planning", &status, captured);
+            return Err(status);
         }
         let schema = flight_info_result_schema(&logical_plan);
 
@@ -134,31 +164,40 @@ impl DatafusionCudfFlightSqlService {
             },
         };
         let endpoint = FlightEndpoint::new().with_ticket(Ticket { ticket: ticket_payload });
-        let info = FlightInfo::new()
-            .try_with_schema(&schema)
-            .map_err(|error| {
-                arrow_error_to_status_for_operation(
+        let info = match FlightInfo::new().try_with_schema(&schema) {
+            Ok(info) => info,
+            Err(error) => {
+                let (status, captured) = arrow_error_to_status_and_capture(
                     error,
                     "datafusion_nexus.server.flight.get_flight_info_query.schema",
                     "failed to build Flight SQL query FlightInfo schema",
-                )
-            })?
-            .with_descriptor(descriptor)
-            .with_endpoint(endpoint)
-            .with_ordered(false);
-        self.tickets.insert(
-            query_id.clone(),
-            StatementTicket {
-                query_id,
+                );
+                planning_lease.finish_captured("planning", &status, captured);
+                return Err(status);
+            },
+        }
+        .with_descriptor(descriptor)
+        .with_endpoint(endpoint)
+        .with_ordered(false);
+        let issued_at = Instant::now();
+        let deadline = issued_at.checked_add(self.statement_ticket_ttl).unwrap_or(issued_at);
+        planning_lease
+            .issue_ticket(CoordinatorTicketPayload {
                 sql,
-                correlation_id,
-                ticket_kind,
+                correlation_id: correlation_id.clone(),
                 prepared_handle,
+                kind: ticket_kind.code(),
                 native_cancellation,
                 started_at,
-                issued_at: Instant::now(),
-            },
-        );
+                deadline,
+            })
+            .map_err(|error| {
+                status_with_query_id_and_correlation_id(
+                    adapter_error_status(error.adapter_error("datafusion_nexus.server.query_coordinator.issue_ticket")),
+                    &query_id,
+                    correlation_id.as_deref(),
+                )
+            })?;
         Ok(info)
     }
 }

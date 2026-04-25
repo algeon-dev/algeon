@@ -18,9 +18,11 @@ mod admission;
 mod auth;
 mod cancel;
 mod config;
+mod coordinator;
 mod diagnostics;
 mod error;
 mod flight;
+mod io_lifecycle;
 mod observability;
 mod session;
 mod table_format_operator_fast_fail;
@@ -58,11 +60,16 @@ pub use config::{
     NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
     NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
     NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
-    NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_SESSION_PROFILE_ENV,
-    NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV,
-    NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV,
-    NEXUS_SERVER_WORKSPACE_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, NexusServerNativeConfigOption, ServerConfig,
-    ServerNativeConfigScope, ServerSessionProfile, WorkspaceOverlayConfig,
+    NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
+    NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
+    NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
+    NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
+    NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
+    NEXUS_SERVER_SESSION_PROFILE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
+    NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
+    NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, NEXUS_SERVER_WORKSPACE_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_SCHEMA_ENV,
+    NexusServerNativeConfigOption, ServerConfig, ServerNativeConfigScope, ServerObservabilityConfig,
+    ServerSessionProfile, WorkspaceOverlayConfig,
 };
 pub use diagnostics::{
     FlightSqlNativeRejectClass, log_leaf_guard_rejection, log_native_planning_report,
@@ -204,6 +211,13 @@ impl FlightSqlServerBuilder {
         if let Some(limiter) = admission.unbounded_native_execution_limiter() {
             native_optimizer_config = native_optimizer_config.with_unbounded_native_execution_limiter(limiter);
         }
+        let io_lifecycle = Arc::new(io_lifecycle::ServerIoLifecycle::new());
+        let native_execution_config = native_optimizer_config
+            .native_execution_config()
+            .clone()
+            .with_io_lifecycle(io_lifecycle.handle())
+            .with_host_output_memory_pool_accounting(true);
+        native_optimizer_config = native_optimizer_config.with_native_execution_config(native_execution_config);
 
         let ctx = match self.session_context {
             Some(ctx) => {
@@ -220,13 +234,14 @@ impl FlightSqlServerBuilder {
 
         let auth_interceptor = auth::AuthInterceptor::new(config.auth.mode.clone(), auth::TokenStore::new());
         log_auth_mode_snapshot(&config.auth.mode);
-        let service = flight::DatafusionCudfFlightSqlService::new(
+        let service = flight::DatafusionCudfFlightSqlService::new_with_io_lifecycle(
             Arc::clone(&ctx),
             native_optimizer_config.clone(),
             config.session_profile,
             admission,
             config.statement_ticket_ttl,
             auth_interceptor,
+            io_lifecycle,
             #[cfg(feature = "cugraph")]
             config.cugraph.as_ref().map(|cugraph| {
                 session::cugraph_sql_config(cugraph, native_optimizer_config.native_execution_config().clone())
@@ -302,15 +317,26 @@ async fn serve_built_server(server: FlightSqlServer) -> Result<()> {
     let FlightSqlServer { service, listen, shutdown, .. } = server;
     let addr = listen.addr()?;
     let admission = Arc::clone(service.admission());
+    let io_lifecycle = Arc::clone(service.io_lifecycle());
     let cancellations = Arc::clone(service.cancellations());
+    let coordinator = Arc::clone(service.coordinator());
+    let _admission_close_guard = AdmissionCloseGuard { admission: Arc::clone(&admission) };
     let shutdown_token = service.shutdown_token().clone();
+    let maintenance = coordinator::QueryCoordinatorMaintenance::start(Arc::clone(&coordinator));
+    let mut shutdown_supervisor = ShutdownSupervisor::start(
+        Arc::clone(&admission),
+        Arc::clone(&io_lifecycle),
+        Arc::clone(&coordinator),
+        maintenance,
+    );
     tracing::info!(
         bind_addr = %addr,
         max_in_flight = admission.max_in_flight(),
         "starting datafusion-nexus Flight SQL server"
     );
 
-    let (shutdown, watchdog_rx) = shutdown_future(shutdown, admission, cancellations, shutdown_token);
+    let (shutdown, watchdog_rx) =
+        shutdown_future(shutdown, shutdown_supervisor.trigger(), cancellations, shutdown_token);
 
     let builder = Server::builder().add_service(FlightServiceServer::new(service));
     let server_result = match listen {
@@ -337,17 +363,174 @@ async fn serve_built_server(server: FlightSqlServer) -> Result<()> {
     {
         watchdog.abort();
     }
+    // The serve future can return before its shutdown future runs (for
+    // example, on a transport error). Start the same supervised shutdown path
+    // there too; begin is idempotent and preserves the first absolute deadline.
+    shutdown_supervisor.begin_shutdown(Instant::now());
+    let shutdown_result = shutdown_supervisor.finish().await;
     server_result.map_err(|error| ServerError::transport_at_addr(addr, error))?;
+    shutdown_result?;
 
     tracing::info!("datafusion-nexus Flight SQL server stopped");
     Ok(())
+}
+
+/// Closes admission even when the caller cancels or aborts the server future.
+///
+/// The normal shutdown path closes admission before coordinator drain. This
+/// guard extends the same ordering to future cancellation, where execution
+/// never resumes after the tonic serve await.
+struct AdmissionCloseGuard {
+    admission: Arc<admission::QueryAdmission>,
+}
+
+#[derive(Clone)]
+struct ShutdownSupervisorTrigger {
+    admission: Arc<admission::QueryAdmission>,
+    io_lifecycle: Arc<io_lifecycle::ServerIoLifecycle>,
+    coordinator: Arc<coordinator::QueryCoordinator>,
+    plan: Arc<std::sync::OnceLock<coordinator::QueryCoordinatorShutdownPlan>>,
+    started: CancellationToken,
+}
+
+impl ShutdownSupervisorTrigger {
+    fn begin_shutdown(&self, now: Instant) -> coordinator::QueryCoordinatorShutdownPlan {
+        let plan = *self.plan.get_or_init(|| {
+            self.io_lifecycle.close();
+            after_closing_admission(&self.admission, || self.coordinator.begin_shutdown(now))
+        });
+        self.started.cancel();
+        plan
+    }
+
+    #[cfg(test)]
+    fn install_shutdown_plan(
+        &self,
+        plan: coordinator::QueryCoordinatorShutdownPlan,
+    ) -> coordinator::QueryCoordinatorShutdownPlan {
+        let plan = *self.plan.get_or_init(|| {
+            self.io_lifecycle.close();
+            self.admission.close();
+            plan
+        });
+        self.started.cancel();
+        plan
+    }
+}
+
+/// Owns the complete server teardown under the coordinator's first absolute
+/// shutdown deadline. Coordinator drain and native query-service cleanup run
+/// concurrently, so neither component receives a second grace period.
+struct ShutdownSupervisor {
+    trigger: ShutdownSupervisorTrigger,
+    task: Option<tokio::task::JoinHandle<Result<()>>>,
+}
+
+impl ShutdownSupervisor {
+    fn start(
+        admission: Arc<admission::QueryAdmission>,
+        io_lifecycle: Arc<io_lifecycle::ServerIoLifecycle>,
+        coordinator: Arc<coordinator::QueryCoordinator>,
+        maintenance: coordinator::QueryCoordinatorMaintenance,
+    ) -> Self {
+        let trigger = ShutdownSupervisorTrigger {
+            admission: Arc::clone(&admission),
+            io_lifecycle: Arc::clone(&io_lifecycle),
+            coordinator: Arc::clone(&coordinator),
+            plan: Arc::new(std::sync::OnceLock::new()),
+            started: CancellationToken::new(),
+        };
+        let worker_trigger = trigger.clone();
+        let task = tokio::spawn(async move {
+            worker_trigger.started.cancelled().await;
+            let plan = *worker_trigger.plan.get().expect("shutdown plan is installed before its start signal");
+            let deadline = plan.deadline();
+            let (maintenance_result, admission_result, io_result) = tokio::join!(
+                maintenance.finish(plan),
+                admission.close_and_wait_for_quiescence_until(deadline),
+                io_lifecycle.close_wait_and_drain_until(deadline),
+            );
+            let forced = maintenance_result.map_err(|error| {
+                ServerError::shutdown_with_source(
+                    "coordinator_maintenance_task_failed",
+                    "query coordinator maintenance task failed during shutdown",
+                    error,
+                )
+            })?;
+            admission_result?;
+            io_result?;
+            if forced {
+                return Err(ServerError::shutdown(
+                    "coordinator_shutdown_timeout",
+                    "query coordinator shutdown deadline expired; retained incomplete query diagnostics",
+                ));
+            }
+            if Instant::now() >= deadline {
+                return Err(ServerError::shutdown(
+                    "server_shutdown_deadline_timeout",
+                    "server shutdown completed after its absolute deadline",
+                ));
+            }
+            Ok(())
+        });
+        Self { trigger, task: Some(task) }
+    }
+
+    fn trigger(&self) -> ShutdownSupervisorTrigger {
+        self.trigger.clone()
+    }
+
+    #[cfg(test)]
+    fn start_with_plan(
+        admission: Arc<admission::QueryAdmission>,
+        io_lifecycle: Arc<io_lifecycle::ServerIoLifecycle>,
+        coordinator: Arc<coordinator::QueryCoordinator>,
+        maintenance: coordinator::QueryCoordinatorMaintenance,
+        plan: coordinator::QueryCoordinatorShutdownPlan,
+    ) -> Self {
+        let supervisor = Self::start(admission, io_lifecycle, coordinator, maintenance);
+        supervisor.trigger.install_shutdown_plan(plan);
+        supervisor
+    }
+
+    fn begin_shutdown(&self, now: Instant) -> coordinator::QueryCoordinatorShutdownPlan {
+        self.trigger.begin_shutdown(now)
+    }
+
+    async fn finish(&mut self) -> Result<()> {
+        self.begin_shutdown(Instant::now());
+        let task = self.task.take().ok_or_else(|| {
+            ServerError::shutdown("shutdown_supervisor_joined_twice", "shutdown supervisor was joined more than once")
+        })?;
+        task.await.map_err(|error| {
+            ServerError::shutdown_with_source(
+                "shutdown_supervisor_task_failed",
+                "shutdown supervisor task failed",
+                error,
+            )
+        })?
+    }
+}
+
+impl Drop for ShutdownSupervisor {
+    fn drop(&mut self) {
+        // If the outer serve future is cancelled, detach the already-owned
+        // cleanup task after triggering the same ordered teardown.
+        self.begin_shutdown(Instant::now());
+    }
+}
+
+impl Drop for AdmissionCloseGuard {
+    fn drop(&mut self) {
+        self.admission.close();
+    }
 }
 
 type ShutdownFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 fn shutdown_future(
     shutdown: ServerShutdown,
-    admission: Arc<admission::QueryAdmission>,
+    supervisor: ShutdownSupervisorTrigger,
     cancellations: Arc<cancel::QueryCancellation>,
     shutdown_token: CancellationToken,
 ) -> (ShutdownFuture, Option<tokio::sync::oneshot::Receiver<tokio::task::JoinHandle<()>>>) {
@@ -359,10 +542,14 @@ fn shutdown_future(
             let (watchdog_tx, watchdog_rx) = tokio::sync::oneshot::channel();
             let shutdown = async move {
                 wait_for_shutdown_signal().await;
-                admission.close();
+                let shutdown_plan = supervisor.begin_shutdown(Instant::now());
                 let in_flight = cancellations.len();
                 shutdown_token.cancel();
-                tracing::info!(in_flight, "received shutdown signal; draining datafusion-nexus Flight SQL server");
+                tracing::info!(
+                    in_flight,
+                    coordinator_live = shutdown_plan.live_count(),
+                    "received shutdown signal; draining datafusion-nexus Flight SQL server"
+                );
                 let watchdog = tokio::spawn(async {
                     wait_for_shutdown_signal().await;
                     tracing::warn!("received second shutdown signal during drain; forcing immediate exit");
@@ -375,14 +562,23 @@ fn shutdown_future(
         ServerShutdown::Token(token) => {
             let shutdown = async move {
                 token.cancelled().await;
-                admission.close();
+                let shutdown_plan = supervisor.begin_shutdown(Instant::now());
                 let in_flight = cancellations.len();
                 shutdown_token.cancel();
-                tracing::info!(in_flight, "received shutdown token; draining datafusion-nexus Flight SQL server");
+                tracing::info!(
+                    in_flight,
+                    coordinator_live = shutdown_plan.live_count(),
+                    "received shutdown token; draining datafusion-nexus Flight SQL server"
+                );
             };
             (Box::pin(shutdown), None)
         },
     }
+}
+
+fn after_closing_admission<T>(admission: &admission::QueryAdmission, action: impl FnOnce() -> T) -> T {
+    admission.close();
+    action()
 }
 
 fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &ServerConfig) -> Result<()> {
@@ -597,6 +793,13 @@ fn log_server_config_snapshot(config: &ServerConfig) {
                     .map(|value| value.as_millis())
                     .unwrap_or(0),
                 statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
+                observability_per_query_max_records = config.observability.per_query_max_records,
+                observability_per_query_max_bytes = config.observability.per_query_max_bytes,
+                observability_active_logical_capture_max_bytes = config.observability.active_logical_capture_max_bytes,
+                observability_global_sealed_max_count = config.observability.global_sealed_max_count,
+                observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
+                observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
+                observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
                 log_filter = %config.log_filter,
                 session_profile = %config.session_profile,
                 native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
@@ -640,6 +843,13 @@ fn log_server_config_snapshot(config: &ServerConfig) {
                 .map(|value| value.as_millis())
                 .unwrap_or(0),
             statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
+            observability_per_query_max_records = config.observability.per_query_max_records,
+            observability_per_query_max_bytes = config.observability.per_query_max_bytes,
+            observability_active_logical_capture_max_bytes = config.observability.active_logical_capture_max_bytes,
+            observability_global_sealed_max_count = config.observability.global_sealed_max_count,
+            observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
+            observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
+            observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
             log_filter = %config.log_filter,
             session_profile = %config.session_profile,
             native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
@@ -678,6 +888,13 @@ fn log_server_config_snapshot(config: &ServerConfig) {
             .map(|value| value.as_millis())
             .unwrap_or(0),
         statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
+        observability_per_query_max_records = config.observability.per_query_max_records,
+        observability_per_query_max_bytes = config.observability.per_query_max_bytes,
+        observability_active_logical_capture_max_bytes = config.observability.active_logical_capture_max_bytes,
+        observability_global_sealed_max_count = config.observability.global_sealed_max_count,
+        observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
+        observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
+        observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
         log_filter = %config.log_filter,
         session_profile = %config.session_profile,
         native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
@@ -978,7 +1195,7 @@ fn distinct_librmm_mappings(maps: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
+    use std::{num::NonZeroUsize, sync::Barrier};
 
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::{
@@ -998,7 +1215,7 @@ mod tests {
     use super::*;
     use crate::{
         backend::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusMemoryPolicy},
-        native_exec::NativeCudfExecutionConfig,
+        native_exec::{NativeCudfExecutionConfig, NativeMetricsCapture},
         planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
         policy::FallbackReason,
         report::CandidateOutcome,
@@ -1021,6 +1238,7 @@ mod tests {
             gpu_devices: vec![0],
             device_budget_fraction: None,
             statement_ticket_ttl: std::time::Duration::from_secs(60),
+            observability: ServerObservabilityConfig::default(),
             native_optimizer_config: CudfOptimizerConfig::default(),
             session_profile: profile,
             auth: auth::AuthConfig::default(),
@@ -1069,6 +1287,233 @@ mod tests {
             .admission(NexusAdmissionPolicy::default().with_max_concurrent_queries(max_concurrent_queries))
             .build_admission_only()
             .expect("admission-only backend should build")
+    }
+
+    #[test]
+    fn shutdown_closes_native_admission_before_coordinator_terminalization() {
+        let config = bounded_config(1);
+        let backend = admission_only_backend(1);
+        let admission = admission::QueryAdmission::from_backend(Some(&backend), &config).unwrap();
+        let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
+            &config.observability,
+        ));
+        let planning = coordinator
+            .register_with_id(
+                "shutdown-order",
+                "select 1",
+                None,
+                None,
+                nexus_query_engine::observability::RuntimeObservationConfig::bounded(16, 4096),
+            )
+            .unwrap();
+        let activity_factory = planning.activity_factory();
+
+        let coordinator_live = after_closing_admission(&admission, || {
+            let error = backend
+                .query_service()
+                .try_admit_query(backend.tenant_id().clone())
+                .expect_err("native QueryService must be closed before coordinator shutdown begins");
+            assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::Cancelled);
+            assert_eq!(error.fact_value("reason"), Some("admission_closed"));
+            let activity = activity_factory().expect("coordinator remains live until admission is closed");
+            drop(activity);
+            coordinator.begin_shutdown(Instant::now())
+        });
+
+        assert_eq!(coordinator_live.live_count(), 1);
+        assert!(activity_factory().is_none(), "coordinator rejects new activity after terminalization");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity() {
+        let config = bounded_config(1);
+        let backend = admission_only_backend(1);
+        let admission = Arc::new(admission::QueryAdmission::from_backend(Some(&backend), &config).unwrap());
+        let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
+            &config.observability,
+        ));
+        let maintenance = coordinator::QueryCoordinatorMaintenance::start(Arc::clone(&coordinator));
+        let execution = coordinator
+            .register_with_id(
+                "shutdown-race",
+                "select 1",
+                None,
+                None,
+                nexus_query_engine::observability::RuntimeObservationConfig::bounded(16, 4096),
+            )
+            .unwrap()
+            .into_execution()
+            .unwrap();
+        let observation = execution.observation_handle().unwrap();
+        let capture = NativeMetricsCapture::coordinated("shutdown-race", observation)
+            .with_observation_activity_factory(execution.activity_factory())
+            .new_execution();
+        let prior_activity = capture
+            .new_observation_activity()
+            .expect("coordinated capture always requires activity")
+            .expect("activity acquired before shutdown");
+        let barrier = Arc::new(Barrier::new(2));
+
+        let (coordinator_live, racing_activity) = std::thread::scope(|scope| {
+            let shutdown_admission = Arc::clone(&admission);
+            let shutdown_coordinator = Arc::clone(&coordinator);
+            let shutdown_barrier = Arc::clone(&barrier);
+            let shutdown = scope.spawn(move || {
+                after_closing_admission(&shutdown_admission, || {
+                    shutdown_barrier.wait();
+                    shutdown_coordinator.begin_shutdown(Instant::now())
+                })
+            });
+
+            barrier.wait();
+            let error = backend
+                .query_service()
+                .try_admit_query(backend.tenant_id().clone())
+                .expect_err("native admission is closed before the coordinator race begins");
+            assert_eq!(error.fact_value("reason"), Some("admission_closed"));
+            let racing_activity = capture
+                .new_observation_activity()
+                .expect("coordinated acquisition cannot downgrade to no activity requirement");
+            (shutdown.join().unwrap(), racing_activity)
+        });
+
+        assert_eq!(coordinator_live.live_count(), 1);
+        drop(execution);
+        let mut finish = tokio::spawn(maintenance.finish(coordinator_live));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut finish).await.is_err(),
+            "maintenance cannot drain while pre-shutdown activity is live"
+        );
+        match racing_activity {
+            Ok(activity) => drop(activity),
+            Err(error) => {
+                assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::Cancelled);
+                assert_eq!(error.fact_value("reason"), Some("query_coordinator_activity_rejected"));
+            },
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut finish).await.is_err(),
+            "racing acquisition cannot release the prior activity"
+        );
+        drop(prior_activity);
+        assert!(!tokio::time::timeout(std::time::Duration::from_secs(1), finish).await.unwrap().unwrap().unwrap());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_supervisor_reports_coordinator_deadline_expiry_as_error() {
+        let admission = Arc::new(admission::QueryAdmission::new(1).unwrap());
+        let observability = ServerObservabilityConfig {
+            shutdown_grace: std::time::Duration::from_millis(20),
+            ..ServerObservabilityConfig::default()
+        };
+        let coordinator =
+            coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(&observability));
+        let execution = coordinator
+            .register_with_id(
+                "supervisor-forced-timeout",
+                "select 1",
+                None,
+                None,
+                nexus_query_engine::observability::RuntimeObservationConfig::bounded(16, 4096),
+            )
+            .unwrap()
+            .into_execution()
+            .unwrap();
+        let activity = execution.activity_factory()().expect("activity lease");
+        let maintenance = coordinator::QueryCoordinatorMaintenance::start(Arc::clone(&coordinator));
+        let mut supervisor = ShutdownSupervisor::start(
+            admission,
+            Arc::new(io_lifecycle::ServerIoLifecycle::new()),
+            Arc::clone(&coordinator),
+            maintenance,
+        );
+
+        assert_eq!(supervisor.begin_shutdown(Instant::now()).live_count(), 1);
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), supervisor.finish())
+            .await
+            .expect("supervisor must use the configured deadline")
+            .expect_err("forced coordinator timeout must fail server shutdown");
+
+        assert_eq!(error.operation(), "datafusion_nexus.server.shutdown");
+        assert_eq!(error.fact_value("reason"), Some("coordinator_shutdown_timeout"));
+        drop(activity);
+        drop(execution);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
+        let mut config = bounded_config(1);
+        config.observability.shutdown_grace = std::time::Duration::from_millis(20);
+        let backend = admission_only_backend(1);
+        let live_query = backend.query_service().admit_query(backend.tenant_id().clone()).unwrap();
+        let admission = Arc::new(admission::QueryAdmission::from_backend(Some(&backend), &config).unwrap());
+        let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
+            &config.observability,
+        ));
+        let maintenance = coordinator::QueryCoordinatorMaintenance::start(Arc::clone(&coordinator));
+        let mut supervisor = ShutdownSupervisor::start(
+            admission,
+            Arc::new(io_lifecycle::ServerIoLifecycle::new()),
+            coordinator,
+            maintenance,
+        );
+
+        assert_eq!(supervisor.begin_shutdown(Instant::now()).live_count(), 0);
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), supervisor.finish())
+            .await
+            .expect("supervisor must not grant admission a second grace period")
+            .expect_err("native admission cleanup timeout must fail server shutdown");
+
+        assert_eq!(error.fact_value("reason"), Some("query_service_shutdown_timeout"));
+        assert_eq!(error.fact_value("shutdown_component"), Some("query_admission"));
+        drop(live_query);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn supervisor_uses_captured_expired_plan_after_coordinator_finalization_clears_deadline() {
+        let admission = Arc::new(admission::QueryAdmission::new(1).unwrap());
+        let observability = ServerObservabilityConfig {
+            shutdown_grace: std::time::Duration::ZERO,
+            ..ServerObservabilityConfig::default()
+        };
+        let coordinator =
+            coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(&observability));
+        let execution = coordinator
+            .register_with_id(
+                "fast-finalization",
+                "select 1",
+                None,
+                None,
+                nexus_query_engine::observability::RuntimeObservationConfig::bounded(16, 4096),
+            )
+            .unwrap()
+            .into_execution()
+            .unwrap();
+        let plan = coordinator.begin_shutdown(Instant::now());
+        assert_eq!(plan.live_count(), 1);
+        drop(execution);
+        assert!(coordinator.is_drained());
+        assert!(coordinator.shutdown_deadline().is_none(), "fast finalization clears mutable coordinator state");
+
+        let maintenance = coordinator::QueryCoordinatorMaintenance::start(Arc::clone(&coordinator));
+        let io_lifecycle = Arc::new(io_lifecycle::ServerIoLifecycle::new());
+        let mut supervisor = ShutdownSupervisor::start_with_plan(
+            Arc::clone(&admission),
+            Arc::clone(&io_lifecycle),
+            coordinator,
+            maintenance,
+            plan,
+        );
+        let error = supervisor.finish().await.expect_err("an already-expired captured plan must time out cleanup");
+
+        assert_eq!(error.fact_value("reason"), Some("kvikio_drain_timeout"));
+        assert_eq!(io_lifecycle.drain_attempts(), 1, "I/O cleanup is not skipped when coordinator state is gone");
+        assert_eq!(
+            io_lifecycle.drain_invocations(),
+            1,
+            "an expired idle phase still performs the mandatory one-shot KvikIO drain"
+        );
+        assert!(admission.try_acquire().is_err(), "admission cleanup closes the gate under the captured plan");
     }
 
     fn empty_exec_plan() -> Arc<dyn ExecutionPlan> {

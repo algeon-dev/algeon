@@ -17,6 +17,7 @@ workspace = true
 
 [dependencies]
 arrow = { workspace = true }
+blake3 = { workspace = true }
 bytes = "1"
 cudf = { workspace = true }
 # Direct edge so build.rs receives both the runtime directory and the shared
@@ -25,9 +26,11 @@ cudf-sys = { workspace = true }
 cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
 futures = { workspace = true }
+getrandom = { workspace = true }
 nvml-wrapper = { version = "0.12.1", optional = true }
 object_store = { workspace = true }
 parquet = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 

@@ -11,7 +11,10 @@ use crate::{
     policy::GpuFallbackPolicy,
     server::{
         auth::{AuthMode, TokenStore},
-        error::{ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY},
+        coordinator::QueryTerminalOutcome,
+        error::{
+            ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
+        },
     },
     table_format::{
         iceberg::CudfIcebergTableProvider,
@@ -209,7 +212,10 @@ async fn unsupported_iceberg_operator_column_in_mixed_plan_fast_fails() {
     assert!(status.message().contains("column=countDetail"), "status={status:?}");
     assert!(status.message().contains("type=Map("), "status={status:?}");
     assert_eq!(planner.request_count(), 0, "Iceberg scan planning must be skipped");
-    assert!(service.tickets.is_empty(), "fast-failed statements should not issue execution tickets");
+    assert!(
+        service.coordinator.ticket_query_ids().is_empty(),
+        "fast-failed statements should not issue execution tickets"
+    );
 }
 
 async fn assert_unsupported_table_format_operator_fast_fails_before_scan_planning(
@@ -248,7 +254,10 @@ async fn assert_unsupported_table_format_operator_fast_fails_before_scan_plannin
     assert!(status.message().contains(&format!("column={column}")), "status={status:?}");
     assert!(status.message().contains(&format!("type={type_prefix}")), "status={status:?}");
     assert_eq!(planner.request_count(), 0, "Iceberg scan planning must be skipped");
-    assert!(service.tickets.is_empty(), "fast-failed statements should not issue execution tickets");
+    assert!(
+        service.coordinator.ticket_query_ids().is_empty(),
+        "fast-failed statements should not issue execution tickets"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -285,7 +294,7 @@ async fn planning_timeout_consumes_statement_ticket_without_holding_admission() 
     };
     assert_eq!(status.code(), Code::InvalidArgument);
     assert_status_metadata(&status, "planning_timeout", "planning", "permanent");
-    assert!(service.tickets.is_empty(), "timed-out statement ticket should be consumed");
+    assert!(service.coordinator.ticket_query_ids().is_empty(), "timed-out statement ticket should be consumed");
 
     tokio::time::timeout(Duration::from_secs(1), issue_statement_ticket(&service, "SELECT 1 AS one"))
         .await
@@ -319,21 +328,20 @@ async fn update_ddl_read_only_schema_failure_captures_catalog_target_facts() {
     });
     let query_id = "read-only-ddl-target".to_string();
     let sql = "CREATE VIEW target_edges AS SELECT src, dst FROM edges_by_src".to_string();
-    service.observability.start_query_with_correlation_id(query_id.clone(), sql.clone(), None);
+    let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
 
     let status = service
-        .execute_update_sql(query_id.clone(), sql, None, UpdateStatementKind::Statement)
+        .execute_update_sql(planning_lease, sql, None, UpdateStatementKind::Statement)
         .await
         .expect_err("read-only source schema should reject DDL registration");
 
     assert_eq!(status.code(), Code::InvalidArgument);
     assert_status_metadata(&status, "datafusion_planning", "planning", "permanent");
     assert!(status.message().contains("glue.nexus_graph"), "status={status:?}");
-    let payload = service
-        .observability
-        .get(&query_id)
-        .expect("failed DDL update should retain query stats")
-        .to_query_stats_payload();
+    let payload = String::from_utf8(
+        service.coordinator.query_stats(&query_id).expect("failed DDL update should retain query stats").to_vec(),
+    )
+    .unwrap();
     assert!(payload.contains("operation=datafusion_nexus.server.flight.do_put_statement_update.sql"), "{payload}");
     assert!(payload.contains("fact.statement_kind=CreateView"), "{payload}");
     assert!(payload.contains("fact.iceberg_enabled=true"), "{payload}");
@@ -363,21 +371,20 @@ async fn update_set_datafusion_nexus_key_is_rejected_loudly() {
     );
     let query_id = "reject-nexus-set".to_string();
     let sql = "SET datafusion_nexus.request.requested_grant_bytes = '1048576'".to_string();
-    service.observability.start_query_with_correlation_id(query_id.clone(), sql.clone(), None);
+    let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
 
     let status = service
-        .execute_update_sql(query_id.clone(), sql, None, UpdateStatementKind::Statement)
+        .execute_update_sql(planning_lease, sql, None, UpdateStatementKind::Statement)
         .await
         .expect_err("Flight update SET for datafusion-nexus keys should be rejected");
 
     assert_eq!(status.code(), Code::InvalidArgument);
     assert_status_metadata(&status, "invalid_request", "invalid_input", "permanent");
     assert!(status.message().contains("server or tenant defaults"), "status={status:?}");
-    let payload = service
-        .observability
-        .get(&query_id)
-        .expect("failed SET update should retain query stats")
-        .to_query_stats_payload();
+    let payload = String::from_utf8(
+        service.coordinator.query_stats(&query_id).expect("failed SET update should retain query stats").to_vec(),
+    )
+    .unwrap();
     assert!(payload.contains("fact.reason=flight_session_scoped_datafusion_nexus_keys_unsupported"), "{payload}");
     assert!(payload.contains("fact.configuration_scope=server_or_tenant_defaults"), "{payload}");
     assert!(!payload.contains("fact.config_key="), "raw config key must not be retained: {payload}");
@@ -398,14 +405,56 @@ async fn update_set_plain_datafusion_key_still_succeeds() {
     );
     let query_id = "plain-datafusion-set".to_string();
     let sql = "SET datafusion.execution.batch_size = '1024'".to_string();
-    service.observability.start_query_with_correlation_id(query_id.clone(), sql.clone(), None);
+    let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
 
     let count = service
-        .execute_update_sql(query_id, sql, None, UpdateStatementKind::Statement)
+        .execute_update_sql(planning_lease, sql, None, UpdateStatementKind::Statement)
         .await
         .expect("plain DataFusion SET should keep existing update-lane behavior");
 
     assert_eq!(count, NO_UPDATED_RECORDS_COUNT);
+}
+
+#[tokio::test]
+async fn prepared_update_shutdown_promotion_preserves_operation_and_request_metadata() {
+    let service = DatafusionCudfFlightSqlService::new(
+        Arc::new(SessionContext::new()),
+        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+        ServerSessionProfile::Native,
+        Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+        Duration::from_secs(30),
+        AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
+        #[cfg(feature = "cugraph")]
+        None,
+    );
+    let query_id = "prepared-update-shutdown-race".to_string();
+    let correlation_id = "prepared-update-correlation".to_string();
+    let sql = "CREATE VIEW prepared_shutdown_view AS SELECT 1".to_string();
+    let planning_lease = service
+        .register_query(query_id.clone(), sql.clone(), Some(correlation_id.clone()))
+        .expect("prepared update planning lease");
+    assert_eq!(service.coordinator.begin_shutdown(Instant::now()).live_count(), 1);
+
+    let status = service
+        .execute_update_sql(planning_lease, sql, Some(correlation_id.clone()), UpdateStatementKind::PreparedStatement)
+        .await
+        .expect_err("shutdown must reject prepared update promotion");
+
+    assert_eq!(status.code(), Code::Cancelled);
+    assert_status_metadata(&status, "cancelled", "cancelled", "permanent");
+    assert_eq!(
+        status.metadata().get(ERROR_OPERATION_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        Some("datafusion_nexus.server.flight.do_put_prepared_statement_update.into_execution")
+    );
+    assert_eq!(
+        status.metadata().get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        Some(query_id.as_str())
+    );
+    assert_eq!(
+        status.metadata().get(CORRELATION_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        Some(correlation_id.as_str())
+    );
+    assert_eq!(service.coordinator.terminal(&query_id), Some(QueryTerminalOutcome::Cancelled));
 }
 
 async fn issue_statement_ticket(
@@ -420,8 +469,34 @@ async fn issue_statement_ticket(
         .await
 }
 
+#[tokio::test]
+async fn issuing_a_new_ticket_sweeps_abandoned_tickets_without_do_get() {
+    let service = DatafusionCudfFlightSqlService::new(
+        Arc::new(SessionContext::new()),
+        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+        ServerSessionProfile::Native,
+        Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+        Duration::ZERO,
+        AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
+        #[cfg(feature = "cugraph")]
+        None,
+    );
+
+    issue_statement_ticket(&service, "SELECT 1").await.expect("first ticket should issue");
+    let abandoned = only_ticket_query_id(&service);
+    issue_statement_ticket(&service, "SELECT 2").await.expect("second ticket should issue");
+
+    let query_ids = service.coordinator.ticket_query_ids();
+    assert_eq!(query_ids.len(), 1);
+    assert!(!query_ids.contains(&abandoned));
+    assert!(matches!(
+        service.coordinator.artifact(&abandoned),
+        Some(CoordinatorArtifact::Unavailable(RetainedUnavailableReason::TicketExpired))
+    ));
+}
+
 fn only_ticket_query_id(service: &DatafusionCudfFlightSqlService) -> String {
-    let query_ids = service.tickets.iter().map(|entry| entry.key().clone()).collect::<Vec<_>>();
+    let query_ids = service.coordinator.ticket_query_ids();
     assert_eq!(query_ids.len(), 1, "expected exactly one live statement ticket, got {query_ids:?}");
     query_ids[0].clone()
 }

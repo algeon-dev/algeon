@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashSet, VecDeque},
     sync::Arc,
 };
 
@@ -9,9 +9,13 @@ use crate::{
     adaptive_runtime::{AdaptiveMemoryHistory, AdaptiveTaskMemoryHistoryShape},
     metrics::{
         CompiledTaskId, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,
-        PlanNodeId, QueryId,
+        PlanNodeId, QueryId, ReservationProjectionLedgerHandle,
     },
     mode::NativePipelineExecutionMode,
+    observability::{
+        RuntimeEventContext, RuntimeExecutionObservationScope, RuntimeObservationPayload, RuntimeReservationAction,
+        RuntimeReservationDisposition, RuntimeReservationId, RuntimeSpanId, TaskAttemptId,
+    },
     pipeline::CompiledPipeline,
     plan::QueryPlan,
     runtime::{
@@ -19,6 +23,210 @@ use crate::{
         gpu::governor::MemoryGrantLiveReservation,
     },
 };
+
+#[derive(Debug, Clone)]
+struct ReservationObservation {
+    scope: RuntimeExecutionObservationScope,
+    reservation_id: RuntimeReservationId,
+    lineage_id: RuntimeReservationId,
+    task_attempt_id: Option<TaskAttemptId>,
+    span_id: Option<RuntimeSpanId>,
+}
+
+#[derive(Debug, Clone)]
+struct SourceCacheBaselineObservation {
+    observation: Option<ReservationObservation>,
+    event_context: ActiveReservationEventContext,
+    reservation_projection_ledger: ReservationProjectionLedgerHandle,
+    remaining_bytes: u64,
+}
+
+impl ReservationObservation {
+    fn retarget(&mut self, task_attempt_id: Option<TaskAttemptId>, span_id: Option<RuntimeSpanId>) {
+        self.task_attempt_id = task_attempt_id;
+        self.span_id = span_id;
+    }
+
+    fn record(
+        &self,
+        context: &ActiveReservationEventContext,
+        action: RuntimeReservationAction,
+        disposition: RuntimeReservationDisposition,
+        requested_bytes: u64,
+        granted_bytes: u64,
+        charged_delta_bytes: i128,
+        current_reserved_bytes: u64,
+    ) {
+        self.record_with_denied_action(
+            context,
+            action,
+            None,
+            disposition,
+            requested_bytes,
+            granted_bytes,
+            charged_delta_bytes,
+            current_reserved_bytes,
+        );
+    }
+
+    fn record_denied(
+        &self,
+        context: &ActiveReservationEventContext,
+        denied_action: RuntimeReservationAction,
+        requested_bytes: u64,
+        granted_bytes: u64,
+        current_reserved_bytes: u64,
+    ) {
+        self.record_with_denied_action(
+            context,
+            RuntimeReservationAction::Deny,
+            Some(denied_action),
+            RuntimeReservationDisposition::Denied,
+            requested_bytes,
+            granted_bytes,
+            0,
+            current_reserved_bytes,
+        );
+    }
+
+    fn record_with_denied_action(
+        &self,
+        context: &ActiveReservationEventContext,
+        action: RuntimeReservationAction,
+        denied_action: Option<RuntimeReservationAction>,
+        disposition: RuntimeReservationDisposition,
+        requested_bytes: u64,
+        granted_bytes: u64,
+        charged_delta_bytes: i128,
+        current_reserved_bytes: u64,
+    ) {
+        let event_context = match self.span_id {
+            Some(span_id) => RuntimeEventContext::for_plan(self.scope.plan_execution_id().clone())
+                .with_span(span_id, Some(self.scope.plan_span_id())),
+            None => RuntimeEventContext::for_plan(self.scope.plan_execution_id().clone())
+                .with_span(self.scope.plan_span_id(), None),
+        };
+        let logical_bytes = self.logical_retained_bytes(context);
+        self.scope.observation().record_with_context_sized(event_context, logical_bytes, || {
+            RuntimeObservationPayload::Reservation(Box::new(crate::observability::RuntimeReservationObservation {
+                reservation_id: self.reservation_id.clone(),
+                lineage_id: self.lineage_id.clone(),
+                task_attempt_id: context.task_attempt_id.clone().or_else(|| self.task_attempt_id.clone()),
+                task_kind: context.task_kind.clone(),
+                action,
+                denied_action,
+                disposition,
+                alias: context.alias,
+                reservation_kind: context.reservation_kind.as_str().to_string(),
+                memory_space: context.memory_space.to_string(),
+                memory_boundary: context.memory_boundary.clone(),
+                requested_bytes,
+                granted_bytes,
+                charged_delta_bytes,
+                current_reserved_bytes,
+                budget_bytes: context.budget_bytes,
+                node_id: context.node_id.as_ref().map(ToString::to_string),
+                stage: context.stage.clone(),
+                chunk_index: context.chunk_index,
+                file_index: context.file_index,
+                source_location_id: context
+                    .path
+                    .as_deref()
+                    .and_then(|path| self.scope.observation().source_location_id(path)),
+                row_groups: context.row_groups.clone(),
+                attempt: context.attempt,
+                max_attempts: context.max_attempts,
+                resident_resource_id: context.resident_resource_id.clone(),
+                source_read_contract_quality: context.source_read_contract_quality.clone(),
+                source_read_planning_bytes: context.source_read_planning_bytes,
+                source_read_estimated_bytes: context.source_read_estimated_bytes,
+            }))
+        });
+    }
+
+    fn logical_retained_bytes(&self, context: &ActiveReservationEventContext) -> u64 {
+        fn optional_text_bytes(value: Option<&str>) -> u64 {
+            value.map_or(0, |value| u64::try_from(value.len()).unwrap_or(u64::MAX))
+        }
+
+        fn decimal_digits(mut value: usize) -> u64 {
+            let mut digits = 1u64;
+            while value >= 10 {
+                value /= 10;
+                digits += 1;
+            }
+            digits
+        }
+
+        let task_attempt = context.task_attempt_id.as_ref().or(self.task_attempt_id.as_ref());
+        let memory_space_bytes = match context.memory_space {
+            MemorySpaceId::Device { device_ordinal } => 4u64.saturating_add(decimal_digits(device_ordinal)),
+        };
+        let source_location_bytes = context
+            .path
+            .as_ref()
+            .map_or(0, |_| self.scope.observation().source_location_id_retained_bytes().unwrap_or(0));
+        42u64
+            .saturating_add(u64::try_from(self.scope.plan_execution_id().as_str().len()).unwrap_or(u64::MAX))
+            .saturating_add(u64::try_from(self.reservation_id.as_str().len()).unwrap_or(u64::MAX))
+            .saturating_add(u64::try_from(self.lineage_id.as_str().len()).unwrap_or(u64::MAX))
+            .saturating_add(task_attempt.map_or(0, |attempt| {
+                u64::try_from(attempt.task_id.as_str().len()).unwrap_or(u64::MAX).saturating_add(4)
+            }))
+            .saturating_add(optional_text_bytes(context.task_kind.as_deref()))
+            .saturating_add(u64::try_from(context.reservation_kind.as_str().len()).unwrap_or(u64::MAX))
+            .saturating_add(memory_space_bytes)
+            .saturating_add(u64::try_from(context.memory_boundary.len()).unwrap_or(u64::MAX))
+            .saturating_add(optional_text_bytes(context.node_id.as_ref().map(PlanNodeId::as_str)))
+            .saturating_add(optional_text_bytes(context.stage.as_deref()))
+            .saturating_add(source_location_bytes)
+            .saturating_add(
+                context
+                    .row_groups
+                    .as_ref()
+                    .map_or(0, |values| u64::try_from(values.len()).unwrap_or(u64::MAX).saturating_mul(8)),
+            )
+            .saturating_add(optional_text_bytes(context.resident_resource_id.as_deref()))
+            .saturating_add(optional_text_bytes(context.source_read_contract_quality.as_deref()))
+            .saturating_add(66)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ReservationDiagnosticContext {
+    task_attempt_id: Option<TaskAttemptId>,
+    task_kind: Option<String>,
+    span_id: Option<RuntimeSpanId>,
+    resident_resource_id: Option<String>,
+    release_disposition: RuntimeReservationDisposition,
+}
+
+impl Default for ReservationDiagnosticContext {
+    fn default() -> Self {
+        Self {
+            task_attempt_id: None,
+            task_kind: None,
+            span_id: None,
+            resident_resource_id: None,
+            release_disposition: RuntimeReservationDisposition::ExplicitRelease,
+        }
+    }
+}
+
+/// Restores the previous typed reservation context on every return path and unwind.
+#[must_use]
+pub(in crate::exec) struct ReservationDiagnosticScope {
+    context: Rc<RefCell<ReservationDiagnosticContext>>,
+    previous: Option<ReservationDiagnosticContext>,
+}
+
+impl Drop for ReservationDiagnosticScope {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            *self.context.borrow_mut() = previous;
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct ActiveReservationEventContext {
@@ -36,10 +244,13 @@ struct ActiveReservationEventContext {
     attempt: Option<usize>,
     max_attempts: Option<usize>,
     compiled_task_id: Option<CompiledTaskId>,
+    task_attempt_id: Option<TaskAttemptId>,
+    task_kind: Option<String>,
     resident_resource_id: Option<String>,
     source_read_contract_quality: Option<String>,
     source_read_planning_bytes: Option<u64>,
     source_read_estimated_bytes: Option<u64>,
+    alias: bool,
 }
 
 impl ActiveReservationEventContext {
@@ -59,11 +270,19 @@ impl ActiveReservationEventContext {
             attempt: request.attempt,
             max_attempts: request.max_attempts,
             compiled_task_id: request.compiled_task_id.clone(),
+            task_attempt_id: request.task_attempt_id.clone(),
+            task_kind: request.task_kind.clone(),
             resident_resource_id: request.resident_resource_id.clone(),
             source_read_contract_quality: request.source_read_contract_quality.clone(),
             source_read_planning_bytes: request.source_read_planning_bytes,
             source_read_estimated_bytes: request.source_read_estimated_bytes,
+            alias: false,
         }
+    }
+
+    fn with_alias(mut self) -> Self {
+        self.alias = true;
+        self
     }
 
     fn event(
@@ -137,6 +356,8 @@ pub(in crate::exec) struct ActiveReservation {
     source_cache_key: Option<GpuLocalParquetSourceCacheKey>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     event_context: ActiveReservationEventContext,
+    reservation_projection_ledger: ReservationProjectionLedgerHandle,
+    observation: Option<ReservationObservation>,
     semantics: ActiveReservationSemantics,
     lineage: Option<Rc<ActiveReservationLineage>>,
     release_action: MemoryReservationEventAction,
@@ -146,13 +367,15 @@ pub(in crate::exec) struct ActiveReservation {
 }
 
 impl ActiveReservation {
-    pub(in crate::exec) fn owned_resident(
+    fn owned_resident(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
         live_accounting: Option<MemoryGrant>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
     ) -> Self {
         Self::charged(
             memory_space,
@@ -161,17 +384,21 @@ impl ActiveReservation {
             protected_source_cache_keys,
             bytes,
             request,
+            reservation_projection_ledger,
+            observation,
             ActiveReservationSemantics::OwnedResident,
         )
     }
 
-    pub(in crate::exec) fn work(
+    fn work(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
         live_accounting: Option<MemoryGrant>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
     ) -> Self {
         Self::charged(
             memory_space,
@@ -180,6 +407,8 @@ impl ActiveReservation {
             protected_source_cache_keys,
             bytes,
             request,
+            reservation_projection_ledger,
+            observation,
             ActiveReservationSemantics::Work,
         )
     }
@@ -191,6 +420,8 @@ impl ActiveReservation {
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
         semantics: ActiveReservationSemantics,
     ) -> Self {
         Self {
@@ -201,6 +432,8 @@ impl ActiveReservation {
             source_cache_key: None,
             source_cache_pin: None,
             event_context: ActiveReservationEventContext::from_request(request),
+            reservation_projection_ledger,
+            observation,
             semantics,
             lineage: Some(Rc::new(ActiveReservationLineage::new())),
             release_action: MemoryReservationEventAction::Release,
@@ -210,7 +443,7 @@ impl ActiveReservation {
         }
     }
 
-    pub(in crate::exec) fn borrowed_source_cache(
+    fn borrowed_source_cache(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
@@ -218,6 +451,8 @@ impl ActiveReservation {
         source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
         bytes: u64,
         request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
     ) -> Self {
         {
             let mut protected = protected_source_cache_keys.borrow_mut();
@@ -231,7 +466,9 @@ impl ActiveReservation {
             protected_source_cache_keys,
             source_cache_key: Some(source_cache_key),
             source_cache_pin,
-            event_context: ActiveReservationEventContext::from_request(request),
+            event_context: ActiveReservationEventContext::from_request(request).with_alias(),
+            reservation_projection_ledger,
+            observation,
             semantics: ActiveReservationSemantics::Alias,
             lineage: Some(Rc::new(ActiveReservationLineage::new())),
             release_action: MemoryReservationEventAction::AliasRelease,
@@ -241,12 +478,14 @@ impl ActiveReservation {
         }
     }
 
-    pub(in crate::exec) fn borrowed_resident(
+    fn borrowed_resident(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
     ) -> Self {
         Self {
             memory_space,
@@ -255,7 +494,9 @@ impl ActiveReservation {
             protected_source_cache_keys,
             source_cache_key: None,
             source_cache_pin: None,
-            event_context: ActiveReservationEventContext::from_request(request),
+            event_context: ActiveReservationEventContext::from_request(request).with_alias(),
+            reservation_projection_ledger,
+            observation,
             semantics: ActiveReservationSemantics::Alias,
             lineage: Some(Rc::new(ActiveReservationLineage::new())),
             release_action: MemoryReservationEventAction::AliasRelease,
@@ -274,6 +515,8 @@ impl ActiveReservation {
         lineage: Rc<ActiveReservationLineage>,
         bytes: u64,
         request: &MemoryReservationRequest,
+        reservation_projection_ledger: ReservationProjectionLedgerHandle,
+        observation: Option<ReservationObservation>,
     ) -> Self {
         lineage.alias_count.set(lineage.alias_count.get().saturating_add(1));
         Self {
@@ -283,7 +526,9 @@ impl ActiveReservation {
             protected_source_cache_keys,
             source_cache_key: None,
             source_cache_pin,
-            event_context: ActiveReservationEventContext::from_request(request),
+            event_context: ActiveReservationEventContext::from_request(request).with_alias(),
+            reservation_projection_ledger,
+            observation,
             semantics: ActiveReservationSemantics::Alias,
             lineage: Some(lineage),
             release_action: MemoryReservationEventAction::AliasRelease,
@@ -328,6 +573,8 @@ impl ActiveReservation {
             source_cache_key: None,
             source_cache_pin: None,
             event_context: ActiveReservationEventContext::from_request(request),
+            reservation_projection_ledger: self.reservation_projection_ledger.clone(),
+            observation: self.observation.clone(),
             semantics,
             lineage: self.lineage.clone(),
             release_action: MemoryReservationEventAction::Release,
@@ -351,7 +598,9 @@ impl ActiveReservation {
             protected_source_cache_keys: Rc::clone(&self.protected_source_cache_keys),
             source_cache_key,
             source_cache_pin,
-            event_context: ActiveReservationEventContext::from_request(request),
+            event_context: ActiveReservationEventContext::from_request(request).with_alias(),
+            reservation_projection_ledger: self.reservation_projection_ledger.clone(),
+            observation: self.observation.clone(),
             semantics: ActiveReservationSemantics::Alias,
             lineage,
             release_action: MemoryReservationEventAction::AliasRelease,
@@ -361,7 +610,7 @@ impl ActiveReservation {
         }
     }
 
-    fn release(&mut self) -> Option<MemoryReservationEvent> {
+    fn release(&mut self, disposition: RuntimeReservationDisposition) -> Option<MemoryReservationEvent> {
         if self.released {
             return None;
         }
@@ -390,6 +639,17 @@ impl ActiveReservation {
                         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(deferred_release));
                         self.record_live_delta(-i128::from(deferred_release));
                         self.released = true;
+                        if let Some(observation) = &self.observation {
+                            observation.record(
+                                &self.event_context,
+                                runtime_release_action(disposition),
+                                disposition,
+                                self.bytes,
+                                0,
+                                -i128::from(deferred_release),
+                                self.reserved_bytes.get(),
+                            );
+                        }
                         return Some(self.event_context.event(
                             self.release_action,
                             self.bytes,
@@ -413,7 +673,32 @@ impl ActiveReservation {
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(self.charged_bytes));
         self.record_live_delta(charged_delta_bytes);
         self.released = true;
+        if let Some(observation) = &self.observation {
+            let disposition = if charged_delta_bytes == 0
+                && !self.is_alias()
+                && self.lineage.as_ref().is_some_and(|lineage| lineage.alias_count.get() > 0)
+            {
+                RuntimeReservationDisposition::AliasDeferred
+            } else {
+                disposition
+            };
+            observation.record(
+                &self.event_context,
+                runtime_release_action(disposition),
+                disposition,
+                self.bytes,
+                0,
+                charged_delta_bytes,
+                self.reserved_bytes.get(),
+            );
+        }
         Some(self.event_context.event(self.release_action, self.bytes, charged_delta_bytes, self.reserved_bytes.get()))
+    }
+
+    fn retarget_observation(&mut self, task_attempt_id: Option<TaskAttemptId>, span_id: Option<RuntimeSpanId>) {
+        if let Some(observation) = &mut self.observation {
+            observation.retarget(task_attempt_id, span_id);
+        }
     }
 
     fn grow(&mut self, bytes: u64) -> u64 {
@@ -457,7 +742,22 @@ impl ActiveReservation {
 
 impl Drop for ActiveReservation {
     fn drop(&mut self) {
-        let _ = self.release();
+        let disposition = if std::thread::panicking() {
+            RuntimeReservationDisposition::UnwindRelease
+        } else {
+            RuntimeReservationDisposition::DropRelease
+        };
+        if let Some(event) = self.release(disposition) {
+            self.reservation_projection_ledger.record_implicit_release(event, self.event_context.task_kind.clone());
+        }
+    }
+}
+
+fn runtime_release_action(disposition: RuntimeReservationDisposition) -> RuntimeReservationAction {
+    if disposition == RuntimeReservationDisposition::RollbackRelease {
+        RuntimeReservationAction::Rollback
+    } else {
+        RuntimeReservationAction::Release
     }
 }
 
@@ -493,8 +793,10 @@ pub(in crate::exec) struct ReservationTracker {
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
     protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
     source_cache_baseline_bytes: u64,
-    compiled_task_id: Option<CompiledTaskId>,
-    resident_resource_id: Option<String>,
+    source_cache_baseline_observations: VecDeque<SourceCacheBaselineObservation>,
+    observation_scope: Option<RuntimeExecutionObservationScope>,
+    next_reservation_id: Rc<Cell<u64>>,
+    diagnostic_context: Rc<RefCell<ReservationDiagnosticContext>>,
     adaptive_task_refinement: Option<AdaptiveTaskReservationRefinement>,
 }
 
@@ -570,16 +872,28 @@ impl ReservationTracker {
     }
 
     fn new_with_budget(memory_space: MemorySpaceId, budget: ReservationBudget) -> Self {
+        Self::new_with_budget_and_observation(memory_space, budget, None)
+    }
+
+    fn new_with_budget_and_observation(
+        memory_space: MemorySpaceId,
+        budget: ReservationBudget,
+        observation_scope: Option<&RuntimeExecutionObservationScope>,
+    ) -> Self {
         Self {
-            query_id: None,
+            query_id: observation_scope
+                .and_then(|scope| scope.observation().query_id())
+                .map(|query_id| QueryId::new(query_id.as_str())),
             memory_space,
             budget,
             reserved_bytes: Rc::new(Cell::new(0)),
             local_parquet_source_cache: None,
             protected_source_cache_keys: Rc::new(RefCell::new(HashMap::new())),
             source_cache_baseline_bytes: 0,
-            compiled_task_id: None,
-            resident_resource_id: None,
+            source_cache_baseline_observations: VecDeque::new(),
+            observation_scope: observation_scope.cloned(),
+            next_reservation_id: Rc::new(Cell::new(1)),
+            diagnostic_context: Rc::new(RefCell::new(ReservationDiagnosticContext::default())),
             adaptive_task_refinement: None,
         }
     }
@@ -588,13 +902,16 @@ impl ReservationTracker {
         context: &ExecutionContext,
         budget_bytes: u64,
         metrics: &mut QueryMetrics,
+        observation_scope: Option<&RuntimeExecutionObservationScope>,
     ) -> Result<Self> {
-        let budget = match (context.native_pipeline_execution_mode(), context.memory_grant().cloned()) {
+        let memory_grant = context.memory_grant()?;
+        let budget = match (context.native_pipeline_execution_mode(), memory_grant) {
             (NativePipelineExecutionMode::Adaptive, Some(grant)) => ReservationBudget::AdaptiveGrant(grant),
             (_, Some(grant)) => ReservationBudget::GrantBackedStatic { budget_bytes, grant },
             (_, None) => ReservationBudget::Static(budget_bytes),
         };
-        let mut tracker = Self::new_with_budget(context.device_memory_space(), budget);
+        let mut tracker =
+            Self::new_with_budget_and_observation(context.device_memory_space(), budget, observation_scope);
         tracker.query_id = context.query_id().cloned();
         tracker.local_parquet_source_cache = context.local_parquet_source_cache();
         if let Some(cache) = context.local_parquet_source_cache() {
@@ -615,8 +932,9 @@ impl ReservationTracker {
         pipeline: &CompiledPipeline,
         budget_bytes: u64,
         metrics: &mut QueryMetrics,
+        observation_scope: Option<&RuntimeExecutionObservationScope>,
     ) -> Result<Self> {
-        let mut tracker = Self::new_for_context(context, budget_bytes, metrics)?;
+        let mut tracker = Self::new_for_context(context, budget_bytes, metrics, observation_scope)?;
         if context.native_pipeline_execution_mode() == NativePipelineExecutionMode::Adaptive
             && let Some(memory_history) = context.adaptive_memory_history()
         {
@@ -657,18 +975,123 @@ impl ReservationTracker {
         self.reservable_remaining_bytes().is_ok_and(|remaining| requested_bytes <= remaining)
     }
 
-    pub(in crate::exec) fn set_diagnostic_context(
-        &mut self,
-        compiled_task_id: Option<impl ToString>,
+    pub(in crate::exec) fn enter_task_observation_scope(
+        &self,
+        task_attempt_id: TaskAttemptId,
+        task_kind: impl Into<String>,
+        span_id: RuntimeSpanId,
         resident_resource_id: Option<impl ToString>,
-    ) {
-        self.compiled_task_id = compiled_task_id.map(CompiledTaskId::new);
-        self.resident_resource_id = resident_resource_id.map(|value| value.to_string());
+    ) -> ReservationDiagnosticScope {
+        self.enter_diagnostic_scope(|context| {
+            context.task_attempt_id = Some(task_attempt_id);
+            context.task_kind = Some(task_kind.into());
+            context.span_id = Some(span_id);
+            context.resident_resource_id = resident_resource_id.map(|value| value.to_string());
+        })
     }
 
-    pub(in crate::exec) fn clear_diagnostic_context(&mut self) {
-        self.compiled_task_id = None;
-        self.resident_resource_id = None;
+    pub(in crate::exec) fn enter_resource_observation_scope(
+        &self,
+        resident_resource_id: impl ToString,
+    ) -> ReservationDiagnosticScope {
+        self.enter_diagnostic_scope(|context| {
+            context.resident_resource_id = Some(resident_resource_id.to_string());
+        })
+    }
+
+    pub(in crate::exec) fn enter_release_observation_scope(
+        &self,
+        disposition: RuntimeReservationDisposition,
+    ) -> ReservationDiagnosticScope {
+        self.enter_diagnostic_scope(|context| context.release_disposition = disposition)
+    }
+
+    fn enter_diagnostic_scope(
+        &self,
+        update: impl FnOnce(&mut ReservationDiagnosticContext),
+    ) -> ReservationDiagnosticScope {
+        let previous = self.diagnostic_context.borrow().clone();
+        update(&mut self.diagnostic_context.borrow_mut());
+        ReservationDiagnosticScope { context: Rc::clone(&self.diagnostic_context), previous: Some(previous) }
+    }
+
+    fn next_observation_id(&self) -> Option<RuntimeReservationId> {
+        self.observation_scope.as_ref()?;
+        let next = self.next_reservation_id.get();
+        self.next_reservation_id.set(next.saturating_add(1));
+        Some(RuntimeReservationId::new(format!("reservation-{next}")))
+    }
+
+    fn new_reservation_observation(&self) -> Option<ReservationObservation> {
+        let scope = self.observation_scope.clone()?;
+        let reservation_id = self.next_observation_id()?;
+        let context = self.diagnostic_context.borrow();
+        Some(ReservationObservation {
+            scope,
+            lineage_id: reservation_id.clone(),
+            reservation_id,
+            task_attempt_id: context.task_attempt_id.clone(),
+            span_id: context.span_id,
+        })
+    }
+
+    fn new_alias_observation(&self, source: &ActiveReservation) -> Option<ReservationObservation> {
+        let scope = self.observation_scope.clone()?;
+        let reservation_id = self.next_observation_id()?;
+        let context = self.diagnostic_context.borrow();
+        Some(ReservationObservation {
+            scope,
+            lineage_id: source
+                .observation
+                .as_ref()
+                .map_or_else(|| reservation_id.clone(), |value| value.lineage_id.clone()),
+            reservation_id,
+            task_attempt_id: context.task_attempt_id.clone(),
+            span_id: context.span_id,
+        })
+    }
+
+    fn retarget_reservation_observation(&self, reservation: &mut ActiveReservation) {
+        let context = self.diagnostic_context.borrow();
+        reservation.retarget_observation(context.task_attempt_id.clone(), context.span_id);
+    }
+
+    fn record_denied_observation(
+        &self,
+        request: &MemoryReservationRequest,
+        denied_action: RuntimeReservationAction,
+        granted_bytes: u64,
+    ) {
+        let Some(observation) = self.new_reservation_observation() else {
+            return;
+        };
+        observation.record_denied(
+            &ActiveReservationEventContext::from_request(request),
+            denied_action,
+            request.requested_bytes,
+            granted_bytes,
+            self.raw_reserved_bytes(),
+        );
+    }
+
+    fn push_source_cache_baseline_observation(
+        &mut self,
+        bytes: u64,
+        source: Option<&ActiveReservation>,
+        request: &MemoryReservationRequest,
+        metrics: &QueryMetrics,
+    ) -> Option<ReservationObservation> {
+        let observation = match source {
+            Some(source) => self.new_alias_observation(source),
+            None => self.new_reservation_observation(),
+        };
+        self.source_cache_baseline_observations.push_back(SourceCacheBaselineObservation {
+            observation: observation.clone(),
+            event_context: ActiveReservationEventContext::from_request(request),
+            reservation_projection_ledger: metrics.reservation_projection_ledger_handle(),
+            remaining_bytes: bytes,
+        });
+        observation
     }
 
     pub(in crate::exec) fn available_bytes_including(&self, reservation: &ActiveReservation) -> u64 {
@@ -719,6 +1142,7 @@ impl ReservationTracker {
                 remaining,
                 self.raw_reserved_bytes(),
             );
+            self.record_denied_observation(&request, RuntimeReservationAction::Reserve, remaining);
             return Err(request.denied_error(remaining));
         }
         if !self.reserve_live_bytes(request.requested_bytes)? {
@@ -729,6 +1153,7 @@ impl ReservationTracker {
                 remaining,
                 self.raw_reserved_bytes(),
             );
+            self.record_denied_observation(&request, RuntimeReservationAction::Reserve, remaining);
             return Err(request.denied_error(remaining));
         }
         metrics.record_reservation_granted_timeline_event(
@@ -738,6 +1163,8 @@ impl ReservationTracker {
             i128::from(request.requested_bytes),
             self.raw_reserved_bytes(),
         );
+        let observation = self.new_reservation_observation();
+        let reservation_projection_ledger = metrics.reservation_projection_ledger_handle();
         let reservation = match semantics {
             ActiveReservationSemantics::OwnedResident => ActiveReservation::owned_resident(
                 self.memory_space,
@@ -746,6 +1173,8 @@ impl ReservationTracker {
                 Rc::clone(&self.protected_source_cache_keys),
                 request.requested_bytes,
                 &request,
+                reservation_projection_ledger,
+                observation.clone(),
             ),
             ActiveReservationSemantics::Work => ActiveReservation::work(
                 self.memory_space,
@@ -754,9 +1183,22 @@ impl ReservationTracker {
                 Rc::clone(&self.protected_source_cache_keys),
                 request.requested_bytes,
                 &request,
+                reservation_projection_ledger,
+                observation,
             ),
             ActiveReservationSemantics::Alias => unreachable!("alias reservations do not charge capacity"),
         };
+        if let Some(observation) = &reservation.observation {
+            observation.record(
+                &reservation.event_context,
+                RuntimeReservationAction::Reserve,
+                RuntimeReservationDisposition::Granted,
+                request.requested_bytes,
+                request.requested_bytes,
+                i128::from(request.requested_bytes),
+                self.raw_reserved_bytes(),
+            );
+        }
         Ok(reservation)
     }
 
@@ -800,7 +1242,8 @@ impl ReservationTracker {
             0,
             self.raw_reserved_bytes(),
         ));
-        ActiveReservation::alias(
+        let observation = self.new_alias_observation(source);
+        let alias = ActiveReservation::alias(
             self.memory_space,
             Rc::clone(&self.reserved_bytes),
             source.live_accounting.clone(),
@@ -809,7 +1252,21 @@ impl ReservationTracker {
             Rc::clone(source.lineage.as_ref().expect("generic alias requires a reservation lineage")),
             request.requested_bytes,
             &request,
-        )
+            metrics.reservation_projection_ledger_handle(),
+            observation,
+        );
+        if let Some(observation) = &alias.observation {
+            observation.record(
+                &alias.event_context,
+                RuntimeReservationAction::Alias,
+                RuntimeReservationDisposition::Applied,
+                request.requested_bytes,
+                0,
+                0,
+                self.raw_reserved_bytes(),
+            );
+        }
+        alias
     }
 
     pub(in crate::exec) fn transfer(
@@ -824,7 +1281,8 @@ impl ReservationTracker {
             "reservation tracker invariant failed during transfer: alias reservations cannot transfer ownership"
         );
         let request = self.stamp_request(request, metrics);
-        let transferred = reservation.transferred(&request);
+        let mut transferred = reservation.transferred(&request);
+        self.retarget_reservation_observation(&mut transferred);
         metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
             &request,
             MemoryReservationEventOutcome::Applied,
@@ -833,6 +1291,17 @@ impl ReservationTracker {
             0,
             self.raw_reserved_bytes(),
         ));
+        if let Some(observation) = &transferred.observation {
+            observation.record(
+                &transferred.event_context,
+                RuntimeReservationAction::Transfer,
+                RuntimeReservationDisposition::Applied,
+                request.requested_bytes,
+                0,
+                0,
+                self.raw_reserved_bytes(),
+            );
+        }
         transferred
     }
 
@@ -848,7 +1317,8 @@ impl ReservationTracker {
             "reservation tracker invariant failed during relabel_alias_reservation: only alias reservations can be relabeled"
         );
         let request = self.stamp_request(request, metrics);
-        let relabeled = reservation.relabeled_alias(&request);
+        let mut relabeled = reservation.relabeled_alias(&request);
+        self.retarget_reservation_observation(&mut relabeled);
         metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
             &request,
             MemoryReservationEventOutcome::Applied,
@@ -857,6 +1327,17 @@ impl ReservationTracker {
             0,
             self.raw_reserved_bytes(),
         ));
+        if let Some(observation) = &relabeled.observation {
+            observation.record(
+                &relabeled.event_context,
+                RuntimeReservationAction::Relabel,
+                RuntimeReservationDisposition::Applied,
+                request.requested_bytes,
+                0,
+                0,
+                self.raw_reserved_bytes(),
+            );
+        }
         relabeled
     }
 
@@ -881,7 +1362,8 @@ impl ReservationTracker {
             0,
             self.raw_reserved_bytes(),
         ));
-        ActiveReservation::borrowed_source_cache(
+        let observation = self.new_reservation_observation();
+        let borrowed = ActiveReservation::borrowed_source_cache(
             self.memory_space,
             Rc::clone(&self.reserved_bytes),
             Rc::clone(&self.protected_source_cache_keys),
@@ -889,7 +1371,21 @@ impl ReservationTracker {
             source_cache_pin,
             bytes,
             &request,
-        )
+            metrics.reservation_projection_ledger_handle(),
+            observation,
+        );
+        if let Some(observation) = &borrowed.observation {
+            observation.record(
+                &borrowed.event_context,
+                RuntimeReservationAction::Alias,
+                RuntimeReservationDisposition::Applied,
+                bytes,
+                0,
+                0,
+                self.raw_reserved_bytes(),
+            );
+        }
+        borrowed
     }
 
     pub(in crate::exec) fn borrow_resident(
@@ -906,29 +1402,48 @@ impl ReservationTracker {
             0,
             self.raw_reserved_bytes(),
         ));
-        ActiveReservation::borrowed_resident(
+        let observation = self.new_reservation_observation();
+        let borrowed = ActiveReservation::borrowed_resident(
             self.memory_space,
             Rc::clone(&self.reserved_bytes),
             Rc::clone(&self.protected_source_cache_keys),
             request.requested_bytes,
             &request,
-        )
+            metrics.reservation_projection_ledger_handle(),
+            observation,
+        );
+        if let Some(observation) = &borrowed.observation {
+            observation.record(
+                &borrowed.event_context,
+                RuntimeReservationAction::Alias,
+                RuntimeReservationDisposition::Applied,
+                request.requested_bytes,
+                0,
+                0,
+                self.raw_reserved_bytes(),
+            );
+        }
+        borrowed
     }
 
     pub(in crate::exec) fn release(&mut self, mut reservation: ActiveReservation, metrics: &mut QueryMetrics) {
         self.assert_reservation_belongs_to_tracker(&reservation, "release");
-        if let Some(event) = reservation.release() {
+        self.retarget_reservation_observation(&mut reservation);
+        let disposition = self.diagnostic_context.borrow().release_disposition;
+        if let Some(event) = reservation.release(disposition) {
             // Release and alias-release events describe live ledger movement only; aggregate
             // requested/granted counters intentionally remain historical admission counters.
             let mut event = event;
+            let context = self.diagnostic_context.borrow();
             if event.compiled_task_id.is_none() {
-                event.compiled_task_id = self.compiled_task_id.clone();
+                event.compiled_task_id =
+                    context.task_attempt_id.as_ref().map(|attempt| CompiledTaskId::new(attempt.task_id.as_str()));
             }
             if event.query_id.is_none() {
                 event.query_id = self.query_id.clone();
             }
             if event.resident_resource_id.is_none() {
-                event.resident_resource_id = self.resident_resource_id.clone();
+                event.resident_resource_id = context.resident_resource_id.clone();
             }
             metrics.record_reservation_timeline_event(event);
         }
@@ -954,6 +1469,7 @@ impl ReservationTracker {
                 remaining,
                 self.raw_reserved_bytes(),
             );
+            self.record_denied_observation(&request, RuntimeReservationAction::Grow, remaining);
             return Err(request.denied_error(remaining));
         }
         if !self.reserve_live_bytes(request.requested_bytes)? {
@@ -964,8 +1480,10 @@ impl ReservationTracker {
                 remaining,
                 self.raw_reserved_bytes(),
             );
+            self.record_denied_observation(&request, RuntimeReservationAction::Grow, remaining);
             return Err(request.denied_error(remaining));
         }
+        self.retarget_reservation_observation(reservation);
         let charged_delta = reservation.grow(request.requested_bytes);
         metrics.record_reservation_granted_timeline_event(
             &request,
@@ -974,6 +1492,17 @@ impl ReservationTracker {
             i128::from(charged_delta),
             self.raw_reserved_bytes(),
         );
+        if let Some(observation) = &reservation.observation {
+            observation.record(
+                &ActiveReservationEventContext::from_request(&request),
+                RuntimeReservationAction::Grow,
+                RuntimeReservationDisposition::Granted,
+                request.requested_bytes,
+                request.requested_bytes,
+                i128::from(charged_delta),
+                self.raw_reserved_bytes(),
+            );
+        }
         Ok(())
     }
 
@@ -984,6 +1513,7 @@ impl ReservationTracker {
         metrics: &mut QueryMetrics,
     ) {
         self.assert_reservation_belongs_to_tracker(reservation, "shrink_to_observed");
+        self.retarget_reservation_observation(reservation);
         let refunded = reservation.shrink_to(observed_bytes);
         if refunded > 0 {
             metrics.record_reservation_timeline_event(reservation.event_context.event(
@@ -992,6 +1522,17 @@ impl ReservationTracker {
                 -i128::from(refunded),
                 self.raw_reserved_bytes(),
             ));
+            if let Some(observation) = &reservation.observation {
+                observation.record(
+                    &reservation.event_context,
+                    RuntimeReservationAction::Shrink,
+                    RuntimeReservationDisposition::Applied,
+                    observed_bytes,
+                    0,
+                    -i128::from(refunded),
+                    self.raw_reserved_bytes(),
+                );
+            }
         }
     }
 
@@ -1003,6 +1544,7 @@ impl ReservationTracker {
         metrics: &mut QueryMetrics,
     ) {
         self.assert_reservation_belongs_to_tracker(reservation, "shrink_to_observed_with_request");
+        self.retarget_reservation_observation(reservation);
         let refunded = reservation.shrink_to(observed_bytes);
         if refunded > 0 {
             let request = self.stamp_request(request, metrics);
@@ -1014,6 +1556,17 @@ impl ReservationTracker {
                 -i128::from(refunded),
                 self.raw_reserved_bytes(),
             ));
+            if let Some(observation) = &reservation.observation {
+                observation.record(
+                    &ActiveReservationEventContext::from_request(&request),
+                    RuntimeReservationAction::Shrink,
+                    RuntimeReservationDisposition::Applied,
+                    request.requested_bytes,
+                    0,
+                    -i128::from(refunded),
+                    self.raw_reserved_bytes(),
+                );
+            }
         }
     }
 
@@ -1039,6 +1592,17 @@ impl ReservationTracker {
                 0,
                 self.raw_reserved_bytes(),
             );
+            if let Some(observation) = self.new_alias_observation(reservation) {
+                observation.record(
+                    &ActiveReservationEventContext::from_request(&request),
+                    RuntimeReservationAction::SourceCachePromote,
+                    RuntimeReservationDisposition::Applied,
+                    retained_bytes,
+                    retained_bytes,
+                    0,
+                    self.raw_reserved_bytes(),
+                );
+            }
             return Ok(());
         }
         let additional_bytes = retained_bytes.saturating_sub(reservation.charged_bytes());
@@ -1054,6 +1618,7 @@ impl ReservationTracker {
                 remaining,
                 self.raw_reserved_bytes(),
             );
+            self.record_denied_observation(&request, RuntimeReservationAction::Reserve, remaining);
             return Err(request.denied_error(remaining));
         }
 
@@ -1065,6 +1630,7 @@ impl ReservationTracker {
                 remaining,
                 self.raw_reserved_bytes(),
             );
+            self.record_denied_observation(&request, RuntimeReservationAction::Reserve, remaining);
             return Err(request.denied_error(remaining));
         }
         reservation.promote_charged_bytes_to_baseline(retained_bytes);
@@ -1076,6 +1642,21 @@ impl ReservationTracker {
             i128::from(additional_bytes),
             self.raw_reserved_bytes(),
         );
+        if let Some(mut observation) =
+            self.push_source_cache_baseline_observation(retained_bytes, Some(reservation), &request, metrics)
+        {
+            let context = self.diagnostic_context.borrow();
+            observation.retarget(context.task_attempt_id.clone(), context.span_id);
+            observation.record(
+                &ActiveReservationEventContext::from_request(&request),
+                RuntimeReservationAction::SourceCachePromote,
+                RuntimeReservationDisposition::Applied,
+                retained_bytes,
+                retained_bytes,
+                i128::from(additional_bytes),
+                self.raw_reserved_bytes(),
+            );
+        }
         Ok(())
     }
 
@@ -1092,14 +1673,79 @@ impl ReservationTracker {
                 .with_stage("source_cache_eviction"),
             metrics,
         );
-        metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
+        let disposition = self.diagnostic_context.borrow().release_disposition;
+        self.record_source_cache_baseline_release(
             &request,
-            MemoryReservationEventOutcome::Applied,
-            MemoryReservationEventAction::Release,
-            0,
-            -i128::from(released),
-            self.raw_reserved_bytes(),
-        ));
+            released,
+            RuntimeReservationAction::SourceCacheEvict,
+            disposition,
+            Some(metrics),
+        );
+    }
+
+    fn record_source_cache_baseline_release(
+        &mut self,
+        request: &MemoryReservationRequest,
+        released: u64,
+        action: RuntimeReservationAction,
+        terminal_disposition: RuntimeReservationDisposition,
+        mut metrics: Option<&mut QueryMetrics>,
+    ) {
+        let diagnostic = self.diagnostic_context.borrow().clone();
+        let mut remaining_release = released;
+        let mut current_reserved_bytes = self.raw_reserved_bytes().saturating_add(released);
+        while remaining_release > 0 {
+            let Some(segment) = self.source_cache_baseline_observations.front_mut() else {
+                break;
+            };
+            let segment_release = remaining_release.min(segment.remaining_bytes);
+            segment.remaining_bytes = segment.remaining_bytes.saturating_sub(segment_release);
+            remaining_release = remaining_release.saturating_sub(segment_release);
+            current_reserved_bytes = current_reserved_bytes.saturating_sub(segment_release);
+            let terminal = segment.remaining_bytes == 0;
+            let disposition = if terminal { terminal_disposition } else { RuntimeReservationDisposition::Applied };
+            if let Some(observation) = &segment.observation {
+                let mut observation = observation.clone();
+                observation.retarget(diagnostic.task_attempt_id.clone(), diagnostic.span_id);
+                observation.record(
+                    &ActiveReservationEventContext::from_request(request),
+                    action,
+                    disposition,
+                    segment_release,
+                    0,
+                    -i128::from(segment_release),
+                    current_reserved_bytes,
+                );
+            }
+            let mut public_request = request.clone();
+            public_request.task_attempt_id.clone_from(&segment.event_context.task_attempt_id);
+            public_request.task_kind.clone_from(&segment.event_context.task_kind);
+            public_request.compiled_task_id.clone_from(&segment.event_context.compiled_task_id);
+            let event = MemoryReservationEvent::from_request(
+                &public_request,
+                MemoryReservationEventOutcome::Applied,
+                MemoryReservationEventAction::Release,
+                0,
+                -i128::from(segment_release),
+                current_reserved_bytes,
+            );
+            if let Some(metrics) = metrics.as_deref_mut() {
+                if let (Some(task_attempt_id), Some(task_kind)) =
+                    (&public_request.task_attempt_id, &public_request.task_kind)
+                {
+                    metrics.register_task_definition(task_attempt_id.task_id.as_str(), task_kind);
+                }
+                metrics.record_reservation_timeline_event(event);
+            } else {
+                segment
+                    .reservation_projection_ledger
+                    .record_implicit_release(event, segment.event_context.task_kind.clone());
+            }
+            if terminal {
+                self.source_cache_baseline_observations.pop_front();
+            }
+        }
+        debug_assert_eq!(remaining_release, 0);
     }
 
     pub(in crate::exec::bounded) fn reclaim_source_cache_for_external_working_set(
@@ -1146,6 +1792,7 @@ impl ReservationTracker {
                 remaining,
                 self.raw_reserved_bytes(),
             );
+            self.record_denied_observation(&request, RuntimeReservationAction::Reserve, remaining);
             return Err(request.denied_error(remaining));
         }
         if !self.reserve_live_bytes(request.requested_bytes)? {
@@ -1156,6 +1803,7 @@ impl ReservationTracker {
                 remaining,
                 self.raw_reserved_bytes(),
             );
+            self.record_denied_observation(&request, RuntimeReservationAction::Reserve, remaining);
             return Err(request.denied_error(remaining));
         }
         self.source_cache_baseline_bytes = self.source_cache_baseline_bytes.saturating_add(request.requested_bytes);
@@ -1166,6 +1814,19 @@ impl ReservationTracker {
             i128::from(request.requested_bytes),
             self.raw_reserved_bytes(),
         );
+        if let Some(observation) =
+            self.push_source_cache_baseline_observation(request.requested_bytes, None, &request, metrics)
+        {
+            observation.record(
+                &ActiveReservationEventContext::from_request(&request),
+                RuntimeReservationAction::Reserve,
+                RuntimeReservationDisposition::Granted,
+                request.requested_bytes,
+                request.requested_bytes,
+                i128::from(request.requested_bytes),
+                self.raw_reserved_bytes(),
+            );
+        }
         Ok(())
     }
 
@@ -1201,18 +1862,34 @@ impl ReservationTracker {
         self.protected_source_cache_keys.borrow().keys().cloned().collect()
     }
 
-    fn stamp_request(&self, mut request: MemoryReservationRequest, metrics: &QueryMetrics) -> MemoryReservationRequest {
+    fn stamp_request(
+        &self,
+        mut request: MemoryReservationRequest,
+        metrics: &mut QueryMetrics,
+    ) -> MemoryReservationRequest {
         request.memory_space = self.memory_space;
         request.budget_bytes = self.budget();
         if request.query_id.is_none() {
             request.query_id =
                 self.query_id.clone().or_else(|| metrics.query_id().is_assigned().then(|| metrics.query_id().clone()));
         }
+        let context = self.diagnostic_context.borrow();
+        if request.task_attempt_id.is_none() {
+            request.task_attempt_id.clone_from(&context.task_attempt_id);
+        }
+        if request.task_kind.is_none() {
+            request.task_kind.clone_from(&context.task_kind);
+        }
         if request.compiled_task_id.is_none() {
-            request.compiled_task_id = self.compiled_task_id.clone();
+            request.compiled_task_id =
+                context.task_attempt_id.as_ref().map(|attempt| CompiledTaskId::new(attempt.task_id.as_str()));
         }
         if request.resident_resource_id.is_none() {
-            request.resident_resource_id = self.resident_resource_id.clone();
+            request.resident_resource_id = context.resident_resource_id.clone();
+        }
+        drop(context);
+        if let (Some(task_attempt_id), Some(task_kind)) = (&request.task_attempt_id, &request.task_kind) {
+            metrics.register_task_definition(task_attempt_id.task_id.as_str(), task_kind);
         }
         request
     }
@@ -1274,16 +1951,48 @@ impl ReservationTracker {
 impl Drop for ReservationTracker {
     fn drop(&mut self) {
         if self.source_cache_baseline_bytes > 0 {
-            self.release_live_bytes(self.source_cache_baseline_bytes);
+            let released = self.source_cache_baseline_bytes;
+            self.release_live_bytes(released);
             self.source_cache_baseline_bytes = 0;
+            let mut request =
+                MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, released, self.budget())
+                    .with_memory_boundary("source_cache_retained")
+                    .with_stage("tracker_drop");
+            request.memory_space = self.memory_space;
+            request.query_id = self.query_id.clone();
+            self.record_source_cache_baseline_release(
+                &request,
+                released,
+                runtime_release_action(if std::thread::panicking() {
+                    RuntimeReservationDisposition::UnwindRelease
+                } else {
+                    RuntimeReservationDisposition::DropRelease
+                }),
+                if std::thread::panicking() {
+                    RuntimeReservationDisposition::UnwindRelease
+                } else {
+                    RuntimeReservationDisposition::DropRelease
+                },
+                None,
+            );
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use arrow::datatypes::{DataType, Field, Schema};
+
     use super::*;
-    use crate::runtime::{GrantRequest, MemoryGovernor};
+    use crate::{
+        observability::{
+            AdmissionRequestId, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationLossReason,
+            RuntimeObservationPayload, RuntimeObservationSession, RuntimeQueryLifecycle, RuntimeReservationAction,
+            RuntimeReservationDisposition, RuntimeTerminalOutcome, write_runtime_observation_jsonl,
+        },
+        runtime::{GrantRequest, MemoryGovernor},
+        source::LocalParquetSource,
+    };
 
     fn test_request(
         kind: ReservationKind,
@@ -1294,10 +2003,180 @@ mod tests {
         MemoryReservationRequest::new(kind, bytes, budget).with_memory_boundary(boundary).with_stage("test")
     }
 
+    fn observed_projection_with_limits(
+        config: RuntimeObservationConfig,
+    ) -> Result<(QueryMetrics, crate::observability::SealedRuntimeObservationSnapshot)> {
+        let lifecycle = RuntimeQueryLifecycle::new(
+            RuntimeObservationSession::new("reservation-cap-parity", None, config),
+            PlanExecutionId::new("plan-reservation-cap-parity"),
+        );
+        let scope = lifecycle.execution_scope();
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget_and_observation(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::Static(100),
+            Some(&scope),
+        );
+        let request = |kind, boundary, bytes| {
+            test_request(kind, boundary, bytes, 100)
+                .with_node_id("cap-node")
+                .with_task_registration("cap-task", 1, "unary")
+        };
+        let mut owned =
+            reservations.try_reserve_work(request(ReservationKind::OperatorOutput, "reserve", 60), &mut metrics)?;
+        reservations.try_grow(&mut owned, request(ReservationKind::OperatorOutput, "grow", 10), &mut metrics)?;
+        reservations.shrink_to_observed(&mut owned, 50, &mut metrics);
+        let denied =
+            reservations.try_reserve_work(request(ReservationKind::OperatorOutput, "denied", 60), &mut metrics);
+        assert!(denied.is_err());
+        drop(owned);
+        drop(reservations);
+        metrics.finalize_reservation_projection();
+        let snapshot = lifecycle.finish(RuntimeTerminalOutcome::Succeeded).expect("observation seals");
+        Ok((metrics, snapshot))
+    }
+
+    fn assert_exact_reservation_projection(actual: &QueryMetrics, expected: &QueryMetrics) {
+        assert_eq!(actual.reservation_requested_bytes, expected.reservation_requested_bytes);
+        assert_eq!(actual.reservation_granted_bytes, expected.reservation_granted_bytes);
+        assert_eq!(actual.reservation_live_peak_bytes, expected.reservation_live_peak_bytes);
+        assert_eq!(actual.reservation_denied_count, expected.reservation_denied_count);
+        assert_eq!(actual.max_task_reservation_bytes, expected.max_task_reservation_bytes);
+        assert_eq!(actual.reservation_events, expected.reservation_events);
+        assert_eq!(actual.task_runtime_metrics, expected.task_runtime_metrics);
+        assert_eq!(actual.task_operator_metrics, expected.task_operator_metrics);
+    }
+
+    #[test]
+    fn public_reservation_projection_is_exact_across_trace_record_and_byte_caps() -> Result<()> {
+        let (uncapped, complete_trace) =
+            observed_projection_with_limits(RuntimeObservationConfig::bounded(64, 64 * 1024))?;
+        assert_eq!(uncapped.reservation_requested_bytes, 130);
+        assert_eq!(uncapped.reservation_granted_bytes, 70);
+        assert_eq!(uncapped.reservation_live_peak_bytes, 70);
+        assert_eq!(uncapped.reservation_denied_count, 1);
+        assert_eq!(uncapped.reservation_events.len(), 5);
+        let task = &uncapped.task_runtime_metrics["cap-task"];
+        assert_eq!(task.reservation_requested_bytes, 130);
+        assert_eq!(task.reservation_granted_bytes, 70);
+        assert_eq!(task.reservation_released_bytes, 70);
+        assert_eq!(task.reservation_live_peak_bytes, 70);
+        assert!(!complete_trace.footer().truncated);
+        assert!(!complete_trace.footer().degraded, "exact reservation preflight must match retained accounting");
+
+        for config in [
+            RuntimeObservationConfig::bounded(0, 64 * 1024),
+            RuntimeObservationConfig::bounded(1, 64 * 1024),
+            RuntimeObservationConfig::bounded(64, 1),
+            RuntimeObservationConfig::bounded(64, 512),
+        ] {
+            let (capped, trace) = observed_projection_with_limits(config)?;
+            assert_exact_reservation_projection(&capped, &uncapped);
+            assert!(trace.footer().truncated);
+            assert!(trace.events().len() < complete_trace.events().len());
+            assert!(trace.footer().first_dropped_sequence.is_some());
+        }
+        let (_, record_limited) = observed_projection_with_limits(RuntimeObservationConfig::bounded(0, 64 * 1024))?;
+        assert!(
+            record_limited
+                .footer()
+                .dropped_by_reason
+                .iter()
+                .any(|loss| loss.reason == RuntimeObservationLossReason::RecordLimit)
+        );
+        let (_, oversized) = observed_projection_with_limits(RuntimeObservationConfig::bounded(64, 1))?;
+        assert!(
+            oversized
+                .footer()
+                .dropped_by_reason
+                .iter()
+                .any(|loss| loss.reason == RuntimeObservationLossReason::Oversized)
+        );
+        Ok(())
+    }
+
+    #[derive(Clone, Copy)]
+    enum TestReleaseMode {
+        Explicit,
+        Drop,
+        Unwind,
+    }
+
+    fn projection_for_release_mode(mode: TestReleaseMode) -> Result<QueryMetrics> {
+        let mut metrics = QueryMetrics::new("release-projection-parity");
+        metrics.record_task_execution("release-task", "unary");
+        metrics.record_task_elapsed("release-task", "unary", std::time::Duration::from_millis(7));
+        let mut reservations = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let active = reservations.try_reserve_work(
+            test_request(ReservationKind::OperatorOutput, "release-parity", 60, 100).with_task_registration(
+                "release-task",
+                1,
+                "unary",
+            ),
+            &mut metrics,
+        )?;
+        match mode {
+            TestReleaseMode::Explicit => reservations.release(active, &mut metrics),
+            TestReleaseMode::Drop => drop(active),
+            TestReleaseMode::Unwind => {
+                let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _active = active;
+                    panic!("exercise reservation unwind cleanup");
+                }));
+                assert!(unwind.is_err());
+            },
+        }
+        assert_eq!(reservations.reserved_bytes(), 0);
+        drop(reservations);
+        metrics.finalize_reservation_projection();
+        Ok(metrics)
+    }
+
+    #[test]
+    fn disabled_observation_drop_and_unwind_keep_the_exact_public_projection() -> Result<()> {
+        let explicit = projection_for_release_mode(TestReleaseMode::Explicit)?;
+        let dropped = projection_for_release_mode(TestReleaseMode::Drop)?;
+        let unwound = projection_for_release_mode(TestReleaseMode::Unwind)?;
+
+        assert_exact_reservation_projection(&dropped, &explicit);
+        assert_exact_reservation_projection(&unwound, &explicit);
+        assert_eq!(explicit.reservation_events.len(), 2);
+        assert_eq!(explicit.reservation_events.iter().map(|event| event.charged_delta_bytes).sum::<i128>(), 0);
+        let task = &explicit.task_runtime_metrics["release-task"];
+        assert_eq!(task.elapsed_time, std::time::Duration::from_millis(7));
+        assert_eq!(task.reservation_requested_bytes, 60);
+        assert_eq!(task.reservation_granted_bytes, 60);
+        assert_eq!(task.reservation_released_bytes, 60);
+        assert_eq!(task.live_reserved_bytes, 0);
+        assert_eq!(explicit.task_operator_metrics["unary"].task_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn cloning_query_metrics_detaches_the_reservation_projection_ledger() -> Result<()> {
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let active = reservations
+            .try_reserve_work(test_request(ReservationKind::OperatorOutput, "clone-ledger", 60, 100), &mut metrics)?;
+        let mut cloned = metrics.clone();
+
+        drop(active);
+        metrics.finalize_reservation_projection();
+        cloned.finalize_reservation_projection();
+
+        assert_eq!(metrics.reservation_events.len(), 2);
+        assert_eq!(metrics.reservation_events.iter().map(|event| event.charged_delta_bytes).sum::<i128>(), 0);
+        assert_eq!(cloned.reservation_events.len(), 1);
+        assert_eq!(cloned.reservation_events[0].charged_delta_bytes, 60);
+        Ok(())
+    }
+
     #[test]
     fn adaptive_reservation_tracker_observes_live_grant_growth() -> Result<()> {
         let governor = MemoryGovernor::new(0, 100)?;
-        let grant = governor.try_request(GrantRequest::new(7, 40, 40))?.expect("initial grant should fit");
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(7), 40, 40))?
+            .expect("initial grant should fit");
         let mut metrics = QueryMetrics::default();
         let mut reservations = ReservationTracker::new_with_budget(
             MemorySpaceId::Device { device_ordinal: 0 },
@@ -1346,7 +2225,9 @@ mod tests {
     #[test]
     fn static_reservation_tracker_ignores_later_grant_growth() -> Result<()> {
         let governor = MemoryGovernor::new(0, 100)?;
-        let grant = governor.try_request(GrantRequest::new(8, 40, 40))?.expect("initial grant should fit");
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(8), 40, 40))?
+            .expect("initial grant should fit");
         let mut metrics = QueryMetrics::default();
         let mut reservations =
             ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, grant.budget_bytes());
@@ -1385,7 +2266,9 @@ mod tests {
     #[test]
     fn grant_backed_static_tracker_retains_live_output_bytes() -> Result<()> {
         let governor = MemoryGovernor::new(0, 100)?;
-        let grant = governor.try_request(GrantRequest::new(7, 10, 40))?.expect("initial grant should fit");
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(7), 10, 40))?
+            .expect("initial grant should fit");
         let mut metrics = QueryMetrics::default();
         let mut reservations = ReservationTracker::new_with_budget(
             MemorySpaceId::Device { device_ordinal: 0 },
@@ -1415,7 +2298,9 @@ mod tests {
     #[test]
     fn adaptive_reservation_tracker_acknowledges_shrink_without_underflowing_live_reservations() -> Result<()> {
         let governor = MemoryGovernor::new(0, 100)?;
-        let grant = governor.try_request(GrantRequest::new(7, 30, 80))?.expect("initial grant should fit");
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 80))?
+            .expect("initial grant should fit");
         let mut metrics = QueryMetrics::default();
         let mut reservations = ReservationTracker::new_with_budget(
             MemorySpaceId::Device { device_ordinal: 0 },
@@ -1441,7 +2326,9 @@ mod tests {
     #[test]
     fn adaptive_shrink_ack_uses_grant_scoped_live_bytes_across_trackers() -> Result<()> {
         let governor = MemoryGovernor::new(0, 100)?;
-        let grant = governor.try_request(GrantRequest::new(7, 30, 90))?.expect("initial grant should fit");
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 90))?
+            .expect("initial grant should fit");
         let mut metrics = QueryMetrics::default();
         let mut first_tracker = ReservationTracker::new_with_budget(
             MemorySpaceId::Device { device_ordinal: 0 },
@@ -1483,7 +2370,9 @@ mod tests {
     #[test]
     fn adaptive_reservation_tracker_denies_when_shared_grant_live_budget_is_exhausted() -> Result<()> {
         let governor = MemoryGovernor::new(0, 100)?;
-        let grant = governor.try_request(GrantRequest::new(7, 30, 70))?.expect("initial grant should fit");
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 70))?
+            .expect("initial grant should fit");
         let mut metrics = QueryMetrics::default();
         let mut first_tracker = ReservationTracker::new_with_budget(
             MemorySpaceId::Device { device_ordinal: 0 },
@@ -1517,7 +2406,9 @@ mod tests {
     #[test]
     fn adaptive_reservation_tracker_borrowed_resident_does_not_double_charge_grant_live_bytes() -> Result<()> {
         let governor = MemoryGovernor::new(0, 100)?;
-        let grant = governor.try_request(GrantRequest::new(7, 30, 70))?.expect("initial grant should fit");
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 70))?
+            .expect("initial grant should fit");
         let retained_input = grant.retain_live_reservation(50).expect("input handle should retain live bytes");
         let mut metrics = QueryMetrics::default();
         let mut reservations = ReservationTracker::new_with_budget(
@@ -1586,7 +2477,9 @@ mod tests {
     #[test]
     fn adaptive_reservation_tracker_completes_shrink_after_live_bytes_drop() -> Result<()> {
         let governor = MemoryGovernor::new(0, 100)?;
-        let grant = governor.try_request(GrantRequest::new(7, 30, 80))?.expect("initial grant should fit");
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 80))?
+            .expect("initial grant should fit");
         let mut metrics = QueryMetrics::default();
         let mut reservations = ReservationTracker::new_with_budget(
             MemorySpaceId::Device { device_ordinal: 0 },
@@ -1612,7 +2505,9 @@ mod tests {
     #[test]
     fn adaptive_reservation_tracker_shrink_ack_counts_source_cache_baseline() -> Result<()> {
         let governor = MemoryGovernor::new(0, 100)?;
-        let grant = governor.try_request(GrantRequest::new(7, 30, 80))?.expect("initial grant should fit");
+        let grant = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(7), 30, 80))?
+            .expect("initial grant should fit");
         let mut metrics = QueryMetrics::default();
         let mut reservations = ReservationTracker::new_with_budget(
             MemorySpaceId::Device { device_ordinal: 0 },
@@ -1716,6 +2611,394 @@ mod tests {
 
         reservations.release(work, &mut metrics);
         assert_eq!(reservations.reserved_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn typed_reservation_lineage_balances_transfer_alias_and_deferred_release() -> Result<()> {
+        let lifecycle = RuntimeQueryLifecycle::new(
+            RuntimeObservationSession::new(
+                "reservation-lineage",
+                None,
+                RuntimeObservationConfig::bounded(64, 64 * 1024),
+            ),
+            PlanExecutionId::new("plan-reservation-lineage"),
+        );
+        let scope = lifecycle.execution_scope();
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget_and_observation(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::Static(100),
+            Some(&scope),
+        );
+        let request = |kind, boundary, bytes| {
+            test_request(kind, boundary, bytes, 100).with_node_id("lineage-node").with_task_registration(
+                "lineage-task",
+                1,
+                "unary",
+            )
+        };
+        let mut owned =
+            reservations.try_reserve_work(request(ReservationKind::OperatorOutput, "work", 60), &mut metrics)?;
+        reservations.try_grow(&mut owned, request(ReservationKind::OperatorOutput, "work_grow", 10), &mut metrics)?;
+        reservations.shrink_to_observed(&mut owned, 50, &mut metrics);
+        let transferred = reservations.transfer(owned, request(ReservationKind::ProbeSide, "probe", 50), &mut metrics);
+        let alias = reservations.alias_reservation(
+            &transferred,
+            request(ReservationKind::OperatorOutput, "alias", 50),
+            &mut metrics,
+        );
+        let alias = reservations.relabel_alias_reservation(
+            alias,
+            request(ReservationKind::ProbeSide, "relabeled_alias", 50),
+            &mut metrics,
+        );
+        reservations.release(transferred, &mut metrics);
+        assert_eq!(reservations.reserved_bytes(), 50, "owner charge remains live through its alias");
+        reservations.release(alias, &mut metrics);
+        assert_eq!(reservations.reserved_bytes(), 0);
+        drop(reservations);
+
+        let snapshot = lifecycle.finish(RuntimeTerminalOutcome::Succeeded).expect("observation seals");
+        let events = snapshot
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                RuntimeObservationPayload::Reservation(observation) => Some((
+                    &observation.reservation_id,
+                    &observation.lineage_id,
+                    observation.action,
+                    observation.disposition,
+                    observation.charged_delta_bytes,
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(events.iter().map(|event| event.4).sum::<i128>(), 0);
+        assert!(events.iter().any(|event| {
+            event.2 == RuntimeReservationAction::Transfer && event.3 == RuntimeReservationDisposition::Applied
+        }));
+        assert!(events.iter().any(|event| {
+            event.2 == RuntimeReservationAction::Relabel && event.3 == RuntimeReservationDisposition::Applied
+        }));
+        assert!(events.iter().any(|event| {
+            event.2 == RuntimeReservationAction::Release
+                && event.3 == RuntimeReservationDisposition::AliasDeferred
+                && event.4 == 0
+        }));
+        let alias = events
+            .iter()
+            .find(|event| event.2 == RuntimeReservationAction::Alias)
+            .expect("alias acquisition is recorded");
+        let root =
+            events.iter().find(|event| event.2 == RuntimeReservationAction::Reserve).expect("root reserve is recorded");
+        assert_ne!(alias.0, root.0);
+        assert_eq!(alias.1, root.1);
+
+        assert_eq!(metrics.reservation_requested_bytes, 70);
+        assert_eq!(metrics.reservation_granted_bytes, 70);
+        assert_eq!(metrics.reservation_denied_count, 0);
+        assert_eq!(metrics.reservation_events.last().map(|event| event.current_reserved_bytes), Some(0));
+        assert!(metrics.reservation_events.iter().all(|event| {
+            event.query_id.as_ref().is_some_and(|query_id| query_id.as_str() == "reservation-lineage")
+                && event.node_id.as_ref().is_some_and(|node_id| node_id.as_str() == "lineage-node")
+                && event.compiled_task_id.as_ref().is_some_and(|task_id| task_id.as_str() == "lineage-task")
+        }));
+        let task = metrics.task_runtime_metrics.get("lineage-task").expect("typed task projection exists");
+        assert_eq!(task.operator_kind, "unary");
+        assert_eq!(task.reservation_requested_bytes, 70);
+        assert_eq!(task.reservation_granted_bytes, 70);
+        assert_eq!(task.reservation_released_bytes, 70);
+        assert_eq!(task.reservation_live_peak_bytes, 70);
+        Ok(())
+    }
+
+    #[test]
+    fn source_cache_promotion_and_eviction_keep_typed_meaning_and_legacy_public_totals() -> Result<()> {
+        let lifecycle = RuntimeQueryLifecycle::new(
+            RuntimeObservationSession::new(
+                "source-cache-promotion",
+                None,
+                RuntimeObservationConfig::bounded(32, 64 * 1024),
+            ),
+            PlanExecutionId::new("plan-source-cache-promotion"),
+        );
+        let scope = lifecycle.execution_scope();
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget_and_observation(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::Static(100),
+            Some(&scope),
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int64, true)]));
+        let source = LocalParquetSource::new("/tmp/source-cache-promotion.parquet", schema, vec!["c0".to_string()]);
+        let key = GpuLocalParquetSourceCacheKey::from_source(&source);
+        let request = |kind, boundary, bytes| {
+            test_request(kind, boundary, bytes, 100).with_node_id("source-cache-node").with_task_registration(
+                "source-cache-task",
+                1,
+                "source_read",
+            )
+        };
+        let mut source_reservation = reservations
+            .try_reserve_owned_resident(request(ReservationKind::SourceRead, "source_read", 40), &mut metrics)?;
+        reservations.promote_source_cache_insert(
+            &mut source_reservation,
+            60,
+            request(ReservationKind::SourceCacheRetained, "source_cache_retained", 60),
+            &mut metrics,
+            &key,
+        )?;
+        reservations.release(source_reservation, &mut metrics);
+        reservations.release_source_cache_baseline_bytes(60, &mut metrics);
+        assert_eq!(reservations.raw_reserved_bytes(), 0);
+        drop(reservations);
+
+        let snapshot = lifecycle.finish(RuntimeTerminalOutcome::Succeeded).expect("observation seals");
+        let typed = snapshot
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                RuntimeObservationPayload::Reservation(observation) => {
+                    Some((observation.action, observation.charged_delta_bytes))
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(typed.iter().any(|event| event.0 == RuntimeReservationAction::SourceCachePromote && event.1 == 20));
+        assert!(typed.iter().any(|event| event.0 == RuntimeReservationAction::SourceCacheEvict && event.1 == -60));
+        assert!(!typed.iter().any(|event| event.0 == RuntimeReservationAction::Transfer));
+        assert_eq!(typed.iter().map(|event| event.1).sum::<i128>(), 0);
+
+        let promotion = metrics
+            .reservation_events
+            .iter()
+            .find(|event| event.memory_boundary == "source_cache_retained" && event.charged_delta_bytes > 0)
+            .expect("legacy promotion row is retained");
+        assert_eq!(promotion.action, MemoryReservationEventAction::Reserve);
+        assert_eq!(promotion.requested_bytes, 60);
+        assert_eq!(promotion.granted_bytes, 60);
+        let eviction = metrics
+            .reservation_events
+            .iter()
+            .find(|event| event.stage.as_deref() == Some("source_cache_eviction"))
+            .expect("legacy eviction row is retained");
+        assert_eq!(eviction.action, MemoryReservationEventAction::Release);
+        assert_eq!(eviction.charged_delta_bytes, -60);
+        assert_eq!(eviction.current_reserved_bytes, 0);
+        assert_eq!(metrics.reservation_requested_bytes, 100);
+        assert_eq!(metrics.reservation_granted_bytes, 100);
+        let task = &metrics.task_runtime_metrics["source-cache-task"];
+        assert_eq!(task.reservation_requested_bytes, 100);
+        assert_eq!(task.reservation_granted_bytes, 60);
+        assert_eq!(task.reservation_released_bytes, 60);
+        assert_eq!(task.live_reserved_bytes, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn typed_reservations_replace_source_paths_with_stable_opaque_ids() -> Result<()> {
+        let sensitive_locations = [
+            "/srv/private/customer-42/orders.parquet",
+            "s3://alice:secret@bucket/private/key.parquet?token=top-secret",
+            "catalog/customer/partition=private",
+        ];
+        let source_location_key = [0x5a; blake3::KEY_LEN];
+        let session = RuntimeObservationSession::with_source_location_test_key(
+            "source-location-privacy",
+            None,
+            RuntimeObservationConfig::bounded(32, 64 * 1024),
+            source_location_key,
+        );
+        let expected_ids = sensitive_locations
+            .iter()
+            .map(|location| session.handle().source_location_id(location).expect("enabled session has a digest key"))
+            .collect::<Vec<_>>();
+        let lifecycle = RuntimeQueryLifecycle::new(session, PlanExecutionId::new("plan-source-location-privacy"));
+        let scope = lifecycle.execution_scope();
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget_and_observation(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::Static(16),
+            Some(&scope),
+        );
+        for (index, location) in sensitive_locations.iter().enumerate() {
+            let reservation = reservations.try_reserve_owned_resident(
+                test_request(ReservationKind::SourceRead, "private_source", 1, reservations.budget())
+                    .with_path(location)
+                    .with_file_index(index)
+                    .with_row_groups(vec![index, index + 2]),
+                &mut metrics,
+            )?;
+            reservations.release(reservation, &mut metrics);
+        }
+        drop(reservations);
+        let snapshot = lifecycle.finish(RuntimeTerminalOutcome::Succeeded).expect("observation seals");
+        assert!(!snapshot.footer().degraded, "Parquet row-group preflight must use the exact retained size");
+        let ids = snapshot
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                RuntimeObservationPayload::Reservation(observation) => observation.source_location_id.clone(),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), sensitive_locations.len() * 2, "reserve and release retain opaque correlation");
+        for (index, expected) in expected_ids.iter().enumerate() {
+            assert_eq!(&ids[index * 2], expected);
+            assert_eq!(&ids[index * 2 + 1], expected);
+            assert!(expected.as_str().starts_with("source_location:blake3_keyed_256:"));
+            assert!(!expected.as_str().contains(":len:"));
+        }
+        assert_ne!(ids[0], ids[2]);
+        assert_ne!(ids[2], ids[4]);
+
+        let mut jsonl = Vec::new();
+        write_runtime_observation_jsonl(&snapshot, &mut jsonl).expect("privacy snapshot exports");
+        let jsonl = String::from_utf8(jsonl).expect("JSONL is UTF-8");
+        for location in sensitive_locations {
+            assert!(!jsonl.contains(location), "raw source location leaked: {location}");
+        }
+        assert!(!jsonl.contains("alice:secret"));
+        assert!(!jsonl.contains("top-secret"));
+        assert!(!jsonl.contains(&"5a".repeat(blake3::KEY_LEN)));
+        assert!(jsonl.contains("source_location_id"));
+        assert!(
+            metrics
+                .reservation_events
+                .iter()
+                .any(|event| { event.path.as_deref() == Some("/srv/private/customer-42/orders.parquet") }),
+            "required public reservation diagnostics remain unchanged"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn typed_reservation_drop_unwind_and_denial_are_distinct_and_balanced() -> Result<()> {
+        let lifecycle = RuntimeQueryLifecycle::new(
+            RuntimeObservationSession::new(
+                "reservation-terminal",
+                None,
+                RuntimeObservationConfig::bounded(64, 64 * 1024),
+            ),
+            PlanExecutionId::new("plan-reservation-terminal"),
+        );
+        let scope = lifecycle.execution_scope();
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget_and_observation(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::Static(100),
+            Some(&scope),
+        );
+
+        let dropped = reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "drop", 20, reservations.budget()),
+            &mut metrics,
+        )?;
+        drop(dropped);
+        assert_eq!(reservations.reserved_bytes(), 0);
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _unwinding = reservations
+                .try_reserve_owned_resident(
+                    test_request(ReservationKind::OperatorOutput, "unwind", 30, reservations.budget()),
+                    &mut metrics,
+                )
+                .expect("unwind reservation fits");
+            panic!("reservation unwind probe");
+        }));
+        assert!(unwind.is_err());
+        assert_eq!(reservations.reserved_bytes(), 0);
+
+        let live = reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "live", 80, reservations.budget()),
+            &mut metrics,
+        )?;
+        let denial = reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::ProbeSide, "denied", 30, reservations.budget()),
+            &mut metrics,
+        );
+        assert!(denial.is_err());
+        reservations.release(live, &mut metrics);
+        drop(reservations);
+
+        let snapshot = lifecycle.finish(RuntimeTerminalOutcome::Succeeded).expect("observation seals");
+        let events = snapshot
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                RuntimeObservationPayload::Reservation(observation) => {
+                    Some((observation.action, observation.disposition, observation.charged_delta_bytes))
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(events.iter().map(|event| event.2).sum::<i128>(), 0);
+        assert!(events.iter().any(|event| event.1 == RuntimeReservationDisposition::DropRelease));
+        assert!(events.iter().any(|event| event.1 == RuntimeReservationDisposition::UnwindRelease));
+        assert!(events.iter().any(|event| {
+            event.0 == RuntimeReservationAction::Deny && event.1 == RuntimeReservationDisposition::Denied
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn typed_reservation_rollback_and_cleanup_releases_are_balanced() -> Result<()> {
+        let lifecycle = RuntimeQueryLifecycle::new(
+            RuntimeObservationSession::new(
+                "reservation-cleanup",
+                None,
+                RuntimeObservationConfig::bounded(32, 64 * 1024),
+            ),
+            PlanExecutionId::new("plan-reservation-cleanup"),
+        );
+        let scope = lifecycle.execution_scope();
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget_and_observation(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::Static(100),
+            Some(&scope),
+        );
+        let rollback = reservations.try_reserve_work(
+            test_request(ReservationKind::GatherMap, "rollback", 30, reservations.budget()),
+            &mut metrics,
+        )?;
+        {
+            let _rollback_scope =
+                reservations.enter_release_observation_scope(RuntimeReservationDisposition::RollbackRelease);
+            reservations.release(rollback, &mut metrics);
+        }
+        let cleanup = reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "cleanup", 40, reservations.budget()),
+            &mut metrics,
+        )?;
+        {
+            let _cleanup_scope =
+                reservations.enter_release_observation_scope(RuntimeReservationDisposition::CleanupRelease);
+            reservations.release(cleanup, &mut metrics);
+        }
+        reservations.try_reserve_source_cache_baseline(20, &mut metrics)?;
+        reservations.release_source_cache_baseline_bytes(20, &mut metrics);
+        drop(reservations);
+
+        let snapshot = lifecycle.finish(RuntimeTerminalOutcome::Succeeded).expect("observation seals");
+        let events = snapshot
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                RuntimeObservationPayload::Reservation(observation) => {
+                    Some((observation.action, observation.disposition, observation.charged_delta_bytes))
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(events.iter().map(|event| event.2).sum::<i128>(), 0);
+        assert!(events.iter().any(|event| {
+            event.0 == RuntimeReservationAction::Rollback && event.1 == RuntimeReservationDisposition::RollbackRelease
+        }));
+        assert!(events.iter().any(|event| {
+            event.0 == RuntimeReservationAction::Release && event.1 == RuntimeReservationDisposition::CleanupRelease
+        }));
         Ok(())
     }
 }

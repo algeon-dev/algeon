@@ -81,7 +81,8 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
     );
     let selection_elapsed = selection_timer.elapsed();
     let total_timer = Instant::now();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
 
     let prepare_timer = Instant::now();
     let frame = if plan.pre_group_exprs.is_empty() {

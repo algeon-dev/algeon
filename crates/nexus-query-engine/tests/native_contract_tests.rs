@@ -153,6 +153,8 @@ mod public_facade;
 mod public_surface;
 #[path = "native_contract_tests/reservation_tracker_contracts.rs"]
 mod reservation_tracker_contracts;
+#[path = "native_contract_tests/runtime_observability.rs"]
+mod runtime_observability;
 #[path = "native_contract_tests/source_contracts.rs"]
 mod source_contracts;
 #[path = "native_contract_tests/type_support.rs"]

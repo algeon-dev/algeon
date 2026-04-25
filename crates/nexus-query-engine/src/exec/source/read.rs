@@ -14,9 +14,10 @@ pub(super) fn read_local_parquet_file(
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
     context.check_cancellation("nexus_query_engine.local_parquet_source.read")?;
+    let _io_lease = context.acquire_io_lease("nexus_query_engine.local_parquet_source.read")?;
     let read_timer = Instant::now();
     let output = DataFrame::read_parquet_source_chunk_with_evidence(
-        context.runtime(),
+        &context.runtime()?,
         cudf_source,
         cudf_chunk,
         SourceReadMode::ExecutionFrame,

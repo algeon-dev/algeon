@@ -547,7 +547,7 @@ fn interval_date_offset_expr(expr: &Expr) -> Result<Option<(&Expr, i32)>> {
 
 fn lower_duration_days_ast_literal(context: &ExecutionContext, value: i32) -> Result<AstExpression> {
     let scalar =
-        context.runtime().duration_raw_scalar(i64::from(value), cudf::TimestampResolution::Days).map_err(|error| {
+        context.runtime()?.duration_raw_scalar(i64::from(value), cudf::TimestampResolution::Days).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.join.lower_residual",
                 "failed to build duration-days scalar for join residual interval literal",
@@ -672,7 +672,7 @@ fn lower_join_ast_operator(op: BinaryOp) -> Result<AstOperator> {
 }
 
 fn lower_join_ast_literal(context: &ExecutionContext, value: &LiteralValue) -> Result<AstExpression> {
-    let runtime = context.runtime();
+    let runtime = context.runtime()?;
     let scalar = match value {
         LiteralValue::Boolean(value) => runtime.scalar(*value),
         LiteralValue::Int8(value) => runtime.scalar(*value),

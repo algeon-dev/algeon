@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     error::QueryError,
     metrics::{CompiledTaskId, PlanNodeId, QueryId},
+    observability::{RuntimeAttemptId, RuntimeTaskId, TaskAttemptId},
     util::comma_separated_usize,
 };
 
@@ -60,6 +61,10 @@ pub struct MemoryReservationRequest {
     pub max_attempts: Option<usize>,
     /// Optional compiled pipeline task id associated with this reservation.
     pub compiled_task_id: Option<CompiledTaskId>,
+    /// Explicit typed task attempt associated with this reservation.
+    pub task_attempt_id: Option<TaskAttemptId>,
+    /// Explicit operator kind for task-level metric projection.
+    pub task_kind: Option<String>,
     /// Optional compiled pipeline resident resource id associated with this reservation.
     pub resident_resource_id: Option<String>,
     /// Optional quality label for source-read sizing diagnostics.
@@ -89,6 +94,8 @@ impl MemoryReservationRequest {
             attempt: None,
             max_attempts: None,
             compiled_task_id: None,
+            task_attempt_id: None,
+            task_kind: None,
             resident_resource_id: None,
             source_read_contract_quality: None,
             source_read_planning_bytes: None,
@@ -178,6 +185,21 @@ impl MemoryReservationRequest {
     #[must_use]
     pub fn with_compiled_task_id(mut self, compiled_task_id: impl ToString) -> Self {
         self.compiled_task_id = Some(CompiledTaskId::new(compiled_task_id));
+        self
+    }
+
+    /// Attaches an explicit task definition and attempt without relying on task-id parsing.
+    #[must_use]
+    pub fn with_task_registration(
+        mut self,
+        task_id: impl ToString,
+        attempt: u32,
+        task_kind: impl Into<String>,
+    ) -> Self {
+        let task_id = task_id.to_string();
+        self.compiled_task_id = Some(CompiledTaskId::new(&task_id));
+        self.task_attempt_id = Some(TaskAttemptId::new(RuntimeTaskId::new(task_id), RuntimeAttemptId::new(attempt)));
+        self.task_kind = Some(task_kind.into());
         self
     }
 

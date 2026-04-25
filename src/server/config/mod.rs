@@ -1,6 +1,13 @@
 #[cfg(feature = "iceberg")]
 use std::fmt;
-use std::{collections::BTreeMap, fs, net::SocketAddr, num::NonZeroUsize, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fs,
+    net::SocketAddr,
+    num::NonZeroUsize,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use nexus_query_engine::{
     mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
@@ -40,6 +47,7 @@ mod env;
 mod file;
 mod iceberg;
 mod native;
+mod observability;
 mod workspace;
 
 pub use admission::{
@@ -102,6 +110,14 @@ pub use native::{
     NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NexusServerNativeConfigOption,
     ServerNativeConfigScope,
 };
+use observability::server_observability_config;
+pub use observability::{
+    NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
+    NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
+    NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
+    NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
+    ServerObservabilityConfig,
+};
 use workspace::workspace_overlay_config;
 pub use workspace::{
     NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
@@ -123,6 +139,8 @@ pub struct ServerConfig {
     /// `DoGet`. Expired tickets are dropped; GPU admission is acquired later
     /// by native plan execution.
     pub statement_ticket_ttl: Duration,
+    /// Bounded native runtime-artifact capture and sealed retention policy.
+    pub observability: ServerObservabilityConfig,
     pub native_optimizer_config: CudfOptimizerConfig,
     /// DataFusion physical-plan profile applied to the Flight SQL session.
     /// See [`NEXUS_SERVER_SESSION_PROFILE_ENV`] and
@@ -180,9 +198,11 @@ impl ServerConfig {
             server_cpu_fallback_max_concurrent_statements(&mut values, &overlay.fallback)?;
         let cpu_fallback_wait_timeout = server_cpu_fallback_wait_timeout(&mut values, &overlay.fallback)?;
         let device_budget_fraction = values.optional_f64(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV)?;
-        let statement_ticket_ttl = Duration::from_secs(
+        let statement_ticket_ttl = checked_config_duration(
+            NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
             values.positive_u64(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, DEFAULT_STATEMENT_TICKET_TTL_SECS)?,
-        );
+        )?;
+        let observability = server_observability_config(&mut values, &overlay.observability)?;
         let mut native_optimizer_config =
             native_optimizer_config(&mut values, &overlay.native, &gpu_devices, device_budget_fraction)?;
         validate_admission_grant_min_capacity(&admission, &native_optimizer_config)?;
@@ -262,6 +282,7 @@ impl ServerConfig {
             gpu_devices,
             device_budget_fraction,
             statement_ticket_ttl,
+            observability,
             native_optimizer_config,
             session_profile,
             auth: overlay.auth,
@@ -272,4 +293,12 @@ impl ServerConfig {
             cugraph,
         })
     }
+}
+
+fn checked_config_duration(field: &'static str, seconds: u64) -> Result<Duration> {
+    let duration = Duration::from_secs(seconds);
+    if Instant::now().checked_add(duration).is_none() {
+        return Err(ServerError::invalid_config(field, "duration exceeds the monotonic clock range"));
+    }
+    Ok(duration)
 }

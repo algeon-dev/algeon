@@ -42,7 +42,7 @@ fn native_grouped_aggregate_filter_masks_false_and_null_predicates() {
     assert_eq!(int64_array(batch, 3).values().as_ref(), &[1, 2]);
     assert_eq!(float64_array(batch, 4).values().as_ref(), &[10.0, 5.0]);
     assert_eq!(result.metrics().boundary.host_to_device_uploads, 0);
-    assert_eq!(runtime.device().ordinal(), context.runtime().device().ordinal());
+    assert_eq!(runtime.device().ordinal(), context.runtime().unwrap().device().ordinal());
 }
 
 #[test]

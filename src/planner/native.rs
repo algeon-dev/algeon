@@ -234,8 +234,7 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         let native_execution_config = effective_config
             .native_execution_config()
             .clone()
-            .with_lakehouse_footer_pruning(lakehouse_pruning::enabled_from_env())
-            .with_plan_query_admission_ticket();
+            .with_lakehouse_footer_pruning(lakehouse_pruning::enabled_from_env());
         let effective_config = effective_config.with_native_execution_config(native_execution_config);
         let native_execution_config = effective_config.native_execution_config();
         let native_optimizer_options = effective_config.native_optimizer_options();
@@ -280,8 +279,11 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             },
             NativeOptimizerStage::CountOnlyProbe => optimized,
         };
-        let query_admission_ticket =
-            plan_query_admission_ticket_for_optimized_plan(optimized.plan.as_ref(), native_execution_config)?;
+        let query_admission_ticket = if optimized.rewritten {
+            plan_query_admission_ticket_for_optimized_plan(optimized.plan.as_ref(), native_execution_config)?
+        } else {
+            None
+        };
         apply_execution_admission_wrappers(
             self.stage,
             &mut optimized,
