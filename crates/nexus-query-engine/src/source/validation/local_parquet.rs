@@ -7,10 +7,10 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::LiteralValue,
     source::{
-        ByteRangeDisposition, LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionColumnDisposition,
-        PredicateDisposition, ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef,
-        ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, local_parquet_file_row_group_metadata_count,
-        parquet_file_path_fact, parquet_file_stable_id_fact,
+        ByteRangeDisposition, LocalParquetFile, LocalParquetSource, ParquetReadStrategy, PartitionColumn,
+        PartitionColumnDisposition, PredicateDisposition, RemoteParquetReadMode, ScanLimitDisposition,
+        SchemaMappingDisposition, SourceColumnRef, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+        local_parquet_file_row_group_metadata_count, parquet_file_path_fact, parquet_file_stable_id_fact,
     },
 };
 
@@ -47,6 +47,32 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
             )
             .with_fact("file_index", file_index));
         }
+        if file.resolved_source.uses_host_buffer() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.local_parquet_source.validate",
+                "native GPU queries require a direct GDS/KvikIO source; host-buffer decoding is disabled",
+            )
+            .with_fact("reason", "host_buffer_disabled")
+            .with_fact("file_index", file_index)
+            .with_fact("path", parquet_file_path_fact(file))
+            .with_fact("read_strategy", file.resolved_source.read_strategy.as_str())
+            .with_fact("source_decode_input", file.resolved_source.decode_input.as_str()));
+        }
+        if file.resolved_source.read_strategy == ParquetReadStrategy::RemoteDirect
+            && file.resolved_source.remote_read_mode != RemoteParquetReadMode::RequireDirect
+        {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.local_parquet_source.validate",
+                "native GPU remote Parquet reads require direct mode; fallback-capable remote reads are disabled",
+            )
+            .with_fact("reason", "remote_direct_required")
+            .with_fact("file_index", file_index)
+            .with_fact("path", parquet_file_path_fact(file))
+            .with_fact("read_strategy", file.resolved_source.read_strategy.as_str())
+            .with_fact("remote_read_mode", file.resolved_source.remote_read_mode.as_str()));
+        }
         if file.has_position_delete_files() {
             validate_position_delete_row_group_selection(file, file_index)?;
         }
@@ -71,6 +97,19 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                 .with_fact("file_index", file_index)
                 .with_fact("delete_index", delete_index));
             }
+            if delete_file.resolved_source.uses_host_buffer() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_source.validate",
+                    "native GPU queries require a direct GDS/KvikIO source; host-buffer decoding is disabled",
+                )
+                .with_fact("reason", "host_buffer_disabled")
+                .with_fact("delete_kind", "position")
+                .with_fact("file_index", file_index)
+                .with_fact("delete_index", delete_index)
+                .with_fact("read_strategy", delete_file.resolved_source.read_strategy.as_str())
+                .with_fact("source_decode_input", delete_file.resolved_source.decode_input.as_str()));
+            }
         }
         for (delete_index, delete_file) in file.equality_delete_files.iter().enumerate() {
             if delete_file.stable_id.is_empty() {
@@ -92,6 +131,19 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                 .with_fact("reason", "empty_equality_delete_path")
                 .with_fact("file_index", file_index)
                 .with_fact("delete_index", delete_index));
+            }
+            if delete_file.resolved_source.uses_host_buffer() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_source.validate",
+                    "native GPU queries require a direct GDS/KvikIO source; host-buffer decoding is disabled",
+                )
+                .with_fact("reason", "host_buffer_disabled")
+                .with_fact("delete_kind", "equality")
+                .with_fact("file_index", file_index)
+                .with_fact("delete_index", delete_index)
+                .with_fact("read_strategy", delete_file.resolved_source.read_strategy.as_str())
+                .with_fact("source_decode_input", delete_file.resolved_source.decode_input.as_str()));
             }
             if delete_file.equality_columns.is_empty() {
                 return Err(QueryError::new(

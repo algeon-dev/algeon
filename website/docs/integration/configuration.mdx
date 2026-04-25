@@ -185,10 +185,12 @@ process-global S3 behavior expects `AWS_DEFAULT_REGION`. On private buckets,
 setting only `AWS_REGION` can make the remote read path fail with unsigned S3
 requests and 403 responses.
 
-`remote_kvikio` selects the cuDF/KvikIO remote Parquet reader path. It is not a
-local-NVMe native GDS guarantee, and KvikIO/cuFile compatibility settings can
-still determine whether the effective read uses native direct storage or a
-compatibility path.
+`remote_kvikio` selects the cuDF/KvikIO remote Parquet reader path. Native GPU
+execution never falls back to a host-buffer Parquet read: if the direct reader
+cannot be used, planning fails with a structured `host_buffer_disabled` reason.
+For local GDS reads, configure the physical mount prefixes explicitly with
+`NEXUS_GDS_MOUNT_ROOTS=/mnt/fast,/srv/nvme`; symlink discovery does not make a
+different path GDS-capable.
 
 A condensed Glue configuration looks like:
 

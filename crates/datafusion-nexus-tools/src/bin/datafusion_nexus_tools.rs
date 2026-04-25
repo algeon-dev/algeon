@@ -15,9 +15,6 @@ mod connection_retry;
 #[path = "../../../../tests/cugraph/cugraph_bfs_predicate_fixture.rs"]
 mod cugraph_bfs_predicate_fixture;
 #[cfg(all(feature = "cugraph-oracle", not(test)))]
-#[path = "../../../../tests/cugraph/cugraph_graph500_rmat_fixture.rs"]
-mod cugraph_graph500_rmat_fixture;
-#[cfg(all(feature = "cugraph-oracle", not(test)))]
 #[path = "../../../../tests/cugraph/optional_fixture.rs"]
 mod cugraph_optional_fixture;
 #[cfg(all(feature = "cugraph-oracle", not(test)))]
@@ -91,7 +88,7 @@ fn print_usage() {
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-remote-direct-e2e\n\
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-rest-multigpu-e2e\n\
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features embedded-backend-e2e -- embedded-backend-e2e\n\
-           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates|graph500-rmat>"
+           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates>"
     );
 }
 
@@ -194,7 +191,6 @@ async fn run_cugraph_fixture_e2e(case: Option<String>) -> ToolResult<()> {
         Some("bfs-utf8-include-edges") => cugraph_bfs_predicate_fixture::run_utf8_include_edges_acceptance().await,
         Some("bfs-utf8-path") => cugraph_bfs_predicate_fixture::run_utf8_path_acceptance().await,
         Some("bfs-utf8-predicates") => cugraph_bfs_predicate_fixture::run_utf8_vertex_predicates_acceptance().await,
-        Some("graph500-rmat") => cugraph_graph500_rmat_fixture::run_graph500_rmat_acceptance().await,
         Some(other) => return Err(format!("unknown cugraph fixture acceptance case: {other}").into()),
         None => return Err("cugraph-fixture-e2e requires an acceptance case".into()),
     }

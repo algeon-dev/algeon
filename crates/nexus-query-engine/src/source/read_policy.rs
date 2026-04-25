@@ -10,6 +10,7 @@ pub enum ParquetReadStrategy {
     /// Path-based cuDF/libcudf read for a local filesystem path.
     LocalKvikio,
     /// Fetch remote object bytes into host memory, then decode with cuDF.
+    /// TODO: purge this
     RemoteHostBuffer,
     /// Read a previously materialized local byte-cache entry through the path-based reader.
     LocalCacheKvikio,

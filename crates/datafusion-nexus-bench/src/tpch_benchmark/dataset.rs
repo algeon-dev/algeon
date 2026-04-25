@@ -97,7 +97,7 @@ fn prepare_external_dataset(
     expected_scale_factor: NativeTpchScaleFactor,
 ) -> DataFusionResult<(PathBuf, TpchDatasetMetadata)> {
     let dataset_mode = expected_scale_factor.dataset_mode_str();
-    let (root, metadata) = if let Some(root) = std::env::var_os(CUDF_TPCH_PARQUET_DIR_ENV) {
+    let (root, metadata) = if let Some(root) = std::env::var_os(NEXUS_PARQUET_DIR_ENV) {
         let root = PathBuf::from(root);
         let scale_factor = std::env::var(CUDF_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
         let generation_command = std::env::var(CUDF_TPCH_GENERATION_COMMAND_ENV).map_err(|_| {
@@ -118,10 +118,10 @@ fn prepare_external_dataset(
     } else {
         let default_root = default_root_for(expected_scale_factor);
         let Some((root, metadata)) =
-            default_nvme_tpch_dataset_with_fingerprint(default_root, expected_scale_factor.as_str())
+            default_tpch_dataset_with_fingerprint(default_root, expected_scale_factor.as_str())
         else {
             return Err(plan_error(format!(
-                "native TPC-H benchmark dataset_mode={dataset_mode} requires {CUDF_TPCH_PARQUET_DIR_ENV} or a populated default fixture at {default_root}; set CUDF_TPCH_BENCH_DATASET_MODE=allow_tiny for local tiny/dev runs"
+                "native TPC-H benchmark dataset_mode={dataset_mode} requires {NEXUS_PARQUET_DIR_ENV} or a populated default fixture at {default_root}; set CUDF_TPCH_BENCH_DATASET_MODE=allow_tiny for local tiny/dev runs"
             )));
         };
         (root, metadata)

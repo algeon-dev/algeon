@@ -17,7 +17,7 @@
 //     `diff` commands for cross-engine and pre/post-rule comparisons
 //
 // Inputs (env vars):
-//   CUDF_TPCDS_PARQUET_DIR              - required, path to TPC-DS parquet root
+//   NEXUS_PARQUET_DIR                   - required, path to TPC-DS parquet root
 //   CUDF_TPCDS_OUTLIER_TRIAGE_QUERIES   - required, comma-separated query ids
 //   CUDF_TPCDS_OUTLIER_TRIAGE_OUT_DIR   - optional, default ./tpcds_outlier_triage_<unix_ns>
 //
@@ -109,8 +109,8 @@ struct TriageConfig {
 
 impl TriageConfig {
     fn from_env() -> Result<Self, Box<dyn Error>> {
-        let root = std::env::var("CUDF_TPCDS_PARQUET_DIR")
-            .map_err(|_| "CUDF_TPCDS_PARQUET_DIR must be set to the TPC-DS parquet root")?;
+        let root = std::env::var(datafusion_nexus_workloads::NEXUS_PARQUET_DIR_ENV)
+            .map_err(|_| "NEXUS_PARQUET_DIR must be set to the TPC-DS parquet root")?;
         let root = PathBuf::from(root);
         let queries_csv = std::env::var("CUDF_TPCDS_OUTLIER_TRIAGE_QUERIES")
             .map_err(|_| "CUDF_TPCDS_OUTLIER_TRIAGE_QUERIES must list query ids, e.g. q08,q21,q39")?;

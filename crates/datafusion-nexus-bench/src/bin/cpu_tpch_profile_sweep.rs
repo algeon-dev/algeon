@@ -14,7 +14,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus_workloads::tpch::{
-    CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
+    CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, NEXUS_PARQUET_DIR_ENV, TPCH_QUERIES, TPCH_TABLES,
     TpchDatasetMetadata, TpchQuery, TpchWorkloadError, discover_tpch_table_layout, prepare_tpch_report_dataset,
     register_tpch_table_layout,
 };
@@ -192,8 +192,8 @@ fn print_metadata(metadata: &TpchDatasetMetadata, config: &CpuTpchConfig) {
     println!("# cpu_profile_wall_time_fields=single_measured_iteration");
     println!(
         "# env_{}={}",
-        CUDF_TPCH_PARQUET_DIR_ENV,
-        std::env::var(CUDF_TPCH_PARQUET_DIR_ENV).unwrap_or_else(|_| "unset".to_string())
+        NEXUS_PARQUET_DIR_ENV,
+        std::env::var(NEXUS_PARQUET_DIR_ENV).unwrap_or_else(|_| "unset".to_string())
     );
     println!(
         "# env_{}={}",

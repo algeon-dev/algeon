@@ -62,15 +62,15 @@ server workspace overlay to expose these unqualified names:
 - `citation_edges_by_dst`
 
 The source `dblp.v12.json` is about 12.5 GB. The local developer fixture path
-is `fixture/dblp.v12.json`; substitute your own path if you keep the dataset
-outside the repo. Keep `fixture/data/demo` on fast local storage, for example
+is `fixture/graph/dblp.v12.json`; substitute your own path if you keep the dataset
+outside the repo. Keep `fixture/graph/demo` on fast local storage, for example
 with a symlink to NVMe, and allow roughly 30 GB of transient space for ingest
 plus Parquet output. The ingest script requires Python with `pyarrow`.
 
 ```bash
-python3 fixture/scripts/dblp_ingest.py \
-  --source-json fixture/dblp.v12.json \
-  --out-root fixture/data/demo \
+python3 fixture/graph/dblp_ingest.py \
+  --source-json fixture/graph/dblp.v12.json \
+  --out-root fixture/graph/demo \
   --overwrite
 ```
 
@@ -82,7 +82,7 @@ rerun the loader after every fresh `docker compose up`.
 
 ```bash
 docker compose -f fixture/iceberg-local/docker-compose.yml up -d
-fixture/scripts/fixture.sh iceberg rest load \
+fixture/fixture.sh iceberg rest load \
   --workload citation_network \
   --load-mode add-files
 ```

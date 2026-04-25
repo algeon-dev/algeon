@@ -30,7 +30,7 @@ use datafusion_nexus_bench::{
     stress_harness::validate_synchronized_admission_queue,
 };
 use datafusion_nexus_workloads::tpcds::{
-    CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_PARQUET_DIR_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, TPCDS_QUERIES,
+    CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, NEXUS_PARQUET_DIR_ENV, TPCDS_QUERIES,
     TpcdsDatasetMetadata, TpcdsQuery, default_tpcds_sf1_parquet_root, describe_tpcds_dataset,
 };
 use nexus_query_engine::{
@@ -65,7 +65,7 @@ const TSV_COLUMNS: &[&str] = &[
     "error_facts",
     "error_message",
 ];
-const DATASET_ROOT_ENV: &str = CUDF_TPCDS_PARQUET_DIR_ENV;
+const DATASET_ROOT_ENV: &str = NEXUS_PARQUET_DIR_ENV;
 const BULK_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_BULK_QUERY_IDS";
 const INTERACTIVE_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_INTERACTIVE_QUERY_IDS";
 const BULK_ITERATIONS_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_BULK_ITERATIONS";

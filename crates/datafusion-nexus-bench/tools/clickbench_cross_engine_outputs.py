@@ -117,7 +117,7 @@ def main() -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
-    parser.add_argument("--fixture", type=Path, help="ClickBench Parquet file or directory. Defaults to CUDF_CLICKBENCH_PARQUET_DIR or local/NVMe defaults.")
+    parser.add_argument("--fixture", type=Path, help="ClickBench Parquet file or directory. Defaults to NEXUS_PARQUET_DIR or local defaults.")
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--raw-dir", type=Path)
     parser.add_argument("--tsv", type=Path)
@@ -189,7 +189,7 @@ def discover_fixture(explicit: Path | None, repo_root: Path) -> Path:
     candidates: list[Path] = []
     if explicit is not None:
         candidates.append(explicit)
-    if env := os.environ.get("CUDF_CLICKBENCH_PARQUET_DIR"):
+    if env := os.environ.get("NEXUS_PARQUET_DIR"):
         candidates.append(Path(env))
     candidates.extend(
         [
@@ -279,7 +279,7 @@ def run_datafusion_outputs(
     env = os.environ.copy()
     env.update(
         {
-            "CUDF_CLICKBENCH_PARQUET_DIR": str(fixture),
+            "NEXUS_PARQUET_DIR": str(fixture),
             "CUDF_CLICKBENCH_BENCH_QUERY_IDS": query_ids,
             "CUDF_CLICKBENCH_BENCH_WARMUPS": "0",
             "CUDF_CLICKBENCH_BENCH_ITERATIONS": str(args.iterations),

@@ -11,13 +11,11 @@ use parquet::{
 };
 
 use super::{TpchWorkloadError, TpchWorkloadResult, fixture::write_tiny_tpch_parquet_dataset};
+use crate::NEXUS_PARQUET_DIR_ENV;
 
 /// Canonical TPC-H table names in fixture discovery order.
 pub const TPCH_TABLES: &[&str] =
     &["customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier"];
-/// Explicit Parquet fixture root. When unset, report helpers use the default
-/// NVMe/local fallback chain before generating tiny data where allowed.
-pub const CUDF_TPCH_PARQUET_DIR_ENV: &str = "CUDF_TPCH_PARQUET_DIR";
 /// Reported scale-factor label; it does not change fixture discovery by itself.
 pub const CUDF_TPCH_SCALE_FACTOR_ENV: &str = "CUDF_TPCH_SCALE_FACTOR";
 /// Free-form provenance command recorded in dataset metadata.
@@ -27,53 +25,21 @@ pub const CUDF_TPCH_GENERATION_COMMAND_ENV: &str = "CUDF_TPCH_GENERATION_COMMAND
 /// content-fingerprint pass.
 pub const CUDF_TPCH_CONTENT_FINGERPRINT_ENV: &str = "CUDF_TPCH_CONTENT_FINGERPRINT";
 
-/// Root of the on-host NVMe mount where `rsync-tpch.service` /
-/// `rsync-tpcds.service` stage the canonical fixtures. When this mount point
-/// is missing (i.e. running on a dev host without the AWS DLAMI NVMe drive),
-/// the dataset probes fall back to the in-repo `./fixture/data/...` roots
-/// below. "Mount missing" is the only fallback trigger — a present mount with
-/// an incomplete fixture is treated as a real fixture problem, not as
-/// "fixture not available here".
-pub const DEFAULT_NVME_MOUNT_ROOT: &str = "/opt/dlami/nvme";
-
-/// Default on-host NVMe Parquet root for the TPC-H SF1 fixture, staged at
-/// boot by `rsync-tpch.service`. Used as an implicit fallback by
-/// `prepare_tpch_report_dataset` when `CUDF_TPCH_PARQUET_DIR` is unset and
-/// the host actually has the fixture present; absence is silent (the
-/// preparation falls back to the tiny dataset).
-pub const DEFAULT_NVME_TPCH_SF1_PARQUET_DIR: &str = "/opt/dlami/nvme/tpch/sf1/parquet";
-
-/// Default on-host NVMe Parquet root for the TPC-H SF10 fixture.
-pub const DEFAULT_NVME_TPCH_SF10_PARQUET_DIR: &str = "/opt/dlami/nvme/tpch/sf10/parquet";
-
-/// Default on-host NVMe Parquet root for the TPC-H SF100 `_optimized`
-/// fixture (sibling-split `lineitem`, single-file other tables).
-pub const DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR: &str = "/opt/dlami/nvme/tpch/sf100_optimized/parquet";
-
-/// In-repo fallback Parquet root for the TPC-H SF1 fixture, used when the
-/// `DEFAULT_NVME_MOUNT_ROOT` mount point is not present on this host.
-pub const DEFAULT_LOCAL_TPCH_SF1_PARQUET_DIR: &str = "./fixture/data/tpch/sf1/parquet";
+/// In-repo default Parquet root for the TPC-H SF1 fixture.
+pub const DEFAULT_LOCAL_TPCH_SF1_PARQUET_DIR: &str = "./fixture/tpc-h/data/sf1/parquet";
 
 /// In-repo fallback Parquet root for the TPC-H SF10 fixture.
-pub const DEFAULT_LOCAL_TPCH_SF10_PARQUET_DIR: &str = "./fixture/data/tpch/sf10/parquet";
+pub const DEFAULT_LOCAL_TPCH_SF10_PARQUET_DIR: &str = "./fixture/tpc-h/data/sf10/parquet";
 
 /// In-repo fallback Parquet root for the TPC-H SF100 `_optimized` fixture.
-pub const DEFAULT_LOCAL_TPCH_SF100_OPTIMIZED_PARQUET_DIR: &str = "./fixture/data/tpch/sf100_optimized/parquet";
+pub const DEFAULT_LOCAL_TPCH_SF100_OPTIMIZED_PARQUET_DIR: &str = "./fixture/tpc-h/data/sf100_optimized/parquet";
 
-/// True when `DEFAULT_NVME_MOUNT_ROOT` exists on this host. Used by the
-/// dataset probes to decide between NVMe-staged fixtures and the in-repo
-/// `./fixture/data/...` fallback roots.
-pub fn default_nvme_mount_present() -> bool {
-    Path::new(DEFAULT_NVME_MOUNT_ROOT).is_dir()
-}
-
-/// Returns the on-host default Parquet root for the given TPC-H scale, picking
-/// the NVMe-staged path when `DEFAULT_NVME_MOUNT_ROOT` is mounted and the
-/// in-repo `./fixture/data/...` path otherwise. The mount check is purely about
-/// whether the NVMe drive is attached — fixture completeness is not consulted
-/// here; the caller probes that separately.
+/// Returns the in-repo default Parquet root for the given TPC-H scale.
+///
+/// Developers who keep fixtures elsewhere should use [`NEXUS_PARQUET_DIR_ENV`]
+/// or symlink the workload-local data directory to their preferred storage.
 pub fn default_tpch_parquet_root(scale: TpchDefaultScale) -> &'static str {
-    if default_nvme_mount_present() { scale.nvme_root() } else { scale.local_root() }
+    scale.local_root()
 }
 
 /// TPC-H scale factors that have a canonical on-host default Parquet root.
@@ -85,14 +51,6 @@ pub enum TpchDefaultScale {
 }
 
 impl TpchDefaultScale {
-    pub const fn nvme_root(self) -> &'static str {
-        match self {
-            Self::Sf1 => DEFAULT_NVME_TPCH_SF1_PARQUET_DIR,
-            Self::Sf10 => DEFAULT_NVME_TPCH_SF10_PARQUET_DIR,
-            Self::Sf100Optimized => DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR,
-        }
-    }
-
     pub const fn local_root(self) -> &'static str {
         match self {
             Self::Sf1 => DEFAULT_LOCAL_TPCH_SF1_PARQUET_DIR,
@@ -226,12 +184,12 @@ pub fn external_tpch_dataset_metadata(
 
 /// Selects the TPC-H fixture for report helpers.
 ///
-/// `CUDF_TPCH_PARQUET_DIR` is strict: if set, that fixture must be complete.
+/// `NEXUS_PARQUET_DIR` is strict: if set, that fixture must be complete.
 /// When unset, the helper tries the implicit SF1 default and falls back to
 /// generating tiny data under `tiny_root`. A truthy
 /// `CUDF_TPCH_CONTENT_FINGERPRINT` requests the expensive content hash.
 pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> TpchWorkloadResult<(PathBuf, TpchDatasetMetadata)> {
-    if let Ok(root) = std::env::var(CUDF_TPCH_PARQUET_DIR_ENV) {
+    if let Ok(root) = std::env::var(NEXUS_PARQUET_DIR_ENV) {
         let root = PathBuf::from(root);
         let scale_factor = std::env::var(CUDF_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
         let generation_command =
@@ -248,7 +206,7 @@ pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> TpchWorkloadResult<(Path
         return Ok((root, metadata));
     }
 
-    if let Some((root, metadata)) = try_default_nvme_tpch_sf1_dataset() {
+    if let Some((root, metadata)) = try_default_local_tpch_sf1_dataset() {
         return Ok((root, metadata));
     }
 
@@ -257,21 +215,18 @@ pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> TpchWorkloadResult<(Path
     Ok((tiny_root.to_path_buf(), metadata))
 }
 
-/// Returns the on-host default SF1 fixture when it is complete. The probe
-/// picks between the NVMe-staged root and the in-repo `./fixture/data/...`
-/// fallback based solely on whether `DEFAULT_NVME_MOUNT_ROOT` is mounted on
-/// this host; fixture completeness is then checked at the chosen root. A
-/// `None` return means "no implicit external fixture available, fall back to
-/// the tiny dataset".
-fn try_default_nvme_tpch_sf1_dataset() -> Option<(PathBuf, TpchDatasetMetadata)> {
-    default_nvme_tpch_dataset(default_tpch_parquet_root(TpchDefaultScale::Sf1), "sf1")
+/// Returns the in-repo default SF1 fixture when it is complete. A `None`
+/// return means "no implicit external fixture available, fall back to the tiny
+/// dataset".
+fn try_default_local_tpch_sf1_dataset() -> Option<(PathBuf, TpchDatasetMetadata)> {
+    default_tpch_dataset(default_tpch_parquet_root(TpchDefaultScale::Sf1), "sf1")
 }
 
-/// Lower-level helper: probe an arbitrary on-host NVMe Parquet root for the
+/// Lower-level helper: probe an arbitrary local Parquet root for the
 /// fixed TPC-H table set and, if all tables are discoverable, describe it as
 /// an external fixture with a synthetic `generation_command`. Returns `None`
 /// when the directory is missing or the fixture is incomplete.
-pub fn default_nvme_tpch_dataset(root: &str, scale_factor: &str) -> Option<(PathBuf, TpchDatasetMetadata)> {
+pub fn default_tpch_dataset(root: &str, scale_factor: &str) -> Option<(PathBuf, TpchDatasetMetadata)> {
     let root_path = PathBuf::from(root);
     if !root_path.is_dir() {
         return None;
@@ -286,12 +241,9 @@ pub fn default_nvme_tpch_dataset(root: &str, scale_factor: &str) -> Option<(Path
     Some((root_path, metadata))
 }
 
-/// Same as `default_nvme_tpch_dataset` but includes a content fingerprint —
+/// Same as `default_tpch_dataset` but includes a content fingerprint —
 /// needed by the benchmark binary's strict-validation gate.
-pub fn default_nvme_tpch_dataset_with_fingerprint(
-    root: &str,
-    scale_factor: &str,
-) -> Option<(PathBuf, TpchDatasetMetadata)> {
+pub fn default_tpch_dataset_with_fingerprint(root: &str, scale_factor: &str) -> Option<(PathBuf, TpchDatasetMetadata)> {
     let root_path = PathBuf::from(root);
     if !root_path.is_dir() {
         return None;

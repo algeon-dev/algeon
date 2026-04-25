@@ -46,9 +46,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_OUT_ROOT = REPO_ROOT / "fixture" / "data" / "demo"
-DEFAULT_SOURCE_JSON = DEFAULT_OUT_ROOT / "dblp.v12.json"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_OUT_ROOT = REPO_ROOT / "fixture" / "graph" / "demo"
+DEFAULT_SOURCE_JSON = REPO_ROOT / "fixture" / "graph" / "dblp.v12.json"
 DEFAULT_ROW_GROUP_SIZE = 1_048_576
 DEFAULT_PROFILE_ROW_GROUP_SIZE = 131_072
 DEFAULT_BUCKET_WIDTH = 100_000_000  # AMiner ids reach ~3e9; keep bucket ids compact for pruning demos.
@@ -1141,7 +1141,7 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
 
     manifest = {
         "schema_version": 1,
-        "generator": "fixture/scripts/dblp_ingest.py",
+        "generator": "fixture/graph/dblp_ingest.py",
         "generated_at_unix": int(time.time()),
         "repo_root": str(REPO_ROOT),
         "dataset": {

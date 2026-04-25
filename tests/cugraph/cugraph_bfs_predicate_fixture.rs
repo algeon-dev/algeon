@@ -2,7 +2,7 @@
 //!
 //! This is an explicit tools acceptance command because it needs CUDA and
 //! Python cuGraph.
-//! It writes a deterministic numeric graph fixture under `fixture/data/`, which
+//! It writes a deterministic numeric graph fixture under `fixture/graph/cugraph/`, which
 //! is gitignored, then compares normalized
 //! `cugraph_bfs(... include_edges_table ...)` output against a Python cuGraph
 //! oracle built from the same allowed-edge relation.

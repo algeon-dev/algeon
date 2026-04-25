@@ -33,8 +33,8 @@ export const tpchSf100Benchmark = {
   "generatedAtUtc": "2026-07-05T06:14:02Z",
   "dataset": {
     "fixture": "AWS EC2 g7e.4xlarge local NVMe",
-    "generationScript": "fixture/scripts/fixture.sh tpch generate",
-    "generatorImplementation": "fixture/scripts/gen_tpch.py",
+    "generationScript": "fixture/fixture.sh tpch generate",
+    "generatorImplementation": "fixture/tpc-h/generate.py",
     "scaleFactor": "sf100",
     "tableCount": 8,
     "fileCount": 8,

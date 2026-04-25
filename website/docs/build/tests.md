@@ -238,11 +238,11 @@ Scale-factor datasets are not Cargo tests. They are explicit acceptance runs:
 
 ```bash
 flock /tmp/cudf-gpu.lock \
-  CUDF_TPCDS_PARQUET_DIR=/path/to/complete/tpcds-sf1 \
+  NEXUS_PARQUET_DIR=/path/to/complete/tpcds-sf1 \
   cargo run -p datafusion-nexus-bench --bin native_tpcds_parity_report
 
 flock /tmp/cudf-gpu.lock \
-  CUDF_TPCH_PARQUET_DIR=/path/to/complete/tpch-sf1 \
+  NEXUS_PARQUET_DIR=/path/to/complete/tpch-sf1 \
   cargo run -p datafusion-nexus-bench --bin native_tpch_execution_report
 ```
 
@@ -265,15 +265,6 @@ An unavailable oracle is a failure for that selected acceptance run, never a
 successful skipped assertion. Replace `bfs-include-edges` with `pagerank`,
 `bfs-utf8-include-edges`, `bfs-utf8-path`, or `bfs-utf8-predicates` for the
 other provisioned cases.
-
-Provision the Graph500 R-MAT fixture with `fixture/scripts/run_gen.sh
-graph500_rmat --scale 12 --edgefactor 16 --overwrite`, then run:
-
-```bash
-flock /tmp/cudf-gpu.lock \
-  cargo run -p datafusion-nexus-tools --features cugraph-oracle -- \
-  cugraph-fixture-e2e graph500-rmat
-```
 
 ## Feature flags
 

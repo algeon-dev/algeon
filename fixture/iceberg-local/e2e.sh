@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
 COMPOSE_FILE="${REPO_ROOT}/fixture/iceberg-local/docker-compose.yml"
-FIXTURE_SCRIPT="${REPO_ROOT}/fixture/scripts/fixture.sh"
+FIXTURE_SCRIPT="${REPO_ROOT}/fixture/fixture.sh"
 
 DOCKER="${DOCKER:-docker}"
 DEFAULT_REST_URI="http://localhost:8181"
@@ -43,7 +43,7 @@ REST_EXPECTED_ROWS="${NEXUS_ICEBERG_REST_E2E_EXPECTED_ROWS:-}"
 usage() {
   cat <<'USAGE'
 Usage:
-  fixture/scripts/e2e.sh iceberg-local [options]
+  fixture/iceberg-local/e2e.sh iceberg-local [options]
 
 Runs the local Iceberg REST + Glue/Moto E2E suite through
 datafusion-nexus-tools. The suite is explicit Cargo run tooling; it is not part
@@ -211,7 +211,7 @@ case "${suite}" in
   iceberg-local) ;;
   embedded-backend)
     shift
-    echo "warning: fixture/scripts/e2e.sh embedded-backend moved to crates/datafusion-nexus-examples/scripts/e2e.sh" >&2
+    echo "warning: fixture/iceberg-local/e2e.sh embedded-backend moved to crates/datafusion-nexus-examples/scripts/e2e.sh" >&2
     exec "${REPO_ROOT}/crates/datafusion-nexus-examples/scripts/e2e.sh" "$@"
     ;;
   *)

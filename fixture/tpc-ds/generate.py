@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
-from tpc_parquet_layout import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tpc"))
+
+from parquet_layout import (
     DEFAULT_ROW_GROUP_BYTES,
     TableLayout,
     optimize_layout,

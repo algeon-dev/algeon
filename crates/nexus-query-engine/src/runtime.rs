@@ -52,9 +52,9 @@ pub use gpu_execution_pool::{
     GpuExecutionQueryTracker,
 };
 pub use io_capability::{
-    DEFAULT_GDS_LOCAL_MOUNT_ROOT, DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus,
-    KVIKIO_COMPAT_MODE_ENV, KvikioCompatModeStatus, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
-    SourceGdsEligibility, source_gds_eligibility, source_gds_eligibility_with_default_mounts,
+    DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus, KVIKIO_COMPAT_MODE_ENV,
+    KvikioCompatModeStatus, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus, SourceGdsEligibility,
+    source_gds_eligibility,
 };
 pub(crate) use object_store::S3ObjectStoreKey;
 pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile};
@@ -75,7 +75,7 @@ pub use service_stream::{
 pub use source_fetch::{
     DEFAULT_GDS_MAX_CONCURRENT_OPS, DEFAULT_GDS_MIN_CHUNK_BYTES, DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT,
     DEFAULT_HOST_FETCH_BUDGET_BYTES, DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES, DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
-    DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS, HostFetchBudget, HostFetchPermit, SourceFetchConfig,
-    SourceFetchStrategy, SourceFetchStrategyDecision, SourceFetchStrategyReason, SourceFetchSubstrate,
-    default_host_fetch_budget_bytes,
+    DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS, HostFetchBudget, HostFetchPermit, NEXUS_GDS_MOUNT_ROOTS_ENV,
+    SourceFetchConfig, SourceFetchStrategy, SourceFetchStrategyDecision, SourceFetchStrategyReason,
+    SourceFetchSubstrate, default_host_fetch_budget_bytes,
 };

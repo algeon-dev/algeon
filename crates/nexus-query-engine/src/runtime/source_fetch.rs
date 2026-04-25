@@ -2,13 +2,12 @@
 
 use std::{
     fmt,
+    path::PathBuf,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
 
-use super::{
-    DeploymentIoCapability, ExecutionCancellation, SourceGdsEligibility, source_gds_eligibility_with_default_mounts,
-};
+use super::{DeploymentIoCapability, ExecutionCancellation, SourceGdsEligibility, source_gds_eligibility};
 use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// Conservative fallback for hosts where physical-memory detection is unavailable.
@@ -24,16 +23,18 @@ pub const DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS: usize =
     SourceFetchConfig::DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS;
 /// Direct-device reads use a separate DMA gate from host-buffer fetches.
 pub const DEFAULT_GDS_MAX_CONCURRENT_OPS: usize = SourceFetchConfig::DEFAULT_GDS_MAX_CONCURRENT_OPS;
-/// Smaller chunks stay on host-buffer IO to avoid direct-device setup overhead.
+/// Smaller chunks are rejected rather than falling back to host-buffer IO.
 pub const DEFAULT_GDS_MIN_CHUNK_BYTES: u64 = SourceFetchConfig::DEFAULT_GDS_MIN_CHUNK_BYTES;
+/// Comma-separated absolute local mount roots whose files may use GDS.
+pub const NEXUS_GDS_MOUNT_ROOTS_ENV: &str = "NEXUS_GDS_MOUNT_ROOTS";
 
 /// Service-level source IO substrate preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SourceFetchSubstrate {
-    /// Probe deployment capability and choose per-source IO strategy later.
+    /// Probe deployment capability and require GDS for every source later.
     #[default]
     Auto,
-    /// Force host-buffer fetch/decode for every source.
+    /// Legacy host-buffer setting. It is rejected before GPU execution.
     HostBuffer,
     /// Require GDS direct-device reads for eligible local sources.
     DirectDevice,
@@ -59,14 +60,16 @@ impl fmt::Display for SourceFetchSubstrate {
 /// Source IO strategy selected for a source chunk.
 ///
 /// This is a runtime/source-compile decision, not a planner admission result.
-/// Remote object-store locations must continue to use host-buffer fetch/decode;
-/// direct-device is reserved for future GDS-capable local/RDMA sources.
+/// Remote object-store locations that cannot prove a direct path are rejected;
+/// direct-device is reserved for GDS-capable local/RDMA sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceFetchStrategy {
-    /// Fetch compressed bytes into host memory, then decode into a device frame.
+    /// Legacy host-buffer strategy. GPU execution rejects it.
     HostBuffer,
     /// Read directly through a future GDS/KvikIO path under the GDS DMA gate.
     DirectDevice,
+    /// Reject the source because it cannot satisfy the GDS-only contract.
+    Rejected,
 }
 
 impl SourceFetchStrategy {
@@ -75,6 +78,7 @@ impl SourceFetchStrategy {
         match self {
             Self::HostBuffer => "host_buffer",
             Self::DirectDevice => "direct_device",
+            Self::Rejected => "rejected",
         }
     }
 }
@@ -88,8 +92,8 @@ impl fmt::Display for SourceFetchStrategy {
 /// Stable reason for a [`SourceFetchStrategyDecision`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceFetchStrategyReason {
-    /// Service config forced host-buffer IO.
-    SubstrateHostBuffer,
+    /// Host-buffer IO is disabled for GPU queries.
+    HostBufferDisabled,
     /// The source passed deployment, path, mount, and size checks for GDS.
     GdsEligible,
     /// Deployment-level GDS capability is unavailable.
@@ -108,7 +112,7 @@ impl SourceFetchStrategyReason {
     /// Stable diagnostic string for this reason.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::SubstrateHostBuffer => "substrate_host_buffer",
+            Self::HostBufferDisabled => "host_buffer_disabled",
             Self::GdsEligible => "gds_eligible",
             Self::DeploymentUnavailable => "deployment_unavailable",
             Self::RemoteObjectStore => "remote_object_store",
@@ -184,8 +188,15 @@ pub struct SourceFetchConfig {
     pub lakehouse_cache_fill_max_concurrent_ops: usize,
     /// Max concurrent future GDS DMA operations across queries.
     pub gds_max_concurrent_ops: usize,
-    /// Per-chunk size below which GDS-eligible sources fall back to host-buffer IO.
+    /// Per-chunk size below which the GDS-only source contract rejects a read.
     pub gds_min_chunk_bytes: u64,
+    /// Absolute local mount roots allowed to serve GDS reads.
+    ///
+    /// The default is read from [`NEXUS_GDS_MOUNT_ROOTS_ENV`]. An empty list
+    /// deliberately admits no local path, so deployments must opt in to each
+    /// physical GDS-capable mount rather than inheriting a machine-specific
+    /// path.
+    pub gds_capable_mount_roots: Vec<PathBuf>,
 }
 
 impl SourceFetchConfig {
@@ -199,7 +210,7 @@ impl SourceFetchConfig {
     pub const DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS: usize = 4;
     /// Direct-device reads use a separate DMA gate from host-buffer fetches.
     pub const DEFAULT_GDS_MAX_CONCURRENT_OPS: usize = 32;
-    /// Smaller chunks stay on host-buffer IO to avoid direct-device setup overhead.
+    /// Smaller chunks are rejected to preserve the GDS-only source contract.
     pub const DEFAULT_GDS_MIN_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
     /// Default timeout for blocking host-buffer budget and source-fetch concurrency acquisition.
     pub const DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -217,6 +228,26 @@ impl SourceFetchConfig {
         validate_lakehouse_cache_fill_max_concurrent_ops(self.lakehouse_cache_fill_max_concurrent_ops)?;
         validate_gds_max_concurrent_ops(self.gds_max_concurrent_ops)?;
         validate_gds_min_chunk_bytes(self.gds_min_chunk_bytes)?;
+        validate_gds_capable_mount_roots(&self.gds_capable_mount_roots)?;
+        if matches!(self.substrate, SourceFetchSubstrate::HostBuffer) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.source_fetch_config.validate",
+                "host-buffer source fetch is disabled for GPU queries; configure GDS mount roots instead",
+            )
+            .with_fact("source_fetch_substrate", self.substrate.as_str())
+            .with_fact("reason", "host_buffer_disabled"));
+        }
+        if matches!(self.substrate, SourceFetchSubstrate::DirectDevice) && self.gds_capable_mount_roots.is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.source_fetch_config.validate",
+                "direct-device source fetch requires at least one configured GDS-capable mount root",
+            )
+            .with_fact("source_fetch_substrate", self.substrate.as_str())
+            .with_fact("field", "gds_capable_mount_roots")
+            .with_fact("reason", "empty"));
+        }
         if matches!(self.substrate, SourceFetchSubstrate::DirectDevice) && !deployment.gds_available {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -233,25 +264,26 @@ impl SourceFetchConfig {
     /// Selects the source IO strategy for a location and optional chunk-size estimate.
     ///
     /// This decision is intentionally pure and does not start IO. It centralizes
-    /// the Milestone 5 contract: remote object-store/network sources remain
-    /// host-buffer reads, `HostBuffer` forces that path, and `Auto` /
-    /// `DirectDevice` select direct-device only when GDS eligibility succeeds.
+    /// the GDS-only contract: sources that cannot satisfy deployment, path,
+    /// mount, and size checks are rejected; they never downgrade to
+    /// host-buffer reads.
     pub fn decide_source_fetch_strategy(
         &self,
         deployment: &DeploymentIoCapability,
         source_location: &str,
         chunk_bytes: Option<u64>,
     ) -> SourceFetchStrategyDecision {
-        let gds_eligibility = source_gds_eligibility_with_default_mounts(
+        let gds_eligibility = source_gds_eligibility(
             deployment,
             source_location,
             chunk_bytes,
             self.gds_min_chunk_bytes,
+            &self.gds_capable_mount_roots,
         );
         if matches!(self.substrate, SourceFetchSubstrate::HostBuffer) {
             return SourceFetchStrategyDecision {
-                strategy: SourceFetchStrategy::HostBuffer,
-                reason: SourceFetchStrategyReason::SubstrateHostBuffer,
+                strategy: SourceFetchStrategy::Rejected,
+                reason: SourceFetchStrategyReason::HostBufferDisabled,
                 gds_eligibility,
                 substrate: self.substrate,
             };
@@ -261,7 +293,7 @@ impl SourceFetchConfig {
         let strategy = if matches!(gds_eligibility, SourceGdsEligibility::Eligible) {
             SourceFetchStrategy::DirectDevice
         } else {
-            SourceFetchStrategy::HostBuffer
+            SourceFetchStrategy::Rejected
         };
         SourceFetchStrategyDecision { strategy, reason, gds_eligibility, substrate: self.substrate }
     }
@@ -278,8 +310,16 @@ impl Default for SourceFetchConfig {
             lakehouse_cache_fill_max_concurrent_ops: Self::DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS,
             gds_max_concurrent_ops: Self::DEFAULT_GDS_MAX_CONCURRENT_OPS,
             gds_min_chunk_bytes: Self::DEFAULT_GDS_MIN_CHUNK_BYTES,
+            gds_capable_mount_roots: configured_gds_capable_mount_roots(),
         }
     }
+}
+
+fn configured_gds_capable_mount_roots() -> Vec<PathBuf> {
+    let Some(value) = std::env::var_os(NEXUS_GDS_MOUNT_ROOTS_ENV) else {
+        return Vec::new();
+    };
+    value.to_string_lossy().split(',').map(str::trim).filter(|value| !value.is_empty()).map(PathBuf::from).collect()
 }
 
 /// Returns the default service-wide host-buffer fetch budget.
@@ -805,6 +845,22 @@ fn validate_gds_min_chunk_bytes(gds_min_chunk_bytes: u64) -> Result<()> {
         )
         .with_fact("field", "gds_min_chunk_bytes")
         .with_fact("reason", "zero"));
+    }
+    Ok(())
+}
+
+fn validate_gds_capable_mount_roots(gds_capable_mount_roots: &[PathBuf]) -> Result<()> {
+    for root in gds_capable_mount_roots {
+        if !root.is_absolute() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.source_fetch_config.validate",
+                "GDS-capable mount roots must be absolute paths",
+            )
+            .with_fact("field", "gds_capable_mount_roots")
+            .with_fact("root", root.display().to_string())
+            .with_fact("reason", "relative_path"));
+        }
     }
     Ok(())
 }

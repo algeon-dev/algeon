@@ -115,7 +115,7 @@ def main() -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bench-bin", type=Path, default=Path("target/release/tpcds_three_way_bench"))
-    parser.add_argument("--parquet-dir", type=Path, default=os.environ.get("CUDF_TPCDS_PARQUET_DIR"))
+    parser.add_argument("--parquet-dir", type=Path, default=os.environ.get("NEXUS_PARQUET_DIR"))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--queries", default=DEFAULT_QUERIES)
     parser.add_argument("--warmups", type=int, default=1)
@@ -130,7 +130,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-staleness-check", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if args.parquet_dir is None:
-        parser.error("--parquet-dir is required when CUDF_TPCDS_PARQUET_DIR is unset")
+        parser.error("--parquet-dir is required when NEXUS_PARQUET_DIR is unset")
     if args.warmups < 0:
         parser.error("--warmups must be >= 0")
     if args.iterations <= 0:
@@ -189,7 +189,7 @@ def candidate_env(args: argparse.Namespace, candidate: Candidate) -> dict[str, s
         env.pop(name, None)
     env.update(
         {
-            "CUDF_TPCDS_PARQUET_DIR": str(args.parquet_dir),
+            "NEXUS_PARQUET_DIR": str(args.parquet_dir),
             "CUDF_TPCDS_BENCH_ENGINE": "native_gpu",
             "CUDF_TPCDS_BENCH_QUERIES": args.queries,
             "CUDF_TPCDS_BENCH_WARMUPS": str(args.warmups),

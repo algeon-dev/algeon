@@ -151,8 +151,8 @@ struct TpcdsPlanningReport {
 async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchPlanningReport> {
     let (root, metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
         ClickbenchWorkloadError::InvalidDataset(
-            "no ClickBench fixture found; set CUDF_CLICKBENCH_PARQUET_DIR or stage \
-             fixture/data/clickbench/{hits.parquet, partitioned/} before running this report"
+            "no ClickBench fixture found; set NEXUS_PARQUET_DIR or stage \
+             fixture/clickbench/data/{hits.parquet, partitioned/} before running this report"
                 .to_string(),
         )
     })?;

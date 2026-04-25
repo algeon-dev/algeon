@@ -8,8 +8,8 @@ SF="${SF:-1}"
 REUSE_PARQUET=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIXTURE_SCRIPT="${SCRIPT_DIR}/fixture.sh"
 REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
+FIXTURE_SCRIPT="${REPO_ROOT}/fixture/fixture.sh"
 LOCAL_ICEBERG_DIR="${REPO_ROOT}/fixture/iceberg-local"
 
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3-scala2.12-java17-python3-ubuntu}"

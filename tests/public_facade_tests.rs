@@ -22,9 +22,9 @@ fn canonical_adapter_paths_expose_stable_contract_symbols() {
     );
     let _planning_report = datafusion_nexus::report::PlanningReport::default();
     let _workload_contracts = (
-        datafusion_nexus_workloads::tpch::CUDF_TPCH_PARQUET_DIR_ENV,
+        datafusion_nexus_workloads::NEXUS_PARQUET_DIR_ENV,
         datafusion_nexus_workloads::tpcds::CUDF_TPCDS_SCALE_FACTOR_ENV,
-        datafusion_nexus_workloads::clickbench::CUDF_CLICKBENCH_PARQUET_DIR_ENV,
+        datafusion_nexus_workloads::NEXUS_PARQUET_DIR_ENV,
         size_of::<datafusion_nexus_workloads::tpch::TpchQuery>(),
         size_of::<datafusion_nexus_workloads::tpcds::TpcdsQuery>(),
         size_of::<datafusion_nexus_workloads::clickbench::ClickbenchQuery>(),

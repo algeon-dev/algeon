@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
 COMPOSE_FILE="${REPO_ROOT}/fixture/iceberg-local/docker-compose.yml"
-FIXTURE_SCRIPT="${REPO_ROOT}/fixture/scripts/fixture.sh"
+FIXTURE_SCRIPT="${REPO_ROOT}/fixture/fixture.sh"
 
 DOCKER="${DOCKER:-docker}"
 DEFAULT_REST_URI="http://localhost:8181"

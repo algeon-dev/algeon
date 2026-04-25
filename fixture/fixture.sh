@@ -9,11 +9,11 @@ REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
 usage() {
   cat <<'USAGE'
 Usage:
-  fixture.sh tpch generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
-  fixture.sh tpcds generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
-  fixture.sh clickbench fetch [--layout single|partitioned|both] [--out PATH]
-  fixture.sh iceberg rest load --workload tpch|tpcds|citation_network [--scale sf1] [--load-mode create|add-files]
-  fixture.sh iceberg glue-moto load --workload tpch|tpcds [--scale sf1]
+  fixture/fixture.sh tpch generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
+  fixture/fixture.sh tpcds generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
+  fixture/fixture.sh clickbench fetch [--layout single|partitioned|both] [--out PATH]
+  fixture/fixture.sh iceberg rest load --workload tpch|tpcds|citation_network [--scale sf1] [--load-mode create|add-files]
+  fixture/fixture.sh iceberg glue-moto load --workload tpch|tpcds [--scale sf1]
 
 TPC-H / TPC-DS generation uses tpchgen-rs and rewrites the final Parquet layout
 with sorted, Snappy-compressed row groups by default. Run a gen_*.py with --help
@@ -23,12 +23,12 @@ USAGE
 
 clickbench_usage() {
   cat <<'USAGE'
-Usage: fixture/scripts/fixture.sh clickbench fetch [options]
+Usage: fixture/fixture.sh clickbench fetch [options]
 
 Options:
   --layout single|partitioned|both Dataset layout to download (default: single)
   --mode single|partitioned|both   Backward-compatible alias for --layout
-  --out PATH                       Destination root (default: fixture/data/clickbench)
+  --out PATH                       Destination root (default: fixture/clickbench/data)
   --output-dir PATH                Backward-compatible alias for --out
   --content-fingerprint            Emit sha256 over file contents after download
   --row-count                      Emit row count using duckdb if available
@@ -169,7 +169,7 @@ clickbench_emit_summary() {
 }
 
 clickbench_fetch() {
-  local DEFAULT_OUTPUT_DIR="${REPO_ROOT}/fixture/data/clickbench"
+  local DEFAULT_OUTPUT_DIR="${REPO_ROOT}/fixture/clickbench/data"
   local SINGLE_URL="https://datasets.clickhouse.com/hits_compatible/athena/hits.parquet"
   local PARTITIONED_URL_PREFIX="https://datasets.clickhouse.com/hits_compatible/athena_partitioned"
   local EXPECTED_ROW_COUNT="99997497"
@@ -264,10 +264,10 @@ shift 2
 
 case "${domain}:${command}" in
   tpch:generate)
-    exec python3 "${SCRIPT_DIR}/gen_tpch.py" "$@"
+    exec python3 "${SCRIPT_DIR}/tpc-h/generate.py" "$@"
     ;;
   tpcds:generate)
-    exec python3 "${SCRIPT_DIR}/gen_tpcds.py" "$@"
+    exec python3 "${SCRIPT_DIR}/tpc-ds/generate.py" "$@"
     ;;
   clickbench:fetch)
     clickbench_fetch "$@"
@@ -280,7 +280,7 @@ case "${domain}:${command}" in
       exit 2
     fi
     shift
-    exec "${SCRIPT_DIR}/iceberg_rest_load.sh" "$@"
+    exec "${SCRIPT_DIR}/iceberg-local/rest_load.sh" "$@"
     ;;
   iceberg:glue-moto)
     subcommand="${1:-}"
@@ -290,7 +290,7 @@ case "${domain}:${command}" in
       exit 2
     fi
     shift
-    exec "${SCRIPT_DIR}/iceberg_glue_moto_load.sh" "$@"
+    exec "${SCRIPT_DIR}/iceberg-local/glue_moto_load.sh" "$@"
     ;;
   -h:*|--help:*)
     usage

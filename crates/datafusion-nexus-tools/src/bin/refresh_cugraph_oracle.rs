@@ -1,9 +1,9 @@
 //! Driver that regenerates local cuGraph oracle JSON fixtures.
 //!
 //! Iterates [`CUGRAPH_PARITY_SPECS`] and invokes
-//! `fixture/scripts/cugraph_oracle.py` for each `oracle_relpath`. Python cuGraph
+//! `fixture/graph/cugraph_oracle.py` for each `oracle_relpath`. Python cuGraph
 //! is optional per row: exit code 77 is reported as "oracle unavailable".
-//! Generated JSON lives under ignored `fixture/data/cugraph/oracle/`.
+//! Generated JSON lives under `fixture/graph/cugraph/oracle/`.
 //!
 //! Recommended invocation:
 //!
@@ -31,7 +31,7 @@ use datafusion_nexus::graph_sql::parity::{
     CUGRAPH_DATA_DIR_FROM_CARGO_MANIFEST, CUGRAPH_PARITY_SPECS, ParitySpec, load_manifest, oracle_path,
 };
 
-const ORACLE_SCRIPT_REL: &str = "fixture/scripts/cugraph_oracle.py";
+const ORACLE_SCRIPT_REL: &str = "fixture/graph/cugraph_oracle.py";
 
 #[derive(Debug, Default)]
 struct CliOptions {
@@ -66,7 +66,7 @@ fn print_usage() {
                                    [--check] [--force] [--python PATH]\n\
          \n\
          Refreshes one row per matching parity spec by invoking\n\
-         fixture/scripts/cugraph_oracle.py. Requires Python cuGraph in PATH.",
+         fixture/graph/cugraph_oracle.py. Requires Python cuGraph in PATH.",
     );
 }
 

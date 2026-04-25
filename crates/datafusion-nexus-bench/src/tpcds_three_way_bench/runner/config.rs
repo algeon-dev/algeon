@@ -18,8 +18,8 @@ impl BenchConfig {
                 );
             },
         };
-        let root = std::env::var("CUDF_TPCDS_PARQUET_DIR")
-            .map_err(|_| "CUDF_TPCDS_PARQUET_DIR must be set to the SF100 parquet root")?;
+        let root = std::env::var(datafusion_nexus_workloads::NEXUS_PARQUET_DIR_ENV)
+            .map_err(|_| "NEXUS_PARQUET_DIR must be set to the SF100 parquet root")?;
         let root = std::path::PathBuf::from(root);
         let queries_csv = std::env::var("CUDF_TPCDS_BENCH_QUERIES").unwrap_or_else(|_| DEFAULT_QUERY_IDS.join(","));
         let queries = bench_queries_from_csv(&queries_csv)?;
