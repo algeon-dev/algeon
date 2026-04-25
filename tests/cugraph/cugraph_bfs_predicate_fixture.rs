@@ -1,6 +1,7 @@
 //! Fixture-scale SQL e2e coverage for relation-backed cuGraph BFS predicates.
 //!
-//! The test is ignored by default because it needs CUDA and Python cuGraph.
+//! This is an explicit tools acceptance command because it needs CUDA and
+//! Python cuGraph.
 //! It writes a deterministic numeric graph fixture under `fixture/data/`, which
 //! is gitignored, then compares normalized
 //! `cugraph_bfs(... include_edges_table ...)` output against a Python cuGraph
@@ -35,12 +36,10 @@ const DEFAULT_STRING_VERTEX_COUNT: i64 = 4_000;
 type NumericBfsRawEdge = (i64, i64, i64);
 type NumericBfsAllowedEdge = (i64, i64);
 
-#[tokio::test]
-async fn cugraph_sql_bfs_include_edges_fixture_matches_python_cugraph_and_reports_timing() {
+pub async fn run_numeric_include_edges_acceptance() {
     let fixture = ensure_numeric_bfs_predicate_fixture();
-    let Some(oracle) = python_bfs_include_edges_oracle(&fixture) else {
-        return;
-    };
+    let oracle = python_bfs_include_edges_oracle(&fixture)
+        .expect("Python cuGraph oracle is required for the selected BFS predicate acceptance test");
 
     let mut config = SessionConfig::new()
         .with_target_partitions(1)
@@ -119,12 +118,10 @@ async fn cugraph_sql_bfs_include_edges_fixture_matches_python_cugraph_and_report
     }
 }
 
-#[tokio::test]
-async fn cugraph_sql_bfs_utf8_include_edges_fixture_matches_python_cugraph_and_reports_timing() {
+pub async fn run_utf8_include_edges_acceptance() {
     let fixture = ensure_string_bfs_predicate_fixture();
-    let Some(oracle) = python_bfs_utf8_include_edges_oracle(&fixture) else {
-        return;
-    };
+    let oracle = python_bfs_utf8_include_edges_oracle(&fixture)
+        .expect("Python cuGraph oracle is required for the selected UTF-8 BFS predicate acceptance test");
 
     let mut config = SessionConfig::new()
         .with_target_partitions(1)
@@ -207,12 +204,10 @@ async fn cugraph_sql_bfs_utf8_include_edges_fixture_matches_python_cugraph_and_r
     }
 }
 
-#[tokio::test]
-async fn cugraph_sql_bfs_utf8_path_fixture_matches_python_cugraph_and_reports_timing() {
+pub async fn run_utf8_path_acceptance() {
     let fixture = ensure_string_bfs_predicate_fixture();
-    let Some(oracle) = python_bfs_utf8_path_oracle(&fixture) else {
-        return;
-    };
+    let oracle = python_bfs_utf8_path_oracle(&fixture)
+        .expect("Python cuGraph oracle is required for the selected UTF-8 BFS path acceptance test");
 
     let mut config = SessionConfig::new()
         .with_target_partitions(1)
@@ -295,8 +290,7 @@ async fn cugraph_sql_bfs_utf8_path_fixture_matches_python_cugraph_and_reports_ti
     }
 }
 
-#[tokio::test]
-async fn cugraph_sql_bfs_utf8_vertex_predicates_fixture_match_python_cugraph_and_report_timing() {
+pub async fn run_utf8_vertex_predicates_acceptance() {
     let fixture = ensure_string_bfs_predicate_fixture();
 
     let mut config = SessionConfig::new()
@@ -366,9 +360,8 @@ async fn cugraph_sql_bfs_utf8_vertex_predicates_fixture_match_python_cugraph_and
     ];
 
     for (mode, predicate_path, options_json) in cases {
-        let Some(oracle) = python_bfs_utf8_vertex_predicate_oracle(&fixture, predicate_path, mode) else {
-            return;
-        };
+        let oracle = python_bfs_utf8_vertex_predicate_oracle(&fixture, predicate_path, mode)
+            .expect("Python cuGraph oracle is required for the selected UTF-8 BFS predicate acceptance test");
         let select_list = if mode == "target_vertices" {
             "vertex, distance, reachable, target_found, target_distance"
         } else {
@@ -843,12 +836,10 @@ print(json.dumps({
         Ok(output) => output,
         Err(error) => {
             handle_python_oracle_unavailable(format!("Python cuGraph oracle unavailable: {error}"));
-            return None;
         },
     };
     if output.status.code() == Some(77) {
         handle_python_oracle_unavailable(String::from_utf8_lossy(&output.stderr));
-        return None;
     }
     assert!(
         output.status.success(),
@@ -916,12 +907,10 @@ print(json.dumps({
         Ok(output) => output,
         Err(error) => {
             handle_python_oracle_unavailable(format!("Python cuGraph oracle unavailable: {error}"));
-            return None;
         },
     };
     if output.status.code() == Some(77) {
         handle_python_oracle_unavailable(String::from_utf8_lossy(&output.stderr));
-        return None;
     }
     assert!(
         output.status.success(),
@@ -1031,12 +1020,10 @@ print(json.dumps({
         Ok(output) => output,
         Err(error) => {
             handle_python_oracle_unavailable(format!("Python cuGraph oracle unavailable: {error}"));
-            return None;
         },
     };
     if output.status.code() == Some(77) {
         handle_python_oracle_unavailable(String::from_utf8_lossy(&output.stderr));
-        return None;
     }
     assert!(
         output.status.success(),
@@ -1141,12 +1128,10 @@ print(json.dumps({
         Ok(output) => output,
         Err(error) => {
             handle_python_oracle_unavailable(format!("Python cuGraph oracle unavailable: {error}"));
-            return None;
         },
     };
     if output.status.code() == Some(77) {
         handle_python_oracle_unavailable(String::from_utf8_lossy(&output.stderr));
-        return None;
     }
     assert!(
         output.status.success(),
@@ -1355,6 +1340,6 @@ fn optional_string_max_slowdown() -> Option<f64> {
         .filter(|value| value.is_finite() && *value > 0.0)
 }
 
-fn handle_python_oracle_unavailable(message: impl AsRef<str>) {
+fn handle_python_oracle_unavailable(message: impl AsRef<str>) -> ! {
     crate::cugraph_optional_fixture::handle_cugraph_python_oracle_unavailable("cuGraph Python oracle", message);
 }

@@ -131,11 +131,18 @@ by the exact toolkit and that `/usr/local/cuda` resolves to that toolkit
 [Environment](./environment.md) gcc-14 settings assume the recommended CUDA
 13.x pairing.
 
-## Parquet fixture tests are flaky in parallel
+## Datafusion Nexus tests fail under bare parallel Cargo
 
-Some `cudf-rs` Parquet fixture tests share `/tmp` files and a Python
-subprocess. If they fail intermittently under parallel execution, run them
-single-threaded to confirm: `cargo test --all-features -- --test-threads=1`.
+`datafusion-nexus` GPU tests use process-global CUDA and query-service state.
+Do not diagnose failures with bare parallel `cargo test`; use the repository's
+serialized diagnostic surface instead:
+
+```bash
+bash scripts/check_all.sh --runner cargo-diagnostic
+```
+
+For canonical validation, run `bash scripts/check_all.sh`. A bare
+`cargo nextest run` also does not take the repository-wide GPU lock.
 
 ## A build works in your shell but fails in CI (or vice versa)
 

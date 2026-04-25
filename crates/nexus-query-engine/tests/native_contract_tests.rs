@@ -142,8 +142,6 @@ mod multi_device_registry;
 mod optimizer_contracts;
 #[path = "native_contract_tests/partial_aggregate_sizing.rs"]
 mod partial_aggregate_sizing;
-#[path = "native_contract_tests/pipeline_compiled_execution.rs"]
-mod pipeline_compiled_execution;
 #[path = "native_contract_tests/pipeline_compiler.rs"]
 mod pipeline_compiler;
 #[path = "native_contract_tests/plan_contracts.rs"]

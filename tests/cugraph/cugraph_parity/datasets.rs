@@ -75,20 +75,6 @@ pub fn load_and_verify() -> Result<LoadedDatasets, LoadAndVerifyError> {
     Ok(LoadedDatasets { data_root: root, manifest })
 }
 
-pub fn load_and_verify_optional() -> Option<LoadedDatasets> {
-    match load_and_verify() {
-        Ok(loaded) => Some(loaded),
-        Err(error @ LoadAndVerifyError::Manifest(ParityManifestError::MissingManifest { .. })) => {
-            crate::cugraph_optional_fixture::handle_cugraph_fixture_unavailable(
-                "cuGraph parity fixture",
-                format!("{error}. Run `fixture/scripts/run_gen.sh cugraph` to populate local data"),
-            );
-            None
-        },
-        Err(error) => panic!("cuGraph parity fixture is present but invalid: {error}"),
-    }
-}
-
 pub fn load_edges(data_root: &Path, dataset: &ParityDataset) -> Result<Vec<ParityEdge>, String> {
     if dataset.format != "space_separated_edges" || dataset.edge_columns != ["dst", "src", "weight"] {
         return Err(format!(

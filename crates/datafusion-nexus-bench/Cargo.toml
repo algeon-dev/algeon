@@ -62,6 +62,7 @@ required-features = ["iceberg"]
 [[bin]]
 name = "native_iceberg_smoke_report"
 required-features = ["iceberg"]
+test = false
 
 [[bin]]
 name = "query_service_iceberg_stress"
@@ -74,6 +75,53 @@ required-features = ["cugraph"]
 [[bin]]
 name = "cugraph_admission_stress"
 required-features = ["cugraph"]
+test = false
+
+# These report and stress binaries have no unit tests. They remain normal
+# build/clippy targets, but do not create empty nextest harnesses.
+[[bin]]
+name = "native_clickbench_execution_report"
+test = false
+
+[[bin]]
+name = "native_datafusion_planning_report"
+test = false
+
+[[bin]]
+name = "native_empty_input_aggregate_report"
+test = false
+
+[[bin]]
+name = "native_fallback_pressure_report"
+test = false
+
+[[bin]]
+name = "native_mixed_fallback_report"
+test = false
+
+[[bin]]
+name = "native_tpcds_execution_report"
+test = false
+
+[[bin]]
+name = "native_tpcds_parity_report"
+test = false
+
+[[bin]]
+name = "native_tpch_benchmark"
+test = false
+
+[[bin]]
+name = "native_tpch_execution_report"
+test = false
+
+[[bin]]
+name = "query_service_tpch_stress"
+test = false
+
+[[bin]]
+name = "tpcds_three_way_bench"
+test = false
 
 [[test]]
 name = "iceberg_bin_tests"

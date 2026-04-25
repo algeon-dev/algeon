@@ -26,15 +26,12 @@ use datafusion_nexus::{
 };
 use serde_json::Value;
 
-#[tokio::test]
-async fn cugraph_bfs_reads_generated_graph500_rmat_fixture() {
-    let Some(fixture) = Graph500Fixture::discover() else {
-        crate::cugraph_optional_fixture::handle_cugraph_graph500_rmat_unavailable(
-            "Graph500 R-MAT SQL BFS smoke",
-            "generate fixture with `fixture/scripts/run_gen.sh graph500_rmat --scale 12 --edgefactor 16 --overwrite`",
-        );
-        return;
-    };
+/// Runs the provisioned Graph500 R-MAT BFS acceptance check.
+pub async fn run_graph500_rmat_acceptance() {
+    let fixture = Graph500Fixture::discover().expect(
+        "Graph500 R-MAT fixture is required for the selected acceptance test; \
+         generate it with `fixture/scripts/run_gen.sh graph500_rmat --scale 12 --edgefactor 16 --overwrite`",
+    );
 
     let mut config = SessionConfig::new()
         .with_target_partitions(1)

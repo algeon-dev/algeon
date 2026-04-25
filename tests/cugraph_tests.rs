@@ -1,9 +1,7 @@
-#[path = "cugraph/cugraph_bfs_predicate_fixture.rs"]
-mod cugraph_bfs_predicate_fixture;
+#![allow(dead_code)] // Explicit tools runners share parser/support modules with this Cargo contract target.
+
 #[path = "cugraph/cugraph_contract.rs"]
 mod cugraph_contract;
-#[path = "cugraph/cugraph_graph500_rmat_fixture.rs"]
-mod cugraph_graph500_rmat_fixture;
 #[path = "cugraph/optional_fixture.rs"]
 mod cugraph_optional_fixture;
 #[path = "cugraph/cugraph_parity.rs"]

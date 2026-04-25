@@ -39,9 +39,7 @@ use serde_json::{Map, Value};
 
 #[test]
 fn parity_manifest_loads_and_dataset_checksums_match() {
-    let Some(loaded) = datasets::load_and_verify_optional() else {
-        return;
-    };
+    let loaded = datasets::load_and_verify().expect("the committed cuGraph parity fixture must be available");
     assert!(
         loaded.manifest.datasets.iter().any(|d| d.id == "karate"),
         "local manifest must include the karate dataset",
@@ -50,9 +48,7 @@ fn parity_manifest_loads_and_dataset_checksums_match() {
 
 #[test]
 fn parity_specs_reference_existing_datasets() {
-    let Some(loaded) = datasets::load_and_verify_optional() else {
-        return;
-    };
+    let loaded = datasets::load_and_verify().expect("the committed cuGraph parity fixture must be available");
     for spec in CUGRAPH_PARITY_SPECS {
         assert!(
             loaded.manifest.dataset(spec.dataset).is_some(),
@@ -99,9 +95,7 @@ fn parity_oracle_inventory_exactly_matches_specs() {
         }
     }
 
-    let Some(loaded) = datasets::load_and_verify_optional() else {
-        return;
-    };
+    let loaded = datasets::load_and_verify().expect("the committed cuGraph parity fixture must be available");
     let oracle_root = loaded.data_root.join("oracle");
     let expected = CUGRAPH_PARITY_SPECS.iter().map(|spec| spec.oracle_relpath.to_string()).collect::<BTreeSet<_>>();
     let mut actual = BTreeSet::new();
@@ -119,9 +113,7 @@ fn parity_specs_declare_a_comparator_family() {
 
 #[test]
 fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
-    let Some(loaded) = datasets::load_and_verify_optional() else {
-        return;
-    };
+    let loaded = datasets::load_and_verify().expect("the committed cuGraph parity fixture must be available");
     let mut missing = Vec::new();
     let mut mismatches = Vec::new();
     let mut present = 0usize;

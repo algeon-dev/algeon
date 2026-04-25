@@ -1074,6 +1074,9 @@ fn grouped_aggregate_with_extra_key(
     builder.add_projection(grouped, projection_outputs(vec![Expr::column("k"), Expr::column("v")], key_value_schema()))
 }
 
+// This topology is exercised by the separate GPU pipeline-execution harness.
+// The CPU contract harness also compiles this shared support module.
+#[allow(dead_code)]
 pub(crate) fn shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan() -> nexus_query_engine::plan::QueryPlan
 {
     let mut builder = QueryPlanBuilder::new();

@@ -2191,247 +2191,76 @@ fn edge_schema_with_edge_id(vertex_type: DataType, weight_type: DataType) -> Arc
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// cugraph-rs inventory drift gate
+// cuGraph public-contract gate
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Mapping from cugraph-rs `Graph` method base names to the corresponding
-/// `GraphAlgorithm::as_str()` registry name.
+/// The native registry names that require the cuGraph graph implementation.
 ///
-/// Only primary methods are listed here. Variant suffixes (`_with`,
-/// `_strict`, `_strict_with`, `_checked`, `_all_checked`, `_all`) are
-/// handled by separate registry entries or by Milestone 2/3 auxiliary-input
-/// flow work; they are NOT separate primary methods for the purpose of this
-/// drift test.
-const CUGRAPH_RS_METHOD_TO_REGISTRY: &[(&str, &str)] = &[
-    ("pagerank", "pagerank"),
-    ("personalized_pagerank", "personalized_pagerank"),
-    ("bfs", "bfs"),
-    ("louvain", "louvain"),
-    ("eigenvector_centrality", "eigenvector_centrality"),
-    ("katz_centrality", "katz_centrality"),
-    ("hits", "hits"),
-    ("sssp", "sssp"),
-    ("degrees_all", "degrees_all"),
-    ("in_degrees_all", "in_degrees_all"),
-    ("out_degrees_all", "out_degrees_all"),
-    ("weakly_connected_components", "weakly_connected_components"),
-    ("strongly_connected_components", "strongly_connected_components"),
-    ("triangle_count_all", "triangle_count_all"),
-    ("core_number", "core_number"),
-    ("k_core", "k_core"),
-    ("minimum_spanning_tree", "minimum_spanning_tree"),
-    ("leiden", "leiden"),
-    ("ecg", "ecg"),
-    ("spectral_modularity_maximization", "spectral_modularity_maximization"),
-    ("force_atlas2", "force_atlas2"),
+/// This is deliberately a contract over our public dependency and descriptor
+/// layer, rather than a parser for a sibling checkout's Rust source. API
+/// changes in `cugraph-rs` are caught by the compile-time type references
+/// below and by the execution adapters that call those APIs.
+#[cfg(feature = "cugraph")]
+const CUGRAPH_REGISTRY_NAMES: &[&str] = &[
+    "pagerank",
+    "personalized_pagerank",
+    "bfs",
+    "louvain",
+    "eigenvector_centrality",
+    "katz_centrality",
+    "hits",
+    "sssp",
+    "degrees_all",
+    "in_degrees_all",
+    "out_degrees_all",
+    "weakly_connected_components",
+    "strongly_connected_components",
+    "triangle_count_all",
+    "core_number",
+    "k_core",
+    "minimum_spanning_tree",
+    "leiden",
+    "ecg",
+    "spectral_modularity_maximization",
+    "force_atlas2",
 ];
 
-/// cugraph-rs `Graph` method names that are intentionally absent from the
-/// registry today, pinned by stage.
-///
-/// **Milestone 2** (need auxiliary inputs):
-///   hits_with_initial_hubs,
-///   betweenness_centrality(_all), edge_betweenness_centrality(_all),
-///   vertex_pairs, jaccard/sorensen/overlap/cosine (pair+all_pairs),
-///   k_truss_subgraph, extract_ego, k_core_with_core_numbers,
-///   analyze_clustering_*, degrees/in_degrees/out_degrees (with vertex selection),
-///   select_random_vertices
-///
-/// **Milestone 3** (stochastic / sampling):
-///   uniform_random_walks, biased_random_walks, node2vec_random_walks,
-///   homogeneous_*_neighbor_sample, homogeneous_*_temporal_neighbor_sample
-///
-/// When a new method is added to cugraph-rs and it is not yet implemented,
-/// add it here with a comment indicating the planned stage. When it is
-/// implemented, move it to `CUGRAPH_RS_METHOD_TO_REGISTRY` above and add
-/// the registry entry.
-const KNOWN_MISSING_CUGRAPH_RS_METHODS: &[&str] = &[
-    // Milestone 2 — auxiliary inputs or variant forms of registered algorithms
-    "pagerank_with",
-    "personalized_pagerank_with",
-    "hits_with_initial_hubs",
-    "degrees",
-    "degrees_checked",
-    "in_degrees",
-    "in_degrees_checked",
-    "out_degrees",
-    "out_degrees_checked",
-    "betweenness_centrality",
-    "betweenness_centrality_all",
-    "edge_betweenness_centrality",
-    "edge_betweenness_centrality_all",
-    "vertex_pairs",
-    "jaccard_coefficients",
-    "sorensen_coefficients",
-    "overlap_coefficients",
-    "cosine_similarity_coefficients",
-    "all_pairs_jaccard_coefficients",
-    "all_pairs_sorensen_coefficients",
-    "all_pairs_overlap_coefficients",
-    "all_pairs_cosine_similarity_coefficients",
-    "k_truss_subgraph",
-    "extract_ego",
-    "k_core_with_core_numbers",
-    "analyze_clustering_modularity",
-    "analyze_clustering_edge_cut",
-    "analyze_clustering_ratio_cut",
-    "select_random_vertices",
-    // Milestone 2 — vertex-selection variant of triangle_count_all
-    "triangle_count",
-    // Milestone 3 — stochastic / sampling / layout
-    "uniform_random_walks",
-    "biased_random_walks",
-    "node2vec_random_walks",
-    "homogeneous_uniform_neighbor_sample",
-    "homogeneous_biased_neighbor_sample",
-    "homogeneous_uniform_temporal_neighbor_sample",
-    "homogeneous_biased_temporal_neighbor_sample",
-    "force_atlas2_with",
-];
-
-/// Methods on `Graph<T>` that are deliberately excluded from the drift
-/// check: generic graph queries, utility accessors, and multi-step
-/// workflow helpers that are not standalone algorithm entry points.
-const CUGRAPH_RS_NON_ALGORITHM_METHODS: &[&str] = &[
-    // graph construction and property accessors
-    "device",
-    "vertex_dtype",
-    "weight_dtype",
-    "properties",
-    "edge_count",
-    "edge_count_checked",
-    "has_edge_ids",
-    "has_weights",
-    // graph residency lifecycle helpers, not standalone algorithms
-    "park",
-    "resume",
-    // registered algorithm variants represented by auxiliary-input IR, not separate registry entries
-    "bfs_with_predicates",
-    // vertex-selection entry points that are Milestone 2 variants of registered algorithms
-    // (already listed in KNOWN_MISSING) - excluded here so they don't appear as unknown
-];
-
+#[cfg(feature = "cugraph")]
 #[test]
-fn graph_operation_registry_covers_cugraph_rs_surface_without_unknown_gaps() {
-    // Resolve the cugraph-rs graph.rs path relative to this crate's manifest
-    // directory. `CARGO_MANIFEST_DIR` is set by cargo at compile time to the
-    // directory containing Cargo.toml for nexus-query-engine.
-    //
-    // Path:  crates/nexus-query-engine/  →  ../../  →  workspace root
-    //        workspace root             →  ../     →  ~/code/
-    //        ~/code/                    →  cugraph-rs/cugraph-rs/src/graph.rs
-    let graph_rs_path =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../cugraph-rs/cugraph-rs/src/graph.rs");
+fn graph_operation_registry_has_cugraph_public_contracts() {
+    // Keep the dependency's two graph orientations in this compile-time
+    // contract. No source-tree layout outside this workspace is assumed.
+    let _: Option<cugraph::Graph<cugraph::Forward>> = None;
+    let _: Option<cugraph::Graph<cugraph::Transposed>> = None;
 
-    // Skip if the sibling checkout is absent (CI or non-standard workspace).
-    if !graph_rs_path.exists() {
-        eprintln!("skipping cugraph-rs drift test: {} not found", graph_rs_path.display());
-        return;
-    }
+    // Method-item references are compile-time contracts against cugraph-rs's
+    // public API. They intentionally avoid reading a sibling checkout's
+    // source, while still failing if an execution adapter's entry point is
+    // renamed or removed.
+    let _ = cugraph::Graph::<cugraph::Transposed>::pagerank;
+    let _ = cugraph::Graph::<cugraph::Transposed>::personalized_pagerank::<i32, f32>;
+    let _ = cugraph::Graph::<cugraph::Forward>::louvain;
+    let _ = cugraph::Graph::<cugraph::Transposed>::eigenvector_centrality;
+    let _ = cugraph::Graph::<cugraph::Transposed>::katz_centrality;
+    let _ = cugraph::Graph::<cugraph::Transposed>::hits;
+    let _ = cugraph::Graph::<cugraph::Forward>::sssp::<i32>;
+    let _ = cugraph::Graph::<cugraph::Transposed>::degrees_all;
+    let _ = cugraph::Graph::<cugraph::Transposed>::in_degrees_all;
+    let _ = cugraph::Graph::<cugraph::Forward>::out_degrees_all;
+    let _ = cugraph::Graph::<cugraph::Forward>::weakly_connected_components;
+    let _ = cugraph::Graph::<cugraph::Forward>::strongly_connected_components;
+    let _ = cugraph::Graph::<cugraph::Forward>::triangle_count_all;
+    let _ = cugraph::Graph::<cugraph::Forward>::core_number;
+    let _ = cugraph::Graph::<cugraph::Forward>::k_core;
+    let _ = cugraph::Graph::<cugraph::Forward>::minimum_spanning_tree;
+    let _ = cugraph::Graph::<cugraph::Forward>::leiden;
+    let _ = cugraph::Graph::<cugraph::Forward>::ecg;
+    let _ = cugraph::Graph::<cugraph::Forward>::spectral_modularity_maximization;
+    let _ = cugraph::Graph::<cugraph::Forward>::force_atlas2;
 
-    let source = std::fs::read_to_string(&graph_rs_path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", graph_rs_path.display()));
-
-    // Extract public method names from `impl Graph<*>` blocks only.
-    //
-    // Strategy: scan line-by-line with a simple state bit.  A line that
-    // starts with `impl` and contains `Graph<` (but NOT `for Graph<` or
-    // `GraphBuilder`) sets the bit; any other `impl` line clears it.
-    // `    pub fn name(` lines inside an active block are collected.
-    let mut in_graph_impl = false;
-    let mut extracted = std::collections::BTreeSet::<String>::new();
-    for line in source.lines() {
-        if line.starts_with("impl") {
-            // New impl block — decide if it belongs to Graph<T>.
-            in_graph_impl = line.contains("Graph<") && !line.contains("GraphBuilder") && !line.contains(" for Graph<");
-            continue;
-        }
-        if !in_graph_impl {
-            continue;
-        }
-        // Extract `    pub fn <name>(` inside an active Graph impl block.
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("pub fn ")
-            && let Some(name_end) = rest.find(|c: char| !c.is_alphanumeric() && c != '_')
-        {
-            extracted.insert(rest[..name_end].to_string());
-        }
-    }
-
-    // Build the universe of known names: registered + known_missing + non_algorithm.
-    let registered_methods: std::collections::BTreeSet<&str> =
-        CUGRAPH_RS_METHOD_TO_REGISTRY.iter().map(|(method, _)| *method).collect();
-    let known_missing: std::collections::BTreeSet<&str> = KNOWN_MISSING_CUGRAPH_RS_METHODS.iter().copied().collect();
-    let non_algorithm: std::collections::BTreeSet<&str> = CUGRAPH_RS_NON_ALGORITHM_METHODS.iter().copied().collect();
-
-    // Every name in the registered mapping must actually appear in graph.rs.
-    // Failing this means cugraph-rs renamed or removed an algorithm.
-    let mut stale_registry_entries: Vec<&str> = Vec::new();
-    for (method, _registry_name) in CUGRAPH_RS_METHOD_TO_REGISTRY {
-        if !extracted.contains(*method) {
-            stale_registry_entries.push(method);
-        }
-    }
-    assert!(
-        stale_registry_entries.is_empty(),
-        "CUGRAPH_RS_METHOD_TO_REGISTRY contains methods not found in graph.rs \
-         (cugraph-rs may have renamed or removed them): {stale_registry_entries:?}",
-    );
-
-    // Every name in KNOWN_MISSING must appear in graph.rs.
-    let mut stale_known_missing: Vec<&str> = Vec::new();
-    for method in KNOWN_MISSING_CUGRAPH_RS_METHODS {
-        if !extracted.contains(*method) {
-            stale_known_missing.push(method);
-        }
-    }
-    assert!(
-        stale_known_missing.is_empty(),
-        "KNOWN_MISSING_CUGRAPH_RS_METHODS contains methods not found in graph.rs \
-         (cugraph-rs may have renamed or removed them): {stale_known_missing:?}",
-    );
-
-    // Every public Graph method in graph.rs must be accounted for in one of
-    // the three lists.  An entry here that appears in none of them means
-    // cugraph-rs added a new method that datafusion-nexus has not yet planned
-    // for.  Add it to KNOWN_MISSING_CUGRAPH_RS_METHODS (with a stage comment)
-    // or implement it in the registry.
-    let mut unknown: Vec<&str> = Vec::new();
-    for method in &extracted {
-        let s = method.as_str();
-        if !registered_methods.contains(s) && !known_missing.contains(s) && !non_algorithm.contains(s) {
-            unknown.push(s);
-        }
-    }
-    // Print extracted set for diagnosis when the assertion fires.
-    if !unknown.is_empty() {
-        eprintln!("All extracted Graph method names from graph.rs ({} total):", extracted.len());
-        for name in &extracted {
-            eprintln!("  {name}");
-        }
-    }
-    assert!(
-        unknown.is_empty(),
-        "cugraph-rs graph.rs contains public Graph methods not accounted for in \
-         CUGRAPH_RS_METHOD_TO_REGISTRY, KNOWN_MISSING_CUGRAPH_RS_METHODS, or \
-         CUGRAPH_RS_NON_ALGORITHM_METHODS.\n\
-         Add each new method to KNOWN_MISSING with a stage comment, or implement it.\n\
-         Unknown: {unknown:?}",
-    );
-
-    // Verify the registry-side mapping is consistent: every registry name
-    // listed in the mapping must exist in GRAPH_OPERATION_REGISTRY.
     let registry_names: std::collections::BTreeSet<&str> =
-        GRAPH_OPERATION_REGISTRY.iter().map(|def| def.name).collect();
-    let mut unmapped: Vec<(&str, &str)> = Vec::new();
-    for (method, registry_name) in CUGRAPH_RS_METHOD_TO_REGISTRY {
-        if !registry_names.contains(registry_name) {
-            unmapped.push((method, registry_name));
-        }
-    }
-    assert!(
-        unmapped.is_empty(),
-        "CUGRAPH_RS_METHOD_TO_REGISTRY maps to registry names not present in \
-         GRAPH_OPERATION_REGISTRY: {unmapped:?}",
-    );
+        GRAPH_OPERATION_REGISTRY.iter().map(|definition| definition.name).collect();
+    let missing =
+        CUGRAPH_REGISTRY_NAMES.iter().copied().filter(|name| !registry_names.contains(name)).collect::<Vec<_>>();
+    assert!(missing.is_empty(), "cuGraph registry contract names missing from GRAPH_OPERATION_REGISTRY: {missing:?}");
 }

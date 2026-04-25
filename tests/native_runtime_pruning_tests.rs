@@ -48,10 +48,7 @@ use datafusion_nexus::{
     policy::GpuFallbackPolicy,
     session::CudfSessionStateBuilderExt,
 };
-use datafusion_nexus_workloads::tpch::{
-    CUDF_TPCH_PARQUET_DIR_ENV, TPCH_QUERIES, TPCH_TABLES, TpchDefaultScale, default_nvme_tpch_dataset,
-    default_tpch_parquet_root, write_tiny_tpch_parquet_dataset,
-};
+use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
 use nexus_query_engine::{
     exec::{execute_query_plan, output::QueryOutput},
     plan::PlanNode,

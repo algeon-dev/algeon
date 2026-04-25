@@ -97,17 +97,17 @@ async fn cugraph_sql_gpu_betweenness_reservation_reports_request_calibration_and
     assert_eq!(row.seed_mode, "runtime_k_selection");
 }
 
-#[tokio::test]
-async fn cugraph_sql_gpu_pagerank_filter_sort_limit_stays_gpu_resident_until_collect() {
+/// Runs the provisioned Python-cuGraph PageRank acceptance check.
+///
+/// This is an explicit tools command rather than a Cargo test because it
+/// requires an external Python/cuGraph installation.
+pub async fn run_pagerank_filter_sort_limit_acceptance() {
     let dir = unique_temp_dir("datafusion-nexus-cugraph-pagerank-compose");
     let path = dir.join("tiny_directed_edges.parquet");
     write_tiny_directed_edges(&path);
 
-    let Some(oracle) = python_pagerank_oracle(&path) else {
-        eprintln!("skipping cuGraph PageRank composition e2e because the Python cuGraph oracle is unavailable");
-        fs::remove_dir_all(dir).ok();
-        return;
-    };
+    let oracle = python_pagerank_oracle(&path)
+        .expect("Python cuGraph oracle is required for the selected PageRank composition acceptance test");
     eprintln!("Python cuGraph oracle versions: {}", oracle.versions);
 
     let mut config = SessionConfig::new()

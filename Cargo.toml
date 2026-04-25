@@ -175,6 +175,10 @@ name = "server_tests"
 required-features = ["server"]
 
 [[test]]
+name = "server_config_tests"
+required-features = ["server"]
+
+[[test]]
 name = "server_iceberg_tests"
 required-features = ["server", "iceberg"]
 

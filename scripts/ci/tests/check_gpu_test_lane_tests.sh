@@ -75,6 +75,8 @@ PY
 make_inventory "${tmp_dir}/expected" "${tmp_dir}/complete.json"
 head -n 1 "${tmp_dir}/expected" >"${tmp_dir}/partial"
 make_inventory "${tmp_dir}/partial" "${tmp_dir}/partial.json"
+catalog_count=$(wc -l <"${tmp_dir}/expected")
+catalog_success="all ${catalog_count} live test binaries are cataloged exactly once"
 
 run_shell_case() {
   local name=$1
@@ -128,7 +130,7 @@ run_policy_case() {
   echo "PASS: ${name}"
 }
 
-run_shell_case complete 0 "all 51 live test binaries are cataloged exactly once" \
+run_shell_case complete 0 "${catalog_success}" \
   "${tmp_dir}/complete.json" 0 "" "visible-successful-inventory-progress"
 grep -Fq "visible-successful-inventory-progress" "${tmp_dir}/complete.output"
 
@@ -138,7 +140,7 @@ PATH="${tmp_dir}/bin:${PATH}" \
   FAKE_REQUIRED_FEATURE_ARGS='--no-default-features --features server' \
   /usr/bin/bash scripts/ci/check_gpu_test_lane.sh --no-default-features --features server \
   >"${cli_feature_output}" 2>&1
-grep -Fq "all 51 live test binaries are cataloged exactly once" "${cli_feature_output}"
+grep -Fq "${catalog_success}" "${cli_feature_output}"
 echo "PASS: explicit feature arguments reach live inventory"
 
 # Producer status wins over empty, partial, or apparently complete stdout and

@@ -40,7 +40,7 @@ use datafusion_nexus::{
 use nexus_query_engine::runtime::SlotGuarantee;
 
 #[path = "cugraph_sql_tests/gpu.rs"]
-mod gpu;
+pub mod gpu;
 #[path = "cugraph_sql_tests/metadata.rs"]
 mod metadata;
 #[path = "cugraph_sql_tests/parser.rs"]

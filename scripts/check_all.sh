@@ -375,7 +375,7 @@ define_phase() {
   PHASE_EXIT["${id}"]=-
 }
 
-define_phase policy-selftests "7 isolated policy/orchestration scripts"
+define_phase policy-selftests "8 isolated policy/orchestration scripts"
 define_phase rustfmt "cargo +${RUSTFMT_TOOLCHAIN} fmt --all --check"
 define_phase lane-structure "test_lane_policy.py check-catalog + generated override check"
 define_phase default-members "cargo check ${FEATURE_ARGS[*]}"
@@ -523,7 +523,8 @@ run_isolated_policy_commands() {
     scripts/ci/tests/check_phase_test_counts_tests.sh \
     scripts/ci/tests/check_gpu_test_lane_tests.sh \
     scripts/ci/tests/check_doctest_rustdoc_tests.sh \
-    scripts/ci/tests/check_gpu_scheduling_tests.sh; do
+    scripts/ci/tests/check_gpu_scheduling_tests.sh \
+    scripts/ci/tests/check_pass_as_skip_policy_tests.sh; do
     echo
     echo "--> ${script}"
     bash "${script}" || policy_status=1

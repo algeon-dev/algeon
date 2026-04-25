@@ -200,7 +200,7 @@ impl DeviceContext {
     /// Attempts to grant a query budget against this device's governor.
     ///
     /// This only updates the memory-governor ledger. Per-device active-query
-    /// slots are tracked separately by [`Self::try_acquire_query_slot`].
+    /// slots are tracked separately by `try_acquire_query_slot`.
     pub fn try_grant_query(&self, request: GrantRequest) -> Result<Option<MemoryGrant>> {
         self.inner.governor.try_request(request)
     }
