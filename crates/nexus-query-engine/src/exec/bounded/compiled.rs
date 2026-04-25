@@ -17,13 +17,11 @@ pub use scheduler::{
     CompiledPipelineScheduler, CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput,
 };
 pub use state::{CompiledPipelineState, ReleasedCompiledResource};
-pub(in crate::exec::bounded) use tasks::ResidentFrameStreamPayload;
-#[allow(unused_imports)]
-pub(in crate::exec::bounded) use tasks::ResidentFrameStreamSource;
 pub use tasks::{
     CompiledGpuResource, CompiledGpuTaskExecutor, ResidentFrameStreamProducerTestHarness,
     YieldedFrameCounterTestHarness,
 };
+pub(in crate::exec::bounded) use tasks::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},

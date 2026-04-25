@@ -328,11 +328,8 @@ fn find_datafusion_resources_exhausted(error: &DataFusionError) -> bool {
     }
 }
 
-#[allow(dead_code)]
-fn _assert_datafusion_result_send_sync<T>(result: DataFusionResult<T>) -> DataFusionResult<T> {
-    result
-}
-
 fn _pin_error_code_use(code: ErrorCode) -> &'static str {
     code.as_str()
 }
+
+const _: fn(DataFusionResult<()>) -> DataFusionResult<()> = |result| result;

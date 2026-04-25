@@ -170,7 +170,6 @@ fn execute_grouping_sets_groupby(
     concat_grouping_set_outputs(context, outputs, token, operation)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_prefix_rollup_grouping_sets_groupby(
     context: &ExecutionContext,
     input_schema: &ArrowSchemaRef,
@@ -272,7 +271,6 @@ fn execute_prefix_rollup_grouping_sets_groupby(
     concat_grouping_set_outputs(context, outputs, token, operation)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_single_grouping_set_groupby(
     context: &ExecutionContext,
     input_schema: &ArrowSchemaRef,
@@ -367,7 +365,6 @@ fn aggregate_for_grouping_set(aggregate: &LoweredAggregate, group: &[bool]) -> L
     LoweredAggregate { key_columns, output_key_names, aggregations: aggregate.aggregations.clone(), output_names }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn complete_grouping_set_output(
     context: &ExecutionContext,
     output_schema: &ArrowSchemaRef,
@@ -569,7 +566,6 @@ fn aggregate_for_prefix_rollup_level(
     LoweredAggregate { key_columns, output_key_names, aggregations: aggregate.aggregations.clone(), output_names }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn prepare_grouping_set_frame(
     context: &ExecutionContext,
     input_schema: &ArrowSchemaRef,

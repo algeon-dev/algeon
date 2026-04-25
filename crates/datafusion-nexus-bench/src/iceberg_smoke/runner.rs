@@ -92,7 +92,6 @@ pub(crate) async fn run_report_with_optional_stream(
     Ok(IcebergNativeSmokeReport { rows: vec![row] })
 }
 
-#[allow(dead_code)]
 pub async fn run_single_tpch_query_report_with_execution_mode(
     mut config: IcebergNativeSmokeConfig,
     query_id: impl Into<String>,

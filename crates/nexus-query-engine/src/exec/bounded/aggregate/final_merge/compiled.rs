@@ -267,7 +267,6 @@ fn execute_compiled_partitioned_final_aggregate_merge(
     Ok(merged)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_compiled_partitioned_final_merge_group(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -349,7 +348,6 @@ fn execute_compiled_partitioned_final_merge_group(
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn merge_compiled_partitioned_final_aggregate_partials_consuming(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -432,7 +430,6 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
     execute_compiled_final_aggregate(context, aggregate, input_schema, output_schema, concatenated, token, metrics)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn record_compiled_partitioned_final_merge_strategy(
     context: &ExecutionContext,
     node_id: NodeId,

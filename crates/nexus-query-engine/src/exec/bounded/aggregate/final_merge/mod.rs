@@ -423,7 +423,6 @@ pub(super) fn concatenate_partitioned_final_merge_outputs(
     Ok(CommittedPartial { frame: concatenated, reservation: output_reservation })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn partitioned_final_merge_task_id(node_id: NodeId, stage: impl std::fmt::Display) -> String {
     format!("legacy_bounded.final_merge.node{node_id}.partitioned.{stage}")
 }

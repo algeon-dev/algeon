@@ -171,7 +171,7 @@ impl NativeCudfComposedExec {
         &self.gpu_inputs
     }
 
-    #[allow(dead_code)] // Standalone callers can drain the wrapper-owned local collector here.
+    #[cfg(test)]
     pub(crate) fn metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
         self.metrics_capture.clone()
     }

@@ -761,7 +761,6 @@ fn execute_row_number_window(
     Ok(output)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_lag_lead_window(
     context: &ExecutionContext,
     node: &WindowNode,

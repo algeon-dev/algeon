@@ -124,7 +124,6 @@ impl NativeCudfMetrics {
     }
 
     #[cfg(any(test, feature = "cugraph"))]
-    #[allow(dead_code)]
     pub(crate) fn new_with_capture(
         metrics: &ExecutionPlanMetricsSet,
         partition: usize,

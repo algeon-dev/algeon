@@ -111,7 +111,6 @@ impl QueryMetrics {
     }
 
     /// Records a graph-related budget event with caller-supplied enforcement evidence.
-    #[allow(clippy::too_many_arguments)]
     pub fn record_graph_budget_tracking_with_boundary_and_enforcement(
         &mut self,
         operation: impl Into<String>,

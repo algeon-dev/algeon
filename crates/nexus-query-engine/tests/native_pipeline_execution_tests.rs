@@ -61,8 +61,8 @@ fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<Projec
 #[path = "native_contract_tests/pipeline_compiled_execution/fixtures_parquet.rs"]
 mod fixtures_parquet;
 #[path = "native_contract_tests/pipeline_compiled_execution/fixtures_plans.rs"]
-// This target runs compiled GPU execution only; this shared fixture module
-// also supplies CPU-only contract cases in `native_contract_tests`.
+// Shared with the CPU contract target. Only a subset is exercised here, so
+// unused fixture constructors are expected for this binary.
 #[allow(dead_code)]
 mod fixtures_plans;
 #[path = "native_contract_tests/pipeline_compiled_execution/gpu_execution.rs"]
@@ -70,7 +70,7 @@ mod gpu_execution;
 #[path = "native_contract_tests/pipeline_compiled_execution/gpu_support.rs"]
 mod gpu_support;
 #[path = "native_contract_tests/bounded_join_admission/plans/remaining_topologies.rs"]
-// The compiled GPU target uses only three of these CPU contract fixtures.
+// Shared with the CPU contract target; this binary only calls three constructors.
 #[allow(dead_code)]
 mod remaining_topologies;
 

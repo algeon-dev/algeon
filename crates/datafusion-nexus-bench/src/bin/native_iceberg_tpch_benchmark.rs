@@ -16,9 +16,11 @@ use datafusion_nexus::{
 };
 use datafusion_nexus_workloads::tpch::TPCH_QUERIES;
 
-#[allow(dead_code)]
-#[path = "native_iceberg_smoke_report.rs"]
-pub(crate) mod native_iceberg_smoke_report;
+// Re-export the smoke library surface under the historical module name used by
+// this binary and its unit tests, without compiling the smoke CLI entrypoint.
+pub(crate) mod native_iceberg_smoke_report {
+    pub(crate) use datafusion_nexus_bench::iceberg_smoke::*;
+}
 
 use native_iceberg_smoke_report::{
     IcebergNativeSmokeConfig, IcebergNativeSmokeFixture, IcebergNativeSmokeReportRow, ObjectStoreStagingMode,
@@ -311,22 +313,17 @@ pub(crate) fn set_iteration_report_elapsed_ms(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum BenchmarkTimeoutCategory {
-    IcebergMetadata,
     NativeRuntime,
     CpuS3Baseline,
-    ParityCollection,
     Iteration,
 }
 
 impl BenchmarkTimeoutCategory {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::IcebergMetadata => "iceberg_metadata_timeout",
             Self::NativeRuntime => "native_runtime_timeout",
             Self::CpuS3Baseline => "cpu_s3_baseline_timeout",
-            Self::ParityCollection => "parity_collection_timeout",
             Self::Iteration => "iteration_timeout",
         }
     }

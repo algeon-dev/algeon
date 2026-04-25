@@ -6,11 +6,8 @@ pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
     /// scheduler's admission input sizing).
     max_per_frame_reservation_bytes: u64,
     /// Sum of per-frame reservation bytes across the whole stream.
-    /// Diagnostic / sanity-check only; not consumed by the scheduler.
-    /// Wired in Milestone 4.B for the upcoming Milestone 4.E.3b metadata
-    /// forecast pass; the dead-code allowance disappears once that
-    /// pass starts populating it from the closed-form upper bound.
-    #[allow(dead_code)]
+    /// Consumed by `aggregate_reservation_bytes()` and start-of-stream
+    /// contract accounting for producer-backed payloads.
     aggregate_reservation_bytes: u64,
     /// Currently-live frame reservation bytes. Read by
     /// `reclaimable_input_bytes` (`tasks.rs:reclaimable_input_bytes`).
@@ -46,11 +43,6 @@ impl YieldedFrame {
         let frame = self.frame.take().expect("YieldedFrame::take_for_release called twice");
         self.release_guard.take_for_release("YieldedFrame::take_for_release called twice");
         frame
-    }
-
-    #[allow(dead_code)]
-    pub(in crate::exec::bounded) fn frame(&self) -> &ResidentGpuFrame {
-        self.frame.as_ref().expect("YieldedFrame::frame called after take_for_release")
     }
 }
 
@@ -202,7 +194,6 @@ impl ResidentFrameStreamPayload {
         }
     }
 
-    #[allow(dead_code)]
     pub(in crate::exec::bounded) fn from_producer(
         max_per_frame_reservation_bytes: u64,
         aggregate_reservation_bytes: u64,
@@ -226,7 +217,6 @@ impl ResidentFrameStreamPayload {
         self.max_per_frame_reservation_bytes
     }
 
-    #[allow(dead_code)]
     pub(in crate::exec::bounded) fn aggregate_reservation_bytes(&self) -> u64 {
         self.aggregate_reservation_bytes
     }

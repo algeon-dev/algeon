@@ -46,10 +46,13 @@ fn typed_nexus_error(error: &DataFusionError) -> &Error {
 
 #[path = "cugraph_sql_tests/gpu.rs"]
 pub mod gpu;
+#[cfg(test)]
 #[path = "cugraph_sql_tests/metadata.rs"]
 mod metadata;
+#[cfg(test)]
 #[path = "cugraph_sql_tests/parser.rs"]
 mod parser;
+#[cfg(test)]
 #[path = "cugraph_sql_tests/planning.rs"]
 mod planning;
 #[path = "cugraph_sql_tests/support.rs"]

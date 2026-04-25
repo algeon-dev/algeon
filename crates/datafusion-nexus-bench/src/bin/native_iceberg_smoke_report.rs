@@ -1,7 +1,8 @@
 use std::io;
 
-#[allow(unused_imports)]
-pub(crate) use datafusion_nexus_bench::iceberg_smoke::*;
+pub(crate) use datafusion_nexus_bench::iceberg_smoke::{
+    IcebergNativeSmokeConfig, run_report, run_report_streaming, stable_tsv_field,
+};
 
 #[tokio::main]
 async fn main() {

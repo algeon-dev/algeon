@@ -659,7 +659,6 @@ fn record_single_grouped_aggregate_strategy_decision(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::operators::aggregate) fn record_single_grouped_aggregate_strategy_decision_with_metrics(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -843,7 +842,6 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_partial_aggregate_with_budget_single_pass(
     context: &ExecutionContext,
     node_id: Option<NodeId>,

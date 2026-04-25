@@ -237,7 +237,6 @@ pub(super) fn execute_segmented_filtered_global_aggregate_with_budget(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_segmented_filtered_global_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -314,7 +313,6 @@ pub(super) fn execute_segmented_filtered_global_partial_aggregate_with_budget(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn record_filtered_global_partial_single_pass(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -381,7 +379,6 @@ pub(super) fn record_filtered_global_aggregate_single_pass(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn record_filtered_global_segmented_failure(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -448,7 +445,6 @@ fn add_segmented_failure_error_facts(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_segmented_filtered_global_partial_state(
     context: &ExecutionContext,
     spec: &AggregateSpec,
@@ -512,7 +508,6 @@ fn execute_segmented_filtered_global_partial_state(
     Ok(frame)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_filtered_global_partial_state_for_chunk(
     context: &ExecutionContext,
     spec: &AggregateSpec,
@@ -872,7 +867,6 @@ fn concat_partial_state_frames(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn record_segmented_filtered_global_aggregate_strategy(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -908,7 +902,6 @@ fn record_segmented_filtered_global_aggregate_strategy(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn record_segmented_filtered_global_partial_strategy(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,

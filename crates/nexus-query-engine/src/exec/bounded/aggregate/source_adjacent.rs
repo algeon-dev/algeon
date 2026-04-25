@@ -764,7 +764,6 @@ fn execute_source_adjacent_partition_aggregate(
     Ok(output)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn concatenate_committed_frames(
     context: &ExecutionContext,
     node_id: NodeId,

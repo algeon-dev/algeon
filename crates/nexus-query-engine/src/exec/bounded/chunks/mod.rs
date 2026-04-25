@@ -1202,7 +1202,6 @@ fn minimum_parquet_source_read_budget_bytes() -> u64 {
 pub(in crate::exec) enum SourceReadReservationContractQuality {
     /// A lower layer supplied an exact preflight byte contract, so bounded
     /// source reads can reserve the required bytes before decoding starts.
-    #[allow(dead_code)]
     ExactLowerLevelContract,
     /// Parquet footer metadata gave projected uncompressed byte counts for the
     /// columns that the source reader must decode.
