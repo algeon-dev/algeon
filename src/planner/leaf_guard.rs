@@ -485,7 +485,6 @@ mod tests {
         );
         assert_eq!(adapter.fact_value("native_source_read_capability"), Some("object_store:s3"));
         assert_eq!(adapter.fact_value("source_read_strategy"), Some("unknown"));
-        assert_eq!(adapter.fact_value("source_decode_input"), Some("unknown"));
         assert_eq!(adapter.fact_value("credential_mode"), Some("unknown"));
         assert_eq!(adapter.fact_value("lakehouse_cache_status"), Some("unknown"));
         assert_eq!(adapter.fact_value("direct_device_read_disposition"), Some("rejected"));

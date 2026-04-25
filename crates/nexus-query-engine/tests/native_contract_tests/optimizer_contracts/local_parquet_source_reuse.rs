@@ -99,15 +99,15 @@ fn native_optimizer_rejects_source_reuse_with_branch_specific_dynamic_filter_rou
 #[test]
 fn gpu_local_parquet_source_cache_key_isolates_resolved_source_contracts() {
     let direct_source = contract_sensitive_customer_address_source(remote_direct_customer_address_contract());
-    let host_buffer_source = contract_sensitive_customer_address_source(host_buffer_customer_address_contract());
+    let cache_policy_source = contract_sensitive_customer_address_source(cache_policy_customer_address_contract());
     let decimal_source = contract_sensitive_customer_address_source(remote_direct_customer_address_contract())
         .with_reader_decimal_contract("id", ParquetReaderDecimalTypeId::Decimal64, -2);
 
     let direct_source_key = GpuLocalParquetSourceCacheKey::from_source(&direct_source);
-    let host_buffer_source_key = GpuLocalParquetSourceCacheKey::from_source(&host_buffer_source);
+    let cache_policy_source_key = GpuLocalParquetSourceCacheKey::from_source(&cache_policy_source);
     let decimal_source_key = GpuLocalParquetSourceCacheKey::from_source(&decimal_source);
     assert_ne!(
-        direct_source_key, host_buffer_source_key,
+        direct_source_key, cache_policy_source_key,
         "whole-source GPU cache keys must include resolved read/cache/credential contract fields"
     );
     assert_ne!(
@@ -115,28 +115,28 @@ fn gpu_local_parquet_source_cache_key_isolates_resolved_source_contracts() {
         "whole-source GPU cache keys must include per-file Parquet reader decimal contracts"
     );
     assert!(direct_source_key.as_str().contains("file.0.resolved.read_strategy=remote_direct"));
-    assert!(direct_source_key.as_str().contains("file.0.resolved.remote_read_mode=require_direct"));
+    assert!(!direct_source_key.as_str().contains("remote_read_mode"));
+    assert!(!direct_source_key.as_str().contains("decode_input"));
     assert!(direct_source_key.as_str().contains("file.0.resolved.credential_mode=shared_process_env"));
     assert!(direct_source_key.as_str().contains("file.0.resolved.storage_profile_id=remote-profile-a"));
-    assert!(host_buffer_source_key.as_str().contains("file.0.resolved.read_strategy=remote_host_buffer"));
-    assert!(host_buffer_source_key.as_str().contains("file.0.resolved.decode_input=host_buffer"));
-    assert!(host_buffer_source_key.as_str().contains("file.0.resolved.lakehouse_cache_status=miss"));
-    assert!(host_buffer_source_key.as_str().contains("file.0.resolved.lakehouse_cache_read_mode=enabled"));
-    assert!(host_buffer_source_key.as_str().contains("file.0.resolved.lakehouse_cache_fill_mode=background"));
+    assert!(cache_policy_source_key.as_str().contains("file.0.resolved.read_strategy=remote_direct"));
+    assert!(cache_policy_source_key.as_str().contains("file.0.resolved.lakehouse_cache_status=miss"));
+    assert!(cache_policy_source_key.as_str().contains("file.0.resolved.lakehouse_cache_read_mode=enabled"));
+    assert!(cache_policy_source_key.as_str().contains("file.0.resolved.lakehouse_cache_fill_mode=background"));
     assert!(decimal_source_key.as_str().contains("file.0.reader_decimal_types.0.type_id=decimal64"));
     assert!(!direct_source_key.as_str().contains("query_variant=a"));
-    assert!(!host_buffer_source_key.as_str().contains("/tmp/nexus-lakehouse-cache"));
+    assert!(!cache_policy_source_key.as_str().contains("/tmp/nexus-lakehouse-cache"));
 
     let mut builder = QueryPlanBuilder::new();
     let direct_source_id = builder.add_source(SourceNode::LocalParquet(direct_source.clone()));
-    let host_buffer_source_id = builder.add_source(SourceNode::LocalParquet(host_buffer_source.clone()));
+    let cache_policy_source_id = builder.add_source(SourceNode::LocalParquet(cache_policy_source.clone()));
     let decimal_source_id = builder.add_source(SourceNode::LocalParquet(decimal_source.clone()));
     let direct_chunk_plan =
         plan_local_parquet_source_chunks(direct_source_id, &direct_source, SourceChunkPlanningPolicy::new(None, 1))
             .unwrap();
-    let host_buffer_chunk_plan = plan_local_parquet_source_chunks(
-        host_buffer_source_id,
-        &host_buffer_source,
+    let cache_policy_chunk_plan = plan_local_parquet_source_chunks(
+        cache_policy_source_id,
+        &cache_policy_source,
         SourceChunkPlanningPolicy::new(None, 1),
     )
     .unwrap();
@@ -145,13 +145,13 @@ fn gpu_local_parquet_source_cache_key_isolates_resolved_source_contracts() {
             .unwrap();
     let direct_chunk_key =
         GpuLocalParquetSourceCacheKey::from_source_chunk(&direct_source, &direct_chunk_plan.chunks[0]);
-    let host_buffer_chunk_key =
-        GpuLocalParquetSourceCacheKey::from_source_chunk(&host_buffer_source, &host_buffer_chunk_plan.chunks[0]);
+    let cache_policy_chunk_key =
+        GpuLocalParquetSourceCacheKey::from_source_chunk(&cache_policy_source, &cache_policy_chunk_plan.chunks[0]);
     let decimal_chunk_key =
         GpuLocalParquetSourceCacheKey::from_source_chunk(&decimal_source, &decimal_chunk_plan.chunks[0]);
 
     assert_ne!(
-        direct_chunk_key, host_buffer_chunk_key,
+        direct_chunk_key, cache_policy_chunk_key,
         "bounded chunk GPU cache keys must include resolved read/cache/credential contract fields"
     );
     assert_ne!(
@@ -159,7 +159,9 @@ fn gpu_local_parquet_source_cache_key_isolates_resolved_source_contracts() {
         "bounded chunk GPU cache keys must include per-chunk Parquet reader decimal contracts"
     );
     assert!(direct_chunk_key.as_str().contains("chunk.resolved.read_strategy=remote_direct"));
-    assert!(host_buffer_chunk_key.as_str().contains("chunk.resolved.read_strategy=remote_host_buffer"));
+    assert!(cache_policy_chunk_key.as_str().contains("chunk.resolved.read_strategy=remote_direct"));
+    assert!(!cache_policy_chunk_key.as_str().contains("remote_read_mode"));
+    assert!(!cache_policy_chunk_key.as_str().contains("decode_input"));
     assert!(decimal_chunk_key.as_str().contains("chunk.reader_decimal_types.0.type_id=decimal64"));
     assert!(decimal_chunk_key.as_str().contains("chunk.reader_decimal_types_footer_verified=false"));
 }
@@ -581,18 +583,18 @@ fn contract_mismatched_local_parquet_source_variants_plan() -> nexus_query_engin
     let direct = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
         remote_direct_customer_address_contract(),
     )));
-    let host_buffer = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
-        host_buffer_customer_address_contract(),
+    let cache_policy = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
+        cache_policy_customer_address_contract(),
     )));
     let direct_id = builder.add_projection(
         direct,
         vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
     );
-    let host_buffer_id = builder.add_projection(
-        host_buffer,
+    let cache_policy_id = builder.add_projection(
+        cache_policy,
         vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
     );
-    let union = builder.add_union(vec![direct_id, host_buffer_id], schema(&["id"]));
+    let union = builder.add_union(vec![direct_id, cache_policy_id], schema(&["id"]));
     builder.finish_gpu_resident(union)
 }
 
@@ -1078,7 +1080,7 @@ impl LocalParquetSourceTestExt for LocalParquetSource {
     fn with_position_delete_file(mut self, id: &str, location: &str) -> Self {
         let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
             id,
-            ResolvedParquetSource::remote_direct(location, CredentialMode::SharedProcessEnv),
+            ResolvedParquetSource::remote_kvikio(location, CredentialMode::SharedProcessEnv),
         )
         .unwrap();
         self.files[0].position_delete_files = vec![delete_file];
@@ -1088,22 +1090,17 @@ impl LocalParquetSourceTestExt for LocalParquetSource {
 }
 
 fn remote_direct_customer_address_contract() -> ResolvedParquetSource {
-    ResolvedParquetSource::remote_direct(
+    ResolvedParquetSource::remote_kvikio(
         "s3://warehouse/customer_address.parquet?query_variant=a",
         CredentialMode::SharedProcessEnv,
     )
-    .with_remote_read_mode(RemoteParquetReadMode::RequireDirect)
     .with_storage_profile_id("remote-profile-a")
     .with_storage_domain("warehouse@s3")
     .with_content_identity("snapshot=42,file=customer_address,etag=abc")
 }
 
-fn host_buffer_customer_address_contract() -> ResolvedParquetSource {
-    ResolvedParquetSource::remote_host_buffer(
-        "s3://warehouse/customer_address.parquet?query_variant=a",
-        "/tmp/nexus-lakehouse-cache/customer_address.parquet",
-        CredentialMode::SharedProcessEnv,
-    )
+fn cache_policy_customer_address_contract() -> ResolvedParquetSource {
+    ResolvedParquetSource::remote_kvikio("s3://warehouse/customer_address.parquet?query_variant=a", CredentialMode::SharedProcessEnv)
     .with_storage_profile_id("remote-profile-a")
     .with_storage_domain("warehouse@s3")
     .with_content_identity("snapshot=42,file=customer_address,etag=abc")

@@ -552,7 +552,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -596,7 +596,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -639,7 +639,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -682,7 +682,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -720,7 +720,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ));
@@ -771,7 +771,7 @@ mod tests {
             TableFormatPartitionTransform::Identity,
             TableFormatScalarValue::Int64(123),
         )])
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ));
@@ -819,7 +819,7 @@ mod tests {
             TableFormatReadCapability::object_store("s3"),
         )
         .with_row_count(1)
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ));
@@ -894,7 +894,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -936,7 +936,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -996,7 +996,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1037,7 +1037,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1082,7 +1082,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1156,7 +1156,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1249,7 +1249,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1305,7 +1305,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1360,7 +1360,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1408,7 +1408,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1457,7 +1457,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1497,7 +1497,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1540,7 +1540,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1585,7 +1585,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -1627,7 +1627,7 @@ mod tests {
             TableFormatDataFileFormat::Parquet,
             TableFormatReadCapability::object_store("s3"),
         )
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -2385,8 +2385,7 @@ mod tests {
                 TableFormatPartitionTransform::Identity,
                 TableFormatScalarValue::Int32(7),
             )])
-            .with_resolved_parquet_source(ResolvedParquetSource::remote_host_buffer(
-                "s3://bucket/table/part-0.parquet",
+            .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
                 "s3://bucket/table/part-0.parquet",
                 CredentialMode::SharedProcessEnv,
             )),
@@ -2410,8 +2409,7 @@ mod tests {
             TableFormatDeleteFileContent::PositionDeletes,
         )
         .with_read_capability(TableFormatReadCapability::object_store("s3"))
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_host_buffer(
-            "s3://bucket/table/delete-0.parquet",
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/delete-0.parquet",
             CredentialMode::SharedProcessEnv,
         ));
@@ -2426,8 +2424,7 @@ mod tests {
             .with_size_bytes(1024)
             .with_row_groups(vec![1, 2])
             .with_position_delete_files(vec![delete_file.clone()])
-            .with_resolved_parquet_source(ResolvedParquetSource::remote_host_buffer(
-                "s3://bucket/table/part-0.parquet",
+            .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
                 "s3://bucket/table/part-0.parquet",
                 CredentialMode::SharedProcessEnv,
             )),
@@ -2461,8 +2458,7 @@ mod tests {
                 TableFormatPartitionTransform::Identity,
                 TableFormatScalarValue::Int32(7),
             )])
-            .with_resolved_parquet_source(ResolvedParquetSource::remote_host_buffer(
-                "s3://bucket/table/part-0.parquet",
+            .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
                 "s3://bucket/table/part-0.parquet",
                 CredentialMode::SharedProcessEnv,
             )),
@@ -2495,8 +2491,7 @@ mod tests {
             )
             .with_size_bytes(1024)
             .with_row_count(123)
-            .with_resolved_parquet_source(ResolvedParquetSource::remote_host_buffer(
-                "s3://bucket/table/part-0.parquet",
+            .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
                 "s3://bucket/table/part-0.parquet",
                 CredentialMode::SharedProcessEnv,
             )),

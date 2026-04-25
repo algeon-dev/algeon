@@ -72,7 +72,7 @@ impl ParquetPositionDeleteFile {
         Ok(Self {
             id,
             location,
-            path: PathBuf::from(&resolved_source.reader_location),
+            path: PathBuf::from(resolved_source.reader_location()),
             resolved_source,
             stable_id,
             file_size_bytes: None,
@@ -184,7 +184,7 @@ impl ParquetEqualityDeleteFile {
         Ok(Self {
             id,
             location,
-            path: PathBuf::from(&resolved_source.reader_location),
+            path: PathBuf::from(resolved_source.reader_location()),
             resolved_source,
             stable_id,
             equality_ids,

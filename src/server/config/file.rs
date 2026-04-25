@@ -61,7 +61,6 @@ pub(super) struct ServerNativeFileConfig {
     pub(super) min_retry_chunk_row_groups: Option<usize>,
     pub(super) max_source_reads_in_flight: Option<usize>,
     pub(super) source_chunk_planning_mode: Option<String>,
-    pub(super) host_fetch_acquire_timeout_secs: Option<u64>,
     pub(super) source_cache_max_retained_bytes: Option<u64>,
     pub(super) graph_cache_max_retained_bytes: Option<u64>,
     pub(super) query_memory_domain_ceiling_multiplier: Option<u64>,

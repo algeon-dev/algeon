@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
     runtime::cache::local_parquet::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey},
-    source::{LocalParquetFile, ParquetReadStrategy, RemoteParquetReadMode},
+    source::{LocalParquetFile, ParquetReadStrategy},
 };
 
 mod reservation_policy;
@@ -193,8 +193,7 @@ fn source_adjacent_source_requires_remote_direct_read(source: &LocalParquetSourc
 }
 
 fn source_chunk_requires_remote_direct_read(chunk: &SourceChunk) -> bool {
-    matches!(chunk.resolved_source.read_strategy, ParquetReadStrategy::RemoteDirect)
-        && chunk.resolved_source.remote_read_mode == RemoteParquetReadMode::RequireDirect
+    matches!(chunk.resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect)
 }
 
 fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<SourceChunkBatch> {
@@ -1685,7 +1684,6 @@ mod tests {
     }
 
     fn remote_direct_resolved_source() -> ResolvedParquetSource {
-        ResolvedParquetSource::remote_direct("s3://bucket/table.parquet", CredentialMode::SharedProcessEnv)
-            .with_remote_read_mode(RemoteParquetReadMode::RequireDirect)
+        ResolvedParquetSource::remote_kvikio("s3://bucket/table.parquet", CredentialMode::SharedProcessEnv)
     }
 }

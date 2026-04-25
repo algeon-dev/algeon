@@ -11,8 +11,7 @@ use futures::future::BoxFuture;
 use nexus_query_engine::{
     runtime::SourceStorageProfile,
     source::{
-        CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, RemoteParquetReadMode,
-        ResolvedParquetSource,
+        CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, ResolvedParquetSource,
     },
 };
 
@@ -34,11 +33,9 @@ pub use columns::{
 use config::table_format_parquet_read_strategy_config_from_env;
 pub use config::{
     AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
-    NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
-    NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV, NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV,
     NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, NEXUS_LAKEHOUSE_CACHE_READ_ENV,
     NEXUS_LAKEHOUSE_CACHE_ROOT_ENV, TableFormatLakehouseCachePolicy, TableFormatLakehouseCacheReadPolicy,
-    TableFormatParquetReadStrategyConfig, TableFormatParquetReadStrategyPreference,
+    TableFormatParquetReadStrategyConfig,
 };
 pub use diagnostics::{
     TableFormatDirectDeviceReadDisposition, TableFormatScanDiagnostics, TableFormatUnsupportedFeature,

@@ -471,7 +471,6 @@ mod rest_tests {
     #[test]
     fn rest_parquet_strategy_config_uses_injected_server_strategy() {
         let injected = TableFormatParquetReadStrategyConfig {
-            preference: crate::table_format::TableFormatParquetReadStrategyPreference::LocalCache,
             lakehouse_cache_root: Some(std::path::PathBuf::from("/tmp/rest-cache")),
             lakehouse_cache_policy: crate::table_format::TableFormatLakehouseCachePolicy::FillBeforeRead,
             lakehouse_cache_max_bytes: Some(1024),
@@ -482,7 +481,6 @@ mod rest_tests {
 
         let strategy = config.parquet_read_strategy_config_from(injected);
 
-        assert_eq!(strategy.preference, crate::table_format::TableFormatParquetReadStrategyPreference::LocalCache);
         assert_eq!(strategy.lakehouse_cache_root, Some(std::path::PathBuf::from("/tmp/rest-cache")));
         assert_eq!(
             strategy.lakehouse_cache_policy,

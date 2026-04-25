@@ -135,16 +135,16 @@ fn non_identity_partition_value_facts_do_not_reject_scan_admission_by_themselves
 }
 
 #[test]
-fn empty_table_format_scan_reports_no_source_fallback_reason() {
+fn empty_table_format_scan_omits_retired_source_labels() {
     let plan = TableFormatScanPlan::new(TableFormat::Iceberg).with_catalog_type("local");
     let diagnostics = plan.diagnostics();
 
-    assert_eq!(diagnostics.source_fallback_reason, "none");
-    assert_eq!(diagnostics.facts()["source_fallback_reason"], "none");
+    assert!(!diagnostics.facts().contains_key(concat!("source_decode_", "input")));
+    assert!(!diagnostics.facts().contains_key(concat!("source_fallback_", "reason")));
 }
 
 #[test]
-fn table_format_scan_display_never_renders_unknown_fallback_reason() {
+fn table_format_scan_display_omits_retired_source_labels() {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
         .with_catalog_type("local")
@@ -153,9 +153,8 @@ fn table_format_scan_display_never_renders_unknown_fallback_reason() {
     let scan = CudfTableFormatScanExec::new(plan, schema);
     let rendered = displayable(&scan).indent(false).to_string();
 
-    assert!(rendered.contains("source_fallback_reason=none"), "{rendered}");
-    assert!(!rendered.contains("source_fallback_reason=unknown"), "{rendered}");
-    assert!(!rendered.contains("fallback_reason=unknown"), "{rendered}");
+    assert!(!rendered.contains(concat!("source_decode_", "input=")), "{rendered}");
+    assert!(!rendered.contains(concat!("source_fallback_", "reason=")), "{rendered}");
 }
 
 #[test]

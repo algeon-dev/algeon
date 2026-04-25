@@ -18,10 +18,8 @@ pub(crate) fn object_store_decimal_reader_predicate_requires_footer_contract(
     source: &LocalParquetSource,
     file: &LocalParquetFile,
 ) -> bool {
-    matches!(
-        file.resolved_source.read_strategy,
-        ParquetReadStrategy::RemoteDirect | ParquetReadStrategy::RemoteHostBuffer
-    ) && matches!(file.location, ParquetSourceLocation::ObjectStoreUri { .. })
+    matches!(file.resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect)
+        && matches!(file.location, ParquetSourceLocation::ObjectStoreUri { .. })
         && source
             .reader_predicate
             .as_ref()
@@ -127,8 +125,8 @@ fn reader_decimal_type_metadata_error(
     .with_fact("reason", reason)
     .with_fact("path", file.location.diagnostic_location())
     .with_fact("stable_id", file.location.diagnostic_stable_id(file.stable_id.as_str()))
-    .with_fact("read_strategy", file.resolved_source.read_strategy.as_str())
-    .with_fact("remote_read_mode", file.resolved_source.remote_read_mode.as_str())
+    .with_fact("read_strategy", file.resolved_source.read_strategy().as_str())
+    .with_fact("remote_read_mode", "require_kvikio")
     .with_fact("missing_reader_decimal_columns", columns);
     if let Some(detail) = detail {
         error = error.with_fact("detail", detail);

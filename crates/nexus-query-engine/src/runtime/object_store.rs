@@ -1,4 +1,4 @@
-//! Object-store source fetch handles and shared runtime registry.
+//! Object-store control-plane handles and shared runtime registry.
 
 use std::{
     collections::HashMap,
@@ -11,7 +11,7 @@ use bytes::Bytes;
 
 use crate::error::{QueryError, QueryErrorCode, Result};
 
-/// Storage profile used by native source fetches.
+/// Storage profile used by native remote reads and cache maintenance.
 ///
 /// The profile is format-neutral: callers such as Iceberg REST/Glue translate
 /// catalog/FileIO settings into this shape before execution. Secrets are held
@@ -228,7 +228,6 @@ pub(crate) struct S3ObjectStoreKey {
 
 pub(crate) struct ObjectStoreFetchResult {
     pub(crate) bytes: Result<Bytes>,
-    pub(crate) elapsed: Duration,
 }
 
 pub(crate) struct ObjectStoreCustomFetchResult<T> {
@@ -303,7 +302,7 @@ impl SourceObjectStoreRegistry {
         Ok(store)
     }
 
-    /// Returns the S3 credential provider shared with host-buffer fetches.
+    /// Returns the S3 credential provider shared with remote KvikIO reads.
     pub(super) fn s3_credential_provider(
         &self,
         key: S3ObjectStoreKey,
@@ -434,7 +433,7 @@ fn s3_store_build_error(
     let mut query_error = QueryError::new(
         QueryErrorCode::CudfDependencyFailure,
         "nexus_query_engine.source_object_store.s3",
-        "failed to build S3 object-store client for native source fetch",
+        "failed to build S3 object-store client for native control-plane work",
     )
     .with_fact("bucket", key.bucket.as_str())
     .with_fact("region", region)
@@ -462,7 +461,7 @@ impl fmt::Debug for SourceObjectStoreRegistry {
     }
 }
 
-pub(super) fn default_source_fetch_runtime() -> Result<Arc<tokio::runtime::Runtime>> {
+pub(super) fn default_object_store_control_runtime() -> Result<Arc<tokio::runtime::Runtime>> {
     static RUNTIME: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
     static INIT_LOCK: Mutex<()> = Mutex::new(());
     if let Some(runtime) = RUNTIME.get() {
@@ -471,40 +470,8 @@ pub(super) fn default_source_fetch_runtime() -> Result<Arc<tokio::runtime::Runti
     let _guard = INIT_LOCK.lock().map_err(|_| {
         QueryError::new(
             QueryErrorCode::CudfDependencyFailure,
-            "nexus_query_engine.runtime.source_fetch_runtime",
-            "source-fetch runtime initialization lock was poisoned",
-        )
-    })?;
-    if let Some(runtime) = RUNTIME.get() {
-        return Ok(Arc::clone(runtime));
-    }
-    let runtime = Arc::new(
-        tokio::runtime::Builder::new_multi_thread().thread_name("cudf-source-fetch").enable_all().build().map_err(
-            |error| {
-                QueryError::new(
-                    QueryErrorCode::CudfDependencyFailure,
-                    "nexus_query_engine.runtime.source_fetch_runtime",
-                    "failed to initialize source-fetch runtime",
-                )
-                .with_source(error)
-            },
-        )?,
-    );
-    assert!(RUNTIME.set(Arc::clone(&runtime)).is_ok(), "source-fetch runtime initialized while holding init lock");
-    Ok(runtime)
-}
-
-pub(super) fn default_lakehouse_cache_fill_runtime() -> Result<Arc<tokio::runtime::Runtime>> {
-    static RUNTIME: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
-    static INIT_LOCK: Mutex<()> = Mutex::new(());
-    if let Some(runtime) = RUNTIME.get() {
-        return Ok(Arc::clone(runtime));
-    }
-    let _guard = INIT_LOCK.lock().map_err(|_| {
-        QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
-            "nexus_query_engine.runtime.lakehouse_cache_fill_runtime",
-            "lakehouse cache fill runtime initialization lock was poisoned",
+            "nexus_query_engine.runtime.object_store_control_runtime",
+            "object-store control runtime initialization lock was poisoned",
         )
     })?;
     if let Some(runtime) = RUNTIME.get() {
@@ -512,21 +479,21 @@ pub(super) fn default_lakehouse_cache_fill_runtime() -> Result<Arc<tokio::runtim
     }
     let runtime = Arc::new(
         tokio::runtime::Builder::new_multi_thread()
-            .thread_name("cudf-lakehouse-cache-fill")
+            .thread_name("nexus-object-store-control")
             .enable_all()
             .build()
             .map_err(|error| {
                 QueryError::new(
                     QueryErrorCode::CudfDependencyFailure,
-                    "nexus_query_engine.runtime.lakehouse_cache_fill_runtime",
-                    "failed to initialize lakehouse cache fill runtime",
+                    "nexus_query_engine.runtime.object_store_control_runtime",
+                    "failed to initialize object-store control runtime",
                 )
                 .with_source(error)
             })?,
     );
     assert!(
         RUNTIME.set(Arc::clone(&runtime)).is_ok(),
-        "lakehouse cache fill runtime initialized while holding init lock"
+        "object-store control runtime initialized while holding init lock"
     );
     Ok(runtime)
 }
@@ -656,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn s3_credential_provider_is_shared_with_host_buffer_store_and_resolves_static_credentials() {
+    fn s3_credential_provider_is_shared_with_control_plane_store_and_resolves_static_credentials() {
         let registry = SourceObjectStoreRegistry::with_profiles([SourceStorageProfile::s3(
             "static",
             S3SourceStorageProfile::default_chain().with_region("us-east-1").with_static_credentials(
@@ -672,10 +639,12 @@ mod tests {
             storage_profile_id: Some("static".to_string()),
         };
 
-        let _host_buffer_store = registry.s3_store(key.clone()).expect("host-buffer store builds");
+        let _control_plane_store = registry.s3_store(key.clone()).expect("control-plane store builds");
         let provider = registry.s3_credential_provider(key).expect("credential provider resolves");
-        let credential =
-            default_source_fetch_runtime().unwrap().block_on(provider.get_credential()).expect("credential resolves");
+        let credential = default_object_store_control_runtime()
+            .unwrap()
+            .block_on(provider.get_credential())
+            .expect("credential resolves");
 
         assert_eq!(credential.key_id, "access-key-value");
         assert_eq!(credential.secret_key, "secret-key-value");

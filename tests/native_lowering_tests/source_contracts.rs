@@ -853,13 +853,12 @@ fn assert_s3_remote_native_source(source: &nexus_query_engine::source::LocalParq
     let file = &source.files[0];
     assert_eq!(file.location.read_capability(), "object_store:s3");
     assert_eq!(file.resolved_source.original_location, expected_uri);
-    assert_eq!(file.resolved_source.reader_location, expected_uri);
+    assert_eq!(file.resolved_source.reader_location(), expected_uri);
     assert!(file.stable_id.starts_with("object_store:s3:fnv64:"));
     assert!(!file.stable_id.contains("bucket"));
     assert!(!file.stable_id.contains("table/input.parquet"));
-    assert_eq!(source.diagnostics.source_read_strategy, file.resolved_source.read_strategy.as_str());
-    assert_eq!(source.diagnostics.source_decode_input, file.resolved_source.decode_input.as_str());
-    assert_eq!(source.diagnostics.credential_mode, file.resolved_source.credential_mode.as_str());
+    assert_eq!(source.diagnostics.source_read_strategy, file.resolved_source.read_strategy().as_str());
+    assert_eq!(source.diagnostics.credential_mode, file.resolved_source.credential_mode().as_str());
     assert!(!source.diagnostics.direct_device_read);
     assert!(source.diagnostics.rejected_features.iter().all(|feature| feature.as_str() != "non_local_object_store"));
 }
@@ -886,7 +885,6 @@ fn s3_parquet_object_store_scan_lowers_to_remote_native_source() {
     let source = native_local_parquet_source(&result.plans[0]);
     assert_s3_remote_native_source(source, expected_uri);
     assert_eq!(result.source_diagnostics[0].source_read_strategy, source.diagnostics.source_read_strategy);
-    assert_eq!(result.source_diagnostics[0].source_decode_input, source.diagnostics.source_decode_input);
     assert_eq!(result.source_diagnostics[0].credential_mode, source.diagnostics.credential_mode);
 
     fs::remove_dir_all(dir).unwrap();
@@ -935,7 +933,6 @@ fn s3_parquet_object_store_aggregate_root_preserves_remote_source_diagnostics() 
     let source = native_local_parquet_source(&result.plans[0]);
     assert_s3_remote_native_source(source, expected_uri);
     assert_eq!(result.source_diagnostics[0].source_read_strategy, source.diagnostics.source_read_strategy);
-    assert_eq!(result.source_diagnostics[0].source_decode_input, source.diagnostics.source_decode_input);
     assert_eq!(result.source_diagnostics[0].credential_mode, source.diagnostics.credential_mode);
 
     fs::remove_dir_all(dir).unwrap();

@@ -35,58 +35,6 @@ const FOOTER_SIDECAR_MAGIC: &[u8; 8] = b"NQPFTR2\0";
 const FOOTER_SIDECAR_HEADER_BYTES: usize =
     FOOTER_SIDECAR_MAGIC.len() + std::mem::size_of::<u64>() + std::mem::size_of::<u64>() + std::mem::size_of::<u64>();
 
-/// Parses Parquet metadata from a complete in-memory Parquet payload.
-pub(crate) fn parse_complete_parquet_metadata(
-    bytes: &[u8],
-    operation: &'static str,
-    path: impl std::fmt::Display,
-) -> Result<Arc<ParquetMetaData>> {
-    let file_size = u64::try_from(bytes.len()).map_err(|error| {
-        QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
-            operation,
-            "Parquet payload length exceeds native metadata range",
-        )
-        .with_fact("path", path.to_string())
-        .with_source(error)
-    })?;
-    if bytes.len() < FOOTER_SIZE {
-        return Err(QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
-            operation,
-            "Parquet payload is smaller than the footer",
-        )
-        .with_fact("path", path.to_string())
-        .with_fact("file_size", file_size));
-    }
-
-    let footer_tail_bytes: [u8; FOOTER_SIZE] =
-        bytes[bytes.len() - FOOTER_SIZE..].try_into().expect("footer tail slice was length-checked");
-    let footer_tail = parse_footer_tail(footer_tail_bytes, operation, &path)?;
-    let metadata_len = footer_tail.metadata_length();
-    let total_footer_len = metadata_len + FOOTER_SIZE;
-    if total_footer_len > bytes.len() {
-        return Err(QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
-            operation,
-            "Parquet footer metadata length exceeds payload size",
-        )
-        .with_fact("path", path.to_string())
-        .with_fact("file_size", file_size)
-        .with_fact("metadata_length", metadata_len));
-    }
-
-    let metadata_start = bytes.len() - total_footer_len;
-    let metadata_end = bytes.len() - FOOTER_SIZE;
-    parse_metadata_from_footer_bytes(
-        Bytes::copy_from_slice(&bytes[metadata_start..metadata_end]),
-        footer_tail_bytes,
-        file_size,
-        operation,
-        path,
-    )
-}
-
 /// Fetches Parquet footer metadata from object storage without staging the full object.
 pub(crate) async fn fetch_object_store_parquet_metadata(
     store: Arc<dyn ObjectStore>,
@@ -758,18 +706,6 @@ mod tests {
         assert_eq!(parquet_footer_prefetch_bytes(1024), 1024);
         assert_eq!(parquet_footer_prefetch_bytes(PARQUET_FOOTER_PREFETCH_BYTES), PARQUET_FOOTER_PREFETCH_BYTES);
         assert_eq!(parquet_footer_prefetch_bytes(PARQUET_FOOTER_PREFETCH_BYTES + 1), PARQUET_FOOTER_PREFETCH_BYTES);
-    }
-
-    #[test]
-    fn parses_complete_payload_metadata() {
-        let bytes = write_test_parquet(6, 2);
-
-        let metadata =
-            parse_complete_parquet_metadata(&bytes, "nexus_query_engine.test.parquet_metadata", "memory.parquet")
-                .unwrap();
-
-        assert_eq!(metadata.num_row_groups(), 3);
-        assert_eq!(metadata.row_group(0).num_rows(), 2);
     }
 
     #[tokio::test]

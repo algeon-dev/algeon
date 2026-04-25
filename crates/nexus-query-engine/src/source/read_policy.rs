@@ -9,9 +9,6 @@ use super::diagnostics::{redacted_debug_option, redacted_debug_value};
 pub enum ParquetReadStrategy {
     /// Path-based cuDF/libcudf read for a local filesystem path.
     LocalKvikio,
-    /// Fetch remote object bytes into host memory, then decode with cuDF.
-    /// TODO: purge this
-    RemoteHostBuffer,
     /// Read a previously materialized local byte-cache entry through the path-based reader.
     LocalCacheKvikio,
     /// Path-based cuDF/libcudf remote KvikIO read for an object-store URI such as `s3://...`.
@@ -23,7 +20,6 @@ impl ParquetReadStrategy {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::LocalKvikio => "local_kvikio",
-            Self::RemoteHostBuffer => "remote_host_buffer",
             Self::LocalCacheKvikio => "local_cache_kvikio",
             Self::RemoteDirect => "remote_direct",
         }
@@ -36,58 +32,47 @@ impl fmt::Display for ParquetReadStrategy {
     }
 }
 
-/// Mechanical input form supplied to cuDF's Parquet decoder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SourceDecodeInput {
-    /// cuDF receives a path or URI string.
-    Filepath,
-    /// cuDF receives an already fetched host-memory Parquet payload.
-    HostBuffer,
+/// Tagged cuDF/KvikIO data-plane input.
+///
+/// Host-memory Parquet payloads are intentionally not representable.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum ResolvedParquetInput {
+    /// Local filesystem path, including a completed lakehouse-cache entry.
+    LocalKvikio { reader_path: String },
+    /// Remote object-store URI read by cuDF's explicit KvikIO datasource.
+    RemoteKvikio { uri: String, credential_mode: CredentialMode, storage_profile_id: Option<String> },
 }
 
-impl SourceDecodeInput {
-    /// Stable diagnostic string.
-    pub const fn as_str(self) -> &'static str {
+impl fmt::Debug for ResolvedParquetInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Filepath => "filepath",
-            Self::HostBuffer => "host_buffer",
+            Self::LocalKvikio { reader_path } => f
+                .debug_struct("LocalKvikio")
+                .field("reader_path", &redacted_debug_value("reader_path", reader_path))
+                .finish(),
+            Self::RemoteKvikio { uri, credential_mode, storage_profile_id } => f
+                .debug_struct("RemoteKvikio")
+                .field("uri", &redacted_debug_value("uri", uri))
+                .field("credential_mode", credential_mode)
+                .field("storage_profile_id", storage_profile_id)
+                .finish(),
         }
     }
 }
 
-impl fmt::Display for SourceDecodeInput {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Remote object-store Parquet read fallback policy requested from lower layers.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RemoteParquetReadMode {
-    /// Fail unless lower layers can prove direct/range-aware remote IO.
-    RequireDirect,
-    /// Prefer direct/range-aware remote IO but allow the reader implementation to choose.
-    #[default]
-    PreferDirect,
-    /// Explicitly allow host-buffer fallback when lower layers choose it.
-    AllowHostFallback,
-}
-
-impl RemoteParquetReadMode {
-    /// Stable diagnostic string.
-    pub const fn as_str(self) -> &'static str {
+impl ResolvedParquetInput {
+    pub fn reader_location(&self) -> &str {
         match self {
-            Self::RequireDirect => "require_direct",
-            Self::PreferDirect => "prefer_direct",
-            Self::AllowHostFallback => "allow_host_fallback",
+            Self::LocalKvikio { reader_path } => reader_path,
+            Self::RemoteKvikio { uri, .. } => uri,
         }
     }
 }
 
-impl fmt::Display for RemoteParquetReadMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ObjectStoreAccess {
+    credential_mode: CredentialMode,
+    storage_profile_id: Option<String>,
 }
 
 /// Credential scope used by a resolved source read.
@@ -213,25 +198,15 @@ impl LakehouseCacheFillMode {
 pub struct ResolvedParquetSource {
     /// Catalog or table-format location before read-strategy resolution.
     pub original_location: String,
-    /// Path or URI string passed to the selected cuDF reader branch.
-    pub reader_location: String,
+    /// The only data-plane input supplied to cuDF.
+    pub input: ResolvedParquetInput,
     /// Credential-free storage domain used for cache scoping, when known.
     pub storage_domain: Option<String>,
     /// Credential-free content identity used for cache scoping, when known.
     pub content_identity: Option<String>,
-    /// Execution-time source storage profile used for object-store fetches.
-    ///
-    /// The referenced profile lives on [`crate::runtime::ExecutionContext`]. Keeping only
-    /// the id here lets plans and diagnostics stay credential-free.
-    pub storage_profile_id: Option<String>,
-    /// Selected high-level read strategy.
-    pub read_strategy: ParquetReadStrategy,
-    /// Mechanical decoder input used by the executor.
-    pub decode_input: SourceDecodeInput,
-    /// Remote object-store read fallback policy requested from lower layers.
-    pub remote_read_mode: RemoteParquetReadMode,
-    /// Credential scope used by the selected strategy.
-    pub credential_mode: CredentialMode,
+    /// Object-store identity retained only for cache fill and metadata maintenance
+    /// when the data-plane input is already a local path.
+    maintenance_access: Option<ObjectStoreAccess>,
     /// Local byte-cache status for this source.
     pub cache_status: LakehouseCacheStatus,
     /// Foreground cache-read behavior for this source.
@@ -244,32 +219,25 @@ pub struct ResolvedParquetSource {
     pub lakehouse_cache_max_bytes: Option<u64>,
     /// Cache-fill mode for complete-object lakehouse cache maintenance.
     pub lakehouse_cache_fill_mode: LakehouseCacheFillMode,
-    /// Whether object-store host-buffer reads may use ranged mini-Parquet fallback.
-    pub remote_host_buffer_ranged_enabled: bool,
-    /// Stable fallback reason when the preferred strategy was unavailable.
-    pub fallback_reason: Option<String>,
 }
 
 impl fmt::Debug for ResolvedParquetSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ResolvedParquetSource")
             .field("original_location", &redacted_debug_value("location", &self.original_location))
-            .field("reader_location", &redacted_debug_value("reader_location", &self.reader_location))
+            .field("reader_location", &redacted_debug_value("reader_location", self.reader_location()))
             .field("storage_domain", &self.storage_domain)
             .field("content_identity", &self.content_identity)
-            .field("storage_profile_id", &self.storage_profile_id)
-            .field("read_strategy", &self.read_strategy)
-            .field("decode_input", &self.decode_input)
-            .field("remote_read_mode", &self.remote_read_mode)
-            .field("credential_mode", &self.credential_mode)
+            .field("storage_profile_id", &self.storage_profile_id())
+            .field("input", &self.input)
+            .field("read_strategy", &self.read_strategy())
+            .field("credential_mode", &self.credential_mode())
             .field("cache_status", &self.cache_status)
             .field("lakehouse_cache_read_mode", &self.lakehouse_cache_read_mode)
             .field("lakehouse_cache_root", &redacted_debug_option("cache_root", self.lakehouse_cache_root.as_deref()))
             .field("lakehouse_cache_path", &redacted_debug_option("cache_path", self.lakehouse_cache_path.as_deref()))
             .field("lakehouse_cache_max_bytes", &self.lakehouse_cache_max_bytes)
             .field("lakehouse_cache_fill_mode", &self.lakehouse_cache_fill_mode)
-            .field("remote_host_buffer_ranged_enabled", &self.remote_host_buffer_ranged_enabled)
-            .field("fallback_reason", &self.fallback_reason)
             .finish()
     }
 }
@@ -280,49 +248,16 @@ impl ResolvedParquetSource {
         let location = location.into();
         Self {
             original_location: location.clone(),
-            reader_location: location,
+            input: ResolvedParquetInput::LocalKvikio { reader_path: location },
             storage_domain: None,
             content_identity: None,
-            storage_profile_id: None,
-            read_strategy: ParquetReadStrategy::LocalKvikio,
-            decode_input: SourceDecodeInput::Filepath,
-            remote_read_mode: RemoteParquetReadMode::PreferDirect,
-            credential_mode: CredentialMode::None,
+            maintenance_access: None,
             cache_status: LakehouseCacheStatus::Disabled,
             lakehouse_cache_read_mode: LakehouseCacheReadMode::Disabled,
             lakehouse_cache_root: None,
             lakehouse_cache_path: None,
             lakehouse_cache_max_bytes: None,
             lakehouse_cache_fill_mode: LakehouseCacheFillMode::Disabled,
-            remote_host_buffer_ranged_enabled: false,
-            fallback_reason: None,
-        }
-    }
-
-    /// Builds a remote host-buffer read contract.
-    pub fn remote_host_buffer(
-        original_location: impl Into<String>,
-        reader_location: impl Into<String>,
-        credential_mode: CredentialMode,
-    ) -> Self {
-        Self {
-            original_location: original_location.into(),
-            reader_location: reader_location.into(),
-            storage_domain: None,
-            content_identity: None,
-            storage_profile_id: None,
-            read_strategy: ParquetReadStrategy::RemoteHostBuffer,
-            decode_input: SourceDecodeInput::HostBuffer,
-            remote_read_mode: RemoteParquetReadMode::AllowHostFallback,
-            credential_mode,
-            cache_status: LakehouseCacheStatus::Disabled,
-            lakehouse_cache_read_mode: LakehouseCacheReadMode::Disabled,
-            lakehouse_cache_root: None,
-            lakehouse_cache_path: None,
-            lakehouse_cache_max_bytes: None,
-            lakehouse_cache_fill_mode: LakehouseCacheFillMode::Disabled,
-            remote_host_buffer_ranged_enabled: false,
-            fallback_reason: None,
         }
     }
 
@@ -335,54 +270,40 @@ impl ResolvedParquetSource {
     ) -> Self {
         Self {
             original_location: original_location.into(),
-            reader_location: reader_location.into(),
+            input: ResolvedParquetInput::LocalKvikio { reader_path: reader_location.into() },
             storage_domain: None,
             content_identity: None,
-            storage_profile_id: None,
-            read_strategy: ParquetReadStrategy::LocalCacheKvikio,
-            decode_input: SourceDecodeInput::Filepath,
-            remote_read_mode: RemoteParquetReadMode::PreferDirect,
-            credential_mode,
+            maintenance_access: Some(ObjectStoreAccess { credential_mode, storage_profile_id: None }),
             cache_status,
             lakehouse_cache_read_mode: LakehouseCacheReadMode::Enabled,
             lakehouse_cache_root: None,
             lakehouse_cache_path: None,
             lakehouse_cache_max_bytes: None,
             lakehouse_cache_fill_mode: LakehouseCacheFillMode::Disabled,
-            remote_host_buffer_ranged_enabled: false,
-            fallback_reason: None,
         }
     }
 
     /// Builds a remote path-based read contract where cuDF/libcudf owns the
     /// object-store read instead of receiving a host-memory Parquet payload.
-    pub fn remote_direct(original_location: impl Into<String>, credential_mode: CredentialMode) -> Self {
+    pub fn remote_kvikio(original_location: impl Into<String>, credential_mode: CredentialMode) -> Self {
         let original_location = original_location.into();
         Self {
-            reader_location: original_location.clone(),
+            input: ResolvedParquetInput::RemoteKvikio {
+                uri: original_location.clone(),
+                credential_mode,
+                storage_profile_id: None,
+            },
             original_location,
             storage_domain: None,
             content_identity: None,
-            storage_profile_id: None,
-            read_strategy: ParquetReadStrategy::RemoteDirect,
-            decode_input: SourceDecodeInput::Filepath,
-            remote_read_mode: RemoteParquetReadMode::PreferDirect,
-            credential_mode,
+            maintenance_access: None,
             cache_status: LakehouseCacheStatus::Disabled,
             lakehouse_cache_read_mode: LakehouseCacheReadMode::Disabled,
             lakehouse_cache_root: None,
             lakehouse_cache_path: None,
             lakehouse_cache_max_bytes: None,
             lakehouse_cache_fill_mode: LakehouseCacheFillMode::Disabled,
-            remote_host_buffer_ranged_enabled: false,
-            fallback_reason: None,
         }
-    }
-
-    /// Attaches a stable fallback reason.
-    pub fn with_fallback_reason(mut self, reason: impl Into<String>) -> Self {
-        self.fallback_reason = Some(reason.into());
-        self
     }
 
     /// Replaces the local byte-cache status after strategy fallback.
@@ -394,12 +315,6 @@ impl ResolvedParquetSource {
     /// Selects foreground complete-object lakehouse cache read behavior.
     pub fn with_lakehouse_cache_read_mode(mut self, read_mode: LakehouseCacheReadMode) -> Self {
         self.lakehouse_cache_read_mode = read_mode;
-        self
-    }
-
-    /// Selects remote object-store read fallback policy.
-    pub fn with_remote_read_mode(mut self, read_mode: RemoteParquetReadMode) -> Self {
-        self.remote_read_mode = read_mode;
         self
     }
 
@@ -417,14 +332,28 @@ impl ResolvedParquetSource {
 
     /// Attaches the execution-time source storage profile id.
     pub fn with_storage_profile_id(mut self, profile_id: impl Into<String>) -> Self {
-        self.storage_profile_id = Some(profile_id.into());
+        self.set_storage_profile_id(Some(profile_id.into()));
         self
     }
 
     /// Attaches an execution-time source storage profile id when present.
     pub fn with_optional_storage_profile_id(mut self, profile_id: Option<String>) -> Self {
-        self.storage_profile_id = profile_id;
+        self.set_storage_profile_id(profile_id);
         self
+    }
+
+    fn set_storage_profile_id(&mut self, profile_id: Option<String>) {
+        match &mut self.input {
+            ResolvedParquetInput::RemoteKvikio { storage_profile_id, .. } => *storage_profile_id = profile_id,
+            ResolvedParquetInput::LocalKvikio { .. } => {
+                self.maintenance_access
+                    .get_or_insert(ObjectStoreAccess {
+                        credential_mode: CredentialMode::None,
+                        storage_profile_id: None,
+                    })
+                    .storage_profile_id = profile_id;
+            },
+        }
     }
 
     /// Attaches lakehouse byte-cache maintenance settings.
@@ -450,14 +379,45 @@ impl ResolvedParquetSource {
         self
     }
 
-    /// Selects whether host-buffer object-store reads may use ranged mini-Parquet fallback.
-    pub fn with_remote_host_buffer_ranged_enabled(mut self, enabled: bool) -> Self {
-        self.remote_host_buffer_ranged_enabled = enabled;
-        self
+    /// Path or URI handed to cuDF.
+    pub fn reader_location(&self) -> &str {
+        self.input.reader_location()
     }
 
-    /// Whether execution must use the object-store host-buffer branch.
-    pub fn uses_host_buffer(&self) -> bool {
-        self.decode_input == SourceDecodeInput::HostBuffer
+    /// Credential scope for the active remote read or local-cache maintenance.
+    pub fn credential_mode(&self) -> CredentialMode {
+        match &self.input {
+            ResolvedParquetInput::RemoteKvikio { credential_mode, .. } => *credential_mode,
+            ResolvedParquetInput::LocalKvikio { .. } => {
+                self.maintenance_access.as_ref().map_or(CredentialMode::None, |access| access.credential_mode)
+            },
+        }
+    }
+
+    /// Storage profile for the active remote read or local-cache maintenance.
+    pub fn storage_profile_id(&self) -> Option<&str> {
+        match &self.input {
+            ResolvedParquetInput::RemoteKvikio { storage_profile_id, .. } => storage_profile_id.as_deref(),
+            ResolvedParquetInput::LocalKvikio { .. } => {
+                self.maintenance_access.as_ref().and_then(|access| access.storage_profile_id.as_deref())
+            },
+        }
+    }
+
+    /// Report-facing strategy derived from the tagged input and cache facts.
+    pub fn read_strategy(&self) -> ParquetReadStrategy {
+        match self.input {
+            ResolvedParquetInput::RemoteKvikio { .. } => ParquetReadStrategy::RemoteDirect,
+            ResolvedParquetInput::LocalKvikio { .. }
+                if matches!(self.cache_status, LakehouseCacheStatus::Hit | LakehouseCacheStatus::FillBeforeRead) =>
+            {
+                ParquetReadStrategy::LocalCacheKvikio
+            },
+            ResolvedParquetInput::LocalKvikio { .. } => ParquetReadStrategy::LocalKvikio,
+        }
+    }
+
+    pub fn is_remote_kvikio(&self) -> bool {
+        matches!(self.input, ResolvedParquetInput::RemoteKvikio { .. })
     }
 }

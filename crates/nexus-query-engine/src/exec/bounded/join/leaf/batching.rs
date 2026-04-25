@@ -81,8 +81,7 @@ fn materialized_source_batch_target_bytes(stream: &BoundedJoinLeafLocalParquetSo
 }
 
 fn source_chunk_requires_remote_direct_read(chunk: &SourceChunk) -> bool {
-    matches!(chunk.resolved_source.read_strategy, crate::source::ParquetReadStrategy::RemoteDirect)
-        && chunk.resolved_source.remote_read_mode == crate::source::RemoteParquetReadMode::RequireDirect
+    matches!(chunk.resolved_source.read_strategy(), crate::source::ParquetReadStrategy::RemoteDirect)
 }
 
 pub(super) fn source_chunk_batching_reader_predicate_supported(source: &LocalParquetSource) -> bool {
@@ -144,9 +143,7 @@ mod tests {
     use super::*;
     use crate::{
         runtime::SourceChunkPlanningMode,
-        source::{
-            CredentialMode, LocalParquetSource, ParquetSourceLocation, RemoteParquetReadMode, ResolvedParquetSource,
-        },
+        source::{CredentialMode, LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
     };
 
     #[test]
@@ -242,11 +239,10 @@ mod tests {
 
     fn test_remote_direct_chunk(index: usize, bytes: u64) -> SourceChunk {
         SourceChunk {
-            resolved_source: ResolvedParquetSource::remote_direct(
+            resolved_source: ResolvedParquetSource::remote_kvikio(
                 format!("s3://bucket/table/part-{index}.parquet"),
                 CredentialMode::SharedProcessEnv,
-            )
-            .with_remote_read_mode(RemoteParquetReadMode::RequireDirect),
+            ),
             location: ParquetSourceLocation::ObjectStoreUri {
                 scheme: "s3".to_string(),
                 uri: format!("s3://bucket/table/part-{index}.parquet"),

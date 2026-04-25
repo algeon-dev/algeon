@@ -163,10 +163,10 @@ fn table_format_data_file_local_paths(file: &datafusion_nexus::table_format::Tab
             paths.push(path);
         }
         if matches!(
-            resolved_source.read_strategy,
+            resolved_source.read_strategy(),
             ParquetReadStrategy::LocalKvikio | ParquetReadStrategy::LocalCacheKvikio
         ) {
-            paths.push(PathBuf::from(&resolved_source.reader_location));
+            paths.push(PathBuf::from(resolved_source.reader_location()));
         }
     }
     paths
@@ -335,13 +335,6 @@ pub(crate) fn aggregate_scan_diagnostics(records: &[StagingRecord]) -> TableForm
             .filter(|value| !value.is_empty() && *value != "unknown")
             .map(str::to_string),
     );
-    let source_decode_input = joined_values(
-        diagnostics
-            .iter()
-            .flat_map(|diagnostics| diagnostics.source_decode_input.split(','))
-            .filter(|value| !value.is_empty() && *value != "unknown")
-            .map(str::to_string),
-    );
     let credential_mode = joined_values(
         diagnostics
             .iter()
@@ -367,13 +360,6 @@ pub(crate) fn aggregate_scan_diagnostics(records: &[StagingRecord]) -> TableForm
         diagnostics
             .iter()
             .flat_map(|diagnostics| diagnostics.lakehouse_cache_fill_mode.split(','))
-            .filter(|value| !value.is_empty() && *value != "unknown")
-            .map(str::to_string),
-    );
-    let source_fallback_reason = joined_values(
-        diagnostics
-            .iter()
-            .flat_map(|diagnostics| diagnostics.source_fallback_reason.split(','))
             .filter(|value| !value.is_empty() && *value != "unknown")
             .map(str::to_string),
     );
@@ -404,12 +390,10 @@ pub(crate) fn aggregate_scan_diagnostics(records: &[StagingRecord]) -> TableForm
         rejected_feature_list: rejected_features,
         native_source_read_capability: capabilities.join(","),
         source_read_strategy,
-        source_decode_input,
         credential_mode,
         lakehouse_cache_status,
         lakehouse_cache_read_mode,
         lakehouse_cache_fill_mode,
-        source_fallback_reason,
         direct_device_read_disposition,
     }
 }

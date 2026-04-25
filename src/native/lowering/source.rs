@@ -74,12 +74,10 @@ pub(super) fn preserve_resolved_source_diagnostics(
     resolved_source_diagnostics: &NativeSourceDiagnostics,
 ) {
     diagnostics.source_read_strategy = resolved_source_diagnostics.source_read_strategy.clone();
-    diagnostics.source_decode_input = resolved_source_diagnostics.source_decode_input.clone();
     diagnostics.credential_mode = resolved_source_diagnostics.credential_mode.clone();
     diagnostics.lakehouse_cache_status = resolved_source_diagnostics.lakehouse_cache_status.clone();
     diagnostics.lakehouse_cache_read_mode = resolved_source_diagnostics.lakehouse_cache_read_mode.clone();
     diagnostics.lakehouse_cache_fill_mode = resolved_source_diagnostics.lakehouse_cache_fill_mode.clone();
-    diagnostics.source_fallback_reason = resolved_source_diagnostics.source_fallback_reason.clone();
     diagnostics.direct_device_read =
         diagnostics.rejected_features.is_empty() && resolved_source_diagnostics.direct_device_read;
 }

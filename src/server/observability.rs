@@ -16,8 +16,8 @@ use crate::{
     error::{Error, ErrorCode, ErrorSourceDiagnostics},
     native_exec::{NativeCudfMetrics, NativeMetricsCaptureSink, admission::QueryAdmissionFacts},
     native_report::{
-        NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport,
-        NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
+        NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem,
+        NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
     },
     planner::NativePlanningDiagnostics,
 };
@@ -345,6 +345,14 @@ impl CapturedQuery {
                 )])
                 .to_tsv(),
             );
+        }
+
+        let runtime_metrics = NativeDataFusionExecutionMetrics::from_metrics(&self.metrics.to_metrics_set());
+        if !runtime_metrics.source_read_runtime_rows.is_empty() {
+            output.push_str("\n[source_read_runtime]\n");
+            for row in &runtime_metrics.source_read_runtime_rows {
+                let _ = writeln!(output, "{}", row.to_stable_kv_row());
+            }
         }
 
         if let Some(error) = self.outcome.error() {
@@ -815,6 +823,19 @@ mod tests {
         metrics.reservation_requested_bytes = 16_384;
         metrics.reservation_granted_bytes = 8_192;
         metrics.reservation_live_peak_bytes = 4_096;
+        metrics.record_source_read_runtime(nexus_query_engine::metrics::SourceReadRuntimeMetrics {
+            source_node_id: "source-1".to_string(),
+            read_kind: "chunk".to_string(),
+            read_strategy: "remote_direct".to_string(),
+            parquet_read_evidence: nexus_query_engine::metrics::SourceReadParquetEvidenceMetrics {
+                input_kind: "remote_path".to_string(),
+                remote_read_mode: "require_kvikio".to_string(),
+                backend: "cudf_sys_kvikio_remote_datasource".to_string(),
+                backend_build_status: "available".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
 
         let sink: Arc<dyn NativeMetricsCaptureSink> = store.clone();
         let capture = crate::native_exec::NativeMetricsCapture::new("q1", sink);
@@ -851,6 +872,10 @@ mod tests {
         assert_eq!(tsv_value(&header, &row, "reservation_requested_bytes"), "16384", "{payload}");
         assert_eq!(tsv_value(&header, &row, "reservation_granted_bytes"), "8192", "{payload}");
         assert_eq!(tsv_value(&header, &row, "reservation_live_peak_bytes"), "4096", "{payload}");
+        assert!(payload.contains("[source_read_runtime]\n"), "{payload}");
+        assert!(payload.contains("read_strategy=remote_direct"), "{payload}");
+        assert!(payload.contains("parquet_read_input_kind=remote_path"), "{payload}");
+        assert!(payload.contains("remote_read_mode=require_kvikio"), "{payload}");
     }
 
     #[test]

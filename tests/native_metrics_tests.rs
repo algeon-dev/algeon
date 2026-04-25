@@ -51,12 +51,6 @@ fn query_metrics_memory_control_defaults_are_unbounded() {
     assert_eq!(metrics.source_cache_misses, 0);
     assert_eq!(metrics.source_cache_retained_bytes, 0);
     assert_eq!(metrics.source_metadata_load_time, std::time::Duration::ZERO);
-    assert_eq!(metrics.source_fetch_bytes, 0);
-    assert_eq!(metrics.source_fetch_count, 0);
-    assert_eq!(metrics.host_fetch_budget_wait_time, std::time::Duration::ZERO);
-    assert_eq!(metrics.source_fetch_concurrency_wait_time, std::time::Duration::ZERO);
-    assert_eq!(metrics.source_fetch_time, std::time::Duration::ZERO);
-    assert_eq!(metrics.source_decode_time, std::time::Duration::ZERO);
     assert_eq!(metrics.retry_count, 0);
     assert_eq!(metrics.partial_aggregate_input_rows, 0);
     assert_eq!(metrics.partial_aggregate_retained_bytes, 0);
@@ -590,12 +584,6 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "source_metadata_load_time",
         "source_read_queue_wait_time",
         "source_cache_lookup_time",
-        "source_fetch_bytes",
-        "source_fetch_count",
-        "host_fetch_budget_wait_time",
-        "source_fetch_concurrency_wait_time",
-        "source_fetch_time",
-        "source_decode_time",
         "parquet_read_time",
         "operator_time",
         "final_merge_time",

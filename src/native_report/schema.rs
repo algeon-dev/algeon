@@ -173,12 +173,6 @@ pub(crate) const NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS: &[&str] = &[
     "join_gather_map_bytes",
     "aggregate_strategy_rows",
     "join_strategy_rows",
-    "source_fetch_bytes",
-    "source_fetch_count",
-    "host_fetch_budget_wait_time_ms",
-    "source_fetch_concurrency_wait_time_ms",
-    "source_fetch_time_ms",
-    "source_decode_time_ms",
     "source_diagnostics",
     "lakehouse_cache_fill_event_snapshot_rows",
     "plan_task_mapping_rows",
@@ -224,8 +218,6 @@ pub const NATIVE_DATAFUSION_EXECUTION_TSV_HEADER: &str = concat!(
     "hash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\t",
     "mixed_join_size_data_bytes\tone_shot_join_index_bytes\tone_shot_join_materialization_bytes\t",
     "one_shot_join_output_bytes\tjoin_gather_map_bytes\taggregate_strategy_rows\tjoin_strategy_rows\t",
-    "source_fetch_bytes\tsource_fetch_count\thost_fetch_budget_wait_time_ms\t",
-    "source_fetch_concurrency_wait_time_ms\tsource_fetch_time_ms\tsource_decode_time_ms\t",
     "source_diagnostics\tlakehouse_cache_fill_event_snapshot_rows\tplan_task_mapping_rows",
 );
 

@@ -11,6 +11,7 @@ mod bounded_join;
 /// Runtime-owned GPU caches.
 pub mod cache;
 mod cache_events;
+mod cache_fill;
 mod context;
 pub mod gpu;
 mod gpu_execution_pool;
@@ -23,7 +24,6 @@ mod reservation;
 /// Frontend-neutral GPU-resident data and reusable build handles.
 pub mod resident;
 mod service_stream;
-mod source_fetch;
 #[cfg(test)]
 mod tests;
 
@@ -36,6 +36,12 @@ pub use bounded_join::{
 };
 pub use cache_events::LakehouseCacheFillEventSnapshot;
 pub(crate) use cache_events::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome};
+pub use cache_fill::{
+    CacheFillByteBudget, CacheFillBytePermit, DEFAULT_LAKEHOUSE_CACHE_FILL_ACQUIRE_TIMEOUT,
+    DEFAULT_LAKEHOUSE_CACHE_FILL_BUDGET_BYTES, DEFAULT_LAKEHOUSE_CACHE_FILL_BUDGET_CAP_BYTES,
+    DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS, LakehouseCacheFillConfig,
+    default_lakehouse_cache_fill_budget_bytes,
+};
 pub use context::{
     ExecutionCancellation, ExecutionContext, ExecutionContextBuilder, LeasedExecutionContext, SourceSchedulerPolicy,
 };
@@ -53,8 +59,7 @@ pub use gpu_execution_pool::{
 };
 pub use io_capability::{
     DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus, KVIKIO_COMPAT_MODE_ENV,
-    KvikioCompatModeStatus, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus, SourceGdsEligibility,
-    source_gds_eligibility,
+    KvikioCompatModeStatus, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
 };
 pub(crate) use object_store::S3ObjectStoreKey;
 pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile};
@@ -71,11 +76,4 @@ pub use reservation::{MemoryReservationRequest, RetryFacts};
 pub(crate) use service_stream::SourceReadStreamLease;
 pub use service_stream::{
     DEFAULT_SERVICE_STREAM_POOL_SIZE, ServiceStreamPool, StreamLease, default_service_stream_pool_size_for_device,
-};
-pub use source_fetch::{
-    DEFAULT_GDS_MAX_CONCURRENT_OPS, DEFAULT_GDS_MIN_CHUNK_BYTES, DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT,
-    DEFAULT_HOST_FETCH_BUDGET_BYTES, DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES, DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
-    DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS, HostFetchBudget, HostFetchPermit, NEXUS_GDS_MOUNT_ROOTS_ENV,
-    SourceFetchConfig, SourceFetchStrategy, SourceFetchStrategyDecision, SourceFetchStrategyReason,
-    SourceFetchSubstrate, default_host_fetch_budget_bytes,
 };

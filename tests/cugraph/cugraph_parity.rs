@@ -179,7 +179,7 @@ fn parity_data_root_lives_under_workspace_fixture_dir() {
         return;
     }
     let root = data_root();
-    let suffix = std::path::Path::new("fixture").join("data").join("cugraph");
+    let suffix = std::path::Path::new("fixture").join("graph").join("cugraph");
     assert!(root.ends_with(suffix), "parity data root unexpected: {}", root.display());
 }
 

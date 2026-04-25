@@ -414,19 +414,9 @@ impl NativeCudfMetrics {
                 .with_new_label("source_node_id", row.source_node_id.clone())
                 .with_new_label("read_kind", row.read_kind.clone())
                 .with_new_label("read_strategy", row.read_strategy.clone())
-                .with_new_label("host_buffer_fetch_mode", row.host_buffer_fetch_mode.clone())
-                .with_new_label("host_buffer_payload_bytes", row.host_buffer_payload_bytes.to_string())
-                .with_new_label("host_buffer_requested_range_count", row.host_buffer_requested_range_count.to_string())
-                .with_new_label("host_buffer_requested_range_bytes", row.host_buffer_requested_range_bytes.to_string())
-                .with_new_label("host_buffer_original_file_bytes", row.host_buffer_original_file_bytes.to_string())
-                .with_new_label(
-                    "host_buffer_mini_parquet_footer_bytes",
-                    row.host_buffer_mini_parquet_footer_bytes.to_string(),
-                )
                 .with_new_label("parquet_read_input_kind", row.parquet_read_evidence.input_kind.clone())
                 .with_new_label("remote_read_mode", row.parquet_read_evidence.remote_read_mode.clone())
                 .with_new_label("parquet_read_backend", row.parquet_read_evidence.backend.clone())
-                .with_new_label("parquet_read_fallback_reason", row.parquet_read_evidence.fallback_reason.clone())
                 .with_new_label("remote_backend_build_status", row.parquet_read_evidence.backend_build_status.clone())
                 .with_new_label(
                     "remote_read_bytes",

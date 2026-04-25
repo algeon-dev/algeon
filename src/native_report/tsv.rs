@@ -77,15 +77,13 @@ pub(super) fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSum
         let total_rows = diagnostics.total_rows.map_or_else(|| "unknown".to_string(), |rows| rows.to_string());
         let _ = write!(
             output,
-            "format={},source_read_strategy={},source_decode_input={},credential_mode={},lakehouse_cache_status={},lakehouse_cache_read_mode={},lakehouse_cache_fill_mode={},source_fallback_reason={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},total_row_groups={},selected_source_bytes={},total_source_bytes={},selected_rows={},total_rows={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},scan_limit={},schema_mapping={},rejected_features={}",
+            "format={},source_read_strategy={},credential_mode={},lakehouse_cache_status={},lakehouse_cache_read_mode={},lakehouse_cache_fill_mode={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},total_row_groups={},selected_source_bytes={},total_source_bytes={},selected_rows={},total_rows={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},scan_limit={},schema_mapping={},rejected_features={}",
             diagnostics.format,
             diagnostics.source_read_strategy,
-            diagnostics.source_decode_input,
             diagnostics.credential_mode,
             diagnostics.lakehouse_cache_status,
             diagnostics.lakehouse_cache_read_mode,
             diagnostics.lakehouse_cache_fill_mode,
-            diagnostics.source_fallback_reason,
             diagnostics.direct_device_read,
             diagnostics.file_count,
             diagnostics.ranged_file_count,
@@ -291,11 +289,6 @@ pub(super) fn optional_observed_metric_count(metrics: &MetricsSet, name: &str) -
     let observed_name = format!("{name}_observed");
     let observed = metrics.sum_by_name(&observed_name).map(|value| value.as_usize()).unwrap_or(0);
     (observed > 0).then(|| metric_count(metrics, name))
-}
-
-pub(super) fn metric_duration_nanos(metrics: &MetricsSet, name: &str) -> Option<usize> {
-    let nanos = metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0);
-    (nanos > 0).then_some(nanos)
 }
 
 pub(super) fn optional_observed_metric_duration_nanos(metrics: &MetricsSet, name: &str) -> Option<usize> {

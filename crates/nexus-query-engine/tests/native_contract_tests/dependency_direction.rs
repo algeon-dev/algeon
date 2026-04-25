@@ -13,6 +13,85 @@ use std::{
 use super::public_surface::rust_identifier_count;
 
 #[test]
+fn gpu_parquet_caller_materialized_byte_calls_are_forbidden() {
+    let markers = ["filebytes", concat!("from_host_", "buffer")];
+    let actual = edge_occurrences(&["crates/nexus-query-engine/src", "src"], &markers);
+
+    assert!(
+        actual.is_empty(),
+        "production GPU Parquet reads must use typed path/URI source builders; CPU metadata/footer object-store IO is intentionally outside this symbol policy: {actual:?}"
+    );
+}
+
+#[test]
+fn retired_source_report_and_runtime_symbols_are_forbidden() {
+    let markers = [
+        concat!("source_", "fetch_bytes"),
+        concat!("source_", "fetch_count"),
+        concat!("host_", "fetch_budget_wait_time"),
+        concat!("source_", "fetch_concurrency_wait_time"),
+        concat!("source_", "fetch_time"),
+        concat!("source_", "decode_time"),
+        concat!("host_", "buffer_"),
+        concat!("source_decode_", "input"),
+        concat!("source_fallback_", "reason"),
+        concat!("parquet_read_fallback_", "reason"),
+        concat!("Host", "Buffer", "Fetch", "RuntimeMetrics"),
+    ];
+    let actual = edge_occurrences(
+        &[
+            "crates/nexus-query-engine/src",
+            "src",
+            "crates/datafusion-nexus-bench/src",
+            "crates/datafusion-nexus-tools/src",
+        ],
+        &markers,
+    );
+    assert!(actual.is_empty(), "retired foreground-fetch and decoder report/runtime symbols returned: {actual:?}");
+}
+
+#[test]
+fn parquet_execution_shapes_use_typed_path_or_uri_source_builders() {
+    let source_exec = read_repo_source("crates/nexus-query-engine/src/exec/source.rs");
+    assert_eq!(
+        source_exec.matches("cudf_local_parquet_source_file_selection(").count(),
+        1,
+        "whole-file reads must build one typed file-selection contract"
+    );
+    assert_eq!(
+        source_exec.matches("cudf_local_parquet_source_chunk(").count(),
+        1,
+        "bounded single-chunk reads must build one typed chunk contract"
+    );
+    assert_eq!(
+        source_exec.matches("cudf_local_parquet_source_chunk_batch(").count(),
+        1,
+        "multi-chunk batch reads must build one typed batch contract"
+    );
+
+    let delete_exec_source = read_repo_source("crates/nexus-query-engine/src/exec/source/position_delete.rs");
+    let delete_exec =
+        delete_exec_source.split("#[cfg(test)]").next().expect("position-delete production source precedes its tests");
+    assert_eq!(
+        delete_exec.matches("cudf_local_parquet_source_chunk(").count(),
+        1,
+        "unbounded position-delete-aware chunk reads must use the typed chunk builder"
+    );
+    assert_eq!(
+        delete_exec.matches("cudf_local_parquet_source_file_selection(").count(),
+        2,
+        "position and equality delete files must each use the typed file-selection builder"
+    );
+
+    let shared_file_reader = read_repo_source("crates/nexus-query-engine/src/exec/source/read.rs");
+    assert_eq!(
+        shared_file_reader.matches("read_parquet_source_chunk_with_evidence(").count(),
+        1,
+        "whole-file and delete-file reads must share the path/URI chunk reader"
+    );
+}
+
+#[test]
 fn ir_models_do_not_consume_executor_implementation_beyond_phase1_baseline() {
     assert_no_edges(
         "IR plan/expr/source must remain executor-independent",

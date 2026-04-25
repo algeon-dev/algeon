@@ -1,9 +1,4 @@
-use std::{
-    borrow::Cow,
-    collections::{BTreeSet, VecDeque},
-    fs,
-    time::Duration,
-};
+use std::{borrow::Cow, collections::BTreeSet, fs, time::Duration};
 
 use parquet::file::reader::FileReader;
 
@@ -12,9 +7,8 @@ use super::*;
 mod cache_runtime;
 mod cudf_contract;
 mod gpu_resident;
-mod host_buffer;
+mod lakehouse_cache;
 mod metrics;
-mod object_store_pipeline;
 mod partition;
 mod position_delete;
 mod predicate;
@@ -31,9 +25,8 @@ use cudf_contract::{
     cudf_local_parquet_source_chunk, cudf_local_parquet_source_chunk_batch, cudf_local_parquet_source_file_selection,
 };
 pub use gpu_resident::read_gpu_resident_source;
-use host_buffer::*;
+use lakehouse_cache::*;
 pub(super) use metrics::{SourceChunkRowGroupFacts, format_row_groups, record_bounded_parquet_source_metrics};
-use object_store_pipeline::*;
 use partition::inject_partition_columns;
 use position_delete::*;
 use read::read_local_parquet_file;
@@ -56,10 +49,6 @@ use crate::{
 
 pub(in crate::exec) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
     crate::source::parquet_source_path_fact(&chunk.location, &chunk.path)
-}
-
-pub(in crate::exec) fn parquet_chunk_stable_id_fact(chunk: &SourceChunk) -> String {
-    crate::source::parquet_source_stable_id_fact(&chunk.location, chunk.stable_id.as_str())
 }
 
 pub(in crate::exec) fn source_read_request(
@@ -263,10 +252,6 @@ fn read_local_parquet_source_uncached(
     }
 
     let columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
-    if should_pipeline_object_store_file_fetches(context, source, &columns) {
-        return read_object_store_parquet_source_with_fetch_pipeline(context, source_node_id, source, metrics);
-    }
-
     let mut frames = Vec::with_capacity(source.files.len());
     let mut remaining_rows = source.scan_limit;
     for (file_index, file) in source.files.iter().enumerate() {
@@ -277,15 +262,10 @@ fn read_local_parquet_source_uncached(
         let row_count_override = if columns.is_empty() { Some(local_parquet_file_row_count(file)?) } else { None };
         let frame = if columns.is_empty() {
             context.runtime().empty_dataframe()
-        } else if file.resolved_source.uses_host_buffer() {
-            let frame =
-                read_object_store_parquet_file(context, source, source_node_id, file, file_index, file_index, metrics)?;
-            record_background_cache_file_fill_enqueue(context, source_node_id, source, file, file_index, metrics);
-            frame
         } else {
             let _cache_read_pin =
-                if file.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio {
-                    ensure_local_cache_parquet_file(context, file, metrics)?;
+                if file.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
+                    ensure_local_cache_parquet_file(context, file)?;
                     Some(acquire_lakehouse_cache_file_read_pin(context, file)?)
                 } else {
                     None
@@ -324,14 +304,10 @@ fn read_local_parquet_source_uncached(
             frames.push(frame);
             continue;
         }
-        let frame = if file.resolved_source.uses_host_buffer() && !columns.is_empty() {
-            frame
-        } else {
-            let frame =
-                inject_partition_columns(context, source, &file.partition_values, frame, row_count_override, metrics)?
-                    .into_frame();
-            materialize_missing_columns(context, source, frame, row_count_override, metrics)?
-        };
+        let frame =
+            inject_partition_columns(context, source, &file.partition_values, frame, row_count_override, metrics)?
+                .into_frame();
+        let frame = materialize_missing_columns(context, source, frame, row_count_override, metrics)?;
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
         let (frame, remaining) = apply_source_scan_limit_to_frame(context, frame, remaining_rows, metrics)?;
         let frame = append_source_order_columns(context, frame, file_index)?;
@@ -370,10 +346,6 @@ fn read_local_parquet_source_uncached(
     metrics.operator_time += timer.elapsed();
 
     Ok(GpuDataFrame::new(output))
-}
-
-fn file_has_explicit_empty_row_group_selection(file: &LocalParquetFile) -> bool {
-    file.row_groups.as_ref().is_some_and(Vec::is_empty)
 }
 
 fn local_parquet_file_row_count(file: &LocalParquetFile) -> Result<usize> {
@@ -474,13 +446,13 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
             });
     }
 
-    let _cache_read_pin = if chunk.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio
-    {
-        ensure_local_cache_parquet_chunk(context, chunk, metrics)?;
-        Some(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?)
-    } else {
-        None
-    };
+    let _cache_read_pin =
+        if chunk.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
+            ensure_local_cache_parquet_chunk(context, chunk)?;
+            Some(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?)
+        } else {
+            None
+        };
     let file =
         crate::chunk::source_file_for_chunk(source, chunk, "nexus_query_engine.local_parquet_chunk.position_deletes")?;
     let row_position_range =
@@ -514,44 +486,28 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
             .with_row_group_facts(chunk)
         })?;
     let read_timer = Instant::now();
-    let (outcome, observed_row_group_count, host_buffer_fetch) = if chunk.resolved_source.uses_host_buffer() {
-        let read = read_object_store_parquet_chunk(context, source, chunk, &cudf_source, &cudf_chunk, &token, metrics)?;
-        record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
-        (
-            read.outcome,
-            read.observed_row_group_count.and_then(|count| usize::try_from(count).ok()),
-            read.host_buffer_fetch,
+    let outcome = DataFrame::read_parquet_source_chunk_with_budget_with_evidence(
+        context.runtime(),
+        &cudf_source,
+        &cudf_chunk,
+        SourceReadMode::ExecutionFrame,
+        &token,
+    )
+    .map_err(|error| {
+        cudf_error_for_chunk_with_budget_details(
+            "nexus_query_engine.local_parquet_chunk.read",
+            "failed to read bounded native local parquet source chunk with cudf",
+            error,
+            chunk,
         )
-    } else {
-        (
-            {
-                let outcome = DataFrame::read_parquet_source_chunk_with_budget_with_evidence(
-                    context.runtime(),
-                    &cudf_source,
-                    &cudf_chunk,
-                    SourceReadMode::ExecutionFrame,
-                    &token,
-                )
-                .map_err(|error| {
-                    cudf_error_for_chunk_with_budget_details(
-                        "nexus_query_engine.local_parquet_chunk.read",
-                        "failed to read bounded native local parquet source chunk with cudf",
-                        error,
-                        chunk,
-                    )
-                    .with_fact("path", parquet_chunk_path_fact(chunk))
-                    .with_fact("chunk_index", chunk.chunk_index)
-                    .with_fact("file_index", chunk.file_index)
-                    .with_fact("read_columns", chunk.read_columns.len())
-                    .with_row_group_facts(chunk)
-                })?;
-                record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
-                outcome
-            },
-            None,
-            HostBufferFetchRuntimeMetrics::default(),
-        )
-    };
+        .with_fact("path", parquet_chunk_path_fact(chunk))
+        .with_fact("chunk_index", chunk.chunk_index)
+        .with_fact("file_index", chunk.file_index)
+        .with_fact("read_columns", chunk.read_columns.len())
+        .with_row_group_facts(chunk)
+    })?;
+    record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
+    let observed_row_group_count = None;
     metrics.record_budgeted_execution("nexus_query_engine.local_parquet_chunk.read", outcome.report());
     let read_evidence = outcome.value().read_evidence().cloned();
     let read_elapsed = read_timer.elapsed();
@@ -578,7 +534,6 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
             row_count,
             read_elapsed,
             reader_dynamic_filter_count,
-            &host_buffer_fetch,
             read_evidence.as_ref(),
             metrics,
         );
@@ -587,8 +542,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
     let frame = apply_source_chunk_scan_limit(context, chunk, frame, metrics)?;
     let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
-    if !chunk.resolved_source.uses_host_buffer()
-        && chunk.reads_all_row_groups
+    if chunk.reads_all_row_groups
         && chunk.row_group_indexes.is_empty()
         && chunk.known_read_row_group_count().is_none()
         && let Some(row_group_count) = observed_chunk_row_group_count(chunk)
@@ -602,7 +556,6 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
         frame.num_rows() as u64,
         read_elapsed,
         reader_dynamic_filter_count,
-        &host_buffer_fetch,
         read_evidence.as_ref(),
         metrics,
     );
@@ -692,8 +645,8 @@ pub(super) fn read_local_parquet_chunk_batch(
     let optimized_cache_entry = local_cache_optimized_batch_entry(source, batch);
     let mut cache_read_pins = Vec::with_capacity(batch.chunk_count());
     for chunk in &batch.chunks {
-        if chunk.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio {
-            ensure_local_cache_parquet_chunk(context, chunk, metrics)?;
+        if chunk.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
+            ensure_local_cache_parquet_chunk(context, chunk)?;
             cache_read_pins.push(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?);
         }
     }
@@ -810,15 +763,12 @@ fn validate_local_parquet_chunk_batch(
     }
     for chunk in &batch.chunks {
         if chunk.zero_column_count
-            || chunk.resolved_source.uses_host_buffer()
             || !matches!(
-                chunk.resolved_source.read_strategy,
+                chunk.resolved_source.read_strategy(),
                 crate::source::ParquetReadStrategy::LocalKvikio
                     | crate::source::ParquetReadStrategy::LocalCacheKvikio
                     | crate::source::ParquetReadStrategy::RemoteDirect
             )
-            || (matches!(chunk.resolved_source.read_strategy, crate::source::ParquetReadStrategy::RemoteDirect)
-                && chunk.resolved_source.remote_read_mode != crate::source::RemoteParquetReadMode::RequireDirect)
             || chunk.scan_limit_rows.is_some()
             || chunk.reads_all_row_groups
             || chunk.row_group_indexes.is_empty()
@@ -976,113 +926,6 @@ mod tests {
     }
 
     #[test]
-    fn object_store_file_fetch_pipeline_requires_multiple_object_store_files_without_scan_limit() {
-        let files = vec![
-            LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap().with_file_size_bytes(1024),
-            LocalParquetFile::object_store_uri("s3://bucket/b.parquet").unwrap().with_file_size_bytes(1024),
-        ];
-        let source = test_source(files, vec!["c1".to_string()]);
-
-        assert!(object_store_file_fetch_pipeline_enabled(2, &source, &["c1"]));
-        assert!(!object_store_file_fetch_pipeline_enabled(1, &source, &["c1"]));
-        assert!(!object_store_file_fetch_pipeline_enabled(2, &source, &[]));
-
-        let mut limited = source.clone();
-        limited.scan_limit = Some(1);
-        assert!(!object_store_file_fetch_pipeline_enabled(2, &limited, &["c1"]));
-    }
-
-    #[test]
-    fn object_store_file_fetch_pipeline_ignores_explicit_empty_row_group_files() {
-        let files = vec![
-            LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap().with_file_size_bytes(1024),
-            LocalParquetFile::object_store_uri("s3://bucket/b.parquet")
-                .unwrap()
-                .with_file_size_bytes(1024)
-                .with_row_groups(Vec::new()),
-            LocalParquetFile::object_store_uri("s3://bucket/c.parquet").unwrap().with_file_size_bytes(1024),
-        ];
-        let source = test_source(files, vec!["c1".to_string()]);
-
-        assert!(object_store_file_fetch_pipeline_enabled(2, &source, &["c1"]));
-
-        let mostly_empty = test_source(
-            vec![
-                LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap().with_file_size_bytes(1024),
-                LocalParquetFile::object_store_uri("s3://bucket/b.parquet")
-                    .unwrap()
-                    .with_file_size_bytes(1024)
-                    .with_row_groups(Vec::new()),
-            ],
-            vec!["c1".to_string()],
-        );
-        assert!(!object_store_file_fetch_pipeline_enabled(2, &mostly_empty, &["c1"]));
-
-        let all_empty = test_source(
-            vec![
-                LocalParquetFile::object_store_uri("s3://bucket/a.parquet")
-                    .unwrap()
-                    .with_file_size_bytes(1024)
-                    .with_row_groups(Vec::new()),
-                LocalParquetFile::object_store_uri("s3://bucket/b.parquet")
-                    .unwrap()
-                    .with_file_size_bytes(1024)
-                    .with_row_groups(Vec::new()),
-            ],
-            vec!["c1".to_string()],
-        );
-        assert!(!object_store_file_fetch_pipeline_enabled(2, &all_empty, &["c1"]));
-    }
-
-    #[test]
-    fn object_store_file_fetch_pipeline_rejects_unknown_size_sources() {
-        let files = vec![
-            LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap(),
-            LocalParquetFile::object_store_uri("s3://bucket/b.parquet").unwrap().with_file_size_bytes(1024),
-        ];
-        let source = test_source(files, vec!["c1".to_string()]);
-
-        assert!(!object_store_file_fetch_pipeline_enabled(2, &source, &["c1"]));
-    }
-
-    #[test]
-    fn object_store_file_fetch_pipeline_rejects_mixed_or_single_file_sources() {
-        let mixed = test_source(
-            vec![
-                LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap(),
-                LocalParquetFile::new("/tmp/b.parquet"),
-            ],
-            vec!["c1".to_string()],
-        );
-        assert!(!object_store_file_fetch_pipeline_enabled(2, &mixed, &["c1"]));
-
-        let single = test_source(
-            vec![LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap()],
-            vec!["c1".to_string()],
-        );
-        assert!(!object_store_file_fetch_pipeline_enabled(2, &single, &["c1"]));
-    }
-
-    #[test]
-    fn object_store_file_fetch_pipeline_rejects_ranged_fetch_sources() {
-        let mut ranged_file = LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap();
-        let ranged_resolved = ranged_file.resolved_source.clone().with_remote_host_buffer_ranged_enabled(true);
-        ranged_file = ranged_file
-            .with_resolved_parquet_source(ranged_resolved)
-            .unwrap()
-            .with_file_size_bytes(1024)
-            .with_row_groups(vec![0])
-            .with_row_group_rows(vec![1, 1]);
-        let files = vec![
-            ranged_file,
-            LocalParquetFile::object_store_uri("s3://bucket/b.parquet").unwrap().with_file_size_bytes(1024),
-        ];
-        let source = test_source(files, vec!["c1".to_string()]);
-
-        assert!(!object_store_file_fetch_pipeline_enabled(2, &source, &["c1"]));
-    }
-
-    #[test]
     fn position_delete_referenced_data_file_matches_local_file_uri_variants() {
         let delete_file = crate::source::ParquetPositionDeleteFile::from_resolved_parquet_source(
             "delete-1",
@@ -1117,7 +960,7 @@ mod tests {
     #[test]
     fn remote_direct_chunk_budget_errors_redact_object_store_locations() {
         let sensitive_uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
-        let resolved = ResolvedParquetSource::remote_direct(sensitive_uri, CredentialMode::SharedProcessEnv);
+        let resolved = ResolvedParquetSource::remote_kvikio(sensitive_uri, CredentialMode::SharedProcessEnv);
         let file = LocalParquetFile::from_resolved_parquet_source(resolved)
             .expect("valid remote source")
             .with_row_groups(vec![0])
@@ -1206,14 +1049,11 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        let resolved_source = ResolvedParquetSource::remote_host_buffer(
-            "s3://bucket/a.parquet",
-            "s3://bucket/a.parquet",
-            CredentialMode::SharedProcessEnv,
-        )
-        .with_lakehouse_cache_config(root.display().to_string(), None)
-        .with_lakehouse_cache_path(cache_path.display().to_string())
-        .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
+        let resolved_source =
+            ResolvedParquetSource::remote_kvikio("s3://bucket/a.parquet", CredentialMode::SharedProcessEnv)
+                .with_lakehouse_cache_config(root.display().to_string(), None)
+                .with_lakehouse_cache_path(cache_path.display().to_string())
+                .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
         let file = LocalParquetFile::object_store_uri("s3://bucket/a.parquet")
             .unwrap()
             .with_resolved_parquet_source(resolved_source)
@@ -1239,34 +1079,6 @@ mod tests {
     }
 
     #[test]
-    fn parquet_evidence_metrics_report_ranged_mini_parquet_bloom_ineligible() {
-        let read_evidence = cudf::io::parquet::ParquetReadEvidence {
-            requested_remote_read_mode: None,
-            input_kind: "host_buffer",
-            backend: "host_buffer",
-            fallback_reason: "not_applicable",
-            remote_bytes: None,
-            remote_range_count: None,
-            device_read_support: "not_applicable",
-            backend_build_status: cudf::io::parquet::RemoteParquetBackendBuildStatus::Unknown,
-            pruning: Some(cudf::io::parquet::ParquetPruningEvidence {
-                input_row_groups: 3,
-                row_groups_after_stats_filter: None,
-                row_groups_after_bloom_filter: None,
-            }),
-        };
-        let host_buffer_fetch =
-            HostBufferFetchRuntimeMetrics { fetch_mode: "ranged_parquet".to_string(), ..Default::default() };
-
-        let metrics = source_read_parquet_evidence_metrics(Some(&read_evidence), &host_buffer_fetch);
-
-        assert_eq!(metrics.pruning_input_row_groups, Some(3));
-        assert_eq!(metrics.row_groups_after_stats_filter, None);
-        assert_eq!(metrics.row_groups_after_bloom_filter, None);
-        assert_eq!(metrics.bloom_pruning_status, "bloom_ineligible_ranged_mini_parquet");
-    }
-
-    #[test]
     fn parquet_evidence_metrics_compare_bloom_pruning_after_stats_pruning() {
         let read_evidence = cudf::io::parquet::ParquetReadEvidence {
             requested_remote_read_mode: None,
@@ -1284,8 +1096,7 @@ mod tests {
             }),
         };
 
-        let metrics =
-            source_read_parquet_evidence_metrics(Some(&read_evidence), &HostBufferFetchRuntimeMetrics::default());
+        let metrics = source_read_parquet_evidence_metrics(Some(&read_evidence));
 
         assert_eq!(metrics.pruning_input_row_groups, Some(9));
         assert_eq!(metrics.row_groups_after_stats_filter, Some(6));

@@ -56,14 +56,12 @@ pub(super) fn push_resolved_source_contract(
         format!("{label}.original_location"),
         Some(resolved_source.original_location.as_str()),
     );
-    push_optional_string(output, format!("{label}.reader_location"), Some(resolved_source.reader_location.as_str()));
+    push_optional_string(output, format!("{label}.reader_location"), Some(resolved_source.reader_location()));
     push_optional_string(output, format!("{label}.storage_domain"), resolved_source.storage_domain.as_deref());
     push_optional_string(output, format!("{label}.content_identity"), resolved_source.content_identity.as_deref());
-    push_optional_string(output, format!("{label}.storage_profile_id"), resolved_source.storage_profile_id.as_deref());
-    push_token(output, format!("{label}.read_strategy"), resolved_source.read_strategy.as_str());
-    push_token(output, format!("{label}.decode_input"), resolved_source.decode_input.as_str());
-    push_token(output, format!("{label}.remote_read_mode"), resolved_source.remote_read_mode.as_str());
-    push_token(output, format!("{label}.credential_mode"), resolved_source.credential_mode.as_str());
+    push_optional_string(output, format!("{label}.storage_profile_id"), resolved_source.storage_profile_id());
+    push_token(output, format!("{label}.read_strategy"), resolved_source.read_strategy().as_str());
+    push_token(output, format!("{label}.credential_mode"), resolved_source.credential_mode().as_str());
     push_token(output, format!("{label}.lakehouse_cache_status"), resolved_source.cache_status.as_str());
     push_token(
         output,
@@ -86,12 +84,6 @@ pub(super) fn push_resolved_source_contract(
         format!("{label}.lakehouse_cache_fill_mode"),
         resolved_source.lakehouse_cache_fill_mode.as_str(),
     );
-    push_token(
-        output,
-        format!("{label}.remote_host_buffer_ranged_enabled"),
-        resolved_source.remote_host_buffer_ranged_enabled.to_string(),
-    );
-    push_optional_string(output, format!("{label}.fallback_reason"), resolved_source.fallback_reason.as_deref());
 }
 
 pub(super) fn push_position_delete_files(
@@ -278,8 +270,8 @@ pub(super) fn redact_resolved_source_contract(
     replace_token_value(
         output,
         format!("{label}.reader_location"),
-        resolved_source.reader_location.as_str(),
-        stable_hashed_string(resolved_source.reader_location.as_str()).as_str(),
+        resolved_source.reader_location(),
+        stable_hashed_string(resolved_source.reader_location()).as_str(),
     );
     replace_optional_token_value(output, format!("{label}.storage_domain"), resolved_source.storage_domain.as_deref());
     replace_optional_token_value(

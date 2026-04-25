@@ -35,11 +35,10 @@ use datafusion_nexus::{
     table_format::{
         CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
         TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
-        TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
-        TableFormatParquetReadStrategyPreference, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
-        TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue,
-        TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
-        iceberg::CudfIcebergTableProvider, resolve_table_format_parquet_source,
+        TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata,
+        TableFormatPartitionTransform, TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability,
+        TableFormatScalarValue, TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature,
+        TableFormatUnsupportedFeatureCode, iceberg::CudfIcebergTableProvider, resolve_table_format_parquet_source,
         resolve_table_format_parquet_source_with_metadata,
     },
 };
@@ -50,8 +49,8 @@ use nexus_query_engine::{
     plan::PlanNode,
     runtime::ExecutionContext,
     source::{
-        CredentialMode, LakehouseCacheStatus, ParquetReadStrategy, ResolvedParquetSource, SourceColumnRef,
-        SourceDecodeInput, SourceNode,
+        CredentialMode, LakehouseCacheStatus, ParquetReadStrategy, ResolvedParquetInput, ResolvedParquetSource,
+        SourceColumnRef, SourceNode,
     },
 };
 use parquet::arrow::{ArrowWriter, PARQUET_FIELD_ID_META_KEY};
@@ -824,7 +823,7 @@ fn native_lowering_rejects_iceberg_missing_predicate_column_above_hash_join() {
             )
             .with_size_bytes(4096)
             .with_row_count(11)
-            .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
                 "s3://bucket/profiles/data-0001.parquet",
                 CredentialMode::SharedProcessEnv,
             ))
@@ -924,7 +923,7 @@ fn native_lowering_accepts_iceberg_same_name_signed_widened_predicate_column_abo
             )
             .with_size_bytes(4096)
             .with_row_count(11)
-            .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
                 "s3://bucket/profiles/data-0001.parquet",
                 CredentialMode::SharedProcessEnv,
             ))
@@ -1125,7 +1124,7 @@ fn native_lowering_lowers_s3_table_format_scan_to_object_store_parquet_source() 
     assert_eq!(result.rewritten_count(), 1);
     assert_eq!(result.rejected_count(), 0);
     let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
-        panic!("expected S3 table-format scan to be rewritten through SourceFetch lowering");
+        panic!("expected S3 table-format scan to be rewritten through remote KvikIO lowering");
     };
     assert_eq!(candidate.shape, "TableFormatScan(iceberg)");
     let source = native_local_parquet_source(&result.plans[0]);
@@ -1133,10 +1132,9 @@ fn native_lowering_lowers_s3_table_format_scan_to_object_store_parquet_source() 
     assert_eq!(source.files[0].location.read_capability(), "object_store:s3");
     assert_eq!(source.files[0].stable_id, "table-format:iceberg:s3-data-0001");
     assert_eq!(source.files[0].path.to_string_lossy(), "s3://bucket/table/data-0001.parquet");
-    assert_eq!(source.files[0].resolved_source.read_strategy, ParquetReadStrategy::RemoteDirect);
-    assert_eq!(source.files[0].resolved_source.decode_input, SourceDecodeInput::Filepath);
+    assert_eq!(source.files[0].resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect);
+    assert!(matches!(&source.files[0].resolved_source.input, ResolvedParquetInput::RemoteKvikio { .. }));
     assert_eq!(source.diagnostics.source_read_strategy, "remote_direct");
-    assert_eq!(source.diagnostics.source_decode_input, "filepath");
 }
 
 #[test]
@@ -1148,10 +1146,10 @@ fn table_format_parquet_resolver_reports_local_remote_and_cache_strategies() {
         &config,
     )
     .unwrap();
-    assert_eq!(local.reader_location, "/tmp/table/data.parquet");
-    assert_eq!(local.read_strategy, ParquetReadStrategy::LocalKvikio);
-    assert_eq!(local.decode_input, SourceDecodeInput::Filepath);
-    assert_eq!(local.credential_mode, CredentialMode::None);
+    assert_eq!(local.reader_location(), "/tmp/table/data.parquet");
+    assert_eq!(local.read_strategy(), ParquetReadStrategy::LocalKvikio);
+    assert!(matches!(&local.input, ResolvedParquetInput::LocalKvikio { .. }));
+    assert_eq!(local.credential_mode(), CredentialMode::None);
 
     let remote = resolve_table_format_parquet_source(
         "s3://bucket/table/data.parquet",
@@ -1159,13 +1157,12 @@ fn table_format_parquet_resolver_reports_local_remote_and_cache_strategies() {
         &config,
     )
     .unwrap();
-    assert_eq!(remote.read_strategy, ParquetReadStrategy::RemoteDirect);
-    assert_eq!(remote.decode_input, SourceDecodeInput::Filepath);
-    assert_eq!(remote.credential_mode, CredentialMode::SharedProcessEnv);
+    assert_eq!(remote.read_strategy(), ParquetReadStrategy::RemoteDirect);
+    assert!(matches!(&remote.input, ResolvedParquetInput::RemoteKvikio { .. }));
+    assert_eq!(remote.credential_mode(), CredentialMode::SharedProcessEnv);
 
     let cache_dir = tempfile::tempdir().unwrap();
     let cache_miss_config = TableFormatParquetReadStrategyConfig {
-        preference: TableFormatParquetReadStrategyPreference::LocalCache,
         lakehouse_cache_root: Some(cache_dir.path().to_path_buf()),
         credential_mode: CredentialMode::SharedProcessEnv,
         ..Default::default()
@@ -1176,12 +1173,10 @@ fn table_format_parquet_resolver_reports_local_remote_and_cache_strategies() {
         &cache_miss_config,
     )
     .unwrap();
-    assert_eq!(cache_miss.read_strategy, ParquetReadStrategy::RemoteDirect);
+    assert_eq!(cache_miss.read_strategy(), ParquetReadStrategy::RemoteDirect);
     assert_eq!(cache_miss.cache_status, LakehouseCacheStatus::Miss);
-    assert_eq!(cache_miss.fallback_reason.as_deref(), Some("lakehouse_cache_miss_fill_disabled"));
 
     let cache_config = TableFormatParquetReadStrategyConfig {
-        preference: TableFormatParquetReadStrategyPreference::LocalCache,
         lakehouse_cache_root: Some(cache_dir.path().to_path_buf()),
         credential_mode: CredentialMode::SharedProcessEnv,
         ..Default::default()
@@ -1197,7 +1192,7 @@ fn table_format_parquet_resolver_reports_local_remote_and_cache_strategies() {
         &cache_metadata,
     )
     .unwrap();
-    let cache_file = PathBuf::from(cache_path_probe.reader_location);
+    let cache_file = PathBuf::from(cache_path_probe.reader_location());
     std::fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
     std::fs::write(&cache_file, vec![0u8; 4096]).unwrap();
     let cached = resolve_table_format_parquet_source_with_metadata(
@@ -1207,17 +1202,16 @@ fn table_format_parquet_resolver_reports_local_remote_and_cache_strategies() {
         &cache_metadata,
     )
     .unwrap();
-    assert_eq!(cached.read_strategy, ParquetReadStrategy::LocalCacheKvikio);
-    assert_eq!(cached.decode_input, SourceDecodeInput::Filepath);
+    assert_eq!(cached.read_strategy(), ParquetReadStrategy::LocalCacheKvikio);
+    assert!(matches!(&cached.input, ResolvedParquetInput::LocalKvikio { .. }));
     assert_eq!(cached.cache_status, LakehouseCacheStatus::Hit);
-    assert_eq!(cached.reader_location, cache_file.display().to_string());
+    assert_eq!(cached.reader_location(), cache_file.display().to_string());
 }
 
 #[test]
 fn table_format_parquet_resolver_selects_fill_before_read_for_local_cache_miss_policy() {
     let cache_dir = tempfile::tempdir().unwrap();
     let cache_config = TableFormatParquetReadStrategyConfig {
-        preference: TableFormatParquetReadStrategyPreference::LocalCache,
         lakehouse_cache_root: Some(cache_dir.path().to_path_buf()),
         lakehouse_cache_policy: TableFormatLakehouseCachePolicy::FillBeforeRead,
         lakehouse_cache_max_bytes: Some(16 * 1024 * 1024),
@@ -1232,21 +1226,20 @@ fn table_format_parquet_resolver_selects_fill_before_read_for_local_cache_miss_p
     )
     .unwrap();
 
-    assert_eq!(resolved.read_strategy, ParquetReadStrategy::LocalCacheKvikio);
-    assert_eq!(resolved.decode_input, SourceDecodeInput::Filepath);
+    assert_eq!(resolved.read_strategy(), ParquetReadStrategy::LocalCacheKvikio);
+    assert!(matches!(&resolved.input, ResolvedParquetInput::LocalKvikio { .. }));
     assert_eq!(resolved.cache_status, LakehouseCacheStatus::FillBeforeRead);
     assert_eq!(resolved.original_location, "s3://bucket/table/data.parquet");
     assert_eq!(resolved.lakehouse_cache_root.as_deref(), Some(cache_dir.path().to_str().unwrap()));
     assert_eq!(resolved.lakehouse_cache_max_bytes, Some(16 * 1024 * 1024));
-    assert!(resolved.reader_location.contains("/v1/s3/bucket/weak_content_unknown/"));
-    assert!(resolved.reader_location.contains("data.parquet__h"));
+    assert!(resolved.reader_location().contains("/v1/s3/bucket/weak_content_unknown/"));
+    assert!(resolved.reader_location().contains("data.parquet__h"));
 }
 
 #[test]
 fn table_format_parquet_resolver_scopes_local_cache_by_storage_domain_and_content_identity() {
     let cache_dir = tempfile::tempdir().unwrap();
     let cache_config = TableFormatParquetReadStrategyConfig {
-        preference: TableFormatParquetReadStrategyPreference::LocalCache,
         lakehouse_cache_root: Some(cache_dir.path().to_path_buf()),
         lakehouse_cache_policy: TableFormatLakehouseCachePolicy::FillBeforeRead,
         credential_mode: CredentialMode::SharedProcessEnv,
@@ -1262,8 +1255,8 @@ fn table_format_parquet_resolver_scopes_local_cache_by_storage_domain_and_conten
         &metadata,
     )
     .unwrap();
-    let cache_path = PathBuf::from(&resolved.reader_location);
-    assert!(resolved.reader_location.contains("/v1/s3/rustfs_bucket-a/etag_abc123/"));
+    let cache_path = PathBuf::from(resolved.reader_location());
+    assert!(resolved.reader_location().contains("/v1/s3/rustfs_bucket-a/etag_abc123/"));
 
     std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
     std::fs::write(&cache_path, vec![0u8; 4096]).unwrap();
@@ -1275,7 +1268,7 @@ fn table_format_parquet_resolver_scopes_local_cache_by_storage_domain_and_conten
     )
     .unwrap();
     assert_eq!(cached.cache_status, LakehouseCacheStatus::Hit);
-    assert_eq!(cached.reader_location, resolved.reader_location);
+    assert_eq!(cached.reader_location(), resolved.reader_location());
     assert_eq!(cached.storage_domain.as_deref(), Some("rustfs:bucket-a"));
     assert_eq!(cached.content_identity.as_deref(), Some("etag:abc123"));
 
@@ -1290,14 +1283,13 @@ fn table_format_parquet_resolver_scopes_local_cache_by_storage_domain_and_conten
     )
     .unwrap();
     assert_eq!(changed.cache_status, LakehouseCacheStatus::FillBeforeRead);
-    assert_ne!(changed.reader_location, cached.reader_location);
+    assert_ne!(changed.reader_location(), cached.reader_location());
 }
 
 #[test]
 fn table_format_parquet_resolver_scopes_local_cache_by_catalog_endpoint_without_endpoint_secrets() {
     let cache_dir = tempfile::tempdir().unwrap();
     let cache_config = TableFormatParquetReadStrategyConfig {
-        preference: TableFormatParquetReadStrategyPreference::LocalCache,
         lakehouse_cache_root: Some(cache_dir.path().to_path_buf()),
         lakehouse_cache_policy: TableFormatLakehouseCachePolicy::FillBeforeRead,
         storage_endpoint: Some("https://user:secret@rustfs.local:9000/minio?X-Amz-Signature=secret#frag".to_string()),
@@ -1315,11 +1307,11 @@ fn table_format_parquet_resolver_scopes_local_cache_by_catalog_endpoint_without_
     .unwrap();
 
     assert_eq!(resolved.storage_domain.as_deref(), Some("bucket-a@https://rustfs.local:9000/minio"));
-    assert_eq!(resolved.storage_profile_id.as_deref(), Some("rest-s3"));
-    assert!(resolved.reader_location.contains("rustfs.local_9000"));
-    assert!(!resolved.reader_location.contains("user"));
-    assert!(!resolved.reader_location.contains("secret"));
-    assert!(!resolved.reader_location.contains("X-Amz-Signature"));
+    assert_eq!(resolved.storage_profile_id(), Some("rest-s3"));
+    assert!(resolved.reader_location().contains("rustfs.local_9000"));
+    assert!(!resolved.reader_location().contains("user"));
+    assert!(!resolved.reader_location().contains("secret"));
+    assert!(!resolved.reader_location().contains("X-Amz-Signature"));
 }
 
 #[test]
@@ -1334,7 +1326,7 @@ fn native_lowering_preserves_remote_direct_reader_contract_for_dispatch() {
             TableFormatReadCapability::object_store("s3"),
         )
         .with_size_bytes(4096)
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/data-0001.parquet",
             CredentialMode::SharedProcessEnv,
         )),
@@ -1346,11 +1338,10 @@ fn native_lowering_preserves_remote_direct_reader_contract_for_dispatch() {
     assert_eq!(result.rewritten_count(), 1);
     let source = native_local_parquet_source(&result.plans[0]);
     let file = &source.files[0];
-    assert_eq!(file.resolved_source.read_strategy, ParquetReadStrategy::RemoteDirect);
-    assert_eq!(file.resolved_source.decode_input, SourceDecodeInput::Filepath);
+    assert_eq!(file.resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect);
+    assert!(matches!(&file.resolved_source.input, ResolvedParquetInput::RemoteKvikio { .. }));
     assert_eq!(file.path.to_string_lossy(), "s3://bucket/table/data-0001.parquet");
     assert_eq!(source.diagnostics.source_read_strategy, "remote_direct");
-    assert_eq!(source.diagnostics.source_decode_input, "filepath");
 }
 
 #[test]

@@ -106,51 +106,40 @@ pub(super) fn read_position_delete_source_chunk(
         .with_row_group_facts(chunk));
     }
 
-    let _cache_read_pin = if chunk.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio
-    {
-        ensure_local_cache_parquet_chunk(context, chunk, metrics)?;
-        Some(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?)
-    } else {
-        None
-    };
+    let _cache_read_pin =
+        if chunk.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
+            ensure_local_cache_parquet_chunk(context, chunk)?;
+            Some(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?)
+        } else {
+            None
+        };
     let file =
         crate::chunk::source_file_for_chunk(source, chunk, "nexus_query_engine.local_parquet_chunk.position_deletes")?;
     let row_position_range =
         if file.has_position_delete_files() { crate::chunk::source_chunk_row_position_range(chunk)? } else { None };
     let (cudf_source, cudf_chunk) = cudf_local_parquet_source_chunk(context, source, chunk)?;
     let read_timer = Instant::now();
-    let (output, observed_row_group_count, host_buffer_fetch) = if chunk.resolved_source.uses_host_buffer() {
-        let read =
-            read_object_store_parquet_chunk_unbounded(context, source, chunk, &cudf_source, &cudf_chunk, metrics)?;
-        record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
-        (
-            read.output,
-            read.observed_row_group_count.and_then(|count| usize::try_from(count).ok()),
-            read.host_buffer_fetch,
+    let output = DataFrame::read_parquet_source_chunk_with_evidence(
+        context.runtime(),
+        &cudf_source,
+        &cudf_chunk,
+        SourceReadMode::ExecutionFrame,
+    )
+    .map_err(|error| {
+        cudf_error_for_chunk_read(
+            "nexus_query_engine.local_parquet_source.position_delete_chunk.read",
+            "failed to read native local parquet position-delete chunk with cudf",
+            error,
+            chunk,
         )
-    } else {
-        let output = DataFrame::read_parquet_source_chunk_with_evidence(
-            context.runtime(),
-            &cudf_source,
-            &cudf_chunk,
-            SourceReadMode::ExecutionFrame,
-        )
-        .map_err(|error| {
-            cudf_error_for_chunk_read(
-                "nexus_query_engine.local_parquet_source.position_delete_chunk.read",
-                "failed to read native local parquet position-delete chunk with cudf",
-                error,
-                chunk,
-            )
-            .with_fact("path", parquet_chunk_path_fact(chunk))
-            .with_fact("chunk_index", chunk.chunk_index)
-            .with_fact("file_index", chunk.file_index)
-            .with_fact("read_columns", chunk.read_columns.len())
-            .with_row_group_facts(chunk)
-        })?;
-        record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
-        (output, None, HostBufferFetchRuntimeMetrics::default())
-    };
+        .with_fact("path", parquet_chunk_path_fact(chunk))
+        .with_fact("chunk_index", chunk.chunk_index)
+        .with_fact("file_index", chunk.file_index)
+        .with_fact("read_columns", chunk.read_columns.len())
+        .with_row_group_facts(chunk)
+    })?;
+    record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
+    let observed_row_group_count = None;
     let read_evidence = output.read_evidence().cloned();
     let read_elapsed = read_timer.elapsed();
     metrics.parquet_read_time += read_elapsed;
@@ -176,7 +165,6 @@ pub(super) fn read_position_delete_source_chunk(
         frame.num_rows() as u64,
         read_elapsed,
         0,
-        &host_buffer_fetch,
         read_evidence.as_ref(),
         metrics,
     );
@@ -568,12 +556,10 @@ pub(super) fn read_position_delete_file(
     )
     .with_reader_predicate(position_delete_reader_predicate(delete_file, data_file_path, row_position_range)?);
     let columns = [ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN, ICEBERG_POSITION_DELETE_POS_COLUMN];
-    let frame = if file.resolved_source.uses_host_buffer() {
-        read_object_store_parquet_file(context, &source, source_node_id, &file, data_file_index, delete_index, metrics)?
-    } else {
+    let frame = {
         let _cache_read_pin =
-            if file.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio {
-                ensure_local_cache_parquet_file(context, &file, metrics)?;
+            if file.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
+                ensure_local_cache_parquet_file(context, &file)?;
                 Some(acquire_lakehouse_cache_file_read_pin(context, &file)?)
             } else {
                 None
@@ -631,20 +617,10 @@ pub(super) fn read_equality_delete_file(
     let delete_source =
         LocalParquetSource::from_files(vec![file.clone()], delete_schema, delete_file.equality_columns.clone());
     let columns = delete_file.equality_columns.iter().map(String::as_str).collect::<Vec<_>>();
-    let frame = if file.resolved_source.uses_host_buffer() {
-        read_object_store_parquet_file(
-            context,
-            &delete_source,
-            source_node_id,
-            &file,
-            data_file_index,
-            delete_index,
-            metrics,
-        )?
-    } else {
+    let frame = {
         let _cache_read_pin =
-            if file.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio {
-                ensure_local_cache_parquet_file(context, &file, metrics)?;
+            if file.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
+                ensure_local_cache_parquet_file(context, &file)?;
                 Some(acquire_lakehouse_cache_file_read_pin(context, &file)?)
             } else {
                 None
@@ -688,4 +664,78 @@ pub(super) fn unique_position_delete_column_name(frame: &DataFrame) -> String {
     crate::naming::unique_name_with_suffix_from(ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN, 0, |candidate| {
         names.contains(&candidate)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::{CredentialMode, ParquetEqualityDeleteFile, ResolvedParquetSource};
+
+    #[test]
+    fn position_and_equality_delete_files_build_typed_remote_kvikio_sources() {
+        let context = ExecutionContext::builder().build().expect("execution context builds");
+
+        let position_delete = crate::source::ParquetPositionDeleteFile::from_resolved_parquet_source(
+            "position-delete",
+            ResolvedParquetSource::remote_kvikio(
+                "s3://bucket/table/position-delete.parquet",
+                CredentialMode::SharedProcessEnv,
+            ),
+        )
+        .expect("position delete source is valid");
+        let position_file = position_delete.to_local_parquet_file();
+        let position_schema = Arc::new(Schema::new(vec![
+            Field::new(ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN, ArrowDataType::Utf8, false),
+            Field::new(ICEBERG_POSITION_DELETE_POS_COLUMN, ArrowDataType::Int64, false),
+        ]));
+        let position_source = LocalParquetSource::from_files(
+            vec![position_file.clone()],
+            position_schema,
+            vec![ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN.to_string(), ICEBERG_POSITION_DELETE_POS_COLUMN.to_string()],
+        )
+        .with_reader_predicate(
+            position_delete_reader_predicate(&position_delete, "s3://bucket/table/data.parquet", None)
+                .expect("position delete predicate builds"),
+        );
+        let (position_cudf_source, position_chunk) =
+            cudf_local_parquet_source_file_selection(&context, &position_source, &position_file, 0, 0)
+                .expect("position delete file uses typed remote source builder");
+        assert_eq!(
+            position_cudf_source.files()[0].remote_source().unwrap().uri(),
+            "s3://bucket/table/position-delete.parquet"
+        );
+        assert_eq!(
+            position_chunk.remote_source().unwrap().read_mode(),
+            cudf::io::parquet::RemoteReadMode::RequireKvikio
+        );
+        assert!(position_cudf_source.reader_predicate().is_some());
+
+        let equality_delete = ParquetEqualityDeleteFile::from_resolved_parquet_source(
+            "equality-delete",
+            ResolvedParquetSource::remote_kvikio(
+                "s3://bucket/table/equality-delete.parquet",
+                CredentialMode::SharedProcessEnv,
+            ),
+            vec![1],
+            vec!["id".to_string()],
+        )
+        .expect("equality delete source is valid");
+        let equality_file = equality_delete.to_local_parquet_file();
+        let equality_source = LocalParquetSource::from_files(
+            vec![equality_file.clone()],
+            Arc::new(Schema::new(vec![Field::new("id", ArrowDataType::Int64, true)])),
+            vec!["id".to_string()],
+        );
+        let (equality_cudf_source, equality_chunk) =
+            cudf_local_parquet_source_file_selection(&context, &equality_source, &equality_file, 0, 1)
+                .expect("equality delete file uses typed remote source builder");
+        assert_eq!(
+            equality_cudf_source.files()[0].remote_source().unwrap().uri(),
+            "s3://bucket/table/equality-delete.parquet"
+        );
+        assert_eq!(
+            equality_chunk.remote_source().unwrap().read_mode(),
+            cudf::io::parquet::RemoteReadMode::RequireKvikio
+        );
+    }
 }

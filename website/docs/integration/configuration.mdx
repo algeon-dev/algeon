@@ -185,12 +185,19 @@ process-global S3 behavior expects `AWS_DEFAULT_REGION`. On private buckets,
 setting only `AWS_REGION` can make the remote read path fail with unsigned S3
 requests and 403 responses.
 
-`remote_kvikio` selects the cuDF/KvikIO remote Parquet reader path. Native GPU
-execution never falls back to a host-buffer Parquet read: if the direct reader
-cannot be used, planning fails with a structured `host_buffer_disabled` reason.
-For local GDS reads, configure the physical mount prefixes explicitly with
-`NEXUS_GDS_MOUNT_ROOTS=/mnt/fast,/srv/nvme`; symlink discovery does not make a
-different path GDS-capable.
+GPU Parquet execution always gives cuDF a local path, lakehouse-cache path, or
+remote S3 URI. KvikIO owns the data I/O and may use native cuFile or its
+compatibility implementation according to process-global
+`KVIKIO_COMPAT_MODE=ON|OFF|AUTO`. Nexus does not download data objects or ranges
+for the decoder and does not fall back to another Parquet data path. A missing
+remote KvikIO backend or unusable source profile is a structured planning or
+execution error.
+
+`KVIKIO_COMPAT_MODE` must be fixed before the process starts. Testing multiple
+modes requires independent server processes because KvikIO initialization is
+process-global. Physical GDS mount prefixes are not a Nexus configuration
+surface; local path eligibility and native-versus-compatibility I/O remain
+KvikIO responsibilities.
 
 A condensed Glue configuration looks like:
 
@@ -204,7 +211,6 @@ AWS_REGION=us-west-2 \
 AWS_DEFAULT_REGION=us-west-2 \
 NEXUS_ICEBERG_S3_REGION=us-west-2 \
 NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain \
-NEXUS_ICEBERG_PARQUET_READ_STRATEGY=remote_kvikio \
 NEXUS_SERVER_CUGRAPH_ENABLED=true \
 NEXUS_SERVER_BIND=127.0.0.1:50051 \
 flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh

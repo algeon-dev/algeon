@@ -51,7 +51,6 @@ pub(super) fn read_local_parquet_file(
         local_file_selected_row_group_count(file),
         frame.num_rows() as u64,
         read_elapsed,
-        &HostBufferFetchRuntimeMetrics::default(),
         read_evidence.as_ref(),
         metrics,
     );
@@ -91,7 +90,7 @@ mod tests {
     #[test]
     fn remote_direct_read_errors_redact_object_store_locations() {
         let sensitive_uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
-        let file = LocalParquetFile::from_resolved_parquet_source(crate::source::ResolvedParquetSource::remote_direct(
+        let file = LocalParquetFile::from_resolved_parquet_source(crate::source::ResolvedParquetSource::remote_kvikio(
             sensitive_uri,
             crate::source::CredentialMode::SharedProcessEnv,
         ))

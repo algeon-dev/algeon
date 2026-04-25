@@ -303,7 +303,7 @@ impl FooterMetadataRequirement {
 fn spawn_footer_metadata_fetch(
     context: &SourceMetadataLoadContext<'_>,
     fetch_location: SourceMetadataFetchLocation,
-    operation: &'static str,
+    _operation: &'static str,
     requirement: FooterMetadataRequirement,
 ) -> Result<Option<FooterMetadataFetch>> {
     let store = match context.execution_context.s3_object_store(S3ObjectStoreKey {
@@ -316,23 +316,13 @@ fn spawn_footer_metadata_fetch(
         Err(_error) => return Ok(None),
     };
     let wait_started = Instant::now();
-    let Some(operation_permit) = context
-        .execution_context
-        .acquire_source_fetch_operation_with_timeout(OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT, operation)?
-    else {
-        if requirement.is_required() {
-            return Err(footer_metadata_fetch_timeout_error(operation));
-        }
-        return Ok(None);
-    };
     let (sender, receiver) = std::sync::mpsc::channel();
     let key = fetch_location.key;
-    let handle = context.execution_context.spawn_object_store_custom_fetch(
+    let handle = context.execution_context.spawn_object_store_control_task(
         move || fetch_object_store_parquet_metadata(store, key),
         move |fetch_result| {
             let metadata = fetch_result.value.map(|(metadata, _file_size)| metadata);
             let _ = sender.send(metadata);
-            drop(operation_permit);
         },
     );
     Ok(Some(FooterMetadataFetch { wait_started, handle, receiver }))
@@ -342,7 +332,7 @@ fn load_local_parquet_footer_metadata(file: &LocalParquetFile) -> Option<Arc<Par
     local_parquet_footer_metadata_path(file).and_then(|path| {
         let content_identity = sidecar_content_identity(file);
         if matches!(
-            file.resolved_source.read_strategy,
+            file.resolved_source.read_strategy(),
             ParquetReadStrategy::LocalCacheKvikio | ParquetReadStrategy::RemoteDirect
         ) && let Ok(Some(metadata)) = read_parquet_footer_sidecar(path, content_identity)
         {
@@ -350,7 +340,7 @@ fn load_local_parquet_footer_metadata(file: &LocalParquetFile) -> Option<Arc<Par
         }
         SerializedFileReader::try_from(path).ok().map(|reader| {
             if matches!(
-                file.resolved_source.read_strategy,
+                file.resolved_source.read_strategy(),
                 ParquetReadStrategy::LocalCacheKvikio | ParquetReadStrategy::RemoteDirect
             ) {
                 let _ = crate::parquet_metadata::write_parquet_footer_sidecar_from_file(path, content_identity);
@@ -368,14 +358,14 @@ pub(super) fn local_parquet_footer_metadata_path(file: &LocalParquetFile) -> Opt
     if let Some(path) = file.location.as_local_path() {
         return Some(path);
     }
-    if file.resolved_source.read_strategy == ParquetReadStrategy::LocalCacheKvikio && file.path.is_file() {
+    if file.resolved_source.read_strategy() == ParquetReadStrategy::LocalCacheKvikio && file.path.is_file() {
         return Some(file.path.as_path());
     }
     None
 }
 
 fn cache_footer_metadata_miss(file: &LocalParquetFile) -> bool {
-    file.resolved_source.read_strategy != ParquetReadStrategy::LocalCacheKvikio
+    file.resolved_source.read_strategy() != ParquetReadStrategy::LocalCacheKvikio
 }
 
 fn load_object_store_parquet_footer_metadata(
@@ -461,10 +451,7 @@ fn footer_metadata_fetch_disconnected_error(operation: &'static str) -> QueryErr
 }
 
 fn source_file_can_fetch_object_store_footer(file: &LocalParquetFile) -> bool {
-    matches!(
-        file.resolved_source.read_strategy,
-        ParquetReadStrategy::RemoteHostBuffer | ParquetReadStrategy::RemoteDirect
-    )
+    matches!(file.resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect)
 }
 
 struct SourceMetadataFetchLocation {
@@ -491,7 +478,7 @@ fn source_metadata_fetch_location(file: &LocalParquetFile) -> Result<SourceMetad
         )
         .with_fact("scheme", scheme));
     }
-    parse_s3_metadata_source_uri(uri, file.resolved_source.storage_profile_id.clone())
+    parse_s3_metadata_source_uri(uri, file.resolved_source.storage_profile_id().map(str::to_owned))
 }
 
 fn parse_s3_metadata_source_uri(uri: &str, storage_profile_id: Option<String>) -> Result<SourceMetadataFetchLocation> {
@@ -551,8 +538,8 @@ impl SourceMetadataCacheKey {
             path: file.path.clone(),
             stable_id: file.stable_id.clone(),
             file_size_bytes: file.file_size_bytes,
-            read_strategy: file.resolved_source.read_strategy,
-            storage_profile_id: file.resolved_source.storage_profile_id.clone(),
+            read_strategy: file.resolved_source.read_strategy(),
+            storage_profile_id: file.resolved_source.storage_profile_id().map(str::to_owned),
             content_identity: sidecar_content_identity(file).to_string(),
         }
     }

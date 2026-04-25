@@ -11,9 +11,10 @@ use futures::StreamExt;
 use object_store::ObjectStoreExt;
 
 use super::{
-    lakehouse_cache_policy::LakehouseCachePolicy,
-    object_store_safety::{object_store_key_fact, source_fetch_location},
-    start_host_parquet_buffer_fetch, *,
+    maintenance::start_cache_maintenance_fetch,
+    policy::LakehouseCachePolicy,
+    s3::{cache_maintenance_location, object_store_key_fact},
+    *,
 };
 use crate::{
     datatypes::is_arrow_fixed_width,
@@ -27,7 +28,6 @@ pub(super) static LAKEHOUSE_CACHE_READ_PIN_COUNTER: AtomicU64 = AtomicU64::new(0
 pub(in crate::exec::source) fn ensure_local_cache_parquet_file(
     context: &ExecutionContext,
     file: &LocalParquetFile,
-    metrics: &mut QueryMetrics,
 ) -> Result<()> {
     ensure_local_cache_parquet_entry(
         context,
@@ -40,14 +40,12 @@ pub(in crate::exec::source) fn ensure_local_cache_parquet_file(
         file.resolved_source.lakehouse_cache_max_bytes,
         None,
         None,
-        metrics,
     )
 }
 
 pub(in crate::exec::source) fn ensure_local_cache_parquet_chunk(
     context: &ExecutionContext,
     chunk: &SourceChunk,
-    metrics: &mut QueryMetrics,
 ) -> Result<()> {
     ensure_local_cache_parquet_entry(
         context,
@@ -60,7 +58,6 @@ pub(in crate::exec::source) fn ensure_local_cache_parquet_chunk(
         chunk.resolved_source.lakehouse_cache_max_bytes,
         Some(chunk.file_index),
         Some(chunk.chunk_index),
-        metrics,
     )
 }
 
@@ -320,7 +317,7 @@ fn local_cache_optimized_batch_eligible(source: &LocalParquetSource, batch: &cra
     let cache_root = first.resolved_source.lakehouse_cache_root.as_deref();
     cache_root.is_some()
         && batch.chunks.iter().all(|chunk| {
-            chunk.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio
+            chunk.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio
                 && chunk.resolved_source.lakehouse_cache_root.as_deref() == cache_root
                 && !chunk.zero_column_count
                 && chunk.scan_limit_rows.is_none()
@@ -408,18 +405,16 @@ fn optimized_batch_resolved_source_contract_signature(
         "original_location",
         Some(resolved_source.original_location.as_str()),
     );
-    push_optimized_batch_contract_hash(&mut output, "reader_location", Some(resolved_source.reader_location.as_str()));
+    push_optimized_batch_contract_hash(&mut output, "reader_location", Some(resolved_source.reader_location()));
     push_optimized_batch_contract_hash(&mut output, "storage_domain", resolved_source.storage_domain.as_deref());
     push_optimized_batch_contract_hash(&mut output, "content_identity", resolved_source.content_identity.as_deref());
     push_optimized_batch_contract_value(
         &mut output,
         "storage_profile_id",
-        resolved_source.storage_profile_id.as_deref().unwrap_or("none"),
+        resolved_source.storage_profile_id().unwrap_or("none"),
     );
-    push_optimized_batch_contract_value(&mut output, "read_strategy", resolved_source.read_strategy.as_str());
-    push_optimized_batch_contract_value(&mut output, "decode_input", resolved_source.decode_input.as_str());
-    push_optimized_batch_contract_value(&mut output, "remote_read_mode", resolved_source.remote_read_mode.as_str());
-    push_optimized_batch_contract_value(&mut output, "credential_mode", resolved_source.credential_mode.as_str());
+    push_optimized_batch_contract_value(&mut output, "read_strategy", resolved_source.read_strategy().as_str());
+    push_optimized_batch_contract_value(&mut output, "credential_mode", resolved_source.credential_mode().as_str());
     push_optimized_batch_contract_value(&mut output, "cache_status", resolved_source.cache_status.as_str());
     push_optimized_batch_contract_value(
         &mut output,
@@ -448,16 +443,6 @@ fn optimized_batch_resolved_source_contract_signature(
         &mut output,
         "lakehouse_cache_fill_mode",
         resolved_source.lakehouse_cache_fill_mode.as_str(),
-    );
-    push_optimized_batch_contract_value(
-        &mut output,
-        "remote_host_buffer_ranged_enabled",
-        if resolved_source.remote_host_buffer_ranged_enabled { "true" } else { "false" },
-    );
-    push_optimized_batch_contract_value(
-        &mut output,
-        "fallback_reason",
-        resolved_source.fallback_reason.as_deref().unwrap_or("none"),
     );
     output
 }
@@ -537,7 +522,6 @@ fn ensure_local_cache_parquet_entry(
     cache_max_bytes: Option<u64>,
     file_index: Option<usize>,
     chunk_index: Option<usize>,
-    metrics: &mut QueryMetrics,
 ) -> Result<()> {
     context.check_cancellation("nexus_query_engine.lakehouse_cache.ensure")?;
     if complete_cache_file_matches_expected_size(cache_path, estimated_fetch_bytes) {
@@ -583,11 +567,7 @@ fn ensure_local_cache_parquet_entry(
     }
 
     let mut fetch =
-        start_host_parquet_buffer_fetch(context, location, resolved_source, estimated_fetch_bytes)?.finish()?;
-    metrics.record_host_fetch_budget_wait(fetch.host_budget_wait_elapsed);
-    metrics.record_source_fetch_concurrency_wait(fetch.concurrency_wait_elapsed);
-    metrics.record_source_fetch(fetch.actual_bytes, fetch.fetch_elapsed);
-    metrics.source_read_time += fetch.fetch_elapsed;
+        start_cache_maintenance_fetch(context, location, resolved_source, estimated_fetch_bytes)?.finish()?;
     validate_lakehouse_cache_fetch_size(
         cache_path,
         stable_id,
@@ -605,7 +585,7 @@ fn ensure_local_cache_parquet_entry(
         chunk_index,
     )?;
     evict_lakehouse_cache(cache_root, cache_path, cache_max_bytes);
-    fetch.release_after_decode();
+    fetch.release_after_publish();
     Ok(())
 }
 
@@ -743,11 +723,11 @@ fn enqueue_background_lakehouse_cache_entry_fill(
         Err(error) => return Err(error),
     };
 
-    let fetch_location = source_fetch_location(location, resolved_source)?;
+    let maintenance_location = cache_maintenance_location(location, resolved_source)?;
     let store = context.s3_object_store(S3ObjectStoreKey {
-        bucket: fetch_location.bucket.clone(),
-        region: fetch_location.region.clone(),
-        storage_profile_id: fetch_location.storage_profile_id.clone(),
+        bucket: maintenance_location.bucket.clone(),
+        region: maintenance_location.region.clone(),
+        storage_profile_id: maintenance_location.storage_profile_id.clone(),
     })?;
     let cache_root = resolved_source.lakehouse_cache_root.clone();
     let cache_max_bytes = resolved_source.lakehouse_cache_max_bytes;
@@ -760,14 +740,14 @@ fn enqueue_background_lakehouse_cache_entry_fill(
     let callback_stable_id_hash = stable_log_hash(callback_stable_id.as_str());
     let event_sink = context.lakehouse_cache_fill_events();
     let sidecar_content_identity = sidecar_content_identity(resolved_source, stable_id.as_str()).to_string();
-    let _fetch_handle = context.spawn_lakehouse_cache_fill(
+    let _fetch_handle = context.spawn_lakehouse_cache_maintenance(
         {
             let cache_path = cache_path.clone();
             move || {
                 let _operation_permit = operation_permit;
                 stream_lakehouse_cache_fill(
                     store,
-                    fetch_location.key,
+                    maintenance_location.key,
                     cache_path,
                     temp_path,
                     lock_guard,
@@ -1213,7 +1193,7 @@ async fn stream_lakehouse_cache_fill(
     stable_id: String,
     sidecar_content_identity: String,
     estimated_fetch_bytes: Option<u64>,
-    mut budget_permit: crate::runtime::HostFetchPermit,
+    mut budget_permit: crate::runtime::CacheFillBytePermit,
 ) -> Result<u64> {
     let _lock = lock_guard;
     if complete_cache_file_matches_expected_size(&cache_path, estimated_fetch_bytes) {

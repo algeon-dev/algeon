@@ -342,18 +342,16 @@ fn reader_decimal_contract_signature(reader_decimal_types: &[crate::source::Parq
 fn resolved_source_contract_signature(resolved_source: &ResolvedParquetSource) -> String {
     let mut output = String::new();
     push_contract_hash(&mut output, "original_location", Some(resolved_source.original_location.as_str()));
-    push_contract_hash(&mut output, "reader_location", Some(resolved_source.reader_location.as_str()));
+    push_contract_hash(&mut output, "reader_location", Some(resolved_source.reader_location()));
     push_contract_hash(&mut output, "storage_domain", resolved_source.storage_domain.as_deref());
     push_contract_hash(&mut output, "content_identity", resolved_source.content_identity.as_deref());
     push_contract_value(
         &mut output,
         "storage_profile_id",
-        resolved_source.storage_profile_id.as_deref().unwrap_or("none"),
+        resolved_source.storage_profile_id().unwrap_or("none"),
     );
-    push_contract_value(&mut output, "read_strategy", resolved_source.read_strategy.as_str());
-    push_contract_value(&mut output, "decode_input", resolved_source.decode_input.as_str());
-    push_contract_value(&mut output, "remote_read_mode", resolved_source.remote_read_mode.as_str());
-    push_contract_value(&mut output, "credential_mode", resolved_source.credential_mode.as_str());
+    push_contract_value(&mut output, "read_strategy", resolved_source.read_strategy().as_str());
+    push_contract_value(&mut output, "credential_mode", resolved_source.credential_mode().as_str());
     push_contract_value(&mut output, "cache_status", resolved_source.cache_status.as_str());
     push_contract_value(&mut output, "lakehouse_cache_read_mode", resolved_source.lakehouse_cache_read_mode.as_str());
     push_contract_hash(&mut output, "lakehouse_cache_root", resolved_source.lakehouse_cache_root.as_deref());
@@ -367,12 +365,6 @@ fn resolved_source_contract_signature(resolved_source: &ResolvedParquetSource) -
             .as_str(),
     );
     push_contract_value(&mut output, "lakehouse_cache_fill_mode", resolved_source.lakehouse_cache_fill_mode.as_str());
-    push_contract_value(
-        &mut output,
-        "remote_host_buffer_ranged_enabled",
-        if resolved_source.remote_host_buffer_ranged_enabled { "true" } else { "false" },
-    );
-    push_contract_value(&mut output, "fallback_reason", resolved_source.fallback_reason.as_deref().unwrap_or("none"));
     output
 }
 

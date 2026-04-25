@@ -1,102 +1,205 @@
-//! Credentialless Glue/S3 remote-direct regression E2E (local Moto + RustFS).
+//! Glue/S3 KvikIO-only Parquet E2E.
 //!
-//! Regression coverage for the 2026-06-09 QA finding that GPU remote-direct
-//! (KvikIO) column reads failed without static AWS credentials while the
-//! host-buffer substrate worked: the engine now resolves the AWS default
-//! credential chain through the same `object_store` provider host-buffer
-//! fetches use. This runner validates that plumbing end to end through the
-//! Flight SQL server against a data-bearing local Glue/Moto + RustFS table:
+//! The parent process launches one independent child process for each
+//! `KVIKIO_COMPAT_MODE` value (`ON`, `OFF`, and `AUTO`). KvikIO initialization
+//! is process-global, so changing the environment inside one server process is
+//! not valid coverage. Each child exercises remote S3 URI, generated local
+//! Parquet path, and fill-before-read local-cache path inputs through Flight SQL
+//! and returns normalized rows for cross-mode parity checking.
 //!
-//! 1. RustFS credentials are supplied ONLY through the provider path
-//!    (process-env `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`), never via the
-//!    static `NEXUS_ICEBERG_S3_*` credential env vars, and the storage profile
-//!    is explicitly opted into the default chain with
-//!    `NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain`.
-//! 2. A `remote_kvikio` + `require_direct` server must run real column
-//!    aggregates and projections (not only `COUNT(*)`, which is served from
-//!    Iceberg metadata without opening the source), with EXPLAIN ANALYZE
-//!    evidence `source_read_boundary_direct_device >= 1` and
-//!    `source_fetch_bytes == 0`.
-//! 3. A `host_buffer` control server with the same credentialless environment
-//!    must return identical results, with `source_fetch_count >= 1` host
-//!    object-store fetch evidence, so the two substrates can never diverge on
-//!    credential behavior. (`source_read_boundary_direct_device` records the
-//!    selected decode-boundary policy and increments on both substrates; only
-//!    the fetch counters distinguish them.)
+//! By default the tool targets the read-only TPC-DS SF100 fixture in `us-west-2`:
+//! `s3://datafusion-nexus-tpcds-sf100-123456789012-us-west-2/warehouse/nexus_tpcds_sf100.db/`.
+//! Credentials are inherited from the AWS default chain (normally the EC2
+//! instance profile); no credential value is accepted in arguments or output.
+//! Local Glue/S3 endpoints remain available only through explicit environment
+//! overrides.
 //!
-//! GPU is required (native remote-direct execution). Serialize with
-//! `flock /tmp/cudf-gpu.lock` per repo policy. Load a data-bearing namespace
-//! first (`fixture/iceberg-local/e2e.sh iceberg-local --load-glue ...` or
-//! `fixture/fixture.sh iceberg glue-moto load`).
+//! GPU and read access to Glue/S3 are required. Serialize with
+//! `flock /tmp/cudf-gpu.lock` per repository policy.
 //!
 //! ```bash
 //! NEXUS_ICEBERG_GLUE_REMOTE_DIRECT_E2E=1 \
-//!   NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
-//!   AWS_ACCESS_KEY_ID=nexusadmin \
-//!   AWS_SECRET_ACCESS_KEY=nexusadmin \
 //!   flock /tmp/cudf-gpu.lock \
 //!   cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- \
 //!   server-iceberg-glue-remote-direct-e2e
 //! ```
 
-use std::{collections::HashMap, net::TcpListener, time::Duration};
+use std::{
+    collections::HashMap,
+    fs,
+    net::TcpListener,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-use arrow::array::{Array, Int32Array, Int64Array, LargeStringArray, StringArray, UInt32Array, UInt64Array};
-use arrow_flight::sql::client::FlightSqlServiceClient;
-use datafusion_nexus::server::{
-    NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-    NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV,
-    NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV, ServerConfig, serve_with_listener,
+use arrow::{
+    array::{Array, ArrayRef, Int32Array, Int64Array, LargeStringArray, StringArray, UInt32Array, UInt64Array},
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
+use arrow_flight::{
+    Action, FlightInfo,
+    sql::{Any, TicketStatementQuery, client::FlightSqlServiceClient},
+};
+use datafusion_nexus::{
+    server::{
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV,
+        NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV, ServerConfig, serve_with_listener,
+    },
+    table_format::{
+        NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, NEXUS_LAKEHOUSE_CACHE_READ_ENV,
+        NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
+    },
 };
 use futures::TryStreamExt;
+use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use prost::Message as _;
 use url::Url;
 
 use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
 
 type E2eResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-const DEFAULT_TABLE: &str = "nation";
-const DEFAULT_INT_COLUMN: &str = "n_nationkey";
-const DEFAULT_STRING_COLUMN: &str = "n_name";
-const DEFAULT_NATION_ROWS: i64 = 25;
+fn e2e_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+    message.into().into()
+}
+
+const DEFAULT_TABLE: &str = "reason";
+const DEFAULT_INT_COLUMN: &str = "r_reason_sk";
+const DEFAULT_STRING_COLUMN: &str = "r_reason_id";
+const DEFAULT_EXPECTED_ROWS: i64 = 55;
+const DEFAULT_NAMESPACE: &str = "nexus_tpcds_sf100";
+const DEFAULT_WAREHOUSE: &str =
+    "s3://datafusion-nexus-tpcds-sf100-123456789012-us-west-2/warehouse/nexus_tpcds_sf100.db/";
+const DEFAULT_REGION: &str = "us-west-2";
+const CHILD_MODE_ENV: &str = "NEXUS_ICEBERG_GLUE_REMOTE_DIRECT_E2E_CHILD_MODE";
+const CHILD_RESULT_PREFIX: &str = "NEXUS_KVIKIO_E2E_RESULT=";
+const COMMAND: &str = "server-iceberg-glue-remote-direct-e2e";
+const KVIKIO_MODES: [&str; 3] = ["ON", "OFF", "AUTO"];
 
 pub async fn run() -> E2eResult<()> {
     require_remote_direct_e2e_enabled()?;
+    if let Ok(mode) = std::env::var(CHILD_MODE_ENV) {
+        return run_child(&mode).await;
+    }
+    run_independent_mode_processes().await
+}
+
+async fn run_child(mode: &str) -> E2eResult<()> {
+    if !KVIKIO_MODES.contains(&mode) {
+        return Err(format!("invalid {CHILD_MODE_ENV} value {mode:?}").into());
+    }
+    if std::env::var("KVIKIO_COMPAT_MODE").as_deref() != Ok(mode) {
+        return Err(format!("child {mode} must start with KVIKIO_COMPAT_MODE={mode}").into());
+    }
     let params = RunParams::from_env()?;
     let _env_guard = EnvGuard::install(&params)?;
+    let local_dir = OwnedTempDir::new("datafusion-nexus-kvikio-local", mode)?;
+    let local_path = local_dir.path().join("local-fixture.parquet");
+    write_local_parquet_fixture(&local_path)?;
+    let remote_and_local = run_remote_and_local_server_pass(&params, &local_path).await?;
 
-    let remote = run_server_pass(&params, ReadSubstrate::RemoteDirect).await?;
-    let control = run_server_pass(&params, ReadSubstrate::HostBufferControl).await?;
-
-    if remote.aggregate_rows != control.aggregate_rows {
-        return Err(format!(
-            "remote-direct vs host-buffer column aggregate mismatch:\n  remote : {:?}\n  control: {:?}",
-            remote.aggregate_rows, control.aggregate_rows
-        )
-        .into());
+    let cache_dir = OwnedTempDir::new("datafusion-nexus-kvikio-cache", mode)?;
+    let cache = run_cache_server_pass(&params, cache_dir.path()).await?;
+    if cache != remote_and_local.remote {
+        return Err(format!("KvikIO {mode} fill-before-read cache results differ from remote URI results").into());
     }
-    if remote.projection_rows != control.projection_rows {
-        return Err(format!(
-            "remote-direct vs host-buffer projection mismatch ({} vs {} rows)",
-            remote.projection_rows.len(),
-            control.projection_rows.len()
-        )
-        .into());
-    }
-    eprintln!(
-        "remote-direct/host-buffer parity OK: {} aggregate row(s), {} projection row(s)",
-        remote.aggregate_rows.len(),
-        remote.projection_rows.len()
+    let result = ModeResults { remote: remote_and_local.remote, local: remote_and_local.local, cache };
+    println!(
+        "{CHILD_RESULT_PREFIX}{}",
+        serde_json::json!({
+            "mode": mode,
+            "remote": query_result_json(&result.remote),
+            "local": query_result_json(&result.local),
+            "cache": query_result_json(&result.cache),
+        })
     );
-    println!("server_iceberg_glue_remote_direct_e2e ok");
     Ok(())
+}
+
+async fn run_independent_mode_processes() -> E2eResult<()> {
+    let executable = std::env::current_exe()?;
+    let mut baseline: Option<ModeResults> = None;
+    for mode in KVIKIO_MODES {
+        eprintln!("[{mode}] launching independent KvikIO process");
+        let output = tokio::process::Command::new(&executable)
+            .arg(COMMAND)
+            .env(CHILD_MODE_ENV, mode)
+            .env("KVIKIO_COMPAT_MODE", mode)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await?;
+        if !output.status.success() {
+            return Err(format!(
+                "KvikIO {mode} child failed with {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            )
+            .into());
+        }
+        let result = parse_child_result(mode, &output.stdout)?;
+        if let Some(expected) = &baseline {
+            if result != *expected {
+                return Err(format!("KvikIO {mode} remote/local/cache results differ from ON baseline").into());
+            }
+        } else {
+            baseline = Some(result);
+        }
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+    println!("server_iceberg_glue_remote_direct_e2e ok modes=ON,OFF,AUTO substrates=remote,local,cache parity=exact");
+    Ok(())
+}
+
+fn query_result_json(result: &QueryResults) -> serde_json::Value {
+    serde_json::json!({
+        "aggregate_rows": result.aggregate_rows,
+        "projection_rows": result.projection_rows,
+    })
+}
+
+fn parse_child_result(mode: &str, stdout: &[u8]) -> E2eResult<ModeResults> {
+    let stdout = String::from_utf8(stdout.to_vec())?;
+    let payload = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(CHILD_RESULT_PREFIX))
+        .ok_or_else(|| format!("KvikIO {mode} child did not emit {CHILD_RESULT_PREFIX}"))?;
+    let value: serde_json::Value = serde_json::from_str(payload)?;
+    if value["mode"].as_str() != Some(mode) {
+        return Err(format!("KvikIO child result mode mismatch for {mode}").into());
+    }
+    let query_results = |substrate: &str| -> E2eResult<QueryResults> {
+        let substrate_value = value
+            .get(substrate)
+            .ok_or_else(|| e2e_error(format!("KvikIO {mode} child result is missing {substrate}")))?;
+        let rows = |field: &str| -> E2eResult<Vec<String>> {
+            substrate_value[field]
+                .as_array()
+                .ok_or_else(|| e2e_error(format!("KvikIO {mode} child {substrate} result is missing {field}")))?
+                .iter()
+                .map(|row| {
+                    row.as_str().map(str::to_string).ok_or_else(|| {
+                        e2e_error(format!("KvikIO {mode} child {substrate} {field} contains a non-string row"))
+                    })
+                })
+                .collect()
+        };
+        Ok(QueryResults { aggregate_rows: rows("aggregate_rows")?, projection_rows: rows("projection_rows")? })
+    };
+    Ok(ModeResults { remote: query_results("remote")?, local: query_results("local")?, cache: query_results("cache")? })
 }
 
 fn require_remote_direct_e2e_enabled() -> E2eResult<()> {
     match std::env::var("NEXUS_ICEBERG_GLUE_REMOTE_DIRECT_E2E").as_deref() {
         Ok("1") => Ok(()),
         _ => Err("server Iceberg Glue remote-direct E2E requires NEXUS_ICEBERG_GLUE_REMOTE_DIRECT_E2E=1, \
-                  fixture/iceberg-local Moto + RustFS, a loaded data-bearing namespace, and a GPU \
+                  read access to the configured Glue/S3 fixture, default-chain AWS credentials, and a GPU \
                   (serialize with `flock /tmp/cudf-gpu.lock`)"
             .into()),
     }
@@ -107,8 +210,8 @@ fn require_remote_direct_e2e_enabled() -> E2eResult<()> {
 // ---------------------------------------------------------------------------
 
 struct RunParams {
-    glue_uri: String,
-    s3_endpoint: String,
+    glue_uri: Option<String>,
+    s3_endpoint: Option<String>,
     warehouse: String,
     s3_region: String,
     namespace: String,
@@ -116,21 +219,20 @@ struct RunParams {
     int_column: String,
     string_column: String,
     expected_rows: Option<i64>,
-    aws_access_key_id: String,
-    aws_secret_access_key: String,
 }
 
 impl RunParams {
     fn from_env() -> E2eResult<Self> {
-        let glue_uri =
-            std::env::var(NEXUS_ICEBERG_GLUE_URI_ENV).unwrap_or_else(|_| "http://localhost:5001".to_string());
-        let s3_endpoint =
-            std::env::var(NEXUS_ICEBERG_S3_ENDPOINT_ENV).unwrap_or_else(|_| "http://localhost:9000".to_string());
-        let warehouse =
-            std::env::var("NEXUS_ICEBERG_WAREHOUSE").unwrap_or_else(|_| "s3://lakehouse/warehouse".to_string());
-        let s3_region = std::env::var(NEXUS_ICEBERG_S3_REGION_ENV).unwrap_or_else(|_| "us-east-1".to_string());
-        require_loopback_http_url(NEXUS_ICEBERG_GLUE_URI_ENV, &glue_uri)?;
-        require_loopback_http_url(NEXUS_ICEBERG_S3_ENDPOINT_ENV, &s3_endpoint)?;
+        let glue_uri = std::env::var(NEXUS_ICEBERG_GLUE_URI_ENV).ok().filter(|value| !value.is_empty());
+        let s3_endpoint = std::env::var(NEXUS_ICEBERG_S3_ENDPOINT_ENV).ok().filter(|value| !value.is_empty());
+        let warehouse = std::env::var("NEXUS_ICEBERG_WAREHOUSE").unwrap_or_else(|_| DEFAULT_WAREHOUSE.to_string());
+        let s3_region = std::env::var(NEXUS_ICEBERG_S3_REGION_ENV).unwrap_or_else(|_| DEFAULT_REGION.to_string());
+        if let Some(glue_uri) = &glue_uri {
+            require_loopback_http_url(NEXUS_ICEBERG_GLUE_URI_ENV, glue_uri)?;
+        }
+        if let Some(s3_endpoint) = &s3_endpoint {
+            require_loopback_http_url(NEXUS_ICEBERG_S3_ENDPOINT_ENV, s3_endpoint)?;
+        }
         require_s3_warehouse("NEXUS_ICEBERG_WAREHOUSE", &warehouse)?;
 
         // The regression under test is the credential DEFAULT CHAIN: RustFS
@@ -139,12 +241,8 @@ impl RunParams {
         reject_non_empty_env(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)?;
         reject_non_empty_env(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)?;
         reject_non_empty_env(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)?;
-        reject_non_empty_env(datafusion_nexus::table_format::iceberg::AWS_SESSION_TOKEN_ENV)?;
-        reject_non_empty_env(datafusion_nexus::table_format::iceberg::AWS_SECURITY_TOKEN_ENV)?;
 
-        let namespace = std::env::var(NEXUS_ICEBERG_NAMESPACE_ENV).map_err(|_| {
-            format!("set {NEXUS_ICEBERG_NAMESPACE_ENV} to a loaded data-bearing namespace such as tpch_sf1")
-        })?;
+        let namespace = std::env::var(NEXUS_ICEBERG_NAMESPACE_ENV).unwrap_or_else(|_| DEFAULT_NAMESPACE.to_string());
         let table =
             std::env::var("NEXUS_ICEBERG_REMOTE_DIRECT_E2E_TABLE").unwrap_or_else(|_| DEFAULT_TABLE.to_string());
         let int_column =
@@ -155,14 +253,9 @@ impl RunParams {
             Ok(raw) => Some(raw.parse::<i64>().map_err(|_| {
                 format!("NEXUS_ICEBERG_REMOTE_DIRECT_E2E_EXPECTED_ROWS must be an integer, got {raw:?}")
             })?),
-            Err(_) if table == DEFAULT_TABLE => Some(DEFAULT_NATION_ROWS),
+            Err(_) if table == DEFAULT_TABLE => Some(DEFAULT_EXPECTED_ROWS),
             Err(_) => None,
         };
-
-        let aws_access_key_id = std::env::var(datafusion_nexus::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV)
-            .unwrap_or_else(|_| "nexusadmin".to_string());
-        let aws_secret_access_key = std::env::var(datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV)
-            .unwrap_or_else(|_| "nexusadmin".to_string());
 
         Ok(Self {
             glue_uri,
@@ -174,34 +267,36 @@ impl RunParams {
             int_column,
             string_column,
             expected_rows,
-            aws_access_key_id,
-            aws_secret_access_key,
         })
     }
 
-    fn server_env(&self, substrate: ReadSubstrate) -> HashMap<&'static str, String> {
-        let (read_strategy, read_mode) = match substrate {
-            ReadSubstrate::RemoteDirect => ("remote_kvikio", "require_direct"),
-            ReadSubstrate::HostBufferControl => ("host_buffer", "allow_host_fallback"),
-        };
-        HashMap::from([
+    fn server_env(&self, cache_root: Option<&Path>) -> HashMap<&'static str, String> {
+        let mut values = HashMap::from([
             (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
             (NEXUS_ICEBERG_NAMESPACE_ENV, self.namespace.clone()),
             (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, self.warehouse.clone()),
-            (NEXUS_ICEBERG_GLUE_URI_ENV, self.glue_uri.clone()),
-            (NEXUS_ICEBERG_S3_ENDPOINT_ENV, self.s3_endpoint.clone()),
             (NEXUS_ICEBERG_S3_REGION_ENV, self.s3_region.clone()),
-            (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
             (
                 NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
                 datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN.to_string(),
             ),
             (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, self.s3_region.clone()),
-            (datafusion_nexus::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV, self.aws_access_key_id.clone()),
-            (datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV, self.aws_secret_access_key.clone()),
-            (datafusion_nexus::table_format::NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, read_strategy.to_string()),
-            (datafusion_nexus::table_format::NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV, read_mode.to_string()),
-        ])
+            (datafusion_nexus::table_format::iceberg::AWS_DEFAULT_REGION_ENV, self.s3_region.clone()),
+        ]);
+        if let Some(glue_uri) = &self.glue_uri {
+            values.insert(NEXUS_ICEBERG_GLUE_URI_ENV, glue_uri.clone());
+        }
+        if let Some(s3_endpoint) = &self.s3_endpoint {
+            values.insert(NEXUS_ICEBERG_S3_ENDPOINT_ENV, s3_endpoint.clone());
+            values.insert(NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string());
+        }
+        if let Some(cache_root) = cache_root {
+            values.insert(NEXUS_LAKEHOUSE_CACHE_ROOT_ENV, cache_root.display().to_string());
+            values.insert(NEXUS_LAKEHOUSE_CACHE_READ_ENV, "enabled".to_string());
+            values.insert(NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, "fill_before_read".to_string());
+            values.insert(NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, (1024_u64 * 1024 * 1024).to_string());
+        }
+        values
     }
 
     fn table_ref(&self) -> String {
@@ -228,56 +323,81 @@ impl RunParams {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ReadSubstrate {
-    RemoteDirect,
-    HostBufferControl,
-}
-
-impl ReadSubstrate {
-    fn label(self) -> &'static str {
-        match self {
-            Self::RemoteDirect => "remote_direct",
-            Self::HostBufferControl => "host_buffer_control",
-        }
-    }
-}
-
-struct SubstrateResults {
+#[derive(Debug, PartialEq, Eq)]
+struct QueryResults {
     aggregate_rows: Vec<String>,
     projection_rows: Vec<String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ModeResults {
+    remote: QueryResults,
+    local: QueryResults,
+    cache: QueryResults,
+}
+
+struct RemoteAndLocalResults {
+    remote: QueryResults,
+    local: QueryResults,
+}
+
 // ---------------------------------------------------------------------------
-// One server pass per read substrate
+// Server passes for remote/local and local-cache KvikIO contracts
 // ---------------------------------------------------------------------------
 
-async fn run_server_pass(params: &RunParams, substrate: ReadSubstrate) -> E2eResult<SubstrateResults> {
-    let label = substrate.label();
-    let server_env = params.server_env(substrate);
+async fn run_remote_and_local_server_pass(params: &RunParams, local_path: &Path) -> E2eResult<RemoteAndLocalResults> {
+    let label = std::env::var(CHILD_MODE_ENV).unwrap_or_else(|_| "unknown".to_string());
+    let server_env = params.server_env(None);
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|name| server_env.get(name).cloned())?;
     config.bind_addr = addr;
 
     eprintln!("[{label}] starting Flight SQL server on {addr}");
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
-    let result = validate_substrate(params, substrate, addr).await;
+    let result = validate_remote_and_local_kvikio(params, local_path, addr, &label).await;
     server.abort();
+    let _ = server.await;
     result
 }
 
-async fn validate_substrate(
-    params: &RunParams,
-    substrate: ReadSubstrate,
-    addr: std::net::SocketAddr,
-) -> E2eResult<SubstrateResults> {
-    let label = substrate.label();
-    let mut client = connect_flight_sql(addr).await?;
+async fn run_cache_server_pass(params: &RunParams, cache_root: &Path) -> E2eResult<QueryResults> {
+    let mode = std::env::var(CHILD_MODE_ENV).unwrap_or_else(|_| "unknown".to_string());
+    let label = format!("{mode}:cache");
+    let server_env = params.server_env(Some(cache_root));
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|name| server_env.get(name).cloned())?;
+    config.bind_addr = addr;
 
+    eprintln!("[{label}] starting Flight SQL server on {addr}");
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let result = validate_cache_kvikio(params, addr, &label).await;
+    server.abort();
+    let _ = server.await;
+    result
+}
+
+async fn validate_remote_and_local_kvikio(
+    params: &RunParams,
+    local_path: &Path,
+    addr: std::net::SocketAddr,
+    label: &str,
+) -> E2eResult<RemoteAndLocalResults> {
+    let mut client = connect_flight_sql(addr).await?;
+    let remote = execute_remote_data_queries(params, &mut client, label).await?;
+    validate_remote_evidence(params, &mut client, label).await?;
+    let local = validate_local_kvikio(local_path, &mut client, label).await?;
+    Ok(RemoteAndLocalResults { remote, local })
+}
+
+async fn execute_remote_data_queries(
+    params: &RunParams,
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    label: &str,
+) -> E2eResult<QueryResults> {
     // COUNT(*) is sanity only: MetadataRowCount sources answer it from Iceberg
     // metadata without opening the remote Parquet source.
     let count_sql = format!("SELECT count(*) AS row_count FROM {}", params.table_ref());
-    let row_count = query_single_int(&mut client, &count_sql).await?;
+    let row_count = query_single_int(client, &count_sql).await?;
     eprintln!("[{label}] {} row_count={row_count}", params.table_ref());
     match params.expected_rows {
         Some(expected) if row_count != expected => {
@@ -295,13 +415,13 @@ async fn validate_substrate(
 
     // The real regression queries: a column aggregate and a projection must
     // open the Parquet source through the substrate under test.
-    let aggregate_rows = sorted_rows(&query_batches(&mut client, &params.aggregate_sql()).await?);
+    let aggregate_rows = sorted_rows(&query_batches(client, &params.aggregate_sql()).await?);
     if aggregate_rows.len() != 1 {
         return Err(format!("[{label}] expected one aggregate row, got {aggregate_rows:?}").into());
     }
     eprintln!("[{label}] column aggregate: {aggregate_rows:?}");
 
-    let projection_batches = query_batches(&mut client, &params.projection_sql()).await?;
+    let projection_batches = query_batches(client, &params.projection_sql()).await?;
     let projection_rows = sorted_rows(&projection_batches);
     if projection_rows.len() != row_count as usize {
         return Err(
@@ -310,7 +430,7 @@ async fn validate_substrate(
     }
 
     let limit_sql = format!("{} LIMIT 5", params.projection_sql());
-    let limit_rows = sorted_rows(&query_batches(&mut client, &limit_sql).await?);
+    let limit_rows = sorted_rows(&query_batches(client, &limit_sql).await?);
     let expected_limit_rows = (row_count as usize).min(5);
     if limit_rows.len() != expected_limit_rows {
         return Err(
@@ -318,53 +438,106 @@ async fn validate_substrate(
         );
     }
 
-    // Planning evidence: the column aggregate must rewrite natively and plan
-    // the requested read strategy.
-    let explain_text = query_plan_text(&mut client, &format!("EXPLAIN VERBOSE {}", params.aggregate_sql())).await?;
+    Ok(QueryResults { aggregate_rows, projection_rows })
+}
+
+async fn validate_remote_evidence(
+    params: &RunParams,
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    label: &str,
+) -> E2eResult<()> {
+    // Planning evidence: the projection must rewrite natively and plan the
+    // requested read strategy. Unlike min/max aggregates, it cannot be folded
+    // entirely from Parquet statistics.
+    let explain_text = query_plan_text(client, &format!("EXPLAIN VERBOSE {}", params.projection_sql())).await?;
     require_contains(label, "EXPLAIN VERBOSE", &explain_text, "NativeCudfExec")?;
-    if substrate == ReadSubstrate::RemoteDirect {
-        require_contains(label, "EXPLAIN VERBOSE", &explain_text, "source_read_strategy=remote_direct")?;
-        require_contains(label, "EXPLAIN VERBOSE", &explain_text, "credential_mode=scoped_resolved")?;
+    require_contains(label, "EXPLAIN VERBOSE", &explain_text, "source_read_strategy=remote_direct")?;
+    require_contains(label, "EXPLAIN VERBOSE", &explain_text, "credential_mode=scoped_resolved")?;
+
+    // Runtime evidence comes from the retained query record because DataFusion's
+    // EXPLAIN ANALYZE display only renders the count of nested source-read rows.
+    let (_batches, runtime_text) = query_batches_with_stats(client, &params.projection_sql()).await?;
+    require_contains(label, "GetQueryStats", &runtime_text, "[source_read_runtime]")?;
+    require_contains(label, "GetQueryStats", &runtime_text, "read_strategy=remote_direct")?;
+    require_contains(label, "GetQueryStats", &runtime_text, "remote_read_mode=require_kvikio")?;
+    require_any_contains(
+        label,
+        "GetQueryStats",
+        &runtime_text,
+        &["parquet_read_input_kind=remote_path", "parquet_read_input_kind=remote_path_multi"],
+    )?;
+    require_removed_labels_absent(label, "GetQueryStats", &runtime_text)?;
+    Ok(())
+}
+
+async fn validate_local_kvikio(
+    local_path: &Path,
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    mode_label: &str,
+) -> E2eResult<QueryResults> {
+    let label = format!("{mode_label}:local");
+    let table = "kvikio_local_fixture";
+    query_batches(
+        client,
+        &format!("CREATE EXTERNAL TABLE {table} STORED AS PARQUET LOCATION '{}'", local_path.to_string_lossy()),
+    )
+    .await?;
+    let aggregate_sql = format!("SELECT count(local_name), min(local_id), max(local_id) FROM {table}");
+    let projection_sql = format!("SELECT local_id, local_name FROM {table}");
+    let aggregate_rows = sorted_rows(&query_batches(client, &aggregate_sql).await?);
+    let projection_rows = sorted_rows(&query_batches(client, &projection_sql).await?);
+    if aggregate_rows != ["4\u{1f}3\u{1f}13"] || projection_rows.len() != 4 {
+        return Err(
+            format!("[{label}] unexpected local fixture results: {aggregate_rows:?} {projection_rows:?}").into()
+        );
     }
 
-    // Runtime evidence from EXPLAIN ANALYZE on the column aggregate.
-    let analyze_text = query_plan_text(&mut client, &format!("EXPLAIN ANALYZE {}", params.aggregate_sql())).await?;
-    let direct_device: u64 = metric_values(&analyze_text, "source_read_boundary_direct_device").iter().sum();
-    let fetch_bytes: u64 = metric_values(&analyze_text, "source_fetch_bytes").iter().sum();
-    let fetch_count: u64 = metric_values(&analyze_text, "source_fetch_count").iter().sum();
-    eprintln!(
-        "[{label}] source_read_boundary_direct_device={direct_device} \
-         source_fetch_bytes={fetch_bytes} source_fetch_count={fetch_count}"
-    );
-    match substrate {
-        ReadSubstrate::RemoteDirect => {
-            if direct_device < 1 {
-                return Err(format!(
-                    "[{label}] expected source_read_boundary_direct_device >= 1 for remote-direct column reads; \
-                     EXPLAIN ANALYZE:\n{analyze_text}"
-                )
-                .into());
-            }
-            if fetch_bytes != 0 || fetch_count != 0 {
-                return Err(format!(
-                    "[{label}] remote-direct column reads must not fall back to host-buffer object-store fetch \
-                     (source_fetch_bytes={fetch_bytes}, source_fetch_count={fetch_count}); EXPLAIN ANALYZE:\n{analyze_text}"
-                )
-                .into());
-            }
-        },
-        ReadSubstrate::HostBufferControl => {
-            if fetch_count < 1 {
-                return Err(format!(
-                    "[{label}] host-buffer control should fetch through the object store \
-                     (source_fetch_count={fetch_count}); EXPLAIN ANALYZE:\n{analyze_text}"
-                )
-                .into());
-            }
-        },
-    }
+    let explain_text = query_plan_text(client, &format!("EXPLAIN VERBOSE {projection_sql}")).await?;
+    require_contains(&label, "EXPLAIN VERBOSE", &explain_text, "NativeCudfExec")?;
+    let (_batches, runtime_text) = query_batches_with_stats(client, &projection_sql).await?;
+    require_contains(&label, "GetQueryStats", &runtime_text, "[source_read_runtime]")?;
+    require_contains(&label, "GetQueryStats", &runtime_text, "read_strategy=local_kvikio")?;
+    require_contains(&label, "GetQueryStats", &runtime_text, "parquet_read_input_kind=local_path")?;
+    require_removed_labels_absent(&label, "GetQueryStats", &runtime_text)?;
 
-    Ok(SubstrateResults { aggregate_rows, projection_rows })
+    Ok(QueryResults { aggregate_rows, projection_rows })
+}
+
+async fn validate_cache_kvikio(params: &RunParams, addr: std::net::SocketAddr, label: &str) -> E2eResult<QueryResults> {
+    let mut client = connect_flight_sql(addr).await?;
+    let results = execute_remote_data_queries(params, &mut client, label).await?;
+
+    // The data query above fills every selected file before opening it. A new
+    // plan must therefore resolve to a complete local cache path.
+    let explain_text = query_plan_text(&mut client, &format!("EXPLAIN VERBOSE {}", params.projection_sql())).await?;
+    require_contains(label, "EXPLAIN VERBOSE", &explain_text, "NativeCudfExec")?;
+    require_contains(label, "EXPLAIN VERBOSE", &explain_text, "source_read_strategy=local_cache_hit")?;
+    require_contains(label, "EXPLAIN VERBOSE", &explain_text, "lakehouse_cache_status=hit")?;
+    let (_batches, runtime_text) = query_batches_with_stats(&mut client, &params.projection_sql()).await?;
+    require_contains(label, "GetQueryStats", &runtime_text, "[source_read_runtime]")?;
+    require_contains(label, "GetQueryStats", &runtime_text, "read_strategy=local_cache_kvikio")?;
+    require_contains(label, "GetQueryStats", &runtime_text, "parquet_read_input_kind=local_path")?;
+    require_removed_labels_absent(label, "GetQueryStats", &runtime_text)?;
+
+    Ok(results)
+}
+
+fn require_removed_labels_absent(label: &str, surface: &str, runtime_text: &str) -> E2eResult<()> {
+    for removed in [
+        concat!("host_", "buffer"),
+        concat!("source_", "fetch_bytes"),
+        concat!("source_", "fetch_count"),
+        concat!("host_", "fetch_budget_wait_time"),
+        concat!("source_", "fetch_concurrency_wait_time"),
+        concat!("source_", "fetch_time"),
+        concat!("source_", "decode_time"),
+        concat!("source_decode_", "input"),
+        concat!("source_fallback_", "reason"),
+        concat!("parquet_read_fallback_", "reason"),
+    ] {
+        require_absent(label, surface, runtime_text, removed)?;
+    }
+    Ok(())
 }
 
 fn require_contains(label: &str, surface: &str, haystack: &str, needle: &str) -> E2eResult<()> {
@@ -372,6 +545,20 @@ fn require_contains(label: &str, surface: &str, haystack: &str, needle: &str) ->
         return Ok(());
     }
     Err(format!("[{label}] {surface} output must contain `{needle}`:\n{haystack}").into())
+}
+
+fn require_any_contains(label: &str, surface: &str, haystack: &str, needles: &[&str]) -> E2eResult<()> {
+    if needles.iter().any(|needle| haystack.contains(needle)) {
+        return Ok(());
+    }
+    Err(format!("[{label}] {surface} output must contain one of {needles:?}:\n{haystack}").into())
+}
+
+fn require_absent(label: &str, surface: &str, haystack: &str, needle: &str) -> E2eResult<()> {
+    if !haystack.contains(needle) {
+        return Ok(());
+    }
+    Err(format!("[{label}] {surface} output contains removed label `{needle}`:\n{haystack}").into())
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +573,35 @@ async fn query_batches(
     let ticket =
         flight_info.endpoint.first().and_then(|ep| ep.ticket.clone()).ok_or("Flight SQL response missing ticket")?;
     Ok(client.do_get(ticket).await?.try_collect::<Vec<_>>().await?)
+}
+
+async fn query_batches_with_stats(
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    sql: &str,
+) -> E2eResult<(Vec<RecordBatch>, String)> {
+    let flight_info = client.execute(sql.to_string(), None).await?;
+    let query_id = query_id_from_statement_flight_info(&flight_info)?;
+    let ticket =
+        flight_info.endpoint.first().and_then(|ep| ep.ticket.clone()).ok_or("Flight SQL response missing ticket")?;
+    let batches = client.do_get(ticket).await?.try_collect::<Vec<_>>().await?;
+    let action = Action { r#type: "GetQueryStats".to_string(), body: query_id.as_bytes().to_vec().into() };
+    let mut stream = client.do_action(action).await?;
+    let result = stream.message().await?.ok_or("GetQueryStats returned no result")?;
+    if stream.message().await?.is_some() {
+        return Err("GetQueryStats returned more than one result".into());
+    }
+    Ok((batches, String::from_utf8(result.body.to_vec())?))
+}
+
+fn query_id_from_statement_flight_info(flight_info: &FlightInfo) -> E2eResult<String> {
+    let ticket = flight_info
+        .endpoint
+        .first()
+        .and_then(|endpoint| endpoint.ticket.as_ref())
+        .ok_or("FlightInfo missing statement ticket")?;
+    let any = Any::decode(&*ticket.ticket)?;
+    let statement = any.unpack::<TicketStatementQuery>()?.ok_or("FlightInfo ticket is not TicketStatementQuery")?;
+    Ok(String::from_utf8(statement.statement_handle.to_vec())?)
 }
 
 async fn query_single_int(client: &mut FlightSqlServiceClient<tonic::transport::Channel>, sql: &str) -> E2eResult<i64> {
@@ -431,22 +647,6 @@ async fn query_plan_text(
         return Err(format!("{sql:?} returned no plan text").into());
     }
     Ok(text)
-}
-
-/// Extracts every `name=<integer>` occurrence from rendered plan metrics.
-fn metric_values(plan_text: &str, name: &str) -> Vec<u64> {
-    let needle = format!("{name}=");
-    let mut values = Vec::new();
-    let mut rest = plan_text;
-    while let Some(position) = rest.find(&needle) {
-        let after = &rest[position + needle.len()..];
-        let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
-        if let Ok(value) = digits.parse::<u64>() {
-            values.push(value);
-        }
-        rest = after;
-    }
-    values
 }
 
 fn int_value(array: &arrow::array::ArrayRef) -> Option<i64> {
@@ -530,6 +730,52 @@ fn sorted_rows(batches: &[arrow::record_batch::RecordBatch]) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Per-child local fixtures
+// ---------------------------------------------------------------------------
+
+struct OwnedTempDir {
+    path: PathBuf,
+}
+
+impl OwnedTempDir {
+    fn new(prefix: &str, mode: &str) -> E2eResult<Self> {
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!("{prefix}-{}-{mode}-{suffix}", std::process::id()));
+        fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for OwnedTempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn write_local_parquet_fixture(path: &Path) -> E2eResult<()> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("local_id", DataType::Int64, false),
+        Field::new("local_name", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![3_i64, 5, 8, 13])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["three", "five", "eight", "thirteen"])) as ArrayRef,
+        ],
+    )?;
+    let file = fs::File::create(path)?;
+    let mut writer = ArrowWriter::try_new(file, schema, Some(WriterProperties::builder().build()))?;
+    writer.write(&batch)?;
+    writer.close()?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Environment validation helpers
 // ---------------------------------------------------------------------------
 
@@ -564,8 +810,7 @@ fn require_s3_warehouse(name: &str, value: &str) -> E2eResult<()> {
 fn reject_non_empty_env(name: &str) -> E2eResult<()> {
     if std::env::var(name).is_ok_and(|value| !value.is_empty()) {
         return Err(format!(
-            "the remote-direct E2E validates the AWS default credential chain; unset {name} so RustFS \
-             credentials flow only through process-env AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY"
+            "the KvikIO-only E2E validates the AWS default credential chain; unset static Nexus credential {name}"
         )
         .into());
     }
@@ -581,39 +826,24 @@ struct EnvGuard {
 }
 
 impl EnvGuard {
-    /// Installs the credentialless process environment: the ambient AWS
-    /// key pair (for the default chain, the Moto Glue client, and OpenDAL
-    /// FileIO config load) plus region, with every static `NEXUS_ICEBERG_S3_*`
-    /// credential and ambient session token cleared.
+    /// Pins both standard AWS region spellings before any AWS/KvikIO client is
+    /// initialized. Credentials remain entirely owned by the inherited
+    /// default chain (environment, profile, web identity, or instance role).
     fn install(params: &RunParams) -> E2eResult<Self> {
         let values: HashMap<&'static str, String> = HashMap::from([
-            (datafusion_nexus::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV, params.aws_access_key_id.clone()),
-            (datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV, params.aws_secret_access_key.clone()),
             (datafusion_nexus::table_format::iceberg::AWS_REGION_ENV, params.s3_region.clone()),
+            (datafusion_nexus::table_format::iceberg::AWS_DEFAULT_REGION_ENV, params.s3_region.clone()),
         ]);
         let mut names: Vec<&'static str> = values.keys().copied().collect();
-        names.extend([
-            datafusion_nexus::table_format::iceberg::AWS_SESSION_TOKEN_ENV,
-            datafusion_nexus::table_format::iceberg::AWS_SECURITY_TOKEN_ENV,
-            datafusion_nexus::table_format::iceberg::AWS_PROFILE_ENV,
-            datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV,
-            datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV,
-            datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV,
-        ]);
         names.sort_unstable();
         names.dedup();
 
         let original = names.iter().map(|name| (*name, std::env::var(name).ok())).collect::<Vec<_>>();
         for name in names {
-            if let Some(value) = values.get(name) {
-                // This single-purpose E2E binary installs process env before
-                // starting any background work that reads AWS credentials.
-                unsafe { std::env::set_var(name, value) };
-            } else {
-                // Clear static credential overrides and ambient session state
-                // so only the default-chain env pair can satisfy reads.
-                unsafe { std::env::remove_var(name) };
-            }
+            let value = values.get(name).expect("region value exists");
+            // This single-purpose E2E child installs process env before
+            // starting any background work that reads AWS configuration.
+            unsafe { std::env::set_var(name, value) };
         }
         Ok(Self { original })
     }

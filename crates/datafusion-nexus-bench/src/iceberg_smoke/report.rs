@@ -43,12 +43,6 @@ pub struct IcebergNativeSmokeReportRow {
     pub native_runtime_elapsed_ms: Option<u128>,
     pub native_output_rows: Option<usize>,
     pub native_output_batches: Option<usize>,
-    pub source_fetch_bytes: usize,
-    pub source_fetch_count: usize,
-    pub host_fetch_budget_wait_time_ns: Option<usize>,
-    pub source_fetch_concurrency_wait_time_ns: Option<usize>,
-    pub source_fetch_time_ns: Option<usize>,
-    pub source_decode_time_ns: Option<usize>,
     pub native_source_read_runtime_rows: String,
     pub lakehouse_cache_fill_event_snapshot_rows: String,
     pub expected_count: Option<u64>,
@@ -98,12 +92,6 @@ impl IcebergNativeSmokeReportRow {
             native_runtime_elapsed_ms: None,
             native_output_rows: None,
             native_output_batches: None,
-            source_fetch_bytes: 0,
-            source_fetch_count: 0,
-            host_fetch_budget_wait_time_ns: None,
-            source_fetch_concurrency_wait_time_ns: None,
-            source_fetch_time_ns: None,
-            source_decode_time_ns: None,
             native_source_read_runtime_rows: "none".to_string(),
             lakehouse_cache_fill_event_snapshot_rows: "none".to_string(),
             expected_count,
@@ -125,12 +113,6 @@ impl IcebergNativeSmokeReportRow {
     pub fn record_native_metrics(&mut self, metrics: NativeDataFusionExecutionMetrics) {
         self.native_source_read_runtime_rows = format_source_read_runtime_rows(&metrics);
         self.lakehouse_cache_fill_event_snapshot_rows = format_lakehouse_cache_fill_event_snapshot_rows(&metrics);
-        self.source_fetch_bytes = metrics.source_fetch_bytes;
-        self.source_fetch_count = metrics.source_fetch_count;
-        self.host_fetch_budget_wait_time_ns = metrics.host_fetch_budget_wait_time_ns;
-        self.source_fetch_concurrency_wait_time_ns = metrics.source_fetch_concurrency_wait_time_ns;
-        self.source_fetch_time_ns = metrics.source_fetch_time_ns;
-        self.source_decode_time_ns = metrics.source_decode_time_ns;
     }
 
     pub fn finalize_count_parity_if_needed(&mut self) {
@@ -178,12 +160,10 @@ impl IcebergNativeSmokeReportRow {
             list_or_none(&self.diagnostics.rejected_feature_list),
             empty_as_none(&self.diagnostics.native_source_read_capability),
             empty_as_none(&self.diagnostics.source_read_strategy),
-            empty_as_none(&self.diagnostics.source_decode_input),
             empty_as_none(&self.diagnostics.credential_mode),
             empty_as_none(&self.diagnostics.lakehouse_cache_status),
             empty_as_none(&self.diagnostics.lakehouse_cache_read_mode),
             empty_as_none(&self.diagnostics.lakehouse_cache_fill_mode),
-            empty_as_none(&self.diagnostics.source_fallback_reason),
             self.diagnostics.direct_device_read_disposition.code().to_string(),
             self.staging_summary.mode.code().to_string(),
             self.staging_summary.status.code().to_string(),
@@ -198,12 +178,6 @@ impl IcebergNativeSmokeReportRow {
             optional_u128(self.native_runtime_elapsed_ms),
             optional_usize(self.native_output_rows),
             optional_usize(self.native_output_batches),
-            self.source_fetch_bytes.to_string(),
-            self.source_fetch_count.to_string(),
-            optional_duration_ms_text(self.host_fetch_budget_wait_time_ns),
-            optional_duration_ms_text(self.source_fetch_concurrency_wait_time_ns),
-            optional_duration_ms_text(self.source_fetch_time_ns),
-            optional_duration_ms_text(self.source_decode_time_ns),
             self.native_source_read_runtime_rows.clone(),
             self.lakehouse_cache_fill_event_snapshot_rows.clone(),
             optional_u64(self.expected_count),

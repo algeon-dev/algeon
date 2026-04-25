@@ -703,7 +703,6 @@ mod tests {
     #[tokio::test]
     async fn catalog_provider_carries_backend_strategy_into_schema_provider() {
         let strategy = TableFormatParquetReadStrategyConfig {
-            preference: crate::table_format::TableFormatParquetReadStrategyPreference::LocalCache,
             lakehouse_cache_root: Some(std::path::PathBuf::from("/tmp/provider-cache")),
             lakehouse_cache_policy: crate::table_format::TableFormatLakehouseCachePolicy::FillBeforeRead,
             ..Default::default()

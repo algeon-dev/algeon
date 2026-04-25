@@ -156,11 +156,9 @@ pub(super) fn validate_cold_and_warm_cache(
             )
             .into());
         }
-        // REST host-buffer staging assigns query-scoped reader locations, so
-        // cross-query key stability is not guaranteed on this substrate.
-        // Require active cache lookup evidence on the warm wave, but do not
-        // mislabel staging-identity misses as a decoded-cache regression.
-        if warm_rows.is_empty() || warm_hits.saturating_add(warm_misses) == 0 {
+        // Remote KvikIO retains the stable object URI as the reader identity,
+        // so a repeated warm wave must reuse at least one decoded source.
+        if warm_rows.is_empty() || warm_hits == 0 {
             return Err(format!(
                 "device {device} lacks warm Q06 decoded-cache lookup evidence: rows={} hits={warm_hits} misses={warm_misses}",
                 warm_rows.len()

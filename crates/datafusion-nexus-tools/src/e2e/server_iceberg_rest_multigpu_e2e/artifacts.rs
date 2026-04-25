@@ -248,7 +248,7 @@ pub(super) fn write_summary(
         "memory_governors": capacities,
         "decoded_source_cache": {
             "configured_max_retained_bytes_per_device": 8_u64 * 1024 * 1024 * 1024,
-            "rest_host_buffer_identity": "query_scoped_misses_allowed",
+            "rest_source_identity": "stable_remote_uri",
             "devices": cache_by_device,
         },
         "telemetry": device_totals,

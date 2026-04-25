@@ -160,8 +160,8 @@ impl TableFormatScanPlan {
     /// A plan is admissible only when it has at least one native-readable
     /// Parquet data file, all associated delete files are supported row-level
     /// deletes, and no retained unsupported features remain. Object-store S3
-    /// files are native-readable through the host-buffer source pipeline, not
-    /// through direct device reads.
+    /// files are native-readable through remote KvikIO, not through local
+    /// direct-device reads.
     pub fn is_native_admissible(&self) -> bool {
         self.unsupported_features.is_empty()
             && !self.data_files.is_empty()
@@ -271,21 +271,12 @@ impl TableFormatScanPlan {
         )
     }
 
-    /// Comma-separated decode input kinds across data files.
-    pub fn source_decode_input_summary(&self) -> String {
-        summarize_resolved_source_value(
-            self.data_files
-                .iter()
-                .filter_map(|file| file.resolved_parquet_source.as_ref().map(|source| source.decode_input.as_str())),
-        )
-    }
-
     /// Comma-separated credential modes across data files.
     pub fn credential_mode_summary(&self) -> String {
         summarize_resolved_source_value(
-            self.data_files
-                .iter()
-                .filter_map(|file| file.resolved_parquet_source.as_ref().map(|source| source.credential_mode.as_str())),
+            self.data_files.iter().filter_map(|file| {
+                file.resolved_parquet_source.as_ref().map(|source| source.credential_mode().as_str())
+            }),
         )
     }
 
@@ -312,13 +303,6 @@ impl TableFormatScanPlan {
         }))
     }
 
-    /// Comma-separated stable source fallback reasons across data files.
-    pub fn source_fallback_reason_summary(&self) -> String {
-        summarize_resolved_source_fallback_reason(self.data_files.iter().filter_map(|file| {
-            file.resolved_parquet_source.as_ref().map(|source| source.fallback_reason.as_deref().unwrap_or("none"))
-        }))
-    }
-
     /// Builds credential-free scan diagnostics for tests and report rows.
     pub fn diagnostics(&self) -> TableFormatScanDiagnostics {
         TableFormatScanDiagnostics {
@@ -332,12 +316,10 @@ impl TableFormatScanPlan {
             rejected_feature_list: self.rejected_feature_codes(),
             native_source_read_capability: self.native_source_read_capability_summary(),
             source_read_strategy: self.source_read_strategy_summary(),
-            source_decode_input: self.source_decode_input_summary(),
             credential_mode: self.credential_mode_summary(),
             lakehouse_cache_status: self.lakehouse_cache_status_summary(),
             lakehouse_cache_read_mode: self.lakehouse_cache_read_mode_summary(),
             lakehouse_cache_fill_mode: self.lakehouse_cache_fill_mode_summary(),
-            source_fallback_reason: self.source_fallback_reason_summary(),
             direct_device_read_disposition: self.direct_device_read_disposition(),
         }
     }
@@ -350,26 +332,13 @@ fn summarize_resolved_source_value<'a>(values: impl IntoIterator<Item = &'a str>
     if values.is_empty() { "unknown".to_string() } else { values.join(",") }
 }
 
-fn summarize_resolved_source_fallback_reason<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
-    let mut values = values.into_iter().collect::<Vec<_>>();
-    values.sort_unstable();
-    values.dedup();
-    if values.is_empty() { "none".to_string() } else { values.join(",") }
-}
-
 pub(super) fn table_format_source_read_contract(source: &ResolvedParquetSource) -> &'static str {
-    match source.read_strategy {
+    match source.read_strategy() {
         nexus_query_engine::source::ParquetReadStrategy::LocalCacheKvikio
             if source.cache_status == LakehouseCacheStatus::Hit =>
         {
             "local_cache_hit"
         },
-        nexus_query_engine::source::ParquetReadStrategy::RemoteHostBuffer
-            if source.remote_host_buffer_ranged_enabled =>
-        {
-            "remote_host_buffer_ranged"
-        },
-        nexus_query_engine::source::ParquetReadStrategy::RemoteHostBuffer => "remote_host_buffer_full",
-        _ => source.read_strategy.as_str(),
+        _ => source.read_strategy().as_str(),
     }
 }

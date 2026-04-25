@@ -14,7 +14,7 @@ use datafusion_nexus::server::{
     NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
 };
 #[cfg(feature = "iceberg")]
-use datafusion_nexus::table_format::{self, TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyPreference};
+use datafusion_nexus::table_format::{self, TableFormatLakehouseCachePolicy};
 use datafusion_nexus::{
     backend::MemoryShare,
     gpu_coverage::NEXUS_EXPLAIN_COVERAGE_FUNCTION,
@@ -30,10 +30,10 @@ use datafusion_nexus::{
         NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV,
         NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
         NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV,
-        NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV, NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
-        NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-        NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
-        NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
+        NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+        NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+        NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
+        NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
         NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
         NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
         NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
@@ -284,7 +284,6 @@ fn server_native_config_option_descriptors_cover_toml_env_and_session_keys() {
         ("native.min_retry_chunk_row_groups", NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV),
         ("native.max_source_reads_in_flight", NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV),
         ("native.source_chunk_planning_mode", NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV),
-        ("native.host_fetch_acquire_timeout_secs", NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV),
         ("native.source_cache_max_retained_bytes", NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV),
         ("native.graph_cache_max_retained_bytes", NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV),
         (
@@ -347,14 +346,6 @@ fn server_native_config_option_descriptors_document_scope() {
             "native.pipeline_execution_mode",
         ])
     );
-
-    let timeout = NEXUS_SERVER_NATIVE_CONFIG_OPTIONS
-        .iter()
-        .find(|option| option.toml_field == "native.host_fetch_acquire_timeout_secs")
-        .expect("host-fetch timeout descriptor");
-    assert_eq!(timeout.scope, ServerNativeConfigScope::SourceIoResource);
-    assert_eq!(timeout.session_key, None);
-    assert!(!timeout.scope.is_bounded_only());
 
     let statistical = NEXUS_SERVER_NATIVE_CONFIG_OPTIONS
         .iter()
@@ -816,7 +807,6 @@ fn server_config_accepts_extended_native_query_knobs() {
         (NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, "2".to_string()),
         (NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "4".to_string()),
         (NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput".to_string()),
-        (NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV, "12".to_string()),
         (NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, "256".to_string()),
         (NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV, "3".to_string()),
         (NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, "adaptive".to_string()),
@@ -842,7 +832,6 @@ fn server_config_accepts_extended_native_query_knobs() {
     );
     assert_eq!(native.source_scheduler_policy().max_source_reads_in_flight(), 4);
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
-    assert_eq!(native.source_fetch_config().host_fetch_acquire_timeout, Duration::from_secs(12));
     assert_eq!(native.query_service_local_parquet_source_cache_max_retained_bytes(), Some(256));
     assert_eq!(native.query_service_query_memory_domain().unwrap().ceiling_multiplier, 3);
     #[cfg(feature = "cugraph")]
@@ -866,7 +855,6 @@ max_retry_attempts = 5
 min_retry_chunk_row_groups = 2
 max_source_reads_in_flight = 4
 source_chunk_planning_mode = "local_parquet_throughput"
-host_fetch_acquire_timeout_secs = 12
 source_cache_max_retained_bytes = 256
 query_memory_domain_ceiling_multiplier = 3
 {graph_cache_toml}
@@ -894,7 +882,6 @@ statistical_aggregate_execution_mode = "gpu_native_tolerant"
     );
     assert_eq!(native.source_scheduler_policy().max_source_reads_in_flight(), 4);
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
-    assert_eq!(native.source_fetch_config().host_fetch_acquire_timeout, Duration::from_secs(12));
     assert_eq!(native.query_service_local_parquet_source_cache_max_retained_bytes(), Some(256));
     assert_eq!(native.query_service_query_memory_domain().unwrap().ceiling_multiplier, 3);
     #[cfg(feature = "cugraph")]
@@ -916,12 +903,10 @@ max_row_groups_per_chunk = 8
 max_retry_attempts = 0
 min_retry_chunk_row_groups = 2
 source_chunk_planning_mode = "local_parquet_throughput"
-host_fetch_acquire_timeout_secs = 0
 "#,
     );
     env.insert(NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "7".to_string());
     env.insert(NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "conservative".to_string());
-    env.insert(NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV, "11".to_string());
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let native = config.native_optimizer_config.native_execution_config();
@@ -937,7 +922,6 @@ host_fetch_acquire_timeout_secs = 0
         }
     );
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
-    assert_eq!(native.source_fetch_config().host_fetch_acquire_timeout, Duration::from_secs(11));
 }
 
 #[test]
@@ -1264,15 +1248,6 @@ fn server_config_rejects_zero_extended_native_query_knobs() {
 }
 
 #[test]
-fn server_config_rejects_zero_host_fetch_acquire_timeout() {
-    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV, "0".to_string())]);
-
-    let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
-
-    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV));
-}
-
-#[test]
 fn server_config_rejects_zero_cache_max_retained_bytes() {
     for cache_env in [
         NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV,
@@ -1347,13 +1322,6 @@ fn server_config_rejects_zero_toml_native_query_knobs() {
 max_source_reads_in_flight = 0
 "#,
             "native.max_source_reads_in_flight",
-        ),
-        (
-            r#"
-[native]
-host_fetch_acquire_timeout_secs = 0
-"#,
-            "native.host_fetch_acquire_timeout_secs",
         ),
         (
             r#"
@@ -2330,7 +2298,6 @@ fn server_iceberg_config_owns_table_format_parquet_strategy() {
         (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
         (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://user:secret@localhost:9000/rustfs?sig=secret".to_string()),
         (NEXUS_ICEBERG_S3_REGION_ENV, "us-west-2".to_string()),
-        (table_format::NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, "local_cache".to_string()),
         (table_format::NEXUS_LAKEHOUSE_CACHE_ROOT_ENV, "/tmp/nexus-cache".to_string()),
         (table_format::NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, "read_through".to_string()),
         (table_format::NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, "4096".to_string()),
@@ -2340,34 +2307,12 @@ fn server_iceberg_config_owns_table_format_parquet_strategy() {
     let iceberg = config.iceberg.expect("iceberg config must be present");
     let strategy = iceberg.parquet_read_strategy_config;
 
-    assert_eq!(strategy.preference, TableFormatParquetReadStrategyPreference::LocalCache);
     assert_eq!(strategy.lakehouse_cache_root, Some(PathBuf::from("/tmp/nexus-cache")));
     assert_eq!(strategy.lakehouse_cache_policy, TableFormatLakehouseCachePolicy::ReadThrough);
     assert_eq!(strategy.lakehouse_cache_max_bytes, Some(4096));
     assert_eq!(strategy.storage_profile_id.as_deref(), Some("table_format_s3"));
     assert_eq!(strategy.storage_endpoint.as_deref(), Some("http://localhost:9000/rustfs"));
     assert_eq!(strategy.credential_mode, nexus_query_engine::source::CredentialMode::ScopedResolved);
-}
-
-#[cfg(feature = "iceberg")]
-#[test]
-fn server_iceberg_config_rejects_unknown_table_format_parquet_strategy() {
-    use datafusion_nexus::server::{
-        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-        NEXUS_ICEBERG_REST_URI_ENV,
-    };
-    let env = BTreeMap::from([
-        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
-        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
-        (table_format::NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, "surprise".to_string()),
-    ]);
-
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
-
-    assert!(error.to_string().contains(table_format::NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV));
-    assert!(error.to_string().contains("host_buffer"));
 }
 
 #[cfg(feature = "iceberg")]

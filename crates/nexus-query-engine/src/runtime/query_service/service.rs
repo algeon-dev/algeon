@@ -367,21 +367,13 @@ impl QueryService {
             gpu_execution_pools,
             gpu_execution_query_tracker,
             _governor_claim: None,
-            host_fetch_budget: HostFetchBudget::new(
-                config.source_fetch.host_fetch_budget_bytes.unwrap_or_else(default_host_fetch_budget_bytes),
+            lakehouse_cache_fill_budget: CacheFillByteBudget::new(
+                config.lakehouse_cache_fill.budget_bytes.unwrap_or_else(default_lakehouse_cache_fill_budget_bytes),
             )?,
-            source_fetch_concurrency: SourceFetchConcurrencyGate::new(
-                config.source_fetch.host_fetch_max_concurrent_ops,
+            lakehouse_cache_fill_concurrency: CacheFillConcurrencyGate::new(
+                config.lakehouse_cache_fill.max_concurrent_ops,
             )?,
-            lakehouse_cache_fill_budget: HostFetchBudget::new(
-                config.source_fetch.lakehouse_cache_fill_budget_bytes.unwrap_or_else(default_host_fetch_budget_bytes),
-            )?,
-            lakehouse_cache_fill_concurrency: SourceFetchConcurrencyGate::new(
-                config.source_fetch.lakehouse_cache_fill_max_concurrent_ops,
-            )?,
-            gds_concurrency: GdsConcurrencyGate::new(config.source_fetch.gds_max_concurrent_ops)?,
-            source_fetch_runtime: default_source_fetch_runtime()?,
-            lakehouse_cache_fill_runtime: default_lakehouse_cache_fill_runtime()?,
+            object_store_control_runtime: default_object_store_control_runtime()?,
             source_object_stores: Arc::new(SourceObjectStoreRegistry::with_profiles(
                 config.source_storage_profiles.clone(),
             )?),

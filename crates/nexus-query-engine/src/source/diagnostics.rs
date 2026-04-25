@@ -70,8 +70,6 @@ pub struct SourceDiagnostics {
     pub format: SourceFormat,
     /// Comma-separated high-level Parquet read strategies represented by this source.
     pub source_read_strategy: String,
-    /// Comma-separated cuDF decode input kinds represented by this source.
-    pub source_decode_input: String,
     /// Comma-separated credential modes represented by this source.
     pub credential_mode: String,
     /// Comma-separated local byte-cache statuses represented by this source.
@@ -80,8 +78,6 @@ pub struct SourceDiagnostics {
     pub lakehouse_cache_read_mode: String,
     /// Comma-separated complete-object lakehouse cache fill modes represented by this source.
     pub lakehouse_cache_fill_mode: String,
-    /// Comma-separated stable source fallback reasons represented by this source.
-    pub source_fallback_reason: String,
     /// True when the source is proven to use a local path/cache reader that
     /// can satisfy the direct-device source-read boundary.
     pub direct_device_read: bool,
@@ -175,12 +171,10 @@ impl SourceDiagnostics {
         Self {
             format: SourceFormat::Parquet,
             source_read_strategy: summarize_source_read_strategy(files),
-            source_decode_input: summarize_source_decode_input(files),
             credential_mode: summarize_credential_mode(files),
             lakehouse_cache_status: summarize_lakehouse_cache_status(files),
             lakehouse_cache_read_mode: summarize_lakehouse_cache_read_mode(files),
             lakehouse_cache_fill_mode: summarize_lakehouse_cache_fill_mode(files),
-            source_fallback_reason: summarize_source_fallback_reason(files),
             direct_device_read: rejected_features.is_empty() && files_have_proven_direct_device_read(files),
             file_count: files.len(),
             ranged_file_count: 0,
@@ -269,25 +263,21 @@ pub(super) fn stable_fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 fn summarize_source_read_strategy(files: &[LocalParquetFile]) -> String {
-    summarize_file_values(files, |file| file.resolved_source.read_strategy.as_str())
+    summarize_file_values(files, |file| file.resolved_source.read_strategy().as_str())
 }
 
 pub(super) fn files_have_proven_direct_device_read(files: &[LocalParquetFile]) -> bool {
     !files.is_empty()
         && files.iter().all(|file| {
             matches!(
-                file.resolved_source.read_strategy,
+                file.resolved_source.read_strategy(),
                 super::ParquetReadStrategy::LocalKvikio | super::ParquetReadStrategy::LocalCacheKvikio
             )
         })
 }
 
-fn summarize_source_decode_input(files: &[LocalParquetFile]) -> String {
-    summarize_file_values(files, |file| file.resolved_source.decode_input.as_str())
-}
-
 fn summarize_credential_mode(files: &[LocalParquetFile]) -> String {
-    summarize_file_values(files, |file| file.resolved_source.credential_mode.as_str())
+    summarize_file_values(files, |file| file.resolved_source.credential_mode().as_str())
 }
 
 fn summarize_lakehouse_cache_status(files: &[LocalParquetFile]) -> String {
@@ -300,14 +290,6 @@ fn summarize_lakehouse_cache_read_mode(files: &[LocalParquetFile]) -> String {
 
 fn summarize_lakehouse_cache_fill_mode(files: &[LocalParquetFile]) -> String {
     summarize_file_values(files, |file| file.resolved_source.lakehouse_cache_fill_mode.as_str())
-}
-
-fn summarize_source_fallback_reason(files: &[LocalParquetFile]) -> String {
-    let mut values =
-        files.iter().map(|file| file.resolved_source.fallback_reason.as_deref().unwrap_or("none")).collect::<Vec<_>>();
-    values.sort_unstable();
-    values.dedup();
-    values.join(",")
 }
 
 fn summarize_file_values(files: &[LocalParquetFile], value: impl Fn(&LocalParquetFile) -> &'static str) -> String {
@@ -538,10 +520,7 @@ impl PredicateDisposition {
 /// Disposition of byte-range file entries.
 ///
 /// This describes the planning-time representation of file entries, not the
-/// runtime fetch strategy. When a source carries a `scan_limit` and points at
-/// remote object-store URIs, the host-buffer reader transparently switches to
-/// footer-first ranged GETs even though entries remain represented as
-/// `FullFiles` here.
+/// lower-level reads performed by the selected Parquet backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ByteRangeDisposition {
     /// Source entries describe whole files.

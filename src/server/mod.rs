@@ -54,11 +54,10 @@ pub use config::{
     NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_LOG_ENV,
     NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
     NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV, NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
-    NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
-    NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
-    NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
+    NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+    NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+    NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
+    NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
     NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
     NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_SESSION_PROFILE_ENV,
     NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV,
@@ -584,9 +583,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
     let native_execution = config.native_optimizer_config.native_execution_config();
     let native_memory = NativeMemorySnapshot::from(native_execution.memory_control_policy());
     let source_scheduler = native_execution.source_scheduler_policy();
-    let source_fetch = native_execution.source_fetch_config();
-    let source_fetch_acquire_timeout_ms =
-        u64::try_from(source_fetch.host_fetch_acquire_timeout.as_millis()).unwrap_or(u64::MAX);
     match &config.iceberg {
         Some(iceberg) => {
             let snapshot = iceberg_backend_snapshot(&iceberg.backend);
@@ -614,7 +610,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
                 native_boundary_policy = %native_execution.boundary_policy(),
                 native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
                 native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
-                native_host_fetch_acquire_timeout_ms = source_fetch_acquire_timeout_ms,
                 native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
                 cugraph_enabled = cugraph_enabled(config),
                 cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
@@ -658,7 +653,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
             native_boundary_policy = %native_execution.boundary_policy(),
             native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
             native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
-            native_host_fetch_acquire_timeout_ms = source_fetch_acquire_timeout_ms,
             native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
             cugraph_enabled = cugraph_enabled(config),
             cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
@@ -673,9 +667,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
     let native_execution = config.native_optimizer_config.native_execution_config();
     let native_memory = NativeMemorySnapshot::from(native_execution.memory_control_policy());
     let source_scheduler = native_execution.source_scheduler_policy();
-    let source_fetch = native_execution.source_fetch_config();
-    let source_fetch_acquire_timeout_ms =
-        u64::try_from(source_fetch.host_fetch_acquire_timeout.as_millis()).unwrap_or(u64::MAX);
     tracing::info!(
         bind_addr = %config.bind_addr,
         max_in_flight = config.max_in_flight,
@@ -700,7 +691,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         native_boundary_policy = %native_execution.boundary_policy(),
         native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
         native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
-        native_host_fetch_acquire_timeout_ms = source_fetch_acquire_timeout_ms,
         native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
         cugraph_enabled = cugraph_enabled(config),
         cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),

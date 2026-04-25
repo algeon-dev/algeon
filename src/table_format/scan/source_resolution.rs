@@ -107,8 +107,7 @@ impl TableFormatReadCapability {
 
     /// Whether this capability can be represented by native Parquet source reads.
     ///
-    /// Object-store S3 reads require a remote-direct path-based reader; a
-    /// host-buffer fallback is rejected before native GPU execution.
+    /// Object-store S3 reads require the fail-closed remote KvikIO reader.
     pub fn is_native_parquet_capable(&self) -> bool {
         match self {
             Self::LocalFileSystem => true,
@@ -119,8 +118,8 @@ impl TableFormatReadCapability {
 
     /// Whether this capability can be represented by local direct-device Parquet reads.
     ///
-    /// Remote S3 direct/range-aware reads are tracked as a separate source
-    /// strategy and must not be confused with local GDS/NVMe eligibility.
+    /// Remote S3 KvikIO reads are tracked as a separate source strategy and
+    /// must not be confused with local direct-device eligibility.
     pub fn is_direct_native_parquet_capable(&self) -> bool {
         matches!(self, Self::LocalFileSystem)
     }
@@ -174,24 +173,7 @@ fn resolve_s3_table_format_parquet_source(
     config: &TableFormatParquetReadStrategyConfig,
     metadata: &TableFormatParquetSourceMetadata,
 ) -> Result<ResolvedParquetSource> {
-    let resolved = match config.preference {
-        TableFormatParquetReadStrategyPreference::Auto => {
-            resolve_auto_s3_table_format_parquet_source(location, config, metadata)
-        },
-        TableFormatParquetReadStrategyPreference::HostBuffer => {
-            remote_host_buffer_fallback_source(location, config, "explicit_remote_host_buffer_full", false)
-        },
-        TableFormatParquetReadStrategyPreference::RemoteKvikio => {
-            if config.remote_direct_enabled {
-                remote_direct_or_capability_fallback_source(location, config, Some("remote_kvikio_compat_alias"))
-            } else {
-                remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)
-            }
-        },
-        TableFormatParquetReadStrategyPreference::LocalCache => {
-            resolve_local_cache_table_format_parquet_source(location, config, metadata)
-        },
-    }?;
+    let resolved = resolve_auto_s3_table_format_parquet_source(location, config, metadata)?;
     Ok(attach_remote_source_identity(resolved, location, config, metadata))
 }
 
@@ -201,41 +183,17 @@ fn resolve_auto_s3_table_format_parquet_source(
     metadata: &TableFormatParquetSourceMetadata,
 ) -> Result<ResolvedParquetSource> {
     if let Some(cache_root) = config.lakehouse_cache_root.as_ref() {
-        return resolve_s3_table_format_parquet_source_with_cache_root(location, config, metadata, cache_root, None);
+        return resolve_s3_table_format_parquet_source_with_cache_root(location, config, metadata, cache_root);
     }
 
-    remote_foreground_source(location, config)
+    remote_kvikio_source(location, config)
 }
 
-fn remote_foreground_source(
+fn remote_kvikio_source(
     location: &str,
     config: &TableFormatParquetReadStrategyConfig,
 ) -> Result<ResolvedParquetSource> {
-    if config.remote_direct_enabled {
-        remote_direct_or_capability_fallback_source(location, config, None)
-    } else {
-        remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)
-    }
-}
-
-fn resolve_local_cache_table_format_parquet_source(
-    location: &str,
-    config: &TableFormatParquetReadStrategyConfig,
-    metadata: &TableFormatParquetSourceMetadata,
-) -> Result<ResolvedParquetSource> {
-    let Some(cache_root) = config.lakehouse_cache_root.as_ref() else {
-        let resolved = remote_foreground_source(location, config)?;
-        return Ok(resolved
-            .with_cache_status(LakehouseCacheStatus::Skipped)
-            .with_fallback_reason("lakehouse_cache_root_unset"));
-    };
-    resolve_s3_table_format_parquet_source_with_cache_root(
-        location,
-        config,
-        metadata,
-        cache_root,
-        Some("lakehouse_cache_miss_fill_disabled"),
-    )
+    remote_kvikio_or_capability_error(location, config)
 }
 
 fn resolve_s3_table_format_parquet_source_with_cache_root(
@@ -243,11 +201,10 @@ fn resolve_s3_table_format_parquet_source_with_cache_root(
     config: &TableFormatParquetReadStrategyConfig,
     metadata: &TableFormatParquetSourceMetadata,
     cache_root: &Path,
-    miss_fill_disabled_fallback_reason: Option<&'static str>,
 ) -> Result<ResolvedParquetSource> {
     let cache_path = cache_root.join(cache_relative_path(location, config, metadata));
     if !config.lakehouse_cache_read_policy.is_enabled() {
-        let resolved = remote_foreground_source(location, config)?;
+        let resolved = remote_kvikio_source(location, config)?;
         return Ok(resolved
             .with_cache_status(LakehouseCacheStatus::Bypassed)
             .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Bypassed)
@@ -266,7 +223,6 @@ fn resolve_s3_table_format_parquet_source_with_cache_root(
         .with_lakehouse_cache_path(cache_path.display().to_string()));
     }
     if config.lakehouse_cache_policy.fills_before_read() {
-        reject_if_remote_direct_required(config, "lakehouse_cache_fill_before_read")?;
         return Ok(ResolvedParquetSource::local_cache_kvikio(
             location,
             cache_path.display().to_string(),
@@ -278,47 +234,39 @@ fn resolve_s3_table_format_parquet_source_with_cache_root(
         .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Blocking));
     }
     let fill_mode = background_fill_mode(config);
-    let mut resolved = remote_foreground_source(location, config)?
+    let resolved = remote_kvikio_source(location, config)?
         .with_cache_status(LakehouseCacheStatus::Miss)
         .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Enabled)
         .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
         .with_lakehouse_cache_path(cache_path.display().to_string())
         .with_lakehouse_cache_fill_mode(fill_mode);
-    if fill_mode == LakehouseCacheFillMode::Disabled
-        && let Some(fallback_reason) = miss_fill_disabled_fallback_reason
-    {
-        resolved = resolved.with_fallback_reason(fallback_reason);
-    }
     Ok(resolved)
 }
 
-fn remote_direct_source(location: &str, config: &TableFormatParquetReadStrategyConfig) -> ResolvedParquetSource {
-    ResolvedParquetSource::remote_direct(location, config.credential_mode)
-        .with_remote_read_mode(config.remote_direct_read_mode)
-}
-
-fn remote_direct_or_capability_fallback_source(
+fn resolved_remote_kvikio_source(
     location: &str,
     config: &TableFormatParquetReadStrategyConfig,
-    compatibility_reason: Option<&'static str>,
+) -> ResolvedParquetSource {
+    ResolvedParquetSource::remote_kvikio(location, config.credential_mode)
+}
+
+fn remote_kvikio_or_capability_error(
+    location: &str,
+    config: &TableFormatParquetReadStrategyConfig,
 ) -> Result<ResolvedParquetSource> {
     if let Some(reason) = config.remote_direct_profile_unsupported_reason {
-        return remote_host_buffer_fallback_source(location, config, reason, true);
+        return reject_remote_kvikio_source(reason);
     }
     match cudf::io::parquet::remote_parquet_backend_build_status() {
         cudf::io::parquet::RemoteParquetBackendBuildStatus::KvikioRemoteIoEnabled => {},
         cudf::io::parquet::RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled => {
-            return remote_host_buffer_fallback_source(location, config, "remote_direct_backend_disabled", true);
+            return reject_remote_kvikio_source("remote_kvikio_backend_disabled");
         },
         cudf::io::parquet::RemoteParquetBackendBuildStatus::Unknown => {
-            return remote_host_buffer_fallback_source(location, config, "remote_direct_backend_unknown", true);
+            return reject_remote_kvikio_source("remote_kvikio_backend_unknown");
         },
     }
-    let resolved = remote_direct_source(location, config);
-    Ok(match compatibility_reason {
-        Some(reason) => resolved.with_fallback_reason(reason),
-        None => resolved,
-    })
+    Ok(resolved_remote_kvikio_source(location, config))
 }
 
 #[cfg(test)]
@@ -327,37 +275,15 @@ fn remote_direct_backend_disabled() -> bool {
         == cudf::io::parquet::RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled
 }
 
-fn remote_host_buffer_fallback_source(
-    _location: &str,
-    config: &TableFormatParquetReadStrategyConfig,
-    fallback_reason: &'static str,
-    _ranged_enabled: bool,
-) -> Result<ResolvedParquetSource> {
+fn reject_remote_kvikio_source(unavailable_reason: &'static str) -> Result<ResolvedParquetSource> {
     Err(crate::error::Error::new(
         crate::error::ErrorCode::InvalidExecutionPlan,
         "datafusion_nexus.table_format.resolve_parquet_source",
-        "native GPU queries require a direct GDS/KvikIO source; host-buffer fallback is disabled",
+        "native GPU queries require the remote KvikIO source contract",
     )
-    .with_fact("reason", "host_buffer_disabled")
-    .with_fact("fallback_reason", fallback_reason)
-    .with_fact("remote_read_mode", config.remote_direct_read_mode.as_str())
-    .with_fact("source_decode_input", "host_buffer"))
-}
-
-fn reject_if_remote_direct_required(
-    config: &TableFormatParquetReadStrategyConfig,
-    fallback_reason: &'static str,
-) -> Result<()> {
-    if config.remote_direct_read_mode != RemoteParquetReadMode::RequireDirect {
-        return Ok(());
-    }
-    Err(crate::error::Error::new(
-        crate::error::ErrorCode::InvalidExecutionPlan,
-        "datafusion_nexus.table_format.resolve_parquet_source",
-        "remote direct read mode is required, but source resolution selected a fallback path",
-    )
-    .with_fact("remote_read_mode", config.remote_direct_read_mode.as_str())
-    .with_fact("fallback_reason", fallback_reason))
+    .with_fact("reason", "remote_kvikio_unavailable")
+    .with_fact("remote_kvikio_unavailable_reason", unavailable_reason)
+    .with_fact("remote_read_mode", "require_kvikio"))
 }
 
 fn background_fill_mode(config: &TableFormatParquetReadStrategyConfig) -> LakehouseCacheFillMode {
@@ -582,29 +508,6 @@ mod tests {
     }
 
     #[test]
-    fn table_format_parquet_read_strategy_config_from_env_requires_opt_in_for_ranged_host_buffer() {
-        let empty = BTreeMap::<&str, &str>::new();
-        let default_config = table_format_parquet_read_strategy_config_from_env(|name| {
-            empty.get(name).map(|value| (*value).to_string())
-        });
-        assert!(!default_config.remote_host_buffer_ranged_enabled);
-
-        let env = BTreeMap::from([(NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV, "1")]);
-        let enabled_config =
-            table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
-        assert!(enabled_config.remote_host_buffer_ranged_enabled);
-    }
-
-    #[test]
-    fn table_format_parquet_read_strategy_config_from_env_parses_remote_direct_read_mode() {
-        let env = BTreeMap::from([(NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV, "require_direct")]);
-        let config =
-            table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
-
-        assert_eq!(config.remote_direct_read_mode, RemoteParquetReadMode::RequireDirect);
-    }
-
-    #[test]
     fn fallback_content_identity_is_marked_weak() {
         assert_eq!(
             content_identity(&TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10))),
@@ -753,14 +656,13 @@ mod tests {
         if remote_direct_backend_disabled() {
             let error = result.unwrap_err();
             assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
-            assert_eq!(error.fact_value("reason"), Some("host_buffer_disabled"));
-            assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_backend_disabled"));
+            assert_eq!(error.fact_value("reason"), Some("remote_kvikio_unavailable"));
+            assert_eq!(error.fact_value("remote_kvikio_unavailable_reason"), Some("remote_kvikio_backend_disabled"));
             None
         } else {
             let source = result.unwrap();
-            assert_eq!(source.read_strategy.as_str(), "remote_direct");
-            assert_eq!(source.decode_input.as_str(), "filepath");
-            assert_eq!(source.remote_read_mode, RemoteParquetReadMode::RequireDirect);
+            assert_eq!(source.read_strategy().as_str(), "remote_direct");
+            assert!(matches!(&source.input, nexus_query_engine::source::ResolvedParquetInput::RemoteKvikio { .. }));
             Some(source)
         }
     }
@@ -784,100 +686,13 @@ mod tests {
         };
         assert_eq!(source.cache_status, LakehouseCacheStatus::Miss);
         assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Disabled);
-        assert_ne!(source.fallback_reason.as_deref(), Some("lakehouse_cache_miss_fill_disabled"));
         assert!(source.lakehouse_cache_path.is_some());
-    }
-
-    #[test]
-    fn explicit_local_cache_without_cache_root_is_skipped_with_stable_reason() {
-        let config = TableFormatParquetReadStrategyConfig {
-            preference: TableFormatParquetReadStrategyPreference::LocalCache,
-            lakehouse_cache_root: None,
-            ..Default::default()
-        };
-
-        let result = resolve_table_format_parquet_source(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-        );
-        let Some(source) = assert_expected_remote_foreground_source(result) else {
-            return;
-        };
-        assert_eq!(source.cache_status, LakehouseCacheStatus::Skipped);
-        assert_eq!(source.fallback_reason.as_deref(), Some("lakehouse_cache_root_unset"));
-    }
-
-    #[test]
-    fn s3_auto_require_direct_uses_remote_direct_when_backend_available() {
-        let config = TableFormatParquetReadStrategyConfig {
-            remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
-            ..Default::default()
-        };
-
-        let result = resolve_table_format_parquet_source(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-        );
-
-        if remote_direct_backend_disabled() {
-            let error = result.unwrap_err();
-            assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
-            assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
-            assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_backend_disabled"));
-        } else {
-            let source = result.unwrap();
-            assert_eq!(source.read_strategy.as_str(), "remote_direct");
-            assert_eq!(source.decode_input.as_str(), "filepath");
-            assert_eq!(source.remote_read_mode, RemoteParquetReadMode::RequireDirect);
-        }
-    }
-
-    #[test]
-    fn require_direct_rejects_remote_direct_disabled_host_buffer_fallback() {
-        let config = TableFormatParquetReadStrategyConfig {
-            remote_direct_enabled: false,
-            remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
-            ..Default::default()
-        };
-
-        let error = resolve_table_format_parquet_source(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
-        assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
-        assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_disabled"));
-    }
-
-    #[test]
-    fn require_direct_rejects_explicit_host_buffer_fallback() {
-        let config = TableFormatParquetReadStrategyConfig {
-            preference: TableFormatParquetReadStrategyPreference::HostBuffer,
-            remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
-            ..Default::default()
-        };
-
-        let error = resolve_table_format_parquet_source(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
-        assert_eq!(error.fact_value("fallback_reason"), Some("explicit_remote_host_buffer_full"));
     }
 
     #[test]
     fn scoped_profile_remote_direct_reaches_direct_path_when_backend_available() {
         let config = TableFormatParquetReadStrategyConfig {
             credential_mode: CredentialMode::ScopedResolved,
-            remote_host_buffer_ranged_enabled: true,
             ..Default::default()
         };
 
@@ -888,40 +703,18 @@ mod tests {
         );
         if remote_direct_backend_disabled() {
             let error = result.unwrap_err();
-            assert_eq!(error.fact_value("reason"), Some("host_buffer_disabled"));
-            assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_backend_disabled"));
+            assert_eq!(error.fact_value("reason"), Some("remote_kvikio_unavailable"));
+            assert_eq!(error.fact_value("remote_kvikio_unavailable_reason"), Some("remote_kvikio_backend_disabled"));
         } else {
             let source = result.unwrap();
-            assert_eq!(source.read_strategy.as_str(), "remote_direct");
-            assert_eq!(source.decode_input.as_str(), "filepath");
-            assert_eq!(source.credential_mode, CredentialMode::ScopedResolved);
-        }
-    }
-
-    #[test]
-    fn require_direct_scoped_profile_reaches_direct_path_when_backend_available() {
-        let config = TableFormatParquetReadStrategyConfig {
-            credential_mode: CredentialMode::ScopedResolved,
-            remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
-            ..Default::default()
-        };
-
-        let result = resolve_table_format_parquet_source(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-        );
-
-        if remote_direct_backend_disabled() {
-            let error = result.unwrap_err();
-            assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
-            assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
-            assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_backend_disabled"));
-        } else {
-            let source = result.unwrap();
-            assert_eq!(source.read_strategy.as_str(), "remote_direct");
-            assert_eq!(source.remote_read_mode, RemoteParquetReadMode::RequireDirect);
-            assert_eq!(source.credential_mode, CredentialMode::ScopedResolved);
+            assert_eq!(source.read_strategy().as_str(), "remote_direct");
+            assert!(matches!(
+                &source.input,
+                nexus_query_engine::source::ResolvedParquetInput::RemoteKvikio {
+                    credential_mode: CredentialMode::ScopedResolved,
+                    ..
+                }
+            ));
         }
     }
 
@@ -945,10 +738,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(source.read_strategy.as_str(), "local_cache_kvikio");
-        assert_eq!(source.decode_input.as_str(), "filepath");
+        assert_eq!(source.read_strategy().as_str(), "local_cache_kvikio");
+        assert!(matches!(&source.input, nexus_query_engine::source::ResolvedParquetInput::LocalKvikio { .. }));
         assert_eq!(source.cache_status, LakehouseCacheStatus::Hit);
-        assert_eq!(source.reader_location, cache_path.display().to_string());
+        assert_eq!(source.reader_location(), cache_path.display().to_string());
         assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
         assert_eq!(table_format_source_read_contract(&source), "local_cache_hit");
     }
@@ -1029,7 +822,7 @@ mod tests {
         };
         assert_eq!(source.cache_status, LakehouseCacheStatus::Bypassed);
         assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Background);
-        assert_eq!(source.reader_location, "s3://bucket/table/part-0.parquet");
+        assert_eq!(source.reader_location(), "s3://bucket/table/part-0.parquet");
         assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
     }
 
@@ -1037,7 +830,6 @@ mod tests {
     fn explicit_local_cache_read_bypass_skips_existing_local_cache_hit() {
         let root = tempfile::tempdir().unwrap();
         let config = TableFormatParquetReadStrategyConfig {
-            preference: TableFormatParquetReadStrategyPreference::LocalCache,
             lakehouse_cache_root: Some(root.path().to_path_buf()),
             lakehouse_cache_read_policy: TableFormatLakehouseCacheReadPolicy::Disabled,
             lakehouse_cache_policy: TableFormatLakehouseCachePolicy::ReadThrough,
@@ -1065,33 +857,9 @@ mod tests {
     }
 
     #[test]
-    fn fill_before_read_rejects_require_direct_with_stable_reason() {
-        let root = tempfile::tempdir().unwrap();
-        let config = TableFormatParquetReadStrategyConfig {
-            preference: TableFormatParquetReadStrategyPreference::LocalCache,
-            lakehouse_cache_root: Some(root.path().to_path_buf()),
-            lakehouse_cache_policy: TableFormatLakehouseCachePolicy::FillBeforeRead,
-            remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
-            ..Default::default()
-        };
-
-        let error = resolve_table_format_parquet_source(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
-        assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
-        assert_eq!(error.fact_value("fallback_reason"), Some("lakehouse_cache_fill_before_read"));
-    }
-
-    #[test]
     fn read_through_cache_miss_selects_background_fill_without_blocking_foreground_read() {
         let root = tempfile::tempdir().unwrap();
         let config = TableFormatParquetReadStrategyConfig {
-            preference: TableFormatParquetReadStrategyPreference::LocalCache,
             lakehouse_cache_root: Some(root.path().to_path_buf()),
             lakehouse_cache_policy: TableFormatLakehouseCachePolicy::ReadThrough,
             ..Default::default()
@@ -1112,113 +880,5 @@ mod tests {
         assert_eq!(source.cache_status, LakehouseCacheStatus::Miss);
         assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Background);
         assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
-    }
-
-    #[test]
-    fn explicit_host_buffer_is_rejected() {
-        let config = TableFormatParquetReadStrategyConfig {
-            preference: TableFormatParquetReadStrategyPreference::HostBuffer,
-            ..Default::default()
-        };
-
-        let error = resolve_table_format_parquet_source(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.fact_value("reason"), Some("host_buffer_disabled"));
-        assert_eq!(error.fact_value("fallback_reason"), Some("explicit_remote_host_buffer_full"));
-    }
-
-    #[test]
-    fn remote_direct_gate_rejects_cache_misses_after_complete_cache_hit_probe() {
-        let root = tempfile::tempdir().unwrap();
-        let config = TableFormatParquetReadStrategyConfig {
-            lakehouse_cache_root: Some(root.path().to_path_buf()),
-            remote_direct_enabled: false,
-            ..Default::default()
-        };
-        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
-        let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
-        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
-        fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
-
-        let hit = resolve_table_format_parquet_source_with_metadata(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-            &metadata,
-        )
-        .unwrap();
-        assert_eq!(hit.read_strategy.as_str(), "local_cache_kvikio");
-
-        fs::remove_file(&cache_path).unwrap();
-        let error = resolve_table_format_parquet_source_with_metadata(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-            &metadata,
-        )
-        .unwrap_err();
-        assert_eq!(error.fact_value("reason"), Some("host_buffer_disabled"));
-        assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_disabled"));
-    }
-
-    #[test]
-    fn remote_direct_gate_rejects_instead_of_selecting_host_buffer() {
-        let config = TableFormatParquetReadStrategyConfig {
-            remote_direct_enabled: false,
-            remote_host_buffer_ranged_enabled: false,
-            ..Default::default()
-        };
-
-        let error = resolve_table_format_parquet_source(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.fact_value("reason"), Some("host_buffer_disabled"));
-        assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_disabled"));
-    }
-
-    #[test]
-    fn remote_direct_gate_rejects_ranged_host_buffer_configuration() {
-        let config = TableFormatParquetReadStrategyConfig {
-            remote_direct_enabled: false,
-            remote_host_buffer_ranged_enabled: true,
-            ..Default::default()
-        };
-        let error = resolve_table_format_parquet_source(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.fact_value("reason"), Some("host_buffer_disabled"));
-        assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_disabled"));
-    }
-
-    #[test]
-    fn explicit_host_buffer_with_ranged_setting_is_rejected() {
-        let config = TableFormatParquetReadStrategyConfig {
-            preference: TableFormatParquetReadStrategyPreference::HostBuffer,
-            remote_host_buffer_ranged_enabled: true,
-            ..Default::default()
-        };
-
-        let error = resolve_table_format_parquet_source(
-            "s3://bucket/table/part-0.parquet",
-            &TableFormatReadCapability::object_store("s3"),
-            &config,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.fact_value("reason"), Some("host_buffer_disabled"));
-        assert_eq!(error.fact_value("fallback_reason"), Some("explicit_remote_host_buffer_full"));
     }
 }

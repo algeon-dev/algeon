@@ -286,7 +286,7 @@ fn no_delete_local_parquet_iceberg_tasks_produce_native_admissible_scan_plan() {
 }
 
 #[test]
-fn no_delete_s3_parquet_iceberg_tasks_are_native_admissible_through_host_buffer_fetch() {
+fn no_delete_s3_parquet_iceberg_tasks_are_native_admissible_through_remote_kvikio() {
     let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
         Some("23456".to_string()),
         Some("aws_glue".to_string()),

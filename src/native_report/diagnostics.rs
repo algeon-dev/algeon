@@ -114,12 +114,10 @@ pub(super) fn summarize_source_diagnostics(diagnostics: &NativeSourceDiagnostics
     NativeSourceDiagnosticSummary {
         format: format!("{:?}", diagnostics.format),
         source_read_strategy: diagnostics.source_read_strategy.clone(),
-        source_decode_input: diagnostics.source_decode_input.clone(),
         credential_mode: diagnostics.credential_mode.clone(),
         lakehouse_cache_status: diagnostics.lakehouse_cache_status.clone(),
         lakehouse_cache_read_mode: diagnostics.lakehouse_cache_read_mode.clone(),
         lakehouse_cache_fill_mode: diagnostics.lakehouse_cache_fill_mode.clone(),
-        source_fallback_reason: diagnostics.source_fallback_reason.clone(),
         direct_device_read: diagnostics.direct_device_read,
         file_count: diagnostics.file_count,
         ranged_file_count: diagnostics.ranged_file_count,

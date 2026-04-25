@@ -50,10 +50,6 @@ fn ordered_descriptors_drive_names_registration_and_legacy_categories() {
         "source_metadata_load_time",
         "source_read_queue_wait_time",
         "source_cache_lookup_time",
-        "host_fetch_budget_wait_time",
-        "source_fetch_concurrency_wait_time",
-        "source_fetch_time",
-        "source_decode_time",
         "parquet_read_time",
         "source_read_time",
         "operator_time",
@@ -97,7 +93,7 @@ fn ordered_descriptors_drive_names_registration_and_legacy_categories() {
 fn every_ordered_descriptor_has_a_compile_time_recording_mapping() {
     let recording_names = NATIVE_CUDF_RECORDING_DESCRIPTORS.iter().map(|(name, _kind)| *name).collect::<Vec<_>>();
     assert_eq!(recording_names, NATIVE_CUDF_DATAFUSION_METRIC_NAMES);
-    assert_eq!(recording_names.len(), 132, "the stable public metric count must not change");
+    assert_eq!(recording_names.len(), 126, "the stable public metric count must not change");
 
     for expected_kind in
         [NativeMetricRecordingKind::Query, NativeMetricRecordingKind::Admission, NativeMetricRecordingKind::CacheEvents]
@@ -439,19 +435,12 @@ fn source_read_runtime_rows_bridge_runtime_labels() {
         query_id: None,
         source_node_id: "n7".to_string(),
         read_kind: "chunk_batch".to_string(),
-        read_strategy: "local_cache_kvikio".to_string(),
-        host_buffer_fetch_mode: "none".to_string(),
-        host_buffer_payload_bytes: 0,
-        host_buffer_requested_range_count: 0,
-        host_buffer_requested_range_bytes: 0,
-        host_buffer_original_file_bytes: 0,
-        host_buffer_mini_parquet_footer_bytes: 0,
+        read_strategy: "remote_direct".to_string(),
         parquet_read_evidence: SourceReadParquetEvidenceMetrics {
             input_kind: "remote_path".to_string(),
-            remote_read_mode: "prefer_direct".to_string(),
-            backend: "libcudf_path_reader_unverified".to_string(),
-            fallback_reason: "not_reported_by_libcudf".to_string(),
-            backend_build_status: "unknown".to_string(),
+            remote_read_mode: "require_kvikio".to_string(),
+            backend: "cudf_sys_kvikio_remote_datasource".to_string(),
+            backend_build_status: "kvikio_remote_io_enabled".to_string(),
             remote_bytes: Some(4096),
             remote_range_count: Some(3),
             device_read_support: "not_reported_by_libcudf".to_string(),
@@ -492,8 +481,7 @@ fn source_read_runtime_rows_bridge_runtime_labels() {
     let row = &metrics.source_read_runtime_rows[0];
     assert_eq!(row.source_node_id, "n7");
     assert_eq!(row.read_kind, "chunk_batch");
-    assert_eq!(row.read_strategy, "local_cache_kvikio");
-    assert_eq!(row.host_buffer_fetch_mode, "none");
+    assert_eq!(row.read_strategy, "remote_direct");
     assert_eq!(row.batch_index, 2);
     assert_eq!(row.chunk_count, 3);
     assert_eq!(row.first_file_index, 10);
@@ -503,10 +491,9 @@ fn source_read_runtime_rows_bridge_runtime_labels() {
     assert_eq!(row.known_projected_uncompressed_bytes, 800);
     assert_eq!(row.known_pure_filter_uncompressed_bytes, 200);
     assert_eq!(row.parquet_read_input_kind, "remote_path");
-    assert_eq!(row.remote_read_mode, "prefer_direct");
-    assert_eq!(row.parquet_read_backend, "libcudf_path_reader_unverified");
-    assert_eq!(row.parquet_read_fallback_reason, "not_reported_by_libcudf");
-    assert_eq!(row.remote_backend_build_status, "unknown");
+    assert_eq!(row.remote_read_mode, "require_kvikio");
+    assert_eq!(row.parquet_read_backend, "cudf_sys_kvikio_remote_datasource");
+    assert_eq!(row.remote_backend_build_status, "kvikio_remote_io_enabled");
     assert_eq!(row.remote_read_bytes, Some(4096));
     assert_eq!(row.remote_read_range_count, Some(3));
     assert_eq!(row.device_read_support, "not_reported_by_libcudf");

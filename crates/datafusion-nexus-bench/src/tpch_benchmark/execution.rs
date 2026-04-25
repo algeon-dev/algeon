@@ -397,8 +397,6 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
             aggregate.source_cache_insert_skipped.saturating_add(current.source_cache_insert_skipped);
         aggregate.source_cache_retained_bytes =
             aggregate.source_cache_retained_bytes.max(current.source_cache_retained_bytes);
-        aggregate.source_fetch_bytes = aggregate.source_fetch_bytes.saturating_add(current.source_fetch_bytes);
-        aggregate.source_fetch_count = aggregate.source_fetch_count.saturating_add(current.source_fetch_count);
         aggregate.row_groups_planned = aggregate.row_groups_planned.saturating_add(current.row_groups_planned);
         aggregate.row_groups_committed = aggregate.row_groups_committed.saturating_add(current.row_groups_committed);
         aggregate.partial_aggregate_count =
