@@ -170,7 +170,7 @@ def dedup_preserving_order(values: Iterable[str]) -> list[str]:
 
 def load_clickbench_queries(repo_root: Path) -> dict[str, Query]:
     source = (
-        repo_root / "crates" / "datafusion-nexus-bench" / "src" / "workload" / "clickbench_queries.rs"
+        repo_root / "crates" / "datafusion-nexus-workloads" / "src" / "clickbench" / "catalog.rs"
     ).read_text(encoding="utf-8")
     pattern = re.compile(
         r'ClickbenchQuery\s*\{\s*id:\s*"(?P<id>q\d{2})",\s*sql:\s*r#"(?:\n)?(?P<sql>.*?)(?:\n)?"#\s*,?\s*\}',
