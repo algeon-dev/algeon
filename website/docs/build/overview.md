@@ -85,6 +85,7 @@ ranges is expected to behave the same.
 | Host compiler | gcc/g++ **14** | RAPIDS 26.06 `dependencies.yaml` |
 | CMake | ≥ **3.30.4** | `cmake_minimum_required` in both C++ projects |
 | Ninja | build dependency (RAPIDS scripts default to it) | cudf/cugraph `dependencies.yaml` |
+| mold + clang | required linker for normal source Cargo builds | `datafusion-nexus/.cargo/config.toml` (+ host packages) |
 | Rust | MSRV 1.94; nightly for `rustfmt` | `Cargo.toml` and rustup |
 
 The libcudf/libcugraph builds target **your own GPU's architecture** by default

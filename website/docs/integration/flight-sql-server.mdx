@@ -12,7 +12,8 @@ Arrow Flight SQL and receive Arrow-native result batches.
 ## Build
 
 Build the server with the features your endpoint needs. Add `cugraph` for graph
-SQL and `iceberg` for Iceberg/Glue/REST/S3 sources:
+SQL and `iceberg` for Iceberg/Glue/REST/S3 sources. Workspace Cargo builds
+require the mold linker and clang on the host ([Build prerequisites](../build/prerequisites.md#rust-linker-mold)):
 
 ```bash
 cargo build --release --features server,cugraph,iceberg --bin datafusion_nexus_server
