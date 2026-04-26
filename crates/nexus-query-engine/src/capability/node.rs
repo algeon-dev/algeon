@@ -72,11 +72,29 @@ pub(super) fn source_format_capability(source: &SourceNode) -> SourceFormatCapab
 fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDecision {
     match &node.kind {
         PlanNode::Source(source) => source_node_executable_decision(source),
-        PlanNode::Filter(filter) => expression_node_decision(
-            node.id,
-            "unsupported_filter_expression_capability",
-            std::iter::once(&filter.predicate),
-        ),
+        PlanNode::Filter(filter) => {
+            // Exact replace-with-backrefs output preflight owns projection
+            // column-input REGEXP_REPLACE only. Filter predicates have no
+            // parallel size API yet, so strict admission rejects them instead
+            // of launching unpreflighted string expansion under bounded tokens.
+            if filter.predicate.contains_regexp_replace() {
+                CapabilityDecision::rejected(
+                    "unsupported_filter_expression_capability",
+                    [
+                        ("node_id", node.id.to_string()),
+                        ("reason", "regexp_replace_filter_preflight_unavailable".to_string()),
+                        ("required_contract", cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT.to_string()),
+                        ("expression", filter.predicate.to_string()),
+                    ],
+                )
+            } else {
+                expression_node_decision(
+                    node.id,
+                    "unsupported_filter_expression_capability",
+                    std::iter::once(&filter.predicate),
+                )
+            }
+        },
         PlanNode::Projection(projection) => {
             let mut decision = expression_node_decision(
                 node.id,
@@ -884,7 +902,8 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
             }
             requirements
         },
-        PlanNode::Filter(filter) if expr_contains_regexp_replace(&filter.predicate) => regexp_replace_requirements(),
+        // Filter predicates that embed REGEXP_REPLACE are rare and cannot yet use the
+        // column-input size preflight consumed by projection execution. Do not claim Exact.
         PlanNode::Projection(projection) if projection_contains_regexp_replace(projection) => {
             regexp_replace_requirements()
         },
@@ -1083,53 +1102,11 @@ fn regexp_replace_requirements() -> Vec<ReservationRequirement> {
     vec![ReservationRequirement::modeled(
         ReservationKind::OperatorOutput,
         "regexp_replace_expression_output",
-        "regexp_replace_expression_output_contract",
-        ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+        cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT,
+        ContractQuality::ExactPreflight,
     )]
 }
 
 fn projection_contains_regexp_replace(projection: &crate::plan::ProjectionNode) -> bool {
-    projection.outputs.iter().any(|output| expr_contains_regexp_replace(&output.expr))
-}
-
-fn expr_contains_regexp_replace(expr: &Expr) -> bool {
-    match expr {
-        Expr::RegexpReplace { .. } => true,
-        Expr::Not(expr)
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr)
-        | Expr::Cast { expr, .. }
-        | Expr::TryCast { expr, .. }
-        | Expr::Like { expr, .. }
-        | Expr::Substring { expr, .. }
-        | Expr::Lower(expr)
-        | Expr::Upper(expr)
-        | Expr::Trim { expr, .. }
-        | Expr::LTrim { expr, .. }
-        | Expr::RTrim { expr, .. }
-        | Expr::StringContains { expr, .. }
-        | Expr::StartsWith { expr, .. }
-        | Expr::EndsWith { expr, .. }
-        | Expr::StringLength { expr, .. }
-        | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
-        | Expr::Round { expr, .. }
-        | Expr::InList { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. }
-        | Expr::Alias { expr, .. } => expr_contains_regexp_replace(expr),
-        Expr::Binary { left, right, .. }
-        | Expr::IsDistinctFrom { left, right }
-        | Expr::IsNotDistinctFrom { left, right } => {
-            expr_contains_regexp_replace(left) || expr_contains_regexp_replace(right)
-        },
-        Expr::Concat(exprs) => exprs.iter().any(expr_contains_regexp_replace),
-        Expr::Case { branches, else_expr } => {
-            branches
-                .iter()
-                .any(|branch| expr_contains_regexp_replace(&branch.when) || expr_contains_regexp_replace(&branch.then))
-                || expr_contains_regexp_replace(else_expr)
-        },
-        Expr::Column(_) | Expr::Literal(_) => false,
-    }
+    projection.outputs.iter().any(|output| output.expr.contains_regexp_replace())
 }

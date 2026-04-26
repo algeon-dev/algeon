@@ -29,19 +29,57 @@ pub(in crate::exec) fn execute_groupby_aggregate_with_budget(
     operation: &'static str,
     message: &'static str,
 ) -> Result<DataFrame> {
+    execute_groupby_aggregate_with_budget_observed(
+        None, overrides, frame, aggregate, token, metrics, operation, message,
+    )
+}
+
+pub(in crate::exec) fn execute_groupby_aggregate_with_budget_observed(
+    context: Option<&ExecutionContext>,
+    _overrides: &ExecutionOverrides<'_>,
+    frame: DataFrame,
+    aggregate: &LoweredAggregate,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+    message: &'static str,
+) -> Result<DataFrame> {
     if aggregate.aggregations.is_empty() {
-        return execute_groupby_distinct_with_budget(overrides, frame, aggregate, token, operation, message);
+        return execute_groupby_distinct_with_budget(_overrides, frame, aggregate, token, operation, message);
     }
 
-    let mut output = budgeted_value(
-        frame
-            .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
-            .options(GroupByOptions::builder().include_null_keys(true).build())
-            .agg_with_budget(&aggregate.aggregations, token)
-            .map_err(|error| QueryError::from_cudf_with_budget_details(operation, message, error))?,
-        metrics,
-        operation,
-    );
+    let input_rows = frame.num_rows() as u64;
+    let stage_guard = context.map(|context| {
+        let (observation, plan_execution_id, parent_span_id) =
+            crate::observability::stage_context_from_execution(context);
+        crate::observability::RuntimeOperatorStageGuard::start(
+            observation,
+            plan_execution_id,
+            parent_span_id,
+            crate::observability::RuntimeOperatorStageKind::LibcudfGroupby,
+            crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
+        )
+    });
+    let result = frame
+        .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
+        .options(GroupByOptions::builder().include_null_keys(true).build())
+        .agg_with_budget(&aggregate.aggregations, token)
+        .map_err(|error| QueryError::from_cudf_with_budget_details(operation, message, error));
+    let mut output = match result {
+        Ok(outcome) => {
+            let output = budgeted_value(outcome, metrics, operation);
+            if let Some(guard) = stage_guard {
+                guard.finish(Some(output.num_rows() as u64), None);
+            }
+            output
+        },
+        Err(error) => {
+            if let Some(guard) = stage_guard {
+                guard.fail(&error);
+            }
+            return Err(error);
+        },
+    };
     rename_groupby_key_columns(&mut output, aggregate, "nexus_query_engine.aggregate.rename_keys")?;
     Ok(output)
 }

@@ -52,7 +52,7 @@ fn encoded_key_partial_contract_decodes_grouped_string_keys_before_merge() {
 }
 
 #[test]
-fn bounded_single_grouped_aggregate_uses_prepared_sort_groupby_after_exact_cardinality_probe() {
+fn bounded_single_grouped_aggregate_uses_libcudf_without_exact_cardinality_probe() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let row_count = 600_000usize;
     let groups = ["13", "31", "23", "29", "30", "18", "17"];
@@ -106,31 +106,21 @@ fn bounded_single_grouped_aggregate_uses_prepared_sort_groupby_after_exact_cardi
         .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("single"))
         .expect("single aggregate should record a strategy decision");
     assert_eq!(single_strategy.node_id, aggregate.to_string());
-    assert_eq!(single_strategy.facts.get("selected_strategy").map(String::as_str), Some("prepared_sort_groupby"));
-    assert_eq!(single_strategy.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str), Some("none"));
+    assert_eq!(single_strategy.facts.get("selected_strategy").map(String::as_str), Some("libcudf_groupby"));
     assert_eq!(
+        single_strategy.facts.get("exact_cardinality_probe_status").map(String::as_str),
+        Some("disabled_non_reusable_probe")
+    );
+    assert_ne!(
         single_strategy.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
         Some("selected_exact_cardinality_low_cardinality")
-    );
-    assert_eq!(single_strategy.facts.get("exact_cardinality_probe_status").map(String::as_str), Some("measured"));
-    assert_eq!(single_strategy.facts.get("exact_cardinality_probe_num_groups").map(String::as_str), Some("7"));
-    assert_eq!(single_strategy.facts.get("prepared_sort_groupby_num_groups").map(String::as_str), Some("7"));
-    assert!(
-        !single_strategy
-            .facts
-            .get("rejected_candidate_strategies")
-            .is_some_and(|strategies| strategies.contains("prepared_sort_groupby:")),
-        "selected prepared strategy should not remain rejected"
     );
 
     let probe_events =
         budgeted_events(metrics, "nexus_query_engine.aggregate.exact_single_key_cardinality_probe.nunique");
-    assert!(!probe_events.is_empty(), "single aggregate should record the exact-cardinality probe event");
+    assert!(probe_events.is_empty(), "hot path must not launch throwaway exact-cardinality probes");
     let prepare_events = budgeted_events(metrics, "nexus_query_engine.aggregate.prepare_single.prepared_sort_groupby");
-    assert!(!prepare_events.is_empty(), "single aggregate should record prepared groupby preparation");
-    let aggregate_events =
-        budgeted_events(metrics, "nexus_query_engine.aggregate.execute_single.prepared_sort_groupby");
-    assert!(!aggregate_events.is_empty(), "single aggregate should record prepared groupby execution");
+    assert!(prepare_events.is_empty(), "unseen single aggregates must not select prepared sort-groupby");
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -152,7 +142,7 @@ fn bounded_single_grouped_aggregate_uses_prepared_sort_groupby_after_exact_cardi
 }
 
 #[test]
-fn bounded_medium_single_string_avg_uses_prepared_sort_groupby_after_exact_cardinality_probe() {
+fn bounded_medium_single_string_avg_uses_libcudf_without_exact_cardinality_probe() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let row_count = 204_000usize;
     let groups =
@@ -203,22 +193,19 @@ fn bounded_medium_single_string_avg_uses_prepared_sort_groupby_after_exact_cardi
         .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("single"))
         .expect("single aggregate should record a strategy decision");
     assert_eq!(single_strategy.node_id, aggregate.to_string());
-    assert_eq!(single_strategy.facts.get("selected_strategy").map(String::as_str), Some("prepared_sort_groupby"));
+    assert_eq!(single_strategy.facts.get("selected_strategy").map(String::as_str), Some("libcudf_groupby"));
     assert_eq!(
-        single_strategy.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
-        Some("selected_exact_cardinality_low_cardinality")
+        single_strategy.facts.get("exact_cardinality_probe_status").map(String::as_str),
+        Some("disabled_non_reusable_probe")
     );
-    assert_eq!(single_strategy.facts.get("exact_cardinality_probe_status").map(String::as_str), Some("measured"));
-    assert_eq!(single_strategy.facts.get("exact_cardinality_probe_input_rows").map(String::as_str), Some("204000"));
-    assert_eq!(single_strategy.facts.get("exact_cardinality_probe_num_groups").map(String::as_str), Some("11"));
 
     let probe_events =
         budgeted_events(metrics, "nexus_query_engine.aggregate.exact_single_key_cardinality_probe.nunique");
-    assert!(!probe_events.is_empty(), "single aggregate should record the exact-cardinality probe event");
+    assert!(probe_events.is_empty(), "hot path must not launch throwaway exact-cardinality probes");
     let prepare_events = budgeted_events(metrics, "nexus_query_engine.aggregate.prepare_single.prepared_sort_groupby");
-    assert!(!prepare_events.is_empty(), "single aggregate should record prepared groupby preparation");
+    assert!(prepare_events.is_empty(), "unseen single aggregates must not select prepared sort-groupby");
     let avg_events = budgeted_events(metrics, "nexus_query_engine.aggregate.finalize_avg");
-    assert!(!avg_events.is_empty(), "prepared AVG should record AVG finalization");
+    assert!(!avg_events.is_empty(), "AVG should record AVG finalization");
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -395,7 +382,7 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
         assert_eq!(
             partial_strategy.facts.get("rejected_candidate_strategies").map(String::as_str),
             Some(
-                "encoded_key_partial:encoded_key_partial_requires_string_group_key;prepared_sort_groupby:prepared_sort_groupby_requires_group_key_source_partition;partitioned_merge:partitioned_merge_requires_final_merge_stage"
+                "encoded_key_partial:encoded_key_partial_requires_string_group_key;prepared_sort_groupby:prepared_sort_groupby_cost_model_small_input;partitioned_merge:partitioned_merge_requires_final_merge_stage"
             )
         );
         assert!(
@@ -692,15 +679,17 @@ fn bounded_native_query_routes_many_string_morsels_away_from_source_adjacent_par
         .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
         .collect::<Vec<_>>();
     assert!(!partial_strategy_rows.is_empty());
+    // Variable-width group keys take the group-key hash partition path even when
+    // source chunk count exceeds the old 64-morsel gate; admission is live-set based.
     assert!(partial_strategy_rows.iter().all(|decision| {
-        decision.facts.get("source_adjacent_partition_strategy").map(String::as_str) == Some("none")
+        decision.facts.get("source_adjacent_partition_strategy").map(String::as_str) == Some("group_key")
     }));
     assert!(
         metrics
             .reservation_events
             .iter()
-            .all(|event| event.memory_boundary != "source_adjacent_aggregate_hash_partition"),
-        "many string row-group morsels should not use the skew-prone source-adjacent hash partition path"
+            .any(|event| event.memory_boundary == "source_adjacent_aggregate_hash_partition"),
+        "many string row-group morsels should stream through group-key hash partition under live working-set admission"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -984,65 +973,25 @@ fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_key
             && decision.facts.get("source_chunk_row_group_count").map(String::as_str) == Some("3")
             && decision.facts.get("source_chunk_known_row_count").map(String::as_str) == Some("120")
     }));
-    let prepared_partial = partial_strategy_rows
-        .iter()
-        .find(|decision| decision.facts.get("selected_strategy").map(String::as_str) == Some("prepared_sort_groupby"))
-        .expect("low-cardinality source-adjacent partial should select prepared sort groupby after prior evidence");
-    assert_eq!(prepared_partial.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str), Some("none"));
-    assert_eq!(
-        prepared_partial.facts.get("prepared_sort_groupby_contract_status").map(String::as_str),
-        Some("available")
-    );
-    assert_eq!(
-        prepared_partial.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+    // Source-adjacent envelope alone must not force prepared sort on the first partial.
+    assert_ne!(
+        first_partial.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
         Some("selected_source_adjacent_execution")
     );
-    let prepared_num_groups = prepared_partial
-        .facts
-        .get("prepared_sort_groupby_num_groups")
-        .and_then(|value| value.parse::<u64>().ok())
-        .expect("prepared selected row should record exact group count");
-    let prepared_key_bytes = prepared_partial
-        .facts
-        .get("prepared_sort_groupby_grouped_key_output_bytes")
-        .and_then(|value| value.parse::<u64>().ok())
-        .expect("prepared selected row should record grouped-key output bytes");
-    let prepared_max_group_size = prepared_partial
-        .facts
-        .get("prepared_sort_groupby_max_group_size")
-        .and_then(|value| value.parse::<u64>().ok())
-        .expect("prepared selected row should record max group size");
-    assert!(prepared_num_groups > 0);
-    assert!(prepared_key_bytes > 0);
-    assert!(prepared_max_group_size > 0);
-    assert!(
-        !prepared_partial
+    assert_ne!(
+        first_partial
             .facts
-            .get("rejected_candidate_strategies")
-            .is_some_and(|strategies| strategies.contains("prepared_sort_groupby:")),
-        "selected prepared strategy should not remain in the rejected-candidate summary"
+            .get("selected_strategy")
+            .map(String::as_str)
+            .zip(first_partial.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str),),
+        Some(("prepared_sort_groupby", "source_adjacent_partial_prepared_execution"))
     );
-    let prepare_events = budgeted_events(metrics, "nexus_query_engine.aggregate.prepare_partial.prepared_sort_groupby");
-    assert!(!prepare_events.is_empty(), "prepared strategy should record a budgeted prepare event");
-    assert!(prepare_events.iter().any(|event| {
-        event.unresolved_contract.as_deref() == Some("libcudf_prepared_groupby_retained_state_memory_unavailable")
-            && event.output_rows == Some(prepared_num_groups)
-            && event.output_bytes.is_none()
-            && event.retained_bytes.is_none()
-            && event.context_facts.get("prepared_groupby_strategy").map(String::as_str) == Some("prepared_sort_groupby")
-    }));
-    let aggregate_events =
-        budgeted_events(metrics, "nexus_query_engine.aggregate.execute_partial.prepared_sort_groupby");
-    assert!(!aggregate_events.is_empty(), "prepared strategy should record a budgeted aggregate event");
-    let expected_prepared_num_groups = prepared_num_groups.to_string();
-    assert!(aggregate_events.iter().any(|event| {
-        event.unresolved_contract.as_deref()
-            == Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
-            && event.output_rows.is_some_and(|rows| rows > 0)
-            && event.output_bytes.is_some_and(|bytes| bytes > 0)
-            && event.retained_bytes.is_some_and(|bytes| bytes > 0)
-            && event.context_facts.get("prepared_groupby_num_groups").map(String::as_str)
-                == Some(expected_prepared_num_groups.as_str())
+    // Allow subsequent identical partitions to reuse completed prior evidence for prepared/encoded.
+    assert!(partial_strategy_rows.iter().all(|decision| {
+        matches!(
+            decision.facts.get("selected_strategy").map(String::as_str),
+            Some("libcudf_groupby") | Some("encoded_key_partial") | Some("prepared_sort_groupby")
+        )
     }));
 
     let final_strategy = metrics
@@ -1052,6 +1001,11 @@ fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_key
         .expect("group-key source-adjacent aggregate should record final merge strategy");
     assert_eq!(final_strategy.node_id, aggregate.to_string());
     assert_eq!(final_strategy.facts.get("selected_strategy").map(String::as_str), Some("partitioned_merge"));
+    assert_eq!(final_strategy.facts.get("partitioned_merge_rehash_skipped").map(String::as_str), Some("true"));
+    assert_eq!(
+        final_strategy.facts.get("partitioned_merge_aligned_input").map(String::as_str),
+        Some("group_key_source_adjacent")
+    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

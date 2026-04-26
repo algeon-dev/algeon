@@ -44,6 +44,7 @@ pub(in crate::exec::bounded) fn execute_standalone_limit(
         metrics,
         |context, input, _token, metrics| execute_limit(context, limit, input, metrics),
         false,
+        None,
     )
 }
 
@@ -74,9 +75,12 @@ fn execute_post_final_stages(
                     )
                 },
                 true,
+                None,
             )?,
             BoundedUnaryStage::Projection { node_id, node, output_schema } => {
                 debug_assert_eq!(node.output_schema().as_ref(), output_schema.as_ref());
+                let work_request_bytes = projection_regexp_replace_work_reservation_bytes(context, node, &input.frame)?
+                    .map(|preflight| preflight.max(input.reservation.bytes()));
                 execute_post_final_stage(
                     context,
                     *node_id,
@@ -95,6 +99,7 @@ fn execute_post_final_stages(
                         )
                     },
                     true,
+                    work_request_bytes,
                 )?
             },
         };
@@ -117,6 +122,7 @@ fn execute_post_final_stage(
         &mut QueryMetrics,
     ) -> Result<GpuDataFrame>,
     use_budget_token: bool,
+    work_request_bytes: Option<u64>,
 ) -> Result<CommittedPartial> {
     execute_bounded_generic_unary_consuming_input_with_reservation_kind(
         context,
@@ -128,6 +134,7 @@ fn execute_post_final_stage(
         reservations,
         metrics,
         use_budget_token,
+        work_request_bytes,
         execute,
     )
 }
@@ -293,7 +300,8 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate(
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
-    let mut output = execute_groupby_aggregate_with_budget(
+    let mut output = execute_groupby_aggregate_with_budget_observed(
+        Some(context),
         &overrides,
         frame,
         &aggregate,

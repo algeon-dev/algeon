@@ -65,10 +65,21 @@ pub(in crate::exec) fn execute_projection(
 }
 
 pub(in crate::exec) fn execute_projection_with_budget(
-    _context: &ExecutionContext,
+    context: &ExecutionContext,
     node: &ProjectionNode,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    execute_projection_with_budget_and_prepared(context, node, input, token, None, metrics)
+}
+
+pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
+    context: &ExecutionContext,
+    node: &ProjectionNode,
+    input: GpuDataFrame,
+    token: &ExecutionBudgetToken,
+    prepared: Option<PreparedProjectionRegexpReplace>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let frame = input.frame().clone();
@@ -77,6 +88,46 @@ pub(in crate::exec) fn execute_projection_with_budget(
         metrics.operator_time += timer.elapsed();
         return GpuDataFrame::try_new_with_source_residency(output, &input);
     }
+
+    let frame = frame;
+    let prepared = match prepared {
+        Some(prepared) => Some(prepared),
+        None if node.outputs.iter().any(|output| output.expr.contains_regexp_replace()) => {
+            // Bounded callers should prepare once across reservation + execute.
+            // Fall back to prepare under the execute token when only the legacy
+            // entrypoint is used.
+            Some(prepare_projection_regexp_replace(context, node, &input, metrics)?)
+        },
+        None => None,
+    };
+
+    if let Some(prepared) = prepared {
+        let (observation, plan_execution_id, parent_span_id) =
+            crate::observability::stage_context_from_execution(context);
+        let input_rows = frame.num_rows() as u64;
+        let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+            observation,
+            plan_execution_id,
+            parent_span_id,
+            crate::observability::RuntimeOperatorStageKind::RegexReplaceExecute,
+            crate::observability::RuntimeOperatorStageIdentity::new()
+                .with_input_rows(input_rows)
+                .with_reserved_bytes(prepared.required_budget_bytes),
+        );
+        match materialize_prepared_regexp_replace_projection(node, frame, prepared, token, metrics) {
+            Ok(output_frame) => {
+                let output = coerce_projection_output_schema(output_frame, node, Some(token), metrics)?;
+                stage_guard.finish(Some(output.num_rows() as u64), None);
+                metrics.operator_time += timer.elapsed();
+                return GpuDataFrame::try_new_with_source_residency(output, &input);
+            },
+            Err(error) => {
+                stage_guard.fail(&error);
+                return Err(error);
+            },
+        }
+    }
+
     let PreparedProjectionColumns { exprs, output_columns } = prepare_projection_columns(node, &frame)?;
     let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let mut output = budgeted_value(
@@ -101,6 +152,417 @@ pub(in crate::exec) fn execute_projection_with_budget(
     output = coerce_projection_output_schema(output, node, Some(token), metrics)?;
     metrics.operator_time += timer.elapsed();
     GpuDataFrame::try_new_with_source_residency(output, &input)
+}
+
+/// Prepared projection components for column-input `REGEXP_REPLACE` outputs.
+///
+/// Independent handles are retained per regexp output. Nested non-column inputs
+/// remain capability-rejected.
+pub(in crate::exec) struct PreparedProjectionRegexpReplace {
+    components: Vec<PreparedRegexpReplaceComponent>,
+    required_budget_bytes: u64,
+    retained_state_bytes: u64,
+}
+
+struct PreparedRegexpReplaceComponent {
+    output_field: String,
+    prepared: cudf::SeriesPreparedReplaceWithBackrefs,
+}
+
+impl PreparedProjectionRegexpReplace {
+    pub(in crate::exec) fn required_budget_bytes(&self) -> u64 {
+        self.required_budget_bytes
+    }
+
+    pub(in crate::exec) fn retained_state_bytes(&self) -> u64 {
+        self.retained_state_bytes
+    }
+}
+
+/// Prepare reusable REGEXP_REPLACE state for a projection and return both
+/// prepared handles and the hard budget required for execute.
+///
+/// Returns `None` when the projection has no regexp_replace. Nested non-column
+/// regexp inputs are rejected fail-closed because preparation requires a
+/// concrete strings column.
+pub(in crate::exec) fn projection_regexp_replace_prepare(
+    context: &ExecutionContext,
+    node: &ProjectionNode,
+    input: &GpuDataFrame,
+    metrics: &mut QueryMetrics,
+) -> Result<Option<PreparedProjectionRegexpReplace>> {
+    if !node.outputs.iter().any(|output| output.expr.contains_regexp_replace()) {
+        return Ok(None);
+    }
+    Ok(Some(prepare_projection_regexp_replace(context, node, input, metrics)?))
+}
+
+/// Exact lower-level size preflight for projection outputs that contain
+/// column-input `REGEXP_REPLACE` expressions.
+///
+/// Prefer [`projection_regexp_replace_prepare`] when the prepared handle will be
+/// consumed by execute. This byte-only helper remains for call sites that only
+/// need a reservation size and will re-prepare under the execute token.
+///
+/// Returns `None` when the projection has no regexp_replace. Nested non-column
+/// regexp inputs are rejected fail-closed because the owning cudf-rs preflight
+/// only sizes a concrete strings column.
+pub(in crate::exec) fn projection_regexp_replace_work_reservation_bytes(
+    context: &ExecutionContext,
+    node: &ProjectionNode,
+    input: &GpuDataFrame,
+) -> Result<Option<u64>> {
+    if !node.outputs.iter().any(|output| output.expr.contains_regexp_replace()) {
+        return Ok(None);
+    }
+
+    // Byte-only view of prepare. Using prepare without a hard token still runs
+    // one size pass and builds retained state that is dropped immediately after
+    // reading facts; bounded callers should prefer the prepare/execute path so
+    // that state is reused rather than rebuilt.
+    let frame = input.frame();
+    let input_rows = frame.num_rows() as u64;
+    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
+    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+        observation,
+        plan_execution_id,
+        parent_span_id,
+        crate::observability::RuntimeOperatorStageKind::RegexReplacePreflight,
+        crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
+    );
+    let result = (|| {
+        let mut required_bytes = 0u64;
+        let mut retained_state_bytes = 0u64;
+        let mut saw_supported_regexp = false;
+        for output in &node.outputs {
+            match classify_regexp_replace_preflight_expr(&output.expr)? {
+                RegexpReplacePreflightClass::Absent => {},
+                RegexpReplacePreflightClass::Unsupported => {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedExpression,
+                        "nexus_query_engine.projection.regexp_replace_preflight",
+                        "REGEXP_REPLACE projection preflight currently requires a direct column input expression",
+                    )
+                    .with_fact("output_field", output.field.name().as_str())
+                    .with_fact("required_contract", cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT));
+                },
+                RegexpReplacePreflightClass::DirectColumn { column_name, pattern, replacement } => {
+                    saw_supported_regexp = true;
+                    let series = frame.series(column_name).map_err(|error| {
+                        QueryError::from_cudf(
+                            "nexus_query_engine.projection.regexp_replace_preflight",
+                            "failed to access input column for REGEXP_REPLACE prepare",
+                            error,
+                        )
+                        .with_fact("column", column_name)
+                        .with_fact("output_field", output.field.name().as_str())
+                    })?;
+                    let prepared =
+                        series.str().prepare_replace_with_backrefs(pattern, replacement).map_err(|error| {
+                            QueryError::from_cudf(
+                                "nexus_query_engine.projection.regexp_replace_preflight",
+                                "failed to prepare REGEXP_REPLACE for output-size preflight",
+                                error,
+                            )
+                            .with_fact("column", column_name)
+                            .with_fact("output_field", output.field.name().as_str())
+                            .with_fact("required_contract", cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT)
+                        })?;
+                    let facts = prepared.output_size_facts();
+                    let component_bytes = u64::try_from(facts.required_budget_bytes()).map_err(|_| {
+                        QueryError::new(
+                            QueryErrorCode::Internal,
+                            "nexus_query_engine.projection.regexp_replace_preflight",
+                            "REGEXP_REPLACE preflight budget does not fit u64",
+                        )
+                        .with_fact("column", column_name)
+                        .with_fact("required_budget_bytes", facts.required_budget_bytes())
+                    })?;
+                    let component_retained = u64::try_from(facts.retained_state_bytes()).map_err(|_| {
+                        QueryError::new(
+                            QueryErrorCode::Internal,
+                            "nexus_query_engine.projection.regexp_replace_preflight",
+                            "REGEXP_REPLACE retained state bytes do not fit u64",
+                        )
+                        .with_fact("column", column_name)
+                    })?;
+                    required_bytes = required_bytes.checked_add(component_bytes).ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::Internal,
+                            "nexus_query_engine.projection.regexp_replace_preflight",
+                            "REGEXP_REPLACE preflight budget overflowed u64",
+                        )
+                        .with_fact("column", column_name)
+                    })?;
+                    retained_state_bytes = retained_state_bytes.checked_add(component_retained).ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::Internal,
+                            "nexus_query_engine.projection.regexp_replace_preflight",
+                            "REGEXP_REPLACE retained state budget overflowed u64",
+                        )
+                        .with_fact("column", column_name)
+                    })?;
+                    drop(prepared);
+                },
+            }
+        }
+
+        if !saw_supported_regexp {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "nexus_query_engine.projection.regexp_replace_preflight",
+                "REGEXP_REPLACE projection preflight currently requires a direct column input expression",
+            )
+            .with_fact("required_contract", cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT));
+        }
+
+        // Prepaid bytes cover only direct regexp_replace components. Pass-through and
+        // non-regexp projection work remains covered by the input reservation held
+        // across execute when columns are shared, or by the operator budget token.
+        let _ = retained_state_bytes;
+        Ok(Some(required_bytes))
+    })();
+    match result {
+        Ok(value) => {
+            stage_guard.finish(Some(input_rows), value);
+            Ok(value)
+        },
+        Err(error) => {
+            stage_guard.fail(&error);
+            Err(error)
+        },
+    }
+}
+
+fn prepare_projection_regexp_replace(
+    context: &ExecutionContext,
+    node: &ProjectionNode,
+    input: &GpuDataFrame,
+    metrics: &mut QueryMetrics,
+) -> Result<PreparedProjectionRegexpReplace> {
+    let frame = input.frame();
+    let input_rows = frame.num_rows() as u64;
+    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
+    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+        observation,
+        plan_execution_id,
+        parent_span_id,
+        crate::observability::RuntimeOperatorStageKind::RegexReplacePreflight,
+        crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
+    );
+    let result = (|| {
+        let mut components = Vec::new();
+        let mut required_bytes = 0u64;
+        let mut retained_state_bytes = 0u64;
+        let mut saw_supported_regexp = false;
+        for output in &node.outputs {
+            match classify_regexp_replace_preflight_expr(&output.expr)? {
+                RegexpReplacePreflightClass::Absent => {},
+                RegexpReplacePreflightClass::Unsupported => {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedExpression,
+                        "nexus_query_engine.projection.regexp_replace_preflight",
+                        "REGEXP_REPLACE projection prepare currently requires a direct column input expression",
+                    )
+                    .with_fact("output_field", output.field.name().as_str())
+                    .with_fact("required_contract", cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT));
+                },
+                RegexpReplacePreflightClass::DirectColumn { column_name, pattern, replacement } => {
+                    saw_supported_regexp = true;
+                    let series = frame.series(column_name).map_err(|error| {
+                        QueryError::from_cudf(
+                            "nexus_query_engine.projection.regexp_replace_preflight",
+                            "failed to access input column for REGEXP_REPLACE prepare",
+                            error,
+                        )
+                        .with_fact("column", column_name)
+                        .with_fact("output_field", output.field.name().as_str())
+                    })?;
+                    // Prepare without a stream-bound budget token so retained prepared
+                    // state keeps the input series domain. A single execute token is
+                    // attached later after reservation reconcile; preparing under a
+                    // separate token rebinds provenance and cannot be inserted back
+                    // into the input frame.
+                    let timer = Instant::now();
+                    let prepared =
+                        series.str().prepare_replace_with_backrefs(pattern, replacement).map_err(|error| {
+                            QueryError::from_cudf(
+                                "nexus_query_engine.projection.regexp_replace_preflight",
+                                "failed to prepare REGEXP_REPLACE reusable size state",
+                                error,
+                            )
+                            .with_fact("column", column_name)
+                            .with_fact("output_field", output.field.name().as_str())
+                            .with_fact("required_contract", cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT)
+                        })?;
+                    metrics.operator_time += timer.elapsed();
+                    let facts = prepared.output_size_facts();
+                    let component_bytes = u64::try_from(facts.required_budget_bytes()).map_err(|_| {
+                        QueryError::new(
+                            QueryErrorCode::Internal,
+                            "nexus_query_engine.projection.regexp_replace_preflight",
+                            "REGEXP_REPLACE prepare budget does not fit u64",
+                        )
+                        .with_fact("column", column_name)
+                        .with_fact("required_budget_bytes", facts.required_budget_bytes())
+                    })?;
+                    let component_retained = u64::try_from(facts.retained_state_bytes()).map_err(|_| {
+                        QueryError::new(
+                            QueryErrorCode::Internal,
+                            "nexus_query_engine.projection.regexp_replace_preflight",
+                            "REGEXP_REPLACE retained state bytes do not fit u64",
+                        )
+                        .with_fact("column", column_name)
+                    })?;
+                    required_bytes = required_bytes.checked_add(component_bytes).ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::Internal,
+                            "nexus_query_engine.projection.regexp_replace_preflight",
+                            "REGEXP_REPLACE prepare budget overflowed u64",
+                        )
+                        .with_fact("column", column_name)
+                    })?;
+                    retained_state_bytes = retained_state_bytes.checked_add(component_retained).ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::Internal,
+                            "nexus_query_engine.projection.regexp_replace_preflight",
+                            "REGEXP_REPLACE retained state budget overflowed u64",
+                        )
+                        .with_fact("column", column_name)
+                    })?;
+                    components
+                        .push(PreparedRegexpReplaceComponent { output_field: output.field.name().clone(), prepared });
+                },
+            }
+        }
+
+        if !saw_supported_regexp {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "nexus_query_engine.projection.regexp_replace_preflight",
+                "REGEXP_REPLACE projection prepare currently requires a direct column input expression",
+            )
+            .with_fact("required_contract", cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT));
+        }
+
+        Ok(PreparedProjectionRegexpReplace { components, required_budget_bytes: required_bytes, retained_state_bytes })
+    })();
+    match result {
+        Ok(value) => {
+            stage_guard.finish(Some(input_rows), Some(value.retained_state_bytes()));
+            Ok(value)
+        },
+        Err(error) => {
+            stage_guard.fail(&error);
+            Err(error)
+        },
+    }
+}
+
+fn materialize_prepared_regexp_replace_projection(
+    node: &ProjectionNode,
+    mut frame: DataFrame,
+    prepared: PreparedProjectionRegexpReplace,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    let prepared_by_field: std::collections::HashMap<String, cudf::SeriesPreparedReplaceWithBackrefs> =
+        prepared.components.into_iter().map(|component| (component.output_field, component.prepared)).collect();
+
+    // Materialize each prepared regexp component first (consumes its handle),
+    // then evaluate remaining projection exprs against the augmented frame.
+    let mut remaining = prepared_by_field;
+    for output in &node.outputs {
+        if remaining.contains_key(output.field.name().as_str()) {
+            let handle = remaining.remove(output.field.name().as_str()).expect("prepared regexp component present");
+            let series = budgeted_value(
+                handle.execute_with_budget(token).map_err(|error| {
+                    QueryError::from_cudf_with_budget_details(
+                        "nexus_query_engine.projection.execute",
+                        "failed to execute prepared REGEXP_REPLACE projection component",
+                        error,
+                    )
+                    .with_fact("output_field", output.field.name().as_str())
+                })?,
+                metrics,
+                "nexus_query_engine.projection.execute",
+            );
+            frame = frame.with_column(output.field.name().as_str(), series).map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.projection.execute",
+                    "failed to attach prepared REGEXP_REPLACE output column",
+                    error,
+                )
+                .with_fact("output_field", output.field.name().as_str())
+            })?;
+        }
+    }
+
+    let lower_exprs = node
+        .outputs
+        .iter()
+        .filter(|output| {
+            !matches!(
+                classify_regexp_replace_preflight_expr(&output.expr).ok(),
+                Some(RegexpReplacePreflightClass::DirectColumn { .. })
+            )
+        })
+        .map(|output| lower_projection_output_expr(output).map(|expr| (output.field.name().as_str(), expr)))
+        .collect::<Result<Vec<_>>>()?;
+
+    if !lower_exprs.is_empty() {
+        frame = budgeted_value(
+            frame.with_columns_with_budget(lower_exprs, token).map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    "nexus_query_engine.projection.execute",
+                    "failed to execute bounded native cudf projection non-regexp expressions",
+                    error,
+                )
+            })?,
+            metrics,
+            "nexus_query_engine.projection.execute",
+        );
+    }
+
+    let mut output_columns = node.output_fields().map(|field| field.name().clone()).collect::<Vec<_>>();
+    output_columns.extend(datafusion_order_columns(&frame));
+    let output_column_refs = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
+    frame.select(output_column_refs).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.projection.execute",
+            "failed to select bounded native cudf projection columns",
+            error,
+        )
+    })
+}
+
+enum RegexpReplacePreflightClass<'a> {
+    Absent,
+    DirectColumn { column_name: &'a str, pattern: &'a str, replacement: &'a str },
+    Unsupported,
+}
+
+fn classify_regexp_replace_preflight_expr(expr: &Expr) -> Result<RegexpReplacePreflightClass<'_>> {
+    match expr {
+        Expr::Alias { expr, .. } => classify_regexp_replace_preflight_expr(expr),
+        Expr::RegexpReplace { expr, pattern, replacement, .. } => match strip_expr_aliases(expr.as_ref()) {
+            Expr::Column(column) => Ok(RegexpReplacePreflightClass::DirectColumn {
+                column_name: column.name(),
+                pattern: pattern.as_str(),
+                replacement: replacement.as_str(),
+            }),
+            _ => Ok(RegexpReplacePreflightClass::Unsupported),
+        },
+        other if other.contains_regexp_replace() => Ok(RegexpReplacePreflightClass::Unsupported),
+        _ => Ok(RegexpReplacePreflightClass::Absent),
+    }
+}
+
+fn strip_expr_aliases(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Alias { expr, .. } => strip_expr_aliases(expr),
+        other => other,
+    }
 }
 
 struct PreparedProjectionColumns<'a> {

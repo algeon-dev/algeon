@@ -230,7 +230,8 @@ fn execute_prefix_rollup_grouping_sets_groupby(
         let grouped = match token {
             Some(token) => {
                 let overrides = token.execution_overrides();
-                execute_groupby_aggregate_with_budget(
+                execute_groupby_aggregate_with_budget_observed(
+                    Some(context),
                     &overrides,
                     source,
                     &rollup_aggregate,
@@ -300,7 +301,8 @@ fn execute_single_grouping_set_groupby(
         return match token {
             Some(token) => {
                 let overrides = token.execution_overrides();
-                execute_groupby_aggregate_with_budget(
+                execute_groupby_aggregate_with_budget_observed(
+                    Some(context),
                     &overrides,
                     working,
                     aggregate,
@@ -321,7 +323,8 @@ fn execute_single_grouping_set_groupby(
     let grouped = match token {
         Some(token) => {
             let overrides = token.execution_overrides();
-            execute_groupby_aggregate_with_budget(
+            execute_groupby_aggregate_with_budget_observed(
+                Some(context),
                 &overrides,
                 frame,
                 &grouping_set_aggregate,

@@ -46,7 +46,19 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
             },
         };
 
-        frame
+        let input_rows = frame.num_rows() as u64;
+        let (observation, plan_execution_id, parent_span_id) =
+            crate::observability::stage_context_from_execution(context);
+        let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+            observation,
+            plan_execution_id,
+            parent_span_id,
+            crate::observability::RuntimeOperatorStageKind::HashPartition,
+            crate::observability::RuntimeOperatorStageIdentity::new()
+                .with_node_id(node_id.to_string())
+                .with_input_rows(input_rows),
+        );
+        match frame
             .with_execution(&token.execution_overrides())
             .hash_partition_by(lowered_keys.key_columns.iter().map(String::as_str), partition_count)
             .map_err(|error| {
@@ -61,7 +73,16 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
                     .with_fact("partition_count", partition_count),
                     &token,
                 )
-            })
+            }) {
+            Ok(partitioned) => {
+                stage_guard.finish(Some(input_rows), None);
+                Ok(partitioned)
+            },
+            Err(error) => {
+                stage_guard.fail(&error);
+                Err(error)
+            },
+        }
     };
     drop(frame);
     let partitioned = match partitioned {

@@ -25,6 +25,11 @@ fn native_execution_reports_emit_selected_policy_and_pipeline_mode_to_stderr() {
             "[native_tpcds_execution_report] stage=run_config",
             "CUDF_TPCDS_NATIVE_FALLBACK_POLICY",
         ),
+        (
+            "src/bin/native_clickbench_execution_report.rs",
+            "[native_clickbench_execution_report] stage=run_config",
+            "CUDF_CLICKBENCH_NATIVE_FALLBACK_POLICY",
+        ),
     ] {
         let src = source(path);
         assert!(src.contains(fallback_env), "{path} must preserve fallback env {fallback_env}");

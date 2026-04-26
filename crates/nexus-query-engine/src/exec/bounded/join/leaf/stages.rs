@@ -39,28 +39,56 @@ pub(super) fn apply_join_leaf_source_stream_stages(
                 }
                 Ok(output)
             },
-            BoundedJoinLeafSourceStreamStage::Projection { node_id, node } => execute_join_leaf_source_stream_unary(
-                context,
-                *node_id,
-                "join_source_projection",
-                "join_source_projection_output",
-                input,
-                reservations,
-                metrics,
-                |context, input, token, metrics| {
-                    execute_projection_with_budget(
-                        context,
-                        node,
-                        input,
-                        token.expect("budget token is created for join source stream projection stages"),
-                        metrics,
-                    )
-                },
-            ),
+            BoundedJoinLeafSourceStreamStage::Projection { node_id, node } => {
+                execute_join_leaf_source_stream_projection(
+                    context,
+                    *node_id,
+                    "join_source_projection",
+                    "join_source_projection_output",
+                    node,
+                    input,
+                    reservations,
+                    metrics,
+                )
+            },
         }?;
     }
     Ok(input)
 }
+pub(super) fn execute_join_leaf_source_stream_projection(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    projection: &ProjectionNode,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let work_request_bytes = projection_regexp_replace_work_reservation_bytes(context, projection, &input.frame)?
+        .map(|preflight| preflight.max(input.reservation.bytes()))
+        .unwrap_or_else(|| input.reservation.bytes());
+    execute_join_leaf_source_stream_unary_with_work_bytes(
+        context,
+        node_id,
+        stage,
+        output_boundary,
+        input,
+        work_request_bytes,
+        reservations,
+        metrics,
+        |context, input, token, metrics| {
+            execute_projection_with_budget(
+                context,
+                projection,
+                input,
+                token.expect("budget token is created for join source stream projection stages"),
+                metrics,
+            )
+        },
+    )
+}
+
 pub(super) fn execute_join_leaf_source_stream_unary(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -77,8 +105,37 @@ pub(super) fn execute_join_leaf_source_stream_unary(
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
     let input_reserved_bytes = input.reservation.bytes();
+    execute_join_leaf_source_stream_unary_with_work_bytes(
+        context,
+        node_id,
+        stage,
+        output_boundary,
+        input,
+        input_reserved_bytes,
+        reservations,
+        metrics,
+        execute,
+    )
+}
+
+fn execute_join_leaf_source_stream_unary_with_work_bytes(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    input: ResidentGpuFrame,
+    work_request_bytes: u64,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    execute: impl FnOnce(
+        &ExecutionContext,
+        GpuDataFrame,
+        Option<&ExecutionBudgetToken>,
+        &mut QueryMetrics,
+    ) -> Result<GpuDataFrame>,
+) -> Result<ResidentGpuFrame> {
     let mut work_reservation = match reservations.try_reserve_work(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, input_reserved_bytes, reservations.budget())
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, work_request_bytes, reservations.budget())
             .with_memory_boundary(stage)
             .with_node_id(node_id)
             .with_stage(stage)

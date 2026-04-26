@@ -15,9 +15,16 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_nexus::{planner::CudfNativePhysicalOptimizerRule, session::CudfSessionStateBuilderExt};
-use datafusion_nexus_bench::report_workload::clickbench::{
-    clickbench_native_optimizer_config, clickbench_report_session_config, clickbench_tuned_cpu_session_config,
+use datafusion_nexus::{
+    planner::CudfNativePhysicalOptimizerRule, policy::GpuFallbackPolicy, session::CudfSessionStateBuilderExt,
+};
+use datafusion_nexus_bench::report_workload::{
+    clickbench::{
+        ClickbenchNativeProfileSettings, clickbench_native_optimizer_config_with_profile_settings,
+        clickbench_native_profile_settings_from_env, clickbench_report_session_config,
+        clickbench_tuned_cpu_session_config,
+    },
+    gpu_fallback_policy_label, parse_gpu_fallback_policy,
 };
 use datafusion_nexus_workloads::clickbench::{
     CLICKBENCH_QUERIES, ClickbenchDatasetMetadata, ClickbenchLayout, ClickbenchQuery, ClickbenchWorkloadError,
@@ -128,9 +135,11 @@ const ITERATIONS_ENV: &str = "CUDF_CLICKBENCH_BENCH_ITERATIONS";
 const SKIP_CPU_ENV: &str = "CUDF_CLICKBENCH_BENCH_SKIP_CPU";
 const SKIP_NATIVE_ENV: &str = "CUDF_CLICKBENCH_BENCH_SKIP_NATIVE";
 const CPU_PROFILE_ENV: &str = "CUDF_CLICKBENCH_BENCH_CPU_PROFILE";
+const NATIVE_FALLBACK_POLICY_ENV: &str = "CUDF_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY";
 const PIPELINE_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
 const PROGRESS_ENV: &str = "CUDF_CLICKBENCH_BENCH_PROGRESS";
 const DUMP_ROWS_DIR_ENV: &str = "CUDF_CLICKBENCH_BENCH_DUMP_ROWS_DIR";
+const KVIKIO_COMPAT_MODE_ENV: &str = "KVIKIO_COMPAT_MODE";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -166,6 +175,8 @@ struct BenchmarkConfig {
     skip_cpu: bool,
     skip_native: bool,
     cpu_profile: CpuProfile,
+    native_fallback_policy: GpuFallbackPolicy,
+    native_profile: ClickbenchNativeProfileSettings,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     progress: bool,
     dump_rows_dir: Option<PathBuf>,
@@ -222,6 +233,15 @@ impl BenchmarkConfig {
                 .map_err(|error| invalid_env(format!("unsupported {PIPELINE_MODE_ENV}: {error}")))?,
             Err(_) => NativePipelineExecutionMode::StrictBounded,
         };
+        let native_fallback_policy = match std::env::var(NATIVE_FALLBACK_POLICY_ENV) {
+            Ok(value) => parse_gpu_fallback_policy(&value)
+                .map_err(|error| invalid_env(format!("invalid {NATIVE_FALLBACK_POLICY_ENV}: {error}")))?,
+            Err(std::env::VarError::NotPresent) => GpuFallbackPolicy::GpuPreferred,
+            Err(error) => {
+                return Err(invalid_env(format!("failed to read {NATIVE_FALLBACK_POLICY_ENV}: {error}")));
+            },
+        };
+        let native_profile = clickbench_native_profile_settings_from_env();
         let query_ids = query_ids_from_env(QUERY_IDS_ENV)?;
         Ok(Self {
             query_ids,
@@ -230,6 +250,8 @@ impl BenchmarkConfig {
             skip_cpu,
             skip_native,
             cpu_profile,
+            native_fallback_policy,
+            native_profile,
             native_pipeline_execution_mode,
             progress: env_truthy(PROGRESS_ENV),
             dump_rows_dir: env_path(DUMP_ROWS_DIR_ENV),
@@ -294,8 +316,9 @@ async fn build_native_ctx(
     config: &BenchmarkConfig,
     layout: &ClickbenchLayout,
 ) -> ClickbenchWorkloadResult<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>)> {
-    let optimizer_config =
-        clickbench_native_optimizer_config().with_native_pipeline_execution_mode(config.native_pipeline_execution_mode);
+    let optimizer_config = clickbench_native_optimizer_config_with_profile_settings(&config.native_profile)
+        .with_fallback_policy(config.native_fallback_policy)
+        .with_native_pipeline_execution_mode(config.native_pipeline_execution_mode);
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(clickbench_report_session_config())
@@ -806,6 +829,58 @@ impl BenchmarkReport {
             self.config.native_pipeline_execution_mode.as_str()
         )
         .unwrap();
+        writeln!(
+            output,
+            "# clickbench_benchmark_native_fallback_policy={}",
+            gpu_fallback_policy_label(self.config.native_fallback_policy)
+        )
+        .unwrap();
+        writeln!(output, "# clickbench_benchmark_native_profile_name={}", self.config.native_profile.profile_name)
+            .unwrap();
+        writeln!(output, "# clickbench_benchmark_native_profile_source={}", self.config.native_profile.profile_source)
+            .unwrap();
+        writeln!(
+            output,
+            "# clickbench_benchmark_native_device_budget_bytes={}",
+            self.config.native_profile.device_budget_bytes
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "# clickbench_benchmark_native_max_source_chunk_bytes={}",
+            self.config.native_profile.max_source_chunk_bytes
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "# clickbench_benchmark_native_max_row_groups_per_chunk={}",
+            self.config.native_profile.max_row_groups_per_chunk
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "# clickbench_benchmark_native_max_retry_attempts={}",
+            self.config.native_profile.max_retry_attempts
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "# clickbench_benchmark_native_min_retry_chunk_row_groups={}",
+            self.config.native_profile.min_retry_chunk_row_groups
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "# clickbench_benchmark_native_source_chunk_planning_mode={}",
+            self.config.native_profile.source_chunk_planning_mode.as_str()
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "# clickbench_benchmark_kvikio_compat_mode={}",
+            std::env::var(KVIKIO_COMPAT_MODE_ENV).unwrap_or_else(|_| "unset".to_string())
+        )
+        .unwrap();
         writeln!(output, "# clickbench_benchmark_parity_fingerprint=order_insensitive").unwrap();
         writeln!(output, "# clickbench_benchmark_nondeterministic_queries={}", parity_waived_query_ids_label())
             .unwrap();
@@ -981,6 +1056,13 @@ mod tests {
         assert!(!tsv.contains("q23="));
         assert!(tsv.contains("q39=result_set_nondeterministic"));
         assert!(tsv.contains("q42=result_set_nondeterministic"));
+        assert!(tsv.contains("# clickbench_benchmark_native_fallback_policy=gpu_only\n"));
+        assert!(tsv.contains("# clickbench_benchmark_native_profile_name=clickbench_gpu_throughput\n"));
+        assert!(tsv.contains("# clickbench_benchmark_native_profile_source=env_profile\n"));
+        assert!(tsv.contains("# clickbench_benchmark_native_max_source_chunk_bytes=34359738368\n"));
+        assert!(tsv.contains("# clickbench_benchmark_native_max_row_groups_per_chunk=1024\n"));
+        assert!(tsv.contains("# clickbench_benchmark_native_source_chunk_planning_mode=local_parquet_throughput\n"));
+        assert!(tsv.contains("# clickbench_benchmark_kvikio_compat_mode="));
     }
 
     #[test]
@@ -1024,6 +1106,12 @@ mod tests {
     }
 
     fn test_config() -> BenchmarkConfig {
+        use datafusion_nexus::native_exec::NativeCudfExecutionConfig;
+        use datafusion_nexus_bench::report_workload::clickbench::{
+            CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
+            CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT,
+        };
+
         BenchmarkConfig {
             query_ids: Vec::new(),
             warmup_iterations: 0,
@@ -1031,6 +1119,18 @@ mod tests {
             skip_cpu: false,
             skip_native: false,
             cpu_profile: CpuProfile::Tuned,
+            native_fallback_policy: GpuFallbackPolicy::GpuOnly,
+            native_profile: ClickbenchNativeProfileSettings {
+                profile_name: CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT,
+                profile_source: "env_profile",
+                device_budget_bytes: CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
+                max_source_chunk_bytes: CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
+                max_row_groups_per_chunk: CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
+                max_retry_attempts: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+                min_retry_chunk_row_groups: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+                source_chunk_planning_mode:
+                    nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
+            },
             native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
             progress: false,
             dump_rows_dir: None,

@@ -117,24 +117,15 @@ fn execute_bounded_generic_node(
             }
             let input =
                 execute_bounded_generic_node(context, plan, projection.input, gpu_inputs, reservations, metrics)?;
-            execute_bounded_generic_unary(
+            execute_bounded_generic_projection(
                 context,
                 id,
                 "bounded_generic_projection",
                 "bounded_generic_projection_output",
+                projection,
                 input,
                 reservations,
                 metrics,
-                true,
-                |context, input, token, metrics| {
-                    execute_projection_with_budget(
-                        context,
-                        projection,
-                        input,
-                        token.expect("budget token is created for bounded generic projection stages"),
-                        metrics,
-                    )
-                },
             )
         },
         PlanNode::Window(window) => {
@@ -855,17 +846,14 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     validate_local_parquet_source(source)?;
-    let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
-        node_id,
+    let planning_policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
         source,
-        SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
-            source,
-            context.memory_control_policy(),
-            context.source_chunk_planning_mode(),
-            context.source_chunk_planning_options(),
-        ),
-        context,
-    )?;
+        context.memory_control_policy(),
+        context.source_chunk_planning_mode(),
+        context.source_chunk_planning_options(),
+    );
+    let chunk_plan =
+        plan_local_parquet_source_chunks_with_execution_context(node_id, source, planning_policy, context)?;
     for chunk in &chunk_plan.chunks {
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
     }
@@ -968,21 +956,21 @@ fn apply_bounded_generic_source_adjacent_stages(
                     1,
                     |context, input, token, metrics| execute_filter_with_budget(context, node, input, token, metrics),
                 ),
-                BoundedGenericSourceAdjacentStage::Projection { node_id, node } => execute_source_adjacent_chunk_unary(
-                    context,
-                    *node_id,
-                    "bounded_generic_source_projection",
-                    "bounded_generic_source_projection_output",
-                    &chunk,
-                    current,
-                    reservations,
-                    metrics,
-                    1,
-                    1,
-                    |context, input, token, metrics| {
-                        execute_projection_with_budget(context, node, input, token, metrics)
-                    },
-                ),
+                BoundedGenericSourceAdjacentStage::Projection { node_id, node } => {
+                    execute_source_adjacent_chunk_projection(
+                        context,
+                        *node_id,
+                        "bounded_generic_source_projection",
+                        "bounded_generic_source_projection_output",
+                        &chunk,
+                        node,
+                        current,
+                        reservations,
+                        metrics,
+                        1,
+                        1,
+                    )
+                },
             };
             current = match result {
                 Ok(current) => current,
@@ -1061,6 +1049,37 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
         &mut QueryMetrics,
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
+    execute_bounded_generic_unary_with_work_bytes(
+        context,
+        node_id,
+        stage,
+        output_boundary,
+        input,
+        reservations,
+        metrics,
+        use_budget_token,
+        None,
+        execute,
+    )
+}
+
+pub(in crate::exec::bounded) fn execute_bounded_generic_unary_with_work_bytes(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    use_budget_token: bool,
+    work_request_bytes: Option<u64>,
+    execute: impl FnOnce(
+        &ExecutionContext,
+        GpuDataFrame,
+        Option<&ExecutionBudgetToken>,
+        &mut QueryMetrics,
+    ) -> Result<GpuDataFrame>,
+) -> Result<ResidentGpuFrame> {
     execute_bounded_generic_unary_consuming_input_with_reservation_kind(
         context,
         node_id,
@@ -1071,8 +1090,293 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
         reservations,
         metrics,
         use_budget_token,
+        work_request_bytes,
         execute,
     )
+}
+
+pub(in crate::exec::bounded) fn execute_bounded_generic_projection(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    projection: &ProjectionNode,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    if !projection.outputs.iter().any(|output| output.expr.contains_regexp_replace()) {
+        return execute_bounded_generic_unary_with_work_bytes(
+            context,
+            node_id,
+            stage,
+            output_boundary,
+            input,
+            reservations,
+            metrics,
+            true,
+            None,
+            |context, input, token, metrics| {
+                execute_projection_with_budget(
+                    context,
+                    projection,
+                    input,
+                    token.expect("budget token is created for bounded generic projection stages"),
+                    metrics,
+                )
+            },
+        );
+    }
+    execute_bounded_generic_regexp_projection(
+        context,
+        node_id,
+        stage,
+        output_boundary,
+        projection,
+        input,
+        None,
+        reservations,
+        metrics,
+    )
+}
+
+pub(in crate::exec::bounded) fn execute_bounded_generic_projection_from_frame(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    projection: &ProjectionNode,
+    input: GpuDataFrame,
+    input_reserved_bytes: u64,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    if !projection.outputs.iter().any(|output| output.expr.contains_regexp_replace()) {
+        return execute_bounded_generic_unary_from_frame_with_reservation_kind(
+            context,
+            node_id,
+            stage,
+            output_boundary,
+            input,
+            input_reserved_bytes,
+            ReservationKind::OperatorOutput,
+            reservations,
+            metrics,
+            true,
+            |context, input, token, metrics| {
+                execute_projection_with_budget(
+                    context,
+                    projection,
+                    input,
+                    token.expect("budget token is created for bounded generic projection stages"),
+                    metrics,
+                )
+            },
+        );
+    }
+    // Wrap frame in a transient resident reservation equal to input_reserved_bytes.
+    let input_reservation = reservations.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, input_reserved_bytes, reservations.budget())
+            .with_memory_boundary(stage)
+            .with_node_id(node_id)
+            .with_stage(stage)
+            .with_attempt(1, 1),
+        metrics,
+    )?;
+    // The "input" reservation here only scopes prepared-path headroom until transfer.
+    let input = ResidentGpuFrame { frame: input, reservation: input_reservation };
+    // Drop the ownership of the synthetic wrapper on error paths inside helper.
+    execute_bounded_generic_regexp_projection(
+        context,
+        node_id,
+        stage,
+        output_boundary,
+        projection,
+        input,
+        Some(input_reserved_bytes),
+        reservations,
+        metrics,
+    )
+}
+
+fn execute_bounded_generic_regexp_projection(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    projection: &ProjectionNode,
+    input: ResidentGpuFrame,
+    _seed_reserved_bytes: Option<u64>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let input_reserved_bytes = input.reservation.bytes();
+    let input_frame = input.frame;
+    let input_reservation = input.reservation;
+
+    // Start with a work reservation covering at least the input claim so prepare
+    // can allocate retained state under an explicit budget token.
+    let initial_work_bytes = input_reserved_bytes.max(1);
+    let mut work_reservation = match reservations.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, initial_work_bytes, reservations.budget())
+            .with_memory_boundary(stage)
+            .with_node_id(node_id)
+            .with_stage(stage)
+            .with_attempt(1, 1),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            drop(input_frame);
+            reservations.release(input_reservation, metrics);
+            return Err(error);
+        },
+    };
+
+    // Prepare without a stream reservation so retained prepared state keeps the
+    // input frame domain. Mint a single execute token after reservation reconcile.
+    let prepared = match projection_regexp_replace_prepare(context, projection, &input_frame, metrics) {
+        Ok(Some(prepared)) => prepared,
+        Ok(None) => {
+            // Defense in depth: no regexp after the gate above.
+            let token = match execution_budget_token_for_boundary(
+                context,
+                reservations.available_bytes_including(&work_reservation),
+                stage,
+                "nexus_query_engine.bounded_generic.budget_token",
+                "failed to create bounded native generic operator budget token",
+            ) {
+                Ok(token) => token,
+                Err(error) => {
+                    drop(input_frame);
+                    reservations.release(work_reservation, metrics);
+                    reservations.release(input_reservation, metrics);
+                    return Err(error.with_fact_if_absent("node_id", node_id));
+                },
+            };
+            match execute_projection_with_budget(context, projection, input_frame, &token, metrics) {
+                Ok(frame) => {
+                    reservations.release(input_reservation, metrics);
+                    let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            reservations.release(work_reservation, metrics);
+                            return Err(error.with_fact_if_absent("node_id", node_id));
+                        },
+                    };
+                    let output_request = MemoryReservationRequest::new(
+                        ReservationKind::OperatorOutput,
+                        output_bytes,
+                        reservations.budget(),
+                    )
+                    .with_memory_boundary(output_boundary)
+                    .with_node_id(node_id)
+                    .with_stage(stage)
+                    .with_attempt(1, 1);
+                    if let Err(error) = reconcile_work_reservation_to_output(
+                        reservations,
+                        &mut work_reservation,
+                        output_bytes,
+                        &output_request,
+                        metrics,
+                    ) {
+                        drop(frame);
+                        reservations.release(work_reservation, metrics);
+                        return Err(error);
+                    }
+                    let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
+                    return Ok(ResidentGpuFrame { frame, reservation: output_reservation });
+                },
+                Err(error) => {
+                    reservations.release(work_reservation, metrics);
+                    reservations.release(input_reservation, metrics);
+                    return Err(error.with_fact_if_absent("node_id", node_id));
+                },
+            }
+        },
+        Err(error) => {
+            drop(input_frame);
+            reservations.release(work_reservation, metrics);
+            reservations.release(input_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+
+    let required = prepared.required_budget_bytes().max(input_reserved_bytes);
+    if required > work_reservation.bytes() {
+        let delta = required - work_reservation.bytes();
+        if let Err(error) = reservations.try_grow(
+            &mut work_reservation,
+            MemoryReservationRequest::new(ReservationKind::OperatorOutput, delta, reservations.budget())
+                .with_memory_boundary(stage)
+                .with_node_id(node_id)
+                .with_stage(stage)
+                .with_attempt(1, 1),
+            metrics,
+        ) {
+            drop(prepared);
+            drop(input_frame);
+            reservations.release(work_reservation, metrics);
+            reservations.release(input_reservation, metrics);
+            return Err(error);
+        }
+    }
+
+    let token = match execution_budget_token_for_boundary(
+        context,
+        reservations.available_bytes_including(&work_reservation),
+        stage,
+        "nexus_query_engine.bounded_generic.budget_token",
+        "failed to create bounded native generic operator budget token after prepare reconcile",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            drop(prepared);
+            drop(input_frame);
+            reservations.release(work_reservation, metrics);
+            reservations.release(input_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+
+    let result =
+        execute_projection_with_budget_and_prepared(context, projection, input_frame, &token, Some(prepared), metrics);
+    let frame = match result {
+        Ok(frame) => frame,
+        Err(error) => {
+            reservations.release(work_reservation, metrics);
+            reservations.release(input_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    reservations.release(input_reservation, metrics);
+
+    let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            reservations.release(work_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    let output_request =
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
+            .with_memory_boundary(output_boundary)
+            .with_node_id(node_id)
+            .with_stage(stage)
+            .with_attempt(1, 1);
+    if let Err(error) = reconcile_work_reservation_to_output(
+        reservations,
+        &mut work_reservation,
+        output_bytes,
+        &output_request,
+        metrics,
+    ) {
+        drop(frame);
+        reservations.release(work_reservation, metrics);
+        return Err(error);
+    }
+    let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
+    Ok(ResidentGpuFrame { frame, reservation: output_reservation })
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
@@ -1117,6 +1421,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input_wi
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
     use_budget_token: bool,
+    work_request_bytes: Option<u64>,
     execute: impl FnOnce(
         &ExecutionContext,
         GpuDataFrame,
@@ -1124,7 +1429,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input_wi
         &mut QueryMetrics,
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
-    let input_reserved_bytes = input.reservation.bytes();
+    let input_reserved_bytes = work_request_bytes.unwrap_or_else(|| input.reservation.bytes());
     let input_frame = input.frame;
     let input_reservation = input.reservation;
     let mut work_reservation = match reservations.try_reserve(

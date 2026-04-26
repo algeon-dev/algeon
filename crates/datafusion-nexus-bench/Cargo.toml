@@ -79,6 +79,11 @@ test = false
 
 # These report and stress binaries have no unit tests. They remain normal
 # build/clippy targets, but do not create empty nextest harnesses.
+# Wall-time ClickBench harness keeps its unit tests in src/bin; do not set
+# test = false here unless those tests are moved into the package test tree.
+[[bin]]
+name = "native_clickbench_benchmark"
+
 [[bin]]
 name = "native_clickbench_execution_report"
 test = false

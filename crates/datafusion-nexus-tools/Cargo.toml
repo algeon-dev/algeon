@@ -13,6 +13,14 @@ workspace = true
 [features]
 default = []
 validate-query = ["dep:datafusion", "dep:datafusion-nexus"]
+clickbench-stage-probe = [
+  "dep:cudf",
+  "dep:datafusion",
+  "dep:datafusion-nexus",
+  "dep:datafusion-nexus-bench",
+  "dep:datafusion-nexus-workloads",
+  "dep:nexus-query-engine",
+]
 cugraph-oracle = ["dep:cudf", "dep:datafusion", "dep:datafusion-nexus", "dep:nexus-query-engine", "datafusion-nexus/cugraph"]
 iceberg-e2e = [
   "dep:datafusion",
@@ -31,6 +39,8 @@ arrow-flight = { workspace = true }
 cudf = { workspace = true, optional = true }
 datafusion = { workspace = true, optional = true }
 datafusion-nexus = { workspace = true, optional = true }
+datafusion-nexus-bench = { path = "../datafusion-nexus-bench", optional = true }
+datafusion-nexus-workloads = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true, optional = true }
 futures = { workspace = true }
 iceberg = { workspace = true, optional = true }

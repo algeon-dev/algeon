@@ -23,6 +23,9 @@ pub(in crate::exec) mod strict;
 use adaptive::try_execute_adaptive_bounded_pipeline;
 use aggregate::*;
 pub use aggregate::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
+pub(in crate::exec::bounded) use aggregate::{
+    SourceAdjacentAggregateChunkCapHints, apply_source_adjacent_aggregate_chunk_caps,
+};
 use chunks::*;
 pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::*;
@@ -30,10 +33,13 @@ pub(in crate::exec) use final_sort::topk_candidate_rows;
 use final_sort::*;
 use generic::{
     execute_bounded_generic_gpu_resident_source, execute_bounded_generic_literal_batch_source,
-    execute_bounded_generic_local_parquet_source, execute_bounded_generic_query_plan, execute_bounded_generic_unary,
-    execute_bounded_generic_unary_consuming_input_with_reservation_kind, execute_bounded_generic_unary_from_frame,
-    execute_bounded_generic_unary_from_frame_with_reservation_kind, execute_bounded_generic_union,
+    execute_bounded_generic_local_parquet_source, execute_bounded_generic_query_plan,
+    execute_bounded_generic_unary_consuming_input_with_reservation_kind, execute_bounded_generic_union,
     release_reservations_reverse,
+};
+pub(in crate::exec::bounded) use generic::{
+    execute_bounded_generic_projection, execute_bounded_generic_projection_from_frame, execute_bounded_generic_unary,
+    execute_bounded_generic_unary_from_frame, execute_bounded_generic_unary_from_frame_with_reservation_kind,
 };
 pub(in crate::exec) use join::JoinMaterializationTxn;
 pub(in crate::exec::bounded) use join::{

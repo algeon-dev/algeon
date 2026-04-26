@@ -280,7 +280,8 @@ pub(super) fn execute_segmented_filtered_grouped_aggregate_with_budget(
     let final_aggregate = lower_final_aggregate_spec(spec)?;
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
     let overrides = token.execution_overrides();
-    let mut output = execute_groupby_aggregate_with_budget(
+    let mut output = execute_groupby_aggregate_with_budget_observed(
+        Some(context),
         &overrides,
         partial_state.into_frame(),
         &final_aggregate,

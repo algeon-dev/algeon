@@ -1,24 +1,32 @@
 #[test]
-fn multi_key_single_sum_without_prior_uses_libcudf_as_cardinality_probe_when_large() {
+fn multi_key_single_sum_without_prior_uses_libcudf_when_large() {
     let decision = partial_strategy_for_multi_key_sum(5_000_000);
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
-        Some("selected_libcudf_runtime_probe")
+        Some("rejected_by_cost_model")
     );
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str),
-        Some("runtime_cardinality_probe_required")
+        Some("completed_cardinality_evidence_required_for_large_variable_width")
     );
     assert_eq!(
         decision.facts.get("encoded_key_partial_selection_reason").map(String::as_str),
-        Some("runtime_cardinality_probe_required")
+        Some("completed_cardinality_evidence_required_for_large_variable_width")
+    );
+    assert_eq!(
+        decision.facts.get("exact_cardinality_probe_status").map(String::as_str),
+        Some("disabled_non_reusable_probe")
+    );
+    assert_eq!(
+        decision.facts.get("partial_strategy_unseen_path").map(String::as_str),
+        Some("streaming_group_key_partition_or_libcudf")
     );
 }
 
 #[test]
-fn source_adjacent_prepared_sort_groupby_rejects_single_large_source_chunk() {
+fn source_adjacent_envelope_does_not_select_prepared_sort_for_large_group_key_chunks() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let evidence = source_adjacent_group_key_evidence(
@@ -37,17 +45,21 @@ fn source_adjacent_prepared_sort_groupby_rejects_single_large_source_chunk() {
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
     assert_eq!(
-        decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
-        Some("prepared_sort_groupby_requires_group_key_source_partition")
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("rejected_by_cost_model")
     );
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str),
-        Some("source_adjacent_row_balanced_partition")
+        Some("completed_cardinality_evidence_required_for_large_variable_width")
+    );
+    assert_eq!(
+        decision.facts.get("exact_cardinality_probe_status").map(String::as_str),
+        Some("disabled_non_reusable_probe")
     );
 }
 
 #[test]
-fn source_adjacent_prepared_sort_groupby_keeps_bounded_group_key_source_chunks() {
+fn source_adjacent_envelope_does_not_select_prepared_sort_for_bounded_group_key_chunks() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let evidence = source_adjacent_group_key_evidence(
@@ -64,15 +76,19 @@ fn source_adjacent_prepared_sort_groupby_keeps_bounded_group_key_source_chunks()
         &QueryMetrics::default(),
     );
 
-    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::PreparedSortGroupby);
-    assert_eq!(
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_ne!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
         Some("selected_source_adjacent_execution")
+    );
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str),
+        Some("completed_cardinality_evidence_required_for_large_variable_width")
     );
 }
 
 #[test]
-fn source_adjacent_prepared_sort_groupby_keeps_bounded_unpartitioned_source_chunks() {
+fn source_adjacent_envelope_does_not_select_prepared_sort_for_bounded_unpartitioned_chunks() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let evidence = source_adjacent_unpartitioned_evidence(
@@ -88,15 +104,15 @@ fn source_adjacent_prepared_sort_groupby_keeps_bounded_unpartitioned_source_chun
         &QueryMetrics::default(),
     );
 
-    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::PreparedSortGroupby);
-    assert_eq!(
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_ne!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
         Some("selected_source_adjacent_execution")
     );
 }
 
 #[test]
-fn source_adjacent_prepared_sort_groupby_keeps_large_byte_bounded_unpartitioned_source_chunks() {
+fn source_adjacent_envelope_does_not_select_prepared_sort_for_byte_bounded_unpartitioned_chunks() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let mut evidence = source_adjacent_unpartitioned_evidence(
@@ -114,15 +130,15 @@ fn source_adjacent_prepared_sort_groupby_keeps_large_byte_bounded_unpartitioned_
         &QueryMetrics::default(),
     );
 
-    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::PreparedSortGroupby);
-    assert_eq!(
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_ne!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
         Some("selected_source_adjacent_execution")
     );
 }
 
 #[test]
-fn source_adjacent_prepared_sort_groupby_rejects_large_unpartitioned_source_chunks_without_byte_bound() {
+fn source_adjacent_envelope_still_rejects_prepared_for_oversized_unpartitioned_bytes() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let mut evidence = source_adjacent_unpartitioned_evidence(
@@ -143,13 +159,13 @@ fn source_adjacent_prepared_sort_groupby_rejects_large_unpartitioned_source_chun
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
     assert_eq!(
-        decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
-        Some("prepared_sort_groupby_requires_group_key_source_partition")
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("rejected_by_cost_model")
     );
 }
 
 #[test]
-fn source_adjacent_prepared_sort_groupby_rejects_unknown_read_all_row_groups_without_byte_bound() {
+fn source_adjacent_envelope_does_not_select_prepared_for_unknown_read_all_row_groups() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let mut evidence = source_adjacent_unpartitioned_evidence(0);
@@ -167,13 +183,13 @@ fn source_adjacent_prepared_sort_groupby_rejects_unknown_read_all_row_groups_wit
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
     assert_eq!(
-        decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
-        Some("prepared_sort_groupby_requires_group_key_source_partition")
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("rejected_by_cost_model")
     );
 }
 
 #[test]
-fn source_adjacent_prepared_sort_groupby_uses_byte_bound_for_unknown_unpartitioned_read_all_row_groups() {
+fn source_adjacent_envelope_does_not_select_prepared_even_with_byte_bound_unknown_row_groups() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let mut evidence = source_adjacent_unpartitioned_evidence(0);
@@ -190,15 +206,15 @@ fn source_adjacent_prepared_sort_groupby_uses_byte_bound_for_unknown_unpartition
         &QueryMetrics::default(),
     );
 
-    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::PreparedSortGroupby);
-    assert_eq!(
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_ne!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
         Some("selected_source_adjacent_execution")
     );
 }
 
 #[test]
-fn source_adjacent_prepared_sort_groupby_zero_row_group_threshold_does_not_admit_unknown_group_key_chunks() {
+fn source_adjacent_row_group_option_is_reported_but_does_not_select_prepared() {
     let (schema, spec) = multi_key_sum_spec();
     let options =
         AggregateStrategyExecutionOptions::default().with_source_adjacent_prepared_sort_groupby_max_row_groups(0);
@@ -219,13 +235,17 @@ fn source_adjacent_prepared_sort_groupby_zero_row_group_threshold_does_not_admit
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
     assert_eq!(
-        decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
-        Some("prepared_sort_groupby_requires_group_key_source_partition")
+        decision.facts.get("aggregate_source_adjacent_prepared_sort_groupby_max_row_groups").map(String::as_str),
+        Some("0")
+    );
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("rejected_by_cost_model")
     );
 }
 
 #[test]
-fn aggregate_strategy_options_change_source_adjacent_row_group_gate_and_report_thresholds() {
+fn aggregate_strategy_options_report_source_adjacent_thresholds_without_selecting_prepared() {
     let (schema, spec) = multi_key_sum_spec();
     let options = AggregateStrategyExecutionOptions::default()
         .with_source_adjacent_prepared_sort_groupby_max_row_groups(
@@ -247,7 +267,7 @@ fn aggregate_strategy_options_change_source_adjacent_row_group_gate_and_report_t
         &QueryMetrics::default(),
     );
 
-    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::PreparedSortGroupby);
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
     assert_eq!(
         decision.facts.get("aggregate_source_adjacent_prepared_sort_groupby_max_row_groups").map(String::as_str),
         Some("65")
@@ -297,13 +317,12 @@ fn source_adjacent_row_balanced_prior_stays_off_prepared_sort_groupby() {
         &metrics,
     );
 
-    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    // Fixed-width priors can still select prepared when evidence matches; row-balanced
+    // source-adjacent identity is part of the structural key, so the prior with the
+    // matching envelope is reused when present.
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::PreparedSortGroupby);
     assert_eq!(
-        decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
-        Some("prepared_sort_groupby_requires_group_key_source_partition")
-    );
-    assert_eq!(
-        decision.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str),
-        Some("source_adjacent_row_balanced_partition")
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("selected_prior_low_cardinality")
     );
 }

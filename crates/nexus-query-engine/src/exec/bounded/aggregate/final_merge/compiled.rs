@@ -879,7 +879,8 @@ fn execute_final_aggregate_for_plan(
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
-    let mut output = execute_groupby_aggregate_with_budget(
+    let mut output = execute_groupby_aggregate_with_budget_observed(
+        Some(context),
         &overrides,
         frame,
         &aggregate,

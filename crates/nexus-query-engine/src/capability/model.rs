@@ -138,12 +138,6 @@ pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
     },
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::OperatorOutput,
-        required_contract: "regexp_replace_expression_output_contract",
-        unresolved_gap: "libcudf_regexp_replace_output_preflight_unavailable",
-        retirement_requirement: "cudf-rs/libcudf regexp_replace output and temporary-workspace preflight",
-    },
-    StrictUnresolvedPreflightGap {
-        kind: ReservationKind::OperatorOutput,
         required_contract: "edge_normalize_output_size_preflight",
         unresolved_gap: "libcudf_edge_normalize_output_preflight_unavailable",
         retirement_requirement: "cudf-rs/libcudf edge normalization output and temporary-workspace preflight",

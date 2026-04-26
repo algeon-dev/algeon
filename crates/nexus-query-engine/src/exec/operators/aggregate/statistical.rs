@@ -195,7 +195,8 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     let prepare_elapsed = prepare_timer.elapsed();
 
     let groupby_timer = Instant::now();
-    let mut output = execute_groupby_aggregate_with_budget(
+    let mut output = execute_groupby_aggregate_with_budget_observed(
+        Some(context),
         &overrides,
         frame,
         &plan.aggregate,
@@ -300,7 +301,8 @@ pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_bud
     let prepare_elapsed = prepare_timer.elapsed();
 
     let groupby_timer = Instant::now();
-    let output = execute_groupby_aggregate_with_budget(
+    let output = execute_groupby_aggregate_with_budget_observed(
+        Some(context),
         &overrides,
         frame,
         &plan.aggregate,
@@ -365,7 +367,8 @@ pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
     let overrides = token.execution_overrides();
 
     let groupby_timer = Instant::now();
-    let mut output = execute_groupby_aggregate_with_budget(
+    let mut output = execute_groupby_aggregate_with_budget_observed(
+        Some(context),
         &overrides,
         frame,
         &plan.aggregate,

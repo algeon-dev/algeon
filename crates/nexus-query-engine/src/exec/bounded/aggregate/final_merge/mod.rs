@@ -12,7 +12,10 @@ mod compiled;
 mod partitioned;
 
 pub(in crate::exec::bounded) use compiled::execute_compiled_bounded_final_aggregate_merge;
-pub(in crate::exec::bounded) use partitioned::execute_final_aggregate_merge;
+pub(in crate::exec::bounded) use partitioned::{
+    AlignedGroupKeyPartitionPartial, execute_aligned_group_key_partitioned_final_aggregate_merge,
+    execute_final_aggregate_merge,
+};
 
 pub(super) struct PartitionedFinalMergeTopK<'a> {
     sort: SortNode,
@@ -82,7 +85,18 @@ pub(super) fn partition_final_merge_partial(
     };
 
     let frame = partial.frame.into_frame();
-    let partitioned = frame
+    let input_rows = frame.num_rows() as u64;
+    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
+    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+        observation,
+        plan_execution_id,
+        parent_span_id,
+        crate::observability::RuntimeOperatorStageKind::HashPartition,
+        crate::observability::RuntimeOperatorStageIdentity::new()
+            .with_node_id(node_id.to_string())
+            .with_input_rows(input_rows),
+    );
+    let partitioned = match frame
         .with_execution(&token.execution_overrides())
         .hash_partition_by(key_columns.iter().map(String::as_str), partition_count)
         .map_err(|error| {
@@ -97,7 +111,16 @@ pub(super) fn partition_final_merge_partial(
                 .with_fact("partition_count", partition_count),
                 &token,
             )
-        });
+        }) {
+        Ok(partitioned) => {
+            stage_guard.finish(Some(input_rows), None);
+            Ok(partitioned)
+        },
+        Err(error) => {
+            stage_guard.fail(&error);
+            Err(error)
+        },
+    };
     drop(frame);
     reservations.release(partial.reservation, metrics);
     let partitioned = match partitioned {
@@ -311,7 +334,18 @@ pub(super) fn apply_partitioned_final_merge_topk(
         metrics,
     )?;
     let input = CommittedPartial { frame, reservation: input_reservation };
-    let output = execute_final_sort_node_with_retry(
+    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
+    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+        observation,
+        plan_execution_id,
+        parent_span_id,
+        crate::observability::RuntimeOperatorStageKind::PartitionLocalTopK,
+        crate::observability::RuntimeOperatorStageIdentity::new()
+            .with_node_id(bounded.aggregate_id.to_string())
+            .with_partition_index(partition_index)
+            .with_input_rows(topk_stats.input_rows),
+    );
+    let output = match execute_final_sort_node_with_retry(
         context,
         bounded.aggregate_id,
         &topk.sort,
@@ -320,7 +354,17 @@ pub(super) fn apply_partitioned_final_merge_topk(
         reservations,
         metrics,
     )
-    .map_err(|error| error.with_fact_if_absent("partitioned_final_merge_topk_partition", partition_index))?;
+    .map_err(|error| error.with_fact_if_absent("partitioned_final_merge_topk_partition", partition_index))
+    {
+        Ok(output) => {
+            stage_guard.finish(Some(output.frame.num_rows() as u64), None);
+            output
+        },
+        Err(error) => {
+            stage_guard.fail(&error);
+            return Err(error);
+        },
+    };
     topk_stats.output_rows = topk_stats.output_rows.saturating_add(output.frame.num_rows() as u64);
     let output_frame = output.frame;
     reservations.release(output.reservation, metrics);

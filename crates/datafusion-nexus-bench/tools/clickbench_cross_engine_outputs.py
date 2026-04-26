@@ -134,8 +134,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cargo-bin", default=os.environ.get("CARGO", "cargo"))
     parser.add_argument("--release", action="store_true", help="Use cargo run --release for DataFusion/datafusion-nexus.")
     parser.add_argument("--no-gpu-flock", action="store_true", help="Do not wrap native GPU runs with flock /tmp/cudf-gpu.lock.")
-    parser.add_argument("--native-source-chunk-bytes", default=os.environ.get("CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES", "4294967296"))
-    parser.add_argument("--native-row-groups-per-chunk", default=os.environ.get("CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK", "1024"))
+    parser.add_argument(
+        "--native-profile",
+        default=os.environ.get("CUDF_CLICKBENCH_NATIVE_PROFILE", "clickbench_gpu_throughput"),
+        help="Named ClickBench native profile (default: clickbench_gpu_throughput).",
+    )
+    parser.add_argument(
+        "--native-fallback-policy",
+        default=os.environ.get("CUDF_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY", "gpu_preferred"),
+        help="Native fallback policy for datafusion_nexus runs (default: gpu_preferred).",
+    )
+    parser.add_argument(
+        "--native-source-chunk-bytes",
+        default=os.environ.get("CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES"),
+        help="Optional override for CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES.",
+    )
+    parser.add_argument(
+        "--native-row-groups-per-chunk",
+        default=os.environ.get("CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK"),
+        help="Optional override for CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK.",
+    )
     args = parser.parse_args()
     if args.iterations < 1:
         raise SystemExit("--iterations must be >= 1")
@@ -193,8 +211,9 @@ def discover_fixture(explicit: Path | None, repo_root: Path) -> Path:
         candidates.append(Path(env))
     candidates.extend(
         [
-            repo_root / "fixture" / "data" / "clickbench" / "partitioned",
-            repo_root / "fixture" / "data" / "clickbench" / "hits.parquet",
+            repo_root / "fixture" / "clickbench" / "data" / "hits.parquet",
+            repo_root / "fixture" / "clickbench" / "data" / "partitioned",
+            repo_root / "fixture" / "clickbench" / "data",
         ]
     )
     for candidate in candidates:
@@ -285,10 +304,14 @@ def run_datafusion_outputs(
             "CUDF_CLICKBENCH_BENCH_ITERATIONS": str(args.iterations),
             "CUDF_CLICKBENCH_BENCH_DUMP_ROWS_DIR": str(dump_dir),
             "CUDF_CLICKBENCH_BENCH_PROGRESS": "1",
-            "CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES": str(args.native_source_chunk_bytes),
-            "CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK": str(args.native_row_groups_per_chunk),
+            "CUDF_CLICKBENCH_NATIVE_PROFILE": str(args.native_profile),
+            "CUDF_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY": str(args.native_fallback_policy),
         }
     )
+    if args.native_source_chunk_bytes is not None:
+        env["CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES"] = str(args.native_source_chunk_bytes)
+    if args.native_row_groups_per_chunk is not None:
+        env["CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK"] = str(args.native_row_groups_per_chunk)
     if engines == ["cpu_datafusion"]:
         env["CUDF_CLICKBENCH_BENCH_SKIP_NATIVE"] = "1"
     elif engines == ["datafusion_nexus"]:

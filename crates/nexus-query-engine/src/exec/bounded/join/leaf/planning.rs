@@ -12,6 +12,7 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
         source,
         node_id,
         SourceTaskMemoryModel::join_leaf_stream(has_source_adjacent_stages),
+        None,
         metrics,
     )
 }
@@ -21,6 +22,7 @@ pub(in crate::exec::bounded) fn plan_bounded_aggregate_input_local_parquet_sourc
     source: &LocalParquetSource,
     node_id: NodeId,
     has_source_adjacent_stages: bool,
+    chunk_cap_hints: SourceAdjacentAggregateChunkCapHints,
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
@@ -28,6 +30,7 @@ pub(in crate::exec::bounded) fn plan_bounded_aggregate_input_local_parquet_sourc
         source,
         node_id,
         SourceTaskMemoryModel::aggregate_pipeline(has_source_adjacent_stages),
+        Some(chunk_cap_hints),
         metrics,
     )
 }
@@ -37,6 +40,7 @@ pub(in crate::exec::bounded) fn plan_bounded_shared_join_aggregate_local_parquet
     source: &LocalParquetSource,
     node_id: NodeId,
     has_source_adjacent_stages: bool,
+    chunk_cap_hints: SourceAdjacentAggregateChunkCapHints,
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
@@ -44,6 +48,7 @@ pub(in crate::exec::bounded) fn plan_bounded_shared_join_aggregate_local_parquet
         source,
         node_id,
         SourceTaskMemoryModel::shared_join_aggregate_stream(has_source_adjacent_stages),
+        Some(chunk_cap_hints),
         metrics,
     )
 }
@@ -53,6 +58,7 @@ fn plan_bounded_local_parquet_source_stream(
     source: &LocalParquetSource,
     node_id: NodeId,
     memory_model: SourceTaskMemoryModel,
+    chunk_cap_hints: Option<SourceAdjacentAggregateChunkCapHints>,
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     validate_local_parquet_source(source)?;
@@ -62,7 +68,10 @@ fn plan_bounded_local_parquet_source_stream(
             "position_delete_visible_scan_limit_requires_materialized_source",
         ));
     }
-    let planning_policy = local_parquet_source_stream_chunk_planning_policy(context, source, memory_model);
+    let mut planning_policy = local_parquet_source_stream_chunk_planning_policy(context, source, memory_model);
+    if let Some(chunk_cap_hints) = chunk_cap_hints {
+        planning_policy = apply_source_adjacent_aggregate_chunk_caps(planning_policy, chunk_cap_hints);
+    }
     let mut chunk_plan =
         plan_local_parquet_source_chunks_with_execution_context(node_id, source, planning_policy, context)?;
     annotate_join_leaf_source_chunk_batching_reasons(

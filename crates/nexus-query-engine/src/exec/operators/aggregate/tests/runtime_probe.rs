@@ -1,13 +1,17 @@
 #[test]
-fn large_single_key_runtime_probe_is_exact_cardinality_probe_candidate() {
+fn large_single_key_does_not_admit_exact_cardinality_probe_candidate() {
     let (schema, spec, decision) = partial_strategy_for_simple_string_sum(5_000_000);
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
-    assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 5_000_000), Some("county"));
+    assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 5_000_000), None);
+    assert_eq!(
+        decision.facts.get("exact_cardinality_probe_status").map(String::as_str),
+        Some("disabled_non_reusable_probe")
+    );
 }
 
 #[test]
-fn medium_single_string_avg_runtime_probe_is_exact_cardinality_probe_candidate() {
+fn medium_single_string_avg_does_not_admit_exact_cardinality_probe_candidate() {
     let (schema, spec) = simple_string_avg_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single);
     let decision = select_partial_aggregate_strategy_decision(
@@ -23,13 +27,17 @@ fn medium_single_string_avg_runtime_probe_is_exact_cardinality_probe_candidate()
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
-        Some("selected_libcudf_runtime_probe")
+        Some("rejected_by_cost_model")
     );
-    assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), Some("category"));
+    assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), None);
+    assert_eq!(
+        decision.facts.get("exact_cardinality_probe_status").map(String::as_str),
+        Some("disabled_non_reusable_probe")
+    );
 }
 
 #[test]
-fn medium_single_string_sum_runtime_probe_waits_for_libcudf_groupby_cardinality() {
+fn medium_single_string_sum_keeps_libcudf_without_hot_path_probe() {
     let (schema, spec) = simple_string_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single);
     let decision = select_partial_aggregate_strategy_decision(
@@ -45,13 +53,13 @@ fn medium_single_string_sum_runtime_probe_waits_for_libcudf_groupby_cardinality(
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
-        Some("selected_libcudf_runtime_probe")
+        Some("rejected_by_cost_model")
     );
     assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), None);
 }
 
 #[test]
-fn aggregate_strategy_options_change_exact_single_key_probe_threshold() {
+fn aggregate_strategy_options_no_longer_enable_hot_path_exact_probe() {
     let (schema, spec) = simple_string_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single);
     let decision = select_partial_aggregate_strategy_decision_with_options(
@@ -69,12 +77,16 @@ fn aggregate_strategy_options_change_exact_single_key_probe_threshold() {
 
     assert_eq!(
         exact_single_key_cardinality_probe_candidate_with_options(&decision, &spec, &schema, 204_000, options),
-        Some("county")
+        None
+    );
+    assert_eq!(
+        decision.facts.get("aggregate_exact_single_key_cardinality_probe_min_input_rows").map(String::as_str),
+        Some("500000")
     );
 }
 
 #[test]
-fn medium_single_string_mixed_avg_sum_runtime_probe_waits_for_libcudf_groupby_cardinality() {
+fn medium_single_string_mixed_avg_sum_keeps_libcudf_without_hot_path_probe() {
     let (schema, spec) = simple_string_avg_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single);
     let decision = select_partial_aggregate_strategy_decision(
@@ -90,13 +102,13 @@ fn medium_single_string_mixed_avg_sum_runtime_probe_waits_for_libcudf_groupby_ca
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
-        Some("selected_libcudf_runtime_probe")
+        Some("rejected_by_cost_model")
     );
     assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), None);
 }
 
 #[test]
-fn medium_partial_single_string_avg_runtime_probe_waits_for_libcudf_groupby_cardinality() {
+fn medium_partial_single_string_avg_keeps_libcudf_without_hot_path_probe() {
     let (schema, spec) = simple_string_avg_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let decision = select_partial_aggregate_strategy_decision(
@@ -112,7 +124,7 @@ fn medium_partial_single_string_avg_runtime_probe_waits_for_libcudf_groupby_card
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
-        Some("selected_libcudf_runtime_probe")
+        Some("rejected_by_cost_model")
     );
     assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), None);
 }
@@ -124,7 +136,7 @@ fn exact_cardinality_probe_candidate_rejects_small_inputs() {
 }
 
 #[test]
-fn large_two_key_runtime_probe_is_exact_grouped_key_cardinality_probe_candidate() {
+fn large_two_key_does_not_admit_exact_grouped_key_cardinality_probe_candidate() {
     let (schema, spec) = fixed_width_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let decision = select_partial_aggregate_strategy_decision(
@@ -137,14 +149,15 @@ fn large_two_key_runtime_probe_is_exact_grouped_key_cardinality_probe_candidate(
         &QueryMetrics::default(),
     );
 
+    assert_eq!(exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 5_000_000), None);
     assert_eq!(
-        exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 5_000_000),
-        Some(vec!["quarter".to_string(), "year".to_string()])
+        decision.facts.get("exact_cardinality_probe_status").map(String::as_str),
+        Some("disabled_non_reusable_probe")
     );
 }
 
 #[test]
-fn medium_two_key_runtime_probe_waits_for_libcudf_groupby_cardinality() {
+fn medium_two_key_keeps_libcudf_without_hot_path_probe() {
     let (schema, spec) = fixed_width_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let decision = select_partial_aggregate_strategy_decision(
@@ -159,13 +172,13 @@ fn medium_two_key_runtime_probe_waits_for_libcudf_groupby_cardinality() {
 
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
-        Some("selected_libcudf_runtime_probe")
+        Some("rejected_by_cost_model")
     );
     assert_eq!(exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), None);
 }
 
 #[test]
-fn large_three_key_string_fixed_runtime_probe_is_exact_grouped_key_cardinality_probe_candidate() {
+fn large_three_key_does_not_admit_exact_grouped_key_cardinality_probe_candidate() {
     let (schema, spec) = q31_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
     let decision = select_partial_aggregate_strategy_decision(
@@ -178,14 +191,11 @@ fn large_three_key_string_fixed_runtime_probe_is_exact_grouped_key_cardinality_p
         &QueryMetrics::default(),
     );
 
-    assert_eq!(
-        exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 5_000_000),
-        Some(vec!["county".to_string(), "quarter".to_string(), "year".to_string()])
-    );
+    assert_eq!(exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 5_000_000), None);
 }
 
 #[test]
-fn three_key_runtime_probe_rejects_wide_input_and_all_fixed_width_keys() {
+fn three_key_runtime_probe_helper_stays_disabled_for_hot_path() {
     let (schema, spec) = q31_key_sum_spec();
     let wide_input_decision = select_partial_aggregate_strategy_decision(
         aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial),
@@ -229,7 +239,7 @@ fn three_key_runtime_probe_rejects_wide_input_and_all_fixed_width_keys() {
 }
 
 #[test]
-fn five_key_string_fixed_runtime_probe_is_exact_grouped_key_cardinality_probe_candidate() {
+fn five_key_does_not_admit_exact_grouped_key_cardinality_probe_candidate() {
     let (schema, spec) = q76_key_sum_spec();
     let decision = select_partial_aggregate_strategy_decision(
         aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single),
@@ -241,20 +251,11 @@ fn five_key_string_fixed_runtime_probe_is_exact_grouped_key_cardinality_probe_ca
         &QueryMetrics::default(),
     );
 
-    assert_eq!(
-        exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 6_900_000),
-        Some(vec![
-            "channel".to_string(),
-            "col_name".to_string(),
-            "year".to_string(),
-            "quarter".to_string(),
-            "category".to_string(),
-        ])
-    );
+    assert_eq!(exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 6_900_000), None);
 }
 
 #[test]
-fn five_key_runtime_probe_rejects_wide_input_and_wrong_string_mix() {
+fn five_key_runtime_probe_helper_stays_disabled_for_hot_path() {
     let (schema, spec) = q76_key_sum_spec();
     let wide_input_decision = select_partial_aggregate_strategy_decision(
         aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single),

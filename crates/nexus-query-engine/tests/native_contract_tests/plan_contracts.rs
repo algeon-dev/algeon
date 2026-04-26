@@ -505,8 +505,8 @@ fn regexp_replace_projection_declares_bounded_output_contract() {
     let requirement = &node.local_requirements[0];
     assert_eq!(requirement.kind, ReservationKind::OperatorOutput);
     assert_eq!(requirement.memory_boundary, "regexp_replace_expression_output");
-    assert_eq!(requirement.required_contract, "regexp_replace_expression_output_contract");
-    assert_eq!(requirement.quality, ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
+    assert_eq!(requirement.required_contract, "regexp_replace_output_size_preflight");
+    assert_eq!(requirement.quality, ContractQuality::ExactPreflight);
 }
 
 #[test]
