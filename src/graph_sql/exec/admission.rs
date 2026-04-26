@@ -1,12 +1,12 @@
 use super::*;
 pub(super) fn edge_execution_config(
     plan: &dyn ExecutionPlan,
-    default_execution_config: &NativeCudfExecutionConfig,
-) -> NativeCudfExecutionConfig {
-    if let Some(native) = as_native_cudf_exec(plan) {
+    default_execution_config: &NexusNativeExecutionConfig,
+) -> NexusNativeExecutionConfig {
+    if let Some(native) = as_nexus_native_exec(plan) {
         return native.execution_config().clone();
     }
-    if let Some(native) = as_native_cudf_composed_exec(plan) {
+    if let Some(native) = as_nexus_native_composed_exec(plan) {
         return native.execution_config().clone();
     }
     default_execution_config.clone()
@@ -15,8 +15,8 @@ pub(super) fn edge_execution_config(
 #[cfg(test)]
 pub(super) fn cugraph_execution_config(
     plan: &dyn ExecutionPlan,
-    default_execution_config: &NativeCudfExecutionConfig,
-) -> NativeCudfExecutionConfig {
+    default_execution_config: &NexusNativeExecutionConfig,
+) -> NexusNativeExecutionConfig {
     let execution_config = edge_execution_config(plan, default_execution_config);
     if let Some(ticket) = default_execution_config.query_admission_ticket() {
         execution_config.with_existing_query_admission_ticket(ticket)
@@ -27,9 +27,9 @@ pub(super) fn cugraph_execution_config(
 
 pub(super) fn cugraph_execution_config_for_task_context(
     plan: &dyn ExecutionPlan,
-    default_execution_config: &NativeCudfExecutionConfig,
+    default_execution_config: &NexusNativeExecutionConfig,
     task_context: &TaskContext,
-) -> NativeCudfExecutionConfig {
+) -> NexusNativeExecutionConfig {
     let execution_config = edge_execution_config(plan, default_execution_config);
     if let Some(ticket) = query_admission_ticket_from_task_context(task_context) {
         execution_config.with_existing_query_admission_ticket(ticket)
@@ -45,8 +45,8 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
     edge_source: &dyn ExecutionPlan,
     edge_normalize_inserted: bool,
     placement_hint: QueryPlacementHint,
-    execution_config: NativeCudfExecutionConfig,
-) -> Result<NativeCudfExecutionConfig> {
+    execution_config: NexusNativeExecutionConfig,
+) -> Result<NexusNativeExecutionConfig> {
     let graph_model_ask =
         if execution_config.requested_grant_bytes().is_some() || execution_config.query_admission_source().is_none() {
             None
@@ -81,7 +81,7 @@ pub(super) fn cugraph_graph_model_ask_bytes(
     spec: &CugraphAlgorithmSpec,
     edge_source: &dyn ExecutionPlan,
     edge_normalize_inserted: bool,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> Result<Option<GraphAdmissionModelAsk>> {
     let Some(native_spec) = native_graph_spec_for_memory_estimate(spec, edge_normalize_inserted) else {
         return Ok(None);
@@ -131,26 +131,26 @@ pub(super) fn native_edge_source_output_rows(edge_source: &dyn ExecutionPlan) ->
 }
 
 pub(super) fn native_edge_source_allows_graph_aware_ticket(edge_source: &dyn ExecutionPlan) -> bool {
-    if let Some(native) = as_native_cudf_exec(edge_source) {
+    if let Some(native) = as_nexus_native_exec(edge_source) {
         return native_plan_is_graph_ticket_light_edge_source(native.native_plan());
     }
-    if let Some(native) = as_native_cudf_composed_exec(edge_source) {
+    if let Some(native) = as_nexus_native_composed_exec(edge_source) {
         return native_plan_is_graph_ticket_light_edge_source(native.native_plan());
     }
-    if let Some(native) = edge_source.downcast_ref::<NativeCudfGpuProducerExec>() {
+    if let Some(native) = edge_source.downcast_ref::<NexusNativeGpuProducerExec>() {
         return native_plan_is_graph_ticket_light_edge_source(native.native_plan());
     }
     true
 }
 
 pub(super) fn graph_edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Option<u64> {
-    if let Some(native) = as_native_cudf_exec(edge_source) {
+    if let Some(native) = as_nexus_native_exec(edge_source) {
         return graph_edge_list_output_rows_for_plan(native.native_plan());
     }
-    if let Some(native) = as_native_cudf_composed_exec(edge_source) {
+    if let Some(native) = as_nexus_native_composed_exec(edge_source) {
         return graph_edge_list_output_rows_for_plan(native.native_plan());
     }
-    if let Some(native) = edge_source.downcast_ref::<NativeCudfGpuProducerExec>() {
+    if let Some(native) = edge_source.downcast_ref::<NexusNativeGpuProducerExec>() {
         return graph_edge_list_output_rows_for_plan(native.native_plan());
     }
     None
@@ -171,7 +171,7 @@ pub(super) fn cugraph_effective_input_edges(
 }
 
 pub(super) fn task_context_with_cugraph_execution_ticket(
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
     task_context: Arc<TaskContext>,
 ) -> Arc<TaskContext> {
     if let Some(ticket) = execution_config.query_admission_ticket() {
@@ -182,7 +182,7 @@ pub(super) fn task_context_with_cugraph_execution_ticket(
 }
 
 pub(super) fn validate_standalone_bounded_cugraph_sources(
-    config: &NativeCudfExecutionConfig,
+    config: &NexusNativeExecutionConfig,
     edge_source: &dyn ExecutionPlan,
     predicate_sources: &[Arc<dyn ExecutionPlan>],
 ) -> Result<()> {
@@ -200,11 +200,11 @@ pub(super) fn validate_standalone_bounded_source_contains_no_native_child(
     source_kind: &'static str,
     plan: &dyn ExecutionPlan,
 ) -> Result<()> {
-    if plan_contains_native_cudf(plan) {
+    if plan_contains_nexus_native(plan) {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
             "datafusion_nexus.cugraph_sql.admission",
-            "standalone bounded cuGraph execution cannot execute native cudf child plans without query-service admission",
+            "standalone bounded cuGraph execution cannot execute nexus native child plans without query-service admission",
         )
         .with_fact("source_kind", source_kind)
         .with_fact("remediation", "use NexusGpuBackend::install_on_with_cugraph_sql or unbounded cuGraph execution")
@@ -213,34 +213,34 @@ pub(super) fn validate_standalone_bounded_source_contains_no_native_child(
     Ok(())
 }
 
-pub(super) fn plan_contains_native_cudf(plan: &dyn ExecutionPlan) -> bool {
-    plan.downcast_ref::<NativeCudfExec>().is_some()
-        || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
-        || plan.downcast_ref::<NativeCudfGpuProducerExec>().is_some()
+pub(super) fn plan_contains_nexus_native(plan: &dyn ExecutionPlan) -> bool {
+    plan.downcast_ref::<NexusNativeExec>().is_some()
+        || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
+        || plan.downcast_ref::<NexusNativeGpuProducerExec>().is_some()
         || plan.downcast_ref::<CugraphAlgoExec>().is_some()
-        || plan.children().iter().any(|child| plan_contains_native_cudf(child.as_ref()))
+        || plan.children().iter().any(|child| plan_contains_nexus_native(child.as_ref()))
 }
 
-pub(super) fn as_native_cudf_exec(plan: &dyn ExecutionPlan) -> Option<&NativeCudfExec> {
-    if let Some(native) = plan.downcast_ref::<NativeCudfExec>() {
+pub(super) fn as_nexus_native_exec(plan: &dyn ExecutionPlan) -> Option<&NexusNativeExec> {
+    if let Some(native) = plan.downcast_ref::<NexusNativeExec>() {
         return Some(native);
     }
     let children = cooperative_exec_children(plan)?;
     let [child] = children.as_slice() else {
         return None;
     };
-    child.downcast_ref::<NativeCudfExec>()
+    child.downcast_ref::<NexusNativeExec>()
 }
 
-pub(super) fn as_native_cudf_composed_exec(plan: &dyn ExecutionPlan) -> Option<&NativeCudfComposedExec> {
-    if let Some(native) = plan.downcast_ref::<NativeCudfComposedExec>() {
+pub(super) fn as_nexus_native_composed_exec(plan: &dyn ExecutionPlan) -> Option<&NexusNativeComposedExec> {
+    if let Some(native) = plan.downcast_ref::<NexusNativeComposedExec>() {
         return Some(native);
     }
     let children = cooperative_exec_children(plan)?;
     let [child] = children.as_slice() else {
         return None;
     };
-    child.downcast_ref::<NativeCudfComposedExec>()
+    child.downcast_ref::<NexusNativeComposedExec>()
 }
 
 pub(super) fn cooperative_exec_children(plan: &dyn ExecutionPlan) -> Option<Vec<&Arc<dyn ExecutionPlan>>> {

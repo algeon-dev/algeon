@@ -214,7 +214,7 @@ pub(in crate::exec) fn execute_aggregate(
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.aggregate.select",
-            "failed to select native cudf aggregate output columns",
+            "failed to select nexus native aggregate output columns",
             error,
         )
     })?;
@@ -578,7 +578,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
         token,
         metrics,
         "nexus_query_engine.aggregate.execute",
-        "failed to execute bounded native cudf aggregate",
+        "failed to execute bounded nexus native aggregate",
     ) {
         Ok(output) => output,
         Err(error) => {
@@ -603,7 +603,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.aggregate.select",
-            "failed to select native cudf aggregate output columns",
+            "failed to select nexus native aggregate output columns",
             error,
         )
     })?;

@@ -24,9 +24,15 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -98,7 +104,10 @@ fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_conca
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -176,7 +185,10 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
         prefix_dim,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -201,7 +213,10 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
         first_dim,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -212,7 +227,10 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
         second_dim,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -293,7 +311,10 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
         prefix_dim,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -318,7 +339,10 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
         first_dim,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -329,7 +353,10 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
         second_dim,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -413,9 +440,15 @@ fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_m
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -498,9 +531,15 @@ fn bounded_native_query_executes_or_residual_with_mixed_join() {
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_residual_predicate(residual)
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -561,7 +600,10 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -613,12 +655,18 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
     assert!(metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_mixed_size_data"
     }));
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_output"
-    }));
-    assert!(metrics.reservation_events.iter().all(|event| {
-        event.memory_boundary != "join_partition_mixed_size_data_forecast"
-    }));
+    assert!(
+        metrics
+            .reservation_events
+            .iter()
+            .any(|event| { event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_output" })
+    );
+    assert!(
+        metrics
+            .reservation_events
+            .iter()
+            .all(|event| { event.memory_boundary != "join_partition_mixed_size_data_forecast" })
+    );
     let first_partial_work = metrics
         .reservation_events
         .iter()
@@ -694,7 +742,10 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
         JoinSpec::new(JoinType::Left, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -731,9 +782,7 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 1);
     assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.memory_boundary == "join_hash_table"
-            && event.granted_bytes > 0
+        event.outcome.as_str() == "granted" && event.memory_boundary == "join_hash_table" && event.granted_bytes > 0
     }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -782,9 +831,15 @@ fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filt
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_residual_predicate(residual)
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -845,9 +900,15 @@ fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_n
         right,
         JoinSpec::new(JoinType::Left, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -928,7 +989,10 @@ fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_n
                     "right_order_id",
                 ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -1040,8 +1104,14 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&joined_schema),
@@ -1168,8 +1238,14 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&joined_schema),
@@ -1181,8 +1257,14 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         semi_keys,
         JoinSpec::new(JoinType::LeftSemi, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "category", "category"), "category"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&joined_schema),

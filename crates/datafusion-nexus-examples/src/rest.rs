@@ -20,9 +20,9 @@ use datafusion::{
 };
 use datafusion_nexus::{
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorKind},
-    planner::CudfNativePhysicalOptimizerRule,
+    planner::NexusNativePhysicalOptimizerRule,
     report::PlanningReport,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use nexus_query_engine::error::{QueryError, QueryErrorKind};
 use serde::Serialize;
@@ -152,9 +152,9 @@ async fn execute_pipeline(state: &AppState, rendered: RenderedPipeline) -> Resul
 }
 
 async fn planning_report(state: &AppState, rendered: RenderedPipeline) -> Result<PlanningReport, AppError> {
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(state.backend.optimizer_config().clone()));
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(state.backend.optimizer_config().clone()));
     let planning_state = SessionStateBuilder::new_from_existing(state.ctx.state())
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let planning_ctx = datafusion::prelude::SessionContext::new_with_state(planning_state);
     let mut df = planning_ctx.sql(&rendered.sql).await.map_err(AppError::from_datafusion)?;

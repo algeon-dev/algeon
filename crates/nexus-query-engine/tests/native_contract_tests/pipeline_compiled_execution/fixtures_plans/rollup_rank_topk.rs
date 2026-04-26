@@ -232,10 +232,10 @@ pub(super) fn selected_q22_class_rollup_topk_after_pushdown_plan() -> QueryPlan 
         .with_row_groups(vec![0, 1])
         .with_projected_row_group_bytes(vec![32 << 20, 32 << 20, 32 << 20, 32 << 20], vec![32 << 20; 4])
         .with_row_group_rows(vec![1_000_000; 4]);
-    let date_file = LocalParquetFile::new("/tmp/compiled-selected-q22-class-rollup-topk-date.parquet")
-        .with_file_size_bytes(1024);
-    let item_file = LocalParquetFile::new("/tmp/compiled-selected-q22-class-rollup-topk-item.parquet")
-        .with_file_size_bytes(4096);
+    let date_file =
+        LocalParquetFile::new("/tmp/compiled-selected-q22-class-rollup-topk-date.parquet").with_file_size_bytes(1024);
+    let item_file =
+        LocalParquetFile::new("/tmp/compiled-selected-q22-class-rollup-topk-item.parquet").with_file_size_bytes(4096);
 
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
@@ -253,10 +253,7 @@ pub(super) fn selected_q22_class_rollup_topk_after_pushdown_plan() -> QueryPlan 
         date,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "date_sk", "date_sk"),
-                ColumnRef::input(1, "date_sk", "date_sk"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "date_sk", "date_sk"), ColumnRef::input(1, "date_sk", "date_sk"))],
         )
         .with_output_projection(vec![
             JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
@@ -275,10 +272,7 @@ pub(super) fn selected_q22_class_rollup_topk_after_pushdown_plan() -> QueryPlan 
         item,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "item_sk", "item_sk"),
-                ColumnRef::input(1, "item_sk", "item_sk"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "item_sk", "item_sk"), ColumnRef::input(1, "item_sk", "item_sk"))],
         )
         .with_output_projection(vec![
             JoinOutputColumn::right(ColumnRef::input(1, "product_name", "product_name"), "product_name"),
@@ -293,12 +287,7 @@ pub(super) fn selected_q22_class_rollup_topk_after_pushdown_plan() -> QueryPlan 
     let aggregate = builder.add_aggregate(
         item_join,
         AggregateSpec::new(
-            vec![
-                Expr::column("product_name"),
-                Expr::column("brand"),
-                Expr::column("class"),
-                Expr::column("category"),
-            ],
+            vec![Expr::column("product_name"), Expr::column("brand"), Expr::column("class"), Expr::column("category")],
             vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("quantity_on_hand"), "avg_qoh")],
         )
         .with_grouping_sets(GroupingSetsSpec::new(
@@ -860,8 +849,8 @@ fn rollup_rank_topk_plan_with_projection_chain(fact_file: LocalParquetFile) -> Q
                     )],
                     else_expr: Box::new(Expr::literal(LiteralValue::Int64(0))),
                 }
-                .alias("__cudf_aggregate_arg_0"),
-                Field::new("__cudf_aggregate_arg_0", DataType::Int64, false),
+                .alias("__nexus_native_aggregate_arg_0"),
+                Field::new("__nexus_native_aggregate_arg_0", DataType::Int64, false),
             ),
         ],
     );
@@ -869,7 +858,11 @@ fn rollup_rank_topk_plan_with_projection_chain(fact_file: LocalParquetFile) -> Q
         coalesce_projection,
         AggregateSpec::new(
             vec![Expr::column("left_group"), Expr::column("right_group")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("__cudf_aggregate_arg_0"), "sumsales")],
+            vec![AggregateExpr::new(
+                AggregateFunction::Sum,
+                Expr::column("__nexus_native_aggregate_arg_0"),
+                "sumsales",
+            )],
         )
         .with_grouping_sets(GroupingSetsSpec::new(
             vec![vec![false, false], vec![false, true], vec![true, true]],

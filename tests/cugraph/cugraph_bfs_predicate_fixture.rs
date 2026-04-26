@@ -26,8 +26,8 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    graph_sql::CugraphSqlConfig, planner::CudfOptimizerConfig, policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    graph_sql::CugraphSqlConfig, planner::NexusNativeOptimizerConfig, policy::GpuFallbackPolicy,
+    session::NexusSessionStateBuilderExt,
 };
 
 const DEFAULT_VERTEX_COUNT: i64 = 12_000;
@@ -50,7 +50,7 @@ pub async fn run_numeric_include_edges_acceptance() {
     let state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -132,7 +132,7 @@ pub async fn run_utf8_include_edges_acceptance() {
     let state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -218,7 +218,7 @@ pub async fn run_utf8_path_acceptance() {
     let state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -302,7 +302,7 @@ pub async fn run_utf8_vertex_predicates_acceptance() {
     let state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -518,12 +518,12 @@ struct PythonUtf8BfsPathOracle {
 }
 
 fn ensure_numeric_bfs_predicate_fixture() -> BfsPredicateFixture {
-    let vertex_count = std::env::var("CUDF_CUGRAPH_BFS_PREDICATE_VERTEX_COUNT")
+    let vertex_count = std::env::var("NEXUS_CUGRAPH_BFS_PREDICATE_VERTEX_COUNT")
         .ok()
         .and_then(|value| value.parse::<i64>().ok())
         .filter(|value| *value >= 2)
         .unwrap_or(DEFAULT_VERTEX_COUNT);
-    let root = std::env::var_os("CUDF_CUGRAPH_BFS_PREDICATE_FIXTURE_DIR").map(PathBuf::from).unwrap_or_else(|| {
+    let root = std::env::var_os("NEXUS_CUGRAPH_BFS_PREDICATE_FIXTURE_DIR").map(PathBuf::from).unwrap_or_else(|| {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixture")
             .join("data")
@@ -559,13 +559,13 @@ fn ensure_numeric_bfs_predicate_fixture() -> BfsPredicateFixture {
 }
 
 fn ensure_string_bfs_predicate_fixture() -> StringBfsPredicateFixture {
-    let vertex_count = std::env::var("CUDF_CUGRAPH_BFS_PREDICATE_STRING_VERTEX_COUNT")
+    let vertex_count = std::env::var("NEXUS_CUGRAPH_BFS_PREDICATE_STRING_VERTEX_COUNT")
         .ok()
         .and_then(|value| value.parse::<i64>().ok())
         .filter(|value| *value >= 2)
         .unwrap_or(DEFAULT_STRING_VERTEX_COUNT);
     let root =
-        std::env::var_os("CUDF_CUGRAPH_BFS_PREDICATE_STRING_FIXTURE_DIR").map(PathBuf::from).unwrap_or_else(|| {
+        std::env::var_os("NEXUS_CUGRAPH_BFS_PREDICATE_STRING_FIXTURE_DIR").map(PathBuf::from).unwrap_or_else(|| {
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("fixture")
                 .join("data")
@@ -1327,14 +1327,14 @@ fn json_f64(value: &serde_json::Value, key: &str) -> f64 {
 }
 
 fn optional_max_slowdown() -> Option<f64> {
-    std::env::var("CUDF_CUGRAPH_BFS_PREDICATE_MAX_SLOWDOWN")
+    std::env::var("NEXUS_CUGRAPH_BFS_PREDICATE_MAX_SLOWDOWN")
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
 }
 
 fn optional_string_max_slowdown() -> Option<f64> {
-    std::env::var("CUDF_CUGRAPH_BFS_PREDICATE_STRING_MAX_SLOWDOWN")
+    std::env::var("NEXUS_CUGRAPH_BFS_PREDICATE_STRING_MAX_SLOWDOWN")
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)

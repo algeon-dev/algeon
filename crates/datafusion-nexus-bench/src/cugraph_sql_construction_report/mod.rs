@@ -20,18 +20,18 @@ use datafusion::{
 };
 use datafusion_nexus::{
     graph_sql::CugraphSqlConfig,
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use nexus_query_engine::mode::NativePipelineExecutionMode;
 
-const ROWS_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_ROWS";
-const MEMORY_POLICY_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_MEMORY_POLICY";
-const DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_DEVICE_BUDGET_BYTES";
-const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_MAX_SOURCE_CHUNK_BYTES";
+const ROWS_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_ROWS";
+const MEMORY_POLICY_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_MEMORY_POLICY";
+const DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_DEVICE_BUDGET_BYTES";
+const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_MAX_SOURCE_CHUNK_BYTES";
 
 const COLUMNS: &[&str] = &[
     "variant",
@@ -68,14 +68,14 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
     write_synthetic_edges(&path, rows)?;
 
     let config = direct_friendly_session_config();
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
             .with_native_execution_config(native_execution_config()),
     ));
     let state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
-        .with_cudf_native_rule(native_rule)
+        .with_nexus_native_rule(native_rule)
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -85,8 +85,8 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
     println!(
         "# rows={rows}\tmemory_policy={}\tdevice_budget_bytes={}\tmax_source_chunk_bytes={}",
         std::env::var(MEMORY_POLICY_ENV).unwrap_or_else(|_| "bounded".to_string()),
-        env_u64(DEVICE_BUDGET_BYTES_ENV, NativeCudfExecutionConfig::auto_sized_device_budget_bytes(),),
-        env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,),
+        env_u64(DEVICE_BUDGET_BYTES_ENV, NexusNativeExecutionConfig::auto_sized_device_budget_bytes(),),
+        env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,),
     );
     println!("{}", COLUMNS.join("\t"));
 
@@ -328,11 +328,11 @@ fn direct_friendly_session_config() -> SessionConfig {
     config
 }
 
-fn native_execution_config() -> NativeCudfExecutionConfig {
+fn native_execution_config() -> NexusNativeExecutionConfig {
     match std::env::var(MEMORY_POLICY_ENV).as_deref() {
-        Ok("bounded") | Err(_) => NativeCudfExecutionConfig::bounded(
-            env_u64(DEVICE_BUDGET_BYTES_ENV, NativeCudfExecutionConfig::auto_sized_device_budget_bytes()),
-            env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES),
+        Ok("bounded") | Err(_) => NexusNativeExecutionConfig::bounded(
+            env_u64(DEVICE_BUDGET_BYTES_ENV, NexusNativeExecutionConfig::auto_sized_device_budget_bytes()),
+            env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES),
             1024,
             3,
             1,
@@ -340,7 +340,7 @@ fn native_execution_config() -> NativeCudfExecutionConfig {
         .with_native_pipeline_execution_mode(NativePipelineExecutionMode::StrictBounded),
         // Explicit diagnostic opt-in for comparing legacy whole-source graph
         // construction against the bounded production default.
-        Ok("unbounded") => NativeCudfExecutionConfig::unbounded(),
+        Ok("unbounded") => NexusNativeExecutionConfig::unbounded(),
         Ok(value) => {
             panic!("unsupported {MEMORY_POLICY_ENV}={value}; expected unbounded or bounded");
         },

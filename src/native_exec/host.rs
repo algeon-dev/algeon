@@ -24,41 +24,41 @@ use nexus_query_engine::{
 
 use super::{
     common::{
-        NATIVE_CUDF_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, NativeHostOutputCursor, conservative_properties,
+        NATIVE_NEXUS_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, NativeHostOutputCursor, conservative_properties,
         mark_native_runtime_error, native_host_output_stream, native_plan_one_line, native_query_runtime_error,
         properties_with_equivalence, run_gpu_execution_task, write_native_plan_tree,
     },
-    config::NativeCudfExecutionConfig,
-    metrics::{NativeCudfMetrics, NativeExecutionMetricsCapture},
+    config::NexusNativeExecutionConfig,
+    metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics},
 };
 use crate::error::{Error, ErrorCode};
 
 /// Leaf DataFusion execution plan for a host-materializing native cuDF query.
 ///
-/// `NativeCudfExec` has no children and exposes exactly one output partition. It executes a
+/// `NexusNativeExec` has no children and exposes exactly one output partition. It executes a
 /// DataFusion-free native `QueryPlan`, then materializes the final GPU result back to host Arrow
 /// because normal DataFusion execution consumes a `RecordBatch` stream.
 #[derive(Debug, Clone)]
-pub struct NativeCudfExec {
+pub struct NexusNativeExec {
     plan: QueryPlan,
-    execution_config: NativeCudfExecutionConfig,
+    execution_config: NexusNativeExecutionConfig,
     metrics_capture: Option<NativeExecutionMetricsCapture>,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
 
-impl NativeCudfExec {
+impl NexusNativeExec {
     /// Create a native DataFusion execution plan.
     ///
     /// GPU-resident sinks are rejected here because regular `ExecutionPlan::execute` must stream
     /// host Arrow `RecordBatch` output to DataFusion.
-    pub fn try_new(plan: QueryPlan, execution_config: NativeCudfExecutionConfig) -> crate::error::Result<Self> {
+    pub fn try_new(plan: QueryPlan, execution_config: NexusNativeExecutionConfig) -> crate::error::Result<Self> {
         Self::try_new_with_cache(plan, execution_config, None)
     }
 
     pub(crate) fn try_new_with_equivalence_properties(
         plan: QueryPlan,
-        execution_config: NativeCudfExecutionConfig,
+        execution_config: NexusNativeExecutionConfig,
         eq_properties: EquivalenceProperties,
     ) -> crate::error::Result<Self> {
         Self::try_new_with_cache(plan, execution_config, Some(eq_properties))
@@ -66,7 +66,7 @@ impl NativeCudfExec {
 
     fn try_new_with_cache(
         plan: QueryPlan,
-        execution_config: NativeCudfExecutionConfig,
+        execution_config: NexusNativeExecutionConfig,
         eq_properties: Option<EquivalenceProperties>,
     ) -> crate::error::Result<Self> {
         if !plan.sink().materializes_host_boundary() {
@@ -91,7 +91,7 @@ impl NativeCudfExec {
     }
 
     #[cfg_attr(not(feature = "cugraph"), allow(dead_code))]
-    pub(crate) fn execution_config(&self) -> &NativeCudfExecutionConfig {
+    pub(crate) fn execution_config(&self) -> &NexusNativeExecutionConfig {
         &self.execution_config
     }
 
@@ -112,12 +112,12 @@ impl NativeCudfExec {
     }
 }
 
-impl DisplayAs for NativeCudfExec {
+impl DisplayAs for NexusNativeExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default => write!(
                 f,
-                "NativeCudfExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}",
+                "NexusNativeExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}",
                 self.plan.node_count(),
                 self.execution_config.native_pipeline_execution_mode(),
                 self.execution_config.memory_control_policy(),
@@ -126,7 +126,7 @@ impl DisplayAs for NativeCudfExec {
             ),
             DisplayFormatType::Verbose => write!(
                 f,
-                "NativeCudfExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
+                "NexusNativeExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
                 self.plan.node_count(),
                 self.execution_config.native_pipeline_execution_mode(),
                 self.execution_config.memory_control_policy(),
@@ -152,9 +152,9 @@ impl DisplayAs for NativeCudfExec {
     }
 }
 
-impl ExecutionPlan for NativeCudfExec {
+impl ExecutionPlan for NexusNativeExec {
     fn name(&self) -> &str {
-        "NativeCudfExec"
+        "NexusNativeExec"
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -173,7 +173,7 @@ impl ExecutionPlan for NativeCudfExec {
             return Err(Error::new(
                 ErrorCode::InvalidChildCount,
                 "datafusion_nexus.native_exec.with_new_children",
-                "native cudf execution expected no children",
+                "nexus native execution expected no children",
             )
             .with_fact("actual_child_count", children.len())
             .into());
@@ -186,21 +186,21 @@ impl ExecutionPlan for NativeCudfExec {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
                 "datafusion_nexus.native_exec.execute",
-                "native cudf execution exposes exactly one output partition",
+                "nexus native execution exposes exactly one output partition",
             )
             .with_fact("partition", partition)
             .into());
         }
 
         // Runtime, allocator, boundary, and memory-control state come from
-        // `NativeCudfExecutionConfig`; the DataFusion task context scopes
+        // `NexusNativeExecutionConfig`; the DataFusion task context scopes
         // backend admission across native fragments in one execution.
         let schema = self.schema();
         let plan = self.plan.clone();
         let execution_config = self.execution_config.clone();
         let runtime_observation_config = execution_config.runtime_observation_config();
         let account_memory_pool = execution_config.host_output_memory_pool_accounting();
-        let metrics = NativeCudfMetrics::new_with_capture_and_shape(
+        let metrics = NexusNativeMetrics::new_with_capture_and_shape(
             &self.metrics,
             partition,
             self.metrics_capture.clone(),
@@ -208,7 +208,7 @@ impl ExecutionPlan for NativeCudfExec {
         );
         let output_schema = Arc::clone(&schema);
         let output = native_host_output_stream(
-            NATIVE_CUDF_EXEC_HOST_OUTPUT_MEMORY_CONSUMER,
+            NATIVE_NEXUS_EXEC_HOST_OUTPUT_MEMORY_CONSUMER,
             schema,
             Arc::clone(&task_context),
             account_memory_pool,
@@ -251,7 +251,7 @@ impl ExecutionPlan for NativeCudfExec {
                         let output = metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
                             DataFusionError::from(native_query_runtime_error(
                                 "datafusion_nexus.native_exec.execute",
-                                "native cudf query execution failed",
+                                "nexus native query execution failed",
                                 error,
                             ))
                         })?;

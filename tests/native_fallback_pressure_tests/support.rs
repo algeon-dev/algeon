@@ -8,7 +8,7 @@ pub(super) fn native_exec_leaf_for_report() -> Arc<dyn ExecutionPlan> {
         schema,
         vec!["key".to_string()],
     )));
-    Arc::new(NativeCudfExec::try_new(builder.finish_with_host_sink(source), native_execution_config()).unwrap())
+    Arc::new(NexusNativeExec::try_new(builder.finish_with_host_sink(source), native_execution_config()).unwrap())
 }
 
 pub(super) fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
@@ -20,7 +20,7 @@ pub(super) fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
         vec!["key".to_string()],
     )));
     let producer = Arc::new(
-        NativeCudfGpuProducerExec::try_new("fragment_input", producer_builder.finish_gpu_resident(producer_source))
+        NexusNativeGpuProducerExec::try_new("fragment_input", producer_builder.finish_gpu_resident(producer_source))
             .unwrap(),
     );
 
@@ -28,7 +28,7 @@ pub(super) fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
     let consumer_source = consumer_builder
         .add_source(SourceNode::GpuResident(GpuResidentSource::new("fragment_input", Arc::clone(&schema))));
     Arc::new(
-        NativeCudfComposedExec::try_new(
+        NexusNativeComposedExec::try_new(
             consumer_builder.finish_with_host_sink(consumer_source),
             vec![producer],
             native_execution_config(),
@@ -37,8 +37,8 @@ pub(super) fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
     )
 }
 
-pub(super) fn native_execution_config() -> NativeCudfExecutionConfig {
-    NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
+pub(super) fn native_execution_config() -> NexusNativeExecutionConfig {
+    NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
 }
 
 pub(super) fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
@@ -669,12 +669,14 @@ pub(super) async fn native_datafusion_planning_report_with_session(
     sql: &str,
     session_config: SessionConfig,
 ) -> NativeDataFusionPlanningReport {
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let optimizer_config =
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
+            NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
+        );
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();

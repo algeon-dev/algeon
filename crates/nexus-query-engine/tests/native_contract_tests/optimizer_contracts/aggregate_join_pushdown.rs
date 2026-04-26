@@ -3,7 +3,7 @@ fn aggregate_join_pushdown_reduces_plain_sum_inner_join_without_semijoining_dupl
     let source_schema = schema(&["zip_prefix", "s_store_name", "ss_net_profit"]);
     let right_schema = schema(&["zip_prefix"]);
     let join_schema = schema(&["ss_net_profit", "s_store_name"]);
-    let aggregate_input_schema = schema(&["s_store_name", "__cudf_aggregate_arg_0"]);
+    let aggregate_input_schema = schema(&["s_store_name", "__nexus_native_aggregate_arg_0"]);
     let aggregate_schema = schema(&["s_store_name", "sum_profit"]);
 
     let mut builder = QueryPlanBuilder::new();
@@ -45,7 +45,7 @@ fn aggregate_join_pushdown_reduces_plain_sum_inner_join_without_semijoining_dupl
     let projection = builder.add_projection(
         join,
         projection_outputs(
-            vec![Expr::column("s_store_name"), Expr::column("ss_net_profit").alias("__cudf_aggregate_arg_0")],
+            vec![Expr::column("s_store_name"), Expr::column("ss_net_profit").alias("__nexus_native_aggregate_arg_0")],
             aggregate_input_schema,
         ),
     );
@@ -53,7 +53,11 @@ fn aggregate_join_pushdown_reduces_plain_sum_inner_join_without_semijoining_dupl
         projection,
         AggregateSpec::new(
             vec![Expr::column("s_store_name")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("__cudf_aggregate_arg_0"), "sum_profit")],
+            vec![AggregateExpr::new(
+                AggregateFunction::Sum,
+                Expr::column("__nexus_native_aggregate_arg_0"),
+                "sum_profit",
+            )],
         ),
         aggregate_schema,
     );
@@ -293,10 +297,7 @@ fn aggregate_join_pushdown_admits_large_variable_width_group_key_preaggregate() 
         dim,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "dim_key", "dim_key"),
-                ColumnRef::input(1, "dim_key", "dim_key"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "dim_key", "dim_key"), ColumnRef::input(1, "dim_key", "dim_key"))],
         )
         .with_output_projection(vec![
             JoinOutputColumn::left(ColumnRef::input(0, "store_name", "store_name"), "store_name"),
@@ -531,7 +532,7 @@ fn aggregate_join_pushdown_reduces_left_join_count_on_non_preserved_side() {
     let Expr::Column(preagg_count_column) = &final_aggregate.spec.aggr_exprs[0].expr else {
         panic!("final aggregate should sum the projected pre-aggregate count");
     };
-    assert!(preagg_count_column.name().starts_with("__cudf_preagg_sum_"));
+    assert!(preagg_count_column.name().starts_with("__nexus_native_preagg_sum_"));
 
     let PlanNode::Projection(coalesce_projection) =
         &optimized.plan.node(final_aggregate.input).expect("final aggregate input should exist").kind
@@ -541,7 +542,7 @@ fn aggregate_join_pushdown_reduces_left_join_count_on_non_preserved_side() {
     assert!(matches!(
         &coalesce_projection.outputs[1].expr,
         Expr::Alias { expr, alias }
-            if alias.starts_with("__cudf_preagg_sum_")
+            if alias.starts_with("__nexus_native_preagg_sum_")
                 && matches!(expr.as_ref(), Expr::Case { .. })
     ));
 
@@ -643,7 +644,7 @@ fn aggregate_join_pushdown_reduces_avg_inner_join_with_explicit_sum_count_state(
         vec![AggregateFunction::Sum, AggregateFunction::Sum],
         "final AVG merge must sum partial SUM and COUNT state, not average partial averages"
     );
-    assert!(final_aggregate.spec.aggr_exprs.iter().all(|expr| expr.alias.starts_with("__cudf_preagg_avg_")));
+    assert!(final_aggregate.spec.aggr_exprs.iter().all(|expr| expr.alias.starts_with("__nexus_native_preagg_avg_")));
 
     let PlanNode::Join(reduced_join) =
         &optimized.plan.node(final_aggregate.input).expect("final aggregate input should exist").kind

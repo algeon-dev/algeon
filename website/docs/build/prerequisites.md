@@ -153,8 +153,8 @@ builds and tests still need mold on the host.
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
-rustup toolchain install nightly      # rustfmt.toml uses unstable options
-cargo install --locked cargo-nextest  # canonical test runner
+rustup toolchain install nightly                       # rustfmt.toml uses unstable options
+cargo install --locked --version 0.9.140 cargo-nextest # exact canonical test runner
 ```
 
 The Rust crates declare an MSRV in `Cargo.toml`; any current stable satisfies

@@ -1,4 +1,4 @@
-//! Native cudf-rs query engine contracts.
+//! Nexus native-rs query engine contracts.
 //!
 //! This crate deliberately does not depend on DataFusion. DataFusion-specific
 //! matching, fallback reporting, and adapter wrappers belong in

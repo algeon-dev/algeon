@@ -105,7 +105,7 @@ fn benchmark_query_progress_line_identifies_query_and_profile() {
 #[test]
 fn benchmark_query_progress_line_identifies_named_sf100_profile() {
     let profile =
-        tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
+        tpch_native_profile_settings_from([(NEXUS_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q07".to_string()],
         native_memory_policy: NativeTpchMemoryPolicy::bounded_from_profile_settings(profile),
@@ -412,9 +412,9 @@ fn benchmark_table_metadata(table: &str, row_count: u64, columns: &[&str]) -> Tp
 fn accepted_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
     NativeDataFusionPlanningRow {
         query_id: query_id.to_string(),
-        physical_root: "NativeCudfExec".to_string(),
-        physical_shape: "NativeCudfExec".to_string(),
-        native_candidate_shape: Some("NativeCudfExec".to_string()),
+        physical_root: "NexusNativeExec".to_string(),
+        physical_shape: "NexusNativeExec".to_string(),
+        native_candidate_shape: Some("NexusNativeExec".to_string()),
         native_candidate_shape_family: Some("sort_local_parquet_aggregate".to_string()),
         outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
         reason_code: None,
@@ -426,7 +426,7 @@ fn accepted_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         edge_normalize_inserted: false,
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
-        post_native_plan_root: "NativeCudfExec".to_string(),
+        post_native_plan_root: "NexusNativeExec".to_string(),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Native,
         native_plan_fragment_count: 1,
         host_datafusion_boundary_count: 0,

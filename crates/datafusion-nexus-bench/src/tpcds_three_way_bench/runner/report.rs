@@ -289,8 +289,8 @@ fn statistical_aggregate_tolerance_contract_for_row(engine: Engine) -> String {
 }
 
 fn native_statistical_aggregate_execution_mode_from_env() -> StatisticalAggregateExecutionMode {
-    std::env::var(CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
-        .or_else(|_| std::env::var(CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV))
+    std::env::var(NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
+        .or_else(|_| std::env::var(NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV))
         .ok()
         .map(|value| {
             value.parse::<StatisticalAggregateExecutionMode>().unwrap_or_else(|error| {

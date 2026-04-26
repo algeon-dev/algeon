@@ -16,7 +16,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::{NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem},
 };
 use datafusion_nexus_bench::{
@@ -35,12 +35,12 @@ use datafusion_nexus_workloads::{
 };
 use nexus_query_engine::mode::NativePipelineExecutionMode;
 
-const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
+const NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let dir = unique_temp_dir("datafusion-nexus-native-fallback-pressure");
-    let workload = std::env::var("CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD").unwrap_or_else(|_| "synthetic".to_string());
+    let workload = std::env::var("NEXUS_NATIVE_FALLBACK_PRESSURE_WORKLOAD").unwrap_or_else(|_| "synthetic".to_string());
 
     let (items, workload_dataset) = match workload.as_str() {
         "synthetic" => (synthetic_workload_items(&dir).await, None),
@@ -58,13 +58,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         value => {
             return Err(format!(
-                "unsupported CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD={value}; expected synthetic, tpch, tpch_scalar, or tpcds"
+                "unsupported NEXUS_NATIVE_FALLBACK_PRESSURE_WORKLOAD={value}; expected synthetic, tpch, tpch_scalar, or tpcds"
             )
             .into());
         },
     };
 
-    let execution_config = NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
+    let execution_config = NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
         .with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
     let mut report = NativeFallbackPressureReport::collect_with_native_execution_config(items, &execution_config);
     if let Some(metadata) = workload_dataset {
@@ -77,11 +77,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
-    let mode = std::env::var(CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
+    let mode = std::env::var(NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
         .unwrap_or_else(|_| NativePipelineExecutionMode::StrictBounded.as_str().to_string());
     mode.parse::<NativePipelineExecutionMode>().unwrap_or_else(|error| {
         panic!(
-            "unsupported {CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
+            "unsupported {NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
             error.value()
         )
     })

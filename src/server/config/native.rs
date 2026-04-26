@@ -202,7 +202,7 @@ pub(super) fn native_optimizer_config(
     file: &ServerNativeFileConfig,
     gpu_devices: &[usize],
     device_budget_fraction: Option<f64>,
-) -> Result<CudfOptimizerConfig> {
+) -> Result<NexusNativeOptimizerConfig> {
     let memory_policy = optional_native_string(
         values,
         NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
@@ -330,26 +330,26 @@ pub(super) fn native_optimizer_config(
 
     let device_ordinal = *gpu_devices.first().unwrap_or(&0);
     let mut execution_config = match memory_policy.value {
-        ServerNativeMemoryPolicy::Unbounded => NativeCudfExecutionConfig::unbounded(),
+        ServerNativeMemoryPolicy::Unbounded => NexusNativeExecutionConfig::unbounded(),
         ServerNativeMemoryPolicy::Bounded => match (&device_budget, &max_source_chunk, &max_row_groups) {
             (None, None, None) => {
                 let device_budget_bytes = match device_budget_fraction {
-                    Some(fraction) => NativeCudfExecutionConfig::auto_sized_device_budget_bytes_for_device_with_fraction(
+                    Some(fraction) => NexusNativeExecutionConfig::auto_sized_device_budget_bytes_for_device_with_fraction(
                         device_ordinal,
                         fraction,
                     ),
-                    None => NativeCudfExecutionConfig::auto_sized_device_budget_bytes_for_device(device_ordinal),
+                    None => NexusNativeExecutionConfig::auto_sized_device_budget_bytes_for_device(device_ordinal),
                 };
-                NativeCudfExecutionConfig::bounded(
+                NexusNativeExecutionConfig::bounded(
                     device_budget_bytes,
-                    NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-                    NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
+                    NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
+                    NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
                     max_retry_attempts
                         .as_ref()
-                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS, |value| value.value),
+                        .map_or(NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS, |value| value.value),
                     min_retry_chunk_row_groups
                         .as_ref()
-                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS, |value| {
+                        .map_or(NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS, |value| {
                             value.value
                         }),
                 )
@@ -361,8 +361,8 @@ pub(super) fn native_optimizer_config(
                 if max_row_groups.value == 0 {
                     return Err(ServerError::invalid_config(max_row_groups.field, "must be greater than zero"));
                 }
-                NativeCudfExecutionConfig::bounded(
-                    NativeCudfExecutionConfig::auto_sized_device_budget_bytes_for_device_with_fraction(
+                NexusNativeExecutionConfig::bounded(
+                    NexusNativeExecutionConfig::auto_sized_device_budget_bytes_for_device_with_fraction(
                         device_ordinal,
                         device_budget_fraction.expect("checked above"),
                     ),
@@ -370,10 +370,10 @@ pub(super) fn native_optimizer_config(
                     max_row_groups.value,
                     max_retry_attempts
                         .as_ref()
-                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS, |value| value.value),
+                        .map_or(NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS, |value| value.value),
                     min_retry_chunk_row_groups
                         .as_ref()
-                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS, |value| {
+                        .map_or(NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS, |value| {
                             value.value
                         }),
                 )
@@ -388,16 +388,16 @@ pub(super) fn native_optimizer_config(
                 if max_row_groups.value == 0 {
                     return Err(ServerError::invalid_config(max_row_groups.field, "must be greater than zero"));
                 }
-                NativeCudfExecutionConfig::bounded(
+                NexusNativeExecutionConfig::bounded(
                     device_budget.value,
                     max_source_chunk.value,
                     max_row_groups.value,
                     max_retry_attempts
                         .as_ref()
-                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS, |value| value.value),
+                        .map_or(NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS, |value| value.value),
                     min_retry_chunk_row_groups
                         .as_ref()
-                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS, |value| {
+                        .map_or(NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS, |value| {
                             value.value
                         }),
                 )
@@ -508,7 +508,7 @@ pub(super) fn native_optimizer_config(
         execution_config = execution_config.with_statistical_aggregate_execution_mode(mode.value);
     }
 
-    Ok(CudfOptimizerConfig::new(GpuFallbackPolicy::default()).with_native_execution_config(execution_config))
+    Ok(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::default()).with_native_execution_config(execution_config))
 }
 
 pub(super) fn optional_native_string(

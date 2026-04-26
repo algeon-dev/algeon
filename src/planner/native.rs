@@ -7,12 +7,12 @@ use datafusion::{
 };
 use nexus_query_engine::{metrics::QueryId, plan::PlanNode, runtime::QueryPlacementHint};
 
-use super::CudfOptimizerConfig;
+use super::NexusNativeOptimizerConfig;
 use crate::{
     error::{Error, ErrorCode},
     native::lakehouse_pruning,
     native_exec::{
-        NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
+        NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
         admission::QueryAdmissionTicket,
         graph::{GraphAdmissionModelAsk, graph_execution_plan},
         plan_is_cpu_fallback_limited, plan_is_query_admission_wrapped, plan_is_unbounded_native_execution_limited,
@@ -22,7 +22,7 @@ use crate::{
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
     physical_plan::physical_plan_shape,
     report::PlanningReport,
-    session::{CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME},
+    session::{NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME},
 };
 
 mod adaptive;
@@ -74,14 +74,14 @@ pub struct NativePlanningDiagnostics {
 /// `GpuPreferred` leaves rejected candidates on the original DataFusion plan;
 /// `GpuOnly` reports the first native rejection as an optimizer error.
 #[derive(Debug)]
-pub struct CudfNativePhysicalOptimizerRule {
-    config: CudfOptimizerConfig,
+pub struct NexusNativePhysicalOptimizerRule {
+    config: NexusNativeOptimizerConfig,
     stage: NativeOptimizerStage,
-    state: Arc<CudfNativePhysicalOptimizerRuleState>,
+    state: Arc<NexusNativePhysicalOptimizerRuleState>,
 }
 
 #[derive(Debug)]
-struct CudfNativePhysicalOptimizerRuleState {
+struct NexusNativePhysicalOptimizerRuleState {
     last_input_plan_root: Mutex<Option<String>>,
     last_input_plan_shape: Mutex<Option<String>>,
     last_input_join_diagnostics: Mutex<Vec<NativeJoinDiagnosticSummary>>,
@@ -101,13 +101,13 @@ enum NativeOptimizerStage {
     Final,
 }
 
-impl CudfNativePhysicalOptimizerRule {
+impl NexusNativePhysicalOptimizerRule {
     /// Create the final native rewrite rule.
-    pub fn new(config: CudfOptimizerConfig) -> Self {
+    pub fn new(config: NexusNativeOptimizerConfig) -> Self {
         Self {
             config,
             stage: NativeOptimizerStage::Final,
-            state: Arc::new(CudfNativePhysicalOptimizerRuleState {
+            state: Arc::new(NexusNativePhysicalOptimizerRuleState {
                 last_input_plan_root: Mutex::new(None),
                 last_input_plan_shape: Mutex::new(None),
                 last_input_join_diagnostics: Mutex::new(Vec::new()),
@@ -121,7 +121,7 @@ impl CudfNativePhysicalOptimizerRule {
     }
 
     /// Return the immutable config copied into rewritten native exec nodes.
-    pub fn config(&self) -> &CudfOptimizerConfig {
+    pub fn config(&self) -> &NexusNativeOptimizerConfig {
         &self.config
     }
 
@@ -200,7 +200,7 @@ impl CudfNativePhysicalOptimizerRule {
     }
 }
 
-impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
+impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
@@ -215,7 +215,8 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         if plan_is_cpu_fallback_limited(plan.as_ref()) {
             return Ok(plan);
         }
-        if plan.downcast_ref::<NativeCudfExec>().is_some() || plan.downcast_ref::<NativeCudfComposedExec>().is_some() {
+        if plan.downcast_ref::<NexusNativeExec>().is_some() || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
+        {
             return Ok(plan);
         }
         if let Some(native_plan) = peel_cooperative_native_exec(&plan) {
@@ -297,8 +298,8 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
 
     fn name(&self) -> &str {
         match self.stage {
-            NativeOptimizerStage::CountOnlyProbe => CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME,
-            NativeOptimizerStage::Final => CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+            NativeOptimizerStage::CountOnlyProbe => NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME,
+            NativeOptimizerStage::Final => NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
         }
     }
 
@@ -307,7 +308,7 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
     }
 }
 
-impl CudfNativePhysicalOptimizerRule {
+impl NexusNativePhysicalOptimizerRule {
     fn store_optimization_attempt(&self, optimized: &NativeOptimizationAttempt) -> DataFusionResult<()> {
         *self.state.last_report.lock().map_err(|_| {
             datafusion::common::DataFusionError::from(Error::new(
@@ -335,8 +336,8 @@ impl CudfNativePhysicalOptimizerRule {
 fn apply_execution_admission_wrappers(
     stage: NativeOptimizerStage,
     optimized: &mut NativeOptimizationAttempt,
-    effective_config: &CudfOptimizerConfig,
-    native_execution_config: &NativeCudfExecutionConfig,
+    effective_config: &NexusNativeOptimizerConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
     query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
 ) {
     if optimized.rewritten
@@ -361,7 +362,7 @@ fn apply_execution_admission_wrappers(
 
 fn plan_query_admission_ticket_for_optimized_plan(
     plan: &dyn ExecutionPlan,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<Option<Arc<QueryAdmissionTicket>>> {
     let graph_model_ask = graph_aware_requested_grant_bytes_for_plan(plan, native_execution_config)?;
     let placement_hint = graph_placement_hint_for_plan(plan);
@@ -403,7 +404,7 @@ fn graph_placement_hint_for_plan(plan: &dyn ExecutionPlan) -> QueryPlacementHint
 
 fn graph_aware_requested_grant_bytes_for_plan(
     plan: &dyn ExecutionPlan,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<Option<GraphAdmissionModelAsk>> {
     if native_execution_config.requested_grant_bytes().is_some() {
         return Ok(None);
@@ -463,16 +464,16 @@ fn collect_graph_model_ask_scan(
     }
 
     let mut local_has_graph = false;
-    if let Some(native) = plan.downcast_ref::<NativeCudfExec>() {
+    if let Some(native) = plan.downcast_ref::<NexusNativeExec>() {
         local_has_graph =
             update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
-    } else if let Some(native) = plan.downcast_ref::<NativeCudfComposedExec>() {
+    } else if let Some(native) = plan.downcast_ref::<NexusNativeComposedExec>() {
         if child_has_graph && native_plan_is_graph_ticket_light_fragment(native.native_plan()) {
             return Ok(true);
         }
         local_has_graph =
             update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
-    } else if let Some(native) = plan.downcast_ref::<NativeCudfGpuProducerExec>() {
+    } else if let Some(native) = plan.downcast_ref::<NexusNativeGpuProducerExec>() {
         local_has_graph =
             update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
     }
@@ -599,7 +600,7 @@ mod tests {
         )
     }
 
-    fn backend_admission_config(min_bytes: u64, want_bytes: u64, capacity_bytes: u64) -> NativeCudfExecutionConfig {
+    fn backend_admission_config(min_bytes: u64, want_bytes: u64, capacity_bytes: u64) -> NexusNativeExecutionConfig {
         let tenant_id = TenantId::new("tenant");
         let service = QueryService::new_admission_only(
             QueryServiceConfig { device_capacity_bytes: Some(capacity_bytes), ..QueryServiceConfig::default() },
@@ -607,7 +608,7 @@ mod tests {
             nongds_deployment(),
         )
         .unwrap();
-        NativeCudfExecutionConfig::bounded(min_bytes, 512, 1, 3, 1)
+        NexusNativeExecutionConfig::bounded(min_bytes, 512, 1, 3, 1)
             .with_query_admission_source(QueryAdmissionSource::new(service, tenant_id))
     }
 
@@ -665,8 +666,8 @@ mod tests {
         builder.finish_with_host_sink(graph)
     }
 
-    fn graph_exec(row_group_rows: Option<Vec<u64>>, config: &NativeCudfExecutionConfig) -> NativeCudfExec {
-        NativeCudfExec::try_new(graph_native_plan(row_group_rows), config.clone()).unwrap()
+    fn graph_exec(row_group_rows: Option<Vec<u64>>, config: &NexusNativeExecutionConfig) -> NexusNativeExec {
+        NexusNativeExec::try_new(graph_native_plan(row_group_rows), config.clone()).unwrap()
     }
 
     fn graph_union_native_plan(row_group_rows: Option<Vec<u64>>) -> QueryPlan {
@@ -681,8 +682,8 @@ mod tests {
 
     #[test]
     fn final_rewritten_plan_does_not_consume_cpu_fallback_limiter_in_library_mode() {
-        let config =
-            CudfOptimizerConfig::default().with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
+        let config = NexusNativeOptimizerConfig::default()
+            .with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
         let native_execution_config = config.native_execution_config().clone();
         let mut optimized = attempt(true);
 
@@ -702,8 +703,8 @@ mod tests {
 
     #[test]
     fn final_non_rewritten_plan_is_cpu_fallback_limited_when_configured() {
-        let config =
-            CudfOptimizerConfig::default().with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
+        let config = NexusNativeOptimizerConfig::default()
+            .with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
         let native_execution_config = config.native_execution_config().clone();
         let mut optimized = attempt(false);
 
@@ -766,7 +767,7 @@ mod tests {
     #[test]
     fn graph_aware_ticket_ask_prices_cacheable_bfs_construction() {
         let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
-        let exec = NativeCudfExec::try_new(bfs_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
+        let exec = NexusNativeExec::try_new(bfs_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
 
         let ask = graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap().unwrap();
         assert!(ask.cold_bytes() > ask.warm_bytes());
@@ -789,7 +790,7 @@ mod tests {
     #[test]
     fn graph_aware_ticket_ask_keeps_default_ticket_for_non_graph_dominated_native_plan() {
         let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
-        let exec = NativeCudfExec::try_new(graph_union_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
+        let exec = NexusNativeExec::try_new(graph_union_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
 
         assert_eq!(graph_aware_requested_grant_bytes_for_plan(&exec, &config).unwrap(), None);
         let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config).unwrap().unwrap();

@@ -225,7 +225,7 @@ fn native_source_storage_errors_preserve_adapter_status_mapping() {
         .with_fact("object_store_error_kind", native_code.as_str());
 
         let adapter_error =
-            Error::from_native("datafusion_nexus.native.execute", "native cudf query execution failed", native_error);
+            Error::from_native("datafusion_nexus.native.execute", "nexus native query execution failed", native_error);
 
         assert_eq!(adapter_error.code(), adapter_code);
         assert_eq!(adapter_error.kind(), adapter_kind);
@@ -244,7 +244,7 @@ fn native_service_overloaded_error_preserves_adapter_classification_and_facts() 
     .with_fact("retry_action", "backoff");
 
     let adapter_error =
-        Error::from_native("datafusion_nexus.native.execute", "native cudf query execution failed", native_error);
+        Error::from_native("datafusion_nexus.native.execute", "nexus native query execution failed", native_error);
 
     assert_eq!(adapter_error.code(), ErrorCode::ServiceOverloaded);
     assert_eq!(adapter_error.kind(), ErrorKind::ResourceExhausted);
@@ -338,7 +338,7 @@ fn native_correlation_facts_follow_stamped_query_error() {
 
     let adapter_error = Error::from_native(
         "datafusion_nexus.native_exec.context",
-        "failed to acquire query service native cudf execution context",
+        "failed to acquire query service nexus native execution context",
         native_error,
     );
 
@@ -358,7 +358,7 @@ fn native_fact_collisions_preserve_adapter_facts_and_record_skipped_keys() {
     .with_fact("fallback_reason", "unsupported_shape");
 
     let adapter_error =
-        Error::from_native("datafusion_nexus.native.lower", "native cudf lowering failed", native_error);
+        Error::from_native("datafusion_nexus.native.lower", "nexus native lowering failed", native_error);
 
     assert_eq!(adapter_error.code(), ErrorCode::UnsupportedOperator);
     assert_eq!(adapter_error.fact_value("native_code"), Some("unsupported_plan_shape"));
@@ -581,7 +581,7 @@ fn native_cancelled_error_preserves_adapter_classification_and_facts() {
     native_error.cancel();
     let adapter_error = Error::from_native(
         "datafusion_nexus.native_exec.execute",
-        "native cudf query execution failed",
+        "nexus native query execution failed",
         native_error.check("nexus_query_engine.exec.execute_query_plan").unwrap_err(),
     );
 
@@ -608,7 +608,7 @@ fn native_memory_reservation_error_preserves_adapter_classification_and_facts() 
     .denied_error(1024);
 
     let adapter_error =
-        Error::from_native("datafusion_nexus.native.execute", "native cudf query execution failed", native_error);
+        Error::from_native("datafusion_nexus.native.execute", "nexus native query execution failed", native_error);
 
     assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
     assert_eq!(adapter_error.kind(), ErrorKind::ResourceExhausted);
@@ -641,7 +641,7 @@ fn native_retry_error_preserves_resume_boundary_facts() {
         ));
 
     let adapter_error =
-        Error::from_native("datafusion_nexus.native_exec.execute", "native cudf query execution failed", native_error);
+        Error::from_native("datafusion_nexus.native_exec.execute", "nexus native query execution failed", native_error);
 
     assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
     assert_eq!(adapter_error.fact_value("native_operation"), Some("nexus_query_engine.final_sort.topk_concat"));

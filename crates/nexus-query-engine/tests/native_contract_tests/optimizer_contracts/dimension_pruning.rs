@@ -141,21 +141,19 @@ fn dimension_pruning_traces_target_union_branch_aliases() {
         )),
     ));
     let date_key_schema = Arc::new(Schema::new(vec![Field::new("d_date_sk", DataType::Int32, false)]));
-    let date_projected = builder.add_projection(
-        date,
-        projection_outputs(vec![Expr::column("d_date_sk")], Arc::clone(&date_key_schema)),
-    );
+    let date_projected =
+        builder.add_projection(date, projection_outputs(vec![Expr::column("d_date_sk")], Arc::clone(&date_key_schema)));
     let joined = builder.add_join(
         union,
         date_projected,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "date_sk", "date_sk"), ColumnRef::input(1, "d_date_sk", "d_date_sk"))],
+            vec![JoinKey::new(
+                ColumnRef::input(0, "date_sk", "date_sk"),
+                ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+            )],
         )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "date_sk", "date_sk"),
-            "date_sk",
-        )]),
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")]),
         Arc::clone(&union_schema),
     );
     let plan = builder.finish_gpu_resident(joined);
@@ -342,9 +340,8 @@ fn dimension_pruning_key_accumulator_supports_q16_string_predicate_with_utf8view
         Arc::clone(&schema),
         vec![
             Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])) as ArrayRef,
-            Arc::new(arrow::array::StringArray::from(vec![
-                "Brand#11", "Brand#45", "Brand#22", "Brand#33", "Brand#44",
-            ])) as ArrayRef,
+            Arc::new(arrow::array::StringArray::from(vec!["Brand#11", "Brand#45", "Brand#22", "Brand#33", "Brand#44"]))
+                as ArrayRef,
             Arc::new(arrow::array::StringViewArray::from(vec![
                 "SMALL BRUSHED",
                 "SMALL BRUSHED",
@@ -357,9 +354,13 @@ fn dimension_pruning_key_accumulator_supports_q16_string_predicate_with_utf8view
     )
     .expect("test batch should be valid");
 
-    let filter = nexus_query_engine::optimizer::dimension_key_filter_from_batch(&batch, "p_partkey", &part_brand_type_size_predicate())
-        .expect("part string predicate should be evaluable")
-        .expect("qualifying part keys should build a filter");
+    let filter = nexus_query_engine::optimizer::dimension_key_filter_from_batch(
+        &batch,
+        "p_partkey",
+        &part_brand_type_size_predicate(),
+    )
+    .expect("part string predicate should be evaluable")
+    .expect("qualifying part keys should build a filter");
 
     assert_eq!(filter.bounds(), nexus_query_engine::optimizer::KeyRange { min: 10, max: 40 });
     assert_eq!(filter.run_count(), 2);
@@ -492,10 +493,7 @@ fn dimension_pruning_does_not_trace_target_lineage_through_limit() {
             JoinType::Inner,
             vec![JoinKey::new(ColumnRef::input(0, "fact_key", "fact_key"), ColumnRef::input(1, "dim_key", "dim_key"))],
         )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "fact_key", "fact_key"),
-            "fact_key",
-        )]),
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")]),
         Arc::clone(&fact_schema),
     );
     let plan = builder.finish_gpu_resident(joined);
@@ -620,8 +618,8 @@ fn dimension_pruning_scattered_keyset_prunes_gaps_a_single_range_would_keep() {
     )));
     let plan = builder.finish_gpu_resident(source);
 
-    let scattered =
-        nexus_query_engine::optimizer::DimensionKeyFilter::from_keys(&[5, 35]).expect("non-empty keyset builds a filter");
+    let scattered = nexus_query_engine::optimizer::DimensionKeyFilter::from_keys(&[5, 35])
+        .expect("non-empty keyset builds a filter");
     assert_eq!(scattered.run_count(), 2);
 
     let result = apply_dimension_derived_pruning_with_stats(
@@ -977,10 +975,7 @@ fn part_brand_type_size_predicate() -> Expr {
     let type_ok = Expr::not_like_escape(Expr::column("p_type"), "MEDIUM POLISHED%", "\\");
     let size_ok = Expr::in_list(
         Expr::column("p_size"),
-        [49, 14, 23, 45, 19, 3, 36, 9]
-            .into_iter()
-            .map(|size| Expr::literal(LiteralValue::Int32(size)))
-            .collect(),
+        [49, 14, 23, 45, 19, 3, 36, 9].into_iter().map(|size| Expr::literal(LiteralValue::Int32(size))).collect(),
     );
     Expr::binary(Expr::binary(brand_ok, BinaryOp::And, type_ok), BinaryOp::And, size_ok)
 }
@@ -996,9 +991,8 @@ fn write_part_brand_type_size_dimension_parquet(path: &Path, schema: Arc<Schema>
         Arc::clone(&schema),
         vec![
             Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])) as ArrayRef,
-            Arc::new(arrow::array::StringArray::from(vec![
-                "Brand#11", "Brand#45", "Brand#22", "Brand#33", "Brand#44",
-            ])) as ArrayRef,
+            Arc::new(arrow::array::StringArray::from(vec!["Brand#11", "Brand#45", "Brand#22", "Brand#33", "Brand#44"]))
+                as ArrayRef,
             Arc::new(arrow::array::StringArray::from(vec![
                 "SMALL BRUSHED",
                 "SMALL BRUSHED",

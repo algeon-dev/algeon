@@ -198,7 +198,7 @@ ENV LD_LIBRARY_PATH=/app/lib \
 #   NEXUS_SERVER_CUGRAPH_DIRECTED  NEXUS_SERVER_CUGRAPH_RENUMBER
 #   NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY   python_cugraph | raw_libcugraph
 #
-# NOTE: CUDF_NATIVE_PIPELINE_EXECUTION_MODE is a BENCHMARK env var only; the
+# NOTE: NEXUS_NATIVE_PIPELINE_EXECUTION_MODE is a BENCHMARK env var only; the
 # server uses NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE.
 # ===========================================================================
 

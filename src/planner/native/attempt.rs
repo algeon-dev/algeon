@@ -27,7 +27,7 @@ use datafusion::{
 use nexus_query_engine::capability::BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS;
 
 use super::{
-    super::{CudfOptimizerConfig, candidate_rejected_error},
+    super::{NexusNativeOptimizerConfig, candidate_rejected_error},
     NativeAdaptivePipelineDiagnostics, NativeStrictBoundedContractDiagnostics,
     adaptive::{adaptive_pipeline_was_rejected, plan_adaptive_pipeline_diagnostics},
     strict_bounded::{
@@ -37,12 +37,12 @@ use super::{
 use crate::{
     error::{Error, ErrorCode},
     native_exec::{
-        NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
+        NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
         producer::gpu_resident_producer_input_name,
     },
     policy::{FallbackReason, GpuFallbackPolicy},
     report::{CandidateOutcome, GpuCandidate, PlanningReport},
-    table_format::CudfTableFormatScanExec,
+    table_format::NexusTableFormatScanExec,
 };
 
 /// Optimizer attempt output, including the replacement plan and all report evidence.
@@ -77,7 +77,7 @@ enum HostArrowChildReplacementScope {
 pub(super) fn apply_native_fallback_policy(
     original_plan: Arc<dyn ExecutionPlan>,
     attempt: NativeOptimizationAttempt,
-    config: &CudfOptimizerConfig,
+    config: &NexusNativeOptimizerConfig,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     match config.fallback_policy {
         GpuFallbackPolicy::GpuPreferred => Ok(attempt),
@@ -91,8 +91,8 @@ pub(super) fn apply_native_fallback_policy(
             rewritten: false,
         }),
         GpuFallbackPolicy::GpuOnly => {
-            if attempt.plan.downcast_ref::<NativeCudfExec>().is_some()
-                || attempt.plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+            if attempt.plan.downcast_ref::<NexusNativeExec>().is_some()
+                || attempt.plan.downcast_ref::<NexusNativeComposedExec>().is_some()
             {
                 return Ok(attempt);
             }
@@ -149,7 +149,7 @@ fn native_preference_fallback_reason(
 
 pub(super) fn optimize_count_only_native_plan(
     plan: Arc<dyn ExecutionPlan>,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
@@ -167,7 +167,7 @@ pub(super) fn optimize_count_only_native_plan(
 
 pub(super) fn optimize_final_native_plan(
     plan: Arc<dyn ExecutionPlan>,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
@@ -182,7 +182,7 @@ pub(super) fn optimize_final_native_plan(
 
 fn optimize_final_native_plan_with_composition(
     plan: Arc<dyn ExecutionPlan>,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
     allow_fragment_composition: bool,
@@ -345,7 +345,7 @@ fn replace_lowered_root_or_keep_plan(
     plan: Arc<dyn ExecutionPlan>,
     properties_plan: Option<Arc<dyn ExecutionPlan>>,
     lowering: crate::native::NativeLoweringResult,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
@@ -507,7 +507,7 @@ fn replace_lowered_root_or_keep_plan(
 
 fn native_optimizer_options_for_execution(
     options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
 ) -> crate::error::Result<nexus_query_engine::optimizer::NativeOptimizerOptions> {
     native_execution_config.validate_query_policies()?;
     let mut options = options.clone();
@@ -534,7 +534,7 @@ fn native_optimizer_options_for_execution(
 fn native_datafusion_exec_for_plan(
     original_plan: Arc<dyn ExecutionPlan>,
     native_plan: nexus_query_engine::plan::QueryPlan,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
     datafusion_shape: &str,
     eq_properties: EquivalenceProperties,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
@@ -542,7 +542,7 @@ fn native_datafusion_exec_for_plan(
         native_execution_config.clone().with_plan_task_mapping_datafusion_shape(datafusion_shape);
     let gpu_input_names = native_plan_gpu_resident_source_names(&native_plan);
     if gpu_input_names.is_empty() {
-        return NativeCudfExec::try_new_with_equivalence_properties(
+        return NexusNativeExec::try_new_with_equivalence_properties(
             native_plan,
             native_execution_config,
             eq_properties,
@@ -552,7 +552,7 @@ fn native_datafusion_exec_for_plan(
     }
 
     let gpu_inputs = gpu_resident_producer_children(&original_plan, &gpu_input_names)?;
-    NativeCudfComposedExec::try_new_with_equivalence_properties(
+    NexusNativeComposedExec::try_new_with_equivalence_properties(
         native_plan,
         gpu_inputs,
         native_execution_config,
@@ -615,7 +615,7 @@ fn collect_gpu_resident_producer_children(
 
 fn compose_host_remainder_over_native_fragments_if_possible(
     rewritten_plan: Arc<dyn ExecutionPlan>,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
     report: &mut PlanningReport,
@@ -647,12 +647,12 @@ fn compose_host_remainder_over_native_fragments_if_possible(
 
 fn try_compose_host_remainder_over_native_fragments(
     rewritten_plan: Arc<dyn ExecutionPlan>,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
 ) -> DataFusionResult<Option<NativeOptimizationAttempt>> {
-    if rewritten_plan.downcast_ref::<NativeCudfExec>().is_some()
-        || rewritten_plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+    if rewritten_plan.downcast_ref::<NexusNativeExec>().is_some()
+        || rewritten_plan.downcast_ref::<NexusNativeComposedExec>().is_some()
         || gpu_resident_producer_input_name(rewritten_plan.as_ref()).is_some()
     {
         return Ok(None);
@@ -674,7 +674,7 @@ fn try_compose_host_remainder_over_native_fragments(
         native_optimizer_options,
         native_plan_preference_options,
     )?;
-    if !attempt.rewritten || attempt.plan.downcast_ref::<NativeCudfComposedExec>().is_none() {
+    if !attempt.rewritten || attempt.plan.downcast_ref::<NexusNativeComposedExec>().is_none() {
         return Ok(None);
     }
     Ok(Some(attempt))
@@ -717,15 +717,15 @@ fn collect_gpu_resident_input_names(plan: &dyn ExecutionPlan, names: &mut BTreeS
 fn producerize_native_fragments(
     plan: Arc<dyn ExecutionPlan>,
     state: &mut NativeFragmentProducerization,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
-    if let Some(native) = plan.downcast_ref::<NativeCudfExec>() {
+    if let Some(native) = plan.downcast_ref::<NexusNativeExec>() {
         let native_plan = native.native_plan().clone_with_gpu_resident_sink();
         if native_gpu_resident_producer_boundary_is_rejected(&native_plan, native_execution_config)? {
             return Ok(None);
         }
         let input_name = state.next_input_name();
-        let producer = NativeCudfGpuProducerExec::try_new_with_metrics_capture_and_shape(
+        let producer = NexusNativeGpuProducerExec::try_new_with_metrics_capture_and_shape(
             input_name,
             native_plan,
             native_execution_config.metrics_capture_factory(),
@@ -739,7 +739,7 @@ fn producerize_native_fragments(
         .map_err(DataFusionError::from)?;
         return Ok(Some(Arc::new(producer)));
     }
-    if plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+    if plan.downcast_ref::<NexusNativeComposedExec>().is_some()
         || gpu_resident_producer_input_name(plan.as_ref()).is_some()
     {
         return Ok(None);
@@ -768,7 +768,7 @@ fn producerize_native_fragments(
 
 fn native_gpu_resident_producer_boundary_is_rejected(
     plan: &nexus_query_engine::plan::QueryPlan,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<bool> {
     match native_execution_config.native_pipeline_execution_mode() {
         nexus_query_engine::mode::NativePipelineExecutionMode::StrictBounded => {
@@ -777,7 +777,7 @@ fn native_gpu_resident_producer_boundary_is_rejected(
         nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive => {
             let diagnostics = plan_adaptive_pipeline_diagnostics(
                 plan,
-                GpuCandidate::new("NativeCudfGpuProducerExec", plan.output_schema().fields().len()),
+                GpuCandidate::new("NexusNativeGpuProducerExec", plan.output_schema().fields().len()),
                 native_execution_config,
             )?
             .unwrap_or_default();
@@ -788,7 +788,7 @@ fn native_gpu_resident_producer_boundary_is_rejected(
 
 fn optimize_native_child_without_composing_host_remainder(
     child: Arc<dyn ExecutionPlan>,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
@@ -803,7 +803,7 @@ fn optimize_native_child_without_composing_host_remainder(
 
 fn optimize_native_children_for_host_arrow_boundary(
     plan: Arc<dyn ExecutionPlan>,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
     mode: HostArrowChildReplacementMode,
@@ -990,12 +990,12 @@ fn join_boundary_should_keep_datafusion_child(parent: &dyn ExecutionPlan, child:
 }
 
 fn subtree_contains_table_format_scan(plan: &dyn ExecutionPlan) -> bool {
-    plan.downcast_ref::<CudfTableFormatScanExec>().is_some()
+    plan.downcast_ref::<NexusTableFormatScanExec>().is_some()
         || plan.children().into_iter().any(|child| subtree_contains_table_format_scan(child.as_ref()))
 }
 
 fn subtree_contains_non_table_format_data_source(plan: &dyn ExecutionPlan) -> bool {
-    if plan.downcast_ref::<CudfTableFormatScanExec>().is_some() {
+    if plan.downcast_ref::<NexusTableFormatScanExec>().is_some() {
         return false;
     }
     plan.downcast_ref::<DataSourceExec>().is_some()
@@ -1079,7 +1079,7 @@ fn expr_contains_scalar_function(expr: &Arc<dyn PhysicalExpr>) -> bool {
 
 fn native_execution_boundary_is_rejected(
     plan: &nexus_query_engine::plan::QueryPlan,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<bool> {
     if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
         return Ok(false);
@@ -1114,7 +1114,10 @@ fn native_execution_rejection_report_for_candidate(
         .with_correlation_from(source_report)
 }
 
-fn stamp_planning_report_correlation(report: &mut PlanningReport, native_execution_config: &NativeCudfExecutionConfig) {
+fn stamp_planning_report_correlation(
+    report: &mut PlanningReport,
+    native_execution_config: &NexusNativeExecutionConfig,
+) {
     if let Some(query_id) = native_execution_config.query_id() {
         report.set_query_id(query_id.clone());
     }
@@ -1125,7 +1128,7 @@ fn stamp_planning_report_correlation(report: &mut PlanningReport, native_executi
 
 fn stamp_native_error_correlation(
     mut error: nexus_query_engine::error::QueryError,
-    native_execution_config: &NativeCudfExecutionConfig,
+    native_execution_config: &NexusNativeExecutionConfig,
 ) -> nexus_query_engine::error::QueryError {
     if let Some(query_id) = native_execution_config.query_id() {
         error = error.with_query_id(query_id.clone());
@@ -1162,7 +1165,7 @@ pub(super) fn peel_cooperative_native_exec(plan: &Arc<dyn ExecutionPlan>) -> Opt
     let [child] = children.as_slice() else {
         return None;
     };
-    child.downcast_ref::<NativeCudfExec>().is_some().then(|| Arc::clone(child))
+    child.downcast_ref::<NexusNativeExec>().is_some().then(|| Arc::clone(child))
 }
 
 #[cfg(test)]
@@ -1175,7 +1178,7 @@ mod tests {
             nexus_query_engine::dynamic_filter::DynamicFilterExecutionOptions::default().with_max_build_rows(10_000);
         let keyed_hash_join_strategy_options = nexus_query_engine::capability::KeyedHashJoinStrategyOptions::default()
             .with_small_reusable_hash_build_row_threshold(11);
-        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+        let execution_config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_dynamic_filter_execution_options(dynamic_filter_options)
             .with_keyed_hash_join_strategy_options(keyed_hash_join_strategy_options)
             .with_native_pipeline_execution_mode(nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive);
@@ -1196,7 +1199,7 @@ mod tests {
 
     #[test]
     fn optimizer_options_for_execution_rejects_invalid_expert_query_policy() {
-        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+        let execution_config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_dynamic_filter_execution_options(
                 nexus_query_engine::dynamic_filter::DynamicFilterExecutionOptions::default()
                     .with_max_build_rows(10)
@@ -1217,7 +1220,7 @@ mod tests {
 
     #[test]
     fn optimizer_options_for_execution_rejects_invalid_keyed_hash_join_policy() {
-        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+        let execution_config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_keyed_hash_join_strategy_options(
                 nexus_query_engine::capability::KeyedHashJoinStrategyOptions::default()
                     .with_large_keyed_hash_build_row_threshold(10),
@@ -1237,7 +1240,7 @@ mod tests {
 
     #[test]
     fn optimizer_options_for_execution_rejects_invalid_aggregate_strategy_policy() {
-        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+        let execution_config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_aggregate_strategy_execution_options(
                 nexus_query_engine::capability::AggregateStrategyExecutionOptions::default()
                     .with_encoded_key_partial_low_cardinality_threshold_ppm(1_000_001),
@@ -1257,7 +1260,7 @@ mod tests {
 
     #[test]
     fn optimizer_options_for_execution_rejects_invalid_source_chunk_planning_policy() {
-        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+        let execution_config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_source_chunk_planning_options(
                 nexus_query_engine::chunk::SourceChunkPlanningOptions::default()
                     .with_local_parquet_throughput_min_device_budget_bytes(0),
@@ -1283,7 +1286,7 @@ mod tests {
             },
             ..nexus_query_engine::optimizer::NativeOptimizerOptions::disabled()
         };
-        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1);
+        let execution_config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1);
 
         let error = native_optimizer_options_for_execution(&optimizer_options, &execution_config).unwrap_err();
 

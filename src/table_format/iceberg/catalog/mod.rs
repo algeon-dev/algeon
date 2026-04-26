@@ -54,8 +54,8 @@ pub use glue::{GlueIcebergCatalogBackend, GlueIcebergCatalogConfig};
 #[cfg(feature = "server")]
 pub(crate) use provider::table_ident_from_flat_name;
 pub use provider::{
-    CudfIcebergCatalogProvider, CudfIcebergSchemaProvider, IcebergCatalogBackend, IcebergProviderKind,
-    IcebergProviderOptions, build_catalog_provider_from_backend, build_catalog_provider_from_backend_with_options,
+    IcebergCatalogBackend, IcebergProviderKind, IcebergProviderOptions, NexusIcebergCatalogProvider,
+    NexusIcebergSchemaProvider, build_catalog_provider_from_backend, build_catalog_provider_from_backend_with_options,
     build_scoped_catalog_provider_from_backend, build_scoped_catalog_provider_from_backend_with_options,
 };
 use provider::{

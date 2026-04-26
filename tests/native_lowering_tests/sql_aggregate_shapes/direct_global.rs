@@ -160,7 +160,7 @@ async fn direct_friendly_sql_discounted_revenue_global_decimal_sum_lowers() {
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
     assert!(matches!(
         &aggregate_exprs[0].expr,
-        Expr::Column(column) if column.name().starts_with("__cudf_aggregate_arg_")
+        Expr::Column(column) if column.name().starts_with("__nexus_native_aggregate_arg_")
     ));
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(

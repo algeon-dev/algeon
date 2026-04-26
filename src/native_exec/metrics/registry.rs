@@ -4,7 +4,7 @@ use datafusion::physical_plan::metrics::{
     Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType, Time,
 };
 
-use super::contract::for_each_native_cudf_metric;
+use super::contract::for_each_native_nexus_metric;
 
 macro_rules! metric_storage_type {
     (rows) => {
@@ -42,7 +42,7 @@ macro_rules! register_metric {
 macro_rules! define_registry {
     ($( $field:ident => $name:literal: $kind:ident, )*) => {
         #[derive(Debug, Clone)]
-        // Fields are written through `NativeCudfMetrics: Deref<Target = NativeMetricRegistry>`
+        // Fields are written through `NexusNativeMetrics: Deref<Target = NativeMetricRegistry>`
         // from the descriptor recording macros. Keep the full ordered registry even when a
         // particular build does not exercise every recorder path.
         #[allow(dead_code)]
@@ -60,4 +60,4 @@ macro_rules! define_registry {
     };
 }
 
-for_each_native_cudf_metric!(define_registry);
+for_each_native_nexus_metric!(define_registry);

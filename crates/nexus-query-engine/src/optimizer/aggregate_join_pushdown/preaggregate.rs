@@ -235,9 +235,9 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn unique_measure_input_alias(
     used.extend(preagg_aliases.iter().cloned());
     for suffix in 0usize.. {
         let candidate = if suffix == 0 {
-            format!("__cudf_preagg_arg_{index}")
+            format!("__nexus_native_preagg_arg_{index}")
         } else {
-            format!("__cudf_preagg_arg_{index}_{suffix}")
+            format!("__nexus_native_preagg_arg_{index}_{suffix}")
         };
         if !used.contains(&candidate) {
             return candidate;
@@ -387,10 +387,10 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn preaggregate_state_aliases(
         .enumerate()
         .map(|(index, expr)| match expr.function {
             AggregateFunction::Avg => vec![
-                unique_preagg_state_alias(format!("__cudf_preagg_avg_{index}_sum"), &mut used),
-                unique_preagg_state_alias(format!("__cudf_preagg_avg_{index}_count"), &mut used),
+                unique_preagg_state_alias(format!("__nexus_native_preagg_avg_{index}_sum"), &mut used),
+                unique_preagg_state_alias(format!("__nexus_native_preagg_avg_{index}_count"), &mut used),
             ],
-            _ => vec![unique_preagg_state_alias(format!("__cudf_preagg_sum_{index}"), &mut used)],
+            _ => vec![unique_preagg_state_alias(format!("__nexus_native_preagg_sum_{index}"), &mut used)],
         })
         .collect()
 }

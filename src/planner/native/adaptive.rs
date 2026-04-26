@@ -4,7 +4,7 @@ use nexus_query_engine::{
     plan::QueryPlan,
 };
 
-use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCandidate};
+use crate::{error::Error, native_exec::NexusNativeExecutionConfig, report::GpuCandidate};
 
 /// Adapter-side adaptive bounded diagnostics collected during planning.
 ///
@@ -55,7 +55,7 @@ pub struct NativeAdaptivePipelineCandidateDiagnostics {
 pub(super) fn plan_adaptive_pipeline_diagnostics(
     plan: &QueryPlan,
     candidate: GpuCandidate,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<Option<NativeAdaptivePipelineDiagnostics>> {
     let memory_history = execution_config.adaptive_memory_history();
     let admission = nexus_query_engine::admission::adaptive_bounded_pipeline_admission_with_memory_history(
@@ -89,7 +89,7 @@ fn adaptive_pipeline_report_error(error: nexus_query_engine::error::QueryError) 
 
 fn stamp_adaptive_report_correlation(
     mut report: AdaptivePipelineReport,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> AdaptivePipelineReport {
     if let Some(query_id) = execution_config.query_id() {
         report = report.with_query_id(query_id.clone());
@@ -102,7 +102,7 @@ fn stamp_adaptive_report_correlation(
 
 fn stamp_native_error_correlation(
     mut error: nexus_query_engine::error::QueryError,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> nexus_query_engine::error::QueryError {
     if let Some(query_id) = execution_config.query_id() {
         error = error.with_query_id(query_id.clone());

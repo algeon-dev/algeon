@@ -413,12 +413,12 @@ mod get_tables_prefilter_tests {
         Arc::new(Schema::new(vec![Field::new(format!("{name}_id"), DataType::Int32, false)]))
     }
 
-    fn service_with_schema(schema: Arc<CountingSchemaProvider>) -> DatafusionCudfFlightSqlService {
+    fn service_with_schema(schema: Arc<CountingSchemaProvider>) -> DatafusionNexusFlightSqlService {
         let ctx = Arc::new(SessionContext::new());
         ctx.register_catalog("counting", Arc::new(CountingCatalog { schema }));
-        DatafusionCudfFlightSqlService::new(
+        DatafusionNexusFlightSqlService::new(
             ctx,
-            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+            NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
             ServerSessionProfile::Native,
             Arc::new(QueryAdmission::new(1).expect("test admission limit")),
             Duration::from_secs(30),

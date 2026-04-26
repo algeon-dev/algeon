@@ -233,7 +233,7 @@ impl MemoryReservationRequest {
         let mut error = QueryError::new(
             crate::error::QueryErrorCode::MemoryReservationFailed,
             "nexus_query_engine.memory.reserve",
-            "memory reservation failed before native cudf execution",
+            "memory reservation failed before nexus native execution",
         )
         .with_fact("memory_boundary", &self.memory_boundary)
         .with_fact("reservation_kind", self.reservation_kind)

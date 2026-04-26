@@ -136,23 +136,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-gpu-flock", action="store_true", help="Do not wrap native GPU runs with flock /tmp/cudf-gpu.lock.")
     parser.add_argument(
         "--native-profile",
-        default=os.environ.get("CUDF_CLICKBENCH_NATIVE_PROFILE", "clickbench_gpu_throughput"),
+        default=os.environ.get("NEXUS_CLICKBENCH_NATIVE_PROFILE", "clickbench_gpu_throughput"),
         help="Named ClickBench native profile (default: clickbench_gpu_throughput).",
     )
     parser.add_argument(
         "--native-fallback-policy",
-        default=os.environ.get("CUDF_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY", "gpu_preferred"),
+        default=os.environ.get("NEXUS_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY", "gpu_preferred"),
         help="Native fallback policy for datafusion_nexus runs (default: gpu_preferred).",
     )
     parser.add_argument(
         "--native-source-chunk-bytes",
-        default=os.environ.get("CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES"),
-        help="Optional override for CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES.",
+        default=os.environ.get("NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES"),
+        help="Optional override for NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES.",
     )
     parser.add_argument(
         "--native-row-groups-per-chunk",
-        default=os.environ.get("CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK"),
-        help="Optional override for CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK.",
+        default=os.environ.get("NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK"),
+        help="Optional override for NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK.",
     )
     args = parser.parse_args()
     if args.iterations < 1:
@@ -299,23 +299,23 @@ def run_datafusion_outputs(
     env.update(
         {
             "NEXUS_PARQUET_DIR": str(fixture),
-            "CUDF_CLICKBENCH_BENCH_QUERY_IDS": query_ids,
-            "CUDF_CLICKBENCH_BENCH_WARMUPS": "0",
-            "CUDF_CLICKBENCH_BENCH_ITERATIONS": str(args.iterations),
-            "CUDF_CLICKBENCH_BENCH_DUMP_ROWS_DIR": str(dump_dir),
-            "CUDF_CLICKBENCH_BENCH_PROGRESS": "1",
-            "CUDF_CLICKBENCH_NATIVE_PROFILE": str(args.native_profile),
-            "CUDF_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY": str(args.native_fallback_policy),
+            "NEXUS_CLICKBENCH_BENCH_QUERY_IDS": query_ids,
+            "NEXUS_CLICKBENCH_BENCH_WARMUPS": "0",
+            "NEXUS_CLICKBENCH_BENCH_ITERATIONS": str(args.iterations),
+            "NEXUS_CLICKBENCH_BENCH_DUMP_ROWS_DIR": str(dump_dir),
+            "NEXUS_CLICKBENCH_BENCH_PROGRESS": "1",
+            "NEXUS_CLICKBENCH_NATIVE_PROFILE": str(args.native_profile),
+            "NEXUS_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY": str(args.native_fallback_policy),
         }
     )
     if args.native_source_chunk_bytes is not None:
-        env["CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES"] = str(args.native_source_chunk_bytes)
+        env["NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES"] = str(args.native_source_chunk_bytes)
     if args.native_row_groups_per_chunk is not None:
-        env["CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK"] = str(args.native_row_groups_per_chunk)
+        env["NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK"] = str(args.native_row_groups_per_chunk)
     if engines == ["cpu_datafusion"]:
-        env["CUDF_CLICKBENCH_BENCH_SKIP_NATIVE"] = "1"
+        env["NEXUS_CLICKBENCH_BENCH_SKIP_NATIVE"] = "1"
     elif engines == ["datafusion_nexus"]:
-        env["CUDF_CLICKBENCH_BENCH_SKIP_CPU"] = "1"
+        env["NEXUS_CLICKBENCH_BENCH_SKIP_CPU"] = "1"
 
     report_path = out_dir / "datafusion_clickbench_benchmark.tsv"
     command = [args.cargo_bin, "run"]

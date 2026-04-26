@@ -24,10 +24,10 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_nexus::{
-    native_exec::{NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig},
-    planner::CudfOptimizerConfig,
+    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig},
+    planner::NexusNativeOptimizerConfig,
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::report_workload::clickbench::{
     clickbench_native_profile_settings_from_env, clickbench_report_session_config,
@@ -148,7 +148,7 @@ async fn probe_native_observed(
     let sql = clickbench_sql(query_id)?;
     let physical = plan_native_physical(query_id, root, sql, profile, config).await?;
     let native_plan = peel_native_query_plan(physical.as_ref())
-        .ok_or_else(|| format!("query {query_id} did not lower to NativeCudfExec/NativeCudfComposedExec"))?;
+        .ok_or_else(|| format!("query {query_id} did not lower to NexusNativeExec/NexusNativeComposedExec"))?;
 
     let query_dir = config.artifact_dir.join(query_id);
     let live_dir = query_dir.join("live");
@@ -201,29 +201,28 @@ async fn probe_native_observed(
     let (result, metrics, sealed) = outcome.into_parts();
     let cancelled = cancellation.is_cancelled();
     let mut completed = false;
-    let mut cancellation_drained = false;
     let mut output_rows = None;
     let mut output_fingerprint = None;
     let mut error = None;
-    match result {
+    let cancellation_drained = match &result {
         Ok(QueryOutput::HostArrow(batch)) => {
             completed = true;
-            cancellation_drained = cancelled;
             output_rows = Some(batch.num_rows() as u64);
             output_fingerprint = Some(fingerprint_batch_rows(batch.num_rows(), batch.num_columns()));
+            cancelled
         },
         Ok(QueryOutput::GpuResident(handle)) => {
             completed = true;
-            cancellation_drained = cancelled;
             output_rows = Some(handle.num_rows() as u64);
             output_fingerprint = Some(format!("gpu_rows:{}", handle.num_rows()));
+            cancelled
         },
         Err(err) => {
             let code = err.code().as_str().to_string();
-            cancellation_drained = cancelled && code == "cancelled";
             error = Some(format!("{code}: {err}"));
+            cancelled && code == "cancelled"
         },
-    }
+    };
 
     let sealed_jsonl = if let Some(snapshot) = sealed.as_ref() {
         let path = query_dir.join("sealed.jsonl");
@@ -351,10 +350,10 @@ async fn plan_native_physical(
     config: &ProbeConfig,
 ) -> ToolResult<Arc<dyn ExecutionPlan>> {
     let layout = discover_clickbench_layout(root)?;
-    let optimizer_config = CudfOptimizerConfig::new(config.fallback_policy)
+    let optimizer_config = NexusNativeOptimizerConfig::new(config.fallback_policy)
         .with_native_pipeline_execution_mode(config.native_pipeline_execution_mode)
         .with_native_execution_config(
-            NativeCudfExecutionConfig::bounded(
+            NexusNativeExecutionConfig::bounded(
                 profile.device_budget_bytes,
                 profile.max_source_chunk_bytes,
                 profile.max_row_groups_per_chunk,
@@ -369,7 +368,7 @@ async fn plan_native_physical(
     let state = datafusion::execution::SessionStateBuilder::new()
         .with_config(clickbench_report_session_config())
         .with_default_features()
-        .with_cudf_native(optimizer_config)
+        .with_nexus_native(optimizer_config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_clickbench_table(&ctx, &layout).await?;
@@ -379,10 +378,10 @@ async fn plan_native_physical(
 }
 
 fn peel_native_query_plan(plan: &dyn ExecutionPlan) -> Option<QueryPlan> {
-    if let Some(native) = plan.downcast_ref::<NativeCudfExec>() {
+    if let Some(native) = plan.downcast_ref::<NexusNativeExec>() {
         return Some(native.native_plan().clone());
     }
-    if let Some(native) = plan.downcast_ref::<NativeCudfComposedExec>() {
+    if let Some(native) = plan.downcast_ref::<NexusNativeComposedExec>() {
         return Some(native.native_plan().clone());
     }
     for child in plan.children() {
@@ -673,7 +672,7 @@ fn default_artifact_dir() -> PathBuf {
 }
 
 fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
-    env::var("CUDF_NATIVE_PIPELINE_EXECUTION_MODE")
+    env::var("NEXUS_NATIVE_PIPELINE_EXECUTION_MODE")
         .ok()
         .and_then(|value| parse_pipeline_mode(value.trim()).ok())
         .unwrap_or(NativePipelineExecutionMode::StrictBounded)
@@ -697,8 +696,8 @@ fn print_usage() {
              [--deadline-secs 120] [--snapshot-interval-ms 500] [--mode native_observed|datafusion_collect]\n\
          \n\
          Environment:\n\
-           NEXUS_PARQUET_DIR, CUDF_CLICKBENCH_NATIVE_PROFILE, CUDF_NATIVE_PIPELINE_EXECUTION_MODE\n\
-           and other CUDF_CLICKBENCH_NATIVE_* knobs are honored via the shared ClickBench profile."
+           NEXUS_PARQUET_DIR, NEXUS_CLICKBENCH_NATIVE_PROFILE, NEXUS_NATIVE_PIPELINE_EXECUTION_MODE\n\
+           and other NEXUS_CLICKBENCH_NATIVE_* knobs are honored via the shared ClickBench profile."
     );
 }
 

@@ -1,6 +1,6 @@
 use super::*;
 
-impl DatafusionCudfFlightSqlService {
+impl DatafusionNexusFlightSqlService {
     pub(super) fn expire_stale_tickets(&self, now: Instant) {
         self.coordinator.maintenance_at(now);
     }
@@ -352,7 +352,7 @@ impl DatafusionCudfFlightSqlService {
                 batch
             })
             .map_err(move |error| {
-                let _stream_enter = DatafusionCudfFlightSqlService::query_stage_span(
+                let _stream_enter = DatafusionNexusFlightSqlService::query_stage_span(
                     None,
                     &query_id_for_body,
                     correlation_id_for_body.as_deref(),

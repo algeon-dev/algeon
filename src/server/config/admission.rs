@@ -377,7 +377,7 @@ pub(super) fn validate_comparable_memory_share_order(
 
 pub(super) fn validate_admission_grant_min_capacity(
     admission: &ServerAdmissionPolicyConfig,
-    optimizer: &CudfOptimizerConfig,
+    optimizer: &NexusNativeOptimizerConfig,
 ) -> Result<()> {
     let MemoryControlPolicy::Bounded { device_budget_bytes: device_capacity_bytes, .. } =
         optimizer.native_execution_config().memory_control_policy()

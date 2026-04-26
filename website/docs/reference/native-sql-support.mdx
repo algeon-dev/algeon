@@ -75,7 +75,7 @@ For ad-hoc SQL, validate against the same catalog and server configuration that
 will execute the query:
 
 ```sql
-SELECT overall, cudf_native_coverage, fallback_reason_count, coverage_json
+SELECT overall, nexus_native_coverage, fallback_reason_count, coverage_json
 FROM nexus_explain_coverage('
   SELECT l_returnflag, sum(l_quantity)
   FROM lineitem

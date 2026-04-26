@@ -36,7 +36,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
         .map_err(|error| {
             QueryError::from_cudf_with_budget_details(
                 "nexus_query_engine.aggregate.prepare_single.prepared_sort_groupby",
-                "failed to prepare bounded native cudf sort groupby",
+                "failed to prepare bounded nexus native sort groupby",
                 error,
             )
         }) {
@@ -68,7 +68,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
     let mut output = match prepared.agg_with_budget(&aggregate.aggregations, token).map_err(|error| {
         QueryError::from_cudf_with_budget_details(
             "nexus_query_engine.aggregate.execute_single.prepared_sort_groupby",
-            "failed to execute bounded native cudf prepared sort groupby aggregate",
+            "failed to execute bounded nexus native prepared sort groupby aggregate",
             error,
         )
     }) {
@@ -153,7 +153,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
         .map_err(|error| {
             QueryError::from_cudf_with_budget_details(
                 "nexus_query_engine.aggregate.prepare_partial.prepared_sort_groupby",
-                "failed to prepare bounded native cudf sort groupby",
+                "failed to prepare bounded nexus native sort groupby",
                 error,
             )
         }) {
@@ -185,7 +185,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
     let mut output = match prepared.agg_with_budget(&aggregate.aggregations, token).map_err(|error| {
         QueryError::from_cudf_with_budget_details(
             "nexus_query_engine.aggregate.execute_partial.prepared_sort_groupby",
-            "failed to execute bounded native cudf prepared sort groupby aggregate",
+            "failed to execute bounded nexus native prepared sort groupby aggregate",
             error,
         )
     }) {
@@ -386,7 +386,7 @@ fn encoded_partial_key_dtype_requires_encoding(data_type: &ArrowDataType) -> boo
 }
 
 fn unique_encoded_group_key_name(frame: &DataFrame, aggregate: &LoweredAggregate, key_index: usize) -> String {
-    let base = format!("__cudf_encoded_group_key_{key_index}");
+    let base = format!("__nexus_native_encoded_group_key_{key_index}");
     crate::naming::unique_alias_with_suffix(base.as_str(), |candidate| {
         frame.contains(candidate) || aggregate.output_names.iter().any(|name| name == candidate)
     })

@@ -14,17 +14,17 @@ use datafusion::{
 };
 use datafusion_nexus::{
     error::{DataFusionErrorExt, Error as AdapterError},
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::{
         NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
         NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
     },
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{
-    CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, NEXUS_PARQUET_DIR_ENV, TPCH_QUERIES, TPCH_TABLES,
+    NEXUS_PARQUET_DIR_ENV, NEXUS_TPCH_GENERATION_COMMAND_ENV, NEXUS_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
     TpchDatasetMetadata, TpchDefaultScale, TpchQuery, default_tpch_parquet_root, describe_tpch_dataset,
     discover_tpch_table_layout, register_tpch_table_layout,
 };
@@ -54,9 +54,9 @@ pub async fn run() -> DataFusionResult<()> {
     let config = StressConfig::from_env()?;
     let dataset = describe_tpch_dataset(
         &config.dataset_root,
-        std::env::var(CUDF_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "sf1".to_string()),
+        std::env::var(NEXUS_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "sf1".to_string()),
         "query_service_tpch_stress",
-        std::env::var(CUDF_TPCH_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unspecified".to_string()),
+        std::env::var(NEXUS_TPCH_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unspecified".to_string()),
     )
     .map_err(|error| plan_error(error.to_string()))?;
     let cpu_baselines = Arc::new(compute_cpu_baselines(&config).await?);
@@ -510,13 +510,14 @@ async fn prepare_native_with_handle(
     query: &TpchQuery,
     handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<PreparedNativeQuery> {
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
-        NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-    );
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(
+            NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
+        );
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpch_tables(&ctx, &config.dataset_root).await?;

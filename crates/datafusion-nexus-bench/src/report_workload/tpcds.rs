@@ -8,14 +8,14 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::{
         NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
     },
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
     source_cardinality::register_source_unique_keys_for_path,
 };
 use datafusion_nexus_workloads::tpcds::{
@@ -35,56 +35,57 @@ pub use parity::{
 /// When unset, the workload uses CUDA/cudf-rs inventory total memory minus
 /// 500 MiB, with a 256 MiB fallback if GPU memory cannot be detected. Invalid
 /// values panic during config construction.
-pub const CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES";
+pub const NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES";
 /// Named native memory/source profile used by TPC-DS benchmark/report
 /// surfaces. Accepts `conservative` (default) or `sf100_gpu_throughput`;
-/// individual `CUDF_TPCDS_NATIVE_*` knobs may still override the profile.
-pub const CUDF_TPCDS_NATIVE_PROFILE_ENV: &str = "CUDF_TPCDS_NATIVE_PROFILE";
+/// individual `NEXUS_TPCDS_NATIVE_*` knobs may still override the profile.
+pub const NEXUS_TPCDS_NATIVE_PROFILE_ENV: &str = "NEXUS_TPCDS_NATIVE_PROFILE";
 /// Planning target, in bytes, for native Parquet source chunks.
-pub const CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+pub const NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES";
 /// Planning target for row groups per native Parquet source chunk.
-pub const CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
+pub const NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
 /// Maximum bounded retry attempts after resource or reservation pressure.
-pub const CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS";
+pub const NEXUS_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "NEXUS_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS";
 /// Minimum row-group granularity used when retrying with smaller chunks.
-pub const CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
+pub const NEXUS_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "NEXUS_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
 /// Source chunk planning mode used by bounded native TPC-DS execution. Accepts
 /// `conservative` or `local_parquet_throughput`; defaults to the selected
 /// profile.
-pub const CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
+pub const NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
 /// Execution contract for native floating statistical aggregates. Accepts
 /// `datafusion_exact_host_welford` or `gpu_native_tolerant`; defaults depend on
 /// the caller's workload surface.
-pub const CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
-    "CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
+pub const NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
+    "NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
 /// Migration alias for
-/// [`CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`], with the
+/// [`NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`], with the
 /// same accepted values.
-pub const CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
+pub const NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
 /// Enables or disables CPU preference for TPC-DS hybrid analytics planning.
 ///
 /// Native all-GPU report/parity surfaces intentionally keep CPU preference
 /// disabled while SQL may include GPU-only `cugraph_*` table functions.
-pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV: &str = "CUDF_TPCDS_NATIVE_CPU_PREFERENCE";
+pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV: &str = "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE";
 /// Row-group threshold for small/selective CPU preference on the TPC-DS hybrid
 /// analytics surface.
-pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV: &str =
-    "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS";
+pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV: &str =
+    "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS";
 /// Source-read byte threshold for small/selective CPU preference on the TPC-DS
 /// hybrid analytics surface.
-pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV: &str =
-    "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES";
+pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV: &str =
+    "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES";
 /// Row-group threshold for residual-join CPU preference on the TPC-DS hybrid
 /// analytics surface.
-pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV: &str =
-    "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS";
+pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV: &str =
+    "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS";
 /// Source-read byte threshold for residual-join CPU preference on the TPC-DS
 /// hybrid analytics surface.
-pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &str =
-    "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES";
+pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &str =
+    "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES";
 /// Top-k fetch threshold for small/selective CPU preference on the TPC-DS
 /// hybrid analytics surface.
-pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV: &str = "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH";
+pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV: &str =
+    "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH";
 /// Hybrid analytics residual-join row-group threshold.
 ///
 /// This stays intentionally close to the engine default while admitting
@@ -193,7 +194,7 @@ fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
 /// native execution context is built. CPU-preference knobs are intentionally
 /// dormant until the native SQL surface can distinguish ordinary TPC-DS shapes
 /// from GPU-only `cugraph_*` calls.
-pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
+pub fn tpcds_native_optimizer_config() -> NexusNativeOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default(
         nexus_query_engine::mode::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
     )
@@ -202,7 +203,7 @@ pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
 /// Native optimizer config using an already-resolved TPC-DS native profile.
 pub fn tpcds_native_optimizer_config_with_profile_settings(
     profile: &TpcdsNativeProfileSettings,
-) -> CudfOptimizerConfig {
+) -> NexusNativeOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
         nexus_query_engine::mode::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
         profile,
@@ -213,11 +214,11 @@ pub fn tpcds_native_optimizer_config_with_profile_settings(
 ///
 /// The analytics default uses GPU-native tolerant floating statistical
 /// aggregate kernels. Set
-/// [`CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`] or the
-/// migration [`CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV`] to
+/// [`NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`] or the
+/// migration [`NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV`] to
 /// `datafusion_exact_host_welford` when a run intentionally needs bit-exact
 /// DataFusion compatibility.
-pub fn tpcds_native_analytics_optimizer_config() -> CudfOptimizerConfig {
+pub fn tpcds_native_analytics_optimizer_config() -> NexusNativeOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default(
         nexus_query_engine::mode::StatisticalAggregateExecutionMode::GpuNativeTolerant,
     )
@@ -226,7 +227,7 @@ pub fn tpcds_native_analytics_optimizer_config() -> CudfOptimizerConfig {
 /// Analytics/performance optimizer config using an already-resolved TPC-DS native profile.
 pub fn tpcds_native_analytics_optimizer_config_with_profile_settings(
     profile: &TpcdsNativeProfileSettings,
-) -> CudfOptimizerConfig {
+) -> NexusNativeOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
         nexus_query_engine::mode::StatisticalAggregateExecutionMode::GpuNativeTolerant,
         profile,
@@ -239,7 +240,7 @@ pub fn tpcds_native_analytics_optimizer_config_with_profile_settings(
 /// benchmark uses this config to quantify the conservative CPU-preference model.
 pub fn tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings(
     profile: &TpcdsNativeProfileSettings,
-) -> CudfOptimizerConfig {
+) -> NexusNativeOptimizerConfig {
     tpcds_native_analytics_optimizer_config_with_profile_settings(profile)
         .with_native_plan_preference_options(tpcds_native_cpu_preference_options_from_env())
 }
@@ -259,27 +260,27 @@ pub fn tpcds_native_cpu_preference_options_with_env(
         ..nexus_query_engine::plan::NativePlanPreferenceOptions::default()
     };
 
-    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV) {
-        options.enabled = parse_env_bool(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, value);
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV) {
+        options.enabled = parse_env_bool(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV, value);
     }
-    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV) {
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV) {
         options.max_small_selective_row_groups =
-            parse_env_usize(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV, value);
+            parse_env_usize(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV, value);
     }
-    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV) {
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV) {
         options.max_small_selective_source_bytes =
-            parse_env_u64(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV, value);
+            parse_env_u64(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV, value);
     }
-    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV) {
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV) {
         options.max_small_selective_residual_join_row_groups =
-            parse_env_usize(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, value);
+            parse_env_usize(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, value);
     }
-    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV) {
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV) {
         options.max_small_selective_residual_join_source_bytes =
-            parse_env_u64(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV, value);
+            parse_env_u64(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV, value);
     }
-    if let Some(value) = get(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV) {
-        options.max_topk_fetch = parse_env_usize(CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, value);
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV) {
+        options.max_topk_fetch = parse_env_usize(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, value);
     }
 
     options
@@ -287,7 +288,7 @@ pub fn tpcds_native_cpu_preference_options_with_env(
 
 fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
     statistical_aggregate_execution_mode_default: nexus_query_engine::mode::StatisticalAggregateExecutionMode,
-) -> CudfOptimizerConfig {
+) -> NexusNativeOptimizerConfig {
     let profile = tpcds_native_profile_settings_from_env();
     tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
         statistical_aggregate_execution_mode_default,
@@ -298,7 +299,7 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
 fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
     statistical_aggregate_execution_mode_default: nexus_query_engine::mode::StatisticalAggregateExecutionMode,
     profile: &TpcdsNativeProfileSettings,
-) -> CudfOptimizerConfig {
+) -> NexusNativeOptimizerConfig {
     let statistical_aggregate_execution_mode =
         optional_env_statistical_aggregate_execution_mode().unwrap_or(statistical_aggregate_execution_mode_default);
     // Keep CPU preference disabled for now: users can submit SQL containing
@@ -307,9 +308,9 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
     // preference. Leave the env constants above in place so the old benchmark
     // gate can be restored once graph SQL has an explicit GPU-only boundary.
     let preference_options = nexus_query_engine::plan::NativePlanPreferenceOptions::disabled();
-    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+    NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(
-            NativeCudfExecutionConfig::bounded(
+            NexusNativeExecutionConfig::bounded(
                 profile.device_budget_bytes,
                 profile.max_source_chunk_bytes,
                 profile.max_row_groups_per_chunk,
@@ -324,10 +325,10 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
 
 /// Resolves the TPC-DS native bounded memory/source profile from env.
 ///
-/// `CUDF_TPCDS_NATIVE_PROFILE` chooses a named base profile:
+/// `NEXUS_TPCDS_NATIVE_PROFILE` chooses a named base profile:
 /// `conservative` keeps the existing bounded defaults, while
 /// `sf100_gpu_throughput` applies the TPC-H-like SF100 local Parquet profile.
-/// The individual `CUDF_TPCDS_NATIVE_*` knobs override either base. If
+/// The individual `NEXUS_TPCDS_NATIVE_*` knobs override either base. If
 /// those final values exactly match a named profile, the resolved
 /// `profile_name` is that profile; otherwise it is `custom`.
 pub fn tpcds_native_profile_settings_from_env() -> TpcdsNativeProfileSettings {
@@ -337,15 +338,15 @@ pub fn tpcds_native_profile_settings_from_env() -> TpcdsNativeProfileSettings {
 pub fn tpcds_native_profile_settings_with_env(
     mut get: impl FnMut(&'static str) -> Option<String>,
 ) -> TpcdsNativeProfileSettings {
-    let requested_profile = get(CUDF_TPCDS_NATIVE_PROFILE_ENV).map(|value| value.trim().to_ascii_lowercase());
+    let requested_profile = get(NEXUS_TPCDS_NATIVE_PROFILE_ENV).map(|value| value.trim().to_ascii_lowercase());
     let base = native_profile_base(requested_profile.as_deref());
     let mut resolved = TpcdsNativeProfileSettings::from_base(base);
-    let device_budget_bytes = get(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV);
-    let max_source_chunk_bytes = get(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV);
-    let max_row_groups_per_chunk = get(CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV);
-    let max_retry_attempts = get(CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV);
-    let min_retry_chunk_row_groups = get(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV);
-    let source_chunk_planning_mode = get(CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV);
+    let device_budget_bytes = get(NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV);
+    let max_source_chunk_bytes = get(NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV);
+    let max_row_groups_per_chunk = get(NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV);
+    let max_retry_attempts = get(NEXUS_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV);
+    let min_retry_chunk_row_groups = get(NEXUS_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV);
+    let source_chunk_planning_mode = get(NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV);
     let had_override = device_budget_bytes.is_some()
         || max_source_chunk_bytes.is_some()
         || max_row_groups_per_chunk.is_some()
@@ -354,19 +355,19 @@ pub fn tpcds_native_profile_settings_with_env(
         || source_chunk_planning_mode.is_some();
 
     if let Some(value) = device_budget_bytes {
-        resolved.device_budget_bytes = parse_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, value);
+        resolved.device_budget_bytes = parse_env_u64(NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, value);
     }
     if let Some(value) = max_source_chunk_bytes {
-        resolved.max_source_chunk_bytes = parse_env_u64(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, value);
+        resolved.max_source_chunk_bytes = parse_env_u64(NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, value);
     }
     if let Some(value) = max_row_groups_per_chunk {
-        resolved.max_row_groups_per_chunk = parse_env_usize(CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, value);
+        resolved.max_row_groups_per_chunk = parse_env_usize(NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, value);
     }
     if let Some(value) = max_retry_attempts {
-        resolved.max_retry_attempts = parse_env_usize(CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV, value);
+        resolved.max_retry_attempts = parse_env_usize(NEXUS_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV, value);
     }
     if let Some(value) = min_retry_chunk_row_groups {
-        resolved.min_retry_chunk_row_groups = parse_env_usize(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, value);
+        resolved.min_retry_chunk_row_groups = parse_env_usize(NEXUS_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, value);
     }
     if let Some(value) = source_chunk_planning_mode {
         resolved.source_chunk_planning_mode = parse_env_source_chunk_planning_mode(value);
@@ -402,11 +403,11 @@ pub fn tpcds_native_profile_settings_with_env(
 }
 
 fn validate_tpcds_native_profile_settings(profile: &TpcdsNativeProfileSettings) {
-    validate_positive(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, profile.device_budget_bytes);
-    validate_positive(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, profile.max_source_chunk_bytes);
-    validate_positive(CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, profile.max_row_groups_per_chunk);
-    validate_positive(CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV, profile.max_retry_attempts);
-    validate_positive(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, profile.min_retry_chunk_row_groups);
+    validate_positive(NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, profile.device_budget_bytes);
+    validate_positive(NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, profile.max_source_chunk_bytes);
+    validate_positive(NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, profile.max_row_groups_per_chunk);
+    validate_positive(NEXUS_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV, profile.max_retry_attempts);
+    validate_positive(NEXUS_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, profile.min_retry_chunk_row_groups);
 }
 
 fn validate_positive<T>(name: &'static str, value: T)
@@ -420,11 +421,11 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
         TPCDS_NATIVE_PROFILE_CONSERVATIVE => NativeProfileBase {
             name: TPCDS_NATIVE_PROFILE_CONSERVATIVE,
             source: "default",
-            device_budget_bytes: NativeCudfExecutionConfig::auto_sized_device_budget_bytes(),
-            max_source_chunk_bytes: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-            max_row_groups_per_chunk: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-            max_retry_attempts: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+            device_budget_bytes: NexusNativeExecutionConfig::auto_sized_device_budget_bytes(),
+            max_source_chunk_bytes: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
+            max_row_groups_per_chunk: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
+            max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
             source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative,
         },
         TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT => NativeProfileBase {
@@ -433,12 +434,12 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             device_budget_bytes: TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
             max_source_chunk_bytes: TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
             max_row_groups_per_chunk: TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
-            max_retry_attempts: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+            max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
             source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
         },
         other => panic!(
-            "unsupported {CUDF_TPCDS_NATIVE_PROFILE_ENV}={other}; expected {TPCDS_NATIVE_PROFILE_CONSERVATIVE} or {TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
+            "unsupported {NEXUS_TPCDS_NATIVE_PROFILE_ENV}={other}; expected {TPCDS_NATIVE_PROFILE_CONSERVATIVE} or {TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
         ),
     }
 }
@@ -479,16 +480,16 @@ fn parse_env_source_chunk_planning_mode(value: String) -> nexus_query_engine::ru
             nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
         },
         other => panic!(
-            "unsupported {CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}={other}; expected conservative or local_parquet_throughput"
+            "unsupported {NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}={other}; expected conservative or local_parquet_throughput"
         ),
     }
 }
 
 fn optional_env_statistical_aggregate_execution_mode()
 -> Option<nexus_query_engine::mode::StatisticalAggregateExecutionMode> {
-    optional_env_statistical_aggregate_execution_mode_for(CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
+    optional_env_statistical_aggregate_execution_mode_for(NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
         .or_else(|| {
-            optional_env_statistical_aggregate_execution_mode_for(CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV)
+            optional_env_statistical_aggregate_execution_mode_for(NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV)
         })
 }
 
@@ -557,12 +558,12 @@ pub async fn tpcds_datafusion_planning_workload_items(
 pub async fn tpcds_datafusion_planning_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
 ) -> TpcdsWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(native_tpcds_session_config(session_config))
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpcds_tables_with_native_metadata(&ctx, root).await?;
@@ -621,7 +622,7 @@ pub async fn tpcds_datafusion_execution_workload_items(
 pub async fn tpcds_datafusion_execution_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
 ) -> TpcdsWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     tpcds_datafusion_execution_workload_items_filtered(root, session_config, optimizer_config, None, None).await
 }
@@ -661,14 +662,14 @@ pub enum TpcdsExecutionProgressEvent<'a> {
 pub async fn tpcds_datafusion_execution_workload_items_filtered(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
     query_ids: Option<&[&str]>,
     mut progress: Option<&mut dyn FnMut(TpcdsExecutionProgressEvent<'_>)>,
 ) -> TpcdsWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(native_tpcds_session_config(session_config))
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpcds_tables_with_native_metadata(&ctx, root).await?;

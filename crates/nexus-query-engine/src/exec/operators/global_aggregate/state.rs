@@ -170,7 +170,7 @@ pub(in crate::exec) fn global_valid_count_state_alias(alias: &str) -> String {
     format!("{GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX}{alias}")
 }
 
-const GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX: &str = "__cudf_global_valid_count_";
+const GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX: &str = "__nexus_native_global_valid_count_";
 
 pub(in crate::exec) fn validate_global_valid_count_state_alias_collisions(
     spec: &AggregateSpec,

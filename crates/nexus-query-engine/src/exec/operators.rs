@@ -60,14 +60,14 @@ pub(super) fn execute_filter(
         frame.with_execution(&overrides).filter_isin(&column, &values).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.filter.execute",
-                "failed to execute native cudf IN-list filter",
+                "failed to execute nexus native IN-list filter",
                 error,
             )
         })?
     } else {
         let predicate = lower_filter_predicate_expr(&node.predicate)?;
         frame.with_execution(&overrides).filter_expr(predicate).map_err(|error| {
-            QueryError::from_cudf("nexus_query_engine.filter.execute", "failed to execute native cudf filter", error)
+            QueryError::from_cudf("nexus_query_engine.filter.execute", "failed to execute nexus native filter", error)
         })?
     };
     metrics.operator_time += timer.elapsed();
@@ -89,7 +89,7 @@ pub(super) fn execute_filter_with_budget(
             attach_budget_token_failure_facts(
                 QueryError::from_cudf(
                     "nexus_query_engine.filter.execute",
-                    "failed to execute native cudf IN-list filter",
+                    "failed to execute nexus native IN-list filter",
                     error,
                 ),
                 token,
@@ -101,7 +101,7 @@ pub(super) fn execute_filter_with_budget(
             attach_budget_token_failure_facts(
                 QueryError::from_cudf(
                     "nexus_query_engine.filter.execute",
-                    "failed to execute native cudf filter",
+                    "failed to execute nexus native filter",
                     error,
                 ),
                 token,
@@ -215,7 +215,7 @@ pub(super) fn execute_sort_on_frame(
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).sort_values(sort.columns, options).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.sort.execute", "failed to execute native cudf sort", error)
+        QueryError::from_cudf("nexus_query_engine.sort.execute", "failed to execute nexus native sort", error)
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
@@ -472,7 +472,7 @@ fn execute_cumulative_window_aggregate(
 
     let timer = Instant::now();
     let mut temp_columns = Vec::new();
-    let row_index_name = unique_temp_column_name(&frame, "__cudf_window_input_row_index");
+    let row_index_name = unique_temp_column_name(&frame, "__nexus_native_window_input_row_index");
     let row_index_series = frame.row_positions().map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.window.cumulative.row_index",
@@ -521,7 +521,8 @@ fn execute_cumulative_window_aggregate(
             continue;
         };
         let scan_agg = cumulative_scan_agg(*function)?;
-        let value_name = unique_temp_column_name(&working, &format!("__cudf_window_cumulative_value_{function_index}"));
+        let value_name =
+            unique_temp_column_name(&working, &format!("__nexus_native_window_cumulative_value_{function_index}"));
         let value_expr = lower_expr(expr)?.alias(value_name.as_str());
         working = working.with_execution(&overrides).with_columns([value_expr]).map_err(|error| {
             QueryError::from_cudf(
@@ -532,7 +533,8 @@ fn execute_cumulative_window_aggregate(
         })?;
         temp_columns.push(value_name.clone());
 
-        let scan_name = unique_temp_column_name(&working, &format!("__cudf_window_cumulative_scan_{function_index}"));
+        let scan_name =
+            unique_temp_column_name(&working, &format!("__nexus_native_window_cumulative_scan_{function_index}"));
         let scanned = working
             .group_scan_sorted(partition_keys.iter().map(String::as_str), value_name.as_str(), scan_agg)
             .map_err(|error| {
@@ -553,7 +555,8 @@ fn execute_cumulative_window_aggregate(
         })?;
         temp_columns.push(scan_name.clone());
 
-        let valid_name = unique_temp_column_name(&working, &format!("__cudf_window_cumulative_valid_{function_index}"));
+        let valid_name =
+            unique_temp_column_name(&working, &format!("__nexus_native_window_cumulative_valid_{function_index}"));
         let valid_expr = when(col(value_name.as_str()).is_null()).then(0i32).otherwise(1i32).alias(valid_name.as_str());
         working = working.with_columns([valid_expr]).map_err(|error| {
             QueryError::from_cudf(
@@ -564,7 +567,8 @@ fn execute_cumulative_window_aggregate(
         })?;
         temp_columns.push(valid_name.clone());
 
-        let seen_name = unique_temp_column_name(&working, &format!("__cudf_window_cumulative_seen_{function_index}"));
+        let seen_name =
+            unique_temp_column_name(&working, &format!("__nexus_native_window_cumulative_seen_{function_index}"));
         let seen = working
             .group_scan_sorted(partition_keys.iter().map(String::as_str), valid_name.as_str(), ScanAgg::Sum)
             .map_err(|error| {
@@ -585,7 +589,7 @@ fn execute_cumulative_window_aggregate(
         temp_columns.push(seen_name.clone());
 
         let filled_name =
-            unique_temp_column_name(&working, &format!("__cudf_window_cumulative_filled_{function_index}"));
+            unique_temp_column_name(&working, &format!("__nexus_native_window_cumulative_filled_{function_index}"));
         let filled = working.series(scan_name.as_str()).and_then(|series| series.ffill()).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.window.cumulative.fill",
@@ -673,8 +677,8 @@ fn execute_rank_window(
         peer_keys.push(lower_column_expr(&sort_expr.expr, "nexus_query_engine.window.rank.order_key")?);
     }
 
-    let partition_rank_name = unique_temp_column_name(&output, "__cudf_window_partition_rank");
-    let peer_rank_name = unique_temp_column_name(&output, "__cudf_window_peer_rank");
+    let partition_rank_name = unique_temp_column_name(&output, "__nexus_native_window_partition_rank");
+    let peer_rank_name = unique_temp_column_name(&output, "__nexus_native_window_peer_rank");
     let partition_rank = output.group_cumcount(partition_keys.iter().map(String::as_str)).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.window.rank.partition",
@@ -724,7 +728,7 @@ fn execute_row_number_window(
         rank_partition_keys(context, output, &node.spec.partition_by, &mut temp_columns)?;
     output = with_partition_key;
 
-    let partition_rank_name = unique_temp_column_name(&output, "__cudf_window_row_number_partition_rank");
+    let partition_rank_name = unique_temp_column_name(&output, "__nexus_native_window_row_number_partition_rank");
     let partition_rank = output.group_cumcount(partition_keys.iter().map(String::as_str)).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.window.row_number.partition",
@@ -790,7 +794,7 @@ fn execute_lag_lead_window(
 
     // 1. Append a stable row_index column so we can recover input row order
     //    after libcudf's group-defined output order.
-    let row_index_name = unique_temp_column_name(&frame, "__cudf_window_lag_lead_row_index");
+    let row_index_name = unique_temp_column_name(&frame, "__nexus_native_window_lag_lead_row_index");
     let row_index_series = frame.row_positions().map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.window.lag_lead.row_index",
@@ -829,7 +833,7 @@ fn execute_lag_lead_window(
     })?;
 
     // 4. Materialize the shifted value column on the sorted frame.
-    let value_name = unique_temp_column_name(&sorted, "__cudf_window_lag_lead_value");
+    let value_name = unique_temp_column_name(&sorted, "__nexus_native_window_lag_lead_value");
     let value_expr_cudf = lower_expr(value_expr)?.alias(value_name.as_str());
     let sorted = sorted.with_execution(&overrides).with_columns([value_expr_cudf]).map_err(|error| {
         QueryError::from_cudf(
@@ -1026,7 +1030,7 @@ fn rank_partition_keys(
             .collect::<Result<Vec<_>>>()?;
         return Ok((frame, keys));
     }
-    let key = unique_temp_column_name(&frame, "__cudf_window_global_partition");
+    let key = unique_temp_column_name(&frame, "__nexus_native_window_global_partition");
     let with_key = frame.with_columns([lit(0i32).alias(key.as_str())]).map_err(|error| {
         QueryError::from_cudf("nexus_query_engine.window.rank.global_key", "failed to append rank partition key", error)
     })?;
@@ -1065,7 +1069,7 @@ pub(super) fn execute_limit_spec_on_frame(
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).slice(offset, length).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.limit.execute", "failed to execute native cudf limit", error)
+        QueryError::from_cudf("nexus_query_engine.limit.execute", "failed to execute nexus native limit", error)
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))

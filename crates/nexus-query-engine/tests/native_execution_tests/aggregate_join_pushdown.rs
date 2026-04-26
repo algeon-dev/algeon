@@ -129,7 +129,7 @@ fn aggregate_join_pushdown_execution_plan(
             ProjectionOutput::new(Expr::column("s_store_name"), Field::new("s_store_name", DataType::Utf8, true)),
             ProjectionOutput::new(
                 Expr::column("ss_net_profit"),
-                Field::new("__cudf_aggregate_arg_0", DataType::Int64, true),
+                Field::new("__nexus_native_aggregate_arg_0", DataType::Int64, true),
             ),
         ],
     );
@@ -137,7 +137,11 @@ fn aggregate_join_pushdown_execution_plan(
         projection,
         AggregateSpec::new(
             vec![Expr::column("s_store_name")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("__cudf_aggregate_arg_0"), "sum_profit")],
+            vec![AggregateExpr::new(
+                AggregateFunction::Sum,
+                Expr::column("__nexus_native_aggregate_arg_0"),
+                "sum_profit",
+            )],
         ),
         Arc::clone(&aggregate_schema),
     );

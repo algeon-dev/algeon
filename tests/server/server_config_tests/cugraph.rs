@@ -133,7 +133,7 @@ async fn server_cugraph_session_does_not_register_udtfs_when_disabled() {
 #[tokio::test]
 async fn server_cugraph_udtfs_and_views_survive_session_state_rebuild() {
     use datafusion::{execution::SessionStateBuilder, prelude::SessionContext};
-    use datafusion_nexus::{planner::CudfOptimizerConfig, session::CudfSessionStateBuilderExt};
+    use datafusion_nexus::{planner::NexusNativeOptimizerConfig, session::NexusSessionStateBuilderExt};
 
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -146,7 +146,7 @@ async fn server_cugraph_udtfs_and_views_survive_session_state_rebuild() {
         .unwrap();
 
     let rebuilt_state =
-        SessionStateBuilder::new_from_existing(ctx.state()).with_cudf_native(CudfOptimizerConfig::default()).build();
+        SessionStateBuilder::new_from_existing(ctx.state()).with_nexus_native(NexusNativeOptimizerConfig::default()).build();
     assert!(
         rebuilt_state.table_functions().contains_key("cugraph_pagerank"),
         "Flight SQL per-query state rebuild must retain registered cuGraph UDTFs"

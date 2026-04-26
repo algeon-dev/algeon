@@ -2,10 +2,10 @@
 
 use nexus_query_engine::{metrics::QueryMetrics, runtime::LakehouseCacheFillEventSnapshot};
 
-use super::{NativeCudfMetrics, add_optional_count, count, join_gather_map_bytes};
+use super::{NexusNativeMetrics, add_optional_count, count, join_gather_map_bytes};
 use crate::native_exec::{
     admission::QueryAdmissionFacts,
-    metrics::contract::{for_each_native_cudf_metric, recording_marker},
+    metrics::contract::{for_each_native_nexus_metric, recording_marker},
 };
 
 #[cfg(test)]
@@ -60,11 +60,11 @@ macro_rules! define_descriptor_recorders {
 #[cfg(test)]
 macro_rules! define_recording_descriptors {
     ($( $field:ident => $name:literal: $kind:ident, )*) => {
-        pub(in crate::native_exec::metrics) const NATIVE_CUDF_RECORDING_DESCRIPTORS: &[(&str, NativeMetricRecordingKind)] = &[
+        pub(in crate::native_exec::metrics) const NATIVE_NEXUS_RECORDING_DESCRIPTORS: &[(&str, NativeMetricRecordingKind)] = &[
             $(
                 (
                     $name,
-                    <NativeCudfMetrics as NativeMetricRecording<recording_marker::$field>>::KIND,
+                    <NexusNativeMetrics as NativeMetricRecording<recording_marker::$field>>::KIND,
                 ),
             )*
         ];
@@ -72,7 +72,7 @@ macro_rules! define_recording_descriptors {
 }
 
 #[cfg(test)]
-for_each_native_cudf_metric!(define_recording_descriptors);
+for_each_native_nexus_metric!(define_recording_descriptors);
 
 macro_rules! recording_kind {
     ($kind:ident) => {
@@ -84,7 +84,7 @@ macro_rules! recording_kind {
 macro_rules! impl_query_count_recording {
     ($( $field:ident => $($source:ident).+ ),* $(,)?) => {
         $(
-            impl NativeMetricRecording<recording_marker::$field> for NativeCudfMetrics {
+            impl NativeMetricRecording<recording_marker::$field> for NexusNativeMetrics {
                 recording_kind!(Query);
 
                 fn record_query(&self, metrics: &QueryMetrics) {
@@ -98,7 +98,7 @@ macro_rules! impl_query_count_recording {
 macro_rules! impl_query_timer_recording {
     ($( $field:ident => $source:ident ),* $(,)?) => {
         $(
-            impl NativeMetricRecording<recording_marker::$field> for NativeCudfMetrics {
+            impl NativeMetricRecording<recording_marker::$field> for NexusNativeMetrics {
                 recording_kind!(Query);
 
                 fn record_query(&self, metrics: &QueryMetrics) {
@@ -112,7 +112,7 @@ macro_rules! impl_query_timer_recording {
 macro_rules! impl_query_optional_recording {
     ($( $field:ident => $source:ident, observed = $observed:ident ),* $(,)?) => {
         $(
-            impl NativeMetricRecording<recording_marker::$field> for NativeCudfMetrics {
+            impl NativeMetricRecording<recording_marker::$field> for NexusNativeMetrics {
                 recording_kind!(Query);
 
                 fn record_query(&self, metrics: &QueryMetrics) {
@@ -126,7 +126,7 @@ macro_rules! impl_query_optional_recording {
 macro_rules! impl_query_optional_unobserved_recording {
     ($( $field:ident => $source:ident ),* $(,)?) => {
         $(
-            impl NativeMetricRecording<recording_marker::$field> for NativeCudfMetrics {
+            impl NativeMetricRecording<recording_marker::$field> for NexusNativeMetrics {
                 recording_kind!(Query);
 
                 fn record_query(&self, metrics: &QueryMetrics) {
@@ -140,7 +140,7 @@ macro_rules! impl_query_optional_unobserved_recording {
 macro_rules! impl_query_rows_recording {
     ($( $field:ident => $method:ident ),* $(,)?) => {
         $(
-            impl NativeMetricRecording<recording_marker::$field> for NativeCudfMetrics {
+            impl NativeMetricRecording<recording_marker::$field> for NexusNativeMetrics {
                 recording_kind!(Query);
 
                 fn record_query(&self, metrics: &QueryMetrics) {
@@ -154,7 +154,7 @@ macro_rules! impl_query_rows_recording {
 macro_rules! impl_noop_recording {
     ($kind:ident; $( $field:ident ),* $(,)?) => {
         $(
-            impl NativeMetricRecording<recording_marker::$field> for NativeCudfMetrics {
+            impl NativeMetricRecording<recording_marker::$field> for NexusNativeMetrics {
                 recording_kind!($kind);
             }
         )*
@@ -287,7 +287,7 @@ impl_query_rows_recording! {
     native_plan_task_mapping_rows => record_plan_task_mapping_rows,
 }
 
-impl NativeMetricRecording<recording_marker::source_read_boundary_direct_device> for NativeCudfMetrics {
+impl NativeMetricRecording<recording_marker::source_read_boundary_direct_device> for NexusNativeMetrics {
     recording_kind!(Query);
 
     fn record_query(&self, metrics: &QueryMetrics) {
@@ -307,7 +307,7 @@ impl_noop_recording! {
     allocator_high_water_bytes_observed,
 }
 
-impl NativeMetricRecording<recording_marker::join_gather_map_bytes> for NativeCudfMetrics {
+impl NativeMetricRecording<recording_marker::join_gather_map_bytes> for NexusNativeMetrics {
     recording_kind!(Query);
 
     fn record_query(&self, metrics: &QueryMetrics) {
@@ -315,7 +315,7 @@ impl NativeMetricRecording<recording_marker::join_gather_map_bytes> for NativeCu
     }
 }
 
-impl NativeMetricRecording<recording_marker::admission_sequence> for NativeCudfMetrics {
+impl NativeMetricRecording<recording_marker::admission_sequence> for NexusNativeMetrics {
     recording_kind!(Admission);
 
     fn record_admission(&self, facts: QueryAdmissionFacts) {
@@ -327,7 +327,7 @@ impl NativeMetricRecording<recording_marker::admission_sequence> for NativeCudfM
     }
 }
 
-impl NativeMetricRecording<recording_marker::admission_wait_time> for NativeCudfMetrics {
+impl NativeMetricRecording<recording_marker::admission_wait_time> for NexusNativeMetrics {
     recording_kind!(Admission);
 
     fn record_admission(&self, facts: QueryAdmissionFacts) {
@@ -336,7 +336,7 @@ impl NativeMetricRecording<recording_marker::admission_wait_time> for NativeCudf
     }
 }
 
-impl NativeMetricRecording<recording_marker::device_ordinal> for NativeCudfMetrics {
+impl NativeMetricRecording<recording_marker::device_ordinal> for NexusNativeMetrics {
     recording_kind!(Admission);
 
     fn record_admission(&self, facts: QueryAdmissionFacts) {
@@ -348,7 +348,7 @@ impl NativeMetricRecording<recording_marker::device_ordinal> for NativeCudfMetri
     }
 }
 
-impl NativeMetricRecording<recording_marker::query_grant_bytes> for NativeCudfMetrics {
+impl NativeMetricRecording<recording_marker::query_grant_bytes> for NexusNativeMetrics {
     recording_kind!(Admission);
 
     fn record_admission(&self, facts: QueryAdmissionFacts) {
@@ -368,7 +368,7 @@ impl_noop_recording! {
     query_grant_bytes_observed,
 }
 
-impl NativeMetricRecording<recording_marker::native_lakehouse_cache_fill_event_snapshot_rows> for NativeCudfMetrics {
+impl NativeMetricRecording<recording_marker::native_lakehouse_cache_fill_event_snapshot_rows> for NexusNativeMetrics {
     recording_kind!(CacheEvents);
 
     fn record_cache_events(&self, events: &[LakehouseCacheFillEventSnapshot]) {
@@ -376,6 +376,6 @@ impl NativeMetricRecording<recording_marker::native_lakehouse_cache_fill_event_s
     }
 }
 
-impl NativeCudfMetrics {
-    for_each_native_cudf_metric!(define_descriptor_recorders);
+impl NexusNativeMetrics {
+    for_each_native_nexus_metric!(define_descriptor_recorders);
 }

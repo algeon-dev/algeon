@@ -1,6 +1,6 @@
 use super::*;
 
-impl NativeCudfExecutionContext {
+impl NexusNativeExecutionContext {
     pub(super) fn standalone(context: ExecutionContext, task_context_owner: Option<usize>) -> Self {
         #[cfg(debug_assertions)]
         let standalone_bounded_context_guard = standalone_bounded_context_debug_guard(&context, task_context_owner);
@@ -159,16 +159,16 @@ impl Drop for StandaloneBoundedContextDebugGuard {
     }
 }
 
-impl NativeCudfExecutionConfig {
+impl NexusNativeExecutionConfig {
     #[cfg(test)]
-    pub(crate) fn execution_context(&self) -> crate::error::Result<NativeCudfExecutionContext> {
+    pub(crate) fn execution_context(&self) -> crate::error::Result<NexusNativeExecutionContext> {
         self.execution_context_with_standalone_owner(None)
     }
 
     pub(super) fn execution_context_with_standalone_owner(
         &self,
         standalone_owner: Option<usize>,
-    ) -> crate::error::Result<NativeCudfExecutionContext> {
+    ) -> crate::error::Result<NexusNativeExecutionContext> {
         self.validate_query_policies()?;
         if let Some(handle) = &self.query_service_handle {
             let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
@@ -179,13 +179,13 @@ impl NativeCudfExecutionConfig {
                     let record_admission_facts = admission_facts_recorded
                         .as_ref()
                         .is_some_and(|recorded| !recorded.swap(true, Ordering::AcqRel));
-                    NativeCudfExecutionContext::tenant_bound(tenant_context, admission_facts, record_admission_facts)
+                    NexusNativeExecutionContext::tenant_bound(tenant_context, admission_facts, record_admission_facts)
                 })
                 .and_then(|context| self.stamp_acquired_service_context(context))
                 .map_err(|error| {
                     Error::from_native(
                         "datafusion_nexus.native_exec.context",
-                        "failed to acquire query service native cudf execution context",
+                        "failed to acquire query service nexus native execution context",
                         self.stamp_native_error_correlation(error),
                     )
                 });
@@ -235,11 +235,11 @@ impl NativeCudfExecutionConfig {
         if let Some(trace_id) = &self.trace_id {
             builder = builder.with_trace_id(trace_id.clone());
         }
-        builder.build().map(|context| NativeCudfExecutionContext::standalone(context, standalone_owner)).map_err(
+        builder.build().map(|context| NexusNativeExecutionContext::standalone(context, standalone_owner)).map_err(
             |error| {
                 Error::from_native(
                     "datafusion_nexus.native_exec.context",
-                    "failed to build native cudf execution context",
+                    "failed to build nexus native execution context",
                     self.stamp_native_error_correlation(error),
                 )
             },
@@ -249,18 +249,18 @@ impl NativeCudfExecutionConfig {
     pub(crate) async fn execution_context_async(
         &self,
         task_context: Arc<TaskContext>,
-    ) -> crate::error::Result<NativeCudfExecutionContext> {
+    ) -> crate::error::Result<NexusNativeExecutionContext> {
         self.validate_query_policies()?;
         if let Some(ticket) = self.query_admission_ticket_for_task_context(&task_context) {
             return ticket
                 .acquire_context(task_context, self.cancellation.clone())
                 .await
-                .map(NativeCudfExecutionContext::ticket_bound)
+                .map(NexusNativeExecutionContext::ticket_bound)
                 .and_then(|context| self.stamp_acquired_service_context(context))
                 .map_err(|error| {
                     Error::from_native(
                         "datafusion_nexus.native_exec.context",
-                        "failed to acquire backend query-service native cudf execution context",
+                        "failed to acquire backend query-service nexus native execution context",
                         self.stamp_native_error_correlation(error),
                     )
                 });
@@ -275,13 +275,13 @@ impl NativeCudfExecutionConfig {
                     let record_admission_facts = admission_facts_recorded
                         .as_ref()
                         .is_some_and(|recorded| !recorded.swap(true, Ordering::AcqRel));
-                    NativeCudfExecutionContext::tenant_bound(tenant_context, admission_facts, record_admission_facts)
+                    NexusNativeExecutionContext::tenant_bound(tenant_context, admission_facts, record_admission_facts)
                 })
                 .and_then(|context| self.stamp_acquired_service_context(context))
                 .map_err(|error| {
                     Error::from_native(
                         "datafusion_nexus.native_exec.context",
-                        "failed to acquire query service native cudf execution context",
+                        "failed to acquire query service nexus native execution context",
                         self.stamp_native_error_correlation(error),
                     )
                 });
@@ -317,7 +317,7 @@ impl NativeCudfExecutionConfig {
         .map_err(|error| {
             Error::from_native(
                 "datafusion_nexus.native_exec.context_executor",
-                "failed to run native cudf context setup on the GPU execution pool",
+                "failed to run nexus native context setup on the GPU execution pool",
                 self.stamp_native_error_correlation(error),
             )
         })?
@@ -357,8 +357,8 @@ impl NativeCudfExecutionConfig {
 
     pub(super) fn stamp_acquired_service_context(
         &self,
-        mut context: NativeCudfExecutionContext,
-    ) -> nexus_query_engine::error::Result<NativeCudfExecutionContext> {
+        mut context: NexusNativeExecutionContext,
+    ) -> nexus_query_engine::error::Result<NexusNativeExecutionContext> {
         // An ambient composed-query ticket owns the canonical identity. Child
         // fragment configs may carry independently minted planning ids and
         // must not overwrite the pre-admission observation identity.

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use datafusion::prelude::SessionConfig;
-use datafusion_nexus::{native_report::NativeDataFusionPlanningWorkloadItem, planner::CudfOptimizerConfig};
+use datafusion_nexus::{native_report::NativeDataFusionPlanningWorkloadItem, planner::NexusNativeOptimizerConfig};
 use datafusion_nexus_workloads::tpch::TpchWorkloadResult;
 
 use super::tpch_report::{datafusion_planning_workload_items, tpch_native_optimizer_config};
@@ -83,7 +83,7 @@ pub(crate) async fn analytical_olap_datafusion_planning_workload_items(
 pub(crate) async fn analytical_olap_datafusion_planning_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
 ) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     datafusion_planning_workload_items(
         root,

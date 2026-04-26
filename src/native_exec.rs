@@ -27,7 +27,7 @@ pub(crate) use self::admission::task_context_with_query_admission_ticket;
 #[cfg(all(feature = "server", test))]
 pub(crate) use self::metrics::NativeMetricsCaptureSink;
 #[cfg(any(feature = "server", feature = "cugraph"))]
-pub(crate) use self::metrics::{NativeCudfMetrics, NativeExecutionMetricsCapture};
+pub(crate) use self::metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics};
 #[cfg(feature = "server")]
 pub(crate) use self::metrics::{
     NativeMetricsCapture, NativeObservationActivityFactory, SERVER_CAPTURE_LOSS_METRIC_NAME,
@@ -41,6 +41,6 @@ pub(crate) use self::{
     unbounded_native::{plan_is_unbounded_native_execution_limited, wrap_plan_with_unbounded_native_execution_limit},
 };
 pub use self::{
-    composed::NativeCudfComposedExec, config::NativeCudfExecutionConfig, host::NativeCudfExec,
-    metrics::NATIVE_CUDF_DATAFUSION_METRIC_NAMES, producer::NativeCudfGpuProducerExec,
+    composed::NexusNativeComposedExec, config::NexusNativeExecutionConfig, host::NexusNativeExec,
+    metrics::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES, producer::NexusNativeGpuProducerExec,
 };

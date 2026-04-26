@@ -14,7 +14,7 @@ use datafusion::common::{Result as DataFusionResult, config::ConfigOptions};
 
 use crate::{
     error::{Error, ErrorCode},
-    native_exec::{CpuFallbackStatementLimiter, NativeCudfExecutionConfig},
+    native_exec::{CpuFallbackStatementLimiter, NexusNativeExecutionConfig},
     policy::{FallbackReason, GpuFallbackPolicy},
     report::GpuCandidate,
     session_config::optimizer_config_with_datafusion_options,
@@ -23,12 +23,12 @@ use crate::{
 mod leaf_guard;
 mod native;
 
-pub use leaf_guard::{CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfTableFormatGpuOnlyLeafGuardRule};
+pub use leaf_guard::{NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, NexusTableFormatGpuOnlyLeafGuardRule};
 pub use native::{
-    CudfNativePhysicalOptimizerRule, NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics,
-    NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
-    NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
-    NativeStrictBoundedRejectedCandidateDiagnostics, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
+    NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics,
+    NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
+    NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
+    NexusNativePhysicalOptimizerRule, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
 };
 
 /// DataFusion-facing native optimizer configuration.
@@ -38,24 +38,24 @@ pub use native::{
 /// optimizer options use their own defaults, and plan-preference fallback is
 /// disabled unless a workload opts in. The native
 /// [`ExecutionContext`](nexus_query_engine::runtime::ExecutionContext) is still built
-/// lazily at execution time through [`NativeCudfExecutionConfig`], so allocator
+/// lazily at execution time through [`NexusNativeExecutionConfig`], so allocator
 /// and memory-control validation fail at the DataFusion/native boundary rather
 /// than during rule construction.
 #[derive(Debug, Clone)]
-pub struct CudfOptimizerConfig {
+pub struct NexusNativeOptimizerConfig {
     fallback_policy: GpuFallbackPolicy,
-    native_execution_config: NativeCudfExecutionConfig,
+    native_execution_config: NexusNativeExecutionConfig,
     native_optimizer_options: nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_plan_preference_options: nexus_query_engine::plan::NativePlanPreferenceOptions,
     cpu_fallback_statement_limiter: Option<CpuFallbackStatementLimiter>,
     cpu_fallback_wait_timeout: Option<Duration>,
 }
 
-impl Default for CudfOptimizerConfig {
+impl Default for NexusNativeOptimizerConfig {
     fn default() -> Self {
         Self {
             fallback_policy: GpuFallbackPolicy::default(),
-            native_execution_config: NativeCudfExecutionConfig::bounded_auto_sized(),
+            native_execution_config: NexusNativeExecutionConfig::bounded_auto_sized(),
             native_optimizer_options: nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
             native_plan_preference_options: nexus_query_engine::plan::NativePlanPreferenceOptions::disabled(),
             cpu_fallback_statement_limiter: None,
@@ -64,7 +64,7 @@ impl Default for CudfOptimizerConfig {
     }
 }
 
-impl CudfOptimizerConfig {
+impl NexusNativeOptimizerConfig {
     /// Build from an explicit fallback policy; all other fields use conservative defaults.
     pub fn new(fallback_policy: GpuFallbackPolicy) -> Self {
         Self { fallback_policy, ..Self::default() }
@@ -83,7 +83,7 @@ impl CudfOptimizerConfig {
     }
 
     /// Native execution settings copied into rewritten execution nodes.
-    pub fn native_execution_config(&self) -> &NativeCudfExecutionConfig {
+    pub fn native_execution_config(&self) -> &NexusNativeExecutionConfig {
         &self.native_execution_config
     }
 
@@ -125,7 +125,7 @@ impl CudfOptimizerConfig {
     }
 
     /// Replace the native execution config copied into accepted native plans.
-    pub fn with_native_execution_config(mut self, execution_config: NativeCudfExecutionConfig) -> Self {
+    pub fn with_native_execution_config(mut self, execution_config: NexusNativeExecutionConfig) -> Self {
         self.native_execution_config = execution_config;
         self
     }
@@ -234,7 +234,11 @@ impl CudfOptimizerConfig {
     }
 }
 
-fn candidate_rejected_error(candidate: &GpuCandidate, reason: FallbackReason, config: &CudfOptimizerConfig) -> Error {
+fn candidate_rejected_error(
+    candidate: &GpuCandidate,
+    reason: FallbackReason,
+    config: &NexusNativeOptimizerConfig,
+) -> Error {
     Error::new(
         ErrorCode::NativeCandidateRejected,
         "datafusion_nexus.native.optimize_plan",

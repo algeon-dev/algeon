@@ -1,8 +1,8 @@
 use super::*;
 
-pub struct DatafusionCudfFlightSqlService {
+pub struct DatafusionNexusFlightSqlService {
     pub(super) ctx: Arc<SessionContext>,
-    pub(super) native_optimizer_config: CudfOptimizerConfig,
+    pub(super) native_optimizer_config: NexusNativeOptimizerConfig,
     /// Static session-profile selection from [`crate::server::ServerConfig`];
     /// per-statement diagnostics use it to add the "switch to native" hint
     /// when the testing-only `cpu_fallback` profile is active.
@@ -65,8 +65,8 @@ fn server_config_iceberg_enabled(_config: &crate::server::config::ServerConfig) 
 
 /// Per-statement session context paired with the retained native rule that
 /// will plan it. The native rule reference is kept alive for the lifetime of
-/// planning so [`CudfNativePhysicalOptimizerRule::last_report`] can be read
-impl DatafusionCudfFlightSqlService {
+/// planning so [`NexusNativePhysicalOptimizerRule::last_report`] can be read
+impl DatafusionNexusFlightSqlService {
     pub(super) fn register_new_query(
         &self,
         sql: String,
@@ -103,7 +103,7 @@ impl DatafusionCudfFlightSqlService {
     #[cfg(test)]
     pub fn new(
         ctx: Arc<SessionContext>,
-        native_optimizer_config: CudfOptimizerConfig,
+        native_optimizer_config: NexusNativeOptimizerConfig,
         session_profile: ServerSessionProfile,
         admission: Arc<QueryAdmission>,
         statement_ticket_ttl: Duration,
@@ -126,7 +126,7 @@ impl DatafusionCudfFlightSqlService {
 
     pub(in crate::server) fn new_with_io_lifecycle(
         ctx: Arc<SessionContext>,
-        native_optimizer_config: CudfOptimizerConfig,
+        native_optimizer_config: NexusNativeOptimizerConfig,
         session_profile: ServerSessionProfile,
         admission: Arc<QueryAdmission>,
         statement_ticket_ttl: Duration,
@@ -364,7 +364,7 @@ impl DatafusionCudfFlightSqlService {
     }
 
     #[cfg(test)]
-    pub(crate) fn native_optimizer_config(&self) -> &CudfOptimizerConfig {
+    pub(crate) fn native_optimizer_config(&self) -> &NexusNativeOptimizerConfig {
         &self.native_optimizer_config
     }
 }

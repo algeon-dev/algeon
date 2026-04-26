@@ -25,12 +25,12 @@ pub const CLICKBENCH_TABLE: &str = "hits";
 pub const CLICKBENCH_RAW_TABLE: &str = "hits_raw";
 
 /// Free-form provenance command recorded in dataset metadata.
-pub const CUDF_CLICKBENCH_GENERATION_COMMAND_ENV: &str = "CUDF_CLICKBENCH_GENERATION_COMMAND";
+pub const NEXUS_CLICKBENCH_GENERATION_COMMAND_ENV: &str = "NEXUS_CLICKBENCH_GENERATION_COMMAND";
 /// Truthy flag requesting a content-fingerprint pass.
 ///
 /// Accepted truthy values are `1`, `true`, `yes`, and `on`. The env value is
 /// not used as the fingerprint; it only decides whether to scan file bytes.
-pub const CUDF_CLICKBENCH_CONTENT_FINGERPRINT_ENV: &str = "CUDF_CLICKBENCH_CONTENT_FINGERPRINT";
+pub const NEXUS_CLICKBENCH_CONTENT_FINGERPRINT_ENV: &str = "NEXUS_CLICKBENCH_CONTENT_FINGERPRINT";
 
 /// In-repo default for the single-file ClickBench fixture. Used when no env
 /// var is set and the partitioned variants are unavailable.
@@ -348,15 +348,15 @@ pub fn external_clickbench_dataset_metadata(
 /// The env-var fixture is strict: if set, it must describe a valid complete
 /// ClickBench layout, and its generation command defaults to
 /// `unknown_external`. Invalid implicit local candidates are skipped
-/// during fallback. A truthy `CUDF_CLICKBENCH_CONTENT_FINGERPRINT` requests the
+/// during fallback. A truthy `NEXUS_CLICKBENCH_CONTENT_FINGERPRINT` requests the
 /// expensive content hash. Returns `Ok(None)` when no implicit fixture exists.
 pub fn prepare_clickbench_report_dataset() -> ClickbenchWorkloadResult<Option<(PathBuf, ClickbenchDatasetMetadata)>> {
     if let Ok(root) = std::env::var(NEXUS_PARQUET_DIR_ENV) {
         let root_path = PathBuf::from(&root);
         let generation_command =
-            std::env::var(CUDF_CLICKBENCH_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unknown_external".to_string());
+            std::env::var(NEXUS_CLICKBENCH_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unknown_external".to_string());
         let include_content_fingerprint =
-            std::env::var(CUDF_CLICKBENCH_CONTENT_FINGERPRINT_ENV).is_ok_and(|value| env_truthy(&value));
+            std::env::var(NEXUS_CLICKBENCH_CONTENT_FINGERPRINT_ENV).is_ok_and(|value| env_truthy(&value));
         let metadata = describe_clickbench_dataset_with_content_fingerprint(
             &root_path,
             "external_parquet_root",

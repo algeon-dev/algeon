@@ -345,11 +345,7 @@ fn resolved_source_contract_signature(resolved_source: &ResolvedParquetSource) -
     push_contract_hash(&mut output, "reader_location", Some(resolved_source.reader_location()));
     push_contract_hash(&mut output, "storage_domain", resolved_source.storage_domain.as_deref());
     push_contract_hash(&mut output, "content_identity", resolved_source.content_identity.as_deref());
-    push_contract_value(
-        &mut output,
-        "storage_profile_id",
-        resolved_source.storage_profile_id().unwrap_or("none"),
-    );
+    push_contract_value(&mut output, "storage_profile_id", resolved_source.storage_profile_id().unwrap_or("none"));
     push_contract_value(&mut output, "read_strategy", resolved_source.read_strategy().as_str());
     push_contract_value(&mut output, "credential_mode", resolved_source.credential_mode().as_str());
     push_contract_value(&mut output, "cache_status", resolved_source.cache_status.as_str());
@@ -442,18 +438,15 @@ fn canonicalize_aggregate_input_expr(plan: &QueryPlan, input: NodeId, expr: &Exp
         },
         Expr::Lower(expr) => Expr::Lower(Box::new(canonicalize_aggregate_input_expr(plan, input, expr))),
         Expr::Upper(expr) => Expr::Upper(Box::new(canonicalize_aggregate_input_expr(plan, input, expr))),
-        Expr::Trim { expr, trim_chars } => Expr::trim(
-            canonicalize_aggregate_input_expr(plan, input, expr),
-            trim_chars.clone(),
-        ),
-        Expr::LTrim { expr, trim_chars } => Expr::ltrim(
-            canonicalize_aggregate_input_expr(plan, input, expr),
-            trim_chars.clone(),
-        ),
-        Expr::RTrim { expr, trim_chars } => Expr::rtrim(
-            canonicalize_aggregate_input_expr(plan, input, expr),
-            trim_chars.clone(),
-        ),
+        Expr::Trim { expr, trim_chars } => {
+            Expr::trim(canonicalize_aggregate_input_expr(plan, input, expr), trim_chars.clone())
+        },
+        Expr::LTrim { expr, trim_chars } => {
+            Expr::ltrim(canonicalize_aggregate_input_expr(plan, input, expr), trim_chars.clone())
+        },
+        Expr::RTrim { expr, trim_chars } => {
+            Expr::rtrim(canonicalize_aggregate_input_expr(plan, input, expr), trim_chars.clone())
+        },
         Expr::StringContains { expr, pattern } => {
             Expr::string_contains(canonicalize_aggregate_input_expr(plan, input, expr), pattern.clone())
         },
@@ -550,10 +543,9 @@ fn aggregate_alias_canonicalization_input_is_rowset_preserving(plan: &QueryPlan,
     };
     match &node.kind {
         PlanNode::Source(_) => true,
-        PlanNode::Projection(projection) => aggregate_alias_canonicalization_input_is_rowset_preserving(
-            plan,
-            projection.input,
-        ),
+        PlanNode::Projection(projection) => {
+            aggregate_alias_canonicalization_input_is_rowset_preserving(plan, projection.input)
+        },
         PlanNode::Sort(sort) => aggregate_alias_canonicalization_input_is_rowset_preserving(plan, sort.input),
         PlanNode::Filter(_)
         | PlanNode::Limit(_)

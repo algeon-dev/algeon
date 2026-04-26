@@ -144,10 +144,7 @@ fn join_build_side_selection_keeps_small_current_build_side_over_grouped_aggrega
                 ColumnRef::input(1, "d_date_sk", "d_date_sk"),
             )],
         )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "date_sk", "date_sk"),
-            "date_sk",
-        )])
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
         .with_build_side(JoinSide::Right),
         schema(&["date_sk"]),
     );
@@ -206,10 +203,7 @@ fn join_build_side_selection_prefers_small_other_side_over_grouped_aggregate_key
                 ColumnRef::input(1, "d_date_sk", "d_date_sk"),
             )],
         )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "date_sk", "date_sk"),
-            "date_sk",
-        )])
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
         .with_build_side(JoinSide::Left),
         schema(&["date_sk"]),
     );
@@ -291,10 +285,7 @@ fn join_build_side_selection_prefers_bounded_left_semi_other_side_over_grouped_a
                 ColumnRef::input(1, "d_date_sk", "d_date_sk"),
             )],
         )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "date_sk", "date_sk"),
-            "date_sk",
-        )])
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
         .with_build_side(JoinSide::Left),
         schema(&["date_sk"]),
     );
@@ -376,10 +367,7 @@ fn join_build_side_selection_prefers_bounded_left_anti_other_side_over_grouped_a
                 ColumnRef::input(1, "d_date_sk", "d_date_sk"),
             )],
         )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "date_sk", "date_sk"),
-            "date_sk",
-        )])
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
         .with_build_side(JoinSide::Left),
         schema(&["date_sk"]),
     );
@@ -459,16 +447,11 @@ fn native_optimizer_revisits_build_side_after_aggregate_join_pushdown_creates_gr
 
     assert_eq!(result.diagnostics.aggregate_join_pushdown.applied_count, 1);
     assert!(
-        result
-            .diagnostics
-            .join_build_side_selection
-            .candidates
-            .iter()
-            .any(|candidate| {
-                candidate.applied
-                    && candidate.before_build_side == JoinSide::Right
-                    && candidate.after_build_side == Some(JoinSide::Left)
-            }),
+        result.diagnostics.join_build_side_selection.candidates.iter().any(|candidate| {
+            candidate.applied
+                && candidate.before_build_side == JoinSide::Right
+                && candidate.after_build_side == Some(JoinSide::Left)
+        }),
         "post-aggregate build-side selection should flip the reduced join to the grouped keyset side"
     );
 
@@ -519,10 +502,7 @@ fn native_optimizer_revisits_build_side_after_dimension_pruning_changes_source_s
     let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![
             LocalParquetFile::new(&fact_path)
-                .with_projected_row_group_bytes(
-                    vec![80 * 1024 * 1024; 4],
-                    vec![80 * 1024 * 1024; 4],
-                )
+                .with_projected_row_group_bytes(vec![80 * 1024 * 1024; 4], vec![80 * 1024 * 1024; 4])
                 .with_row_group_rows(vec![1; 4]),
         ],
         Arc::clone(&fact_schema),
@@ -551,10 +531,7 @@ fn native_optimizer_revisits_build_side_after_dimension_pruning_changes_source_s
             JoinType::Inner,
             vec![JoinKey::new(ColumnRef::input(0, "fact_key", "fact_key"), ColumnRef::input(1, "dim_key", "dim_key"))],
         )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "fact_key", "fact_key"),
-            "fact_key",
-        )])
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&fact_schema),
     );

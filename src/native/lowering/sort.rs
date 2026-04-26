@@ -117,7 +117,7 @@ fn project_sort_output(
 }
 
 fn unique_sort_key_name(index: usize, used_names: &BTreeSet<String>) -> String {
-    let base = format!("__cudf_sort_key_{index}");
+    let base = format!("__nexus_native_sort_key_{index}");
     unique_name_with_suffix(base.as_str(), |candidate| !used_names.contains(candidate))
 }
 

@@ -15,10 +15,11 @@ pub(super) fn direct_friendly_sql_session_config() -> SessionConfig {
 pub(super) async fn native_datafusion_sql_plan(
     path: &std::path::Path,
     sql: &str,
-    native_config: NativeCudfExecutionConfig,
+    native_config: NexusNativeExecutionConfig,
 ) -> Arc<dyn ExecutionPlan> {
-    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
-    let state = SessionStateBuilder::new_with_default_features().with_cudf_native(config).build();
+    let config =
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
+    let state = SessionStateBuilder::new_with_default_features().with_nexus_native(config).build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let df = ctx.sql(sql).await.unwrap();
@@ -28,12 +29,13 @@ pub(super) async fn native_datafusion_sql_plan(
 pub(super) async fn native_datafusion_lineitem_sql_plan(
     path: &std::path::Path,
     sql: &str,
-    native_config: NativeCudfExecutionConfig,
+    native_config: NexusNativeExecutionConfig,
 ) -> Arc<dyn ExecutionPlan> {
-    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
+    let config =
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
-        .with_cudf_native(config)
+        .with_nexus_native(config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("lineitem", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
@@ -44,12 +46,13 @@ pub(super) async fn native_datafusion_lineitem_sql_plan(
 pub(super) async fn native_datafusion_tpch_sql_plan(
     root: &std::path::Path,
     sql: &str,
-    native_config: NativeCudfExecutionConfig,
+    native_config: NexusNativeExecutionConfig,
 ) -> Arc<dyn ExecutionPlan> {
-    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
+    let config =
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
-        .with_cudf_native(config)
+        .with_nexus_native(config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tiny_tpch_tables(&ctx, root).await;
@@ -64,19 +67,19 @@ pub(super) async fn register_tiny_tpch_tables(ctx: &SessionContext, root: &std::
     }
 }
 
-pub(super) fn native_datafusion_config() -> NativeCudfExecutionConfig {
-    NativeCudfExecutionConfig::bounded(512 * 1024 * 1024, 256 * 1024 * 1024, 1, 3, 1)
+pub(super) fn native_datafusion_config() -> NexusNativeExecutionConfig {
+    NexusNativeExecutionConfig::bounded(512 * 1024 * 1024, 256 * 1024 * 1024, 1, 3, 1)
         .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
 }
 
-pub(super) fn unbounded_native_datafusion_config() -> NativeCudfExecutionConfig {
+pub(super) fn unbounded_native_datafusion_config() -> NexusNativeExecutionConfig {
     // These pruning tests cover legacy whole-plan execution without bounded
     // source chunking, so the unbounded config is intentional.
-    NativeCudfExecutionConfig::unbounded().with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
+    NexusNativeExecutionConfig::unbounded().with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
 }
 
-pub(super) fn constrained_native_datafusion_config() -> NativeCudfExecutionConfig {
-    NativeCudfExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1)
+pub(super) fn constrained_native_datafusion_config() -> NexusNativeExecutionConfig {
+    NexusNativeExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1)
         .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
 }
 
@@ -105,9 +108,9 @@ pub(super) fn adapter_error(error: &DataFusionError) -> &Error {
     source.downcast_ref::<Error>().expect("DataFusion external error should preserve datafusion_nexus::error::Error")
 }
 
-pub(super) fn assert_native_cudf_exec(plan: &Arc<dyn ExecutionPlan>, context: &str) {
-    assert_eq!(plan.name(), "NativeCudfExec", "{context}");
-    assert!(plan.downcast_ref::<NativeCudfExec>().is_some(), "{context}");
+pub(super) fn assert_nexus_native_exec(plan: &Arc<dyn ExecutionPlan>, context: &str) {
+    assert_eq!(plan.name(), "NexusNativeExec", "{context}");
+    assert!(plan.downcast_ref::<NexusNativeExec>().is_some(), "{context}");
 }
 
 pub(super) fn assert_batches_equal(left: &[RecordBatch], right: &[RecordBatch]) {

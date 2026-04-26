@@ -161,13 +161,7 @@ fn native_optimizer_keeps_large_keyset_source_reader_route_when_downstream_work_
 
 #[test]
 fn native_optimizer_rejects_dynamic_filter_route_when_producer_keyset_exceeds_runtime_limit() {
-    let plan = estimated_inner_join_plan(
-        JoinSide::Right,
-        512 * 1024 * 1024,
-        1_000_000,
-        64 * 1024 * 1024,
-        1_000_001,
-    );
+    let plan = estimated_inner_join_plan(JoinSide::Right, 512 * 1024 * 1024, 1_000_000, 64 * 1024 * 1024, 1_000_001);
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
@@ -180,10 +174,7 @@ fn native_optimizer_rejects_dynamic_filter_route_when_producer_keyset_exceeds_ru
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = &result.diagnostics.dynamic_filter_route_discovery.candidates[0];
     assert!(!candidate.routed);
-    assert_eq!(
-        candidate.rejected_reason,
-        Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit)
-    );
+    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit));
     assert!(result.plan.dynamic_filter_routes().is_empty());
 }
 
@@ -203,10 +194,7 @@ fn native_optimizer_uses_custom_dynamic_filter_runtime_limit_for_route_discovery
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = &result.diagnostics.dynamic_filter_route_discovery.candidates[0];
     assert!(!candidate.routed);
-    assert_eq!(
-        candidate.rejected_reason,
-        Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit)
-    );
+    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit));
     assert_eq!(result.plan.dynamic_filter_execution_options(), execution);
 }
 
@@ -267,7 +255,8 @@ fn native_optimizer_rejects_large_keyset_dimension_route_when_producer_is_larger
         2 * 1024 * 1024,
         16_000,
     ));
-    let right = builder.add_source(estimated_local_source("right_large_keyset", "right_key", 512 * 1024 * 1024, 1_000_000));
+    let right =
+        builder.add_source(estimated_local_source("right_large_keyset", "right_key", 512 * 1024 * 1024, 1_000_000));
     let output_schema = schema(&["left_key", "right_key"]);
     let join = builder.add_join(
         left,
@@ -315,7 +304,8 @@ fn native_optimizer_keeps_large_keyset_dimension_route_when_many_row_groups_cons
         2 * 1024 * 1024,
         16_000,
     ));
-    let right = builder.add_source(estimated_local_source("right_smaller_keyset", "right_key", 64 * 1024 * 1024, 1_000_000));
+    let right =
+        builder.add_source(estimated_local_source("right_smaller_keyset", "right_key", 64 * 1024 * 1024, 1_000_000));
     let output_schema = schema(&["left_key", "right_key"]);
     let join = builder.add_join(
         left,

@@ -53,11 +53,13 @@ async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Avg);
     assert_eq!(aggregate_exprs[0].alias, "avg(bench.m00)");
-    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == "__cudf_aggregate_arg_0"));
+    assert!(
+        matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == "__nexus_native_aggregate_arg_0")
+    );
     assert!(native_projection_exprs(&result.plans[0]).iter().any(|expr| matches!(
         expr,
         Expr::Alias { expr, alias }
-            if alias == "__cudf_aggregate_arg_0"
+            if alias == "__nexus_native_aggregate_arg_0"
                 && matches!(
                     expr.as_ref(),
                     Expr::Cast { expr, target_type }
@@ -159,13 +161,13 @@ async fn default_sql_distributed_aggregate_filter_lowers_to_native_filter() {
     assert!(
         matches!(
             aggregate_exprs[0].filter.as_ref(),
-            Some(Expr::Column(column)) if column.name() == "__cudf_aggregate_filter_0"
+            Some(Expr::Column(column)) if column.name() == "__nexus_native_aggregate_filter_0"
         ),
         "distributed aggregate filter should be materialized once before the native aggregate"
     );
     assert!(native_projection_exprs(&result.plans[0]).iter().any(|expr| matches!(
         expr,
-        Expr::Alias { alias, .. } if alias == "__cudf_aggregate_filter_0"
+        Expr::Alias { alias, .. } if alias == "__nexus_native_aggregate_filter_0"
     )));
 
     fs::remove_dir_all(dir).unwrap();
@@ -270,7 +272,7 @@ async fn distributed_partial_aggregate_filter_lowers_to_native_filter() {
     assert!(
         matches!(
             aggregate_exprs[0].filter.as_ref(),
-            Some(Expr::Column(column)) if column.name() == "__cudf_aggregate_filter_0"
+            Some(Expr::Column(column)) if column.name() == "__nexus_native_aggregate_filter_0"
         ),
         "partial-side filter should be retained on the native aggregate"
     );

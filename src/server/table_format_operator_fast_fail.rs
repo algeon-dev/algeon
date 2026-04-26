@@ -238,7 +238,7 @@ fn table_scan_uses_gpu_only_table_format_provider(
     let source = source.as_ref() as &dyn std::any::Any;
     source.downcast_ref::<DefaultTableSource>().is_some_and(|source| {
         let provider = source.table_provider.as_ref() as &dyn std::any::Any;
-        provider.is::<crate::table_format::iceberg::CudfIcebergTableProvider>()
+        provider.is::<crate::table_format::iceberg::NexusIcebergTableProvider>()
     })
 }
 

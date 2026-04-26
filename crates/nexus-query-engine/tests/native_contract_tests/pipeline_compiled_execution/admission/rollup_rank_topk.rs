@@ -84,7 +84,7 @@ fn strict_admission_rejects_large_rollup_rank_native_fragment_without_outer_topk
 
     assert!(
         analysis.has_rejections(),
-        "large rollup/rank native fragment should be rejected even when the outer TopK remains outside NativeCudfExec"
+        "large rollup/rank native fragment should be rejected even when the outer TopK remains outside NexusNativeExec"
     );
     let rejection = analysis.first_rejection_projection().expect("shape should project a rejection");
     assert_eq!(rejection.reason, "blocking_rollup_rank_full_scan_requires_exact_contracts");

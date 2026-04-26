@@ -70,12 +70,12 @@ use super::{
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphSqlConfig;
 #[cfg(feature = "cugraph")]
-use crate::session::CudfSessionStateBuilderExt;
+use crate::session::NexusSessionStateBuilderExt;
 use crate::{
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
     native_exec::{NativeMetricsCapture, NativeObservationActivityFactory},
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
-    session::install_cudf_native_rule_with_session_config,
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
+    session::install_nexus_native_rule_with_session_config,
     session_config::DataFusionNexusSessionConfig,
 };
 
@@ -101,7 +101,7 @@ use execution::cancel_invalid_argument_status;
 use frame_limiter::encode_flight_data_stream;
 use metadata::*;
 use prepared::PreparedStatementEntry;
-pub use service::DatafusionCudfFlightSqlService;
+pub use service::DatafusionNexusFlightSqlService;
 #[cfg(all(test, feature = "iceberg"))]
 use service::ServerCatalogDiagnostics;
 use status::*;

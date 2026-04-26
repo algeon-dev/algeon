@@ -16,59 +16,59 @@ use datafusion::{
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::{CugraphSqlConfig, cugraph_table_functions};
 #[cfg(feature = "cugraph")]
-use crate::native_exec::NativeCudfExecutionConfig;
+use crate::native_exec::NexusNativeExecutionConfig;
 use crate::{
     gpu_coverage_sql::gpu_coverage_table_function,
     planner::{
-        CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
-        CudfTableFormatGpuOnlyLeafGuardRule,
+        NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
+        NexusTableFormatGpuOnlyLeafGuardRule,
     },
     session_config::DataFusionNexusSessionConfig,
 };
 
 /// Public name and deduplication key for the final native rewrite rule.
-pub const CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_nexus_native";
+pub const NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_nexus_native";
 /// Public name and deduplication key for the count-only native probe rule.
-pub const CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_nexus_native_count_only";
+pub const NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_nexus_native_count_only";
 const DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME: &str = "aggregate_statistics";
 const DATAFUSION_FINAL_VALIDATION_RULE_NAME: &str = "SanityCheckPlan";
 
 pub type PhysicalOptimizerRules = Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>;
 
-/// Return DataFusion's default physical optimizer rules with the cudf native
+/// Return DataFusion's default physical optimizer rules with the nexus native
 /// rewrite inserted before DataFusion's final plan validation rule.
-pub fn cudf_native_physical_optimizer_rules(config: CudfOptimizerConfig) -> PhysicalOptimizerRules {
-    let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(config));
-    cudf_native_physical_optimizer_rules_with_rule(rule)
+pub fn nexus_native_physical_optimizer_rules(config: NexusNativeOptimizerConfig) -> PhysicalOptimizerRules {
+    let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(config));
+    nexus_native_physical_optimizer_rules_with_rule(rule)
 }
 
 /// Return DataFusion's default physical optimizer rules with a caller-retained
-/// cudf native rule inserted before DataFusion's final plan validation rule.
-pub fn cudf_native_physical_optimizer_rules_with_rule(
-    rule: Arc<CudfNativePhysicalOptimizerRule>,
+/// nexus native rule inserted before DataFusion's final plan validation rule.
+pub fn nexus_native_physical_optimizer_rules_with_rule(
+    rule: Arc<NexusNativePhysicalOptimizerRule>,
 ) -> PhysicalOptimizerRules {
     let mut rules = PhysicalOptimizer::new().rules;
-    insert_cudf_native_rules_before_final_validation(&mut rules, rule);
+    insert_nexus_native_rules_before_final_validation(&mut rules, rule);
     rules
 }
 
 /// Extension methods for adding native GPU planning to a DataFusion session.
-pub trait CudfSessionStateBuilderExt {
-    /// Register cudf native rewriting before DataFusion's final physical-plan
+pub trait NexusSessionStateBuilderExt {
+    /// Register nexus native rewriting before DataFusion's final physical-plan
     /// validation rule.
-    fn with_cudf_native(self, config: CudfOptimizerConfig) -> Self;
+    fn with_nexus_native(self, config: NexusNativeOptimizerConfig) -> Self;
 
     #[cfg(feature = "cugraph")]
     fn with_cugraph_sql(self, config: CugraphSqlConfig) -> Self;
 
-    /// Register a caller-retained cudf native rule before DataFusion's final
+    /// Register a caller-retained nexus native rule before DataFusion's final
     /// physical-plan validation rule.
-    fn with_cudf_native_rule(self, rule: Arc<CudfNativePhysicalOptimizerRule>) -> Self;
+    fn with_nexus_native_rule(self, rule: Arc<NexusNativePhysicalOptimizerRule>) -> Self;
 }
 
-impl CudfSessionStateBuilderExt for SessionStateBuilder {
-    fn with_cudf_native(self, config: CudfOptimizerConfig) -> Self {
-        self.with_cudf_native_rule(Arc::new(CudfNativePhysicalOptimizerRule::new(config)))
+impl NexusSessionStateBuilderExt for SessionStateBuilder {
+    fn with_nexus_native(self, config: NexusNativeOptimizerConfig) -> Self {
+        self.with_nexus_native_rule(Arc::new(NexusNativePhysicalOptimizerRule::new(config)))
     }
 
     #[cfg(feature = "cugraph")]
@@ -81,18 +81,18 @@ impl CudfSessionStateBuilderExt for SessionStateBuilder {
         self
     }
 
-    fn with_cudf_native_rule(mut self, rule: Arc<CudfNativePhysicalOptimizerRule>) -> Self {
+    fn with_nexus_native_rule(mut self, rule: Arc<NexusNativePhysicalOptimizerRule>) -> Self {
         ensure_datafusion_nexus_session_config(&mut self, rule.config());
         install_gpu_coverage_table_function(&mut self);
         let mut rules = take_physical_optimizer_rules(&mut self);
-        insert_cudf_native_rules_before_final_validation(&mut rules, rule);
+        insert_nexus_native_rules_before_final_validation(&mut rules, rule);
         self.with_physical_optimizer_rules(rules)
     }
 }
 
-pub(crate) fn install_cudf_native_rule_with_session_config(
+pub(crate) fn install_nexus_native_rule_with_session_config(
     mut builder: SessionStateBuilder,
-    rule: Arc<CudfNativePhysicalOptimizerRule>,
+    rule: Arc<NexusNativePhysicalOptimizerRule>,
     session_extension: DataFusionNexusSessionConfig,
 ) -> DataFusionResult<SessionStateBuilder> {
     let session_config = builder.config().get_or_insert_with(Default::default);
@@ -108,25 +108,25 @@ pub(crate) fn install_cudf_native_rule_with_session_config(
     session_config.options_mut().extensions.insert(session_extension);
     install_gpu_coverage_table_function(&mut builder);
     let mut rules = take_physical_optimizer_rules(&mut builder);
-    insert_cudf_native_rules_before_final_validation(&mut rules, rule);
+    insert_nexus_native_rules_before_final_validation(&mut rules, rule);
     Ok(builder.with_physical_optimizer_rules(rules))
 }
 
 #[cfg(feature = "cugraph")]
 pub(crate) fn session_state_with_native_execution_config(
     state: &SessionState,
-    native_execution_config: NativeCudfExecutionConfig,
+    native_execution_config: NexusNativeExecutionConfig,
 ) -> Option<SessionState> {
     let optimizer_config =
-        installed_cudf_native_optimizer_config(state)?.with_native_execution_config(native_execution_config);
-    let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+        installed_nexus_native_optimizer_config(state)?.with_native_execution_config(native_execution_config);
+    let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let mut rules = state.physical_optimizers().to_vec();
-    insert_cudf_native_rules_before_final_validation(&mut rules, rule);
+    insert_nexus_native_rules_before_final_validation(&mut rules, rule);
     Some(SessionStateBuilder::new_from_existing(state.clone()).with_physical_optimizer_rules(rules).build())
 }
 
-pub(crate) fn installed_cudf_native_optimizer_config(state: &SessionState) -> Option<CudfOptimizerConfig> {
-    installed_cudf_native_optimizer_config_from_rules(state.physical_optimizers())
+pub(crate) fn installed_nexus_native_optimizer_config(state: &SessionState) -> Option<NexusNativeOptimizerConfig> {
+    installed_nexus_native_optimizer_config_from_rules(state.physical_optimizers())
 }
 
 #[cfg(feature = "cugraph")]
@@ -137,7 +137,7 @@ fn cugraph_config_with_builder_native_admission(
     if config.native_execution_config.has_query_admission_authority() {
         return config;
     }
-    let Some(optimizer_config) = installed_cudf_native_optimizer_config_from_builder(builder) else {
+    let Some(optimizer_config) = installed_nexus_native_optimizer_config_from_builder(builder) else {
         return config;
     };
     let native_execution_config = optimizer_config.native_execution_config();
@@ -149,36 +149,36 @@ fn cugraph_config_with_builder_native_admission(
 }
 
 #[cfg(feature = "cugraph")]
-fn installed_cudf_native_optimizer_config_from_builder(
+fn installed_nexus_native_optimizer_config_from_builder(
     builder: &mut SessionStateBuilder,
-) -> Option<CudfOptimizerConfig> {
+) -> Option<NexusNativeOptimizerConfig> {
     if let Some(config) = builder
         .physical_optimizers()
         .as_ref()
-        .and_then(|optimizer| installed_cudf_native_optimizer_config_from_rules(&optimizer.rules))
+        .and_then(|optimizer| installed_nexus_native_optimizer_config_from_rules(&optimizer.rules))
     {
         return Some(config);
     }
     builder
         .physical_optimizer_rules()
         .as_ref()
-        .and_then(|rules| installed_cudf_native_optimizer_config_from_rules(rules))
+        .and_then(|rules| installed_nexus_native_optimizer_config_from_rules(rules))
 }
 
-fn installed_cudf_native_optimizer_config_from_rules(
+fn installed_nexus_native_optimizer_config_from_rules(
     rules: &[Arc<dyn PhysicalOptimizerRule + Send + Sync>],
-) -> Option<CudfOptimizerConfig> {
-    rules.iter().find_map(|rule| cudf_native_optimizer_config_from_rule(rule.as_ref()))
+) -> Option<NexusNativeOptimizerConfig> {
+    rules.iter().find_map(|rule| nexus_native_optimizer_config_from_rule(rule.as_ref()))
 }
 
-fn cudf_native_optimizer_config_from_rule(
+fn nexus_native_optimizer_config_from_rule(
     rule: &(dyn PhysicalOptimizerRule + Send + Sync),
-) -> Option<CudfOptimizerConfig> {
+) -> Option<NexusNativeOptimizerConfig> {
     let rule = rule as &dyn std::any::Any;
-    rule.downcast_ref::<CudfNativePhysicalOptimizerRule>().map(|native| native.config().clone())
+    rule.downcast_ref::<NexusNativePhysicalOptimizerRule>().map(|native| native.config().clone())
 }
 
-fn ensure_datafusion_nexus_session_config(builder: &mut SessionStateBuilder, config: &CudfOptimizerConfig) {
+fn ensure_datafusion_nexus_session_config(builder: &mut SessionStateBuilder, config: &NexusNativeOptimizerConfig) {
     let session_config = builder.config().get_or_insert_with(Default::default);
     if session_config.options().extensions.get::<DataFusionNexusSessionConfig>().is_none() {
         session_config.options_mut().extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(config));
@@ -204,14 +204,14 @@ fn take_physical_optimizer_rules(builder: &mut SessionStateBuilder) -> PhysicalO
     rules
 }
 
-fn insert_cudf_native_rules_before_final_validation(
+fn insert_nexus_native_rules_before_final_validation(
     rules: &mut PhysicalOptimizerRules,
-    native_rule: Arc<CudfNativePhysicalOptimizerRule>,
+    native_rule: Arc<NexusNativePhysicalOptimizerRule>,
 ) {
     rules.retain(|existing| {
-        existing.name() != CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
-            && existing.name() != CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
-            && existing.name() != CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME
+        existing.name() != NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
+            && existing.name() != NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
+            && existing.name() != NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME
     });
     let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
     let insertion_position =
@@ -221,7 +221,7 @@ fn insert_cudf_native_rules_before_final_validation(
         .iter()
         .rposition(|existing| existing.name() == DATAFUSION_FINAL_VALIDATION_RULE_NAME)
         .map(|position| rules.remove(position));
-    let leaf_guard = Arc::new(CudfTableFormatGpuOnlyLeafGuardRule::with_native_rule(Arc::clone(&native_rule)));
+    let leaf_guard = Arc::new(NexusTableFormatGpuOnlyLeafGuardRule::with_native_rule(Arc::clone(&native_rule)));
     rules.push(native_rule);
     rules.push(leaf_guard);
     if let Some(final_validation) = final_validation {
@@ -259,10 +259,10 @@ mod tests {
     fn cugraph_sql_config_inherits_installed_backend_admission() {
         let source = admission_only_source();
         let native_execution_config =
-            NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+            NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
         let optimizer_config =
-            CudfOptimizerConfig::default().with_native_execution_config(native_execution_config.clone());
-        let mut builder = SessionStateBuilder::new().with_cudf_native(optimizer_config);
+            NexusNativeOptimizerConfig::default().with_native_execution_config(native_execution_config.clone());
+        let mut builder = SessionStateBuilder::new().with_nexus_native(optimizer_config);
 
         let cugraph_config = cugraph_config_with_builder_native_admission(&mut builder, CugraphSqlConfig::default());
 

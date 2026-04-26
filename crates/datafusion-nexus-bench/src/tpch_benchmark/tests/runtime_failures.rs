@@ -73,7 +73,7 @@ fn native_runtime_failure_preserves_adapter_error_facts() {
     let adapter_error = AdapterError::new(
         datafusion_nexus::error::ErrorCode::MemoryReservationFailed,
         "datafusion_nexus.native_exec.execute",
-        "native cudf query execution failed",
+        "nexus native query execution failed",
     )
     .with_fact("native_code", "memory_reservation_failed")
     .with_fact("native_kind", "resource_exhausted")

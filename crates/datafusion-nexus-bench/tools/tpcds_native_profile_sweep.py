@@ -74,13 +74,13 @@ SUMMARY_HEADER = [
     "stderr_log",
 ]
 NATIVE_ENV_OWNED_BY_SWEEP = (
-    "CUDF_TPCDS_NATIVE_PROFILE",
-    "CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES",
-    "CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES",
-    "CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK",
-    "CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE",
-    "CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS",
-    "CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS",
+    "NEXUS_TPCDS_NATIVE_PROFILE",
+    "NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES",
+    "NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES",
+    "NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK",
+    "NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE",
+    "NEXUS_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS",
+    "NEXUS_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS",
 )
 
 
@@ -190,22 +190,22 @@ def candidate_env(args: argparse.Namespace, candidate: Candidate) -> dict[str, s
     env.update(
         {
             "NEXUS_PARQUET_DIR": str(args.parquet_dir),
-            "CUDF_TPCDS_BENCH_ENGINE": "native_gpu",
-            "CUDF_TPCDS_BENCH_QUERIES": args.queries,
-            "CUDF_TPCDS_BENCH_WARMUPS": str(args.warmups),
-            "CUDF_TPCDS_BENCH_ITERATIONS": str(args.iterations),
-            "CUDF_TPCDS_NATIVE_PROFILE": "conservative",
-            "CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES": str(candidate.max_source_chunk_bytes),
-            "CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK": str(candidate.max_row_groups_per_chunk),
-            "CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE": "conservative",
+            "NEXUS_TPCDS_BENCH_ENGINE": "native_gpu",
+            "NEXUS_TPCDS_BENCH_QUERIES": args.queries,
+            "NEXUS_TPCDS_BENCH_WARMUPS": str(args.warmups),
+            "NEXUS_TPCDS_BENCH_ITERATIONS": str(args.iterations),
+            "NEXUS_TPCDS_NATIVE_PROFILE": "conservative",
+            "NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES": str(candidate.max_source_chunk_bytes),
+            "NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK": str(candidate.max_row_groups_per_chunk),
+            "NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE": "conservative",
         }
     )
     if args.skip_staleness_check:
         env["CUDF_RS_SKIP_STALENESS_CHECK"] = "1"
     if candidate.device_budget_bytes is None:
-        env.pop("CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES", None)
+        env.pop("NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES", None)
     else:
-        env["CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES"] = str(candidate.device_budget_bytes)
+        env["NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES"] = str(candidate.device_budget_bytes)
     return env
 
 

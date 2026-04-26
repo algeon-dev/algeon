@@ -60,7 +60,7 @@ pub(crate) async fn run_report_with_optional_stream(
     ));
 
     let provider = Arc::new(
-        CudfIcebergTableProvider::from_table_format_planner(logical_schema, planner)
+        NexusIcebergTableProvider::from_table_format_planner(logical_schema, planner)
             .with_catalog_type(catalog_type.clone()),
     );
     let (ctx, native_rule) =
@@ -159,7 +159,7 @@ pub(crate) async fn run_tpch_subset_report_with_execution_mode(
             (*table_name).to_string(),
         ));
         let provider = Arc::new(
-            CudfIcebergTableProvider::from_table_format_planner(logical_schema, staging_planner)
+            NexusIcebergTableProvider::from_table_format_planner(logical_schema, staging_planner)
                 .with_catalog_type(catalog_type.clone()),
         );
         ctx.register_table(*table_name, provider)?;
@@ -272,7 +272,7 @@ pub(crate) async fn run_tpcds_subset_report(
             (*table_name).to_string(),
         ));
         let provider = Arc::new(
-            CudfIcebergTableProvider::from_table_format_planner(logical_schema, staging_planner)
+            NexusIcebergTableProvider::from_table_format_planner(logical_schema, staging_planner)
                 .with_catalog_type(catalog_type.clone()),
         );
         ctx.register_table(*table_name, provider)?;
@@ -493,7 +493,7 @@ pub(crate) async fn register_custom_probe_table(
         table_name.to_string(),
     ));
     let provider = Arc::new(
-        CudfIcebergTableProvider::from_table_format_planner(logical_schema, staging_planner)
+        NexusIcebergTableProvider::from_table_format_planner(logical_schema, staging_planner)
             .with_catalog_type(catalog_type.to_string()),
     );
     ctx.register_table(table_name, provider)?;
@@ -536,7 +536,7 @@ pub(crate) async fn run_query_with_registered_native_tables(
     table_ident: String,
     sql: String,
     ctx: &SessionContext,
-    native_rule: &CudfNativePhysicalOptimizerRule,
+    native_rule: &NexusNativePhysicalOptimizerRule,
     staging_records: Arc<Mutex<Vec<StagingRecord>>>,
     run_cpu_parity: bool,
     credential_source: String,

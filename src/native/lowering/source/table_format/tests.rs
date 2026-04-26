@@ -699,7 +699,7 @@ fn table_format_filter_only_same_name_signed_integer_widening_admits() {
             crate::table_format::TableFormatColumnRole::PureFilter,
         ));
     let scan_exec: Arc<dyn ExecutionPlan> =
-        Arc::new(CudfTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
+        Arc::new(NexusTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
     let scan_schema = scan_exec.schema();
     let predicate =
         binary(col("status", &scan_schema).unwrap(), Operator::Gt, lit(ScalarValue::Int32(Some(0))), &scan_schema)
@@ -781,7 +781,7 @@ fn table_format_bare_boolean_filter_stays_post_decode() {
             TableFormatColumnSource::DirectTopLevelFileColumn,
             crate::table_format::TableFormatColumnRole::PureFilter,
         ));
-    let scan_exec = Arc::new(CudfTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
+    let scan_exec = Arc::new(NexusTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
     let scan_plan_exec: Arc<dyn ExecutionPlan> = scan_exec.clone();
     let scan_schema = scan_plan_exec.schema();
     let predicate = col("flag", &scan_schema).unwrap();
@@ -860,7 +860,7 @@ fn table_format_filter_only_same_name_unsafe_type_mismatch_rejects_instead_of_mi
             crate::table_format::TableFormatColumnRole::PureFilter,
         ));
     let scan_exec: Arc<dyn ExecutionPlan> =
-        Arc::new(CudfTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
+        Arc::new(NexusTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
     let scan_schema = scan_exec.schema();
     let predicate =
         binary(col("status", &scan_schema).unwrap(), Operator::Gt, lit(ScalarValue::Int32(Some(0))), &scan_schema)
@@ -916,7 +916,7 @@ fn table_format_filter_only_absent_nullable_field_id_rejects_instead_of_missing_
             crate::table_format::TableFormatColumnRole::PureFilter,
         ));
     let scan_exec: Arc<dyn ExecutionPlan> =
-        Arc::new(CudfTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
+        Arc::new(NexusTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
     let scan_schema = scan_exec.schema();
     let predicate =
         binary(col("status", &scan_schema).unwrap(), Operator::Gt, lit(ScalarValue::Int64(Some(0))), &scan_schema)
@@ -1262,7 +1262,7 @@ fn table_format_field_id_alias_and_position_deletes_lower_into_one_native_source
     let mut scan_plan = single_projected_file_scan_plan(&data_path, Arc::clone(&scan_schema), 2);
     scan_plan.data_files[0] = scan_plan.data_files[0].clone().with_position_delete_files(vec![delete_file.clone()]);
     scan_plan.delete_files.push(delete_file);
-    let scan_exec = CudfTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
+    let scan_exec = NexusTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
     let mut builder = NativeQueryPlanBuilder::new();
 
     let lowered =
@@ -1342,7 +1342,7 @@ fn table_format_equality_delete_hidden_key_rejects_without_delete_footer_field_i
             TableFormatColumnSource::DirectTopLevelFileColumn,
             crate::table_format::TableFormatColumnRole::PureFilter,
         ));
-    let scan_exec = CudfTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
+    let scan_exec = NexusTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
     let mut builder = NativeQueryPlanBuilder::new();
 
     let error = lower_table_format_source_input(
@@ -1381,7 +1381,7 @@ fn table_format_position_delete_scan_limit_is_pushed_with_upper_limit() {
         single_projected_file_scan_plan(&data_path, Arc::clone(&scan_schema), 2).with_scan_limit(Some(1));
     scan_plan.data_files[0] = scan_plan.data_files[0].clone().with_position_delete_files(vec![delete_file.clone()]);
     scan_plan.delete_files.push(delete_file);
-    let scan_exec = CudfTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
+    let scan_exec = NexusTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
     let mut builder = NativeQueryPlanBuilder::new();
 
     let lowered =
@@ -1448,7 +1448,7 @@ fn table_format_local_footer_renamed_physical_columns_lower_as_union_groups() {
             TableFormatColumnSource::DirectTopLevelFileColumn,
             crate::table_format::TableFormatColumnRole::Projected,
         ));
-    let scan_exec = CudfTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
+    let scan_exec = NexusTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
     let mut builder = NativeQueryPlanBuilder::new();
 
     let lowered =
@@ -1513,7 +1513,7 @@ fn table_format_multi_group_scan_limit_is_pushed_into_each_source() {
             TableFormatColumnSource::DirectTopLevelFileColumn,
             crate::table_format::TableFormatColumnRole::Projected,
         ));
-    let scan_exec = CudfTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
+    let scan_exec = NexusTableFormatScanExec::new(scan_plan, Arc::clone(&scan_schema));
     let mut builder = NativeQueryPlanBuilder::new();
 
     let lowered =

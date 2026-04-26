@@ -34,7 +34,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    native_exec::{NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec},
+    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
     native_report::{
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
         NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport,
@@ -44,14 +44,14 @@ use datafusion_nexus::{
         NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
     },
     planner::{
-        CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativeAdaptivePipelineCandidateDiagnostics,
-        NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
-        NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
-        NativeStrictBoundedRejectedCandidateDiagnostics,
+        NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics,
+        NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
+        NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
+        NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
     },
     policy::{FallbackReason, GpuFallbackPolicy},
     report::{GpuCandidate, PlanningReport},
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{
     TPCH_QUERY_COUNT, tiny_tpch_dataset_metadata, tpch_query_ids, write_tiny_tpch_parquet_dataset,
@@ -344,7 +344,7 @@ async fn adaptive_fallback_pressure_report_projects_adaptive_rows_only_when_sele
     let strict = NativeFallbackPressureReport::collect([item.clone()]);
     assert!(report_row(&strict, "join_adaptive").adaptive_pipeline_rows.is_empty());
 
-    let adaptive_config = NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
+    let adaptive_config = NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
         .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
     let adaptive = NativeFallbackPressureReport::collect_with_native_execution_config([item], &adaptive_config);
     let row = report_row(&adaptive, "join_adaptive");
@@ -398,7 +398,7 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(accepted_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
     assert_eq!(accepted_row.reason_code, None);
     assert_eq!(accepted_row.unsupported_category, None);
-    assert_eq!(accepted_row.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(accepted_row.post_native_plan_root, "NexusNativeExec");
     assert_eq!(accepted_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
     assert!(!accepted_row.rejected_before_execution);
     assert_eq!(accepted_row.source_diagnostics.len(), 1);
@@ -420,7 +420,7 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
         count_only_row.native_candidate_shape_family.as_deref(),
         Some("projected_global_local_parquet_distributed_aggregate")
     );
-    assert_eq!(count_only_row.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(count_only_row.post_native_plan_root, "NexusNativeExec");
     assert_eq!(count_only_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
     assert_eq!(count_only_row.source_diagnostics.len(), 1);
     assert_eq!(count_only_row.source_diagnostics[0].read_column_count, 0);
@@ -440,14 +440,16 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(distributed_avg_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
     assert_eq!(distributed_avg_row.reason_code, None);
     assert_eq!(distributed_avg_row.unsupported_category, None);
-    assert_eq!(distributed_avg_row.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(distributed_avg_row.post_native_plan_root, "NexusNativeExec");
     assert_eq!(distributed_avg_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
     assert!(!distributed_avg_row.rejected_before_execution);
 
     let rejected_plan = typed_null_and_try_cast_reject_plan(parquet_scan(&path).await);
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
-    let native_rule = CudfNativePhysicalOptimizerRule::new(optimizer_config);
+    let optimizer_config =
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
+            NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
+        );
+    let native_rule = NexusNativePhysicalOptimizerRule::new(optimizer_config);
     let rejected_plan = native_rule.optimize(rejected_plan, &ConfigOptions::default()).unwrap();
     let rejected = NativeDataFusionPlanningReport::from_retained_rule("try_cast_session", rejected_plan, &native_rule);
     assert_eq!(rejected.rows.len(), 1);
@@ -495,7 +497,7 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert!(text.contains("sum_session\t"));
     assert!(text.contains("\taccepted_replaced\tnone\tnone\t"));
     assert!(text.contains("\tfalse\tnone\t"));
-    assert!(text.contains("\tNativeCudfExec\tnative\t1\t0\tfalse"));
+    assert!(text.contains("\tNexusNativeExec\tnative\t1\t0\tfalse"));
 
     fs::remove_dir_all(dir).unwrap();
 }

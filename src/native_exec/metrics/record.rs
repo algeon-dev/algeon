@@ -28,11 +28,11 @@ use crate::native_exec::admission::QueryAdmissionFacts;
 mod mapping;
 
 #[cfg(test)]
-pub(super) use mapping::{NATIVE_CUDF_RECORDING_DESCRIPTORS, NativeMetricRecordingKind};
+pub(super) use mapping::{NATIVE_NEXUS_RECORDING_DESCRIPTORS, NativeMetricRecordingKind};
 
 /// Private translation layer from native QueryMetrics into DataFusion metrics.
 #[derive(Debug, Clone)]
-pub(crate) struct NativeCudfMetrics {
+pub(crate) struct NexusNativeMetrics {
     metrics_set: ExecutionPlanMetricsSet,
     capture: Option<NativeExecutionMetricsCapture>,
     plan_task_mapping_datafusion_shape: Option<String>,
@@ -109,7 +109,7 @@ impl fmt::Write for MetricRowSizeProbe {
 
 // Recorder methods use descriptor-generated field identifiers directly while the
 // registry retains ownership of all registered DataFusion metric handles.
-impl Deref for NativeCudfMetrics {
+impl Deref for NexusNativeMetrics {
     type Target = NativeMetricRegistry;
 
     fn deref(&self) -> &Self::Target {
@@ -117,7 +117,7 @@ impl Deref for NativeCudfMetrics {
     }
 }
 
-impl NativeCudfMetrics {
+impl NexusNativeMetrics {
     #[cfg(test)]
     pub(crate) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         Self::new_with_capture_and_shape(metrics, partition, None, None)

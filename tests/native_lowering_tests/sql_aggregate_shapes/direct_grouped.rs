@@ -178,7 +178,7 @@ async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() 
         .expect("native aggregate should include COUNT(*)");
     assert!(matches!(
         &count_expr.expr,
-        Expr::Column(column) if column.name().starts_with("__cudf_aggregate_arg_")
+        Expr::Column(column) if column.name().starts_with("__nexus_native_aggregate_arg_")
     ));
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(
@@ -256,7 +256,7 @@ async fn direct_friendly_sql_typed_null_count_does_not_use_zero_column_count() {
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Count);
     assert!(matches!(
         &aggregate_exprs[0].expr,
-        Expr::Column(column) if column.name().starts_with("__cudf_aggregate_arg_")
+        Expr::Column(column) if column.name().starts_with("__nexus_native_aggregate_arg_")
     ));
 
     fs::remove_dir_all(dir).unwrap();

@@ -3,30 +3,31 @@ use super::*;
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];
 
-const CUDF_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV: &str = "CUDF_TPCDS_BENCH_NATIVE_FALLBACK_POLICY";
+const NEXUS_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV: &str = "NEXUS_TPCDS_BENCH_NATIVE_FALLBACK_POLICY";
 
 impl BenchConfig {
     pub(super) fn from_env() -> Result<Self, Box<dyn Error>> {
-        let engine = match std::env::var("CUDF_TPCDS_BENCH_ENGINE").as_deref() {
+        let engine = match std::env::var("NEXUS_TPCDS_BENCH_ENGINE").as_deref() {
             Ok("native_gpu") => Engine::NativeGpu,
             Ok("cpu_datafusion") => Engine::CpuDataFusion,
             Ok("hybrid_cpu_preferred") => Engine::HybridCpuPreferred,
-            Ok(other) => return Err(format!("unsupported CUDF_TPCDS_BENCH_ENGINE={other}").into()),
+            Ok(other) => return Err(format!("unsupported NEXUS_TPCDS_BENCH_ENGINE={other}").into()),
             Err(_) => {
                 return Err(
-                    "CUDF_TPCDS_BENCH_ENGINE must be set to native_gpu, cpu_datafusion, or hybrid_cpu_preferred".into(),
+                    "NEXUS_TPCDS_BENCH_ENGINE must be set to native_gpu, cpu_datafusion, or hybrid_cpu_preferred"
+                        .into(),
                 );
             },
         };
         let root = std::env::var(datafusion_nexus_workloads::NEXUS_PARQUET_DIR_ENV)
             .map_err(|_| "NEXUS_PARQUET_DIR must be set to the SF100 parquet root")?;
         let root = std::path::PathBuf::from(root);
-        let queries_csv = std::env::var("CUDF_TPCDS_BENCH_QUERIES").unwrap_or_else(|_| DEFAULT_QUERY_IDS.join(","));
+        let queries_csv = std::env::var("NEXUS_TPCDS_BENCH_QUERIES").unwrap_or_else(|_| DEFAULT_QUERY_IDS.join(","));
         let queries = bench_queries_from_csv(&queries_csv)?;
-        let warmups = env_usize("CUDF_TPCDS_BENCH_WARMUPS", 1)?;
-        let iterations = env_usize("CUDF_TPCDS_BENCH_ITERATIONS", 2)?;
+        let warmups = env_usize("NEXUS_TPCDS_BENCH_WARMUPS", 1)?;
+        let iterations = env_usize("NEXUS_TPCDS_BENCH_ITERATIONS", 2)?;
         if iterations == 0 {
-            return Err("CUDF_TPCDS_BENCH_ITERATIONS must be >= 1".into());
+            return Err("NEXUS_TPCDS_BENCH_ITERATIONS must be >= 1".into());
         }
         let native_profile = match engine {
             Engine::CpuDataFusion => tpcds_native_profile_settings_with_env(|_| None),
@@ -49,11 +50,11 @@ impl BenchConfig {
 }
 
 fn native_fallback_policy_from_env() -> Result<GpuFallbackPolicy, Box<dyn Error>> {
-    match std::env::var(CUDF_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV) {
+    match std::env::var(NEXUS_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV) {
         Ok(value) => crate::report_workload::parse_gpu_fallback_policy(&value)
-            .map_err(|error| format!("invalid {CUDF_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}").into()),
+            .map_err(|error| format!("invalid {NEXUS_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}").into()),
         Err(std::env::VarError::NotPresent) => Ok(GpuFallbackPolicy::GpuPreferred),
-        Err(error) => Err(format!("failed to read {CUDF_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}").into()),
+        Err(error) => Err(format!("failed to read {NEXUS_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}").into()),
     }
 }
 
@@ -89,10 +90,10 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
             let optimizer_config = tpcds_native_analytics_optimizer_config_with_profile_settings(&cfg.native_profile)
                 .with_fallback_policy(cfg.native_fallback_policy)
                 .with_native_pipeline_execution_mode(cfg.native_pipeline_execution_mode);
-            let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+            let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
             let state = SessionStateBuilder::new_with_default_features()
                 .with_config(tpcds_native_report_session_config())
-                .with_cudf_native_rule(Arc::clone(&rule))
+                .with_nexus_native_rule(Arc::clone(&rule))
                 .build();
             let ctx = SessionContext::new_with_state(state);
             register_tpcds_tables_with_native_metadata(&ctx, &cfg.root).await?;
@@ -128,15 +129,15 @@ async fn build_native_planning_context(
     native_profile: &TpcdsNativeProfileSettings,
     fallback_policy: GpuFallbackPolicy,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
-) -> Result<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>), Box<dyn Error>> {
+) -> Result<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>), Box<dyn Error>> {
     let optimizer_config =
         tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings(native_profile)
             .with_fallback_policy(fallback_policy)
             .with_native_pipeline_execution_mode(native_pipeline_execution_mode);
-    let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+    let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpcds_native_report_session_config())
-        .with_cudf_native_rule(Arc::clone(&rule))
+        .with_nexus_native_rule(Arc::clone(&rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpcds_tables_with_native_metadata(&ctx, root).await?;
@@ -145,9 +146,9 @@ async fn build_native_planning_context(
 
 fn tuned_cpu_session_config() -> SessionConfig {
     let target_partitions =
-        std::env::var("CUDF_TPCDS_CPU_TARGET_PARTITIONS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(16);
+        std::env::var("NEXUS_TPCDS_CPU_TARGET_PARTITIONS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(16);
     let batch_size =
-        std::env::var("CUDF_TPCDS_CPU_BATCH_SIZE").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(8192);
+        std::env::var("NEXUS_TPCDS_CPU_BATCH_SIZE").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(8192);
     let mut config = SessionConfig::new()
         .with_target_partitions(target_partitions)
         .with_batch_size(batch_size)

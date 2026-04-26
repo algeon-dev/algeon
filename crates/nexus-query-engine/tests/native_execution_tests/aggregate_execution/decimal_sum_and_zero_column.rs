@@ -7,7 +7,7 @@ fn bounded_native_query_executes_filtered_decimal_global_sum() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_discounted_lineitem_parquet(&path);
     let projected_schema =
-        Arc::new(Schema::new(vec![Field::new("__cudf_aggregate_arg_0", DataType::Decimal128(38, 4), true)]));
+        Arc::new(Schema::new(vec![Field::new("__nexus_native_aggregate_arg_0", DataType::Decimal128(38, 4), true)]));
     let aggregated_schema = Arc::new(Schema::new(vec![Field::new("revenue", DataType::Decimal128(38, 4), true)]));
 
     let source = LocalParquetSource::from_files(
@@ -59,11 +59,11 @@ fn bounded_native_query_executes_filtered_decimal_global_sum() {
     );
     let projection = vec![
         Expr::binary(Expr::column("l_extendedprice"), BinaryOp::Multiply, Expr::column("l_discount"))
-            .alias("__cudf_aggregate_arg_0"),
+            .alias("__nexus_native_aggregate_arg_0"),
     ];
     let aggregate = AggregateSpec::new(
         Vec::new(),
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("__cudf_aggregate_arg_0"), "revenue")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("__nexus_native_aggregate_arg_0"), "revenue")],
     );
 
     let mut builder = QueryPlanBuilder::new();

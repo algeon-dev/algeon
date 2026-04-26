@@ -10,7 +10,7 @@ use nexus_query_engine::plan::{
 };
 
 use super::plan_error;
-use crate::native_exec::NativeCudfExecutionConfig;
+use crate::native_exec::NexusNativeExecutionConfig;
 
 pub const CUGRAPH_PAGERANK_FUNCTION: &str = "cugraph_pagerank";
 pub const CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION: &str = "cugraph_personalized_pagerank";
@@ -45,15 +45,15 @@ pub struct CugraphSqlConfig {
     /// overrides.
     pub default_graph_options: CugraphGraphOptions,
     /// Native execution policy used when a cuGraph edge source has not already
-    /// been rewritten into a native cudf execution node.
-    pub native_execution_config: NativeCudfExecutionConfig,
+    /// been rewritten into a nexus native execution node.
+    pub native_execution_config: NexusNativeExecutionConfig,
 }
 
 impl Default for CugraphSqlConfig {
     fn default() -> Self {
         Self {
             default_graph_options: CugraphGraphOptions::default(),
-            native_execution_config: NativeCudfExecutionConfig::bounded_auto_sized(),
+            native_execution_config: NexusNativeExecutionConfig::bounded_auto_sized(),
         }
     }
 }
@@ -63,10 +63,10 @@ impl CugraphSqlConfig {
     ///
     /// The server uses this to keep cuGraph SQL execution aligned with the
     /// configured bounded/unbounded memory policy. If an edge-source child is
-    /// already a native cudf execution node, cuGraph execution still inherits
+    /// already a nexus native execution node, cuGraph execution still inherits
     /// that child node's config so composed GPU-resident pipelines use one
     /// native context.
-    pub fn with_native_execution_config(mut self, native_execution_config: NativeCudfExecutionConfig) -> Self {
+    pub fn with_native_execution_config(mut self, native_execution_config: NexusNativeExecutionConfig) -> Self {
         self.native_execution_config = native_execution_config;
         self
     }

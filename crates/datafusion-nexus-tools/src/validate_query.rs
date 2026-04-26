@@ -108,7 +108,7 @@ fn print_human(coverage: &QueryGpuCoverage) {
         println!("retryable: {retryable}");
         println!("detail: {detail}");
     }
-    println!("cudf_native_coverage: {}", coverage.domains.cudf_native_coverage.as_str());
+    println!("nexus_native_coverage: {}", coverage.domains.nexus_native_coverage.as_str());
     println!("cugraph_operator: {}", coverage.domains.cugraph_operator.as_str());
     println!("datafusion_cpu_ingest_or_boundary: {}", coverage.domains.datafusion_cpu_ingest_or_boundary.as_str());
     println!("host_output_materialization: {}", coverage.domains.host_output_materialization.as_str());

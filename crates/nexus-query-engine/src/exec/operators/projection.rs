@@ -54,7 +54,7 @@ pub(in crate::exec) fn execute_projection(
             |error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.projection.execute",
-                    "failed to execute native cudf projection",
+                    "failed to execute nexus native projection",
                     error,
                 )
             },
@@ -134,7 +134,7 @@ pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
         frame.with_columns_with_budget(exprs, token).map_err(|error| {
             QueryError::from_cudf_with_budget_details(
                 "nexus_query_engine.projection.execute",
-                "failed to execute bounded native cudf projection",
+                "failed to execute bounded nexus native projection",
                 error,
             )
         })?,
@@ -145,7 +145,7 @@ pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
     .map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.projection.execute",
-            "failed to select bounded native cudf projection columns",
+            "failed to select bounded nexus native projection columns",
             error,
         )
     })?;
@@ -515,7 +515,7 @@ fn materialize_prepared_regexp_replace_projection(
             frame.with_columns_with_budget(lower_exprs, token).map_err(|error| {
                 QueryError::from_cudf_with_budget_details(
                     "nexus_query_engine.projection.execute",
-                    "failed to execute bounded native cudf projection non-regexp expressions",
+                    "failed to execute bounded nexus native projection non-regexp expressions",
                     error,
                 )
             })?,
@@ -530,7 +530,7 @@ fn materialize_prepared_regexp_replace_projection(
     frame.select(output_column_refs).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.projection.execute",
-            "failed to select bounded native cudf projection columns",
+            "failed to select bounded nexus native projection columns",
             error,
         )
     })

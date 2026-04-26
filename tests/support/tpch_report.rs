@@ -19,13 +19,13 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::{
         NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureWorkloadItem, WorkloadDatasetMetadata,
     },
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, TpchDatasetMetadata, TpchWorkloadResult, register_tpch_tables};
 
@@ -56,9 +56,9 @@ impl TestReportDatasetMetadataExt for TpchDatasetMetadata {
     }
 }
 
-pub(crate) fn tpch_native_optimizer_config() -> CudfOptimizerConfig {
-    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
+pub(crate) fn tpch_native_optimizer_config() -> NexusNativeOptimizerConfig {
+    NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
 }
 
 pub(crate) async fn tpch_scalar_fallback_pressure_workload_items(
@@ -146,7 +146,7 @@ pub(crate) async fn tpch_datafusion_planning_workload_items(
 pub(crate) async fn tpch_datafusion_planning_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
 ) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     datafusion_planning_workload_items(
         root,
@@ -160,13 +160,13 @@ pub(crate) async fn tpch_datafusion_planning_workload_items_with_optimizer_confi
 pub(crate) async fn datafusion_planning_workload_items<'a>(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
     queries: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpch_tables(&ctx, root).await?;

@@ -46,7 +46,7 @@ use crate::{
     native_exec::{
         QueryAdmissionSource, task_context_with_query_admission_ticket, wrap_plan_with_query_admission_ticket,
     },
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 
 fn admission_only_source() -> QueryAdmissionSource {
@@ -159,11 +159,11 @@ fn edge_source_output_rows_rejects_inexact_datafusion_statistics() {
     assert_eq!(edge_source_output_rows(&filter).unwrap(), None);
 }
 
-fn native_edge_source(row_group_rows: Vec<u64>, config: &NativeCudfExecutionConfig) -> Arc<dyn ExecutionPlan> {
+fn native_edge_source(row_group_rows: Vec<u64>, config: &NexusNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
     native_edge_source_with_root(row_group_rows, config, |_, source| source)
 }
 
-fn sorted_native_edge_source(row_group_rows: Vec<u64>, config: &NativeCudfExecutionConfig) -> Arc<dyn ExecutionPlan> {
+fn sorted_native_edge_source(row_group_rows: Vec<u64>, config: &NexusNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
     native_edge_source_with_root(row_group_rows, config, |builder, source| {
         builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("src"), false, false)]), edge_schema())
     })
@@ -171,7 +171,7 @@ fn sorted_native_edge_source(row_group_rows: Vec<u64>, config: &NativeCudfExecut
 
 fn native_edge_source_with_root(
     row_group_rows: Vec<u64>,
-    config: &NativeCudfExecutionConfig,
+    config: &NexusNativeExecutionConfig,
     root: impl FnOnce(&mut QueryPlanBuilder, nexus_query_engine::plan::NodeId) -> nexus_query_engine::plan::NodeId,
 ) -> Arc<dyn ExecutionPlan> {
     let source = LocalParquetSource::from_files(
@@ -183,11 +183,11 @@ fn native_edge_source_with_root(
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let root = root(&mut builder, source);
     let plan = builder.finish_with_host_sink(root);
-    Arc::new(NativeCudfExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
+    Arc::new(NexusNativeExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
 }
 
 fn native_graph_residency_edge_source_with_stable_id(
-    config: &NativeCudfExecutionConfig,
+    config: &NexusNativeExecutionConfig,
     stable_id: &str,
 ) -> Arc<dyn ExecutionPlan> {
     let file = LocalParquetFile::new("edges.parquet")
@@ -210,10 +210,10 @@ fn native_graph_residency_edge_source_with_stable_id(
         ],
     );
     let plan = builder.finish_with_host_sink(projected);
-    Arc::new(NativeCudfExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
+    Arc::new(NexusNativeExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
 }
 
-fn native_graph_residency_edge_source(config: &NativeCudfExecutionConfig) -> Arc<dyn ExecutionPlan> {
+fn native_graph_residency_edge_source(config: &NexusNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
     native_graph_residency_edge_source_with_stable_id(config, "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z")
 }
 
@@ -321,7 +321,7 @@ impl NativeMetricsCaptureSink for GraphCaptureSink {
 }
 
 #[cfg(feature = "server")]
-fn native_literal_edge_source(config: &NativeCudfExecutionConfig, utf8: bool) -> Arc<dyn ExecutionPlan> {
+fn native_literal_edge_source(config: &NexusNativeExecutionConfig, utf8: bool) -> Arc<dyn ExecutionPlan> {
     let (schema, columns): (Arc<Schema>, Vec<ArrayRef>) = if utf8 {
         (
             string_edge_schema(),
@@ -343,7 +343,7 @@ fn native_literal_edge_source(config: &NativeCudfExecutionConfig, utf8: bool) ->
     let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
-    Arc::new(NativeCudfExec::try_new(builder.finish_with_host_sink(source), config.clone()).unwrap())
+    Arc::new(NexusNativeExec::try_new(builder.finish_with_host_sink(source), config.clone()).unwrap())
         as Arc<dyn ExecutionPlan>
 }
 
@@ -355,7 +355,7 @@ fn observed_graph_exec(
 ) -> (Arc<CugraphAlgoExec>, Arc<GraphCaptureSink>) {
     let sink = Arc::new(GraphCaptureSink::default());
     let erased_sink: Arc<dyn NativeMetricsCaptureSink> = sink.clone();
-    let config = NativeCudfExecutionConfig::unbounded()
+    let config = NexusNativeExecutionConfig::unbounded()
         .with_cancellation(cancellation)
         .with_metrics_capture(NativeMetricsCapture::new(query_id, erased_sink));
     let edge_source = native_literal_edge_source(&config, false);
@@ -383,7 +383,7 @@ fn graph_execution_accumulator_merges_stages_and_publishes_exactly_once() {
     let capture = NativeMetricsCapture::new("graph-stage-merge", erased_sink).new_execution();
     let owner = capture.clone();
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NativeCudfMetrics::new_with_capture(&metrics_set, 0, Some(capture));
+    let native_metrics = NexusNativeMetrics::new_with_capture(&metrics_set, 0, Some(capture));
     let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, RuntimeObservationConfig::native_execution());
 
     let mut edge = QueryMetrics::default().with_query_id("graph-stage-merge");
@@ -559,7 +559,7 @@ async fn graph_logical_bfs_gpu_projection_retains_three_stages_and_publishes_onc
     let observation_config = server_observability.runtime_observation_config();
     let sink = Arc::new(GraphCaptureSink::default());
     let erased_sink: Arc<dyn NativeMetricsCaptureSink> = sink.clone();
-    let config = NativeCudfExecutionConfig::unbounded().with_metrics_capture(
+    let config = NexusNativeExecutionConfig::unbounded().with_metrics_capture(
         NativeMetricsCapture::new("graph-bfs-projection", erased_sink)
             .with_runtime_observation_config(observation_config),
     );
@@ -609,7 +609,7 @@ fn singleflight_test_exec_with_options(
     projection: Option<Vec<usize>>,
     limit: Option<usize>,
 ) -> CugraphAlgoExec {
-    let config = NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
+    let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
         .with_query_admission_source(admission_only_source())
         .with_query_service_resident_graph_cache_max_retained_bytes(Some(4096));
     let edge_source = native_graph_residency_edge_source_with_stable_id(&config, graph_stable_id);
@@ -713,7 +713,7 @@ fn bfs_singleflight_eligibility_is_exact_and_rejects_bounded_depth() {
 #[test]
 fn cugraph_execution_config_creates_plan_ticket_for_backend_admission_source() {
     let source = admission_only_source();
-    let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let base = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
     let plan = EmptyExec::new(Arc::new(Schema::empty()));
 
     assert!(base.has_query_admission_authority());
@@ -734,7 +734,7 @@ fn cugraph_algo_exec_mints_graph_aware_ticket_below_tenant_want() {
     let want = 2 * 1024 * 1024 * 1024;
     let capacity = 4 * 1024 * 1024 * 1024;
     let source = admission_source_with_band(min, want, capacity);
-    let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1).with_query_admission_source(source);
+    let config = NexusNativeExecutionConfig::bounded(min, 512, 1, 3, 1).with_query_admission_source(source);
 
     let exec = CugraphAlgoExec::try_new(triangle_spec(), memory_edge_source(300), vec![], None, None, config)
         .expect("cuGraph exec should build with graph-aware admission ticket");
@@ -750,7 +750,7 @@ fn cugraph_algo_exec_mints_graph_aware_ticket_below_tenant_want() {
 
 #[test]
 fn cugraph_algo_exec_registers_frontend_neutral_execution_spis() {
-    let config = NativeCudfExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1);
+    let config = NexusNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1);
     let exec = CugraphAlgoExec::try_new(triangle_spec(), memory_edge_source(300), vec![], None, None, config)
         .expect("cuGraph exec should register its execution SPIs");
     let plan = &exec as &dyn ExecutionPlan;
@@ -768,7 +768,7 @@ fn cugraph_algo_exec_registers_frontend_neutral_execution_spis() {
 #[test]
 fn cugraph_graph_model_ask_prefers_exact_edge_rows_over_configured_raw_edges() {
     let min = 64 * 1024 * 1024;
-    let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1);
+    let config = NexusNativeExecutionConfig::bounded(min, 512, 1, 3, 1);
     let stale_config = config.clone().with_graph_memory_calibration_override(
         nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride::none().with_raw_input_edges(30_000),
     );
@@ -791,7 +791,7 @@ fn cugraph_algo_exec_uses_native_edge_source_rows_for_graph_aware_ticket() {
     let want = 2 * 1024 * 1024 * 1024;
     let capacity = 4 * 1024 * 1024 * 1024;
     let source = admission_source_with_band(min, want, capacity);
-    let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1).with_query_admission_source(source);
+    let config = NexusNativeExecutionConfig::bounded(min, 512, 1, 3, 1).with_query_admission_source(source);
     let edge_source = native_edge_source(vec![100, 200], &config);
 
     let exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
@@ -806,7 +806,7 @@ fn cugraph_algo_exec_uses_native_edge_source_rows_for_graph_aware_ticket() {
 
 #[test]
 fn cugraph_algo_exec_records_graph_residency_for_native_edge_source() {
-    let config = NativeCudfExecutionConfig::unbounded();
+    let config = NexusNativeExecutionConfig::unbounded();
     let edge_source = native_graph_residency_edge_source(&config);
 
     let exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
@@ -828,7 +828,7 @@ async fn cugraph_algo_exec_records_graph_residency_for_datafusion_parquet_edge_s
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
-    let config = NativeCudfExecutionConfig::unbounded();
+    let config = NexusNativeExecutionConfig::unbounded();
     let edge_source = datafusion_parquet_edge_source(&path).await;
 
     let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
@@ -845,7 +845,7 @@ async fn cugraph_algo_exec_bypasses_graph_residency_for_datafusion_parquet_scan_
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
-    let config = NativeCudfExecutionConfig::unbounded();
+    let config = NexusNativeExecutionConfig::unbounded();
     let edge_source = datafusion_parquet_edge_source_sql(&path, "SELECT src, dst, weight FROM edges LIMIT 2").await;
 
     let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
@@ -859,7 +859,7 @@ async fn cugraph_algo_exec_bypasses_graph_residency_for_logical_bfs_datafusion_p
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
     write_string_edge_parquet(&path);
-    let config = NativeCudfExecutionConfig::unbounded();
+    let config = NexusNativeExecutionConfig::unbounded();
     let edge_source = datafusion_parquet_edge_source_sql(&path, "SELECT src, dst FROM edges").await;
 
     let exec = CugraphAlgoExec::try_new(bfs_utf8_spec(), edge_source, vec![], None, None, config)
@@ -881,7 +881,7 @@ async fn cugraph_algo_exec_mints_graph_cache_placement_hint_for_datafusion_parqu
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
     let source = admission_only_source();
-    let config = NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
     let edge_source = datafusion_parquet_edge_source(&path).await;
 
     let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
@@ -904,7 +904,7 @@ async fn cugraph_algo_exec_mints_bfs_graph_cache_placement_hint_for_datafusion_p
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
     let source = admission_only_source();
-    let config = NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
     let edge_source = datafusion_parquet_edge_source(&path).await;
 
     let exec = CugraphAlgoExec::try_new(bfs_spec(), edge_source, vec![], None, None, config)
@@ -974,7 +974,7 @@ fn cugraph_exec_in_plan(plan: Arc<dyn ExecutionPlan>) -> Option<Arc<dyn Executio
 
 #[test]
 fn graph_residency_schema_guard_rejects_descriptor_dtype_mismatch() {
-    let config = NativeCudfExecutionConfig::unbounded();
+    let config = NexusNativeExecutionConfig::unbounded();
     let edge_source = native_graph_residency_edge_source(&config);
     let spec = triangle_spec();
     let exec = CugraphAlgoExec::try_new(spec.clone(), edge_source, vec![], None, None, config)
@@ -993,7 +993,7 @@ fn graph_residency_schema_guard_rejects_descriptor_dtype_mismatch() {
 #[test]
 fn cugraph_algo_exec_mints_graph_cache_placement_hint_for_keyable_native_edge_source() {
     let source = admission_only_source();
-    let config = NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
     let edge_source = native_graph_residency_edge_source(&config);
 
     let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
@@ -1011,7 +1011,7 @@ fn cugraph_algo_exec_mints_graph_cache_placement_hint_for_keyable_native_edge_so
 #[test]
 fn cugraph_algo_exec_keeps_empty_graph_cache_placement_hint_for_unkeyable_edge_source() {
     let source = admission_only_source();
-    let config = NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
 
     let exec = CugraphAlgoExec::try_new(pagerank_spec(), memory_edge_source(100), vec![], None, None, config)
         .expect("cuGraph exec should build for non-native edge source");
@@ -1026,7 +1026,7 @@ fn cugraph_algo_exec_keeps_default_ticket_for_non_light_native_edge_source() {
     let want = 2 * 1024 * 1024 * 1024;
     let capacity = 4 * 1024 * 1024 * 1024;
     let source = admission_source_with_band(min, want, capacity);
-    let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1)
+    let config = NexusNativeExecutionConfig::bounded(min, 512, 1, 3, 1)
         .with_query_admission_source(source)
         .with_graph_memory_calibration_override(
             nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride::none().with_raw_input_edges(300),
@@ -1043,7 +1043,7 @@ fn cugraph_algo_exec_keeps_default_ticket_for_non_light_native_edge_source() {
 
 #[test]
 fn cugraph_execution_config_keeps_standalone_configs_ticketless() {
-    let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1);
+    let base = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1);
     let plan = EmptyExec::new(Arc::new(Schema::empty()));
 
     let graph_config = cugraph_execution_config(&plan, &base);
@@ -1055,8 +1055,8 @@ fn cugraph_execution_config_keeps_standalone_configs_ticketless() {
 fn cugraph_execution_config_recovers_wrapped_native_edge_source_ticket() {
     let source = admission_only_source();
     let default_config =
-        NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source.clone());
-    let native_config = NativeCudfExecutionConfig::bounded(2048, 512, 1, 3, 1).with_query_admission_source(source);
+        NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source.clone());
+    let native_config = NexusNativeExecutionConfig::bounded(2048, 512, 1, 3, 1).with_query_admission_source(source);
     let native_config = native_config.with_plan_query_admission_ticket();
     let ticket = native_config.query_admission_ticket().expect("native edge source should have a plan ticket");
     let expected_ticket_id = native_config.query_admission_ticket_id();
@@ -1065,10 +1065,10 @@ fn cugraph_execution_config_recovers_wrapped_native_edge_source_ticket() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
     let native_plan = builder.finish_with_host_sink(source);
-    let native_exec = Arc::new(NativeCudfExec::try_new(native_plan, native_config).unwrap()) as Arc<dyn ExecutionPlan>;
+    let native_exec = Arc::new(NexusNativeExec::try_new(native_plan, native_config).unwrap()) as Arc<dyn ExecutionPlan>;
     let wrapped = wrap_plan_with_query_admission_ticket(native_exec, ticket);
 
-    assert!(wrapped.downcast_ref::<NativeCudfExec>().is_some());
+    assert!(wrapped.downcast_ref::<NexusNativeExec>().is_some());
     assert_eq!(
         cugraph_execution_config(wrapped.as_ref(), &default_config).query_admission_ticket_id(),
         expected_ticket_id
@@ -1078,7 +1078,7 @@ fn cugraph_execution_config_recovers_wrapped_native_edge_source_ticket() {
 #[test]
 fn cugraph_execution_config_prefers_ambient_root_ticket() {
     let source = admission_only_source();
-    let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let base = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
     let ambient_config = base.clone().with_plan_query_admission_ticket();
     let local_config = base.with_plan_query_admission_ticket();
     let ambient_ticket =
@@ -1096,7 +1096,7 @@ fn cugraph_execution_config_prefers_ambient_root_ticket() {
 #[test]
 fn cugraph_execution_context_stamps_resolved_ticket_before_acquire() {
     let source = admission_only_source();
-    let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let execution_config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
     let execution_config = execution_config.with_plan_query_admission_ticket();
     let raw_context = Arc::new(TaskContext::default());
 
@@ -1111,34 +1111,36 @@ fn cugraph_execution_context_stamps_resolved_ticket_before_acquire() {
 
 #[test]
 fn standalone_bounded_cugraph_rejects_native_child_execution_without_admission() {
-    let config = NativeCudfExecutionConfig::bounded(2048, 512, 1, 3, 1);
+    let config = NexusNativeExecutionConfig::bounded(2048, 512, 1, 3, 1);
     let schema = Arc::new(Schema::empty());
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
     let native_plan = builder.finish_with_host_sink(source);
-    let native_exec = Arc::new(NativeCudfExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
+    let native_exec =
+        Arc::new(NexusNativeExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
 
     let error = validate_standalone_bounded_cugraph_sources(&config, native_exec.as_ref(), &[])
         .expect_err("standalone bounded cuGraph must not execute a native edge child without admission");
-    assert!(error.to_string().contains("cannot execute native cudf child plans"), "{error}");
+    assert!(error.to_string().contains("cannot execute nexus native child plans"), "{error}");
 
     let repartitioned = Arc::new(RepartitionExec::try_new(native_exec, Partitioning::UnknownPartitioning(1)).unwrap())
         as Arc<dyn ExecutionPlan>;
     let error = validate_standalone_bounded_cugraph_sources(&config, repartitioned.as_ref(), &[])
         .expect_err("fallback collect over native children should be rejected");
 
-    assert!(error.to_string().contains("cannot execute native cudf child plans"), "{error}");
+    assert!(error.to_string().contains("cannot execute nexus native child plans"), "{error}");
 }
 
 #[test]
 fn admission_backed_cugraph_allows_native_child_execution() {
     let config =
-        NativeCudfExecutionConfig::bounded(2048, 512, 1, 3, 1).with_query_admission_source(admission_only_source());
+        NexusNativeExecutionConfig::bounded(2048, 512, 1, 3, 1).with_query_admission_source(admission_only_source());
     let schema = Arc::new(Schema::empty());
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
     let native_plan = builder.finish_with_host_sink(source);
-    let native_exec = Arc::new(NativeCudfExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
+    let native_exec =
+        Arc::new(NexusNativeExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
     let repartitioned =
         Arc::new(RepartitionExec::try_new(Arc::clone(&native_exec), Partitioning::UnknownPartitioning(1)).unwrap())
             as Arc<dyn ExecutionPlan>;
@@ -1151,7 +1153,7 @@ fn admission_backed_cugraph_allows_native_child_execution() {
 
 #[tokio::test]
 async fn cugraph_prepares_nested_native_source_metadata_before_graph_admission() {
-    let config = NativeCudfExecutionConfig::unbounded().with_lakehouse_footer_pruning(true);
+    let config = NexusNativeExecutionConfig::unbounded().with_lakehouse_footer_pruning(true);
     let native_exec = native_edge_source(vec![100, 200], &config);
     let wrapped = Arc::new(
         RepartitionExec::try_new(native_exec, Partitioning::UnknownPartitioning(1))
@@ -1162,7 +1164,8 @@ async fn cugraph_prepares_nested_native_source_metadata_before_graph_admission()
 
     assert!(prepared.downcast_ref::<RepartitionExec>().is_some(), "host wrapper must be preserved");
     let children = prepared.children();
-    let native =
-        children[0].downcast_ref::<NativeCudfExec>().expect("nested native child should remain under the host wrapper");
+    let native = children[0]
+        .downcast_ref::<NexusNativeExec>()
+        .expect("nested native child should remain under the host wrapper");
     assert!(!native.execution_config().lakehouse_footer_pruning());
 }

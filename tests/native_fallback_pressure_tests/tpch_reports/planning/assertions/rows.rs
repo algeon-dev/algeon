@@ -55,7 +55,7 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
                 }
             }
             if row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native {
-                assert_eq!(row.post_native_plan_root, "NativeCudfExec");
+                assert_eq!(row.post_native_plan_root, "NexusNativeExec");
             } else {
                 assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::PartialNative);
             }

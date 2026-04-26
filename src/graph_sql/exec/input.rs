@@ -5,10 +5,10 @@ pub(super) fn prepare_cugraph_source_metadata<'a>(
     task_context: &'a TaskContext,
 ) -> BoxFuture<'a, Arc<dyn ExecutionPlan>> {
     Box::pin(async move {
-        if let Some(native) = plan.downcast_ref::<NativeCudfExec>() {
+        if let Some(native) = plan.downcast_ref::<NexusNativeExec>() {
             return Arc::new(native.prepare_lakehouse_metadata(task_context).await) as Arc<dyn ExecutionPlan>;
         }
-        if let Some(native) = plan.downcast_ref::<NativeCudfComposedExec>() {
+        if let Some(native) = plan.downcast_ref::<NexusNativeComposedExec>() {
             return Arc::new(native.prepare_lakehouse_metadata(task_context).await) as Arc<dyn ExecutionPlan>;
         }
 
@@ -37,7 +37,7 @@ pub(super) async fn execute_edge_source_to_gpu(
     plan: Arc<dyn ExecutionPlan>,
     task_context: Arc<TaskContext>,
 ) -> Result<GpuDataFrame> {
-    if let Some(native) = as_native_cudf_exec(plan.as_ref()) {
+    if let Some(native) = as_nexus_native_exec(plan.as_ref()) {
         let native_plan = crate::native_exec::lakehouse::resolve_query_plan(
             native.execution_config(),
             native.native_plan().clone(),
@@ -62,7 +62,7 @@ pub(super) async fn execute_edge_source_to_gpu(
         };
         return Ok(handle.into_gpu_frame());
     }
-    if let Some(native) = as_native_cudf_composed_exec(plan.as_ref()) {
+    if let Some(native) = as_nexus_native_composed_exec(plan.as_ref()) {
         let native_plan = crate::native_exec::lakehouse::resolve_query_plan(
             native.execution_config(),
             native.native_plan().clone(),

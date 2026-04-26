@@ -770,11 +770,11 @@ fn statistical_state_aliases_for_names(
 fn statistical_state_aliases_with_suffix(index: usize, suffix: Option<usize>) -> StatisticalStateAliases {
     let suffix = suffix.map(|suffix| format!("_{suffix}")).unwrap_or_default();
     StatisticalStateAliases {
-        value: format!("__cudf_stat_{index}_value{suffix}"),
-        square: format!("__cudf_stat_{index}_square{suffix}"),
-        sum: format!("__cudf_stat_{index}_sum{suffix}"),
-        count: format!("__cudf_stat_{index}_count{suffix}"),
-        sum_squares: format!("__cudf_stat_{index}_sum_squares{suffix}"),
+        value: format!("__nexus_native_stat_{index}_value{suffix}"),
+        square: format!("__nexus_native_stat_{index}_square{suffix}"),
+        sum: format!("__nexus_native_stat_{index}_sum{suffix}"),
+        count: format!("__nexus_native_stat_{index}_count{suffix}"),
+        sum_squares: format!("__nexus_native_stat_{index}_sum_squares{suffix}"),
     }
 }
 

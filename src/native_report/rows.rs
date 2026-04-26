@@ -686,7 +686,7 @@ mod tests {
             strict_bounded_compiled_graphs: Vec::new(),
             adaptive_pipeline_rows: Vec::new(),
             source_diagnostics: Vec::new(),
-            post_native_plan_root: "NativeCudfExec".to_string(),
+            post_native_plan_root: "NexusNativeExec".to_string(),
             post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Native,
             native_plan_fragment_count: 7,
             host_datafusion_boundary_count: 2,
@@ -809,7 +809,7 @@ mod tests {
             execution.to_tsv_line(),
             concat!(
                 "q_exec\tRootExec\tRootExec(Source)\tcandidate_shape\tcandidate_family\taccepted_replaced\tnone\tnone\t",
-                "none\tnone\tnone\tNativeCudfExec\tnative\t7\t2\tfalse\t100\t1.500\t2\t4096\t",
+                "none\tnone\tnone\tNexusNativeExec\tnative\t7\t2\tfalse\t100\t1.500\t2\t4096\t",
                 "true\tsucceeded\tnone\t3\t111\t2222\t",
                 "10\t11\t12\t13\t14\t15\t16\t17\t18\t19\t20\t21\t22\t23\t24\t25\t26\t27\t28\t29\t30\t31\t",
                 "none\tnone\tnone\tnone\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t",

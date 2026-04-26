@@ -27,13 +27,13 @@ use datafusion::{
 };
 use datafusion_nexus::{
     native_exec::{
-        NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfComposedExec, NativeCudfExec, NativeCudfGpuProducerExec,
+        NATIVE_NEXUS_DATAFUSION_METRIC_NAMES, NexusNativeComposedExec, NexusNativeExec, NexusNativeGpuProducerExec,
     },
     native_report::{NativeDataFusionExecutionMetrics, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow},
-    planner::CudfNativePhysicalOptimizerRule,
+    planner::NexusNativePhysicalOptimizerRule,
     policy::GpuFallbackPolicy,
     report::CandidateOutcome,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpcds::{TPCDS_QUERIES, TpcdsQuery};
 use nexus_query_engine::{
@@ -44,7 +44,7 @@ use nexus_query_engine::{
 use crate::report_workload::{
     gpu_fallback_policy_label,
     tpcds::{
-        CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
+        NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
         TpcdsNativeProfileSettings, register_tpcds_tables_with_native_metadata,
         tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings,
         tpcds_native_analytics_optimizer_config_with_profile_settings, tpcds_native_profile_settings_from_env,
@@ -115,14 +115,14 @@ impl Engine {
 
 struct BenchRuntime {
     execution_ctx: SessionContext,
-    optimizer: Option<Arc<CudfNativePhysicalOptimizerRule>>,
+    optimizer: Option<Arc<NexusNativePhysicalOptimizerRule>>,
     native_planning: Option<NativePlanningRuntime>,
     skip_cpu_preferred: bool,
 }
 
 struct NativePlanningRuntime {
     ctx: SessionContext,
-    optimizer: Arc<CudfNativePhysicalOptimizerRule>,
+    optimizer: Arc<NexusNativePhysicalOptimizerRule>,
 }
 
 struct BenchConfig {
@@ -217,7 +217,7 @@ async fn run_hybrid_cpu_preferred_once(
 
 async fn plan_native_preference(
     ctx: &SessionContext,
-    optimizer: &CudfNativePhysicalOptimizerRule,
+    optimizer: &NexusNativePhysicalOptimizerRule,
     query: &TpcdsQuery,
 ) -> Result<PlanningSummary, IterOutcome> {
     let started_plan = Instant::now();
@@ -264,7 +264,7 @@ async fn plan_native_preference(
 
 async fn run_query_collect(
     ctx: &SessionContext,
-    optimizer: Option<&CudfNativePhysicalOptimizerRule>,
+    optimizer: Option<&NexusNativePhysicalOptimizerRule>,
     query: &TpcdsQuery,
     planning_outcome_override: Option<String>,
     native_runtime_started_override: Option<bool>,
@@ -398,9 +398,9 @@ async fn run_query_collect(
 }
 
 fn plan_contains_native_runtime(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> bool {
-    plan.downcast_ref::<NativeCudfExec>().is_some()
-        || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
-        || plan.downcast_ref::<NativeCudfGpuProducerExec>().is_some()
+    plan.downcast_ref::<NexusNativeExec>().is_some()
+        || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
+        || plan.downcast_ref::<NexusNativeGpuProducerExec>().is_some()
         || plan.children().into_iter().any(|child| plan_contains_native_runtime(child.as_ref()))
 }
 
@@ -425,11 +425,11 @@ fn native_metrics_from_metrics(metrics: Option<&MetricsSet>) -> Option<NativeDat
     let metrics = metrics?;
     metrics
         .iter()
-        .any(|metric| NATIVE_CUDF_DATAFUSION_METRIC_NAMES.contains(&metric.value().name()))
+        .any(|metric| NATIVE_NEXUS_DATAFUSION_METRIC_NAMES.contains(&metric.value().name()))
         .then(|| NativeDataFusionExecutionMetrics::from_metrics(metrics))
 }
 
-fn planning_summary(optimizer: Option<&CudfNativePhysicalOptimizerRule>) -> PlanningSummary {
+fn planning_summary(optimizer: Option<&NexusNativePhysicalOptimizerRule>) -> PlanningSummary {
     optimizer
         .and_then(|rule| rule.last_planning_diagnostics())
         .map(|diag| {

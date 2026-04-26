@@ -195,7 +195,7 @@ backend's last query handle drains, so a rebuild must drop the old backend
 first. Two `Optimistic` backends may coexist on one ordinal — they then share
 the byte ledger (each sees the other's grants) but not admission queues or
 slot guarantees. In every case, share the one backend object instead of
-building a second. The plain `with_cudf_native` path (no backend) keeps the
+building a second. The plain `with_nexus_native` path (no backend) keeps the
 historical per-query-full-budget behavior and is only safe for one query at a
 time.
 :::
@@ -359,8 +359,8 @@ Device admission is deliberately **not** expressed through DataFusion's
 while admission must be able to queue and wait. The pool also has no query
 identity, so grants and placement are inexpressible there.
 
-The host side *is* bridged: `NativeCudfExec` registers a
-`MemoryConsumer("NativeCudfExec[host-output]")` against the task's memory pool
+The host side *is* bridged: `NexusNativeExec` registers a
+`MemoryConsumer("NexusNativeExec[host-output]")` against the task's memory pool
 and accounts the host Arrow batches it materializes for downstream CPU
 operators. Hybrid plans therefore stay honest under
 `RuntimeEnvBuilder::with_memory_limit`, and the accounting is free when the
@@ -373,8 +373,8 @@ defaults to two concurrent fallback statements and a 30 s fallback wait timeout,
 exposed as `NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS` and
 `NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS`; set the timeout to `0` to wait
 indefinitely. Library users opt in with
-`CudfOptimizerConfig::with_cpu_fallback_max_concurrent_statements` and can set
-`CudfOptimizerConfig::with_cpu_fallback_wait_timeout`; the library default is
+`NexusNativeOptimizerConfig::with_cpu_fallback_max_concurrent_statements` and can set
+`NexusNativeOptimizerConfig::with_cpu_fallback_wait_timeout`; the library default is
 indefinite waiting for embedder compatibility. Nested fallback execution with
 the same DataFusion `TaskContext` reuses the ambient fallback permit, so a
 fallback statement that internally collects another fallback-planned source does

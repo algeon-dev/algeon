@@ -236,7 +236,10 @@ impl AvgStateAliases {
     /// exist only while carrying SUM and non-null COUNT state between partial
     /// and final aggregate stages.
     pub(in crate::exec) fn for_aggregate_index(index: usize) -> Self {
-        Self { sum_alias: format!("__cudf_avg_{index}_sum"), count_alias: format!("__cudf_avg_{index}_count") }
+        Self {
+            sum_alias: format!("__nexus_native_avg_{index}_sum"),
+            count_alias: format!("__nexus_native_avg_{index}_count"),
+        }
     }
 
     pub(in crate::exec) fn sum(&self) -> &str {
@@ -311,7 +314,10 @@ mod tests {
         let lowered = lower_single_stage_grouped_aggregate_spec(&spec)
             .expect("mixed avg and median single-stage aggregate lowers");
 
-        assert_eq!(lowered.output_names, vec!["key", "__cudf_avg_0_sum", "__cudf_avg_0_count", "median_value"]);
+        assert_eq!(
+            lowered.output_names,
+            vec!["key", "__nexus_native_avg_0_sum", "__nexus_native_avg_0_count", "median_value"]
+        );
         assert_eq!(lowered.aggregations.len(), 3);
     }
 }

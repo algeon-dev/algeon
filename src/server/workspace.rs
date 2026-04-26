@@ -53,7 +53,7 @@ impl NexusWorkspaceSchemaProvider {
             {
                 let mut names = names;
                 if let Some(iceberg) =
-                    self.backing.downcast_ref::<crate::table_format::iceberg::catalog::CudfIcebergSchemaProvider>()
+                    self.backing.downcast_ref::<crate::table_format::iceberg::catalog::NexusIcebergSchemaProvider>()
                 {
                     names.extend(iceberg.known_or_seeded_table_names());
                 }
@@ -79,7 +79,7 @@ impl NexusWorkspaceSchemaProvider {
         }
         #[cfg(feature = "iceberg")]
         if let Some(iceberg) =
-            self.backing.downcast_ref::<crate::table_format::iceberg::catalog::CudfIcebergSchemaProvider>()
+            self.backing.downcast_ref::<crate::table_format::iceberg::catalog::NexusIcebergSchemaProvider>()
         {
             return iceberg.known_or_seeded_table_exists(name);
         }
@@ -227,7 +227,7 @@ fn schema_supports_session_ddl(schema: &dyn SchemaProvider) -> bool {
         return true;
     }
     #[cfg(feature = "iceberg")]
-    if schema.is::<crate::table_format::iceberg::catalog::CudfIcebergSchemaProvider>() {
+    if schema.is::<crate::table_format::iceberg::catalog::NexusIcebergSchemaProvider>() {
         return false;
     }
     true

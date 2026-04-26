@@ -18,8 +18,8 @@ use datafusion_nexus::table_format::{self, TableFormatLakehouseCachePolicy};
 use datafusion_nexus::{
     backend::MemoryShare,
     gpu_coverage::NEXUS_EXPLAIN_COVERAGE_FUNCTION,
-    native_exec::NativeCudfExecutionConfig,
-    planner::CudfOptimizerConfig,
+    native_exec::NexusNativeExecutionConfig,
+    planner::NexusNativeOptimizerConfig,
     server::{
         NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV,
         NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV, NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV,

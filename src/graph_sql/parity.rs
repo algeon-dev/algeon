@@ -527,11 +527,11 @@ impl std::error::Error for ParityManifestError {
 
 /// Resolve the cuGraph data root.
 ///
-/// The harness honors `CUDF_CUGRAPH_DATA_ROOT` so refresh tooling can point at a
+/// The harness honors `NEXUS_CUGRAPH_DATA_ROOT` so refresh tooling can point at a
 /// staging copy; default is the local `fixture/graph/cugraph` directory
 /// relative to the workspace root determined by `CARGO_MANIFEST_DIR`.
 pub fn data_root() -> PathBuf {
-    if let Ok(env) = std::env::var("CUDF_CUGRAPH_DATA_ROOT") {
+    if let Ok(env) = std::env::var("NEXUS_CUGRAPH_DATA_ROOT") {
         return PathBuf::from(env);
     }
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
@@ -784,12 +784,12 @@ mod tests {
 
     #[test]
     fn data_root_defaults_to_workspace_fixture_data_cugraph() {
-        // `data_root` honors `CUDF_CUGRAPH_DATA_ROOT` so refresh tooling
+        // `data_root` honors `NEXUS_CUGRAPH_DATA_ROOT` so refresh tooling
         // can point at a staging fixture; the default-case assertion
         // here only fires when the override is absent so a
         // documented refresh invocation does not break `cargo test
         // --features cugraph`.
-        if std::env::var_os("CUDF_CUGRAPH_DATA_ROOT").is_some() {
+        if std::env::var_os("NEXUS_CUGRAPH_DATA_ROOT").is_some() {
             return;
         }
         let root = data_root();

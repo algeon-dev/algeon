@@ -1,6 +1,6 @@
 use super::*;
 
-impl NativeCudfExecutionConfig {
+impl NexusNativeExecutionConfig {
     /// Returns the auto-sized bounded device budget in bytes.
     ///
     /// The value is derived from the primary GPU's reported total memory minus
@@ -17,7 +17,7 @@ impl NativeCudfExecutionConfig {
     /// Unlike [`Self::auto_sized_device_budget_bytes`], this helper is not
     /// process-cached because server placement can choose a non-default ordinal.
     pub fn auto_sized_device_budget_bytes_for_device(device_ordinal: usize) -> u64 {
-        auto_sized_device_budget_bytes_for_device_with_inventory(&CudfInventory, device_ordinal)
+        auto_sized_device_budget_bytes_for_device_with_inventory(&NexusGpuInventory, device_ordinal)
     }
 
     /// Returns the auto-sized bounded device budget for `device_ordinal` after
@@ -28,7 +28,7 @@ impl NativeCudfExecutionConfig {
     /// `total - 500 MiB` behavior instead of granting the full device.
     pub fn auto_sized_device_budget_bytes_for_device_with_fraction(device_ordinal: usize, budget_fraction: f64) -> u64 {
         auto_sized_device_budget_bytes_for_device_with_fraction_and_inventory(
-            &CudfInventory,
+            &NexusGpuInventory,
             device_ordinal,
             budget_fraction,
         )
@@ -36,7 +36,7 @@ impl NativeCudfExecutionConfig {
 }
 
 pub(super) fn detect_auto_sized_device_budget_bytes() -> u64 {
-    auto_sized_device_budget_bytes_with_inventory(&CudfInventory)
+    auto_sized_device_budget_bytes_with_inventory(&NexusGpuInventory)
 }
 
 pub(super) fn auto_sized_device_budget_bytes_with_inventory(inventory: &impl GpuInventory) -> u64 {
@@ -52,11 +52,11 @@ pub(super) fn auto_sized_device_budget_bytes_for_device_with_inventory(
         .map(|facts| {
             device_budget_bytes_from_facts(
                 &facts,
-                NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES,
-                NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+                NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES,
+                NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
             )
         })
-        .unwrap_or(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
+        .unwrap_or(NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
 }
 
 pub(super) fn auto_sized_device_budget_bytes_for_device_with_fraction_and_inventory(
@@ -69,15 +69,15 @@ pub(super) fn auto_sized_device_budget_bytes_for_device_with_fraction_and_invent
         .map(|facts| {
             let headroom_budget = device_budget_bytes_from_facts(
                 &facts,
-                NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES,
-                NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+                NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES,
+                NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
             );
             let fraction_budget = fraction_budget_bytes(facts.total_bytes, budget_fraction)
                 .filter(|budget| *budget > 0)
-                .unwrap_or(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES);
+                .unwrap_or(NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES);
             headroom_budget.min(fraction_budget)
         })
-        .unwrap_or(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
+        .unwrap_or(NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
 }
 
 pub(super) fn fraction_budget_bytes(total_bytes: u64, budget_fraction: f64) -> Option<u64> {

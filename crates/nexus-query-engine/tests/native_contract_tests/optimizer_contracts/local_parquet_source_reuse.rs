@@ -1100,7 +1100,10 @@ fn remote_direct_customer_address_contract() -> ResolvedParquetSource {
 }
 
 fn cache_policy_customer_address_contract() -> ResolvedParquetSource {
-    ResolvedParquetSource::remote_kvikio("s3://warehouse/customer_address.parquet?query_variant=a", CredentialMode::SharedProcessEnv)
+    ResolvedParquetSource::remote_kvikio(
+        "s3://warehouse/customer_address.parquet?query_variant=a",
+        CredentialMode::SharedProcessEnv,
+    )
     .with_storage_profile_id("remote-profile-a")
     .with_storage_domain("warehouse@s3")
     .with_content_identity("snapshot=42,file=customer_address,etag=abc")
@@ -1209,7 +1212,11 @@ fn local_parquet_sources_for_stable_id<'a>(
         .collect()
 }
 
-fn assert_source_input(plan: &nexus_query_engine::plan::QueryPlan, node_id: nexus_query_engine::plan::NodeId, name: &str) {
+fn assert_source_input(
+    plan: &nexus_query_engine::plan::QueryPlan,
+    node_id: nexus_query_engine::plan::NodeId,
+    name: &str,
+) {
     let node = plan.node(node_id).expect("node should exist");
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {

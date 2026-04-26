@@ -137,8 +137,8 @@ fn shared_prefix_branch_local_dynamic_filter_plan() -> (nexus_query_engine::plan
     (builder.finish_gpu_resident(final_join), first_branch_join, second_branch_join)
 }
 
-fn shared_filtered_prefix_branch_local_dynamic_filter_plan() -> (nexus_query_engine::plan::QueryPlan, NodeId, NodeId, NodeId)
-{
+fn shared_filtered_prefix_branch_local_dynamic_filter_plan()
+-> (nexus_query_engine::plan::QueryPlan, NodeId, NodeId, NodeId) {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["sold_date_sk", "item_sk"]);
     let fact = builder.add_source(estimated_local_source_with_fields(
@@ -388,20 +388,17 @@ fn q02_like_shared_partsupp_dynamic_filter_plan(
         );
         root_inputs.push(limited_constrained_join);
     }
-    let root = if root_inputs.len() == 1 {
-        final_join
-    } else {
-        builder.add_union(root_inputs, Arc::clone(&result_schema))
-    };
+    let root =
+        if root_inputs.len() == 1 { final_join } else { builder.add_union(root_inputs, Arc::clone(&result_schema)) };
 
-    SharedPartsuppDynamicFilterPlan {
-        plan: builder.finish_gpu_resident(root),
-        partsupp,
-        part_partsupp_join,
-    }
+    SharedPartsuppDynamicFilterPlan { plan: builder.finish_gpu_resident(root), partsupp, part_partsupp_join }
 }
 
-fn aggregate_keyset_source(builder: &mut QueryPlanBuilder, name: &str, key_name: &str) -> nexus_query_engine::plan::NodeId {
+fn aggregate_keyset_source(
+    builder: &mut QueryPlanBuilder,
+    name: &str,
+    key_name: &str,
+) -> nexus_query_engine::plan::NodeId {
     let source = builder.add_source(gpu_source(name, &[key_name]));
     builder.add_aggregate(source, AggregateSpec::new(vec![Expr::column(key_name)], Vec::new()), schema(&[key_name]))
 }

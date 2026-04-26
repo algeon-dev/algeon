@@ -26,7 +26,7 @@ impl NativeFallbackPressureReport {
     /// [`Self::collect_with_native_execution_config`] with an explicit bounded
     /// or adaptive config so bounded diagnostics affect fallback-pressure rows.
     pub fn collect(items: impl IntoIterator<Item = NativeFallbackPressureWorkloadItem>) -> Self {
-        let execution_config = NativeCudfExecutionConfig::unbounded();
+        let execution_config = NexusNativeExecutionConfig::unbounded();
         Self::collect_with_native_execution_config(items, &execution_config)
     }
 
@@ -37,7 +37,7 @@ impl NativeFallbackPressureReport {
     /// surfaces.
     pub fn collect_with_native_execution_config(
         items: impl IntoIterator<Item = NativeFallbackPressureWorkloadItem>,
-        execution_config: &NativeCudfExecutionConfig,
+        execution_config: &NexusNativeExecutionConfig,
     ) -> Self {
         let rows = items.into_iter().flat_map(|item| report_rows_for_item(item, execution_config)).collect();
         Self { rows, workload_dataset: None }
@@ -102,7 +102,7 @@ impl NativeDataFusionPlanningReport {
     pub fn from_retained_rule(
         query_id: impl Into<String>,
         planned_plan: Arc<dyn ExecutionPlan>,
-        native_rule: &CudfNativePhysicalOptimizerRule,
+        native_rule: &NexusNativePhysicalOptimizerRule,
     ) -> Self {
         let Some(diagnostics) = native_rule.last_planning_diagnostics() else {
             return Self::collect([NativeDataFusionPlanningWorkloadItem::planning_failure(

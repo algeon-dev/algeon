@@ -128,7 +128,9 @@ fn bounded_native_query_executes_global_final_merge_with_consistent_state_schema
     };
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(batch.num_columns(), repeated_sums + 3);
-    assert!(batch.schema().fields().iter().all(|field| !field.name().starts_with("__cudf_global_valid_count_")));
+    assert!(
+        batch.schema().fields().iter().all(|field| !field.name().starts_with("__nexus_native_global_valid_count_"))
+    );
     for index in 0..repeated_sums {
         assert_eq!(int64_array(batch, index).value(0), 3072);
     }

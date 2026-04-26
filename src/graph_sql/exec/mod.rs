@@ -71,8 +71,8 @@ use super::{
 use crate::{
     error::{Error, ErrorCode},
     native_exec::{
-        NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
-        NativeCudfMetrics, NativeExecutionMetricsCapture,
+        NativeExecutionMetricsCapture, NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig,
+        NexusNativeGpuProducerExec, NexusNativeMetrics,
         admission::task_context_with_query_admission_ticket,
         graph::{
             GraphAdmissionModelAsk, GraphBfsFollowerOutcome, GraphBfsLeader, GraphBfsSingleflightJoin,
@@ -117,7 +117,7 @@ use path::*;
 use residency::*;
 
 pub(super) struct GraphExecutionMetrics<'a> {
-    sink: &'a NativeCudfMetrics,
+    sink: &'a NexusNativeMetrics,
     runtime_observation_config: RuntimeObservationConfig,
     accumulated: QueryMetrics,
     stage_count: usize,
@@ -125,7 +125,7 @@ pub(super) struct GraphExecutionMetrics<'a> {
 }
 
 impl<'a> GraphExecutionMetrics<'a> {
-    pub(super) fn new(sink: &'a NativeCudfMetrics, runtime_observation_config: RuntimeObservationConfig) -> Self {
+    pub(super) fn new(sink: &'a NexusNativeMetrics, runtime_observation_config: RuntimeObservationConfig) -> Self {
         Self {
             sink,
             runtime_observation_config,

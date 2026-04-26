@@ -59,9 +59,9 @@ pub(crate) fn device_telemetry_snapshots_for_ordinals(
 
 /// Production live telemetry backed by CUDA plus optional NVML.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct CudfNvmlTelemetry;
+pub struct NexusNvmlTelemetry;
 
-impl GpuTelemetry for CudfNvmlTelemetry {
+impl GpuTelemetry for NexusNvmlTelemetry {
     fn snapshot(&self, device_ordinal: usize) -> DeviceTelemetrySnapshot {
         let mut snapshot = DeviceTelemetrySnapshot {
             sampled_at_unix_ms: sampled_at_unix_ms(),
@@ -126,9 +126,9 @@ pub trait GpuInventory: Send + Sync {
 
 /// Production GPU inventory backed by cudf-rs.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct CudfInventory;
+pub struct NexusGpuInventory;
 
-impl GpuInventory for CudfInventory {
+impl GpuInventory for NexusGpuInventory {
     fn device_count(&self) -> Result<usize> {
         cudf::DeviceId::count().map_err(|error| {
             QueryError::from_cudf(
@@ -290,13 +290,13 @@ mod tests {
     #[cfg(feature = "nvml")]
     #[test]
     fn live_telemetry_covers_every_cuda_device_with_valid_ranges() {
-        use super::CudfNvmlTelemetry;
+        use super::NexusNvmlTelemetry;
 
         let device_count = cudf::DeviceId::count().expect("CUDA device count");
         assert!(device_count > 0, "GPU test lane requires at least one CUDA device");
         let ordinals = (0..device_count).collect::<Vec<_>>();
 
-        let snapshots = device_telemetry_snapshots_for_ordinals(&CudfNvmlTelemetry, &ordinals);
+        let snapshots = device_telemetry_snapshots_for_ordinals(&NexusNvmlTelemetry, &ordinals);
 
         assert_eq!(snapshots.len(), device_count);
         for (ordinal, snapshot) in snapshots.iter().enumerate() {

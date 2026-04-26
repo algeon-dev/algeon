@@ -1,7 +1,7 @@
 use super::*;
 
 #[tonic::async_trait]
-impl FlightSqlService for DatafusionCudfFlightSqlService {
+impl FlightSqlService for DatafusionNexusFlightSqlService {
     type FlightService = Self;
 
     async fn do_handshake(
@@ -24,7 +24,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                 status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
             })?;
         let query_span =
-            DatafusionCudfFlightSqlService::query_span(&query_id, correlation_id.as_deref(), "get_flight_info");
+            DatafusionNexusFlightSqlService::query_span(&query_id, correlation_id.as_deref(), "get_flight_info");
         let _query_enter = query_span.enter();
         let planning_started_at = Instant::now();
         tracing::info!(
@@ -78,7 +78,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             self.register_new_query(String::new(), correlation_id.clone()).map_err(|(query_id, status)| {
                 status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
             })?;
-        let query_span = DatafusionCudfFlightSqlService::query_span(
+        let query_span = DatafusionNexusFlightSqlService::query_span(
             &query_id,
             correlation_id.as_deref(),
             "get_flight_info_prepared_statement",
@@ -600,7 +600,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             self.register_new_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
                 status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
             })?;
-        let query_span = DatafusionCudfFlightSqlService::query_span(
+        let query_span = DatafusionNexusFlightSqlService::query_span(
             &query_id,
             correlation_id.as_deref(),
             "create_prepared_statement",
@@ -632,7 +632,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         drop(_query_enter);
         let logical_plan = tokio::select! {
             result = state.create_logical_plan(&sql)
-                .instrument(DatafusionCudfFlightSqlService::query_stage_span(
+                .instrument(DatafusionNexusFlightSqlService::query_stage_span(
                     Some(&query_span),
                     &query_id,
                     correlation_id.as_deref(),

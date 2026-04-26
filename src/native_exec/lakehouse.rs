@@ -3,10 +3,10 @@
 use datafusion::execution::context::TaskContext;
 use nexus_query_engine::plan::QueryPlan;
 
-use super::config::NativeCudfExecutionConfig;
+use super::config::NexusNativeExecutionConfig;
 
 pub(crate) async fn resolve_query_plan(
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
     plan: QueryPlan,
     task_context: &TaskContext,
 ) -> QueryPlan {

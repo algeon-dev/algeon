@@ -32,11 +32,11 @@ use datafusion_nexus::{
         CugraphBfsSource, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphSqlConfig,
         parse_cugraph_algorithm_spec, stable_result_schema,
     },
-    native_exec::{NativeCudfComposedExec, NativeCudfExec},
+    native_exec::{NexusNativeComposedExec, NexusNativeExec},
     native_report::NativeDataFusionExecutionMetrics,
-    planner::CudfOptimizerConfig,
+    planner::NexusNativeOptimizerConfig,
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use nexus_query_engine::runtime::SlotGuarantee;
 

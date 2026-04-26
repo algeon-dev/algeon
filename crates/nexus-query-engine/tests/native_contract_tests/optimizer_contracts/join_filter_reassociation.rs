@@ -508,7 +508,8 @@ fn shared_projected_parent_join_filter_plan() -> nexus_query_engine::plan::Query
             ProjectionOutput::new(Expr::column("reason_key"), Field::new("reason_key", DataType::Int32, false)),
         ],
     );
-    let union = builder.add_union(vec![shared_projected, shared_projected], schema(&["customer", "amount", "reason_key"]));
+    let union =
+        builder.add_union(vec![shared_projected, shared_projected], schema(&["customer", "amount", "reason_key"]));
     builder.finish_gpu_resident(union)
 }
 
@@ -639,7 +640,10 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nex
     builder.finish_gpu_resident(upper_join)
 }
 
-fn date32_scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nexus_query_engine::plan::QueryPlan {
+fn date32_scalar_range_residual_plan(
+    date_path: &Path,
+    date_schema: Arc<Schema>,
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left_schema = Arc::new(Schema::new(vec![Field::new("d_date", DataType::Date32, false)]));
     let left =

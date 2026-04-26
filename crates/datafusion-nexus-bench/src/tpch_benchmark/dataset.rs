@@ -99,10 +99,10 @@ fn prepare_external_dataset(
     let dataset_mode = expected_scale_factor.dataset_mode_str();
     let (root, metadata) = if let Some(root) = std::env::var_os(NEXUS_PARQUET_DIR_ENV) {
         let root = PathBuf::from(root);
-        let scale_factor = std::env::var(CUDF_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
-        let generation_command = std::env::var(CUDF_TPCH_GENERATION_COMMAND_ENV).map_err(|_| {
+        let scale_factor = std::env::var(NEXUS_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
+        let generation_command = std::env::var(NEXUS_TPCH_GENERATION_COMMAND_ENV).map_err(|_| {
             plan_error(format!(
-                "native TPC-H benchmark dataset_mode={dataset_mode} requires {CUDF_TPCH_GENERATION_COMMAND_ENV} so {} provenance is reproducible",
+                "native TPC-H benchmark dataset_mode={dataset_mode} requires {NEXUS_TPCH_GENERATION_COMMAND_ENV} so {} provenance is reproducible",
                 expected_scale_factor.label()
             ))
         })?;
@@ -121,7 +121,7 @@ fn prepare_external_dataset(
             default_tpch_dataset_with_fingerprint(default_root, expected_scale_factor.as_str())
         else {
             return Err(plan_error(format!(
-                "native TPC-H benchmark dataset_mode={dataset_mode} requires {NEXUS_PARQUET_DIR_ENV} or a populated default fixture at {default_root}; set CUDF_TPCH_BENCH_DATASET_MODE=allow_tiny for local tiny/dev runs"
+                "native TPC-H benchmark dataset_mode={dataset_mode} requires {NEXUS_PARQUET_DIR_ENV} or a populated default fixture at {default_root}; set NEXUS_TPCH_BENCH_DATASET_MODE=allow_tiny for local tiny/dev runs"
             )));
         };
         (root, metadata)
@@ -155,7 +155,7 @@ pub(super) fn validate_external_metadata(
     let dataset_mode = expected_scale_factor.dataset_mode_str();
     if metadata.scale_factor != expected_scale_factor.as_str() {
         return Err(plan_error(format!(
-            "native TPC-H benchmark dataset_mode={dataset_mode} requires {CUDF_TPCH_SCALE_FACTOR_ENV}={}; observed {}",
+            "native TPC-H benchmark dataset_mode={dataset_mode} requires {NEXUS_TPCH_SCALE_FACTOR_ENV}={}; observed {}",
             expected_scale_factor.as_str(),
             metadata.scale_factor
         )));
@@ -168,7 +168,7 @@ pub(super) fn validate_external_metadata(
     }
     if metadata.generation_command.trim().is_empty() || metadata.generation_command == "unknown_external" {
         return Err(plan_error(format!(
-            "native TPC-H benchmark dataset_mode={dataset_mode} requires a reproducible {CUDF_TPCH_GENERATION_COMMAND_ENV}; observed {}",
+            "native TPC-H benchmark dataset_mode={dataset_mode} requires a reproducible {NEXUS_TPCH_GENERATION_COMMAND_ENV}; observed {}",
             metadata.generation_command
         )));
     }

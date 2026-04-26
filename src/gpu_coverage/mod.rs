@@ -19,8 +19,8 @@ use datafusion::{execution::SessionStateBuilder, prelude::SessionContext};
 
 pub use self::model::{
     QueryGpuCoverage, QueryGpuCoverageConfidence, QueryGpuCoverageDomains, QueryGpuCoverageOverall,
-    QueryGpuCudfNativeCoverage, QueryGpuCugraphCall, QueryGpuCugraphOperatorDomain, QueryGpuFallbackReason,
-    QueryGpuFallbackReasonKind, QueryGpuPresence, QueryGpuRejectionPhase, QueryGpuRuntimeCaveat,
+    QueryGpuCugraphCall, QueryGpuCugraphOperatorDomain, QueryGpuFallbackReason, QueryGpuFallbackReasonKind,
+    QueryGpuNexusNativeCoverage, QueryGpuPresence, QueryGpuRejectionPhase, QueryGpuRuntimeCaveat,
     QueryGpuValidatedUnder,
 };
 use self::{
@@ -31,8 +31,8 @@ use self::{
     },
 };
 use crate::{
-    native_report::post_native_plan_coverage, planner::CudfNativePhysicalOptimizerRule,
-    session::CudfSessionStateBuilderExt,
+    native_report::post_native_plan_coverage, planner::NexusNativePhysicalOptimizerRule,
+    session::NexusSessionStateBuilderExt,
 };
 
 /// SQL table function that exposes query GPU coverage validation.
@@ -60,9 +60,9 @@ pub(crate) use self::preflight::{coverage_validator_recursion_error, gpu_coverag
 pub async fn validate_query(ctx: &SessionContext, sql: impl AsRef<str>) -> crate::error::Result<QueryGpuCoverage> {
     let sql = sql.as_ref();
     let config = optimizer_config_for_validation(ctx);
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(config.diagnostic_optimizer_config.clone()));
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(config.diagnostic_optimizer_config.clone()));
     let mut planning_state_builder =
-        SessionStateBuilder::new_from_existing(ctx.state()).with_cudf_native_rule(Arc::clone(&native_rule));
+        SessionStateBuilder::new_from_existing(ctx.state()).with_nexus_native_rule(Arc::clone(&native_rule));
     mark_coverage_validation_in_progress(&mut planning_state_builder);
     let planning_state = planning_state_builder.build();
     let validated_under = validated_under(&planning_state, &config);

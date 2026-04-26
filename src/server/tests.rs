@@ -18,8 +18,8 @@ use tokio_util::sync::CancellationToken;
 use super::*;
 use crate::{
     backend::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusMemoryPolicy},
-    native_exec::{NativeCudfExecutionConfig, NativeMetricsCapture},
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    native_exec::{NativeMetricsCapture, NexusNativeExecutionConfig},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::FallbackReason,
     report::CandidateOutcome,
 };
@@ -42,7 +42,7 @@ fn base_config(profile: ServerSessionProfile) -> ServerConfig {
         device_budget_fraction: None,
         statement_ticket_ttl: std::time::Duration::from_secs(60),
         observability: ServerObservabilityConfig::default(),
-        native_optimizer_config: CudfOptimizerConfig::default(),
+        native_optimizer_config: NexusNativeOptimizerConfig::default(),
         session_profile: profile,
         auth: auth::AuthConfig::default(),
         workspace: None,
@@ -58,7 +58,7 @@ fn bounded_config(max_concurrent_queries: usize) -> ServerConfig {
     config.max_in_flight = max_concurrent_queries;
     config.admission_policy = NexusAdmissionPolicy::default().with_max_concurrent_queries(max_concurrent_queries);
     config.native_optimizer_config =
-        CudfOptimizerConfig::default().with_native_execution_config(NativeCudfExecutionConfig::bounded(
+        NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::bounded(
             TEST_DEVICE_BUDGET_BYTES,
             TEST_MAX_SOURCE_CHUNK_BYTES,
             TEST_MAX_ROW_GROUPS_PER_CHUNK,
@@ -73,7 +73,7 @@ fn unbounded_config() -> ServerConfig {
     config.max_in_flight = 1;
     config.admission_policy = NexusAdmissionPolicy::default().with_max_concurrent_queries(1);
     config.native_optimizer_config =
-        CudfOptimizerConfig::default().with_native_execution_config(NativeCudfExecutionConfig::unbounded());
+        NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::unbounded());
     config
 }
 
@@ -472,7 +472,7 @@ async fn builder_rejects_injected_backend_device_budget_fraction_conflict() {
     let mut config = bounded_config(1);
     config.device_budget_fraction = Some(0.5);
     config.native_optimizer_config =
-        CudfOptimizerConfig::default().with_native_execution_config(NativeCudfExecutionConfig::bounded(
+        NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::bounded(
             TEST_DEVICE_BUDGET_BYTES / 2,
             TEST_MAX_SOURCE_CHUNK_BYTES,
             TEST_MAX_ROW_GROUPS_PER_CHUNK,
@@ -522,7 +522,7 @@ async fn build_session_context_with_backend_installs_backend_admission_source() 
     let ctx = build_session_context_with_backend(&config, Some(&backend)).await.unwrap();
     let state = ctx.state();
     let optimizer_config =
-        crate::session::installed_cudf_native_optimizer_config(&state).expect("native optimizer installed");
+        crate::session::installed_nexus_native_optimizer_config(&state).expect("native optimizer installed");
 
     assert!(
         optimizer_config
@@ -536,7 +536,7 @@ fn server_cpu_fallback_limit_reaches_optimizer_fallback_plan() {
     let mut config = bounded_config(1);
     config.native_optimizer_config =
         config.native_optimizer_config.with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
-    let rule = CudfNativePhysicalOptimizerRule::new(config.native_optimizer_config.clone());
+    let rule = NexusNativePhysicalOptimizerRule::new(config.native_optimizer_config.clone());
     let fallback_plan = unsupported_projection_plan();
 
     let optimized = rule.optimize(fallback_plan, &ConfigOptions::new()).unwrap();
@@ -587,7 +587,7 @@ async fn builder_installs_unbounded_native_execution_limit() {
     );
     let state = server.session_context().state();
     let optimizer_config =
-        crate::session::installed_cudf_native_optimizer_config(&state).expect("native optimizer installed");
+        crate::session::installed_nexus_native_optimizer_config(&state).expect("native optimizer installed");
     assert_eq!(
         optimizer_config.native_execution_config().unbounded_native_max_concurrent_queries().map(|value| value.get()),
         Some(1)

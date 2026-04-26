@@ -19,7 +19,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::table_format::iceberg::catalog::{
-    CudfIcebergCatalogProvider, IcebergCatalogBackend, IcebergProviderKind, build_catalog_provider_from_backend,
+    IcebergCatalogBackend, IcebergProviderKind, NexusIcebergCatalogProvider, build_catalog_provider_from_backend,
     build_scoped_catalog_provider_from_backend,
 };
 use iceberg::{NamespaceIdent, TableIdent};
@@ -265,7 +265,7 @@ async fn seeding_same_alias_twice_keeps_first() {
 // Information-schema SQL (requires information_schema feature)
 // ---------------------------------------------------------------------------
 
-async fn session_with_catalog(catalog_name: &str, provider: CudfIcebergCatalogProvider) -> SessionContext {
+async fn session_with_catalog(catalog_name: &str, provider: NexusIcebergCatalogProvider) -> SessionContext {
     let cfg = SessionConfig::new().with_information_schema(true);
     let ctx = SessionContext::new_with_config(cfg);
     ctx.register_catalog(catalog_name, Arc::new(provider));

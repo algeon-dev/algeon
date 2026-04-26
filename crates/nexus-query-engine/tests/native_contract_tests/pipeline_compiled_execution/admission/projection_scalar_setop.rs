@@ -410,7 +410,12 @@ fn strict_admission_accepts_projection_scalar_setop_scalar_join_grouped_aggregat
     let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
         .expect("compiled scalar join grouped aggregate report should be valid");
     assert_modeled_gate_row("scalar join grouped aggregate", &report, ReservationKind::SourceRead, "source_contract");
-    assert_modeled_gate_row("scalar join grouped aggregate", &report, ReservationKind::OperatorOutput, "aggregate_contract");
+    assert_modeled_gate_row(
+        "scalar join grouped aggregate",
+        &report,
+        ReservationKind::OperatorOutput,
+        "aggregate_contract",
+    );
     assert_modeled_gate_row(
         "scalar join grouped aggregate",
         &report,

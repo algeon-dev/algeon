@@ -47,9 +47,9 @@ fn backend_admission_only_lowers_to_query_service_and_planning_floor() {
 
 #[test]
 fn backend_propagates_query_service_local_parquet_source_cache_capacity() {
-    let execution_config = NativeCudfExecutionConfig::bounded(4096, 1024, 1, 3, 1)
+    let execution_config = NexusNativeExecutionConfig::bounded(4096, 1024, 1, 3, 1)
         .with_query_service_local_parquet_source_cache_max_retained_bytes(Some(2048));
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(execution_config.clone());
     let resolved = ResolvedBackendMemoryPolicy {
         device_ordinals: vec![0, 1],
@@ -82,9 +82,9 @@ fn backend_propagates_query_service_local_parquet_source_cache_capacity() {
 
 #[test]
 fn backend_rejects_zero_query_service_local_parquet_source_cache_capacity() {
-    let execution_config = NativeCudfExecutionConfig::bounded(4096, 1024, 1, 3, 1)
+    let execution_config = NexusNativeExecutionConfig::bounded(4096, 1024, 1, 3, 1)
         .with_query_service_local_parquet_source_cache_max_retained_bytes(Some(0));
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(execution_config.clone());
     let resolved = ResolvedBackendMemoryPolicy {
         device_ordinals: vec![0],
@@ -179,9 +179,9 @@ fn backend_builder_rejects_zero_query_service_local_parquet_source_cache_capacit
 #[cfg(feature = "cugraph")]
 #[test]
 fn backend_propagates_query_service_resident_graph_cache_capacity() {
-    let execution_config = NativeCudfExecutionConfig::bounded(4096, 1024, 1, 3, 1)
+    let execution_config = NexusNativeExecutionConfig::bounded(4096, 1024, 1, 3, 1)
         .with_query_service_resident_graph_cache_max_retained_bytes(Some(2048));
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(execution_config.clone());
     let resolved = ResolvedBackendMemoryPolicy {
         device_ordinals: vec![0, 1],
@@ -212,9 +212,9 @@ fn backend_propagates_query_service_resident_graph_cache_capacity() {
 #[cfg(feature = "cugraph")]
 #[test]
 fn backend_rejects_zero_query_service_resident_graph_cache_capacity() {
-    let execution_config = NativeCudfExecutionConfig::bounded(4096, 1024, 1, 3, 1)
+    let execution_config = NexusNativeExecutionConfig::bounded(4096, 1024, 1, 3, 1)
         .with_query_service_resident_graph_cache_max_retained_bytes(Some(0));
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(execution_config.clone());
     let resolved = ResolvedBackendMemoryPolicy {
         device_ordinals: vec![0],
@@ -560,8 +560,8 @@ fn backend_policy_default_grant_want_round_trips_without_pinning_full_capacity()
 #[cfg(feature = "server")]
 #[test]
 fn backend_default_optimistic_adaptive_want_uses_full_capacity() {
-    let adaptive = CudfOptimizerConfig::default().with_native_execution_config(
-        NativeCudfExecutionConfig::bounded(800, 64, 1, 1, 1)
+    let adaptive = NexusNativeOptimizerConfig::default().with_native_execution_config(
+        NexusNativeExecutionConfig::bounded(800, 64, 1, 1, 1)
             .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive),
     );
     let adaptive = NexusGpuBackend::from_optimizer_config_for_admission_only(
@@ -757,7 +757,7 @@ fn backend_install_rejects_conflicting_preexisting_session_extension() {
     config
         .options_mut()
         .extensions
-        .insert(DataFusionNexusSessionConfig::from_optimizer_config(&CudfOptimizerConfig::default()));
+        .insert(DataFusionNexusSessionConfig::from_optimizer_config(&NexusNativeOptimizerConfig::default()));
 
     let error = backend.install_on(SessionStateBuilder::new().with_config(config)).unwrap_err();
 
@@ -768,7 +768,7 @@ fn backend_install_rejects_conflicting_preexisting_session_extension() {
 #[cfg(feature = "cugraph")]
 #[test]
 fn backend_install_rejects_preexisting_cugraph_sql_registration() {
-    use crate::{graph_sql::CugraphSqlConfig, session::CudfSessionStateBuilderExt};
+    use crate::{graph_sql::CugraphSqlConfig, session::NexusSessionStateBuilderExt};
 
     let backend = NexusGpuBackend::builder()
         .memory_policy(NexusMemoryPolicy::Bounded {

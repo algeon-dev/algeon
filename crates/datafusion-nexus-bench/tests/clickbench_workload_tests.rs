@@ -1,13 +1,13 @@
 use std::panic;
 
-use datafusion_nexus::native_exec::NativeCudfExecutionConfig;
+use datafusion_nexus::native_exec::NexusNativeExecutionConfig;
 use datafusion_nexus_bench::report_workload::clickbench::{
     CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
     CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE,
     CLICKBENCH_NATIVE_PROFILE_CUSTOM, CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT,
-    CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, CUDF_CLICKBENCH_NATIVE_PROFILE_ENV,
-    CUDF_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, clickbench_native_optimizer_config_with_profile_settings,
+    NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+    NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV,
+    NEXUS_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, clickbench_native_optimizer_config_with_profile_settings,
     clickbench_native_profile_settings_with_env,
 };
 
@@ -25,15 +25,15 @@ fn clickbench_native_profile_defaults_to_conservative() {
 
     assert_eq!(profile.profile_name, CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE);
     assert_eq!(profile.profile_source, "default");
-    assert_eq!(profile.max_source_chunk_bytes, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
-    assert_eq!(profile.max_row_groups_per_chunk, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(profile.max_source_chunk_bytes, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
+    assert_eq!(profile.max_row_groups_per_chunk, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
     assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative);
 }
 
 #[test]
 fn clickbench_native_profile_resolves_gpu_throughput() {
     let profile =
-        clickbench_native_profile_settings_from([(CUDF_CLICKBENCH_NATIVE_PROFILE_ENV, "clickbench_gpu_throughput")]);
+        clickbench_native_profile_settings_from([(NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV, "clickbench_gpu_throughput")]);
 
     assert_eq!(profile.profile_name, CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT);
     assert_eq!(profile.profile_source, "env_profile");
@@ -49,10 +49,10 @@ fn clickbench_native_profile_resolves_gpu_throughput() {
 #[test]
 fn clickbench_native_profile_numeric_overrides_become_custom() {
     let profile = clickbench_native_profile_settings_from([
-        (CUDF_CLICKBENCH_NATIVE_PROFILE_ENV, "conservative"),
-        (CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, "123456789"),
-        (CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "268435456"),
-        (CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8"),
+        (NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV, "conservative"),
+        (NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, "123456789"),
+        (NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "268435456"),
+        (NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8"),
     ]);
 
     assert_eq!(profile.profile_name, CLICKBENCH_NATIVE_PROFILE_CUSTOM);
@@ -66,8 +66,8 @@ fn clickbench_native_profile_numeric_overrides_become_custom() {
 #[test]
 fn clickbench_native_profile_source_chunk_planning_mode_override_becomes_custom() {
     let profile = clickbench_native_profile_settings_from([
-        (CUDF_CLICKBENCH_NATIVE_PROFILE_ENV, "conservative"),
-        (CUDF_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
+        (NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV, "conservative"),
+        (NEXUS_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
     ]);
 
     assert_eq!(profile.profile_name, CLICKBENCH_NATIVE_PROFILE_CUSTOM);
@@ -81,17 +81,17 @@ fn clickbench_native_profile_source_chunk_planning_mode_override_becomes_custom(
 #[test]
 fn clickbench_native_profile_exact_overrides_resolve_to_named_profile() {
     let profile = clickbench_native_profile_settings_from([
-        (CUDF_CLICKBENCH_NATIVE_PROFILE_ENV, "conservative"),
-        (CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, &CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES.to_string()),
+        (NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV, "conservative"),
+        (NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, &CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES.to_string()),
         (
-            CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+            NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
             &CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES.to_string(),
         ),
         (
-            CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+            NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
             &CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK.to_string(),
         ),
-        (CUDF_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
+        (NEXUS_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
     ]);
 
     assert_eq!(profile.profile_name, CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT);
@@ -102,8 +102,8 @@ fn clickbench_native_profile_exact_overrides_resolve_to_named_profile() {
 fn clickbench_native_profile_rejects_zero_numeric_values() {
     let result = panic::catch_unwind(|| {
         clickbench_native_profile_settings_from([
-            (CUDF_CLICKBENCH_NATIVE_PROFILE_ENV, "clickbench_gpu_throughput"),
-            (CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "0"),
+            (NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV, "clickbench_gpu_throughput"),
+            (NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "0"),
         ]);
     });
 
@@ -113,7 +113,7 @@ fn clickbench_native_profile_rejects_zero_numeric_values() {
 #[test]
 fn clickbench_native_optimizer_config_uses_resolved_profile_knobs() {
     let profile =
-        clickbench_native_profile_settings_from([(CUDF_CLICKBENCH_NATIVE_PROFILE_ENV, "clickbench_gpu_throughput")]);
+        clickbench_native_profile_settings_from([(NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV, "clickbench_gpu_throughput")]);
     let config = clickbench_native_optimizer_config_with_profile_settings(&profile);
     let execution = config.native_execution_config();
 

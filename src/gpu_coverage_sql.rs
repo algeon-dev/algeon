@@ -85,7 +85,7 @@ impl TableProvider for GpuCoverageProvider {
 fn coverage_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("overall", DataType::Utf8, false),
-        Field::new("cudf_native_coverage", DataType::Utf8, false),
+        Field::new("nexus_native_coverage", DataType::Utf8, false),
         Field::new("cugraph_operator", DataType::Utf8, false),
         Field::new("datafusion_cpu_ingest_or_boundary", DataType::Utf8, false),
         Field::new("host_output_materialization", DataType::Utf8, false),
@@ -104,7 +104,7 @@ fn coverage_batch(coverage: &QueryGpuCoverage) -> Result<RecordBatch> {
         coverage_schema(),
         vec![
             strings(vec![coverage.overall.as_str().to_string()]),
-            strings(vec![coverage.domains.cudf_native_coverage.as_str().to_string()]),
+            strings(vec![coverage.domains.nexus_native_coverage.as_str().to_string()]),
             strings(vec![coverage.domains.cugraph_operator.as_str().to_string()]),
             strings(vec![coverage.domains.datafusion_cpu_ingest_or_boundary.as_str().to_string()]),
             strings(vec![coverage.domains.host_output_materialization.as_str().to_string()]),
@@ -167,13 +167,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        native_exec::NativeCudfExecutionConfig, planner::CudfOptimizerConfig, policy::GpuFallbackPolicy,
-        session::CudfSessionStateBuilderExt,
+        native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig, policy::GpuFallbackPolicy,
+        session::NexusSessionStateBuilderExt,
     };
 
-    fn test_optimizer_config() -> CudfOptimizerConfig {
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-            .with_native_execution_config(NativeCudfExecutionConfig::unbounded())
+    fn test_optimizer_config() -> NexusNativeOptimizerConfig {
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+            .with_native_execution_config(NexusNativeExecutionConfig::unbounded())
     }
 
     fn string_value(batch: &RecordBatch, column: usize, row: usize) -> &str {
@@ -182,18 +182,18 @@ mod tests {
 
     #[tokio::test]
     async fn native_session_builder_registers_coverage_table_function() {
-        let state = SessionStateBuilder::new_with_default_features().with_cudf_native(test_optimizer_config()).build();
+        let state = SessionStateBuilder::new_with_default_features().with_nexus_native(test_optimizer_config()).build();
         assert!(state.table_functions().contains_key(NEXUS_EXPLAIN_COVERAGE_FUNCTION));
     }
 
     #[tokio::test]
     async fn coverage_table_function_returns_summary_and_json() {
-        let state = SessionStateBuilder::new_with_default_features().with_cudf_native(test_optimizer_config()).build();
+        let state = SessionStateBuilder::new_with_default_features().with_nexus_native(test_optimizer_config()).build();
         let ctx = SessionContext::new_with_state(state);
 
         let batches = ctx
             .sql(
-                "SELECT overall, cudf_native_coverage, coverage_json \
+                "SELECT overall, nexus_native_coverage, coverage_json \
                  FROM nexus_explain_coverage('SELECT 1')",
             )
             .await
@@ -207,12 +207,12 @@ mod tests {
         assert_ne!(string_value(batch, 0, 0), "rejected");
         let json: serde_json::Value = serde_json::from_str(string_value(batch, 2, 0)).unwrap();
         assert_eq!(json["overall"]["verdict"], string_value(batch, 0, 0));
-        assert_eq!(json["domains"]["cudf_native_coverage"], string_value(batch, 1, 0));
+        assert_eq!(json["domains"]["nexus_native_coverage"], string_value(batch, 1, 0));
     }
 
     #[tokio::test]
     async fn coverage_table_function_rejects_recursive_validation() {
-        let state = SessionStateBuilder::new_with_default_features().with_cudf_native(test_optimizer_config()).build();
+        let state = SessionStateBuilder::new_with_default_features().with_nexus_native(test_optimizer_config()).build();
         let ctx = SessionContext::new_with_state(state);
 
         let batches = ctx
@@ -233,7 +233,7 @@ mod tests {
 
     #[tokio::test]
     async fn coverage_table_function_rejects_view_indirect_recursive_validation() {
-        let state = SessionStateBuilder::new_with_default_features().with_cudf_native(test_optimizer_config()).build();
+        let state = SessionStateBuilder::new_with_default_features().with_nexus_native(test_optimizer_config()).build();
         let ctx = SessionContext::new_with_state(state);
 
         ctx.sql(

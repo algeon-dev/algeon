@@ -67,7 +67,7 @@ impl QueryService {
     /// placement. A failed substrate is represented by status fields in each
     /// snapshot rather than failing diagnostics as a whole.
     pub fn device_telemetry_snapshots(&self) -> Vec<DeviceTelemetrySnapshot> {
-        self.device_telemetry_snapshots_with(&CudfNvmlTelemetry)
+        self.device_telemetry_snapshots_with(&NexusNvmlTelemetry)
     }
 
     pub(in crate::runtime::query_service::service) fn device_telemetry_snapshots_with(

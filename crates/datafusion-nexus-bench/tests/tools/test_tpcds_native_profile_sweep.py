@@ -55,13 +55,13 @@ class TpcdsNativeProfileSweepTest(unittest.TestCase):
 
         env = module.candidate_env(args, candidate)
 
-        self.assertEqual(env["CUDF_TPCDS_BENCH_ENGINE"], "native_gpu")
-        self.assertEqual(env["CUDF_TPCDS_BENCH_QUERIES"], "q44,q96")
-        self.assertEqual(env["CUDF_TPCDS_NATIVE_PROFILE"], "conservative")
-        self.assertEqual(env["CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES"], str(32 * 1024**3))
-        self.assertEqual(env["CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK"], "1024")
-        self.assertEqual(env["CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE"], "conservative")
-        self.assertNotIn("CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES", env)
+        self.assertEqual(env["NEXUS_TPCDS_BENCH_ENGINE"], "native_gpu")
+        self.assertEqual(env["NEXUS_TPCDS_BENCH_QUERIES"], "q44,q96")
+        self.assertEqual(env["NEXUS_TPCDS_NATIVE_PROFILE"], "conservative")
+        self.assertEqual(env["NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES"], str(32 * 1024**3))
+        self.assertEqual(env["NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK"], "1024")
+        self.assertEqual(env["NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE"], "conservative")
+        self.assertNotIn("NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES", env)
 
     def test_candidate_env_clears_ambient_profile_for_auto_budget(self) -> None:
         module = load_module()
@@ -80,22 +80,22 @@ class TpcdsNativeProfileSweepTest(unittest.TestCase):
             max_row_groups_per_chunk=1,
         )
 
-        old_profile = os.environ.get("CUDF_TPCDS_NATIVE_PROFILE")
-        old_budget = os.environ.get("CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES")
-        old_mode = os.environ.get("CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE")
+        old_profile = os.environ.get("NEXUS_TPCDS_NATIVE_PROFILE")
+        old_budget = os.environ.get("NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES")
+        old_mode = os.environ.get("NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE")
         try:
-            os.environ["CUDF_TPCDS_NATIVE_PROFILE"] = "sf100_gpu_throughput"
-            os.environ["CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES"] = "102005473280"
-            os.environ["CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE"] = "local_parquet_throughput"
+            os.environ["NEXUS_TPCDS_NATIVE_PROFILE"] = "sf100_gpu_throughput"
+            os.environ["NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES"] = "102005473280"
+            os.environ["NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE"] = "local_parquet_throughput"
             env = module.candidate_env(args, candidate)
         finally:
-            restore_env("CUDF_TPCDS_NATIVE_PROFILE", old_profile)
-            restore_env("CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES", old_budget)
-            restore_env("CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE", old_mode)
+            restore_env("NEXUS_TPCDS_NATIVE_PROFILE", old_profile)
+            restore_env("NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES", old_budget)
+            restore_env("NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE", old_mode)
 
-        self.assertEqual(env["CUDF_TPCDS_NATIVE_PROFILE"], "conservative")
-        self.assertEqual(env["CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE"], "conservative")
-        self.assertNotIn("CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES", env)
+        self.assertEqual(env["NEXUS_TPCDS_NATIVE_PROFILE"], "conservative")
+        self.assertEqual(env["NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE"], "conservative")
+        self.assertNotIn("NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES", env)
 
     def test_summarize_candidate_requires_all_measured_iterations_to_succeed(self) -> None:
         module = load_module()

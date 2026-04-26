@@ -58,7 +58,7 @@ fn auto_sized_budget_uses_total_memory_minus_headroom() {
 
     assert_eq!(
         auto_sized_device_budget_bytes_with_inventory(&inventory),
-        total - NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES
+        total - NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES
     );
 }
 
@@ -68,7 +68,7 @@ fn auto_sized_budget_falls_back_when_inventory_fails() {
 
     assert_eq!(
         auto_sized_device_budget_bytes_with_inventory(&inventory),
-        NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES
+        NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES
     );
 }
 
@@ -92,7 +92,7 @@ fn auto_sized_budget_for_device_uses_requested_ordinal() {
 
     assert_eq!(
         auto_sized_device_budget_bytes_for_device_with_inventory(&OrdinalInventory, 1),
-        16 * 1024 * 1024 * 1024 - NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES
+        16 * 1024 * 1024 * 1024 - NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES
     );
 }
 
@@ -103,14 +103,14 @@ fn auto_sized_budget_fraction_preserves_headroom_floor() {
 
     assert_eq!(
         auto_sized_device_budget_bytes_for_device_with_fraction_and_inventory(&inventory, 0, 1.0),
-        total - NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES
+        total - NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES
     );
     assert_eq!(auto_sized_device_budget_bytes_for_device_with_fraction_and_inventory(&inventory, 0, 0.5), total / 2);
 }
 
 #[test]
 fn execution_context_carries_configured_correlation_ids() {
-    let context = NativeCudfExecutionConfig::unbounded()
+    let context = NexusNativeExecutionConfig::unbounded()
         .with_query_id("query-config")
         .with_trace_id("trace-config")
         .execution_context()
@@ -122,8 +122,10 @@ fn execution_context_carries_configured_correlation_ids() {
 
 #[test]
 fn standalone_bounded_and_unbounded_contexts_reject_parquet_io_after_generation_close() {
-    let configs =
-        [NativeCudfExecutionConfig::bounded(1024 * 1024, 512 * 1024, 1, 1, 1), NativeCudfExecutionConfig::unbounded()];
+    let configs = [
+        NexusNativeExecutionConfig::bounded(1024 * 1024, 512 * 1024, 1, 1, 1),
+        NexusNativeExecutionConfig::unbounded(),
+    ];
 
     for config in configs {
         let lifecycle = IoLifecycle::new();
@@ -140,8 +142,8 @@ fn standalone_bounded_and_unbounded_contexts_reject_parquet_io_after_generation_
 fn acquired_query_service_context_is_stamped_with_server_io_generation() {
     let lifecycle = IoLifecycle::new();
     let config =
-        NativeCudfExecutionConfig::bounded(1024 * 1024, 512 * 1024, 1, 1, 1).with_io_lifecycle(lifecycle.clone());
-    let context = NativeCudfExecutionContext::standalone(ExecutionContext::builder().build().unwrap(), None);
+        NexusNativeExecutionConfig::bounded(1024 * 1024, 512 * 1024, 1, 1, 1).with_io_lifecycle(lifecycle.clone());
+    let context = NexusNativeExecutionContext::standalone(ExecutionContext::builder().build().unwrap(), None);
     let context = config.stamp_acquired_service_context(context).unwrap();
     lifecycle.close();
 
@@ -153,7 +155,7 @@ fn acquired_query_service_context_is_stamped_with_server_io_generation() {
 #[test]
 fn service_acquired_context_preserves_service_graph_calibration_without_adapter_override() {
     let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-    let config = NativeCudfExecutionConfig::bounded_auto_sized();
+    let config = NexusNativeExecutionConfig::bounded_auto_sized();
 
     assert_eq!(
         config.graph_memory_calibration_override_for_acquired_service_context(service_override),
@@ -165,14 +167,14 @@ fn service_acquired_context_preserves_service_graph_calibration_without_adapter_
 fn service_acquired_context_applies_only_configured_adapter_graph_calibration_fields() {
     let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
 
-    let raw_reset = NativeCudfExecutionConfig::bounded_auto_sized().with_graph_raw_input_edges_override(None);
+    let raw_reset = NexusNativeExecutionConfig::bounded_auto_sized().with_graph_raw_input_edges_override(None);
     assert_eq!(
         raw_reset.graph_memory_calibration_override_for_acquired_service_context(service_override),
         GraphMemoryCalibrationOverride::default()
     );
 
     let full_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(99);
-    let config = NativeCudfExecutionConfig::bounded_auto_sized().with_graph_memory_calibration_override(full_override);
+    let config = NexusNativeExecutionConfig::bounded_auto_sized().with_graph_memory_calibration_override(full_override);
     assert_eq!(config.graph_memory_calibration_override_for_acquired_service_context(service_override), full_override);
 }
 
@@ -226,7 +228,7 @@ fn plan_query_admission_ticket_is_shared_by_config_clones() {
     )
     .unwrap();
     let source = QueryAdmissionSource::new(service, tenant_id);
-    let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+    let base = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
         .with_query_id("ticket-query")
         .with_trace_id("ticket-trace")
         .with_query_admission_source(source)
@@ -266,7 +268,7 @@ fn query_service_handle_clears_plan_admission_source_to_prevent_double_admission
     )
     .unwrap();
     let source = QueryAdmissionSource::new(service.clone(), tenant_id.clone());
-    let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+    let base = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
         .with_query_admission_source(source)
         .with_requested_grant_min_bytes(Some(384))
         .with_requested_grant_bytes(Some(512))
@@ -315,7 +317,7 @@ fn query_admission_ticket_selection_prefers_ambient_query_admission_ticket() {
     .unwrap();
     let ambient_ticket =
         QueryAdmissionTicket::new(QueryAdmissionSource::new(root_service.clone(), root_tenant), None, Some(1536));
-    let child_config = NativeCudfExecutionConfig::bounded(256, 512, 1, 3, 1)
+    let child_config = NexusNativeExecutionConfig::bounded(256, 512, 1, 3, 1)
         .with_query_admission_source(QueryAdmissionSource::new(child_service.clone(), child_tenant))
         .with_requested_grant_bytes(Some(512))
         .with_plan_query_admission_ticket();
@@ -345,7 +347,7 @@ fn query_service_handle_admission_facts_record_once_across_config_clones() {
     )
     .unwrap();
     let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
-    let config = NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle);
+    let config = NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle);
     let cloned = config.clone();
     let marker = config.query_admission_facts_recorded.as_ref().expect("direct handle configs must have a marker");
     let cloned_marker =
@@ -358,7 +360,7 @@ fn query_service_handle_admission_facts_record_once_across_config_clones() {
 
 #[test]
 fn config_validation_errors_carry_configured_correlation_ids() {
-    let error = NativeCudfExecutionConfig::unbounded()
+    let error = NexusNativeExecutionConfig::unbounded()
         .with_query_id("query-config-error")
         .with_trace_id("trace-config-error")
         .with_source_chunk_planning_options(

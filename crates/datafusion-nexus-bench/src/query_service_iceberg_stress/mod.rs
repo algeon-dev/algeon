@@ -13,18 +13,18 @@ use datafusion::{
 };
 use datafusion_nexus::{
     error::{DataFusionErrorExt, Error as AdapterError},
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::{
         NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
         NativeDataFusionPostNativeExecutionPath,
     },
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
     table_format::{
         TableFormatScanRequest,
         iceberg::{
-            CudfIcebergTableProvider, GlueIcebergTableConfig, IcebergTableFormatPlanner,
+            GlueIcebergTableConfig, IcebergTableFormatPlanner, NexusIcebergTableProvider,
             catalog::GlueIcebergCatalogConfig, load_glue_table,
         },
     },
@@ -72,16 +72,16 @@ const DEFAULT_TABLE: &str = "lineitem";
 const DEFAULT_WAREHOUSE: &str = "s3://lakehouse/warehouse";
 const DEFAULT_CATALOG_ID: &str = "";
 const DEFAULT_REGION: &str = "us-east-1";
-const QUERY_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_SQL";
-const TENANTS_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_TENANTS";
-const ITERATIONS_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_ITERATIONS";
-const TENANT_BUDGET_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_TENANT_BUDGET_BYTES";
-const MAX_CONCURRENT_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_MAX_CONCURRENT_QUERIES";
-const MAX_ADMISSION_QUEUE_LEN_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_MAX_ADMISSION_QUEUE_LEN";
-const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_ADMISSION_WAIT_TIMEOUT_MS";
-const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_MAX_SOURCE_CHUNK_BYTES";
-const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_MAX_ROW_GROUPS_PER_CHUNK";
-const OVERLOAD_PROBE_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_OVERLOAD_PROBE";
+const QUERY_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_SQL";
+const TENANTS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_TENANTS";
+const ITERATIONS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_ITERATIONS";
+const TENANT_BUDGET_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_TENANT_BUDGET_BYTES";
+const MAX_CONCURRENT_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_CONCURRENT_QUERIES";
+const MAX_ADMISSION_QUEUE_LEN_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_ADMISSION_QUEUE_LEN";
+const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_ADMISSION_WAIT_TIMEOUT_MS";
+const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_SOURCE_CHUNK_BYTES";
+const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_ROW_GROUPS_PER_CHUNK";
+const OVERLOAD_PROBE_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_OVERLOAD_PROBE";
 
 pub async fn run() -> DataFusionResult<()> {
     let config = StressConfig::from_env()?;
@@ -486,13 +486,14 @@ async fn collect_native_with_handle(
     config: &StressConfig,
     handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
-        NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-    );
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(
+            NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
+        );
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     let loaded = load_glue_table(config.glue.clone()).await.map_err(DataFusionError::from)?;
@@ -500,10 +501,12 @@ async fn collect_native_with_handle(
     let parquet_read_strategy_config = glue_catalog_config(&config.glue)
         .parquet_read_strategy_config()
         .with_source_storage_profile_remote_direct_capability(&source_storage_profile);
-    let provider =
-        CudfIcebergTableProvider::try_new_with_parquet_read_strategy_config(loaded.table, parquet_read_strategy_config)
-            .map_err(DataFusionError::from)?
-            .with_catalog_type("glue");
+    let provider = NexusIcebergTableProvider::try_new_with_parquet_read_strategy_config(
+        loaded.table,
+        parquet_read_strategy_config,
+    )
+    .map_err(DataFusionError::from)?
+    .with_catalog_type("glue");
     ctx.register_table(config.table_alias.as_str(), Arc::new(provider))?;
     let df = ctx.sql(&config.sql).await?;
     let plan = df.create_physical_plan().await?;
@@ -794,8 +797,8 @@ where T: PartialEq + From<u8> {
 }
 
 fn default_tenant_budget_bytes() -> u64 {
-    let total = NativeCudfExecutionConfig::auto_sized_device_budget_bytes();
-    (total / 3).max(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
+    let total = NexusNativeExecutionConfig::auto_sized_device_budget_bytes();
+    (total / 3).max(NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
 }
 
 fn format_facts(facts: &BTreeMap<String, String>) -> String {

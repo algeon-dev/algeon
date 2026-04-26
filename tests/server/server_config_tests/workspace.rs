@@ -113,7 +113,7 @@ fn server_config_session_profile_defaults_to_native_when_iceberg_configured() {
     assert_eq!(
         config.session_profile,
         datafusion_nexus::server::ServerSessionProfile::Native,
-        "Iceberg presence must force the native profile so CudfTableFormatScanExec is not over-repartitioned"
+        "Iceberg presence must force the native profile so NexusTableFormatScanExec is not over-repartitioned"
     );
 }
 

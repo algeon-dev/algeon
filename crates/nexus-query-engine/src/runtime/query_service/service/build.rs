@@ -133,7 +133,7 @@ impl QueryService {
         if let Some(device_capacity_bytes) = config.device_capacity_bytes {
             registry_config = registry_config.with_device_capacity_bytes(device_capacity_bytes);
         }
-        let devices = DeviceRegistry::install(&CudfInventory, &registry_config)?;
+        let devices = DeviceRegistry::install(&NexusGpuInventory, &registry_config)?;
         let gpu_execution_query_tracker = GpuExecutionQueryTracker::new();
         let gpu_execution_worker_count = gpu_execution_worker_count_per_device(&config);
         let gpu_execution_pools = devices

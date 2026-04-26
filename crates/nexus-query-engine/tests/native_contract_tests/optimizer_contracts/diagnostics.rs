@@ -54,7 +54,8 @@ fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
 #[test]
 fn native_optimizer_stable_rule_rows_project_count_non_null_pruning_candidates() {
     let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(estimated_local_source_with_fields("orders", &["o_custkey", "o_orderkey"], 1_024, 10));
+    let source =
+        builder.add_source(estimated_local_source_with_fields("orders", &["o_custkey", "o_orderkey"], 1_024, 10));
     let aggregate = builder.add_aggregate(
         source,
         AggregateSpec::new(

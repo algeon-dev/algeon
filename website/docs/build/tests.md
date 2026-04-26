@@ -30,7 +30,7 @@ bash scripts/check_all.sh
 ```
 
 This is more than the three test lanes. It runs all isolated policy self-tests,
-the dated-nightly rustfmt check, build-support checks, the live canonical
+the nightly rustfmt check, build-support checks, the live canonical
 test-binary inventory (union of the default-member surface and an explicit
 all-feature bench inventory), a default-member compile, CPU/shared-GPU/
 exclusive-GPU tests, an explicit all-feature bench nextest phase, locked
@@ -48,12 +48,14 @@ dedicated directory when automation needs a predictable artifact path. Raw
 phase output remains visible while the log is written.
 
 The canonical runner is exactly cargo-nextest 0.9.140. A missing or different
-version exits 2 before policy, build, inventory, or test work. Its three test
+version exits 2 before policy, build, inventory, or test work. Its four nextest
 commands are equivalent to:
 
 ```bash
 AVAILABLE_CPU_CORES=$(nproc)
 cargo nextest run --all-features \
+  -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
+cargo nextest run -p datafusion-nexus-bench --all-features \
   -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
 flock /tmp/cudf-gpu.lock \
   cargo nextest run -P default --all-features \
@@ -63,9 +65,10 @@ flock /tmp/cudf-gpu.lock \
   -E 'group(gpu-exclusive)' --no-fail-fast --test-threads 1
 ```
 
-Always run all three lanes for full coverage. The harness first runs the
-binary-lane classification tripwire and verifies the configured cap with
-`nextest show-config` before running GPU lanes.
+The full harness runs the default-member CPU lane, the explicit bench phase,
+and both GPU lanes. It first runs the binary-lane classification tripwire and
+verifies the configured cap with `nextest show-config` before running GPU
+lanes.
 
 ## Modes and options
 
@@ -77,7 +80,7 @@ bash scripts/check_all.sh --fast --no-default-features
 bash scripts/check_all.sh --fast --features server
 ```
 
-It runs isolated policy self-tests, pinned rustfmt, build support, the
+It runs isolated policy self-tests, nightly rustfmt, build support, the
 catalog/generated lane-structure checks, and the CPU nextest lane. It does not
 run live nextest inventory, GPU tests, doctests, rustdoc, clippy, the explicit
 bench phases, or the tools/examples checks. CPU-lane membership is enforced by
@@ -378,30 +381,13 @@ The MSRV is Rust 1.94. Formatting requires nightly.
 
 ## Continuous enforcement
 
-The repository-visible `Validation` GitHub Actions workflow runs on every pull
-request, merge-group candidate, and push to `main`, plus a nightly schedule.
-Its stable status names and owners are:
-
-| Required status | Runner | Contract |
-| --- | --- | --- |
-| `Validation / Policy and format` | GitHub-hosted Ubuntu | isolated policy suites, pinned rustfmt, and lane structure |
-| `Validation / Website docs` | GitHub-hosted Ubuntu | clean Docusaurus install and build with `CI=true` |
-| `Validation / CPU, lints, and rustdoc` | self-hosted `datafusion-nexus-cpu` | CPU lane, all-feature compile, strict rustdoc, clippy, tools, and examples |
-| `Validation / Canonical GPU full` | self-hosted `datafusion-nexus-gpu` | plain `bash scripts/check_all.sh`, including the locked GPU lanes and doctests |
-
-The native runners are provisioned with the sibling `cudf-rs`, `cugraph-rs`,
-and `iceberg-rust` checkouts, matching native libraries, pinned Rust
-toolchains, Python 3.12+, and cargo-nextest 0.9.140. The GPU runner must join
-the same `/tmp/cudf-gpu.lock` convention as every other GPU consumer on that
-host. The workflow verifies the expected checkout/artifact layout before it
-runs the harness.
-
-Repository administrators must require all four status names above on `main`.
-The workflow is the versioned enforcement definition; branch-protection and
-self-hosted-runner registration remain GitHub repository settings and cannot
-be inferred from a green local run. External-service acceptance remains a
-separately provisioned explicit `datafusion-nexus-tools` workflow, never a
-Cargo test target.
+The only repository-visible GitHub Actions workflow currently builds and
+deploys the website on matching pushes to `main` or manual dispatch. It does
+not run the Rust test suite. No committed workflow currently turns the
+canonical pre-merge surface into required GitHub status checks, so use plain
+`bash scripts/check_all.sh` for that validation. External-service acceptance
+remains an explicit `datafusion-nexus-tools` invocation, never a Cargo test
+target.
 
 ## Performance evidence
 

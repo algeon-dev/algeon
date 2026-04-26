@@ -12,7 +12,7 @@ use super::{
 };
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphSqlConfig;
-use crate::{backend::NexusGpuBackend, session::CudfSessionStateBuilderExt};
+use crate::{backend::NexusGpuBackend, session::NexusSessionStateBuilderExt};
 
 pub async fn build_session_context(config: &ServerConfig) -> super::error::Result<SessionContext> {
     build_session_context_with_backend(config, None).await
@@ -51,7 +51,7 @@ pub async fn build_session_context_with_backend(
             }
         },
         None => {
-            let builder = builder.with_cudf_native(config.native_optimizer_config.clone());
+            let builder = builder.with_nexus_native(config.native_optimizer_config.clone());
             #[cfg(feature = "cugraph")]
             let builder = match &config.cugraph {
                 Some(cugraph) => builder.with_cugraph_sql(cugraph_sql_config(
@@ -79,7 +79,7 @@ pub async fn build_session_context_with_backend(
 #[cfg(feature = "cugraph")]
 pub(crate) fn cugraph_sql_config(
     config: &super::config::CugraphServerConfig,
-    native_execution_config: crate::native_exec::NativeCudfExecutionConfig,
+    native_execution_config: crate::native_exec::NexusNativeExecutionConfig,
 ) -> CugraphSqlConfig {
     let sql = CugraphSqlConfig { default_graph_options: config.default_graph_options.clone(), ..Default::default() };
     sql.with_native_execution_config(native_execution_config)
@@ -333,7 +333,7 @@ fn iceberg_provider_kind_for(
 
 /// Builds the [`TableProvider`] used to seed a pre-declared alias.
 ///
-/// Mirrors the dispatch in [`crate::table_format::iceberg::catalog::CudfIcebergSchemaProvider`]
+/// Mirrors the dispatch in [`crate::table_format::iceberg::catalog::NexusIcebergSchemaProvider`]
 /// so the dynamic three-part path and the legacy bare-alias path resolve to
 /// the same provider kind.
 #[cfg(feature = "iceberg")]
@@ -349,13 +349,13 @@ async fn build_alias_provider(
         IcebergProviderKind::Gpu => {
             let provider = match parquet_read_strategy_config {
                 Some(config) => {
-                    crate::table_format::iceberg::CudfIcebergTableProvider::try_new_with_parquet_read_strategy_config(
+                    crate::table_format::iceberg::NexusIcebergTableProvider::try_new_with_parquet_read_strategy_config(
                         table, config,
                     )
                 },
-                None => crate::table_format::iceberg::CudfIcebergTableProvider::try_new(table),
+                None => crate::table_format::iceberg::NexusIcebergTableProvider::try_new(table),
             }
-            .map_err(|error| ServerError::session("failed to build CudfIcebergTableProvider", error))?
+            .map_err(|error| ServerError::session("failed to build NexusIcebergTableProvider", error))?
             .with_catalog_type(catalog_type)
             .with_scan_planning_timeout(scan_planning_timeout);
             Ok(Arc::new(provider))

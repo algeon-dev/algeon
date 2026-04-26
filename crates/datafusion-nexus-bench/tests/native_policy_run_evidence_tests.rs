@@ -18,17 +18,17 @@ fn native_execution_reports_emit_selected_policy_and_pipeline_mode_to_stderr() {
         (
             "src/bin/native_tpch_execution_report.rs",
             "[native_tpch_execution_report] stage=run_config",
-            "CUDF_TPCH_NATIVE_FALLBACK_POLICY",
+            "NEXUS_TPCH_NATIVE_FALLBACK_POLICY",
         ),
         (
             "src/bin/native_tpcds_execution_report.rs",
             "[native_tpcds_execution_report] stage=run_config",
-            "CUDF_TPCDS_NATIVE_FALLBACK_POLICY",
+            "NEXUS_TPCDS_NATIVE_FALLBACK_POLICY",
         ),
         (
             "src/bin/native_clickbench_execution_report.rs",
             "[native_clickbench_execution_report] stage=run_config",
-            "CUDF_CLICKBENCH_NATIVE_FALLBACK_POLICY",
+            "NEXUS_CLICKBENCH_NATIVE_FALLBACK_POLICY",
         ),
     ] {
         let src = source(path);
@@ -76,7 +76,7 @@ fn iceberg_native_sessions_emit_selected_policy_and_strict_pipeline_mode_to_stde
         1,
         "Iceberg native session setup must read the fallback-policy env exactly once"
     );
-    assert!(session_setup.contains("CudfOptimizerConfig::new(fallback_policy)"));
+    assert!(session_setup.contains("NexusNativeOptimizerConfig::new(fallback_policy)"));
     assert!(evidence_setup.contains("gpu_fallback_policy_label(fallback_policy)"));
     assert!(evidence_setup.contains("execution_config.native_pipeline_execution_mode().as_str()"));
     assert!(

@@ -11,7 +11,7 @@ use nexus_query_engine::{
     plan::QueryPlan,
 };
 
-use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCandidate};
+use crate::{error::Error, native_exec::NexusNativeExecutionConfig, report::GpuCandidate};
 
 /// Stable reason used when strict report rows intentionally omit bounded non-join plans.
 pub const STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON: &str =
@@ -108,7 +108,7 @@ impl NativeStrictBoundedCompiledGraphDiagnostics {
 pub(super) fn accepted_plan_contract_diagnostics(
     plan: &QueryPlan,
     candidate: GpuCandidate,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<NativeStrictBoundedContractDiagnostics> {
     if !execution_config.memory_control_policy().is_bounded() {
         return Ok(NativeStrictBoundedContractDiagnostics::default());
@@ -142,7 +142,7 @@ pub(super) fn accepted_plan_contract_diagnostics(
 
 pub(super) fn strict_bounded_admission_is_rejected(
     plan: &QueryPlan,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<bool> {
     match strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
         plan,
@@ -158,7 +158,7 @@ pub(super) fn strict_bounded_admission_is_rejected(
 pub(super) fn rejected_plan_contract_diagnostics(
     plan: &QueryPlan,
     candidate: GpuCandidate,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<NativeStrictBoundedContractDiagnostics> {
     if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
         return Ok(NativeStrictBoundedContractDiagnostics::default());
@@ -180,7 +180,7 @@ pub(super) fn rejected_plan_contract_diagnostics(
 
 fn first_blocking_contract_row(
     plan: &QueryPlan,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<Option<StrictBoundedContractGateRow>> {
     if let Some(projection) = strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
         plan,
@@ -231,7 +231,7 @@ fn strict_bounded_candidate_error(message: &'static str) -> DataFusionError {
 
 fn stamp_strict_report_correlation(
     mut report: StrictBoundedContractReport,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> StrictBoundedContractReport {
     if let Some(query_id) = execution_config.query_id() {
         report = report.with_query_id(query_id.clone());
@@ -244,7 +244,7 @@ fn stamp_strict_report_correlation(
 
 fn stamp_native_error_correlation(
     mut error: nexus_query_engine::error::QueryError,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> nexus_query_engine::error::QueryError {
     if let Some(query_id) = execution_config.query_id() {
         error = error.with_query_id(query_id.clone());

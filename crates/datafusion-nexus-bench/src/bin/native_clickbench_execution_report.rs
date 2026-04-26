@@ -20,10 +20,10 @@ use datafusion_nexus_workloads::clickbench::{
 };
 use nexus_query_engine::mode::NativePipelineExecutionMode;
 
-const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
-const CUDF_CLICKBENCH_NATIVE_FALLBACK_POLICY_ENV: &str = "CUDF_CLICKBENCH_NATIVE_FALLBACK_POLICY";
-const CUDF_CLICKBENCH_EXECUTION_QUERY_IDS_ENV: &str = "CUDF_CLICKBENCH_EXECUTION_QUERY_IDS";
-const CUDF_CLICKBENCH_EXECUTION_PROGRESS_ENV: &str = "CUDF_CLICKBENCH_EXECUTION_PROGRESS";
+const NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
+const NEXUS_CLICKBENCH_NATIVE_FALLBACK_POLICY_ENV: &str = "NEXUS_CLICKBENCH_NATIVE_FALLBACK_POLICY";
+const NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS_ENV: &str = "NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS";
+const NEXUS_CLICKBENCH_EXECUTION_PROGRESS_ENV: &str = "NEXUS_CLICKBENCH_EXECUTION_PROGRESS";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -110,33 +110,33 @@ struct ClickbenchExecutionReport {
 }
 
 fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
-    let mode = std::env::var(CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
+    let mode = std::env::var(NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
         .unwrap_or_else(|_| NativePipelineExecutionMode::StrictBounded.as_str().to_string());
     mode.parse::<NativePipelineExecutionMode>().unwrap_or_else(|error| {
         panic!(
-            "unsupported {CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
+            "unsupported {NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
             error.value()
         )
     })
 }
 
 fn query_filter_from_env() -> Option<Vec<String>> {
-    let raw = std::env::var(CUDF_CLICKBENCH_EXECUTION_QUERY_IDS_ENV).ok()?;
+    let raw = std::env::var(NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS_ENV).ok()?;
     let filtered: Vec<String> = raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     if filtered.is_empty() { None } else { Some(filtered) }
 }
 
 fn progress_enabled_from_env() -> bool {
-    match std::env::var(CUDF_CLICKBENCH_EXECUTION_PROGRESS_ENV) {
+    match std::env::var(NEXUS_CLICKBENCH_EXECUTION_PROGRESS_ENV) {
         Ok(value) => matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
         Err(_) => false,
     }
 }
 
 fn native_fallback_policy_from_env() -> datafusion_nexus::policy::GpuFallbackPolicy {
-    match std::env::var(CUDF_CLICKBENCH_NATIVE_FALLBACK_POLICY_ENV) {
+    match std::env::var(NEXUS_CLICKBENCH_NATIVE_FALLBACK_POLICY_ENV) {
         Ok(value) => parse_gpu_fallback_policy(&value).unwrap_or_else(|error| panic!("{error}")),
         Err(std::env::VarError::NotPresent) => datafusion_nexus::policy::GpuFallbackPolicy::GpuPreferred,
-        Err(error) => panic!("failed to read {CUDF_CLICKBENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}"),
+        Err(error) => panic!("failed to read {NEXUS_CLICKBENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}"),
     }
 }

@@ -560,9 +560,7 @@ fn root_semijoin_over_fact_date_dimension_plan() -> nexus_query_engine::plan::Qu
 }
 
 fn root_semijoin_over_fact_date_dimension_plan_with_left_semi_week_keyset() -> nexus_query_engine::plan::QueryPlan {
-    root_semijoin_over_fact_date_dimension_plan_with_week_keyset(
-        week_dates_from_filtered_date_dimension_left_semi,
-    )
+    root_semijoin_over_fact_date_dimension_plan_with_week_keyset(week_dates_from_filtered_date_dimension_left_semi)
 }
 
 fn root_semijoin_over_fact_date_dimension_plan_with_week_keyset(
@@ -694,7 +692,11 @@ fn week_dates_from_filtered_date_dimension_left_semi(
     )
 }
 
-fn assert_left_semi_input(plan: &nexus_query_engine::plan::QueryPlan, node_id: nexus_query_engine::plan::NodeId, key_name: &str) {
+fn assert_left_semi_input(
+    plan: &nexus_query_engine::plan::QueryPlan,
+    node_id: nexus_query_engine::plan::NodeId,
+    key_name: &str,
+) {
     let node = plan.node(node_id).expect("node should exist");
     let PlanNode::Join(join) = &node.kind else {
         panic!("expected pushed left-semi join");

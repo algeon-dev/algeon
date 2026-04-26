@@ -109,7 +109,7 @@ async fn cugraph_undirected_only_algorithms_reject_directed_graph_option() {
 #[tokio::test]
 async fn cugraph_table_function_scan_rejects_int64_for_legacy_int32_only_algorithms() {
     let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -292,7 +292,7 @@ async fn cugraph_bfs_normalized_output_mode_is_opt_in() {
 #[tokio::test]
 async fn cugraph_bfs_table_function_scan_rejects_mixed_logical_vertex_domains() {
     let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -342,7 +342,7 @@ async fn cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema()
 #[tokio::test]
 async fn cugraph_bfs_predicate_options_plan_as_exec_side_inputs() {
     let state = SessionStateBuilder::new_with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -479,7 +479,7 @@ async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_
 
     let state = SessionStateBuilder::new()
         .with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -541,7 +541,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
 
     let state = SessionStateBuilder::new()
         .with_default_features()
-        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);

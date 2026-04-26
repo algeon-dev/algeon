@@ -28,7 +28,7 @@ use crate::expr::{Expr, LiteralValue};
 ///
 /// A zero-column count source reads no physical columns and produces row counts
 /// from file or row-group metadata instead of projecting normal source columns.
-pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__cudf_zero_column_row_count";
+pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__nexus_native_zero_column_row_count";
 
 fn schema_column_indices(schema: &SchemaRef, columns: &[String]) -> Vec<usize> {
     columns.iter().filter_map(|column| schema.index_of(column).ok()).collect()

@@ -41,14 +41,14 @@ impl EquiJoinIndices {
                 let left_bytes = left.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
                     QueryError::from_cudf(
                         "nexus_query_engine.join.gather_map_bytes",
-                        "failed to observe native cudf join left gather-map memory",
+                        "failed to observe nexus native join left gather-map memory",
                         error,
                     )
                 })?;
                 let right_bytes = right.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
                     QueryError::from_cudf(
                         "nexus_query_engine.join.gather_map_bytes",
-                        "failed to observe native cudf join right gather-map memory",
+                        "failed to observe nexus native join right gather-map memory",
                         error,
                     )
                 })?;
@@ -58,7 +58,7 @@ impl EquiJoinIndices {
                 indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
                     QueryError::from_cudf(
                         "nexus_query_engine.join.gather_map_bytes",
-                        "failed to observe native cudf join gather-map memory",
+                        "failed to observe nexus native join gather-map memory",
                         error,
                     )
                 })
@@ -277,7 +277,7 @@ fn execute_cross_join(
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = left.with_execution(&overrides).cross_join_projected(&right, options).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.join.cross", "failed to execute native cudf cross join", error)
+        QueryError::from_cudf("nexus_query_engine.join.cross", "failed to execute nexus native cross join", error)
     })?;
     let output = reorder_projected_cross_join_output(output, &node.spec.output_projection)?;
     metrics.operator_time += timer.elapsed();
@@ -405,7 +405,7 @@ pub(super) fn join_index_error(error: cudf::Error, node: &JoinNode) -> QueryErro
 }
 
 pub(super) fn join_index_error_base(error: cudf::Error, node: &JoinNode) -> QueryError {
-    QueryError::from_cudf("nexus_query_engine.join.execute", "failed to execute native cudf join indices", error)
+    QueryError::from_cudf("nexus_query_engine.join.execute", "failed to execute nexus native join indices", error)
         .with_fact("join_type", node.spec.join_type)
         .with_fact("key_count", node.spec.keys.len())
         .with_fact("null_equality", node.spec.null_equality)

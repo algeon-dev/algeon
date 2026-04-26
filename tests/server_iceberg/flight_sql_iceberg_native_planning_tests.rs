@@ -4,12 +4,12 @@
 //!
 //! - Under the native-friendly server session profile, Iceberg-backed
 //!   `GROUP BY ... ORDER BY` and `JOIN + GROUP BY + ORDER BY` queries must
-//!   rewrite to native and leave no `CudfTableFormatScanExec` behind.
+//!   rewrite to native and leave no `NexusTableFormatScanExec` behind.
 //! - Under a CPU-style session profile that re-enables DataFusion
 //!   repartitioning, the same `GROUP BY ... ORDER BY` shape includes a full
 //!   `SortPreservingMergeExec`; native lowering must absorb that SPM as an
 //!   explicit native sort and still leave no GPU-only leaf behind.
-//! - A leaf-guard unit test asserts that a leftover `CudfTableFormatScanExec`
+//! - A leaf-guard unit test asserts that a leftover `NexusTableFormatScanExec`
 //!   beneath a non-rewritable wrapper produces the structured
 //!   `table_format_gpu_only_leaf_not_rewritten` error.
 //!
@@ -41,17 +41,17 @@ use datafusion::{
 };
 use datafusion_nexus::{
     planner::{
-        CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
-        CudfTableFormatGpuOnlyLeafGuardRule,
+        NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
+        NexusTableFormatGpuOnlyLeafGuardRule,
     },
     policy::{FallbackReason, GpuFallbackPolicy},
     server::{FlightSqlNativeRejectClass, ServerSessionProfile, apply_session_profile, log_leaf_guard_rejection},
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
     table_format::{
-        CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
-        TableFormatDataFile, TableFormatDataFileFormat, TableFormatPlanner, TableFormatReadCapability,
-        TableFormatScanPlan, TableFormatScanRequest,
-        iceberg::CudfIcebergTableProvider,
+        NexusTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole,
+        TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat, TableFormatPlanner,
+        TableFormatReadCapability, TableFormatScanPlan, TableFormatScanRequest,
+        iceberg::NexusIcebergTableProvider,
         scan::{TableFormatPredicate, TableFormatPredicateOp},
     },
 };
@@ -82,7 +82,7 @@ async fn native_profile_iceberg_lead_window_ordering_uses_host_window_over_nativ
     .expect("native profile must rewrite the Iceberg scan under the LEAD window");
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+    assert_plan_contains_nexus_native_exec(physical_plan.as_ref());
     assert_plan_contains_operator(physical_plan.as_ref(), "BoundedWindowAggExec");
     assert_plan_contains_operator(physical_plan.as_ref(), "SortExec");
 }
@@ -92,7 +92,7 @@ async fn native_profile_iceberg_join_group_by_order_by_rewrites_with_no_leftover
     // Both inputs share the same logical schema (id BIGINT NOT NULL, value
     // VARCHAR). The native-friendly profile pins target_partitions=1, so the
     // hash join, grouped aggregate, and final sort all collapse onto a single
-    // native pipeline rooted at NativeCudfExec instead of being split across
+    // native pipeline rooted at NexusNativeExec instead of being split across
     // DataFusion exchange nodes.
     let schema = iceberg_test_schema();
     let physical_plan = run_iceberg_sql_under_native_profile(
@@ -173,7 +173,7 @@ async fn native_profile_iceberg_cte_aggregate_join_back_fully_lowers_to_native()
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
     assert_query_fully_lowered_to_native(physical_plan.as_ref());
-    assert_plan_contains_operator(physical_plan.as_ref(), "NativeCudfGpuProducerExec");
+    assert_plan_contains_operator(physical_plan.as_ref(), "NexusNativeGpuProducerExec");
     assert_plan_does_not_contain_operator(physical_plan.as_ref(), "HashJoinExec");
     assert_plan_does_not_contain_operator(physical_plan.as_ref(), "SortExec");
 }
@@ -194,8 +194,8 @@ async fn native_profile_iceberg_not_in_count_distinct_composes_gpu_resident_chil
     .expect("native profile must plan NOT IN plus COUNT(DISTINCT) over Iceberg without a leftover GPU-only leaf");
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
-    assert_plan_contains_operator(physical_plan.as_ref(), "NativeCudfGpuProducerExec");
+    assert_plan_contains_nexus_native_exec(physical_plan.as_ref());
+    assert_plan_contains_operator(physical_plan.as_ref(), "NexusNativeGpuProducerExec");
     assert_query_root_is_native(physical_plan.as_ref());
 }
 
@@ -327,7 +327,7 @@ async fn native_profile_iceberg_cte_aggregate_scalar_filter_plans_with_no_leftov
     .expect("native profile must rewrite CTE aggregate scalar filter over Iceberg");
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+    assert_plan_contains_nexus_native_exec(physical_plan.as_ref());
     assert_plan_does_not_contain_operator(physical_plan.as_ref(), "ScalarSubqueryExec");
 }
 
@@ -356,7 +356,7 @@ async fn native_profile_iceberg_physical_scalar_subquery_rewrites_children_with_
         "test must exercise DataFusion's physical scalar-subquery wrapper"
     );
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+    assert_plan_contains_nexus_native_exec(physical_plan.as_ref());
 }
 
 #[tokio::test]
@@ -393,7 +393,7 @@ async fn native_profile_iceberg_scalar_subquery_scope_skips_mixed_regular_parque
         "test must exercise DataFusion's physical scalar-subquery wrapper"
     );
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+    assert_plan_contains_nexus_native_exec(physical_plan.as_ref());
     let scalar_subquery = find_operator(physical_plan.as_ref(), "ScalarSubqueryExec")
         .expect("physical scalar subquery should remain in the optimized plan");
     let regular_parquet_subquery = scalar_subquery
@@ -415,7 +415,7 @@ async fn cpu_style_profile_iceberg_group_by_order_by_full_spm_lowers_to_native_s
     // The CPU-style profile mirrors the pre-Milestone-2 audit scenario:
     // DataFusion is allowed to repartition sorts so an unbounded GROUP BY +
     // ORDER BY plan produces a root SortPreservingMergeExec over the GPU-only
-    // CudfTableFormatScanExec. Full SPM is now lowerable as an explicit native
+    // NexusTableFormatScanExec. Full SPM is now lowerable as an explicit native
     // sort, so this profile should rewrite the whole subtree instead of falling
     // through to the leaf guard.
     let plan = native_admissible_scan_plan(iceberg_test_schema());
@@ -459,7 +459,7 @@ async fn cpu_style_profile_rejection_is_recognised_by_diagnostics_helper() {
 fn leaf_guard_rejects_leftover_table_format_scan_under_spm_wrapper() {
     // The Milestone 1 leaf guard is a `PhysicalOptimizerRule` that runs after the
     // native rewrite. This test exercises it directly with a wrapper around a
-    // CudfTableFormatScanExec so the leaf is still present when the guard runs.
+    // NexusTableFormatScanExec so the leaf is still present when the guard runs.
     let error = leftover_table_format_scan_under_spm_leaf_guard_error();
 
     let adapter_error = adapter_error_from(&error);
@@ -468,13 +468,13 @@ fn leaf_guard_rejects_leftover_table_format_scan_under_spm_wrapper() {
         facts.get("fallback_reason").map(String::as_str),
         Some(FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code()),
     );
-    assert_eq!(facts.get("leftover_operator").map(String::as_str), Some("CudfTableFormatScanExec"));
+    assert_eq!(facts.get("leftover_operator").map(String::as_str), Some("NexusTableFormatScanExec"));
     assert_eq!(facts.get("table_format").map(String::as_str), Some("iceberg"));
     assert_eq!(facts.get("cpu_arrow_reader_fallback").map(String::as_str), Some("false"));
     assert_eq!(facts.get("physical_plan_root").map(String::as_str), Some("SortPreservingMergeExec"));
     let shape = facts.get("physical_plan_shape").map(String::as_str).expect("shape fact");
     assert!(shape.contains("SortPreservingMergeExec("), "shape must reproduce the wrapper: {shape}");
-    assert!(shape.contains("CudfTableFormatScanExec"), "shape must mention the surviving leaf: {shape}");
+    assert!(shape.contains("NexusTableFormatScanExec"), "shape must mention the surviving leaf: {shape}");
 }
 
 // ----- helpers ---------------------------------------------------------------
@@ -482,7 +482,7 @@ fn leaf_guard_rejects_leftover_table_format_scan_under_spm_wrapper() {
 fn leftover_table_format_scan_under_spm_leaf_guard_error() -> DataFusionError {
     let schema = iceberg_test_schema();
     let scan: Arc<dyn ExecutionPlan> =
-        Arc::new(CudfTableFormatScanExec::new(native_admissible_scan_plan(Arc::clone(&schema)), schema));
+        Arc::new(NexusTableFormatScanExec::new(native_admissible_scan_plan(Arc::clone(&schema)), schema));
     let ordering = datafusion::physical_expr::LexOrdering::new([datafusion::physical_expr::PhysicalSortExpr::new(
         datafusion::physical_expr::expressions::col("id", scan.schema().as_ref()).unwrap(),
         arrow::compute::SortOptions::new(false, false),
@@ -490,10 +490,10 @@ fn leftover_table_format_scan_under_spm_leaf_guard_error() -> DataFusionError {
     .expect("non-empty LexOrdering");
     let wrapper: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(ordering, scan));
 
-    let rule = CudfTableFormatGpuOnlyLeafGuardRule::new();
-    assert_eq!(rule.name(), CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME);
+    let rule = NexusTableFormatGpuOnlyLeafGuardRule::new();
+    assert_eq!(rule.name(), NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME);
     rule.optimize(wrapper, &datafusion::common::config::ConfigOptions::new())
-        .expect_err("leaf guard must reject a plan that retains a CudfTableFormatScanExec")
+        .expect_err("leaf guard must reject a plan that retains a NexusTableFormatScanExec")
 }
 
 async fn run_iceberg_sql_under_native_profile(
@@ -524,18 +524,18 @@ async fn run_iceberg_sql_with_session_config(
     sql: &str,
     session_config: SessionConfig,
 ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
 
     for (name, plan) in tables {
         let schema = plan.logical_schema.clone();
         let planner = Arc::new(RecordingPlanner::new(plan.clone()));
-        let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(schema, planner));
+        let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(schema, planner));
         ctx.register_table(*name, provider).expect("test should register a unique table name once");
     }
 
@@ -549,18 +549,18 @@ async fn run_mixed_iceberg_parquet_sql_with_session_config(
     sql: &str,
     session_config: SessionConfig,
 ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
 
     for (name, plan) in iceberg_tables {
         let schema = plan.logical_schema.clone();
         let planner = Arc::new(RecordingPlanner::new(plan.clone()));
-        let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(schema, planner));
+        let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(schema, planner));
         ctx.register_table(*name, provider).expect("test should register a unique table name once");
     }
     for (name, path) in parquet_tables {
@@ -575,7 +575,7 @@ async fn run_mixed_iceberg_parquet_sql_with_session_config(
 fn assert_no_leftover_table_format_scan(plan: &dyn ExecutionPlan) {
     if find_table_format_scan(plan).is_some() {
         let rendered = displayable(plan).indent(false).to_string();
-        panic!("native profile rewrite left a CudfTableFormatScanExec in place; plan:\n{rendered}");
+        panic!("native profile rewrite left a NexusTableFormatScanExec in place; plan:\n{rendered}");
     }
 }
 
@@ -594,7 +594,7 @@ fn assert_no_leftover_table_format_scan(plan: &dyn ExecutionPlan) {
 /// only consumed the leaf — that is exactly the regression Milestone 3 pins.
 fn assert_query_fully_lowered_to_native(plan: &dyn ExecutionPlan) {
     let rendered = displayable(plan).indent(false).to_string();
-    let native_root = find_native_cudf_exec_root(plan).unwrap_or_else(|| {
+    let native_root = find_nexus_native_exec_root(plan).unwrap_or_else(|| {
         panic!("native profile rewrite did not produce a native execution wrapper; plan:\n{rendered}");
     });
     for forbidden in CPU_PIPELINE_OPERATORS_ABSORBED_BY_NATIVE_REWRITE {
@@ -609,8 +609,8 @@ fn assert_query_fully_lowered_to_native(plan: &dyn ExecutionPlan) {
 const CPU_PIPELINE_OPERATORS_ABSORBED_BY_NATIVE_REWRITE: &[&str] =
     &["AggregateExec", "SortExec", "HashJoinExec", "RepartitionExec", "SortPreservingMergeExec"];
 
-fn assert_plan_contains_native_cudf_exec(plan: &dyn ExecutionPlan) {
-    if !plan_contains_operator(plan, "NativeCudfExec") && !plan_contains_operator(plan, "NativeCudfComposedExec") {
+fn assert_plan_contains_nexus_native_exec(plan: &dyn ExecutionPlan) {
+    if !plan_contains_operator(plan, "NexusNativeExec") && !plan_contains_operator(plan, "NexusNativeComposedExec") {
         let rendered = displayable(plan).indent(false).to_string();
         panic!("native profile rewrite did not produce any native execution wrapper; plan:\n{rendered}");
     }
@@ -631,7 +631,7 @@ fn assert_plan_contains_operator(plan: &dyn ExecutionPlan, operator: &str) {
 }
 
 fn assert_query_root_is_native(plan: &dyn ExecutionPlan) {
-    if !matches!(plan.name(), "NativeCudfExec" | "NativeCudfComposedExec") {
+    if !matches!(plan.name(), "NexusNativeExec" | "NexusNativeComposedExec") {
         let rendered = displayable(plan).indent(false).to_string();
         panic!(
             "native profile rewrite left a DataFusion host boundary above the native plan root; \
@@ -658,11 +658,11 @@ struct NativeRootDescent {
     ancestor_names: Vec<String>,
 }
 
-fn find_native_cudf_exec_root(plan: &dyn ExecutionPlan) -> Option<NativeRootDescent> {
+fn find_nexus_native_exec_root(plan: &dyn ExecutionPlan) -> Option<NativeRootDescent> {
     let mut ancestor_names = Vec::new();
     let mut cursor: &dyn ExecutionPlan = plan;
     loop {
-        if matches!(cursor.name(), "NativeCudfExec" | "NativeCudfComposedExec") {
+        if matches!(cursor.name(), "NexusNativeExec" | "NexusNativeComposedExec") {
             return Some(NativeRootDescent { ancestor_names });
         }
         ancestor_names.push(cursor.name().to_string());
@@ -677,8 +677,8 @@ fn find_native_cudf_exec_root(plan: &dyn ExecutionPlan) -> Option<NativeRootDesc
     }
 }
 
-fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTableFormatScanExec> {
-    if let Some(scan) = plan.downcast_ref::<CudfTableFormatScanExec>() {
+fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&NexusTableFormatScanExec> {
+    if let Some(scan) = plan.downcast_ref::<NexusTableFormatScanExec>() {
         return Some(scan);
     }
     plan.children().into_iter().find_map(|child| find_table_format_scan(child.as_ref()))
@@ -889,5 +889,5 @@ impl TableFormatPlanner for RecordingPlanner {
 // quote the first native rejection. The `last_report` accessor is the dependency
 // the guard reads at fire time; pin the method in the type system so dropping it
 // fails compilation for this suite.
-const _: fn(&CudfNativePhysicalOptimizerRule) -> Option<datafusion_nexus::report::PlanningReport> =
-    CudfNativePhysicalOptimizerRule::last_report;
+const _: fn(&NexusNativePhysicalOptimizerRule) -> Option<datafusion_nexus::report::PlanningReport> =
+    NexusNativePhysicalOptimizerRule::last_report;

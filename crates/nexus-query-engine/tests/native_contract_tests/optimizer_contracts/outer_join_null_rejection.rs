@@ -28,12 +28,8 @@ fn outer_join_null_rejection_converts_left_join_when_inner_join_key_rejects_righ
 
 #[test]
 fn outer_join_null_rejection_preserves_left_join_build_side_after_build_side_selection() {
-    let plan = inner_join_over_estimated_projected_left_join_right_key_plan(
-        1024 * 1024,
-        10_000,
-        32 * 1024 * 1024,
-        1_000_000,
-    );
+    let plan =
+        inner_join_over_estimated_projected_left_join_right_key_plan(1024 * 1024, 10_000, 32 * 1024 * 1024, 1_000_000);
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::default(),
         outer_join_null_rejection: nexus_query_engine::optimizer::OuterJoinNullRejectionOptions::default(),
@@ -316,9 +312,8 @@ fn inner_join_over_projected_left_join_key_plan_with_sources(
         Field::new("r_key", DataType::Int32, true),
         Field::new("r_reason", DataType::Int32, true),
     ]));
-    let root_input = limit_fetch.map_or(projected, |fetch| {
-        builder.add_limit(projected, LimitSpec::fetch(fetch), Arc::clone(&root_schema))
-    });
+    let root_input = limit_fetch
+        .map_or(projected, |fetch| builder.add_limit(projected, LimitSpec::fetch(fetch), Arc::clone(&root_schema)));
     let root = builder.add_join(
         root_input,
         dim,
@@ -387,13 +382,7 @@ fn inner_join_over_large_left_join_right_key_plan() -> nexus_query_engine::plan:
 }
 
 fn aggregate_over_reason_join_over_large_left_join_plan() -> nexus_query_engine::plan::QueryPlan {
-    let sales_schema = schema(&[
-        "ss_item_sk",
-        "ss_customer_sk",
-        "ss_ticket_number",
-        "ss_quantity",
-        "ss_sales_price",
-    ]);
+    let sales_schema = schema(&["ss_item_sk", "ss_customer_sk", "ss_ticket_number", "ss_quantity", "ss_sales_price"]);
     let returns_schema = schema(&["sr_item_sk", "sr_reason_sk", "sr_ticket_number", "sr_return_quantity"]);
     let left_join_schema = Arc::new(Schema::new(vec![
         Field::new("ss_customer_sk", DataType::Int32, false),
@@ -420,12 +409,7 @@ fn aggregate_over_reason_join_over_large_left_join_plan() -> nexus_query_engine:
                 .with_row_group_rows(vec![10_000_000]),
         ],
         returns_schema,
-        vec![
-            "sr_item_sk".into(),
-            "sr_reason_sk".into(),
-            "sr_ticket_number".into(),
-            "sr_return_quantity".into(),
-        ],
+        vec!["sr_item_sk".into(), "sr_reason_sk".into(), "sr_ticket_number".into(), "sr_return_quantity".into()],
     )));
     let reason = builder.add_source(gpu_source("reason", &["r_reason_sk"]));
     let left_join = builder.add_join(
@@ -449,7 +433,10 @@ fn aggregate_over_reason_join_over_large_left_join_plan() -> nexus_query_engine:
             JoinOutputColumn::left(ColumnRef::input(0, "ss_quantity", "ss_quantity"), "ss_quantity"),
             JoinOutputColumn::left(ColumnRef::input(0, "ss_sales_price", "ss_sales_price"), "ss_sales_price"),
             JoinOutputColumn::right(ColumnRef::input(1, "sr_reason_sk", "sr_reason_sk"), "sr_reason_sk"),
-            JoinOutputColumn::right(ColumnRef::input(1, "sr_return_quantity", "sr_return_quantity"), "sr_return_quantity"),
+            JoinOutputColumn::right(
+                ColumnRef::input(1, "sr_return_quantity", "sr_return_quantity"),
+                "sr_return_quantity",
+            ),
         ])
         .with_build_side(JoinSide::Right),
         left_join_schema,
@@ -466,7 +453,10 @@ fn aggregate_over_reason_join_over_large_left_join_plan() -> nexus_query_engine:
         )
         .with_output_projection(vec![
             JoinOutputColumn::left(ColumnRef::input(0, "ss_customer_sk", "ss_customer_sk"), "ss_customer_sk"),
-            JoinOutputColumn::left(ColumnRef::input(0, "sr_return_quantity", "sr_return_quantity"), "sr_return_quantity"),
+            JoinOutputColumn::left(
+                ColumnRef::input(0, "sr_return_quantity", "sr_return_quantity"),
+                "sr_return_quantity",
+            ),
             JoinOutputColumn::left(ColumnRef::input(0, "ss_quantity", "ss_quantity"), "ss_quantity"),
             JoinOutputColumn::left(ColumnRef::input(0, "ss_sales_price", "ss_sales_price"), "ss_sales_price"),
         ])
@@ -476,11 +466,7 @@ fn aggregate_over_reason_join_over_large_left_join_plan() -> nexus_query_engine:
     let act_sales = Expr::case(
         vec![CaseWhen::new(
             Expr::is_not_null(Expr::column("sr_return_quantity")),
-            Expr::binary(
-                Expr::column("ss_quantity"),
-                BinaryOp::Subtract,
-                Expr::column("sr_return_quantity"),
-            ),
+            Expr::binary(Expr::column("ss_quantity"), BinaryOp::Subtract, Expr::column("sr_return_quantity")),
         )],
         Expr::column("ss_quantity"),
     );
@@ -556,20 +542,14 @@ fn union_aggregate_over_left_join_right_key_plan() -> nexus_query_engine::plan::
         left_join,
         vec![
             ProjectionOutput::new(Expr::column("site_sk"), Field::new("site_sk", DataType::Int32, true)),
-            ProjectionOutput::new(
-                Expr::column("returns_value"),
-                Field::new("returns_value", DataType::Int32, false),
-            ),
+            ProjectionOutput::new(Expr::column("returns_value"), Field::new("returns_value", DataType::Int32, false)),
         ],
     );
     let direct_projected = builder.add_projection(
         direct,
         vec![
             ProjectionOutput::new(Expr::column("site_sk"), Field::new("site_sk", DataType::Int32, false)),
-            ProjectionOutput::new(
-                Expr::column("returns_value"),
-                Field::new("returns_value", DataType::Int32, false),
-            ),
+            ProjectionOutput::new(Expr::column("returns_value"), Field::new("returns_value", DataType::Int32, false)),
         ],
     );
     let union_schema = Arc::new(Schema::new(vec![

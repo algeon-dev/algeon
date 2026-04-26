@@ -14,10 +14,10 @@ use nexus_query_engine::{
 
 use crate::{
     error::{Error, ErrorCode, Result},
-    native_exec::{NativeCudfExecutionConfig, QueryAdmissionSource},
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    native_exec::{NexusNativeExecutionConfig, QueryAdmissionSource},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::GpuFallbackPolicy,
-    session::install_cudf_native_rule_with_session_config,
+    session::install_nexus_native_rule_with_session_config,
     session_config::DataFusionNexusSessionConfig,
 };
 
@@ -31,7 +31,7 @@ const DEFAULT_GRANT_WANT: MemoryShare = MemoryShare::PolicyDefault;
 pub struct NexusGpuBackend {
     query_service: QueryService,
     tenant_id: TenantId,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
     device_ordinals: Vec<usize>,
 }
 
@@ -230,10 +230,10 @@ impl NexusGpuBackend {
             reject_preexisting_cugraph_sql(&mut builder)?;
             builder
         };
-        let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(self.optimizer_config.clone()));
+        let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(self.optimizer_config.clone()));
         let session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&self.optimizer_config).frozen_for_backend_admission();
-        install_cudf_native_rule_with_session_config(builder, rule, session_config).map_err(|error| {
+        install_nexus_native_rule_with_session_config(builder, rule, session_config).map_err(|error| {
             Error::new(
                 ErrorCode::InvalidRequest,
                 "datafusion_nexus.backend.install_on",
@@ -250,7 +250,7 @@ impl NexusGpuBackend {
         builder: SessionStateBuilder,
         cugraph_config: crate::graph_sql::CugraphSqlConfig,
     ) -> Result<SessionStateBuilder> {
-        use crate::session::CudfSessionStateBuilderExt;
+        use crate::session::NexusSessionStateBuilderExt;
 
         let builder = self.install_on(builder)?;
         Ok(builder.with_cugraph_sql(
@@ -267,7 +267,7 @@ impl NexusGpuBackend {
         &self.tenant_id
     }
 
-    pub fn optimizer_config(&self) -> &CudfOptimizerConfig {
+    pub fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
         &self.optimizer_config
     }
 
@@ -289,7 +289,7 @@ impl NexusGpuBackend {
 
     #[cfg(feature = "server")]
     pub(crate) fn from_optimizer_config_for_admission(
-        optimizer_config: CudfOptimizerConfig,
+        optimizer_config: NexusNativeOptimizerConfig,
         device_ordinals: Vec<usize>,
         admission_policy: NexusAdmissionPolicy,
         tenant_id: TenantId,
@@ -299,7 +299,7 @@ impl NexusGpuBackend {
 
     #[cfg(all(test, feature = "server"))]
     pub(crate) fn from_optimizer_config_for_admission_only(
-        optimizer_config: CudfOptimizerConfig,
+        optimizer_config: NexusNativeOptimizerConfig,
         device_ordinals: Vec<usize>,
         admission_policy: NexusAdmissionPolicy,
         tenant_id: TenantId,
@@ -309,7 +309,7 @@ impl NexusGpuBackend {
 
     #[cfg(feature = "server")]
     fn from_optimizer_config_inner(
-        optimizer_config: CudfOptimizerConfig,
+        optimizer_config: NexusNativeOptimizerConfig,
         device_ordinals: Vec<usize>,
         admission_policy: NexusAdmissionPolicy,
         tenant_id: TenantId,
@@ -326,7 +326,7 @@ impl NexusGpuBackend {
     }
 
     fn build_bounded(
-        optimizer_config: CudfOptimizerConfig,
+        optimizer_config: NexusNativeOptimizerConfig,
         resolved: ResolvedBackendMemoryPolicy,
         admission_policy: NexusAdmissionPolicy,
         tenant_id: TenantId,
@@ -481,7 +481,7 @@ impl NexusGpuBackendBuilder {
         }
         resolved.execution_config =
             resolved.execution_config.with_query_service_query_memory_domain(self.query_service_query_memory_domain);
-        let optimizer_config = CudfOptimizerConfig::new(self.fallback_policy)
+        let optimizer_config = NexusNativeOptimizerConfig::new(self.fallback_policy)
             .with_native_execution_config(resolved.execution_config.clone());
         NexusGpuBackend::build_bounded(
             optimizer_config,
@@ -497,7 +497,7 @@ impl NexusGpuBackendBuilder {
 struct ResolvedBackendMemoryPolicy {
     device_ordinals: Vec<usize>,
     planning_device_budget_bytes: u64,
-    execution_config: NativeCudfExecutionConfig,
+    execution_config: NexusNativeExecutionConfig,
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
     max_retry_attempts: usize,
@@ -508,7 +508,7 @@ impl ResolvedBackendMemoryPolicy {
     #[cfg(feature = "server")]
     fn from_execution_config(
         device_ordinals: Vec<usize>,
-        execution_config: NativeCudfExecutionConfig,
+        execution_config: NexusNativeExecutionConfig,
     ) -> Result<Option<Self>> {
         validate_device_ordinals(&device_ordinals)?;
         let MemoryControlPolicy::Bounded {
@@ -546,9 +546,9 @@ impl ResolvedBackendMemoryPolicy {
                 }
                 let first_device = device_ordinals[0];
                 let budget = budget_fraction.map_or_else(
-                    || NativeCudfExecutionConfig::auto_sized_device_budget_bytes_for_device(first_device),
+                    || NexusNativeExecutionConfig::auto_sized_device_budget_bytes_for_device(first_device),
                     |fraction| {
-                        NativeCudfExecutionConfig::auto_sized_device_budget_bytes_for_device_with_fraction(
+                        NexusNativeExecutionConfig::auto_sized_device_budget_bytes_for_device_with_fraction(
                             first_device,
                             fraction,
                         )
@@ -557,18 +557,18 @@ impl ResolvedBackendMemoryPolicy {
                 Ok(Self {
                     device_ordinals: device_ordinals.clone(),
                     planning_device_budget_bytes: budget,
-                    execution_config: NativeCudfExecutionConfig::bounded(
+                    execution_config: NexusNativeExecutionConfig::bounded(
                         budget,
-                        NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-                        NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-                        NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-                        NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+                        NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
+                        NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
+                        NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+                        NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
                     )
                     .with_device_ordinal(first_device),
-                    max_source_chunk_bytes: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-                    max_row_groups_per_chunk: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-                    max_retry_attempts: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-                    min_retry_chunk_row_groups: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+                    max_source_chunk_bytes: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
+                    max_row_groups_per_chunk: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
+                    max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+                    min_retry_chunk_row_groups: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
                 })
             },
             NexusMemoryPolicy::Bounded {
@@ -585,7 +585,7 @@ impl ResolvedBackendMemoryPolicy {
                 validate_positive_usize("max_row_groups_per_chunk", *max_row_groups_per_chunk)?;
                 validate_positive_usize("max_retry_attempts", *max_retry_attempts)?;
                 validate_positive_usize("min_retry_chunk_row_groups", *min_retry_chunk_row_groups)?;
-                let execution_config = NativeCudfExecutionConfig::bounded(
+                let execution_config = NexusNativeExecutionConfig::bounded(
                     *device_budget_bytes,
                     *max_source_chunk_bytes,
                     *max_row_groups_per_chunk,
@@ -612,7 +612,7 @@ impl ResolvedBackendMemoryPolicy {
 }
 
 fn backend_query_service_config(
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
     admission_policy: &NexusAdmissionPolicy,
     resolved: &ResolvedBackendMemoryPolicy,
     max_concurrent_queries: usize,

@@ -3,9 +3,9 @@ use super::*;
 /// after physical optimization runs (during `DataFrame::execute_stream`).
 pub(super) struct QueryPlanning {
     pub(super) ctx: SessionContext,
-    pub(super) native_rule: Arc<CudfNativePhysicalOptimizerRule>,
+    pub(super) native_rule: Arc<NexusNativePhysicalOptimizerRule>,
 }
-impl DatafusionCudfFlightSqlService {
+impl DatafusionNexusFlightSqlService {
     pub(super) fn coordinated_query_planning(
         &self,
         query_id: &str,
@@ -41,12 +41,12 @@ impl DatafusionCudfFlightSqlService {
             self.native_optimizer_config.clone().with_native_execution_config(execution_config.clone());
         // Retain the native rule so we can read its `last_report` for the
         // Milestone 4 planning-report log after physical optimization runs.
-        let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+        let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
         let mut session_extension = DataFusionNexusSessionConfig::from_optimizer_config(&optimizer_config);
         if optimizer_config.native_execution_config().has_query_admission_authority() {
             session_extension = session_extension.frozen_for_backend_admission();
         }
-        let builder = install_cudf_native_rule_with_session_config(
+        let builder = install_nexus_native_rule_with_session_config(
             SessionStateBuilder::new_from_existing(self.ctx.state()),
             Arc::clone(&native_rule),
             session_extension,

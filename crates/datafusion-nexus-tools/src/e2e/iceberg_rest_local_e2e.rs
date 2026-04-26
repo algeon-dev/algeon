@@ -285,9 +285,9 @@ async fn rest_table_metadata_contract_local() {
 ///
 /// Default CPU-only path proves:
 /// 1. **Planning rewrite.** Register the REST catalog with a GPU provider and
-///    the `CudfNativePhysicalOptimizerRule`, build the optimized physical plan
+///    the `NexusNativePhysicalOptimizerRule`, build the optimized physical plan
 ///    for an aggregate-over-Iceberg shape, and assert the rule rewrote it to a
-///    `NativeCudfExec` with no leftover `CudfTableFormatScanExec`. This proves
+///    `NexusNativeExec` with no leftover `NexusTableFormatScanExec`. This proves
 ///    the optimizer wrapped the shape, not GPU result correctness.
 /// 2. **CPU-reader stability.** Two independent CPU-reader runs of the same
 ///    query must agree.
@@ -310,8 +310,8 @@ async fn rest_native_planning_and_parity_local() {
         prelude::{SessionConfig, SessionContext},
     };
     use datafusion_nexus::{
-        native_exec::NativeCudfExecutionConfig, planner::CudfOptimizerConfig, policy::GpuFallbackPolicy,
-        session::CudfSessionStateBuilderExt,
+        native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig, policy::GpuFallbackPolicy,
+        session::NexusSessionStateBuilderExt,
     };
 
     let namespace = std::env::var("NEXUS_ICEBERG_NAMESPACE")
@@ -344,19 +344,19 @@ async fn rest_native_planning_and_parity_local() {
     .expect("build scoped GPU catalog provider");
 
     // Single partition keeps the plan free of RepartitionExec so the aggregate
-    // shape lowers cleanly into one NativeCudfExec pipeline.
+    // shape lowers cleanly into one NexusNativeExec pipeline.
     let native_execution_config =
-        NativeCudfExecutionConfig::bounded_auto_sized().with_source_storage_profile(storage_profile);
-    let optimizer_config =
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_execution_config);
+        NexusNativeExecutionConfig::bounded_auto_sized().with_source_storage_profile(storage_profile);
+    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(native_execution_config);
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(SessionConfig::new().with_target_partitions(1))
-        .with_cudf_native(optimizer_config)
+        .with_nexus_native(optimizer_config)
         .build();
     let gpu_ctx = SessionContext::new_with_state(state);
     gpu_ctx.register_catalog("lake", Arc::new(gpu_provider));
 
-    // Planning outcome: the rule must rewrite to NativeCudfExec.
+    // Planning outcome: the rule must rewrite to NexusNativeExec.
     let physical = gpu_ctx
         .sql(&sql)
         .await
@@ -367,12 +367,12 @@ async fn rest_native_planning_and_parity_local() {
     let rendered = displayable(physical.as_ref()).indent(false).to_string();
     eprintln!("native physical plan:\n{rendered}");
     assert!(
-        plan_contains(physical.as_ref(), "NativeCudfExec"),
-        "native profile must rewrite the aggregate-over-Iceberg shape to NativeCudfExec; plan:\n{rendered}"
+        plan_contains(physical.as_ref(), "NexusNativeExec"),
+        "native profile must rewrite the aggregate-over-Iceberg shape to NexusNativeExec; plan:\n{rendered}"
     );
     assert!(
-        !plan_contains(physical.as_ref(), "CudfTableFormatScanExec"),
-        "native rewrite left a leftover CudfTableFormatScanExec; plan:\n{rendered}"
+        !plan_contains(physical.as_ref(), "NexusTableFormatScanExec"),
+        "native rewrite left a leftover NexusTableFormatScanExec; plan:\n{rendered}"
     );
 
     // --- CPU reference session: GPU-free Arrow reader ------------------------
