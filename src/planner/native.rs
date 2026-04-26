@@ -29,6 +29,7 @@ use crate::{
 
 mod adaptive;
 mod attempt;
+mod mixed;
 mod strict_bounded;
 
 pub use adaptive::{NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics};
@@ -36,6 +37,7 @@ use attempt::{
     NativeOptimizationAttempt, optimize_count_only_native_plan, optimize_final_native_plan,
     peel_cooperative_native_exec,
 };
+use mixed::is_certified_mixed_execution_plan;
 pub use strict_bounded::{
     NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
     NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
@@ -366,6 +368,9 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         }
         if let Some(native_plan) = peel_cooperative_native_exec(&plan) {
             return Ok(native_plan);
+        }
+        if is_certified_mixed_execution_plan(plan.as_ref()) {
+            return Ok(plan);
         }
 
         *self.state.last_input_plan_root.lock().expect("native input plan root mutex poisoned") =

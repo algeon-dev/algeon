@@ -4,33 +4,45 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use arrow::compute::SortOptions as ArrowSortOptions;
+use arrow::{
+    array::{Array, Int32Array, StringArray, StringViewArray},
+    compute::SortOptions as ArrowSortOptions,
+};
 use datafusion::{
-    common::{DataFusionError, config::ConfigOptions},
+    common::{DataFusionError, ScalarValue, config::ConfigOptions},
     datasource::{memory::MemorySourceConfig, source::DataSourceExec},
-    execution::context::TaskContext,
+    execution::{context::TaskContext, object_store::ObjectStoreUrl},
     logical_expr::Operator,
-    physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col},
+    physical_expr::{
+        LexOrdering, PhysicalSortExpr,
+        expressions::{LikeExpr, col, lit},
+    },
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        ExecutionPlan, collect, displayable,
-        execution_plan::Boundedness,
+        ExecutionPlan, collect,
+        coop::CooperativeExec,
+        displayable,
+        execution_plan::{Boundedness, EmissionType},
+        filter::FilterExec,
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
     },
 };
 use datafusion_nexus::{
+    backend::NexusGpuBackend,
     capability::CapabilityReason,
     error::{DataFusionErrorExt, ErrorCode},
     native::lower_physical_plan_to_native,
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
+    native_report::{NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport},
     planner::{
-        FinalPlanDisposition, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusNativeOptimizerConfig,
-        NexusNativePhysicalOptimizerRule, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, classify_final_plan,
+        FinalPlanDisposition, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusFinalPlanRequirementRule,
+        NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
+        STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, classify_final_plan,
     },
     report::CandidateOutcome,
     session::nexus_native_physical_optimizer_rules,
@@ -44,10 +56,11 @@ use nexus_query_engine::{
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::{NativePlanCostOptions, NativePlanCostReason},
     runtime::{
-        BoundedJoinReservationContract, LakehouseCacheFillConfig, MemoryControlPolicy, ReservationKind,
-        SourceChunkPlanningMode,
+        BoundedJoinReservationContract, ExecutionCancellation, LakehouseCacheFillConfig, MemoryControlPolicy,
+        ReservationKind, SourceChunkPlanningMode,
     },
 };
+use proptest::prelude::*;
 
 #[path = "native_exec_tests/bounded_join.rs"]
 mod bounded_join;
@@ -437,6 +450,366 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
     );
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_property_checked_ilike_boundary_is_mixed_and_idempotent() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike");
+    let path = dir.join("input.parquet");
+    write_ilike_parquet_file(&path);
+    let plan = ilike_filter_plan(&path);
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let report = NativeDataFusionPlanningReport::from_retained_rule("ilike_boundary", Arc::clone(&optimized), &rule);
+
+    assert_eq!(report.rows.len(), 1);
+    let row = &report.rows[0];
+    assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected));
+    assert_eq!(row.final_disposition, FinalPlanDisposition::Mixed);
+    assert_eq!(row.native_plan_fragment_count, 1);
+    assert_eq!(row.host_datafusion_boundary_count, 1);
+    assert_eq!(row.source_diagnostics.len(), 1);
+    assert!(row.source_diagnostics[0].direct_device_read);
+
+    let filter = optimized.downcast_ref::<FilterExec>().expect("P2a boundary must retain the CPU root filter");
+    let native = filter
+        .input()
+        .downcast_ref::<NexusNativeExec>()
+        .expect("P2a boundary must replace only the local-Parquet leaf");
+    assert_p2_mixed_properties(filter, native);
+
+    let report_before_repeat = rule.last_report().expect("selected P2a boundary must retain a report");
+    let repeated = rule.optimize(Arc::clone(&optimized), &ConfigOptions::default()).unwrap();
+    assert!(Arc::ptr_eq(&optimized, &repeated), "P2a mixed boundary must be an optimizer fixed point");
+    assert_eq!(rule.last_report(), Some(report_before_repeat), "idempotence must preserve the selected-leaf report");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_property_checked_ilike_boundary_allows_transparent_cooperative_wrapper() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike-cooperative");
+    let path = dir.join("input.parquet");
+    write_ilike_parquet_file(&path);
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(ilike_filter_plan(&path)));
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let cooperative = optimized
+        .downcast_ref::<CooperativeExec>()
+        .expect("the certified transparent wrapper should remain in the final plan");
+    let filter = cooperative
+        .input()
+        .downcast_ref::<FilterExec>()
+        .expect("cooperative wrapper must still contain the root filter");
+    let native = filter.input().downcast_ref::<NexusNativeExec>().expect("filter child must be the one native leaf");
+    assert_p2_mixed_properties(filter, native);
+    assert_eq!(optimized.properties().emission_type, EmissionType::Final);
+    assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::Mixed);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_property_checked_ilike_boundary_rejects_nonlocal_parquet() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike-nonlocal");
+    let path = dir.join("input.parquet");
+    write_ilike_parquet_file(&path);
+    let plan = ilike_filter_over_scan(parquet_scan_with_object_store_url(
+        &path,
+        ObjectStoreUrl::parse("s3://p2-boundary-test").unwrap(),
+    ));
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+
+    assert!(
+        Arc::ptr_eq(&optimized, &plan),
+        "the P2a certificate must not replace a remote Parquet source through its local-only boundary"
+    );
+    let report = rule.last_report().expect("native optimizer should record the whole-plan rejection");
+    assert_eq!(report.selected_count(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_property_checked_ilike_boundary_is_rejected_by_no_datafusion_cpu() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike-no-datafusion-cpu");
+    let path = dir.join("input.parquet");
+    write_ilike_parquet_file(&path);
+    let config = NexusNativeOptimizerConfig::default()
+        .with_no_datafusion_cpu_requirement()
+        .with_native_execution_config(bounded_config());
+    let native_rule = NexusNativePhysicalOptimizerRule::new(config.clone());
+    let requirement_rule = NexusFinalPlanRequirementRule::new(config);
+
+    let planned = native_rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
+    let report = NativeDataFusionPlanningReport::from_retained_rule("ilike_no_cpu", Arc::clone(&planned), &native_rule);
+    assert_eq!(report.rows[0].final_disposition, FinalPlanDisposition::Mixed);
+    assert_eq!(report.rows[0].native_plan_fragment_count, 1);
+    assert_eq!(report.rows[0].host_datafusion_boundary_count, 1);
+
+    let error = requirement_rule
+        .optimize(planned, &ConfigOptions::default())
+        .expect_err("NoDataFusionCpu must reject the exact selected mixed plan");
+    let adapter_error = adapter_error(&error);
+    assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+    assert_eq!(adapter_error.fact_value("requirement"), Some("no_datafusion_cpu"));
+    assert_eq!(adapter_error.fact_value("observed_final_plan_disposition"), Some("mixed"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_property_checked_ilike_boundary_matches_cpu_results() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike-parity");
+    let path = dir.join("input.parquet");
+    write_ilike_parquet_file(&path);
+
+    let cpu = futures::executor::block_on(collect(ilike_filter_plan(&path), Arc::new(TaskContext::default()))).unwrap();
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
+    let native_plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
+    let native_leaf = p2_native_leaf(native_plan.as_ref());
+    let native =
+        futures::executor::block_on(collect(Arc::clone(&native_plan), Arc::new(TaskContext::default()))).unwrap();
+
+    assert_eq!(ilike_rows(&native), ilike_rows(&cpu));
+    let metrics = native_leaf.metrics().expect("the native leaf owns runtime metrics for the one D2H boundary");
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_property_checked_ilike_boundary_reserves_host_output_before_d2h() {
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike-host-budget");
+    let path = dir.join("input.parquet");
+    write_ilike_parquet_file(&path);
+    let device_to_host_boundaries = Arc::new(AtomicUsize::new(0));
+    let observed_device_to_host_boundaries = Arc::clone(&device_to_host_boundaries);
+    let runtime = Arc::new(
+        cudf::Runtime::builder()
+            .with_boundary_observer(move |observation: cudf::BoundaryObservation| {
+                if observation.kind == cudf::BoundaryKind::DeviceToHost {
+                    observed_device_to_host_boundaries.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+            .build()
+            .unwrap(),
+    );
+    let config = NexusNativeOptimizerConfig::default().with_native_execution_config(
+        bounded_config().with_shared_runtime(runtime).with_host_output_memory_pool_accounting(true),
+    );
+    let rule = NexusNativePhysicalOptimizerRule::new(config);
+    let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
+    let runtime_env = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime_env)));
+
+    let error = futures::executor::block_on(collect(plan, task_context))
+        .expect_err("the optimizer-built P2a boundary must reserve its host Arrow output before D2H");
+
+    assert!(matches!(error.find_root(), DataFusionError::ResourcesExhausted(_)), "unexpected error: {error:?}");
+    assert!(error.to_string().contains("NexusNativeExec[host-output]"), "unexpected error: {error}");
+    assert_eq!(
+        device_to_host_boundaries.load(Ordering::SeqCst),
+        0,
+        "host-memory denial must occur before the P2a native leaf copies data from device to host"
+    );
+    assert_eq!(runtime_env.memory_pool.reserved(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_property_checked_ilike_boundary_honors_pre_execution_cancellation() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike-cancelled");
+    let path = dir.join("input.parquet");
+    write_ilike_parquet_file(&path);
+    let cancellation = ExecutionCancellation::new();
+    cancellation.cancel();
+    let config = NexusNativeOptimizerConfig::default()
+        .with_native_execution_config(bounded_config().with_cancellation(cancellation));
+    let rule = NexusNativePhysicalOptimizerRule::new(config);
+    let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
+
+    let error = futures::executor::block_on(collect(plan, Arc::new(TaskContext::default())))
+        .expect_err("the P2a native leaf must observe cancellation before it starts native execution");
+    assert_eq!(adapter_error(&error).code(), ErrorCode::Cancelled);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_property_checked_ilike_boundary_uses_one_backend_admission_and_observation_owner() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-property-checked-ilike-admission");
+    let path = dir.join("input.parquet");
+    write_ilike_parquet_file(&path);
+    let backend = NexusGpuBackend::builder().build().unwrap();
+    let rule = NexusNativePhysicalOptimizerRule::new(backend.optimizer_config().clone());
+    let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
+    let native_leaf = p2_native_leaf(plan.as_ref());
+
+    let batches = futures::executor::block_on(collect(Arc::clone(&plan), Arc::new(TaskContext::default()))).unwrap();
+
+    assert_eq!(ilike_rows(&batches), vec![(1, Some("Alpha".to_string())), (3, Some("ALMANAC".to_string()))]);
+    let metrics =
+        native_leaf.metrics().expect("the selected native leaf must expose the shared observation projection");
+    assert_eq!(metrics.sum_by_name("admission_sequence_observed").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("admission_wait_time_observed").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("query_grant_bytes_observed").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while backend.query_service().admission_snapshot().unwrap().active_queries != 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let snapshot = backend.query_service().admission_snapshot().unwrap();
+    assert_eq!(snapshot.active_queries, 0, "the one P2a admission ticket must release after its stream completes");
+    assert_eq!(snapshot.queued_queries, 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 16,
+        .. ProptestConfig::default()
+    })]
+
+    /// Generates only the P2a-certified family. This proves the invariant
+    /// across nullable UTF-8 view inputs and deterministic ASCII prefixes
+    /// without broadening the root-only local-Parquet certificate.
+    #[test]
+    fn native_optimizer_property_based_ilike_boundary_preserves_contract(
+        mut labels in prop::collection::vec(prop::option::of("[A-Za-z]{0,12}"), 1..16),
+        prefix in "[A-Za-z]{0,5}",
+    ) {
+        // Retain a null in every generated P2a fixture while still varying
+        // nullable input values in the generated rows.
+        labels.push(None);
+        let dir = unique_temp_dir("datafusion-nexus-native-exec-property-based-ilike");
+        let path = dir.join("input.parquet");
+        write_ilike_parquet_file_with_labels(&path, &labels);
+        let pattern = format!("{prefix}%");
+
+        let cpu = futures::executor::block_on(collect(
+            ilike_filter_plan_with_pattern(&path, pattern.clone()),
+            Arc::new(TaskContext::default()),
+        ))
+        .unwrap();
+        let config = native_optimizer_config().with_no_datafusion_cpu_requirement();
+        let native_rule = NexusNativePhysicalOptimizerRule::new(config.clone());
+        let planned = native_rule
+            .optimize(ilike_filter_plan_with_pattern(&path, pattern), &ConfigOptions::default())
+            .unwrap();
+        let report = NativeDataFusionPlanningReport::from_retained_rule(
+            "generated_ilike_boundary",
+            Arc::clone(&planned),
+            &native_rule,
+        );
+
+        prop_assert_eq!(report.rows.len(), 1);
+        let row = &report.rows[0];
+        prop_assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected));
+        prop_assert_eq!(row.final_disposition, FinalPlanDisposition::Mixed);
+        prop_assert_eq!(row.native_plan_fragment_count, 1);
+        prop_assert_eq!(row.host_datafusion_boundary_count, 1);
+        let filter = planned.downcast_ref::<FilterExec>().expect("P2a must retain the CPU root filter");
+        let native = filter.input().downcast_ref::<NexusNativeExec>().expect("P2a must replace only the source leaf");
+        assert_p2_mixed_properties(filter, native);
+
+        let mixed = futures::executor::block_on(collect(Arc::clone(&planned), Arc::new(TaskContext::default()))).unwrap();
+        prop_assert_eq!(ilike_rows(&mixed), ilike_rows(&cpu));
+
+        let retained_report = native_rule.last_report().expect("P2a selected report should be retained");
+        let repeated = native_rule.optimize(Arc::clone(&planned), &ConfigOptions::default()).unwrap();
+        prop_assert!(Arc::ptr_eq(&planned, &repeated));
+        prop_assert_eq!(native_rule.last_report(), Some(retained_report));
+
+        let requirement_rule = NexusFinalPlanRequirementRule::new(config);
+        let error = requirement_rule
+            .optimize(planned, &ConfigOptions::default())
+            .expect_err("NoDataFusionCpu must reject the exact generated mixed plan");
+        let error = adapter_error(&error);
+        prop_assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+        prop_assert_eq!(error.fact_value("observed_final_plan_disposition"), Some("mixed"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+fn ilike_filter_plan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    ilike_filter_plan_with_pattern(path, "al%".to_string())
+}
+
+fn ilike_filter_plan_with_pattern(path: &std::path::Path, pattern: String) -> Arc<dyn ExecutionPlan> {
+    ilike_filter_over_scan_with_pattern(parquet_scan(path), pattern)
+}
+
+fn ilike_filter_over_scan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    ilike_filter_over_scan_with_pattern(scan, "al%".to_string())
+}
+
+fn ilike_filter_over_scan_with_pattern(scan: Arc<dyn ExecutionPlan>, pattern: String) -> Arc<dyn ExecutionPlan> {
+    let schema = scan.schema();
+    let predicate =
+        Arc::new(LikeExpr::new(false, true, col("label", &schema).unwrap(), lit(ScalarValue::Utf8View(Some(pattern)))));
+    Arc::new(FilterExec::try_new(predicate, scan).unwrap())
+}
+
+fn p2_native_leaf(plan: &dyn ExecutionPlan) -> &NexusNativeExec {
+    let filter = plan.downcast_ref::<FilterExec>().expect("P2a plan must retain the CPU root filter");
+    filter.input().downcast_ref::<NexusNativeExec>().expect("P2a filter input must be the native leaf")
+}
+
+fn assert_p2_mixed_properties(filter: &FilterExec, native: &NexusNativeExec) {
+    assert_eq!(filter.schema().as_ref(), native.schema().as_ref());
+    assert!(matches!(
+        filter.properties().output_partitioning(),
+        datafusion::physical_expr::Partitioning::UnknownPartitioning(1)
+    ));
+    assert_eq!(filter.properties().emission_type, EmissionType::Final);
+    assert_eq!(filter.properties().boundedness, Boundedness::Bounded);
+    assert!(filter.properties().output_ordering().is_none());
+    assert!(filter.properties().equivalence_properties().eq_group().is_empty());
+    assert!(filter.properties().equivalence_properties().oeq_class().is_empty());
+    assert!(filter.properties().equivalence_properties().constraints().is_empty());
+
+    assert!(matches!(
+        native.properties().output_partitioning(),
+        datafusion::physical_expr::Partitioning::UnknownPartitioning(1)
+    ));
+    assert_eq!(native.properties().emission_type, EmissionType::Final);
+    assert_eq!(native.properties().boundedness, Boundedness::Bounded);
+    assert!(native.properties().output_ordering().is_none());
+    assert!(native.properties().equivalence_properties().eq_group().is_empty());
+    assert!(native.properties().equivalence_properties().oeq_class().is_empty());
+    assert!(native.properties().equivalence_properties().constraints().is_empty());
+    assert_eq!(native.native_plan().nodes().len(), 1);
+}
+
+fn ilike_rows(batches: &[arrow::record_batch::RecordBatch]) -> Vec<(i32, Option<String>)> {
+    let mut rows = batches
+        .iter()
+        .flat_map(|batch| {
+            let ids = batch.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+            let labels = batch.column(1);
+            let label_at = |row| {
+                if let Some(labels) = labels.as_any().downcast_ref::<StringArray>() {
+                    return (!labels.is_null(row)).then(|| labels.value(row).to_string());
+                }
+                let labels = labels.as_any().downcast_ref::<StringViewArray>().unwrap();
+                (!labels.is_null(row)).then(|| labels.value(row).to_string())
+            };
+            (0..batch.num_rows()).map(move |row| (ids.value(row), label_at(row)))
+        })
+        .collect::<Vec<_>>();
+    rows.sort();
+    rows
 }
 
 #[test]
