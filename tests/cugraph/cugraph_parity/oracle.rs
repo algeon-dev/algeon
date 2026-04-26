@@ -26,7 +26,7 @@ pub fn lookup(data_root: &Path, manifest: &ParityManifest, spec: &ParitySpec) ->
 pub fn refresh_hint(data_root: &Path, spec: &ParitySpec) -> String {
     format!(
         "to populate oracle JSON for `{label}`, run:\n      \
-         cargo run --release -p datafusion-nexus-tools --features cugraph-oracle --bin refresh_cugraph_oracle -- \
+         cargo run --release -p nexus-tools --features cugraph-oracle --bin refresh_cugraph_oracle -- \
          --algorithm {algorithm} --dataset {dataset}\n      \
          (writes to {oracle})",
         label = spec.label,

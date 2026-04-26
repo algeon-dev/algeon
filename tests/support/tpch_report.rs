@@ -26,7 +26,7 @@ use datafusion_nexus::{
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
 };
-use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, TpchDatasetMetadata, TpchWorkloadResult, register_tpch_tables};
+use nexus_workloads::tpch::{TPCH_QUERIES, TpchDatasetMetadata, TpchWorkloadResult, register_tpch_tables};
 
 pub(crate) trait TestReportDatasetMetadataExt {
     fn to_workload_dataset_metadata(&self) -> WorkloadDatasetMetadata;

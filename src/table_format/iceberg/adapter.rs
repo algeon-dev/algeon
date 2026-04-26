@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef, UnionFields};
-use datafusion_nexus_iceberg::{
+use nexus_iceberg::{
     IcebergColumnBinding, IcebergColumnRole, IcebergColumnSource, IcebergDefaultValue, IcebergDeleteContent,
     IcebergDeleteFile, IcebergError, IcebergErrorCode, IcebergErrorStatus, IcebergFileFormat, IcebergNameMapping,
     IcebergNameMappingField, IcebergPartitionTransform, IcebergScalarValue, IcebergScanCandidate, IcebergScanRequest,
@@ -80,7 +80,7 @@ fn append_request_columns(
     name_mapping: Option<&IcebergNameMapping>,
 ) -> Result<()> {
     match &request.projection {
-        datafusion_nexus_iceberg::IcebergProjection::AllColumns => {
+        nexus_iceberg::IcebergProjection::AllColumns => {
             for (index, field) in schema.fields.iter().enumerate() {
                 let arrow = schema.arrow_schema.field(index);
                 let binding = IcebergColumnBinding {
@@ -93,7 +93,7 @@ fn append_request_columns(
                 append_binding(plan, schema, &binding, name_mapping, Some(arrow))?;
             }
         },
-        datafusion_nexus_iceberg::IcebergProjection::Columns(bindings) => {
+        nexus_iceberg::IcebergProjection::Columns(bindings) => {
             for binding in bindings {
                 append_binding(plan, schema, binding, name_mapping, None)?;
             }
@@ -198,7 +198,7 @@ fn candidate_has_identity_partition_field(plan: &TableFormatScanPlan, field_id: 
 }
 
 fn append_candidate_semantic_rejections(plan: &mut TableFormatScanPlan, candidate: &IcebergScanCandidate) {
-    use datafusion_nexus_iceberg::IcebergPredicateEnforcement;
+    use nexus_iceberg::IcebergPredicateEnforcement;
 
     if matches!(candidate.request.predicate.enforcement, IcebergPredicateEnforcement::PartiallyEnforced) {
         plan.unsupported_features.push(TableFormatUnsupportedFeature::new(
@@ -208,8 +208,8 @@ fn append_candidate_semantic_rejections(plan: &mut TableFormatScanPlan, candidat
     }
 
     let projection_bindings = match &candidate.request.projection {
-        datafusion_nexus_iceberg::IcebergProjection::AllColumns => &[][..],
-        datafusion_nexus_iceberg::IcebergProjection::Columns(bindings) => bindings,
+        nexus_iceberg::IcebergProjection::AllColumns => &[][..],
+        nexus_iceberg::IcebergProjection::Columns(bindings) => bindings,
     };
     for binding in projection_bindings.iter().chain(&candidate.request.filter_bindings) {
         let identity_partition_file_count = candidate
@@ -354,7 +354,7 @@ fn root_delete_file(
 }
 
 fn root_partition_value(
-    value: &datafusion_nexus_iceberg::IcebergPartitionValue,
+    value: &nexus_iceberg::IcebergPartitionValue,
     schema: &IcebergSchema,
 ) -> Option<TableFormatPartitionValue> {
     let (_, arrow, _) = schema_field(schema, value.source_field_id)?;
@@ -415,10 +415,10 @@ fn iceberg_scalar_is_not_native_materializable(value: &IcebergScalarValue) -> bo
 
 fn logical_schema_for_request(schema: &IcebergSchema, request: &IcebergScanRequest) -> Result<SchemaRef> {
     let fields = match &request.projection {
-        datafusion_nexus_iceberg::IcebergProjection::AllColumns => {
+        nexus_iceberg::IcebergProjection::AllColumns => {
             schema.arrow_schema.fields().iter().map(|field| canonical_field(field.as_ref())).collect::<Vec<_>>()
         },
-        datafusion_nexus_iceberg::IcebergProjection::Columns(bindings) => bindings
+        nexus_iceberg::IcebergProjection::Columns(bindings) => bindings
             .iter()
             .map(|binding| {
                 let (_, arrow, _) = schema_field(schema, binding.field_id).ok_or_else(|| {
@@ -572,8 +572,8 @@ pub(crate) fn root_error_from_iceberg(source: IcebergError, operation: &'static 
         error = error.with_log_safe_fact(
             "iceberg_catalog_kind",
             match kind {
-                datafusion_nexus_iceberg::IcebergCatalogErrorKind::Glue => "glue",
-                datafusion_nexus_iceberg::IcebergCatalogErrorKind::Rest => "rest",
+                nexus_iceberg::IcebergCatalogErrorKind::Glue => "glue",
+                nexus_iceberg::IcebergCatalogErrorKind::Rest => "rest",
             },
         );
     }
@@ -625,7 +625,7 @@ const fn iceberg_error_status_code(status: IcebergErrorStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
-    use datafusion_nexus_iceberg::{
+    use nexus_iceberg::{
         IcebergDataFile, IcebergErrorContext, IcebergFileRange, IcebergFileSequence, IcebergOperation,
         IcebergPartitionValue, IcebergPredicateEnforcement, IcebergPredicateIntent, IcebergProjection,
         IcebergResidualPredicate, IcebergScanCandidate, IcebergSchemaField, IcebergSourceLimit, IcebergTableIdentifier,

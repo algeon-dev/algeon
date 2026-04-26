@@ -46,7 +46,7 @@ Usage:
   fixture/iceberg-local/e2e.sh iceberg-local [options]
 
 Runs the local Iceberg REST + Glue/Moto E2E suite through
-datafusion-nexus-tools. The suite is explicit Cargo run tooling; it is not part
+nexus-tools. The suite is explicit Cargo run tooling; it is not part
 of cargo test --all-features.
 
 Options:
@@ -211,8 +211,8 @@ case "${suite}" in
   iceberg-local) ;;
   embedded-backend)
     shift
-    echo "warning: fixture/iceberg-local/e2e.sh embedded-backend moved to crates/datafusion-nexus-examples/scripts/e2e.sh" >&2
-    exec "${REPO_ROOT}/crates/datafusion-nexus-examples/scripts/e2e.sh" "$@"
+    echo "warning: fixture/iceberg-local/e2e.sh embedded-backend moved to crates/nexus-examples/scripts/e2e.sh" >&2
+    exec "${REPO_ROOT}/crates/nexus-examples/scripts/e2e.sh" "$@"
     ;;
   *)
     usage >&2
@@ -471,13 +471,13 @@ if [[ "${RUN_REST}" == "1" ]]; then
       AWS_SESSION_TOKEN= \
       AWS_SECURITY_TOKEN= \
       flock /tmp/cudf-gpu.lock \
-      cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
+      cargo run -p nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
   else
     env "${rest_env[@]}" \
       NEXUS_ICEBERG_S3_SESSION_TOKEN= \
       AWS_SESSION_TOKEN= \
       AWS_SECURITY_TOKEN= \
-      cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
+      cargo run -p nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
   fi
 fi
 
@@ -497,13 +497,13 @@ glue_env=(
 if [[ "${RUN_GLUE}" == "1" ]]; then
   step "running Glue/Moto backend E2E"
   env "${glue_env[@]}" \
-    cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-glue-moto-e2e
+    cargo run -p nexus-tools --features iceberg-e2e -- iceberg-glue-moto-e2e
 fi
 
 if [[ "${RUN_SERVER}" == "1" ]]; then
   step "running server + Glue/Moto E2E"
   env "${glue_env[@]}" \
-    cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-moto-e2e
+    cargo run -p nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-moto-e2e
 fi
 
 if [[ "${RUN_REMOTE_DIRECT}" == "1" ]]; then
@@ -528,7 +528,7 @@ if [[ "${RUN_REMOTE_DIRECT}" == "1" ]]; then
     NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY= \
     NEXUS_ICEBERG_S3_SESSION_TOKEN= \
     flock /tmp/cudf-gpu.lock \
-    cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-remote-direct-e2e
+    cargo run -p nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-remote-direct-e2e
 fi
 
 if [[ "${RUN_SERVER_REST_MULTIGPU}" == "1" ]]; then
@@ -550,7 +550,7 @@ if [[ "${RUN_SERVER_REST_MULTIGPU}" == "1" ]]; then
       AWS_SESSION_TOKEN= \
       AWS_SECURITY_TOKEN= \
       NEXUS_ICEBERG_NAMESPACE="${namespace}" \
-      cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-rest-multigpu-e2e
+      cargo run -p nexus-tools --features server-iceberg-e2e -- server-iceberg-rest-multigpu-e2e
   ) 9>/tmp/cudf-gpu.lock
 fi
 

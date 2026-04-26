@@ -350,7 +350,7 @@ async fn physical_scalar_subquery_retains_executable_iceberg_datafusion_plan() {
 
 #[tokio::test]
 async fn physical_scalar_subquery_with_mixed_parquet_retains_executable_datafusion_plan() {
-    let dir = unique_temp_dir("datafusion-nexus-iceberg-scalar-scope");
+    let dir = unique_temp_dir("nexus-iceberg-scalar-scope");
     let parquet_path = dir.join("regular.parquet");
     write_scalar_subquery_probe_parquet(&parquet_path);
     let mut session_config = SessionConfig::new();

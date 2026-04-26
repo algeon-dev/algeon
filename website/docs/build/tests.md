@@ -55,7 +55,7 @@ commands are equivalent to:
 AVAILABLE_CPU_CORES=$(nproc)
 cargo nextest run --all-features \
   -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
-cargo nextest run -p datafusion-nexus-bench --all-features \
+cargo nextest run -p nexus-bench --all-features \
   -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
 flock /tmp/cudf-gpu.lock \
   cargo nextest run -P default --all-features \
@@ -331,11 +331,11 @@ Scale-factor datasets are not Cargo tests. They are explicit acceptance runs:
 ```bash
 flock /tmp/cudf-gpu.lock \
   NEXUS_PARQUET_DIR=/path/to/complete/tpcds-sf1 \
-  cargo run -p datafusion-nexus-bench --bin native_tpcds_parity_report
+  cargo run -p nexus-bench --bin native_tpcds_parity_report
 
 flock /tmp/cudf-gpu.lock \
   NEXUS_PARQUET_DIR=/path/to/complete/tpch-sf1 \
-  cargo run -p datafusion-nexus-bench --bin native_tpch_execution_report
+  cargo run -p nexus-bench --bin native_tpch_execution_report
 ```
 
 Both commands validate their dataset before the workload begins and fail when
@@ -349,7 +349,7 @@ host with Python cuGraph installed:
 
 ```bash
 flock /tmp/cudf-gpu.lock \
-  cargo run -p datafusion-nexus-tools --features cugraph-oracle -- \
+  cargo run -p nexus-tools --features cugraph-oracle -- \
   cugraph-fixture-e2e bfs-include-edges
 ```
 
@@ -386,7 +386,7 @@ deploys the website on matching pushes to `main` or manual dispatch. It does
 not run the Rust test suite. No committed workflow currently turns the
 canonical pre-merge surface into required GitHub status checks, so use plain
 `bash scripts/check_all.sh` for that validation. External-service acceptance
-remains an explicit `datafusion-nexus-tools` invocation, never a Cargo test
+remains an explicit `nexus-tools` invocation, never a Cargo test
 target.
 
 ## Performance evidence

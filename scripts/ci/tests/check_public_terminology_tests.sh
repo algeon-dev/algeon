@@ -8,9 +8,9 @@ tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-public-terminology.XXXXXX"
 trap 'rm -rf "${tmp_dir}"' EXIT
 fixture="${tmp_dir}/fixture"
 mkdir -p \
-  "${fixture}/crates/datafusion-nexus-examples/src" \
-  "${fixture}/crates/datafusion-nexus-tools/src/bin" \
-  "${fixture}/crates/datafusion-nexus-tools/src/e2e" \
+  "${fixture}/crates/nexus-examples/src" \
+  "${fixture}/crates/nexus-tools/src/bin" \
+  "${fixture}/crates/nexus-tools/src/e2e" \
   "${fixture}/tests" \
   "${fixture}/docs/plan" \
   "${fixture}/docs/report" \
@@ -28,12 +28,12 @@ SH
 chmod +x "${fixture}/bin/npm"
 
 printf '# Current public documentation\n' >"${fixture}/README.md"
-printf '[package]\nname = "datafusion-nexus-tools"\n' >"${fixture}/crates/datafusion-nexus-tools/Cargo.toml"
-printf 'fn main() { println!("current tool help"); }\n' >"${fixture}/crates/datafusion-nexus-tools/src/bin/tools.rs"
-printf 'fn main() { println!("current example"); }\n' >"${fixture}/crates/datafusion-nexus-examples/src/main.rs"
-printf 'const LEGACY: &str = "cpu-fallback";\n' >"${fixture}/crates/datafusion-nexus-tools/src/e2e/tests.rs"
+printf '[package]\nname = "nexus-tools"\n' >"${fixture}/crates/nexus-tools/Cargo.toml"
+printf 'fn main() { println!("current tool help"); }\n' >"${fixture}/crates/nexus-tools/src/bin/tools.rs"
+printf 'fn main() { println!("current example"); }\n' >"${fixture}/crates/nexus-examples/src/main.rs"
+printf 'const LEGACY: &str = "cpu-fallback";\n' >"${fixture}/crates/nexus-tools/src/e2e/tests.rs"
 printf '#[cfg(test)]\nmod tests {\n    const LEGACY: &str = "GpuFallbackPolicy";\n}\n' \
-  >>"${fixture}/crates/datafusion-nexus-examples/src/main.rs"
+  >>"${fixture}/crates/nexus-examples/src/main.rs"
 printf '{"name":"website"}\n' >"${fixture}/website/package.json"
 printf '# Current website source\n' >"${fixture}/website/docs/intro.md"
 
@@ -96,11 +96,11 @@ reject_root_term partial_native PartialNative PartialNative
 reject_root_term iceberg_cpu iceberg-cpu iceberg-cpu
 reject_root_term iceberg_provider IcebergProviderKind IcebergProviderKind
 
-printf 'cpu-fallback-contract-validate = []\n' >>"${fixture}/crates/datafusion-nexus-tools/Cargo.toml"
+printf 'cpu-fallback-contract-validate = []\n' >>"${fixture}/crates/nexus-tools/Cargo.toml"
 run_check tool_selector "${check[@]}"
 assert_status tool_selector 1
 assert_contains "${tmp_dir}/tool_selector.out" "legacy CPU fallback contract tool or environment"
-sed -i '$d' "${fixture}/crates/datafusion-nexus-tools/Cargo.toml"
+sed -i '$d' "${fixture}/crates/nexus-tools/Cargo.toml"
 
 printf 'NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS\n' >>"${fixture}/website/docs/intro.md"
 run_check website_source "${check[@]}"

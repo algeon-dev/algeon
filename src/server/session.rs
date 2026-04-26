@@ -108,39 +108,38 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
     // Connect the leaf catalog once. It owns catalog/FileIO credential
     // application and returns a `ResolvedIcebergTable` that freezes the
     // table, snapshot, schema, and source policy together.
-    let (backend, catalog_type): (Arc<datafusion_nexus_iceberg::IcebergCatalogBackend>, &'static str) =
-        match &iceberg.backend {
-            super::config::IcebergCatalogBackendConfig::Glue(glue) => {
-                let mut catalog_config = datafusion_nexus_iceberg::GlueIcebergCatalogConfig::new(
-                    glue.catalog_handle.clone(),
-                    glue.warehouse.clone(),
-                    glue.region.clone(),
-                )
-                .with_source_access_policy(iceberg.source_access_policy().clone());
-                if let Some(id) = &glue.catalog_id {
-                    catalog_config = catalog_config.with_catalog_id(id.clone());
-                }
-                if let Some(profile) = &glue.profile {
-                    catalog_config = catalog_config.with_profile(profile.clone());
-                }
-                if let Some(uri) = &glue.uri {
-                    catalog_config = catalog_config.with_uri(uri.clone());
-                }
-                let backend = datafusion_nexus_iceberg::GlueIcebergCatalogBackend::connect(catalog_config)
-                    .await
-                    .map_err(|error| ServerError::session("failed to connect to Glue Iceberg catalog backend", error))?
-                    .into_backend();
-                (Arc::new(backend), "glue")
-            },
-            super::config::IcebergCatalogBackendConfig::Rest(rest) => {
-                let catalog_config = rest.clone().with_source_access_policy(iceberg.source_access_policy().clone());
-                let backend = datafusion_nexus_iceberg::RestIcebergCatalogBackend::connect(catalog_config)
-                    .await
-                    .map_err(|error| ServerError::session("failed to connect to REST Iceberg catalog backend", error))?
-                    .into_backend();
-                (Arc::new(backend), "rest")
-            },
-        };
+    let (backend, catalog_type): (Arc<nexus_iceberg::IcebergCatalogBackend>, &'static str) = match &iceberg.backend {
+        super::config::IcebergCatalogBackendConfig::Glue(glue) => {
+            let mut catalog_config = nexus_iceberg::GlueIcebergCatalogConfig::new(
+                glue.catalog_handle.clone(),
+                glue.warehouse.clone(),
+                glue.region.clone(),
+            )
+            .with_source_access_policy(iceberg.source_access_policy().clone());
+            if let Some(id) = &glue.catalog_id {
+                catalog_config = catalog_config.with_catalog_id(id.clone());
+            }
+            if let Some(profile) = &glue.profile {
+                catalog_config = catalog_config.with_profile(profile.clone());
+            }
+            if let Some(uri) = &glue.uri {
+                catalog_config = catalog_config.with_uri(uri.clone());
+            }
+            let backend = nexus_iceberg::GlueIcebergCatalogBackend::connect(catalog_config)
+                .await
+                .map_err(|error| ServerError::session("failed to connect to Glue Iceberg catalog backend", error))?
+                .into_backend();
+            (Arc::new(backend), "glue")
+        },
+        super::config::IcebergCatalogBackendConfig::Rest(rest) => {
+            let catalog_config = rest.clone().with_source_access_policy(iceberg.source_access_policy().clone());
+            let backend = nexus_iceberg::RestIcebergCatalogBackend::connect(catalog_config)
+                .await
+                .map_err(|error| ServerError::session("failed to connect to REST Iceberg catalog backend", error))?
+                .into_backend();
+            (Arc::new(backend), "rest")
+        },
+    };
 
     // The root catalog wrapper only adapts DataFusion identities. It delegates
     // every table load to the leaf backend and retains the validated server
@@ -169,7 +168,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
     // Loading routes through the backend-agnostic IcebergCatalogBackend so the
     // same path serves Glue and REST.
     for table in &iceberg.tables {
-        let table_ident = datafusion_nexus_iceberg::IcebergTableIdentifier::new(
+        let table_ident = nexus_iceberg::IcebergTableIdentifier::new(
             iceberg.namespace.split('.').map(str::to_owned).collect(),
             table.table.clone(),
         )
@@ -252,7 +251,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
 /// Uses the same dual-mode provider as the dynamic three-part catalog path.
 #[cfg(feature = "iceberg")]
 fn build_alias_provider(
-    resolved: datafusion_nexus_iceberg::ResolvedIcebergTable,
+    resolved: nexus_iceberg::ResolvedIcebergTable,
     catalog_type: &str,
     parquet_read_strategy_config: crate::table_format::scan::TableFormatParquetReadStrategyConfig,
     scan_planning_timeout: std::time::Duration,

@@ -64,12 +64,12 @@ if [[ "${1:-}" == "nextest" && "${2:-}" == "show-config" ]]; then
 fi
 if [[ "${1:-}" == "metadata" ]]; then
   cat <<'JSON'
-{"packages":[{"id":"path+file:///fake#datafusion-nexus-iceberg@0.1.0","name":"datafusion-nexus-iceberg"}],"resolve":{"nodes":[{"id":"path+file:///fake#datafusion-nexus-iceberg@0.1.0","deps":[]}]}}
+{"packages":[{"id":"path+file:///fake#nexus-iceberg@0.1.0","name":"nexus-iceberg"}],"resolve":{"nodes":[{"id":"path+file:///fake#nexus-iceberg@0.1.0","deps":[]}]}}
 JSON
   exit 0
 fi
 if [[ "${1:-}" == "nextest" && "${2:-}" == "run" ]]; then
-  if [[ " $* " == *" -p datafusion-nexus-bench "* ]]; then
+  if [[ " $* " == *" -p nexus-bench "* ]]; then
     echo "Summary [ 0.100s] 7 tests run: 7 passed, 0 skipped"
     exit 0
   fi
@@ -100,7 +100,7 @@ if [[ "${1:-}" == "test" && " $* " == *" --doc "* ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "test" ]]; then
-  if [[ " $* " == *" -p datafusion-nexus-bench "* ]]; then
+  if [[ " $* " == *" -p nexus-bench "* ]]; then
     echo "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"
     exit 0
   fi
@@ -348,12 +348,12 @@ assert_contains "${tmp_dir}/default.log" "cargo <test> <--all-features> <--doc> 
 assert_contains "${tmp_dir}/default.log" "cargo <+nightly> <fmt> <--all> <--check>"
 assert_contains "${tmp_dir}/default.log" "cargo <check> <--all-features>"
 assert_contains "${tmp_dir}/default.log" "cargo <clippy> <--all-targets> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "cargo <check> <-p> <datafusion-nexus-tools> <--all-targets> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "cargo <check> <-p> <datafusion-nexus-examples> <--all-targets>"
-assert_contains "${tmp_dir}/default.log" "cargo <check> <-p> <datafusion-nexus-bench> <--all-targets> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-p> <datafusion-nexus-bench> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
-assert_contains "${tmp_dir}/default.log" "cargo <clippy> <-p> <datafusion-nexus-bench> <--all-targets> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "cargo <doc> <-p> <datafusion-nexus-bench> <--all-features> <--no-deps> <--keep-going>"
+assert_contains "${tmp_dir}/default.log" "cargo <check> <-p> <nexus-tools> <--all-targets> <--all-features>"
+assert_contains "${tmp_dir}/default.log" "cargo <check> <-p> <nexus-examples> <--all-targets>"
+assert_contains "${tmp_dir}/default.log" "cargo <check> <-p> <nexus-bench> <--all-targets> <--all-features>"
+assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-p> <nexus-bench> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
+assert_contains "${tmp_dir}/default.log" "cargo <clippy> <-p> <nexus-bench> <--all-targets> <--all-features>"
+assert_contains "${tmp_dir}/default.log" "cargo <doc> <-p> <nexus-bench> <--all-features> <--no-deps> <--keep-going>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/build/check_cpu_packaging_policy.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_gpu_test_lane_tests.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_doctest_rustdoc_tests.sh>"
@@ -417,7 +417,7 @@ assert_not_contains "${tmp_dir}/cargo_diagnostic_cli.log" "cargo <nextest>"
 assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" cargo-diagnostic "0.100s | PASS | run=4 passed=4 failed=0 ignored=1 measured=0 filtered=2 harnesses=1 | 1 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/cargo-diagnostic.log"
 assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" cargo-diagnostic "cargo-diagnostic | RUST_TEST_THREADS=1 flock /tmp/cudf-gpu.lock cargo test --all-features --no-fail-fast --lib --bins --tests --examples -- --test-threads=1 | 0.100s"
 assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" cpu-tests "- | SKIPPED | - | - | - | all | -"
-assert_contains "${tmp_dir}/cargo_diagnostic_cli.log" "cargo <test> <-p> <datafusion-nexus-bench> <--all-features> <--no-fail-fast> <--lib> <--tests> <--> <--test-threads=1>"
+assert_contains "${tmp_dir}/cargo_diagnostic_cli.log" "cargo <test> <-p> <nexus-bench> <--all-features> <--no-fail-fast> <--lib> <--tests> <--> <--test-threads=1>"
 assert_phase_contains "${tmp_dir}/cargo_diagnostic_cli.output" bench-tests "all(fixed) | ${tmp_dir}/phase-logs/bench-tests.log"
 echo "PASS: Cargo runner is explicit, serialized, and noncanonical"
 
@@ -451,8 +451,8 @@ assert_contains "${tmp_dir}/fast.log" "cargo <nextest> <run> <--features> <serve
 assert_not_contains "${tmp_dir}/fast.log" "flock"
 assert_not_contains "${tmp_dir}/fast.log" "<doc>"
 assert_not_contains "${tmp_dir}/fast.log" "<clippy>"
-assert_not_contains "${tmp_dir}/fast.log" "datafusion-nexus-tools"
-assert_not_contains "${tmp_dir}/fast.log" "datafusion-nexus-bench"
+assert_not_contains "${tmp_dir}/fast.log" "nexus-tools"
+assert_not_contains "${tmp_dir}/fast.log" "nexus-bench"
 assert_not_contains "${tmp_dir}/fast.log" "bash <scripts/ci/check_gpu_test_lane.sh>"
 assert_not_contains "${tmp_dir}/fast.log" "bash <scripts/ci/check_public_terminology.sh>"
 assert_not_contains "${tmp_dir}/fast.log" "bash <scripts/ci/tests/check_public_terminology_tests.sh>"
@@ -485,7 +485,7 @@ run_check lane_cpu /usr/bin/bash scripts/check_all.sh --lane cpu
 assert_status lane_cpu 0
 assert_contains "${tmp_dir}/lane_cpu.output" "selected lane 'cpu' passed. PARTIAL"
 assert_contains "${tmp_dir}/lane_cpu.log" "cargo <nextest> <run>"
-assert_contains "${tmp_dir}/lane_cpu.log" "cargo <nextest> <run> <-p> <datafusion-nexus-bench> <--all-features>"
+assert_contains "${tmp_dir}/lane_cpu.log" "cargo <nextest> <run> <-p> <nexus-bench> <--all-features>"
 assert_not_contains "${tmp_dir}/lane_cpu.log" "flock"
 assert_not_contains "${tmp_dir}/lane_cpu.log" "<clippy>"
 assert_phase_contains "${tmp_dir}/lane_cpu.output" cpu-tests "0.100s | PASS | run=3 passed=3 failed=0 skipped=5 | - | - | all | ${tmp_dir}/phase-logs/cpu-tests.log"
@@ -497,7 +497,7 @@ assert_status lane_shared 0
 assert_contains "${tmp_dir}/lane_shared.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
 assert_not_contains "${tmp_dir}/lane_shared.log" "cargo <nextest> <run> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
 assert_not_contains "${tmp_dir}/lane_shared.log" "group(gpu-exclusive)"
-assert_not_contains "${tmp_dir}/lane_shared.log" "datafusion-nexus-bench"
+assert_not_contains "${tmp_dir}/lane_shared.log" "nexus-bench"
 assert_phase_contains "${tmp_dir}/lane_shared.output" bench-tests "- | SKIPPED | - | - | - | all(fixed) | -"
 assert_phase_contains "${tmp_dir}/lane_shared.output" gpu-shared-tests "0.100s | PASS | run=2 passed=2 failed=0 skipped=6 | 16 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-shared-tests.log"
 

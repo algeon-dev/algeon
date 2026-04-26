@@ -97,8 +97,8 @@ list_inventory() {
 
 : >"${inventory_stderr}"
 list_inventory "${default_inventory_json}" "${FEATURE_ARGS[@]}" || exit $?
-list_inventory "${bench_inventory_json}" -p datafusion-nexus-bench --all-features || exit $?
-list_inventory "${iceberg_leaf_inventory_json}" -p datafusion-nexus-iceberg --all-features || exit $?
+list_inventory "${bench_inventory_json}" -p nexus-bench --all-features || exit $?
+list_inventory "${iceberg_leaf_inventory_json}" -p nexus-iceberg --all-features || exit $?
 
 validation_status=0
 python3 scripts/ci/test_lane_policy.py validate-inventory \

@@ -1,11 +1,11 @@
 use std::{path::PathBuf, sync::Arc};
 
 use datafusion::logical_expr::{Cast, col, lit};
-use datafusion_nexus_iceberg::S3FileIoConfigVerification;
 use iceberg::{
     scan::FileScanTask,
     spec::{DataContentType, DataFileFormat, NestedField, PrimitiveType, Schema as IcebergSchema, Struct, Type},
 };
+use nexus_iceberg::S3FileIoConfigVerification;
 
 use super::*;
 use crate::{capability::CapabilityReason, table_format::scan::TableFormatLakehouseCachePolicy};

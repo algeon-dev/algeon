@@ -170,7 +170,7 @@ NEXUS_SERVER_CUGRAPH_ENABLED=false flock /tmp/cudf-gpu.lock bash docker/run.sh
 With the container running on `127.0.0.1:50051`, use the repo client:
 
 ```bash
-cargo run -p datafusion-nexus-tools -- \
+cargo run -p nexus-tools -- \
   flight-sql-query http://127.0.0.1:50051 "SELECT 1 AS one"
 ```
 
@@ -184,7 +184,7 @@ one
 For a full image launched with `NEXUS_SERVER_CUGRAPH_ENABLED=true`:
 
 ```bash
-cargo run -p datafusion-nexus-tools -- \
+cargo run -p nexus-tools -- \
   flight-sql-query http://127.0.0.1:50051 \
   "SELECT COUNT(*) AS algorithms FROM cugraph_list_algorithms()"
 ```

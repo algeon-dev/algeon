@@ -18,7 +18,7 @@
   IR and execution belong in `crates/nexus-query-engine`.
 - `cudf` and `cugraph` are sibling path dependencies; DataFusion is pinned in
   `Cargo.toml`.
-- Default members are the adapter, `datafusion-nexus-workloads`, and
+- Default members are the adapter, `nexus-workloads`, and
   `nexus-query-engine`. Bench, tools, and examples are explicit non-default
   members.
 - Linux only. MSRV is Rust 1.94; formatting requires nightly.
@@ -48,9 +48,9 @@ cargo nextest run -p datafusion-nexus --no-default-features --test native_planni
 cargo nextest run -p nexus-query-engine --no-default-features --test native_contract_tests
 
 # Non-default bench package, when touched
-cargo check -p datafusion-nexus-bench --all-targets --all-features
-cargo clippy -p datafusion-nexus-bench --all-targets --all-features
-cargo nextest run -p datafusion-nexus-bench --all-features
+cargo check -p nexus-bench --all-targets --all-features
+cargo clippy -p nexus-bench --all-targets --all-features
+cargo nextest run -p nexus-bench --all-features
 
 # Only full pre-merge surface
 bash scripts/check_all.sh
@@ -67,7 +67,7 @@ partial and must not be reported as full validation.
   changing it, run
   `python3 scripts/ci/test_lane_policy.py generate-nextest --write`.
 - Do not add external-service E2E tests to Cargo test targets; invoke them
-  explicitly through `cargo run -p datafusion-nexus-tools`.
+  explicitly through `cargo run -p nexus-tools`.
 - Use `bash scripts/dev/clean_target_artifacts.sh` only to report removable build
   artifacts; cleanup is never implicit.
 - `scripts/check_all.sh` is the only top-level script entry. Build tooling lives

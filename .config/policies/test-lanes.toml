@@ -10,47 +10,47 @@ resource_class = "shared"
 reason = "Adapter library tests include coverage SQL, native execution context, and Flight SQL cases that create cuDF runtimes on bounded fixtures."
 
 [[binary]]
-id = "datafusion-nexus-bench"
+id = "nexus-bench"
 lane = "cpu"
 reason = "Benchmark library unit tests validate workload/report construction; benchmark GPU execution is an explicit cargo-run path."
 
 [[binary]]
-id = "datafusion-nexus-bench::iceberg_bin_tests"
+id = "nexus-bench::iceberg_bin_tests"
 lane = "cpu"
 reason = "Tests validate Iceberg CLI item shapes and environment handling without contacting services or CUDA."
 
 [[binary]]
-id = "datafusion-nexus-bench::native_clickbench_execution_report_tests"
+id = "nexus-bench::native_clickbench_execution_report_tests"
 lane = "cpu"
 reason = "Tests validate report rows and policy evidence without executing the native GPU workload."
 
 [[binary]]
-id = "datafusion-nexus-bench::clickbench_workload_tests"
+id = "nexus-bench::clickbench_workload_tests"
 lane = "cpu"
 reason = "Workload tests validate ClickBench native profile/env resolution without executing the native GPU workload."
 
 [[binary]]
-id = "datafusion-nexus-bench::native_relational_execution_evidence_tests"
+id = "nexus-bench::native_relational_execution_evidence_tests"
 lane = "cpu"
 reason = "Tests validate relational-execution evidence without executing CUDA work."
 
 [[binary]]
-id = "datafusion-nexus-bench::tpcds_workload_tests"
+id = "nexus-bench::tpcds_workload_tests"
 lane = "cpu"
 reason = "Workload tests validate TPCDS query catalogs and fixtures without native execution."
 
 [[binary]]
-id = "datafusion-nexus-bench::tpch_workload_tests"
+id = "nexus-bench::tpch_workload_tests"
 lane = "cpu"
 reason = "Workload tests validate TPCH query catalogs and fixtures without native execution."
 
 [[binary]]
-id = "datafusion-nexus-workloads::clickbench_contracts"
+id = "nexus-workloads::clickbench_contracts"
 lane = "cpu"
 reason = "ClickBench catalog, deterministic fixture discovery, and Parquet metadata contracts do not create a native runtime."
 
 [[binary]]
-id = "datafusion-nexus-iceberg"
+id = "nexus-iceberg"
 lane = "cpu"
 reason = "DataFusion-free Iceberg catalog, resolved-source, and scan-candidate contracts do not initialize DataFusion or CUDA."
 

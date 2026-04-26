@@ -39,7 +39,7 @@ impl IcebergProviderOptions {
 
 /// Wraps a loaded Iceberg table in the unified dual-mode provider.
 fn build_table_provider(
-    resolved: datafusion_nexus_iceberg::ResolvedIcebergTable,
+    resolved: nexus_iceberg::ResolvedIcebergTable,
     catalog_type: &str,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
     provider_options: &IcebergProviderOptions,
@@ -81,7 +81,7 @@ pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
     /// The DataFusion wrapper consumes the returned resolution directly, so
     /// the CPU delegate, leaf scan candidate, and native source policy share
     /// the same snapshot and source-access facts.
-    async fn load_table(&self, table: &TableIdent) -> Result<datafusion_nexus_iceberg::ResolvedIcebergTable>;
+    async fn load_table(&self, table: &TableIdent) -> Result<nexus_iceberg::ResolvedIcebergTable>;
 
     /// Table-format Parquet read-strategy config associated with this catalog.
     ///
@@ -97,24 +97,24 @@ pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
 /// DataFusion-facing view of a connected leaf catalog backend.
 ///
 /// The leaf owns catalog connection, FileIO, and the immutable
-/// [`datafusion_nexus_iceberg::SourceAccessPolicy`] stored in every resolved
+/// [`nexus_iceberg::SourceAccessPolicy`] stored in every resolved
 /// table. The root owns only the DataFusion conversion and its independent
 /// table-format read strategy. Keeping that strategy here prevents a dynamic
 /// catalog from silently dropping server cache or native read settings.
 #[derive(Debug, Clone)]
 pub struct NexusIcebergCatalogSource {
-    backend: Arc<datafusion_nexus_iceberg::IcebergCatalogBackend>,
+    backend: Arc<nexus_iceberg::IcebergCatalogBackend>,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
 }
 
 impl NexusIcebergCatalogSource {
     /// Adapts an owned, already-connected leaf backend for DataFusion.
-    pub fn new(backend: datafusion_nexus_iceberg::IcebergCatalogBackend) -> Self {
+    pub fn new(backend: nexus_iceberg::IcebergCatalogBackend) -> Self {
         Self::from_shared_backend(Arc::new(backend))
     }
 
     /// Adapts a shared, already-connected leaf backend for DataFusion.
-    pub fn from_shared_backend(backend: Arc<datafusion_nexus_iceberg::IcebergCatalogBackend>) -> Self {
+    pub fn from_shared_backend(backend: Arc<nexus_iceberg::IcebergCatalogBackend>) -> Self {
         Self { backend, parquet_read_strategy_config: None }
     }
 
@@ -125,7 +125,7 @@ impl NexusIcebergCatalogSource {
     }
 
     /// Returns the connected leaf backend without exposing its credentials.
-    pub const fn backend(&self) -> &Arc<datafusion_nexus_iceberg::IcebergCatalogBackend> {
+    pub const fn backend(&self) -> &Arc<nexus_iceberg::IcebergCatalogBackend> {
         &self.backend
     }
 }
@@ -162,7 +162,7 @@ impl IcebergCatalogBackend for NexusIcebergCatalogSource {
 
     async fn list_tables(&self, namespace: &NamespaceIdent) -> Result<Vec<TableIdent>> {
         self.backend
-            .list_tables(datafusion_nexus_iceberg::IcebergNamespace { parts: namespace.as_ref().clone() })
+            .list_tables(nexus_iceberg::IcebergNamespace { parts: namespace.as_ref().clone() })
             .await
             .map_err(|error| {
                 crate::table_format::iceberg::adapter::root_error_from_iceberg(
@@ -186,9 +186,9 @@ impl IcebergCatalogBackend for NexusIcebergCatalogSource {
             .collect()
     }
 
-    async fn load_table(&self, table: &TableIdent) -> Result<datafusion_nexus_iceberg::ResolvedIcebergTable> {
+    async fn load_table(&self, table: &TableIdent) -> Result<nexus_iceberg::ResolvedIcebergTable> {
         self.backend
-            .load_table(datafusion_nexus_iceberg::IcebergTableIdentifier {
+            .load_table(nexus_iceberg::IcebergTableIdentifier {
                 namespace: table.namespace().as_ref().clone(),
                 name: table.name().to_string(),
             })
@@ -584,7 +584,7 @@ mod tests {
             Ok(vec![TableIdent::new(namespace.clone(), "nation".to_string())])
         }
 
-        async fn load_table(&self, _table: &TableIdent) -> Result<datafusion_nexus_iceberg::ResolvedIcebergTable> {
+        async fn load_table(&self, _table: &TableIdent) -> Result<nexus_iceberg::ResolvedIcebergTable> {
             unreachable!("this test only inspects schema-provider construction")
         }
 

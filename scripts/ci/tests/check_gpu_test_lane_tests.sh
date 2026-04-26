@@ -21,7 +21,7 @@ if [[ "${1:-}" == "nextest" && "${2:-}" == "list" ]]; then
     echo "inventory must request nextest's binaries-only JSON format: $*" >&2
     exit 98
   fi
-  if [[ " $* " == *" -p datafusion-nexus-bench "* ]]; then
+  if [[ " $* " == *" -p nexus-bench "* ]]; then
     if [[ " $* " != *" --all-features "* ]]; then
       echo "bench inventory must use --all-features: $*" >&2
       exit 95
@@ -30,7 +30,7 @@ if [[ "${1:-}" == "nextest" && "${2:-}" == "list" ]]; then
     [[ -z "${FAKE_BENCH_INVENTORY:-}" ]] || /usr/bin/cat "${FAKE_BENCH_INVENTORY}"
     exit "${FAKE_BENCH_NEXTEST_STATUS:-${FAKE_NEXTEST_STATUS:-0}}"
   fi
-  if [[ " $* " == *" -p datafusion-nexus-iceberg "* ]]; then
+  if [[ " $* " == *" -p nexus-iceberg "* ]]; then
     if [[ " $* " != *" --all-features "* ]]; then
       echo "Iceberg leaf inventory must use --all-features: $*" >&2
       exit 94
@@ -59,11 +59,11 @@ import tomllib
 with open(".config/policies/test-lanes.toml", "rb") as catalog_file:
     catalog = tomllib.load(catalog_file)
 ids = sorted(entry["id"] for entry in catalog["binary"])
-bench_ids = sorted(binary_id for binary_id in ids if binary_id == "datafusion-nexus-bench" or binary_id.startswith("datafusion-nexus-bench::"))
+bench_ids = sorted(binary_id for binary_id in ids if binary_id == "nexus-bench" or binary_id.startswith("nexus-bench::"))
 iceberg_leaf_ids = sorted(
     binary_id
     for binary_id in ids
-    if binary_id == "datafusion-nexus-iceberg" or binary_id.startswith("datafusion-nexus-iceberg::")
+    if binary_id == "nexus-iceberg" or binary_id.startswith("nexus-iceberg::")
 )
 default_ids = sorted(binary_id for binary_id in ids if binary_id not in set(bench_ids) | set(iceberg_leaf_ids))
 Path = __import__("pathlib").Path
@@ -224,8 +224,8 @@ with open(sys.argv[1], "w", encoding="utf-8") as output_file:
     json.dump(
         {
             "rust-binaries": {
-                "datafusion-nexus-bench": {
-                    "binary-id": "datafusion-nexus-bench",
+                "nexus-bench": {
+                    "binary-id": "nexus-bench",
                     "binary-name": "renamed_bench",
                     "package-id": "path+file:///fault-injection#fixture",
                     "kind": "test",
@@ -237,7 +237,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as output_file:
         output_file,
     )
 PY
-run_policy_case conflicting_union_names 1 "conflicting binary-name for datafusion-nexus-bench" \
+run_policy_case conflicting_union_names 1 "conflicting binary-name for nexus-bench" \
   validate-inventory \
   --inventory "${tmp_dir}/default-with-bench.json" \
   --inventory "${tmp_dir}/bench-conflict.json" \

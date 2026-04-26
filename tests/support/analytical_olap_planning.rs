@@ -2,7 +2,7 @@ use std::path::Path;
 
 use datafusion::prelude::SessionConfig;
 use datafusion_nexus::{native_report::NativeDataFusionPlanningWorkloadItem, planner::NexusNativeOptimizerConfig};
-use datafusion_nexus_workloads::tpch::TpchWorkloadResult;
+use nexus_workloads::tpch::TpchWorkloadResult;
 
 use super::tpch_report::{datafusion_planning_workload_items, tpch_native_optimizer_config};
 use crate::analytical_olap_workload::ANALYTICAL_OLAP_QUERIES;

@@ -39,12 +39,7 @@ fn retired_source_report_and_runtime_symbols_are_forbidden() {
         concat!("Host", "Buffer", "Fetch", "RuntimeMetrics"),
     ];
     let actual = edge_occurrences(
-        &[
-            "crates/nexus-query-engine/src",
-            "src",
-            "crates/datafusion-nexus-bench/src",
-            "crates/datafusion-nexus-tools/src",
-        ],
+        &["crates/nexus-query-engine/src", "src", "crates/nexus-bench/src", "crates/nexus-tools/src"],
         &markers,
     );
     assert!(actual.is_empty(), "retired foreground-fetch and decoder report/runtime symbols returned: {actual:?}");
@@ -159,7 +154,7 @@ fn lakehouse_footer_pruning_uses_the_native_rule_product_path() {
         "the one native physical-optimizer path must be the sole plan-time pruning hook"
     );
 
-    let bench_runner = read_repo_source("crates/datafusion-nexus-bench/src/iceberg_smoke/runner.rs");
+    let bench_runner = read_repo_source("crates/nexus-bench/src/iceberg_smoke/runner.rs");
     assert!(!bench_runner.contains("prune_table_format_native_plan"), "bench must not retain the retired resolver API");
     assert!(
         !bench_runner.contains("datafusion_nexus::native::lakehouse_pruning"),

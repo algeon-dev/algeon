@@ -186,12 +186,12 @@ def rust_without_test_items(text: str) -> str:
 def public_source_files(root: Path) -> list[Path]:
     required_files = [
         root / "README.md",
-        root / "crates/datafusion-nexus-tools/Cargo.toml",
+        root / "crates/nexus-tools/Cargo.toml",
         root / "website/package.json",
     ]
     required_directories = [
-        root / "crates/datafusion-nexus-examples",
-        root / "crates/datafusion-nexus-tools/src/bin",
+        root / "crates/nexus-examples",
+        root / "crates/nexus-tools/src/bin",
         root / "website",
     ]
     for path in required_files:
@@ -212,11 +212,11 @@ def public_source_files(root: Path) -> list[Path]:
             files.add(candidate)
 
     # Public runnable examples, not library tests.
-    files.update(text_files(root / "crates/datafusion-nexus-examples"))
+    files.update(text_files(root / "crates/nexus-examples"))
 
     # Tool feature selectors and sources that back user-visible commands/help.
     # Dedicated Rust test files are not public surfaces.
-    tool_source = root / "crates/datafusion-nexus-tools/src"
+    tool_source = root / "crates/nexus-tools/src"
     for candidate in text_files(tool_source):
         if not nonpublic_rust_test(candidate, tool_source):
             files.add(candidate)

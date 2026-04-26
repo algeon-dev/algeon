@@ -37,12 +37,12 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig};
-use datafusion_nexus_workloads::tpch::TPCH_TABLES;
 use nexus_query_engine::{
     expr::ColumnRef,
     plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlan, QueryPlanBuilder},
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
+use nexus_workloads::tpch::TPCH_TABLES;
 
 use crate::tpch_session::tpch_report_session_config;
 

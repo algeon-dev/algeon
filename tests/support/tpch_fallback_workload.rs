@@ -2,7 +2,7 @@ use std::path::Path;
 
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_nexus::native_report::NativeFallbackPressureWorkloadItem;
-use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, TpchWorkloadResult, register_tpch_tables};
+use nexus_workloads::tpch::{TPCH_QUERIES, TpchWorkloadResult, register_tpch_tables};
 
 pub(crate) async fn tpch_fallback_pressure_workload_items(
     root: &Path,

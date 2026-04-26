@@ -12,16 +12,16 @@ readme = "README.md"
 [workspace]
 members = [
   ".",
-  "crates/datafusion-nexus-workloads",
-  "crates/datafusion-nexus-iceberg",
+  "crates/nexus-workloads",
+  "crates/nexus-iceberg",
   "crates/nexus-query-engine",
-  "crates/datafusion-nexus-bench",
-  "crates/datafusion-nexus-tools",
-  "crates/datafusion-nexus-examples",
+  "crates/nexus-bench",
+  "crates/nexus-tools",
+  "crates/nexus-examples",
 ]
 default-members = [
   ".",
-  "crates/datafusion-nexus-workloads",
+  "crates/nexus-workloads",
   "crates/nexus-query-engine",
 ]
 resolver = "3"
@@ -46,7 +46,7 @@ workspace = true
 
 [workspace.dependencies]
 datafusion-nexus = { path = ".", default-features = false }
-datafusion-nexus-workloads = { path = "crates/datafusion-nexus-workloads" }
+nexus-workloads = { path = "crates/nexus-workloads" }
 nexus-query-engine = { path = "crates/nexus-query-engine", default-features = false }
 cudf = { path = "../cudf-rs/cudf-rs" }
 cudf-sys = { path = "../cudf-rs/cudf-sys" }
@@ -86,13 +86,13 @@ cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf-rs CUDA/RMM inventory.
 nvml = ["nexus-query-engine/nvml"]
 iceberg = [
-  "dep:datafusion-nexus-iceberg",
+  "dep:nexus-iceberg",
   "dep:iceberg",
   "dep:iceberg-datafusion",
   "dep:object_store",
   "dep:opendal",
   "dep:tempfile",
-  "datafusion-nexus-iceberg/all-catalogs",
+  "nexus-iceberg/all-catalogs",
 ]
 server = [
   "dep:arrow-flight",
@@ -132,7 +132,7 @@ cugraph-sys = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true }
 dashmap = { version = "6.2", optional = true }
 datafusion = { workspace = true }
-datafusion-nexus-iceberg = { path = "crates/datafusion-nexus-iceberg", optional = true, default-features = false }
+nexus-iceberg = { path = "crates/nexus-iceberg", optional = true, default-features = false }
 futures = { workspace = true }
 iceberg = { workspace = true, optional = true }
 iceberg-datafusion = { workspace = true, optional = true }
@@ -153,7 +153,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], option
 uuid = { version = "1.23", features = ["v4"], optional = true }
 
 [dev-dependencies]
-datafusion-nexus-workloads = { workspace = true }
+nexus-workloads = { workspace = true }
 hex = "0.4"
 proptest = "1.7"
 sha2 = "0.11"
