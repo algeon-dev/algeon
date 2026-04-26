@@ -24,21 +24,21 @@ pub(super) fn iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(
     tasks: impl IntoIterator<Item = FileScanTask>,
     parquet_read_strategy_config: &TableFormatParquetReadStrategyConfig,
 ) -> Result<TableFormatScanPlan> {
-    iceberg_file_scan_tasks_to_table_format_scan_plan_with_config_and_filter_enforcement(
+    let mut plan = iceberg_file_scan_tasks_to_table_format_scan_plan_with_filter_enforcement(
         snapshot_id,
         catalog_type,
         tasks,
-        parquet_read_strategy_config,
         false,
         None,
-    )
+    )?;
+    attach_native_parquet_source_strategies(&mut plan, parquet_read_strategy_config)?;
+    Ok(plan)
 }
 
-pub(super) fn iceberg_file_scan_tasks_to_table_format_scan_plan_with_config_and_filter_enforcement(
+pub(super) fn iceberg_file_scan_tasks_to_table_format_scan_plan_with_filter_enforcement(
     snapshot_id: Option<String>,
     catalog_type: Option<String>,
     tasks: impl IntoIterator<Item = FileScanTask>,
-    parquet_read_strategy_config: &TableFormatParquetReadStrategyConfig,
     parent_filter_enforces_task_predicate: bool,
     timeout_context: Option<&IcebergScanPlanningTimeoutContext>,
 ) -> Result<TableFormatScanPlan> {
@@ -67,16 +67,60 @@ pub(super) fn iceberg_file_scan_tasks_to_table_format_scan_plan_with_config_and_
         if let Some(context) = timeout_context {
             context.check("convert_file_scan_task")?;
         }
-        append_task_facts(
-            &mut plan,
-            task_index,
-            task,
-            parquet_read_strategy_config,
-            parent_filter_enforces_task_predicate,
-        )?;
+        append_task_facts(&mut plan, task_index, task, parent_filter_enforces_task_predicate)?;
     }
 
     Ok(plan)
+}
+
+pub(super) fn attach_native_parquet_source_strategies(
+    plan: &mut TableFormatScanPlan,
+    config: &TableFormatParquetReadStrategyConfig,
+) -> Result<()> {
+    for file in &mut plan.data_files {
+        if file.format != TableFormatDataFileFormat::Parquet || !file.read_capability.is_native_parquet_capable() {
+            continue;
+        }
+        let mut metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(file.size_bytes, file.row_count);
+        if let Some(content_identity) = file.source_content_identity.as_ref() {
+            metadata = metadata.with_content_identity(content_identity.clone());
+        }
+        file.resolved_parquet_source = Some(resolve_table_format_parquet_source_with_metadata(
+            &file.location,
+            &file.read_capability,
+            config,
+            &metadata,
+        )?);
+    }
+
+    for delete_file in &mut plan.delete_files {
+        if delete_file.format != TableFormatDataFileFormat::Parquet
+            || !delete_file.read_capability.is_native_parquet_capable()
+        {
+            continue;
+        }
+        let metadata =
+            TableFormatParquetSourceMetadata::from_size_and_row_count(delete_file.size_bytes, delete_file.row_count);
+        delete_file.resolved_parquet_source = Some(resolve_table_format_parquet_source_with_metadata(
+            &delete_file.location,
+            &delete_file.read_capability,
+            config,
+            &metadata,
+        )?);
+    }
+
+    let resolved_delete_sources = plan
+        .delete_files
+        .iter()
+        .filter_map(|file| file.resolved_parquet_source.clone().map(|source| (file.id.clone(), source)))
+        .collect::<HashMap<_, _>>();
+    for data_file in &mut plan.data_files {
+        for delete_file in data_file.position_delete_files.iter_mut().chain(data_file.equality_delete_files.iter_mut())
+        {
+            delete_file.resolved_parquet_source = resolved_delete_sources.get(&delete_file.id).cloned();
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn iceberg_project_field_ids(schema: &IcebergSchema, column_names: Option<&[String]>) -> Result<Vec<i32>> {
@@ -574,6 +618,7 @@ pub(super) async fn attach_remote_delete_file_row_counts_for_data_file(
         let Some((delete_index, delete_id, row_count)) = result else {
             break;
         };
+        let row_count = row_count?;
         if let Some(row_count) = row_count {
             if let Some(delete_file) = plan
                 .data_files
@@ -632,6 +677,7 @@ pub(super) async fn attach_remote_footer_schemas_for_field_id_proof(
         let Some((index, footer)) = result else {
             break;
         };
+        let footer = footer?;
         if let Some(footer) = footer
             && let Some(data_file) = plan.data_files.get_mut(index)
         {
@@ -744,7 +790,6 @@ pub(super) fn append_task_facts(
     plan: &mut TableFormatScanPlan,
     task_index: usize,
     task: FileScanTask,
-    parquet_read_strategy_config: &TableFormatParquetReadStrategyConfig,
     parent_filter_enforces_task_predicate: bool,
 ) -> Result<()> {
     let file_id = if task.data_file_path.is_empty() {
@@ -757,22 +802,7 @@ pub(super) fn append_task_facts(
     };
     let file_format = table_format_data_file_format(task.data_file_format);
     let read_capability = read_capability_for_location(&task.data_file_path);
-    let mut source_metadata =
-        TableFormatParquetSourceMetadata::from_size_and_row_count(Some(task.file_size_in_bytes), task.record_count);
-    if let Some(content_identity) = iceberg_task_content_identity(plan.snapshot_id.as_deref(), &task) {
-        source_metadata = source_metadata.with_content_identity(content_identity);
-    }
-    let resolved_parquet_source =
-        if task.data_file_format == DataFileFormat::Parquet && read_capability.is_native_parquet_capable() {
-            Some(resolve_table_format_parquet_source_with_metadata(
-                &task.data_file_path,
-                &read_capability,
-                parquet_read_strategy_config,
-                &source_metadata,
-            )?)
-        } else {
-            None
-        };
+    let source_content_identity = iceberg_task_content_identity(plan.snapshot_id.as_deref(), &task);
     let mut data_file = TableFormatDataFile::new(
         file_id.clone(),
         task.data_file_path.clone(),
@@ -780,8 +810,8 @@ pub(super) fn append_task_facts(
         read_capability.clone(),
     )
     .with_size_bytes(task.file_size_in_bytes);
-    if let Some(resolved_parquet_source) = resolved_parquet_source {
-        data_file = data_file.with_resolved_parquet_source(resolved_parquet_source);
+    if let Some(content_identity) = source_content_identity {
+        data_file = data_file.with_source_content_identity(content_identity);
     }
     if let Some(record_count) = task.record_count {
         data_file = data_file.with_row_count(record_count);
@@ -864,14 +894,7 @@ pub(super) fn append_task_facts(
     }
 
     for (delete_index, delete_file) in task.deletes.iter().enumerate() {
-        append_delete_file_facts(
-            plan,
-            &mut data_file,
-            &file_id,
-            delete_index,
-            delete_file,
-            parquet_read_strategy_config,
-        )?;
+        append_delete_file_facts(plan, &mut data_file, &file_id, delete_index, delete_file)?;
     }
 
     plan.data_files.push(data_file);
@@ -1156,7 +1179,6 @@ pub(super) fn append_delete_file_facts(
     data_file_id: &str,
     delete_index: usize,
     delete_file: &FileScanTaskDeleteFile,
-    parquet_read_strategy_config: &TableFormatParquetReadStrategyConfig,
 ) -> Result<()> {
     let delete_id = if delete_file.file_path.is_empty() {
         format!("{data_file_id}#delete-{delete_index}")
@@ -1169,24 +1191,6 @@ pub(super) fn append_delete_file_facts(
     let format = table_format_data_file_format_from_path(&delete_file.file_path);
     let content = table_format_delete_content(delete_file.file_type);
     let read_capability = read_capability_for_location(&delete_file.file_path);
-    let resolved_parquet_source = if format == TableFormatDataFileFormat::Parquet
-        && matches!(
-            content,
-            TableFormatDeleteFileContent::PositionDeletes | TableFormatDeleteFileContent::EqualityDeletes
-        )
-        && read_capability.is_native_parquet_capable()
-    {
-        let metadata =
-            TableFormatParquetSourceMetadata::from_size_and_row_count(Some(delete_file.file_size_in_bytes), None);
-        Some(resolve_table_format_parquet_source_with_metadata(
-            &delete_file.file_path,
-            &read_capability,
-            parquet_read_strategy_config,
-            &metadata,
-        )?)
-    } else {
-        None
-    };
     let mut table_delete = TableFormatDeleteFile::for_data_file(
         delete_id.clone(),
         data_file_id.to_string(),
@@ -1196,17 +1200,19 @@ pub(super) fn append_delete_file_facts(
     )
     .with_size_bytes(delete_file.file_size_in_bytes)
     .with_read_capability(read_capability.clone());
-    if let Some(resolved_parquet_source) = resolved_parquet_source {
-        table_delete = table_delete.with_resolved_parquet_source(resolved_parquet_source);
-    }
     if let Some(equality_ids) = delete_file.equality_ids.clone() {
         table_delete = table_delete.with_equality_ids(equality_ids);
     }
 
     plan.delete_files.push(table_delete.clone());
-    if table_delete.is_supported_position_delete() {
+    let native_parquet_delete_candidate = table_delete.format == TableFormatDataFileFormat::Parquet
+        && table_delete.read_capability.is_native_parquet_capable();
+    if table_delete.content == TableFormatDeleteFileContent::PositionDeletes && native_parquet_delete_candidate {
         data_file.push_position_delete_file(table_delete);
-    } else if table_delete.is_supported_equality_delete() {
+    } else if table_delete.content == TableFormatDeleteFileContent::EqualityDeletes
+        && native_parquet_delete_candidate
+        && table_delete.equality_ids.as_ref().is_some_and(|ids| !ids.is_empty())
+    {
         plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
             TableFormatUnsupportedFeatureCode::IcebergDeleteFilesUnsupported,
             delete_id,

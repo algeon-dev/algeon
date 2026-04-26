@@ -148,7 +148,7 @@ async fn run_cpu_child_from_env() -> BenchmarkResult<()> {
     let smoke_row = run_single_tpch_query_report_with_execution_mode(
         config.smoke_config.clone(),
         query_id,
-        SmokeQueryExecutionMode::CpuOnly,
+        SmokeQueryExecutionMode::CpuBaselineOnly,
     )
     .await?;
     let row = IcebergTpchBenchmarkRow {

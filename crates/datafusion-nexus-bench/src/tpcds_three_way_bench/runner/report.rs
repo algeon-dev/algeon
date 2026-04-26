@@ -126,7 +126,7 @@ pub(super) fn print_metadata(cfg: &BenchConfig) {
     println!("# tpcds_benchmark_wall_time_fields=per_measured_iteration");
     println!("# tpcds_benchmark_native_profile_name={}", cfg.native_profile.profile_name);
     println!("# tpcds_benchmark_native_profile_source={}", cfg.native_profile.profile_source);
-    println!("# tpcds_benchmark_native_fallback_policy={}", gpu_fallback_policy_label(cfg.native_fallback_policy));
+    println!("# tpcds_benchmark_relational_execution={}", cfg.relational_execution.as_str());
     println!("# tpcds_benchmark_native_pipeline_execution_mode={}", cfg.native_pipeline_execution_mode.as_str());
     println!("# tpcds_benchmark_native_device_budget_bytes={}", cfg.native_profile.device_budget_bytes);
     println!("# tpcds_benchmark_native_max_source_chunk_bytes={}", cfg.native_profile.max_source_chunk_bytes);

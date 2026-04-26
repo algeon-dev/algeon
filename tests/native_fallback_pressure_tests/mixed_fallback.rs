@@ -1,12 +1,12 @@
-//! Four-case mixed-fallback execution contract migrated from
+//! Relational-fallback execution coverage migrated from
 //! `native_mixed_fallback_report` (formerly `c1_mixed_fallback_experiment`).
 //!
-//! Asserts under `GpuPreferred`:
+//! Asserts whole-plan native selection under the normal session configuration:
 //! - post-native execution path
-//! - min native fragment count
-//! - host DataFusion boundary evidence
+//! - exact native fragment count
+//! - DataFusion fallback for unsupported relational parents
 //! - candidate rewritten/rejected outcomes
-//! - GPU-preferred session results vs plain DataFusion parity
+//! - session results vs plain DataFusion parity
 
 use arrow::{array::StringArray, util::pretty::pretty_format_batches};
 use datafusion_nexus::{
@@ -18,34 +18,34 @@ use nexus_query_engine::runtime::SlotGuarantee;
 
 use super::*;
 
-struct MixedFallbackCase {
+struct RelationalFallbackCase {
     id: &'static str,
     sql: &'static str,
     expected_path: NativeDataFusionPostNativeExecutionPath,
-    expected_min_fragments: usize,
+    expected_native_fragment_count: usize,
 }
 
-const MIXED_FALLBACK_CASES: &[MixedFallbackCase] = &[
+const RELATIONAL_FALLBACK_CASES: &[RelationalFallbackCase] = &[
     // Control: fully supported query should be rewritten whole.
-    MixedFallbackCase {
+    RelationalFallbackCase {
         id: "control_supported",
         sql: "SELECT key, SUM(m00) AS s, COUNT(*) AS c FROM bench GROUP BY key ORDER BY key",
         expected_path: NativeDataFusionPostNativeExecutionPath::Native,
-        expected_min_fragments: 1,
+        expected_native_fragment_count: 1,
     },
-    // Mixed: APPROX_DISTINCT (unsupported operator) over a supported join+filter
-    // subtree. Expect the join fragment on GPU, the aggregate on CPU.
-    MixedFallbackCase {
+    // APPROX_DISTINCT is an unsupported relational parent. Its supported join
+    // subtree must not be extracted into a separate native fragment.
+    RelationalFallbackCase {
         id: "mixed_unsupported_aggregate",
         sql: "SELECT t.key, APPROX_DISTINCT(t.name) AS d \
               FROM (SELECT b.key, b.name FROM bench b JOIN bench2 s ON b.key = s.key WHERE s.payload >= 10) t \
               GROUP BY t.key ORDER BY t.key",
-        expected_path: NativeDataFusionPostNativeExecutionPath::PartialNative,
-        expected_min_fragments: 1,
+        expected_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        expected_native_fragment_count: 0,
     },
-    // Mixed with two disjoint supported fragments under a CPU union of two
-    // unsupported aggregates.
-    MixedFallbackCase {
+    // A union of unsupported relational parents remains a single DataFusion
+    // plan; no disjoint native child fragments are producerized.
+    RelationalFallbackCase {
         id: "mixed_two_disjoint_fragments",
         sql: "SELECT * FROM ( \
               SELECT 'a' AS src, t.key, APPROX_DISTINCT(t.name) AS d \
@@ -55,41 +55,43 @@ const MIXED_FALLBACK_CASES: &[MixedFallbackCase] = &[
               SELECT 'b' AS src, u.key, APPROX_DISTINCT(u.name) AS d \
               FROM (SELECT b2.key, b2.name FROM bench2 b2 JOIN bench b3 ON b2.key = b3.key WHERE b3.m00 >= 2.0) u \
               GROUP BY u.key) v ORDER BY src, key",
-        expected_path: NativeDataFusionPostNativeExecutionPath::PartialNative,
-        expected_min_fragments: 2,
+        expected_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        expected_native_fragment_count: 0,
     },
-    // Negative control: unsupported *expression* rejections intentionally block
-    // fragment extraction -> whole query stays on CPU.
-    MixedFallbackCase {
+    // Unsupported expressions likewise retain the whole query on DataFusion.
+    RelationalFallbackCase {
         id: "negative_unsupported_expression",
         sql: "SELECT t.key, SUM(TRY_CAST(t.name AS DOUBLE)) AS s \
               FROM (SELECT b.key, b.name FROM bench b JOIN bench2 s ON b.key = s.key WHERE s.payload >= 10) t \
               GROUP BY t.key ORDER BY t.key",
         expected_path: NativeDataFusionPostNativeExecutionPath::Cpu,
-        expected_min_fragments: 0,
+        expected_native_fragment_count: 0,
     },
 ];
 
 #[tokio::test]
-async fn mixed_fallback_execution_contract_four_cases() {
-    let dir = unique_temp_dir("datafusion-nexus-native-mixed-fallback");
+async fn relational_fallback_execution_coverage_preserves_datafusion_plans() {
+    let dir = unique_temp_dir("datafusion-nexus-relational-fallback");
     let bench = dir.join("bench.parquet");
     let bench2 = dir.join("bench2.parquet");
     write_mixed_fallback_input_parquet(&bench, 0);
     write_mixed_fallback_input_parquet(&bench2, 1);
 
-    for case in MIXED_FALLBACK_CASES {
-        run_mixed_fallback_case(case, &bench, &bench2).await;
+    for case in RELATIONAL_FALLBACK_CASES {
+        run_relational_fallback_case(case, &bench, &bench2).await;
     }
 
     fs::remove_dir_all(&dir).ok();
 }
 
-async fn run_mixed_fallback_case(case: &MixedFallbackCase, bench: &std::path::Path, bench2: &std::path::Path) {
-    // Multi-fragment PartialNative plans need shared QueryService admission; use
-    // NexusGpuBackend so concurrent native fragments are not standalone-unadmitted.
+async fn run_relational_fallback_case(
+    case: &RelationalFallbackCase,
+    bench: &std::path::Path,
+    bench2: &std::path::Path,
+) {
+    // Keep the normal bounded QueryService configuration so the fully supported
+    // control retains its native performance coverage alongside CPU fallbacks.
     let backend = NexusGpuBackend::builder()
-        .fallback_policy(GpuFallbackPolicy::GpuPreferred)
         .memory_policy(NexusMemoryPolicy::Bounded {
             device_ordinals: vec![0],
             device_budget_bytes: 256 * 1024 * 1024,
@@ -98,20 +100,12 @@ async fn run_mixed_fallback_case(case: &MixedFallbackCase, bench: &std::path::Pa
             max_retry_attempts: 3,
             min_retry_chunk_row_groups: 1,
         })
-        .admission(
-            NexusAdmissionPolicy::default()
-                .with_slot_guarantee(SlotGuarantee::Optimistic)
-                // Two concurrent native fragments share one admission handle/grant; size the
-                // race-free grant high enough for both join fragments under the 256MiB budget.
-                .with_grant_band(GrantBand {
-                    min: MemoryShare::Bytes(64 * 1024 * 1024),
-                    want: MemoryShare::Bytes(128 * 1024 * 1024),
-                }),
-        )
+        .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic).with_grant_band(
+            GrantBand { min: MemoryShare::Bytes(64 * 1024 * 1024), want: MemoryShare::Bytes(128 * 1024 * 1024) },
+        ))
         .build()
         .unwrap_or_else(|error| panic!("{}: backend build failed: {error}", case.id));
-    // install_on freezes session config for QueryService admission authority and
-    // wraps multi-fragment plans with a shared admission ticket.
+    // install_on freezes session config for QueryService admission authority.
     let state = backend
         .install_on(SessionStateBuilder::new_with_default_features().with_config(direct_friendly_sql_session_config()))
         .unwrap_or_else(|error| panic!("{}: backend install failed: {error}", case.id))
@@ -166,29 +160,36 @@ async fn run_mixed_fallback_case(case: &MixedFallbackCase, bench: &std::path::Pa
         "{}: unexpected post_native_execution_path (fragments={}, host_boundaries={}, rewritten={rewritten}, rejected={rejected_reasons:?})",
         case.id, row.native_plan_fragment_count, row.host_datafusion_boundary_count
     );
-    assert!(
-        row.native_plan_fragment_count >= case.expected_min_fragments,
-        "{}: fragments {} < expected min {}",
+    assert_eq!(
+        row.native_plan_fragment_count, case.expected_native_fragment_count,
+        "{}: unexpected native fragment count",
         case.id,
-        row.native_plan_fragment_count,
-        case.expected_min_fragments
     );
 
     match case.expected_path {
-        NativeDataFusionPostNativeExecutionPath::PartialNative => {
-            assert!(rewritten >= 1, "{}: expected at least one rewritten candidate, got {rewritten}", case.id);
-            assert!(!rejected_reasons.is_empty(), "{}: expected non-empty rejected reasons for mixed path", case.id);
-            assert!(
-                row.host_datafusion_boundary_count >= 1,
-                "{}: expected host_datafusion_boundary_count >= 1, got {}",
-                case.id,
-                row.host_datafusion_boundary_count
-            );
-        },
         NativeDataFusionPostNativeExecutionPath::Cpu => {
             assert_eq!(rewritten, 0, "{}: CPU path should have zero rewritten candidates, got {rewritten}", case.id);
+            assert!(
+                !rejected_reasons.is_empty(),
+                "{}: CPU fallback should retain its native rejection evidence",
+                case.id
+            );
+            assert_eq!(
+                row.host_datafusion_boundary_count, 0,
+                "{}: ordinary relational fallback must not create a host/native boundary",
+                case.id
+            );
         },
-        NativeDataFusionPostNativeExecutionPath::Native => {},
+        NativeDataFusionPostNativeExecutionPath::Native => {
+            assert_eq!(rewritten, 1, "{}: supported whole plan should have one rewrite", case.id);
+            assert!(rejected_reasons.is_empty(), "{}: supported whole plan should not have rejections", case.id);
+            assert_eq!(
+                row.host_datafusion_boundary_count, 0,
+                "{}: whole native plan should have no host boundary",
+                case.id
+            );
+        },
+        unexpected => panic!("{}: relational fallback coverage does not admit {unexpected:?}", case.id),
     }
 }
 

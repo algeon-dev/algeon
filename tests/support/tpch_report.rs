@@ -24,7 +24,6 @@ use datafusion_nexus::{
         NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureWorkloadItem, WorkloadDatasetMetadata,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, TpchDatasetMetadata, TpchWorkloadResult, register_tpch_tables};
@@ -57,8 +56,13 @@ impl TestReportDatasetMetadataExt for TpchDatasetMetadata {
 }
 
 pub(crate) fn tpch_native_optimizer_config() -> NexusNativeOptimizerConfig {
-    NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
+    NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::bounded(
+        256 * 1024 * 1024,
+        64 * 1024 * 1024,
+        1,
+        3,
+        1,
+    ))
 }
 
 pub(crate) async fn tpch_scalar_fallback_pressure_workload_items(

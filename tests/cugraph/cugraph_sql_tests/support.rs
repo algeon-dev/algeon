@@ -83,7 +83,6 @@ fn append_plan_metrics(
 
 pub(super) fn backend_cugraph_sql_state(builder: SessionStateBuilder) -> datafusion::execution::SessionState {
     let backend = NexusGpuBackend::builder()
-        .fallback_policy(GpuFallbackPolicy::GpuPreferred)
         .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic))
         .build()
         .unwrap();

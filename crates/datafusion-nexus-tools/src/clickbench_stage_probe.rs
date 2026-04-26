@@ -26,7 +26,6 @@ use datafusion::{
 use datafusion_nexus::{
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig},
     planner::NexusNativeOptimizerConfig,
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::report_workload::clickbench::{
@@ -63,7 +62,6 @@ struct ProbeConfig {
     deadline: Duration,
     snapshot_interval: Duration,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
-    fallback_policy: GpuFallbackPolicy,
     mode: ProbeMode,
 }
 
@@ -350,7 +348,7 @@ async fn plan_native_physical(
     config: &ProbeConfig,
 ) -> ToolResult<Arc<dyn ExecutionPlan>> {
     let layout = discover_clickbench_layout(root)?;
-    let optimizer_config = NexusNativeOptimizerConfig::new(config.fallback_policy)
+    let optimizer_config = NexusNativeOptimizerConfig::default()
         .with_native_pipeline_execution_mode(config.native_pipeline_execution_mode)
         .with_native_execution_config(
             NexusNativeExecutionConfig::bounded(
@@ -595,7 +593,6 @@ fn parse_args(args: Vec<String>) -> ToolResult<ProbeConfig> {
     let mut deadline_secs = DEFAULT_DEADLINE_SECS;
     let mut snapshot_interval_ms = DEFAULT_SNAPSHOT_INTERVAL_MS;
     let mut mode = ProbeMode::NativeObserved;
-    let mut fallback_policy = GpuFallbackPolicy::GpuOnly;
     let mut pipeline_mode = native_pipeline_execution_mode_from_env();
 
     let mut iter = args.into_iter();
@@ -635,14 +632,6 @@ fn parse_args(args: Vec<String>) -> ToolResult<ProbeConfig> {
                     other => return Err(format!("unsupported --mode {other}").into()),
                 };
             },
-            "--fallback-policy" => {
-                let value = iter.next().ok_or("--fallback-policy requires a value")?;
-                fallback_policy = match value.as_str() {
-                    "gpu_only" => GpuFallbackPolicy::GpuOnly,
-                    "gpu_preferred" => GpuFallbackPolicy::GpuPreferred,
-                    other => return Err(format!("unsupported fallback policy {other}").into()),
-                };
-            },
             "--pipeline-mode" => {
                 let value = iter.next().ok_or("--pipeline-mode requires a value")?;
                 pipeline_mode = parse_pipeline_mode(&value)?;
@@ -661,7 +650,6 @@ fn parse_args(args: Vec<String>) -> ToolResult<ProbeConfig> {
         deadline: Duration::from_secs(deadline_secs),
         snapshot_interval: Duration::from_millis(snapshot_interval_ms),
         native_pipeline_execution_mode: pipeline_mode,
-        fallback_policy,
         mode,
     })
 }

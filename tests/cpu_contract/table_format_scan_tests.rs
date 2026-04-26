@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use datafusion::physical_plan::displayable;
+use datafusion::physical_plan::{ExecutionPlan, displayable, empty::EmptyExec};
 use datafusion_nexus::{
     policy::FallbackReason,
     table_format::{
-        NexusTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole,
-        TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile,
-        TableFormatDeleteFileContent, TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform,
-        TableFormatPartitionValue, TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan,
-        TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
+        NexusIcebergNativeScanOutcome, NexusIcebergScanExec, TableFormat, TableFormatColumnMapping,
+        TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat,
+        TableFormatDeleteFile, TableFormatDeleteFileContent, TableFormatDirectDeviceReadDisposition,
+        TableFormatPartitionTransform, TableFormatPartitionValue, TableFormatReadCapability, TableFormatScalarValue,
+        TableFormatScanPlan, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
     },
 };
 
@@ -150,7 +150,13 @@ fn table_format_scan_display_omits_retired_source_labels() {
         .with_catalog_type("local")
         .with_logical_schema(Arc::clone(&schema))
         .with_native_source_schema(Arc::clone(&schema));
-    let scan = NexusTableFormatScanExec::new(plan, schema);
+    let cpu_delegate: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::clone(&schema)));
+    let scan = NexusIcebergScanExec::try_new(
+        cpu_delegate,
+        Arc::clone(&schema),
+        NexusIcebergNativeScanOutcome::from_scan_plan(plan),
+    )
+    .unwrap();
     let rendered = displayable(&scan).indent(false).to_string();
 
     assert!(!rendered.contains(concat!("source_decode_", "input=")), "{rendered}");

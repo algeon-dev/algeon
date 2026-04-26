@@ -23,7 +23,6 @@ use datafusion_nexus::{
     native_exec::NexusNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
 };
 use nexus_query_engine::mode::NativePipelineExecutionMode;
@@ -69,8 +68,7 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
 
     let config = direct_friendly_session_config();
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-            .with_native_execution_config(native_execution_config()),
+        NexusNativeOptimizerConfig::default().with_native_execution_config(native_execution_config()),
     ));
     let state = SessionStateBuilder::new()
         .with_config(config)

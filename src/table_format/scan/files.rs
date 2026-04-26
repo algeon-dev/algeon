@@ -40,6 +40,8 @@ pub struct TableFormatDataFile {
     pub row_count: Option<u64>,
     /// Optional selected row-group indexes.
     pub row_groups: Option<Vec<usize>>,
+    /// Immutable content identity retained for native source inspection.
+    pub source_content_identity: Option<String>,
     /// Required read capability for this location.
     pub read_capability: TableFormatReadCapability,
     /// Resolved Parquet read strategy for native source lowering.
@@ -69,6 +71,7 @@ impl fmt::Debug for TableFormatDataFile {
             .field("size_bytes", &self.size_bytes)
             .field("row_count", &self.row_count)
             .field("row_groups", &self.row_groups)
+            .field("source_content_identity_available", &self.source_content_identity.is_some())
             .field("read_capability", &self.read_capability)
             .field("resolved_parquet_source", &self.resolved_parquet_source)
             .field("footer_schema_available", &self.footer_schema.is_some())
@@ -95,6 +98,7 @@ impl TableFormatDataFile {
             size_bytes: None,
             row_count: None,
             row_groups: None,
+            source_content_identity: None,
             read_capability,
             resolved_parquet_source: None,
             footer_schema: None,
@@ -120,6 +124,12 @@ impl TableFormatDataFile {
     /// Records selected row-group indexes.
     pub fn with_row_groups(mut self, row_groups: Vec<usize>) -> Self {
         self.row_groups = Some(row_groups);
+        self
+    }
+
+    /// Records an immutable source content identity for later native inspection.
+    pub fn with_source_content_identity(mut self, content_identity: impl Into<String>) -> Self {
+        self.source_content_identity = Some(content_identity.into());
         self
     }
 

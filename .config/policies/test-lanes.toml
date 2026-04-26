@@ -30,9 +30,9 @@ lane = "cpu"
 reason = "Workload tests validate ClickBench native profile/env resolution without executing the native GPU workload."
 
 [[binary]]
-id = "datafusion-nexus-bench::native_policy_run_evidence_tests"
+id = "datafusion-nexus-bench::native_relational_execution_evidence_tests"
 lane = "cpu"
-reason = "Tests validate serialized policy evidence without executing CUDA work."
+reason = "Tests validate relational-execution evidence without executing CUDA work."
 
 [[binary]]
 id = "datafusion-nexus-bench::tpcds_workload_tests"

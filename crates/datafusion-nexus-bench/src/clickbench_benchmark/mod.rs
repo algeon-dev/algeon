@@ -15,9 +15,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_nexus::{
-    planner::NexusNativePhysicalOptimizerRule, policy::GpuFallbackPolicy, session::NexusSessionStateBuilderExt,
-};
+use datafusion_nexus::{planner::NexusNativePhysicalOptimizerRule, session::NexusSessionStateBuilderExt};
 use datafusion_nexus_workloads::clickbench::{
     CLICKBENCH_QUERIES, ClickbenchDatasetMetadata, ClickbenchLayout, ClickbenchQuery, ClickbenchWorkloadError,
     ClickbenchWorkloadResult, discover_clickbench_layout, prepare_clickbench_report_dataset, register_clickbench_table,
@@ -25,12 +23,12 @@ use datafusion_nexus_workloads::clickbench::{
 use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 use crate::report_workload::{
+    RelationalExecutionSelection,
     clickbench::{
         ClickbenchNativeProfileSettings, clickbench_native_optimizer_config_with_profile_settings,
         clickbench_native_profile_settings_from_env, clickbench_report_session_config,
         clickbench_tuned_cpu_session_config,
     },
-    gpu_fallback_policy_label, parse_gpu_fallback_policy,
 };
 const TSV_COLUMNS: &[&str] = &[
     "query_id",
@@ -136,7 +134,6 @@ const ITERATIONS_ENV: &str = "NEXUS_CLICKBENCH_BENCH_ITERATIONS";
 const SKIP_CPU_ENV: &str = "NEXUS_CLICKBENCH_BENCH_SKIP_CPU";
 const SKIP_NATIVE_ENV: &str = "NEXUS_CLICKBENCH_BENCH_SKIP_NATIVE";
 const CPU_PROFILE_ENV: &str = "NEXUS_CLICKBENCH_BENCH_CPU_PROFILE";
-const NATIVE_FALLBACK_POLICY_ENV: &str = "NEXUS_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY";
 const PIPELINE_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
 const PROGRESS_ENV: &str = "NEXUS_CLICKBENCH_BENCH_PROGRESS";
 const DUMP_ROWS_DIR_ENV: &str = "NEXUS_CLICKBENCH_BENCH_DUMP_ROWS_DIR";
@@ -175,7 +172,7 @@ struct BenchmarkConfig {
     skip_cpu: bool,
     skip_native: bool,
     cpu_profile: CpuProfile,
-    native_fallback_policy: GpuFallbackPolicy,
+    native_execution: RelationalExecutionSelection,
     native_profile: ClickbenchNativeProfileSettings,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     progress: bool,
@@ -233,14 +230,6 @@ impl BenchmarkConfig {
                 .map_err(|error| invalid_env(format!("unsupported {PIPELINE_MODE_ENV}: {error}")))?,
             Err(_) => NativePipelineExecutionMode::StrictBounded,
         };
-        let native_fallback_policy = match std::env::var(NATIVE_FALLBACK_POLICY_ENV) {
-            Ok(value) => parse_gpu_fallback_policy(&value)
-                .map_err(|error| invalid_env(format!("invalid {NATIVE_FALLBACK_POLICY_ENV}: {error}")))?,
-            Err(std::env::VarError::NotPresent) => GpuFallbackPolicy::GpuPreferred,
-            Err(error) => {
-                return Err(invalid_env(format!("failed to read {NATIVE_FALLBACK_POLICY_ENV}: {error}")));
-            },
-        };
         let native_profile = clickbench_native_profile_settings_from_env();
         let query_ids = query_ids_from_env(QUERY_IDS_ENV)?;
         Ok(Self {
@@ -250,7 +239,7 @@ impl BenchmarkConfig {
             skip_cpu,
             skip_native,
             cpu_profile,
-            native_fallback_policy,
+            native_execution: RelationalExecutionSelection::strict_native(),
             native_profile,
             native_pipeline_execution_mode,
             progress: env_truthy(PROGRESS_ENV),
@@ -316,9 +305,13 @@ async fn build_native_ctx(
     config: &BenchmarkConfig,
     layout: &ClickbenchLayout,
 ) -> ClickbenchWorkloadResult<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>)> {
-    let optimizer_config = clickbench_native_optimizer_config_with_profile_settings(&config.native_profile)
-        .with_fallback_policy(config.native_fallback_policy)
-        .with_native_pipeline_execution_mode(config.native_pipeline_execution_mode);
+    let optimizer_config = config
+        .native_execution
+        .configure_native_optimizer(
+            clickbench_native_optimizer_config_with_profile_settings(&config.native_profile)
+                .with_native_pipeline_execution_mode(config.native_pipeline_execution_mode),
+        )
+        .expect("native ClickBench session installs the native rule");
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(clickbench_report_session_config())
@@ -829,12 +822,8 @@ impl BenchmarkReport {
             self.config.native_pipeline_execution_mode.as_str()
         )
         .unwrap();
-        writeln!(
-            output,
-            "# clickbench_benchmark_native_fallback_policy={}",
-            gpu_fallback_policy_label(self.config.native_fallback_policy)
-        )
-        .unwrap();
+        writeln!(output, "# clickbench_benchmark_relational_execution={}", self.config.native_execution.as_str())
+            .unwrap();
         writeln!(output, "# clickbench_benchmark_native_profile_name={}", self.config.native_profile.profile_name)
             .unwrap();
         writeln!(output, "# clickbench_benchmark_native_profile_source={}", self.config.native_profile.profile_source)
@@ -1056,7 +1045,7 @@ mod tests {
         assert!(!tsv.contains("q23="));
         assert!(tsv.contains("q39=result_set_nondeterministic"));
         assert!(tsv.contains("q42=result_set_nondeterministic"));
-        assert!(tsv.contains("# clickbench_benchmark_native_fallback_policy=gpu_only\n"));
+        assert!(tsv.contains("# clickbench_benchmark_relational_execution=native_no_datafusion_cpu\n"));
         assert!(tsv.contains("# clickbench_benchmark_native_profile_name=clickbench_gpu_throughput\n"));
         assert!(tsv.contains("# clickbench_benchmark_native_profile_source=env_profile\n"));
         assert!(tsv.contains("# clickbench_benchmark_native_max_source_chunk_bytes=34359738368\n"));
@@ -1120,7 +1109,7 @@ mod tests {
             skip_cpu: false,
             skip_native: false,
             cpu_profile: CpuProfile::Tuned,
-            native_fallback_policy: GpuFallbackPolicy::GpuOnly,
+            native_execution: RelationalExecutionSelection::strict_native(),
             native_profile: ClickbenchNativeProfileSettings {
                 profile_name: CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT,
                 profile_source: "env_profile",

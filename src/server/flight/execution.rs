@@ -162,7 +162,6 @@ impl DatafusionNexusFlightSqlService {
                 )) => match result {
                 Ok(plan) => plan,
                 Err(error) => {
-                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
                     let (status, captured) =
                         datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
                     let status = status_with_query_id(status, &query_id);
@@ -205,10 +204,6 @@ impl DatafusionNexusFlightSqlService {
                     // DDL execution and logical-plan wrapping happen before
                     // the physical optimizer runs, so `last_report` is empty
                     // here. The leaf-guard helper no-ops on non-leaf-guard
-                    // errors, but we run it for completeness so any
-                    // planning-time adapter error that does carry the
-                    // leaf-guard facts gets the structured warn line.
-                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
                     let (status, captured) =
                         datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
                     let status = status_with_query_id(status, &query_id);
@@ -239,12 +234,6 @@ impl DatafusionNexusFlightSqlService {
         {
             entry.mark_executed();
         }
-        if let Some(error) = fast_fail_unsupported_table_format_operator_plan(df.logical_plan()) {
-            let (status, captured) = adapter_error_to_status_and_capture(error);
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            coordinator_terminal.finish_captured("planning", &status, captured);
-            return Err(status);
-        }
         let schema = df.schema().as_arrow().clone();
         let task_ctx = Arc::new(df.task_ctx());
         let logical_plan_tables = referenced_table_names(df.logical_plan());
@@ -267,7 +256,6 @@ impl DatafusionNexusFlightSqlService {
                         diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
                         &logical_plan_tables,
                     );
-                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
                     self.coordinator.capture_planning_failure(
                         &query_id,
                         "physical_planning",
@@ -307,7 +295,6 @@ impl DatafusionNexusFlightSqlService {
         let stream = match execute_physical_stream(Arc::clone(&plan), task_ctx) {
             Ok(stream) => stream,
             Err(error) => {
-                log_leaf_guard_rejection(&query_id, &error, self.session_profile);
                 let (status, captured) =
                     datafusion_error_to_status_and_capture(error, ticket_kind.execute_stream_operation());
                 let status = status_with_query_id(status, &query_id);

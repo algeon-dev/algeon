@@ -49,7 +49,7 @@ use datafusion_nexus::{
         NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
         NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
     },
-    policy::{FallbackReason, GpuFallbackPolicy},
+    policy::FallbackReason,
     report::{GpuCandidate, PlanningReport},
     session::NexusSessionStateBuilderExt,
 };
@@ -445,10 +445,9 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert!(!distributed_avg_row.rejected_before_execution);
 
     let rejected_plan = typed_null_and_try_cast_reject_plan(parquet_scan(&path).await);
-    let optimizer_config =
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
-            NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
-        );
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
+        NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
+    );
     let native_rule = NexusNativePhysicalOptimizerRule::new(optimizer_config);
     let rejected_plan = native_rule.optimize(rejected_plan, &ConfigOptions::default()).unwrap();
     let rejected = NativeDataFusionPlanningReport::from_retained_rule("try_cast_session", rejected_plan, &native_rule);

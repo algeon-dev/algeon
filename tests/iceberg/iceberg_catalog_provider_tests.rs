@@ -19,7 +19,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::table_format::iceberg::catalog::{
-    IcebergCatalogBackend, IcebergProviderKind, NexusIcebergCatalogProvider, build_catalog_provider_from_backend,
+    IcebergCatalogBackend, NexusIcebergCatalogProvider, build_catalog_provider_from_backend,
     build_scoped_catalog_provider_from_backend,
 };
 use iceberg::{NamespaceIdent, TableIdent};
@@ -87,7 +87,7 @@ fn mock_backend_with_tpch() -> MockIcebergCatalogBackend {
 #[tokio::test]
 async fn catalog_provider_schema_names_from_namespace_list() {
     let backend = Arc::new(mock_backend_with_tpch());
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
 
     let names = provider.schema_names();
     assert_eq!(names, vec!["tpch_sf1"]);
@@ -96,7 +96,7 @@ async fn catalog_provider_schema_names_from_namespace_list() {
 #[tokio::test]
 async fn catalog_provider_schema_lookup() {
     let backend = Arc::new(mock_backend_with_tpch());
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
 
     assert!(provider.schema("tpch_sf1").is_some());
     assert!(provider.schema("nonexistent_db").is_none());
@@ -105,7 +105,7 @@ async fn catalog_provider_schema_lookup() {
 #[tokio::test]
 async fn schema_provider_table_names_from_table_list() {
     let backend = Arc::new(mock_backend_with_tpch());
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
     let schema = provider.schema("tpch_sf1").unwrap();
 
     let mut names = schema.table_names();
@@ -116,7 +116,7 @@ async fn schema_provider_table_names_from_table_list() {
 #[tokio::test]
 async fn schema_provider_table_exist_matches_discovered_names() {
     let backend = Arc::new(mock_backend_with_tpch());
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
     let schema = provider.schema("tpch_sf1").unwrap();
 
     assert!(schema.table_exist("tpch_sf1_nation"));
@@ -129,7 +129,7 @@ async fn schema_provider_table_exist_matches_discovered_names() {
 #[tokio::test]
 async fn schema_provider_table_returns_none_for_unknown_name() {
     let backend = Arc::new(mock_backend_with_tpch());
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
     let schema = provider.schema("tpch_sf1").unwrap();
 
     let result = schema.table("ghost_table").await.unwrap();
@@ -143,7 +143,7 @@ async fn schema_provider_table_returns_none_for_unknown_name() {
 #[tokio::test]
 async fn empty_namespace_list_yields_empty_catalog() {
     let backend = Arc::new(MockIcebergCatalogBackend::new(vec![], HashMap::new()));
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
 
     assert!(provider.schema_names().is_empty());
     assert!(provider.schema("anything").is_none());
@@ -162,7 +162,7 @@ async fn catalog_provider_multi_namespace() {
             ("db_b".to_string(), vec!["products".to_string(), "inventory".to_string()]),
         ]),
     ));
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
 
     let mut schema_names = provider.schema_names();
     schema_names.sort();
@@ -183,8 +183,7 @@ async fn scoped_catalog_provider_exposes_only_requested_namespace() {
             ("db_b".to_string(), vec!["products".to_string(), "inventory".to_string()]),
         ]),
     ));
-    let provider =
-        build_scoped_catalog_provider_from_backend(backend, "glue", "db_b", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_scoped_catalog_provider_from_backend(backend, "glue", "db_b").await.unwrap();
 
     assert_eq!(provider.schema_names(), vec!["db_b"]);
     assert!(provider.schema("db_a").is_none());
@@ -200,9 +199,7 @@ async fn scoped_catalog_provider_does_not_enumerate_global_namespace_list() {
         vec![NamespaceIdent::new("unrelated".to_string())],
         HashMap::from([("tpch_sf1".to_string(), vec!["tpch_sf1_nation".to_string()])]),
     ));
-    let provider = build_scoped_catalog_provider_from_backend(backend, "glue", "tpch_sf1", IcebergProviderKind::Gpu)
-        .await
-        .unwrap();
+    let provider = build_scoped_catalog_provider_from_backend(backend, "glue", "tpch_sf1").await.unwrap();
 
     assert_eq!(provider.schema_names(), vec!["tpch_sf1"]);
     assert_eq!(provider.schema("tpch_sf1").unwrap().table_names(), vec!["tpch_sf1_nation"]);
@@ -219,7 +216,7 @@ async fn seeded_alias_resolves_through_schema_provider() {
     use datafusion::datasource::MemTable;
 
     let backend = Arc::new(mock_backend_with_tpch());
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
 
     // Seed a MemTable under the alias "nation".
     let schema = Arc::new(Schema::new(vec![Field::new("n_nationkey", DataType::Int32, false)]));
@@ -241,7 +238,7 @@ async fn seeding_same_alias_twice_keeps_first() {
     use datafusion::datasource::MemTable;
 
     let backend = Arc::new(mock_backend_with_tpch());
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
     let schema_provider = provider.schema_concrete("tpch_sf1").unwrap();
 
     let make_table = |tag: &str| {
@@ -275,7 +272,7 @@ async fn session_with_catalog(catalog_name: &str, provider: NexusIcebergCatalogP
 #[tokio::test]
 async fn information_schema_schemata_lists_namespaces() {
     let backend = Arc::new(mock_backend_with_tpch());
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
     let ctx = session_with_catalog("glue", provider).await;
 
     let sql = "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'glue'";
@@ -295,7 +292,7 @@ async fn information_schema_schemata_lists_namespaces() {
 #[tokio::test]
 async fn information_schema_tables_lists_discovered_tables() {
     let backend = Arc::new(mock_backend_with_tpch());
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
     let ctx = session_with_catalog("glue", provider).await;
 
     let sql = "SELECT table_name FROM information_schema.tables \
@@ -320,7 +317,7 @@ async fn information_schema_tables_lists_discovered_tables() {
 async fn information_schema_tables_does_not_load_iceberg_table_metadata() {
     let (counting_backend, load_count) = CountingMockBackend::new(mock_backend_with_tpch());
     let backend = Arc::new(counting_backend);
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
     let ctx = session_with_catalog("glue", provider).await;
 
     let sql = "SELECT table_name FROM information_schema.tables \
@@ -343,7 +340,7 @@ async fn multi_level_namespace_joined_as_schema_name() {
         vec![ns],
         HashMap::from([("a.b".to_string(), vec!["t1".to_string()])]),
     ));
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
 
     assert_eq!(provider.schema_names(), vec!["a.b"]);
     let schema = provider.schema("a.b").unwrap();
@@ -354,8 +351,7 @@ async fn multi_level_namespace_joined_as_schema_name() {
 async fn scoped_catalog_provider_accepts_multi_level_namespace_scope() {
     let backend =
         Arc::new(MockIcebergCatalogBackend::new(vec![], HashMap::from([("a.b".to_string(), vec!["t1".to_string()])])));
-    let provider =
-        build_scoped_catalog_provider_from_backend(backend, "glue", "a.b", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_scoped_catalog_provider_from_backend(backend, "glue", "a.b").await.unwrap();
 
     assert_eq!(provider.schema_names(), vec!["a.b"]);
     assert_eq!(provider.schema("a.b").unwrap().table_names(), vec!["t1"]);
@@ -371,7 +367,7 @@ async fn namespace_with_no_tables_is_still_discoverable() {
         vec![NamespaceIdent::new("empty_db".to_string())],
         HashMap::from([("empty_db".to_string(), vec![])]),
     ));
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
 
     assert_eq!(provider.schema_names(), vec!["empty_db"]);
     let schema = provider.schema("empty_db").unwrap();
@@ -420,7 +416,7 @@ async fn seed_prevents_backend_load_on_first_table_access() {
 
     let (counting_backend, load_count) = CountingMockBackend::new(mock_backend_with_tpch());
     let backend = Arc::new(counting_backend);
-    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let provider = build_catalog_provider_from_backend(backend, "glue").await.unwrap();
 
     // Seed the table before any query touches it.
     let schema = Arc::new(Schema::new(vec![Field::new("n_nationkey", DataType::Int32, false)]));

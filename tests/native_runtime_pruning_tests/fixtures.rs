@@ -8,8 +8,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::parquet::{
-    arrow::ArrowWriter,
-    file::{metadata::SortingColumn, properties::WriterProperties},
+    arrow::{ArrowSchemaConverter, ArrowWriter},
+    data_type::{Int32Type, Int64Type},
+    file::{metadata::SortingColumn, properties::WriterProperties, writer::SerializedFileWriter},
 };
 
 pub(super) fn write_sorting_columns_parquet_file(path: &std::path::Path) {
@@ -80,6 +81,42 @@ pub(super) fn write_row_group_pruning_parquet_file(path: &std::path::Path) {
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
+}
+
+pub(super) fn write_physically_empty_parquet_file(path: &std::path::Path) {
+    let file = File::create(path).unwrap();
+    let writer = ArrowWriter::try_new(file, empty_parquet_schema(), Some(WriterProperties::builder().build())).unwrap();
+    writer.close().unwrap();
+}
+
+pub(super) fn write_zero_row_group_parquet_file(path: &std::path::Path) {
+    let schema = empty_parquet_schema();
+    let file = File::create(path).unwrap();
+    let properties = Arc::new(WriterProperties::builder().build());
+    let parquet_schema = ArrowSchemaConverter::new().convert(&schema).unwrap();
+    let mut writer =
+        SerializedFileWriter::new(file, parquet_schema.root_schema_ptr(), Arc::clone(&properties)).unwrap();
+    let mut row_group = writer.next_row_group().unwrap();
+    for column_index in 0..4 {
+        let mut column = row_group.next_column().unwrap().expect("zero-row group must contain every schema column");
+        match column_index {
+            0 | 1 => column.typed::<Int32Type>().write_batch(&[], None, None).unwrap(),
+            2 | 3 => column.typed::<Int64Type>().write_batch(&[], None, None).unwrap(),
+            _ => unreachable!(),
+        };
+        column.close().unwrap();
+    }
+    row_group.close().unwrap();
+    writer.close().unwrap();
+}
+
+fn empty_parquet_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+        Field::new("m01", DataType::Int64, false),
+    ]))
 }
 
 pub(super) fn write_reader_pushdown_selective_parquet_file(path: &std::path::Path) {

@@ -53,21 +53,22 @@ cugraph = { path = "../cugraph-rs/cugraph-rs" }
 cugraph-sys = { path = "../cugraph-rs/cugraph-sys" }
 anyhow = "1"
 arrow = { version = "58.3.0", default-features = false, features = ["ipc"] }
-arrow-flight = { version = "58.3", features = ["flight-sql-experimental"] }
+arrow-flight = { version = "58.3.0", features = ["flight-sql-experimental"] }
 arrow-json = "58.3.0"
-aws-config = "1.8"
-aws-credential-types = "1.2"
+aws-config = "1.10"
+aws-credential-types = "1.3"
 axum = "0.8"
 blake3 = "1.8"
 datafusion = "54"
 futures = "0.3"
-getrandom = "0.3"
+getrandom = "0.4"
 iceberg = { git = "https://github.com/apache/iceberg-rust.git", branch = "main" }
 iceberg-catalog-glue = { git = "https://github.com/apache/iceberg-rust.git", branch = "main" }
 iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git", branch = "main" }
 iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust.git", branch = "main" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", branch = "main" }
 object_store = { version = "0.13", default-features = false, features = ["aws"] }
+opendal = "0.57"
 parquet = { version = "58.3", features = ["async", "object_store"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
@@ -89,16 +90,12 @@ iceberg = [
   "dep:iceberg",
   "dep:iceberg-catalog-glue",
   "dep:iceberg-catalog-rest",
+  "dep:iceberg-datafusion",
   "dep:iceberg-storage-opendal",
   "dep:object_store",
+  "dep:opendal",
   "dep:tempfile",
 ]
-# CPU Iceberg read path via the upstream iceberg-datafusion integration.
-# Opt-in on top of `iceberg`. When this feature is on and the server runs
-# under SESSION_PROFILE=cpu_fallback, Iceberg tables are served by
-# IcebergStaticTableProvider (real CPU Arrow reader) instead of the
-# GPU-only NexusTableFormatScanExec leaf.
-iceberg-cpu = ["iceberg", "dep:iceberg-datafusion"]
 server = [
   "dep:arrow-flight",
   "dep:argon2",
@@ -146,6 +143,7 @@ iceberg-catalog-rest = { workspace = true, optional = true }
 iceberg-datafusion = { workspace = true, optional = true }
 iceberg-storage-opendal = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true }
+opendal = { workspace = true, optional = true }
 parquet = { workspace = true }
 prost = { version = "0.14", optional = true }
 rand = { version = "0.10", optional = true }

@@ -17,11 +17,11 @@ fn native_clickbench_benchmark_admission_contract_is_stable() {
     let src = fs::read_to_string("src/clickbench_benchmark/mod.rs")
         .expect("benchmark module source must be readable from the package root");
     for required in [
-        "NEXUS_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY",
         "clickbench_native_profile_settings_from_env",
         "clickbench_native_optimizer_config_with_profile_settings",
-        ".with_fallback_policy(config.native_fallback_policy)",
-        "# clickbench_benchmark_native_fallback_policy=",
+        "RelationalExecutionSelection::strict_native()",
+        ".configure_native_optimizer(",
+        "# clickbench_benchmark_relational_execution=",
         "# clickbench_benchmark_native_profile_name=",
         "# clickbench_benchmark_native_profile_source=",
         "# clickbench_benchmark_native_device_budget_bytes=",
@@ -32,6 +32,7 @@ fn native_clickbench_benchmark_admission_contract_is_stable() {
     ] {
         assert!(src.contains(required), "benchmark module missing contract surface {required}");
     }
+    assert!(!src.contains("FALLBACK_POLICY"), "benchmark must not parse a removed legacy environment value");
 
     let workload_src = fs::read_to_string("src/report_workload/clickbench.rs")
         .expect("workload source must be readable from the package root");
@@ -44,26 +45,23 @@ fn native_clickbench_benchmark_admission_contract_is_stable() {
     }
 }
 
-/// The execution report binary's env vars are part of its public shell
-/// contract — users wire them into orchestration scripts. Pin the names by
-/// reading the binary source so accidental renames in `src/bin/...` fail
-/// here loudly rather than silently breaking external runners.
+/// The execution report emits a normal native selection together with the
+/// pipeline mode. Keep the selection explicit rather than deriving it from an
+/// environment policy value.
 #[test]
-fn native_clickbench_execution_report_env_var_names_are_stable() {
+fn native_clickbench_execution_report_records_normal_native_selection() {
     let src = fs::read_to_string("src/bin/native_clickbench_execution_report.rs")
         .expect("binary source must be readable from the workspace root");
     for required in [
         "NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS",
         "NEXUS_CLICKBENCH_EXECUTION_PROGRESS",
-        "NEXUS_CLICKBENCH_NATIVE_FALLBACK_POLICY",
         "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE",
+        "RelationalExecutionSelection::native()",
     ] {
         assert!(src.contains(required), "binary source missing env var {required}");
     }
-    assert!(
-        src.contains(".with_fallback_policy(fallback_policy)"),
-        "binary must configure the optimizer from the logged fallback-policy value"
-    );
+    assert!(src.contains(".configure_native_optimizer("), "binary must configure the normal native selection");
+    assert!(!src.contains("FALLBACK_POLICY"), "binary must not expose a removed legacy environment value");
     assert!(
         src.contains("[native_clickbench_execution_report] stage=run_config"),
         "binary must emit a stable stderr run-config event"

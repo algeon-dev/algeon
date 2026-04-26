@@ -119,15 +119,10 @@ pub(in crate::exec::bounded) fn execute_bounded_aggregate_to_frame(
     for chunk in &chunk_plan.chunks {
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
     }
-    if chunk_plan.chunks.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.bounded.plan",
-            "bounded execution requires at least one planned source chunk",
-        )
-        .with_fact("source_node_id", bounded.source_id));
-    }
     record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
+    if chunk_plan.chunks.is_empty() {
+        return execute_final_aggregate_merge(context, bounded, Vec::new(), reservations, metrics);
+    }
 
     if aggregate_spec_requires_whole_input(&bounded.aggregate.0.spec) {
         return execute_bounded_whole_input_aggregate_from_raw_chunks(

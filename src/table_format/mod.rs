@@ -26,4 +26,4 @@ pub use scan::{
     TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
     resolve_table_format_parquet_source_with_metadata,
 };
-pub use scan_exec::NexusTableFormatScanExec;
+pub use scan_exec::{NexusIcebergNativeScanOutcome, NexusIcebergScanExec};

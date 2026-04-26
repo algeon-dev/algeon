@@ -264,7 +264,7 @@ pub(super) async fn run_global_retained_byte_pressure_phase(
         shutdown_grace_secs: params.observability.shutdown_grace_secs,
     };
     let label = "native-global-byte-pressure";
-    let mut server = spawn_server(&pressure_params, evidence, label, ChildProfile::Native).await?;
+    let mut server = spawn_server(&pressure_params, evidence, label).await?;
     let phase_result = async {
         setup_local_table(&pressure_params, &server.channel, label).await?;
         run_global_retained_byte_pressure(&pressure_params, &server.channel, label, &mut evidence.scenarios).await

@@ -749,7 +749,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{native_exec::QueryAdmissionSource, policy::GpuFallbackPolicy};
+    use crate::native_exec::QueryAdmissionSource;
 
     fn nongds_deployment() -> DeploymentIoCapability {
         DeploymentIoCapability::from_probe_inputs(
@@ -761,7 +761,7 @@ mod tests {
 
     #[test]
     fn request_key_is_mutable_when_backend_admission_config_is_frozen() {
-        let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+        let base = NexusNativeOptimizerConfig::default();
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
 
@@ -799,8 +799,7 @@ mod tests {
         .unwrap();
         let execution_config = NexusNativeExecutionConfig::bounded(512, 512, 1, 3, 1)
             .with_query_admission_source(QueryAdmissionSource::new(service, tenant_id));
-        let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-            .with_native_execution_config(execution_config);
+        let base = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config);
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
         session_config.set(REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY, "768").unwrap();
@@ -830,7 +829,7 @@ mod tests {
     #[test]
     fn default_request_graph_options_do_not_override_service_acquired_calibration() {
         let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-        let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        let base = NexusNativeOptimizerConfig::default()
             .with_native_execution_config(NexusNativeExecutionConfig::bounded_auto_sized());
         let mut options = ConfigOptions::default();
         options
@@ -850,7 +849,7 @@ mod tests {
     #[test]
     fn explicit_request_graph_reset_overrides_service_acquired_calibration() {
         let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-        let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        let base = NexusNativeOptimizerConfig::default()
             .with_native_execution_config(NexusNativeExecutionConfig::bounded_auto_sized());
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
@@ -871,7 +870,7 @@ mod tests {
     #[test]
     fn public_request_graph_reset_setters_mark_request_options_configured() {
         let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-        let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        let base = NexusNativeOptimizerConfig::default()
             .with_native_execution_config(NexusNativeExecutionConfig::bounded_auto_sized());
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();

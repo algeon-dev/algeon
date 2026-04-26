@@ -44,8 +44,7 @@ pub(crate) async fn run_report_with_optional_stream(
     );
     let file_io = table.file_io().clone();
     let catalog_type = config.fixture.catalog_type().to_string();
-    let logical_schema = iceberg_table_arrow_schema(&table)?;
-    let planner = IcebergTableFormatPlanner::new(table)
+    let planner = IcebergTableFormatPlanner::new(table.clone())
         .with_catalog_type(catalog_type.clone())
         .with_parquet_read_strategy_config(config.fixture.parquet_read_strategy_config());
     let staging_records = Arc::new(Mutex::new(Vec::new()));
@@ -59,10 +58,7 @@ pub(crate) async fn run_report_with_optional_stream(
         config.table_alias.clone(),
     ));
 
-    let provider = Arc::new(
-        NexusIcebergTableProvider::from_table_format_planner(logical_schema, planner)
-            .with_catalog_type(catalog_type.clone()),
-    );
+    let provider = Arc::new(provider_with_native_planner(&table, planner, &catalog_type).await?);
     let (ctx, native_rule) =
         native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::Smoke).await?;
     ctx.register_table(config.table_alias.as_str(), provider)?;
@@ -145,9 +141,8 @@ pub(crate) async fn run_tpch_subset_report_with_execution_mode(
             table_fixture.mode_code(),
             table_fixture.table_ident_display(),
         );
-        let logical_schema = iceberg_table_arrow_schema(&table)?;
         let file_io = table.file_io().clone();
-        let planner = IcebergTableFormatPlanner::new(table)
+        let planner = IcebergTableFormatPlanner::new(table.clone())
             .with_catalog_type(catalog_type.clone())
             .with_parquet_read_strategy_config(table_fixture.parquet_read_strategy_config());
         let staging_planner = Arc::new(StagingTableFormatPlanner::new(
@@ -158,10 +153,7 @@ pub(crate) async fn run_tpch_subset_report_with_execution_mode(
             Arc::clone(&staging_records),
             (*table_name).to_string(),
         ));
-        let provider = Arc::new(
-            NexusIcebergTableProvider::from_table_format_planner(logical_schema, staging_planner)
-                .with_catalog_type(catalog_type.clone()),
-        );
+        let provider = Arc::new(provider_with_native_planner(&table, staging_planner, &catalog_type).await?);
         ctx.register_table(*table_name, provider)?;
     }
 
@@ -258,9 +250,8 @@ pub(crate) async fn run_tpcds_subset_report(
             table_fixture.mode_code(),
             table_fixture.table_ident_display(),
         );
-        let logical_schema = iceberg_table_arrow_schema(&table)?;
         let file_io = table.file_io().clone();
-        let planner = IcebergTableFormatPlanner::new(table)
+        let planner = IcebergTableFormatPlanner::new(table.clone())
             .with_catalog_type(catalog_type.clone())
             .with_parquet_read_strategy_config(table_fixture.parquet_read_strategy_config());
         let staging_planner = Arc::new(StagingTableFormatPlanner::new(
@@ -271,10 +262,7 @@ pub(crate) async fn run_tpcds_subset_report(
             Arc::clone(&staging_records),
             (*table_name).to_string(),
         ));
-        let provider = Arc::new(
-            NexusIcebergTableProvider::from_table_format_planner(logical_schema, staging_planner)
-                .with_catalog_type(catalog_type.clone()),
-        );
+        let provider = Arc::new(provider_with_native_planner(&table, staging_planner, &catalog_type).await?);
         ctx.register_table(*table_name, provider)?;
     }
 
@@ -479,9 +467,8 @@ pub(crate) async fn register_custom_probe_table(
         table_fixture.mode_code(),
         table_fixture.table_ident_display(),
     );
-    let logical_schema = iceberg_table_arrow_schema(&table)?;
     let file_io = table.file_io().clone();
-    let planner = IcebergTableFormatPlanner::new(table)
+    let planner = IcebergTableFormatPlanner::new(table.clone())
         .with_catalog_type(catalog_type.to_string())
         .with_parquet_read_strategy_config(table_fixture.parquet_read_strategy_config());
     let staging_planner = Arc::new(StagingTableFormatPlanner::new(
@@ -492,12 +479,29 @@ pub(crate) async fn register_custom_probe_table(
         staging_records,
         table_name.to_string(),
     ));
-    let provider = Arc::new(
-        NexusIcebergTableProvider::from_table_format_planner(logical_schema, staging_planner)
-            .with_catalog_type(catalog_type.to_string()),
-    );
+    let provider = Arc::new(provider_with_native_planner(&table, staging_planner, catalog_type).await?);
     ctx.register_table(table_name, provider)?;
     Ok(())
+}
+
+async fn provider_with_native_planner<P>(
+    table: &Table,
+    planner: Arc<P>,
+    catalog_type: &str,
+) -> SmokeResult<NexusIcebergTableProvider>
+where
+    P: TableFormatPlanner + Send + Sync + 'static,
+{
+    let resolved_snapshot_id = table.metadata().current_snapshot_id();
+    let cpu_provider = match resolved_snapshot_id {
+        Some(snapshot_id) => {
+            IcebergStaticTableProvider::try_new_from_table_snapshot(table.clone(), snapshot_id).await?
+        },
+        None => IcebergStaticTableProvider::try_new_from_table(table.clone()).await?,
+    };
+    let cpu_provider: Arc<dyn datafusion::datasource::TableProvider> = Arc::new(cpu_provider);
+    Ok(NexusIcebergTableProvider::from_cpu_provider_and_native_planner(cpu_provider, resolved_snapshot_id, planner)
+        .with_catalog_type(catalog_type))
 }
 pub(crate) fn query_error_report_row(
     query_id: String,

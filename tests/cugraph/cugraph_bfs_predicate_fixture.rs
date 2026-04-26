@@ -26,8 +26,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    graph_sql::CugraphSqlConfig, planner::NexusNativeOptimizerConfig, policy::GpuFallbackPolicy,
-    session::NexusSessionStateBuilderExt,
+    graph_sql::CugraphSqlConfig, planner::NexusNativeOptimizerConfig, session::NexusSessionStateBuilderExt,
 };
 
 const DEFAULT_VERTEX_COUNT: i64 = 12_000;
@@ -50,7 +49,7 @@ pub async fn run_numeric_include_edges_acceptance() {
     let state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -132,7 +131,7 @@ pub async fn run_utf8_include_edges_acceptance() {
     let state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -218,7 +217,7 @@ pub async fn run_utf8_path_acceptance() {
     let state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -302,7 +301,7 @@ pub async fn run_utf8_vertex_predicates_acceptance() {
     let state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);

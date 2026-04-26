@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use datafusion::catalog::CatalogProvider;
 use datafusion_nexus::table_format::iceberg::catalog::{
-    IcebergCatalogBackend, IcebergProviderKind, RestIcebergCatalogBackend, RestIcebergCatalogConfig,
+    IcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig,
     build_scoped_catalog_provider_from_backend,
 };
 use iceberg::{NamespaceIdent, TableIdent};
@@ -140,10 +140,9 @@ async fn rest_scoped_catalog_provider_discovers_tables_local() {
 
     let backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.unwrap());
-    let provider =
-        build_scoped_catalog_provider_from_backend(Arc::clone(&backend), "rest", &namespace, IcebergProviderKind::Gpu)
-            .await
-            .expect("build scoped catalog provider");
+    let provider = build_scoped_catalog_provider_from_backend(Arc::clone(&backend), "rest", &namespace)
+        .await
+        .expect("build scoped catalog provider");
 
     let schema_names = provider.schema_names();
     eprintln!("discovered scoped namespaces: {schema_names:?}");
@@ -156,7 +155,6 @@ async fn rest_scoped_catalog_provider_discovers_tables_local() {
 }
 
 /// Full CPU-reader path through REST/RustFS: `count(*)` plus a small `LIMIT`.
-/// Requires `iceberg-cpu`.
 ///
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
@@ -175,10 +173,9 @@ async fn rest_datafusion_scan_local() {
 
     let backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.unwrap());
-    let provider =
-        build_scoped_catalog_provider_from_backend(Arc::clone(&backend), "rest", &namespace, IcebergProviderKind::Cpu)
-            .await
-            .expect("build scoped CPU catalog provider");
+    let provider = build_scoped_catalog_provider_from_backend(Arc::clone(&backend), "rest", &namespace)
+        .await
+        .expect("build scoped catalog provider");
 
     let ctx = SessionContext::new_with_config(SessionConfig::new());
     ctx.register_catalog("lake", Arc::new(provider));
@@ -212,7 +209,7 @@ async fn rest_datafusion_scan_local() {
 }
 
 /// Metadata contract: `nation` has the expected schema and S3-backed metadata
-/// locations, without requiring GPU or `iceberg-cpu`.
+/// locations, without requiring GPU.
 ///
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
@@ -284,10 +281,10 @@ async fn rest_table_metadata_contract_local() {
 /// table; GPU-native correctness is opt-in.
 ///
 /// Default CPU-only path proves:
-/// 1. **Planning rewrite.** Register the REST catalog with a GPU provider and
+/// 1. **Planning rewrite.** Register the REST catalog with the unified provider and
 ///    the `NexusNativePhysicalOptimizerRule`, build the optimized physical plan
 ///    for an aggregate-over-Iceberg shape, and assert the rule rewrote it to a
-///    `NexusNativeExec` with no leftover `NexusTableFormatScanExec`. This proves
+///    `NexusNativeExec` with no leftover `NexusIcebergScanExec`. This proves
 ///    the optimizer wrapped the shape, not GPU result correctness.
 /// 2. **CPU-reader stability.** Two independent CPU-reader runs of the same
 ///    query must agree.
@@ -310,7 +307,7 @@ async fn rest_native_planning_and_parity_local() {
         prelude::{SessionConfig, SessionContext},
     };
     use datafusion_nexus::{
-        native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig, policy::GpuFallbackPolicy,
+        native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig,
         session::NexusSessionStateBuilderExt,
     };
 
@@ -334,21 +331,15 @@ async fn rest_native_planning_and_parity_local() {
     let storage_profile = rest_config.source_storage_profile_from_env();
     let gpu_backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config.clone()).await.unwrap());
-    let gpu_provider = build_scoped_catalog_provider_from_backend(
-        Arc::clone(&gpu_backend),
-        "rest",
-        &namespace,
-        IcebergProviderKind::Gpu,
-    )
-    .await
-    .expect("build scoped GPU catalog provider");
+    let gpu_provider = build_scoped_catalog_provider_from_backend(Arc::clone(&gpu_backend), "rest", &namespace)
+        .await
+        .expect("build scoped catalog provider");
 
     // Single partition keeps the plan free of RepartitionExec so the aggregate
     // shape lowers cleanly into one NexusNativeExec pipeline.
     let native_execution_config =
         NexusNativeExecutionConfig::bounded_auto_sized().with_source_storage_profile(storage_profile);
-    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(native_execution_config);
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(native_execution_config);
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(SessionConfig::new().with_target_partitions(1))
         .with_nexus_native(optimizer_config)
@@ -371,21 +362,16 @@ async fn rest_native_planning_and_parity_local() {
         "native profile must rewrite the aggregate-over-Iceberg shape to NexusNativeExec; plan:\n{rendered}"
     );
     assert!(
-        !plan_contains(physical.as_ref(), "NexusTableFormatScanExec"),
-        "native rewrite left a leftover NexusTableFormatScanExec; plan:\n{rendered}"
+        !plan_contains(physical.as_ref(), "NexusIcebergScanExec"),
+        "native rewrite left a leftover NexusIcebergScanExec; plan:\n{rendered}"
     );
 
     // --- CPU reference session: GPU-free Arrow reader ------------------------
     let cpu_backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config.clone()).await.unwrap());
-    let cpu_provider = build_scoped_catalog_provider_from_backend(
-        Arc::clone(&cpu_backend),
-        "rest",
-        &namespace,
-        IcebergProviderKind::Cpu,
-    )
-    .await
-    .expect("build scoped CPU catalog provider");
+    let cpu_provider = build_scoped_catalog_provider_from_backend(Arc::clone(&cpu_backend), "rest", &namespace)
+        .await
+        .expect("build scoped catalog provider");
     let cpu_ctx = SessionContext::new_with_config(SessionConfig::new());
     cpu_ctx.register_catalog("lake", Arc::new(cpu_provider));
     let cpu_rows =
@@ -403,7 +389,6 @@ async fn rest_native_planning_and_parity_local() {
             as Arc<dyn IcebergCatalogBackend>,
         "rest",
         &namespace,
-        IcebergProviderKind::Cpu,
     )
     .await
     .expect("build second scoped CPU catalog provider");

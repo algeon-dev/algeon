@@ -46,7 +46,6 @@ fn canonical_graph_path_exposes_sql_contracts() {
 #[cfg(feature = "server")]
 #[test]
 fn canonical_server_path_exposes_session_contracts() {
-    let _profile = datafusion_nexus::server::ServerSessionProfile::Native;
     let _auth_contracts = (
         size_of::<datafusion_nexus::server::AuthConfig>(),
         size_of::<datafusion_nexus::server::AuthInterceptor>(),
@@ -63,7 +62,6 @@ fn canonical_server_path_exposes_session_contracts() {
         datafusion_nexus::server::FlightSqlNativeRejectClass::Other,
         datafusion_nexus::server::log_native_planning_report,
         datafusion_nexus::server::log_native_planning_report_for_tables,
-        datafusion_nexus::server::log_leaf_guard_rejection,
     );
     let _error_contracts = (
         datafusion_nexus::server::ERROR_CODE_METADATA_KEY,

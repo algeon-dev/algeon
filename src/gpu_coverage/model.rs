@@ -101,7 +101,7 @@ impl QueryGpuCoverage {
             retryable: rejection.retryable,
             detail: rejection.detail,
         };
-        let runtime_caveats = runtime_caveats_for_overall(&overall, &validated_under, Vec::new());
+        let runtime_caveats = runtime_caveats_for_overall(&overall, Vec::new());
         Self {
             overall,
             domains: QueryGpuCoverageDomains {
@@ -361,10 +361,14 @@ impl QueryGpuRuntimeCaveat {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuValidatedUnder {
-    pub actual_policy: String,
-    pub diagnostic_policy: String,
+    /// Whether the caller had a native optimizer rule installed in the
+    /// session state cloned for validation.
+    pub native_optimizer_rule_installed: bool,
     pub optimizer_config_source: String,
-    pub execution_mode: String,
+    /// Native execution mode when a native optimizer rule was installed.
+    pub execution_mode: Option<String>,
+    /// Ordered completed-plan requirements from the effective native optimizer configuration.
+    pub final_plan_requirements: Vec<String>,
     pub session_config_fingerprint: String,
     pub optimizer_fingerprint: String,
     pub catalog_snapshot: String,
@@ -373,10 +377,10 @@ pub struct QueryGpuValidatedUnder {
 impl QueryGpuValidatedUnder {
     fn to_json(&self) -> Value {
         json!({
-            "actual_policy": self.actual_policy,
-            "diagnostic_policy": self.diagnostic_policy,
+            "native_optimizer_rule_installed": self.native_optimizer_rule_installed,
             "optimizer_config_source": self.optimizer_config_source,
             "execution_mode": self.execution_mode,
+            "final_plan_requirements": self.final_plan_requirements,
             "session_config_fingerprint": self.session_config_fingerprint,
             "optimizer_fingerprint": self.optimizer_fingerprint,
             "catalog_snapshot": self.catalog_snapshot,

@@ -1,6 +1,8 @@
 use super::*;
 #[cfg(feature = "cugraph")]
-use crate::exec::graph_algorithm::{adaptive_betweenness::*, diagnostics::*, memory::*, statistics::*};
+use crate::exec::graph_algorithm::{
+    adaptive_betweenness::*, diagnostics::*, graph_empty_input_prevalidated, memory::*, statistics::*,
+};
 use crate::exec::source::{ScheduledLocalParquetReadOutput, record_bounded_parquet_source_metrics};
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
@@ -483,14 +485,46 @@ fn execute_bounded_generic_graph_algorithm(
     {
         filtered_input = filtered_input.with_graph_residency(graph_residency);
     }
+    let mut live_reservations = vec![input_reservation];
+    let mut side_inputs = std::collections::BTreeMap::new();
+    for input_id in graph.inputs.iter().skip(1) {
+        match execute_bounded_generic_node(context, plan, *input_id, gpu_inputs, reservations, metrics) {
+            Ok(frame) => {
+                live_reservations.push(frame.reservation);
+                side_inputs.insert(*input_id, frame.frame);
+            },
+            Err(error) => {
+                drop(filtered_input);
+                release_reservations_reverse(reservations, live_reservations, metrics);
+                return Err(error);
+            },
+        }
+    }
+    if let Err(error) = validate_betweenness_static_seed_policy(&graph.spec) {
+        drop(filtered_input);
+        release_reservations_reverse(reservations, live_reservations, metrics);
+        return Err(error.with_fact_if_absent("node_id", node_id));
+    }
+    let empty_input_prevalidated = match graph_empty_input_prevalidated(
+        context,
+        graph,
+        filtered_input.frame(),
+        &side_inputs,
+        input_rows,
+        sanitized_input_rows,
+    ) {
+        Ok(empty_input_prevalidated) => empty_input_prevalidated,
+        Err(error) => {
+            drop(filtered_input);
+            release_reservations_reverse(reservations, live_reservations, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
     let mut runtime_spec = RuntimeGraphSpecResolution::CheckedNoRewrite;
     let mut graph_reservation = None;
-    let graph_memory_limit_bytes = if crate::graph_memory::graph_memory_reservation_required(graph.spec.algorithm) {
-        if let Err(error) = validate_betweenness_static_seed_policy(&graph.spec) {
-            drop(filtered_input);
-            reservations.release(input_reservation, metrics);
-            return Err(error.with_fact_if_absent("node_id", node_id));
-        }
+    let graph_memory_limit_bytes = if !empty_input_prevalidated
+        && crate::graph_memory::graph_memory_reservation_required(graph.spec.algorithm)
+    {
         let graph_statistics_probe = match graph_memory_vertex_estimate_with_reservation(
             context,
             node_id,
@@ -502,7 +536,7 @@ fn execute_bounded_generic_graph_algorithm(
             Ok(probe) => probe,
             Err(error) => {
                 drop(filtered_input);
-                reservations.release(input_reservation, metrics);
+                release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
@@ -511,7 +545,7 @@ fn execute_bounded_generic_graph_algorithm(
                 validate_betweenness_seed_policy_for_vertex_count(&graph.spec, probe.vertex_estimate.count)
         {
             drop(filtered_input);
-            reservations.release(input_reservation, metrics);
+            release_reservations_reverse(reservations, live_reservations, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         }
         runtime_spec =
@@ -520,7 +554,7 @@ fn execute_bounded_generic_graph_algorithm(
             Ok(device_total_memory_bytes) => device_total_memory_bytes,
             Err(error) => {
                 drop(filtered_input);
-                reservations.release(input_reservation, metrics);
+                release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
@@ -528,7 +562,7 @@ fn execute_bounded_generic_graph_algorithm(
             Ok(remaining) => remaining,
             Err(error) => {
                 drop(filtered_input);
-                reservations.release(input_reservation, metrics);
+                release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
@@ -547,7 +581,7 @@ fn execute_bounded_generic_graph_algorithm(
             Ok(report) => report,
             Err(error) => {
                 drop(filtered_input);
-                reservations.release(input_reservation, metrics);
+                release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
@@ -568,7 +602,7 @@ fn execute_bounded_generic_graph_algorithm(
                 reservations.reserved_bytes(),
             );
             drop(filtered_input);
-            reservations.release(input_reservation, metrics);
+            release_reservations_reverse(reservations, live_reservations, metrics);
             return Err(report
                 .denied_error(&request, graph_reservable_remaining_bytes)
                 .with_fact_if_absent("node_id", node_id));
@@ -582,7 +616,7 @@ fn execute_bounded_generic_graph_algorithm(
             },
             Err(error) => {
                 drop(filtered_input);
-                reservations.release(input_reservation, metrics);
+                release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error
                     .with_fact_if_absent("reason", crate::graph_memory::GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON));
             },
@@ -590,24 +624,6 @@ fn execute_bounded_generic_graph_algorithm(
     } else {
         None
     };
-    let mut live_reservations = vec![input_reservation];
-    let mut side_inputs = std::collections::BTreeMap::new();
-    for input_id in graph.inputs.iter().skip(1) {
-        match execute_bounded_generic_node(context, plan, *input_id, gpu_inputs, reservations, metrics) {
-            Ok(frame) => {
-                live_reservations.push(frame.reservation);
-                side_inputs.insert(*input_id, frame.frame);
-            },
-            Err(error) => {
-                drop(filtered_input);
-                if let Some(reservation) = graph_reservation.take() {
-                    reservations.release(reservation, metrics);
-                }
-                release_reservations_reverse(reservations, live_reservations, metrics);
-                return Err(error);
-            },
-        }
-    }
     let output = match execute_graph_algorithm_sanitized(
         context,
         node_id,
@@ -620,6 +636,7 @@ fn execute_bounded_generic_graph_algorithm(
         input_columns,
         null_edge_rows_dropped,
         preparation_pin_id,
+        empty_input_prevalidated,
         metrics,
     ) {
         Ok(output) => output,

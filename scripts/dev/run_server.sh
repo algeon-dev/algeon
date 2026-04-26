@@ -40,28 +40,10 @@ fi
 # NEXUS_SERVER_MAX_CONCURRENT_QUERIES
 #                                  max admitted statements (default: 2)
 # NEXUS_SERVER_MAX_IN_FLIGHT     compatibility alias for max admitted statements
-# NEXUS_SERVER_SESSION_PROFILE   "native" or "cpu_fallback" (default: native when
-#                                          Iceberg is configured, cpu_fallback otherwise).
-#                                          The native profile pins
-#                                          target_partitions=1 and disables DataFusion
-#                                          repartitioning + dynamic-filter pushdown so plans
-#                                          match the native-lowerable shapes the cudf
-#                                          optimizer rule expects. Required for Iceberg
-#                                          tables that use the GPU-only
-#                                          NexusTableFormatScanExec leaf.
-#                                          NOTE: cpu_fallback is **testing-only** while
-#                                          Iceberg is configured — the GPU-only leaf has
-#                                          no CPU Arrow reader yet,
-#                                          so plain ORDER BY queries hit the Milestone 1 leaf
-#                                          guard and fail in planning. The server emits a
-#                                          startup WARN when this combination is selected.
 # ---------------------------------------------------------------------------
 export NEXUS_SERVER_BIND="${NEXUS_SERVER_BIND:-0.0.0.0:50051}"
 export NEXUS_SERVER_LOG="${NEXUS_SERVER_LOG:-info}"
 export NEXUS_SERVER_MAX_CONCURRENT_QUERIES="${NEXUS_SERVER_MAX_CONCURRENT_QUERIES:-${NEXUS_SERVER_MAX_IN_FLIGHT:-2}}"
-# Iceberg presence already selects the native profile by default; leaving this
-# unset lets the server pick the right profile from the catalog wiring.
-# export NEXUS_SERVER_SESSION_PROFILE="native"
 
 # ---------------------------------------------------------------------------
 # cuGraph SQL DSL
@@ -143,21 +125,15 @@ export NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE="${NEXUS_SERVER_
 # becomes `DATAFUSION_EXECUTION_TARGET_PARTITIONS` (single underscores, NOT
 # double).
 # These variables are consumed by DataFusion itself; datafusion-nexus only
-# starts from the resulting SessionConfig and then applies the server profile.
+# enables catalog discovery on the resulting SessionConfig.
 #
-# DATAFUSION_EXECUTION_TARGET_PARTITIONS  CPU parallelism for fallback path.
-#                                         IGNORED under the native session
-#                                         profile (pinned to 1); only matters
-#                                         when NEXUS_SERVER_SESSION_PROFILE=cpu_fallback.
+# DATAFUSION_EXECUTION_TARGET_PARTITIONS  CPU parallelism and physical-plan
+#                                         partitioning for the server session.
 # DATAFUSION_EXECUTION_BATCH_SIZE         Arrow record-batch size for
 #                                         DataFusion/fallback operators. Native
 #                                         cudf source chunking is controlled by
 #                                         NEXUS_SERVER_NATIVE_* budget knobs.
 # ---------------------------------------------------------------------------
-# The default Iceberg/native profile pins target_partitions=1 to keep DataFusion
-# from inserting CPU-style RepartitionExec / SortPreservingMergeExec nodes over
-# the GPU-only NexusTableFormatScanExec leaf. Only override this when explicitly
-# running under NEXUS_SERVER_SESSION_PROFILE=cpu_fallback.
 # export DATAFUSION_EXECUTION_TARGET_PARTITIONS=16
 export DATAFUSION_EXECUTION_BATCH_SIZE="${DATAFUSION_EXECUTION_BATCH_SIZE:-8192}"
 

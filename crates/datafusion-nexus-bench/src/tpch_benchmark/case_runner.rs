@@ -44,13 +44,13 @@ pub(super) fn benchmark_query_progress_line(
             },
         };
     format!(
-        "[native_tpch_benchmark] stage=query_start query={} index={}/{} dataset_mode={} execution_mode={} native_fallback_policy={} memory_policy={} native_profile={} source_chunk_planning_mode={} max_row_groups_per_chunk={} max_source_chunk_bytes={} skip_cpu={}",
+        "[native_tpch_benchmark] stage=query_start query={} index={}/{} dataset_mode={} execution_mode={} relational_execution={} memory_policy={} native_profile={} source_chunk_planning_mode={} max_row_groups_per_chunk={} max_source_chunk_bytes={} skip_cpu={}",
         query.id,
         query_index.saturating_add(1),
         query_count,
         config.dataset_mode.as_str(),
         config.native_pipeline_execution_mode.as_str(),
-        gpu_fallback_policy_label(config.native_fallback_policy),
+        config.native_execution.as_str(),
         config.native_memory_policy.as_str(),
         profile_name,
         source_chunk_planning_mode,

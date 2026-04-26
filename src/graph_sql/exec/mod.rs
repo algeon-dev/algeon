@@ -1,10 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    task::{Context, Poll},
     time::Instant,
 };
 
@@ -13,16 +15,21 @@ use arrow::{
     datatypes::{DataType, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
-use cudf::{DataFrame, Series, frame::factorization::Codebook};
+use cudf::{
+    DataFrame, Series,
+    frame::{dataframe::HostBatchCursorConfig, factorization::Codebook},
+};
 use datafusion::{
-    common::{DataFusionError, Result, stats::Precision},
+    common::{DataFusionError, Result, stats::Precision, utils::memory::get_record_batch_memory_size},
     datasource::{memory::MemorySourceConfig, physical_plan::FileScanConfig, source::DataSourceExec},
-    execution::context::TaskContext,
+    execution::{
+        context::TaskContext,
+        memory_pool::{MemoryConsumer, MemoryReservation},
+    },
     physical_expr::{EquivalenceProperties, Partitioning, expressions::Column},
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, RecordBatchStream, SendableRecordBatchStream,
         aggregates::{AggregateExec, AggregateMode},
-        collect,
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet, RecordOutput},
         projection::ProjectionExec,
@@ -32,7 +39,7 @@ use datafusion::{
         union::UnionExec,
     },
 };
-use futures::{TryStreamExt, future::BoxFuture};
+use futures::{Stream, TryStreamExt, future::BoxFuture};
 use nexus_query_engine::{
     exec::{
         execute_query_plan_observed, execute_query_plan_with_gpu_inputs_observed,
@@ -66,7 +73,8 @@ use nexus_query_engine::{
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsParams,
-    CugraphBfsSource, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphKCoreDegreeType, plan_error,
+    CugraphBfsSource, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphKCoreDegreeType,
+    GpuIslandHostBoundaryConfig, plan_error,
 };
 use crate::{
     error::{Error, ErrorCode},
@@ -75,8 +83,9 @@ use crate::{
         NexusNativeGpuProducerExec, NexusNativeMetrics,
         admission::task_context_with_query_admission_ticket,
         graph::{
-            GraphAdmissionModelAsk, GraphBfsFollowerOutcome, GraphBfsLeader, GraphBfsSingleflightJoin,
-            GraphBfsSingleflightKey, GraphExecutionPlan, register_graph_execution_plan_discovery,
+            GraphAdmissionModelAsk, GraphBfsFollowerOutcome, GraphBfsLeader, GraphBfsPublishedResult,
+            GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionPlan,
+            register_graph_execution_plan_discovery,
         },
         producer::{
             GpuResidentProducer, gpu_resident_producer as native_gpu_resident_producer,
@@ -178,6 +187,13 @@ impl<'a> GraphExecutionMetrics<'a> {
         }
         self.sink.record_query_metrics(&self.accumulated);
         self.published = true;
+    }
+
+    fn record_device_to_host_materialization(&mut self, batch: &RecordBatch) {
+        self.accumulated.boundary.record_device_to_host_materialization(
+            u64::try_from(batch.num_rows()).unwrap_or(u64::MAX),
+            u64::try_from(get_record_batch_memory_size(batch)).unwrap_or(u64::MAX),
+        );
     }
 
     #[cfg(test)]

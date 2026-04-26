@@ -11,14 +11,297 @@ struct SleepingPlanner {
 }
 
 #[derive(Debug)]
+struct SleepingResolutionPlanner {
+    delay: Duration,
+}
+
+#[derive(Debug)]
 struct BusyPlanner {
     plan: TableFormatScanPlan,
     spin_for: Duration,
 }
 
+#[derive(Debug)]
+struct FailingResolutionPlanner {
+    code: ErrorCode,
+}
+
+#[derive(Debug)]
+struct FailingNativeInspectionPlanner {
+    plan: TableFormatScanPlan,
+    code: ErrorCode,
+}
+
+#[derive(Debug)]
+struct FailingInspectionAfterNotSupportedPlanner {
+    plan: TableFormatScanPlan,
+    inspection_count: Arc<AtomicUsize>,
+}
+
+#[derive(Debug)]
+struct TrimmingInspectionPlanner {
+    resolved_scan: TableFormatScanPlan,
+    inspected_scan: TableFormatScanPlan,
+    inspection_count: Arc<AtomicUsize>,
+}
+
+struct RealIcebergProviderFixture {
+    _temp_dir: tempfile::TempDir,
+    table_location: PathBuf,
+    table: Table,
+}
+
+impl RealIcebergProviderFixture {
+    fn new() -> Self {
+        Self::new_with_metadata_transform(|_| {})
+    }
+
+    fn new_nested() -> Self {
+        Self::new_with_metadata_transform(|metadata| {
+            metadata["last-column-id"] = serde_json::json!(9);
+            let current_schema = metadata["schemas"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|schema| schema["schema-id"] == serde_json::json!(1))
+                .unwrap();
+            current_schema["identifier-field-ids"] = serde_json::json!([1]);
+            current_schema["fields"] = serde_json::json!([
+                {"id": 1, "name": "x", "required": true, "type": "long"},
+                {
+                    "id": 2,
+                    "name": "names",
+                    "required": true,
+                    "type": {
+                        "type": "list",
+                        "element-id": 3,
+                        "element-required": true,
+                        "element": "string"
+                    }
+                },
+                {
+                    "id": 4,
+                    "name": "profile",
+                    "required": true,
+                    "type": {
+                        "type": "struct",
+                        "fields": [
+                            {"id": 5, "name": "city", "required": true, "type": "string"},
+                            {"id": 6, "name": "score", "required": true, "type": "long"}
+                        ]
+                    }
+                },
+                {
+                    "id": 7,
+                    "name": "attributes",
+                    "required": true,
+                    "type": {
+                        "type": "map",
+                        "key-id": 8,
+                        "key": "string",
+                        "value-id": 9,
+                        "value-required": true,
+                        "value": "long"
+                    }
+                }
+            ]);
+            metadata["default-sort-order-id"] = serde_json::json!(0);
+            metadata["sort-orders"] = serde_json::json!([{"order-id": 0, "fields": []}]);
+        })
+    }
+
+    fn new_with_metadata_transform(transform: impl FnOnce(&mut serde_json::Value)) -> Self {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let table_location = temp_dir.path().join("table1");
+        let metadata_dir = table_location.join("metadata");
+        fs::create_dir_all(&metadata_dir).unwrap();
+
+        let manifest_list1_location = metadata_dir.join("manifests_list_1.avro");
+        let manifest_list2_location = metadata_dir.join("manifests_list_2.avro");
+        let table_metadata1_location = metadata_dir.join("v1.json");
+        let template_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../iceberg-rust/crates/iceberg/testdata/example_table_metadata_v2.json");
+        let metadata_json = fs::read_to_string(template_path)
+            .unwrap()
+            .replace("{{ table_location }}", table_location.to_str().unwrap())
+            .replace("{{ manifest_list_1_location }}", manifest_list1_location.to_str().unwrap())
+            .replace("{{ manifest_list_2_location }}", manifest_list2_location.to_str().unwrap())
+            .replace("{{ table_metadata_1_location }}", table_metadata1_location.to_str().unwrap());
+        let mut metadata_json = serde_json::from_str::<serde_json::Value>(&metadata_json).unwrap();
+        transform(&mut metadata_json);
+        let table_metadata = serde_json::from_value::<TableMetadata>(metadata_json).unwrap();
+        let table = Table::builder()
+            .metadata(table_metadata)
+            .identifier(TableIdent::from_strs(["db", "table1"]).unwrap())
+            .file_io(FileIO::new_with_fs())
+            .metadata_location(table_metadata1_location.to_str().unwrap())
+            .runtime(iceberg::test_utils::test_runtime())
+            .build()
+            .unwrap();
+
+        Self { _temp_dir: temp_dir, table_location, table }
+    }
+
+    async fn write_one_row_and_current_manifest_list(&self) {
+        let current_snapshot = self.table.metadata().current_snapshot().unwrap();
+        let current_schema = current_snapshot.schema(self.table.metadata()).unwrap();
+        let arrow_schema = Arc::new(iceberg::arrow::schema_to_arrow_schema(current_schema.as_ref()).unwrap());
+        let data_path = self.table_location.join("data-0001.parquet");
+        let batch = RecordBatch::try_new(
+            Arc::clone(&arrow_schema),
+            vec![
+                Arc::new(Int64Array::from(vec![100])),
+                Arc::new(Int64Array::from(vec![200])),
+                Arc::new(Int64Array::from(vec![300])),
+                Arc::new(StringArray::from(vec!["row"])),
+                Arc::new(Float64Array::from(vec![1.5])),
+                Arc::new(Int32Array::from(vec![32])),
+                Arc::new(Int64Array::from(vec![64])),
+                Arc::new(BooleanArray::from(vec![true])),
+            ],
+        )
+        .unwrap();
+        let file = File::create(&data_path).unwrap();
+        let mut parquet_writer = ArrowWriter::try_new(file, arrow_schema, None).unwrap();
+        parquet_writer.write(&batch).unwrap();
+        parquet_writer.close().unwrap();
+
+        let current_partition_spec = self.table.metadata().default_partition_spec();
+        let manifest_path = self.table_location.join("metadata/data_manifest.avro");
+        let manifest_output = self.table.file_io().new_output(manifest_path.to_str().unwrap()).unwrap();
+        let mut writer = ManifestWriterBuilder::new(
+            manifest_output,
+            Some(current_snapshot.snapshot_id()),
+            current_schema,
+            current_partition_spec.as_ref().clone(),
+        )
+        .build_v2_data();
+        let data_file = DataFileBuilder::default()
+            .partition_spec_id(0)
+            .content(DataContentType::Data)
+            .file_path(data_path.to_str().unwrap().to_string())
+            .file_format(DataFileFormat::Parquet)
+            .file_size_in_bytes(fs::metadata(&data_path).unwrap().len())
+            .record_count(1)
+            .partition(Struct::from_iter([Some(Literal::long(100))]))
+            .key_metadata(None)
+            .build()
+            .unwrap();
+        writer.add_file(data_file, current_snapshot.sequence_number()).unwrap();
+        let data_file_manifest = writer.write_manifest_file().await.unwrap();
+
+        let manifest_list_writer =
+            self.table.file_io().new_output(current_snapshot.manifest_list()).unwrap().writer().await.unwrap();
+        let mut manifest_list_write = ManifestListWriter::v2(
+            manifest_list_writer,
+            current_snapshot.snapshot_id(),
+            current_snapshot.parent_snapshot_id(),
+            current_snapshot.sequence_number(),
+        );
+        manifest_list_write.add_manifests(vec![data_file_manifest].into_iter()).unwrap();
+        manifest_list_write.close().await.unwrap();
+    }
+
+    async fn write_one_nested_row_and_current_manifest_list(&self) {
+        let current_snapshot = self.table.metadata().current_snapshot().unwrap();
+        let current_schema = current_snapshot.schema(self.table.metadata()).unwrap();
+        let arrow_schema = Arc::new(iceberg::arrow::schema_to_arrow_schema(current_schema.as_ref()).unwrap());
+
+        let DataType::List(names_element) = arrow_schema.field(1).data_type() else {
+            panic!("names must be an Iceberg list");
+        };
+        let names: ArrayRef = Arc::new(ListArray::new(
+            Arc::clone(names_element),
+            OffsetBuffer::new(vec![0_i32, 2].into()),
+            Arc::new(StringArray::from(vec!["alice", "bob"])),
+            None,
+        ));
+
+        let DataType::Struct(profile_fields) = arrow_schema.field(2).data_type() else {
+            panic!("profile must be an Iceberg struct");
+        };
+        let profile: ArrayRef = Arc::new(StructArray::new(
+            profile_fields.clone(),
+            vec![Arc::new(StringArray::from(vec!["Taipei"])), Arc::new(Int64Array::from(vec![7]))],
+            None,
+        ));
+
+        let DataType::Map(attribute_entries, ordered) = arrow_schema.field(3).data_type() else {
+            panic!("attributes must be an Iceberg map");
+        };
+        let DataType::Struct(attribute_fields) = attribute_entries.data_type() else {
+            panic!("map entries must be a struct");
+        };
+        let entries = StructArray::new(
+            attribute_fields.clone(),
+            vec![Arc::new(StringArray::from(vec!["level"])), Arc::new(Int64Array::from(vec![3]))],
+            None,
+        );
+        let attributes: ArrayRef = Arc::new(MapArray::new(
+            Arc::clone(attribute_entries),
+            OffsetBuffer::new(vec![0_i32, 1].into()),
+            entries,
+            None,
+            *ordered,
+        ));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&arrow_schema),
+            vec![Arc::new(Int64Array::from(vec![100])), names, profile, attributes],
+        )
+        .unwrap();
+
+        let data_path = self.table_location.join("data-0001.parquet");
+        let file = File::create(&data_path).unwrap();
+        let mut parquet_writer = ArrowWriter::try_new(file, arrow_schema, None).unwrap();
+        parquet_writer.write(&batch).unwrap();
+        parquet_writer.close().unwrap();
+
+        let current_partition_spec = self.table.metadata().default_partition_spec();
+        let manifest_path = self.table_location.join("metadata/data_manifest.avro");
+        let manifest_output = self.table.file_io().new_output(manifest_path.to_str().unwrap()).unwrap();
+        let mut writer = ManifestWriterBuilder::new(
+            manifest_output,
+            Some(current_snapshot.snapshot_id()),
+            current_schema,
+            current_partition_spec.as_ref().clone(),
+        )
+        .build_v2_data();
+        let data_file = DataFileBuilder::default()
+            .partition_spec_id(0)
+            .content(DataContentType::Data)
+            .file_path(data_path.to_str().unwrap().to_string())
+            .file_format(DataFileFormat::Parquet)
+            .file_size_in_bytes(fs::metadata(&data_path).unwrap().len())
+            .record_count(1)
+            .partition(Struct::from_iter([Some(Literal::long(100))]))
+            .key_metadata(None)
+            .build()
+            .unwrap();
+        writer.add_file(data_file, current_snapshot.sequence_number()).unwrap();
+        let data_file_manifest = writer.write_manifest_file().await.unwrap();
+
+        let manifest_list_writer =
+            self.table.file_io().new_output(current_snapshot.manifest_list()).unwrap().writer().await.unwrap();
+        let mut manifest_list_write = ManifestListWriter::v2(
+            manifest_list_writer,
+            current_snapshot.snapshot_id(),
+            current_snapshot.parent_snapshot_id(),
+            current_snapshot.sequence_number(),
+        );
+        manifest_list_write.add_manifests(vec![data_file_manifest].into_iter()).unwrap();
+        manifest_list_write.close().await.unwrap();
+    }
+}
+
 impl SleepingPlanner {
     fn new(plan: TableFormatScanPlan, delay: Duration) -> Self {
         Self { plan, delay }
+    }
+}
+
+impl SleepingResolutionPlanner {
+    fn new(delay: Duration) -> Self {
+        Self { delay }
     }
 }
 
@@ -28,16 +311,123 @@ impl BusyPlanner {
     }
 }
 
-impl TableFormatPlanner for SleepingPlanner {
-    fn plan_scan(
+impl TableFormatPlanner for FailingResolutionPlanner {
+    fn resolve_scan(
+        &self,
+        _request: TableFormatScanRequest,
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
+        let code = self.code;
+        Box::pin(async move {
+            Err(Error::new(code, "datafusion_nexus.test.iceberg.resolve_scan", "test Iceberg source resolution failed"))
+        })
+    }
+}
+
+impl TableFormatPlanner for FailingNativeInspectionPlanner {
+    fn resolve_scan(
         &self,
         _request: TableFormatScanRequest,
     ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
         let plan = self.plan.clone();
+        Box::pin(async move { Ok(plan) })
+    }
+
+    fn inspect_native_scan(
+        &self,
+        _request: TableFormatScanRequest,
+        _resolved_scan: TableFormatScanPlan,
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
+        let code = self.code;
+        Box::pin(async move {
+            Err(Error::new(
+                code,
+                "datafusion_nexus.test.iceberg.inspect_native_scan",
+                "test optional native Iceberg probe failed",
+            ))
+        })
+    }
+}
+
+impl TableFormatPlanner for FailingInspectionAfterNotSupportedPlanner {
+    fn resolve_scan(
+        &self,
+        _request: TableFormatScanRequest,
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
+        let plan = self.plan.clone();
+        Box::pin(async move { Ok(plan) })
+    }
+
+    fn inspect_native_scan(
+        &self,
+        _request: TableFormatScanRequest,
+        _resolved_scan: TableFormatScanPlan,
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
+        self.inspection_count.fetch_add(1, AtomicOrdering::Relaxed);
+        Box::pin(async move {
+            Err(Error::new(
+                ErrorCode::SourceTemporaryFailure,
+                "datafusion_nexus.test.iceberg.inspect_native_scan",
+                "inspection must not replace a resolved capability rejection",
+            ))
+        })
+    }
+}
+
+impl TableFormatPlanner for TrimmingInspectionPlanner {
+    fn resolve_scan(
+        &self,
+        request: TableFormatScanRequest,
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
+        let scan_plan = self.resolved_scan.clone().with_scan_limit(request.scan_limit);
+        Box::pin(async move { Ok(scan_plan) })
+    }
+
+    fn inspect_native_scan(
+        &self,
+        _request: TableFormatScanRequest,
+        _resolved_scan: TableFormatScanPlan,
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
+        self.inspection_count.fetch_add(1, AtomicOrdering::Relaxed);
+        let scan_plan = self.inspected_scan.clone();
+        Box::pin(async move { Ok(scan_plan) })
+    }
+}
+
+impl TableFormatPlanner for SleepingResolutionPlanner {
+    fn resolve_scan(
+        &self,
+        _request: TableFormatScanRequest,
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
         let delay = self.delay;
         Box::pin(async move {
             tokio::time::sleep(delay).await;
-            Ok(plan)
+            Ok(TableFormatScanPlan::new(TableFormat::Iceberg))
+        })
+    }
+
+    fn planning_failure_facts(&self) -> Vec<(&'static str, String)> {
+        vec![("test_planner_fact", "slow_resolution".to_string())]
+    }
+}
+
+impl TableFormatPlanner for SleepingPlanner {
+    fn resolve_scan(
+        &self,
+        _request: TableFormatScanRequest,
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
+        let plan = self.plan.clone();
+        Box::pin(async move { Ok(plan) })
+    }
+
+    fn inspect_native_scan(
+        &self,
+        _request: TableFormatScanRequest,
+        resolved_scan: TableFormatScanPlan,
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
+        let delay = self.delay;
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            Ok(resolved_scan)
         })
     }
 
@@ -47,18 +437,26 @@ impl TableFormatPlanner for SleepingPlanner {
 }
 
 impl TableFormatPlanner for BusyPlanner {
-    fn plan_scan(
+    fn resolve_scan(
         &self,
         _request: TableFormatScanRequest,
     ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
         let plan = self.plan.clone();
+        Box::pin(async move { Ok(plan) })
+    }
+
+    fn inspect_native_scan(
+        &self,
+        _request: TableFormatScanRequest,
+        resolved_scan: TableFormatScanPlan,
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
         let spin_for = self.spin_for;
         Box::pin(async move {
             let deadline = Instant::now() + spin_for;
             while Instant::now() < deadline {
                 std::hint::spin_loop();
             }
-            Ok(plan)
+            Ok(resolved_scan)
         })
     }
 
@@ -78,7 +476,7 @@ impl RecordingPlanner {
 }
 
 impl TableFormatPlanner for RecordingPlanner {
-    fn plan_scan(
+    fn resolve_scan(
         &self,
         request: TableFormatScanRequest,
     ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
@@ -87,6 +485,108 @@ impl TableFormatPlanner for RecordingPlanner {
         let plan = self.plan.clone().with_scan_limit(scan_limit);
         Box::pin(async move { Ok(plan) })
     }
+}
+
+fn test_iceberg_provider<P>(schema: Arc<Schema>, planner: Arc<P>) -> NexusIcebergTableProvider
+where P: TableFormatPlanner + Send + Sync + 'static {
+    let cpu_provider: Arc<dyn TableProvider> = Arc::new(UnknownStatisticsCpuProvider::new(schema));
+    NexusIcebergTableProvider::from_cpu_provider_and_native_planner(cpu_provider, None, planner)
+}
+
+#[derive(Debug)]
+struct UnknownStatisticsCpuProvider {
+    schema: Arc<Schema>,
+}
+
+impl UnknownStatisticsCpuProvider {
+    fn new(schema: Arc<Schema>) -> Self {
+        Self { schema }
+    }
+}
+
+#[async_trait::async_trait]
+impl TableProvider for UnknownStatisticsCpuProvider {
+    fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let schema = project_schema(&self.schema, projection)?;
+        Ok(Arc::new(UnknownStatisticsCpuExec::new(schema)))
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::common::Result<Vec<TableProviderFilterPushDown>> {
+        Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
+    }
+}
+
+#[derive(Debug)]
+struct UnknownStatisticsCpuExec {
+    inner: EmptyExec,
+}
+
+impl UnknownStatisticsCpuExec {
+    fn new(schema: Arc<Schema>) -> Self {
+        Self { inner: EmptyExec::new(schema) }
+    }
+}
+
+impl DisplayAs for UnknownStatisticsCpuExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt_as(t, f)
+    }
+}
+
+impl ExecutionPlan for UnknownStatisticsCpuExec {
+    fn name(&self) -> &str {
+        "UnknownStatisticsCpuExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        self.inner.properties()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        Vec::new()
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        if children.is_empty() {
+            Ok(self)
+        } else {
+            Err(DataFusionError::Internal("test CPU exec does not accept children".to_string()))
+        }
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        self.inner.execute(partition, context)
+    }
+}
+
+fn test_iceberg_scan_exec(scan_plan: TableFormatScanPlan, schema: Arc<Schema>) -> NexusIcebergScanExec {
+    let cpu_delegate: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::clone(&schema)));
+    NexusIcebergScanExec::try_new(cpu_delegate, schema, NexusIcebergNativeScanOutcome::from_scan_plan(scan_plan))
+        .unwrap()
 }
 
 fn iceberg_test_schema() -> Arc<Schema> {
@@ -503,11 +1003,15 @@ fn timestamp_decimal_identity_partition_scan_plan(schema: Arc<Schema>) -> TableF
         ))
 }
 
-fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&NexusTableFormatScanExec> {
-    if let Some(scan) = plan.downcast_ref::<NexusTableFormatScanExec>() {
+fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&NexusIcebergScanExec> {
+    if let Some(scan) = plan.downcast_ref::<NexusIcebergScanExec>() {
         return Some(scan);
     }
     plan.children().into_iter().find_map(|child| find_table_format_scan(child.as_ref()))
+}
+
+fn plan_contains_name(plan: &dyn ExecutionPlan, name: &str) -> bool {
+    plan.name() == name || plan.children().into_iter().any(|child| plan_contains_name(child.as_ref(), name))
 }
 
 fn adapter_error_from(error: &DataFusionError) -> &datafusion_nexus::error::Error {

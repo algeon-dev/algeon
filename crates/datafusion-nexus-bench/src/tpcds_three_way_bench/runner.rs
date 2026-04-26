@@ -31,7 +31,6 @@ use datafusion_nexus::{
     },
     native_report::{NativeDataFusionExecutionMetrics, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow},
     planner::NexusNativePhysicalOptimizerRule,
-    policy::GpuFallbackPolicy,
     report::CandidateOutcome,
     session::NexusSessionStateBuilderExt,
 };
@@ -42,7 +41,7 @@ use nexus_query_engine::{
 };
 
 use crate::report_workload::{
-    gpu_fallback_policy_label,
+    RelationalExecutionSelection,
     tpcds::{
         NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
         TpcdsNativeProfileSettings, register_tpcds_tables_with_native_metadata,
@@ -60,7 +59,7 @@ use report::{NativeTimingMetrics, TSV_HEADER, print_metadata, print_progress, pr
 pub async fn run() -> Result<(), Box<dyn Error>> {
     let cfg = BenchConfig::from_env()?;
     eprintln!(
-        "[tpcds_three_way_bench] engine={} root={} queries={} warmups={} iterations={} native_profile={} native_device_budget_bytes={} native_max_source_chunk_bytes={} native_max_row_groups_per_chunk={} native_source_chunk_planning_mode={} native_fallback_policy={} native_pipeline_execution_mode={}",
+        "[tpcds_three_way_bench] engine={} root={} queries={} warmups={} iterations={} native_profile={} native_device_budget_bytes={} native_max_source_chunk_bytes={} native_max_row_groups_per_chunk={} native_source_chunk_planning_mode={} relational_execution={} native_pipeline_execution_mode={}",
         cfg.engine.as_str(),
         cfg.root.display(),
         cfg.queries.iter().map(|q| q.id).collect::<Vec<_>>().join(","),
@@ -71,7 +70,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         cfg.native_profile.max_source_chunk_bytes,
         cfg.native_profile.max_row_groups_per_chunk,
         cfg.native_profile.source_chunk_planning_mode.as_str(),
-        gpu_fallback_policy_label(cfg.native_fallback_policy),
+        cfg.relational_execution.as_str(),
         cfg.native_pipeline_execution_mode.as_str(),
     );
 
@@ -132,7 +131,7 @@ struct BenchConfig {
     warmups: usize,
     iterations: usize,
     native_profile: TpcdsNativeProfileSettings,
-    native_fallback_policy: GpuFallbackPolicy,
+    relational_execution: RelationalExecutionSelection,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
 }
 

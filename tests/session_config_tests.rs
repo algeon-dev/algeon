@@ -9,7 +9,6 @@ use datafusion_nexus::{
     error::{Error, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
     planner::NexusNativeOptimizerConfig,
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
     session_config::{DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig, NativeMemoryPolicyConfig},
 };
@@ -23,9 +22,7 @@ use nexus_query_engine::{
 
 #[test]
 fn nexus_session_builder_registers_datafusion_nexus_config_extension() {
-    let state = SessionStateBuilder::new()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .build();
+    let state = SessionStateBuilder::new().with_nexus_native(NexusNativeOptimizerConfig::default()).build();
 
     let extension = state
         .config_options()
@@ -38,7 +35,7 @@ fn nexus_session_builder_registers_datafusion_nexus_config_extension() {
 
 #[test]
 fn datafusion_nexus_session_config_applies_native_bounded_options() {
-    let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+    let base = NexusNativeOptimizerConfig::default()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1));
     let mut options = options_with_nexus_extension(&base);
 
@@ -84,8 +81,7 @@ fn datafusion_nexus_session_config_unbounded_disables_bounded_options() {
         .with_source_scheduler_policy(SourceSchedulerPolicy::new(4))
         .with_source_chunk_planning_mode(SourceChunkPlanningMode::LocalParquetThroughput)
         .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
-    let base =
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(base_execution);
+    let base = NexusNativeOptimizerConfig::default().with_native_execution_config(base_execution);
     let mut options = options_with_nexus_extension(&base);
 
     options.set("datafusion_nexus.native.memory_policy", "unbounded").unwrap();
@@ -106,7 +102,7 @@ fn datafusion_nexus_session_config_unbounded_disables_bounded_options() {
 
 #[test]
 fn datafusion_nexus_session_config_rejects_invalid_values() {
-    let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+    let base = NexusNativeOptimizerConfig::default();
     let mut options = options_with_nexus_extension(&base);
 
     let error = options.set("datafusion_nexus.native.max_retry_attempts", "0").unwrap_err();
@@ -132,7 +128,7 @@ fn datafusion_nexus_session_config_rejects_invalid_values() {
 
 #[test]
 fn datafusion_nexus_session_config_rejects_bounded_settings_while_unbounded() {
-    let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+    let base = NexusNativeOptimizerConfig::default();
     let mut options = options_with_nexus_extension(&base);
 
     options.set("datafusion_nexus.native.memory_policy", "unbounded").unwrap();
@@ -155,7 +151,7 @@ fn datafusion_nexus_request_grant_rejects_pre_admitted_query_handle() {
     )
     .unwrap();
     let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
-    let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
+    let base = NexusNativeOptimizerConfig::default().with_native_execution_config(
         NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
     );
     let mut options = options_with_nexus_extension(&base);
@@ -182,7 +178,7 @@ fn datafusion_nexus_request_grant_min_rejects_pre_admitted_query_handle() {
     )
     .unwrap();
     let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
-    let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
+    let base = NexusNativeOptimizerConfig::default().with_native_execution_config(
         NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
     );
     let mut options = options_with_nexus_extension(&base);
@@ -209,7 +205,7 @@ fn datafusion_nexus_pre_admitted_query_handle_without_request_grant_is_unchanged
     )
     .unwrap();
     let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
-    let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
+    let base = NexusNativeOptimizerConfig::default().with_native_execution_config(
         NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
     );
     let options = options_with_nexus_extension(&base);
@@ -226,7 +222,7 @@ fn datafusion_nexus_pre_admitted_query_handle_without_request_grant_is_unchanged
 
 #[test]
 fn datafusion_nexus_session_config_ignores_direct_bounded_fields_while_unbounded() {
-    let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+    let base = NexusNativeOptimizerConfig::default();
     let mut session_config = DataFusionNexusSessionConfig::from_optimizer_config(&base);
     session_config.native_memory_policy = NativeMemoryPolicyConfig::Unbounded;
     session_config.native_device_budget_bytes = 0;
@@ -246,7 +242,7 @@ fn datafusion_nexus_session_config_ignores_direct_bounded_fields_while_unbounded
 
 #[test]
 fn datafusion_nexus_session_config_entries_are_discoverable() {
-    let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+    let base = NexusNativeOptimizerConfig::default();
     let options = options_with_nexus_extension(&base);
     let entries = options.entries();
     let nexus_entries = entries.iter().filter(|entry| entry.key.starts_with("datafusion_nexus.")).collect::<Vec<_>>();
@@ -308,9 +304,7 @@ fn datafusion_nexus_session_config_option_descriptors_document_scope_and_types()
 
 #[tokio::test]
 async fn datafusion_nexus_session_config_can_be_set_through_sql() {
-    let state = SessionStateBuilder::new()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .build();
+    let state = SessionStateBuilder::new().with_nexus_native(NexusNativeOptimizerConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
 
     ctx.sql("SET datafusion_nexus.native.memory_policy = 'unbounded'").await.unwrap().collect().await.unwrap();
@@ -326,9 +320,7 @@ async fn datafusion_nexus_session_config_can_be_set_through_sql() {
 
 #[tokio::test]
 async fn datafusion_nexus_request_config_can_be_set_and_reset_through_sql() {
-    let state = SessionStateBuilder::new()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .build();
+    let state = SessionStateBuilder::new().with_nexus_native(NexusNativeOptimizerConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
 
     ctx.sql("SET datafusion_nexus.request.requested_grant_min_bytes = '1024'").await.unwrap().collect().await.unwrap();
@@ -360,9 +352,7 @@ async fn datafusion_nexus_request_config_can_be_set_and_reset_through_sql() {
 
 #[tokio::test]
 async fn datafusion_nexus_removed_graph_topology_config_key_is_rejected_through_sql() {
-    let state = SessionStateBuilder::new()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-        .build();
+    let state = SessionStateBuilder::new().with_nexus_native(NexusNativeOptimizerConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
     let removed_key = ["datafusion_nexus.request.graph_topology_", "family"].concat();
 

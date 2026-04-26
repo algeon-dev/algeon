@@ -8,11 +8,65 @@ pub(super) struct PreparedCugraphInputs {
     pub(super) logical_codebook: Option<Codebook>,
 }
 
+pub(super) struct PreparedCugraphInputSchemas {
+    pub(super) execution_spec: CugraphAlgorithmSpec,
+    pub(super) edge_schema: SchemaRef,
+    pub(super) predicate_schemas: Vec<SchemaRef>,
+    pub(super) logical_mapping: bool,
+}
+
+pub(super) fn prepare_bfs_logical_input_schemas(
+    spec: &CugraphAlgorithmSpec,
+    edge_schema: SchemaRef,
+    predicate_schemas: Vec<SchemaRef>,
+) -> Result<PreparedCugraphInputSchemas> {
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return Ok(PreparedCugraphInputSchemas {
+            execution_spec: spec.clone(),
+            edge_schema,
+            predicate_schemas,
+            logical_mapping: false,
+        });
+    };
+    if !validate_bfs_logical_mapping_capability(spec, params, &edge_schema)? {
+        return Ok(PreparedCugraphInputSchemas {
+            execution_spec: spec.clone(),
+            edge_schema,
+            predicate_schemas,
+            logical_mapping: false,
+        });
+    }
+    validate_bfs_logical_edge_schema(spec, &edge_schema)?;
+    let edge_schema = remap_bfs_logical_schema(&edge_schema, &[&spec.src_col, &spec.dst_col])?;
+    let mut mapped_predicates = Vec::with_capacity(predicate_schemas.len() + usize::from(params.source.is_utf8()));
+    if params.source.is_utf8() {
+        mapped_predicates.push(Arc::new(Schema::new(vec![arrow::datatypes::Field::new(
+            "__source_vertex",
+            DataType::Int32,
+            false,
+        )])));
+    }
+    for (index, schema) in predicate_schemas.into_iter().enumerate() {
+        let columns = bfs_logical_predicate_columns(params, index);
+        let columns = columns.iter().map(String::as_str).collect::<Vec<_>>();
+        mapped_predicates.push(remap_bfs_logical_schema(&schema, &columns)?);
+    }
+    let mut execution_spec = spec.clone();
+    execution_spec.output_schema = bfs_numeric_execution_schema(params)?;
+    Ok(PreparedCugraphInputSchemas {
+        execution_spec,
+        edge_schema,
+        predicate_schemas: mapped_predicates,
+        logical_mapping: true,
+    })
+}
+
 pub(super) fn prepare_bfs_logical_gpu_inputs(
     context: &ExecutionContext,
     spec: &CugraphAlgorithmSpec,
     edge_schema: SchemaRef,
     edge_frame: GpuDataFrame,
+    literal_source_frame: Option<CugraphGpuFrame>,
     predicate_frames: Vec<CugraphGpuFrame>,
 ) -> Result<PreparedCugraphInputs> {
     let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
@@ -24,7 +78,7 @@ pub(super) fn prepare_bfs_logical_gpu_inputs(
             logical_codebook: None,
         });
     };
-    if !bfs_uses_logical_mapping(spec, params, &edge_schema)? {
+    if !validate_bfs_logical_mapping_capability(spec, params, &edge_schema)? {
         return Ok(PreparedCugraphInputs {
             execution_spec: spec.clone(),
             edge_schema,
@@ -38,17 +92,12 @@ pub(super) fn prepare_bfs_logical_gpu_inputs(
         "datafusion_nexus.cugraph_sql.logical_mapping.runtime",
         "query service closed before cuGraph logical mapping acquired its runtime",
     )?;
-    if spec.edge_id_col.is_some() || params.predicates.include_edge_ids.is_some() {
-        return Err(plan_error(
-            "cuGraph BFS logical vertex-id mapping does not yet support edge_id_col or include_edge_ids predicates",
-        ));
-    }
-
     let source_edge_frame = edge_frame.clone();
     let edge_frame = edge_frame.into_frame();
     validate_bfs_logical_edge_schema(spec, &edge_schema)?;
     let mut domain_parts = vec![cudf_series(&edge_frame, &spec.src_col)?, cudf_series(&edge_frame, &spec.dst_col)?];
-    let literal_source_series = bfs_literal_string_source_series(context, params)?;
+    let literal_source_series =
+        literal_source_frame.as_ref().map(|frame| cudf_series(frame.frame.frame(), "__source_vertex")).transpose()?;
     if let Some(source_series) = &literal_source_series {
         domain_parts.push(source_series.clone());
     }
@@ -129,6 +178,16 @@ pub(super) fn prepare_bfs_logical_gpu_inputs(
     })
 }
 
+fn validate_bfs_logical_mapping_capability(
+    spec: &CugraphAlgorithmSpec,
+    params: &super::CugraphBfsParams,
+    edge_schema: &SchemaRef,
+) -> Result<bool> {
+    let logical_mapping = bfs_uses_logical_mapping(spec, params, edge_schema)?;
+    super::super::validate_bfs_logical_edge_id_capability(spec, logical_mapping)?;
+    Ok(logical_mapping)
+}
+
 pub(super) fn retain_mapped_cugraph_frame(
     frame: DataFrame,
     source: &GpuDataFrame,
@@ -175,10 +234,10 @@ pub(super) fn bfs_uses_logical_mapping(
         && is_bfs_logical_vertex_type(destination_field.data_type()))
 }
 
-pub(super) fn bfs_literal_string_source_series(
-    context: &ExecutionContext,
-    params: &super::CugraphBfsParams,
-) -> Result<Option<Series>> {
+pub(super) fn bfs_literal_string_source_batch(spec: &CugraphAlgorithmSpec) -> Result<Option<RecordBatch>> {
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return Ok(None);
+    };
     let Some(values) = params.source.literal_values() else {
         return Ok(None);
     };
@@ -192,22 +251,10 @@ pub(super) fn bfs_literal_string_source_series(
             CugraphBfsSourceVertex::Int64(_) => Err(plan_error("string BFS source list contained a numeric value")),
         })
         .collect::<Result<Vec<_>>>()?;
-    let runtime = counted_cudf_runtime(
-        context,
-        "datafusion_nexus.cugraph_sql.logical_mapping.runtime",
-        "query service closed before cuGraph logical mapping acquired its runtime",
-    )?;
-    runtime.series(values.as_slice()).map(Some).map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "datafusion_nexus.cugraph_sql.logical_mapping",
-            "failed to create GPU source-vertices series for cuGraph logical BFS mapping",
-            nexus_query_engine::error::QueryError::from_cudf(
-                "datafusion_nexus.cugraph_sql.logical_mapping",
-                "failed to create GPU source-vertices series for cuGraph logical BFS mapping",
-                error,
-            ),
-        ))
-    })
+    let schema = Arc::new(Schema::new(vec![arrow::datatypes::Field::new("__source_vertex", DataType::Utf8, false)]));
+    RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(values)) as ArrayRef])
+        .map(Some)
+        .map_err(DataFusionError::from)
 }
 
 pub(super) fn is_bfs_logical_vertex_type(data_type: &DataType) -> bool {
@@ -271,64 +318,15 @@ pub(super) fn encode_bfs_logical_predicate_frame(
     frame: CugraphGpuFrame,
     codebook: &Codebook,
 ) -> Result<CugraphGpuFrame> {
-    let mut expected_index = 0;
     let source_frame = frame.frame.clone();
     let mut raw = frame.frame.into_frame();
-    let mut encoded_columns = Vec::new();
-    let source_offset = bfs_planned_source_input_offset(params);
-    let is_source_frame = index < source_offset;
-    if let CugraphBfsSource::Relation(input) = &params.source
-        && is_source_frame
-    {
-        encoded_columns.push(input.column.as_str());
-    }
-    if is_source_frame {
-        for column in &encoded_columns {
-            raw = encode_column(raw, column, codebook)?;
-        }
-        return Ok(CugraphGpuFrame {
-            schema: remap_bfs_logical_schema(&frame.schema, &encoded_columns)?,
-            frame: retain_mapped_cugraph_frame(
-                raw,
-                &source_frame,
-                "datafusion_nexus.cugraph_sql.logical_mapping",
-                "failed to retain mapped cuGraph logical predicate frame residency",
-            )?,
-        });
-    }
-    let index = index.saturating_sub(source_offset);
-    if let Some(input) = &params.predicates.include_vertices {
-        if index == expected_index {
-            encoded_columns.push(input.column.as_str());
-        }
-        expected_index += 1;
-    }
-    if let Some(input) = &params.predicates.exclude_vertices {
-        if index == expected_index {
-            encoded_columns.push(input.column.as_str());
-        }
-        expected_index += 1;
-    }
-    if let Some(input) = &params.predicates.target_vertices {
-        if index == expected_index {
-            encoded_columns.push(input.column.as_str());
-        }
-        expected_index += 1;
-    }
-    if params.predicates.include_edge_ids.is_some() {
-        expected_index += 1;
-    }
-    if let Some(input) = &params.predicates.include_edges
-        && index == expected_index
-    {
-        encoded_columns.push(input.source_col.as_str());
-        encoded_columns.push(input.destination_col.as_str());
-    }
+    let encoded_columns = bfs_logical_predicate_columns(params, index);
     for column in &encoded_columns {
         raw = encode_column(raw, column, codebook)?;
     }
+    let encoded_column_refs = encoded_columns.iter().map(String::as_str).collect::<Vec<_>>();
     Ok(CugraphGpuFrame {
-        schema: remap_bfs_logical_schema(&frame.schema, &encoded_columns)?,
+        schema: remap_bfs_logical_schema(&frame.schema, &encoded_column_refs)?,
         frame: retain_mapped_cugraph_frame(
             raw,
             &source_frame,
@@ -336,6 +334,39 @@ pub(super) fn encode_bfs_logical_predicate_frame(
             "failed to retain mapped cuGraph logical predicate frame residency",
         )?,
     })
+}
+
+pub(super) fn bfs_logical_predicate_columns(params: &super::CugraphBfsParams, index: usize) -> Vec<String> {
+    let source_offset = bfs_planned_source_input_offset(params);
+    if index < source_offset {
+        return match &params.source {
+            CugraphBfsSource::Relation(input) => vec![input.column.clone()],
+            _ => Vec::new(),
+        };
+    }
+
+    let index = index - source_offset;
+    let mut expected_index = 0;
+    for input in [
+        params.predicates.include_vertices.as_ref(),
+        params.predicates.exclude_vertices.as_ref(),
+        params.predicates.target_vertices.as_ref(),
+        params.predicates.include_edge_ids.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if index == expected_index {
+            return vec![input.column.clone()];
+        }
+        expected_index += 1;
+    }
+    if let Some(input) = &params.predicates.include_edges
+        && index == expected_index
+    {
+        return vec![input.source_col.clone(), input.destination_col.clone()];
+    }
+    Vec::new()
 }
 
 pub(super) fn bfs_planned_source_input_offset(params: &super::CugraphBfsParams) -> usize {

@@ -65,7 +65,7 @@ pub(super) async fn run_structured_failure_case(
         parse_artifact(&query_id, Some(&correlation_id), &frames, Some("failed"), Some(&params.observability))?;
     Ok(ScenarioEvidence {
         scenario: scenario.to_string(),
-        profile: "native".to_string(),
+        execution_path: "native".to_string(),
         query_id,
         correlation_id,
         outcome: "failed".to_string(),
@@ -167,7 +167,7 @@ pub(super) async fn terminal_scenario(
         parse_artifact(&query_id, Some(&correlation_id), &frames, Some("cancelled"), Some(&params.observability))?;
     Ok(ScenarioEvidence {
         scenario: scenario.to_string(),
-        profile: "native".to_string(),
+        execution_path: "native".to_string(),
         query_id,
         correlation_id,
         outcome: "cancelled".to_string(),

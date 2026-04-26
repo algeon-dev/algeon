@@ -3,8 +3,6 @@ use super::*;
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];
 
-const NEXUS_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV: &str = "NEXUS_TPCDS_BENCH_NATIVE_FALLBACK_POLICY";
-
 impl BenchConfig {
     pub(super) fn from_env() -> Result<Self, Box<dyn Error>> {
         let engine = match std::env::var("NEXUS_TPCDS_BENCH_ENGINE").as_deref() {
@@ -43,18 +41,13 @@ impl BenchConfig {
             warmups,
             iterations,
             native_profile,
-            native_fallback_policy: native_fallback_policy_from_env()?,
+            relational_execution: match engine {
+                Engine::CpuDataFusion => RelationalExecutionSelection::CpuBaseline,
+                Engine::NativeGpu => RelationalExecutionSelection::strict_native(),
+                Engine::HybridCpuPreferred => RelationalExecutionSelection::native(),
+            },
             native_pipeline_execution_mode,
         })
-    }
-}
-
-fn native_fallback_policy_from_env() -> Result<GpuFallbackPolicy, Box<dyn Error>> {
-    match std::env::var(NEXUS_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV) {
-        Ok(value) => crate::report_workload::parse_gpu_fallback_policy(&value)
-            .map_err(|error| format!("invalid {NEXUS_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}").into()),
-        Err(std::env::VarError::NotPresent) => Ok(GpuFallbackPolicy::GpuPreferred),
-        Err(error) => Err(format!("failed to read {NEXUS_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}").into()),
     }
 }
 
@@ -87,9 +80,13 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
             Ok(BenchRuntime { execution_ctx: ctx, optimizer: None, native_planning: None, skip_cpu_preferred: false })
         },
         Engine::NativeGpu => {
-            let optimizer_config = tpcds_native_analytics_optimizer_config_with_profile_settings(&cfg.native_profile)
-                .with_fallback_policy(cfg.native_fallback_policy)
-                .with_native_pipeline_execution_mode(cfg.native_pipeline_execution_mode);
+            let optimizer_config = cfg
+                .relational_execution
+                .configure_native_optimizer(
+                    tpcds_native_analytics_optimizer_config_with_profile_settings(&cfg.native_profile)
+                        .with_native_pipeline_execution_mode(cfg.native_pipeline_execution_mode),
+                )
+                .expect("native GPU benchmark installs the native rule");
             let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
             let state = SessionStateBuilder::new_with_default_features()
                 .with_config(tpcds_native_report_session_config())
@@ -110,7 +107,7 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
             let (native_ctx, optimizer) = build_native_planning_context(
                 &cfg.root,
                 &cfg.native_profile,
-                cfg.native_fallback_policy,
+                cfg.relational_execution,
                 cfg.native_pipeline_execution_mode,
             )
             .await?;
@@ -127,13 +124,15 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
 async fn build_native_planning_context(
     root: &Path,
     native_profile: &TpcdsNativeProfileSettings,
-    fallback_policy: GpuFallbackPolicy,
+    relational_execution: RelationalExecutionSelection,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
 ) -> Result<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>), Box<dyn Error>> {
-    let optimizer_config =
-        tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings(native_profile)
-            .with_fallback_policy(fallback_policy)
-            .with_native_pipeline_execution_mode(native_pipeline_execution_mode);
+    let optimizer_config = relational_execution
+        .configure_native_optimizer(
+            tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings(native_profile)
+                .with_native_pipeline_execution_mode(native_pipeline_execution_mode),
+        )
+        .expect("hybrid planning session installs the native rule");
     let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpcds_native_report_session_config())

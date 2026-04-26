@@ -58,14 +58,12 @@ use super::{
     admission::QueryAdmission,
     auth::{AuthInterceptor, handle_handshake},
     cancel::QueryCancellation,
-    config::ServerSessionProfile,
     coordinator::{
         CoordinatorTicketPayload, QueryCoordinator, QueryCoordinatorConfig, QueryExecutionLease, QueryPlanningLease,
     },
-    diagnostics::{log_leaf_guard_rejection, log_native_planning_report_for_tables},
+    diagnostics::log_native_planning_report_for_tables,
     error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
     observability::CapturedError,
-    table_format_operator_fast_fail::fast_fail_unsupported_table_format_operator_plan,
 };
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphSqlConfig;

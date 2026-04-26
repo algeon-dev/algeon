@@ -25,6 +25,7 @@ pub use community::{
     GraphWccParams,
 };
 pub use definition::{
+    EmptyGraphEdgeInputAction, EmptyGraphInputPolicy, EmptyGraphSideInputPolicy,
     GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
     GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_OPERATION_REGISTRY, GraphAlgorithm,
     GraphAlgorithmStrictBoundedLowerLevelContract, GraphConstructionOptions, GraphConstructionPolicy,

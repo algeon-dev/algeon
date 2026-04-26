@@ -27,7 +27,6 @@ use datafusion_nexus::{
         NativeFallbackPressureWorkloadItem,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, TpchWorkloadResult, register_tpch_tables};
@@ -92,8 +91,13 @@ pub fn tpch_tuned_cpu_session_config() -> SessionConfig {
 /// the retry floor. Decision-grade benchmark binaries override this through
 /// their own TPC-H env-var surface.
 pub fn tpch_native_optimizer_config() -> NexusNativeOptimizerConfig {
-    NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
+    NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::bounded(
+        256 * 1024 * 1024,
+        64 * 1024 * 1024,
+        1,
+        3,
+        1,
+    ))
 }
 
 /// Builds fallback-pressure planning items for all TPC-H queries.

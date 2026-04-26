@@ -4,7 +4,7 @@ use super::*;
 fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resource_metrics() {
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q01".to_string()],
-        native_fallback_policy: GpuFallbackPolicy::GpuOnly,
+        native_execution: crate::report_workload::RelationalExecutionSelection::strict_native(),
         ..NativeTpchBenchmarkConfig::default()
     };
     let row = NativeTpchBenchmarkRow {
@@ -312,7 +312,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
 
     let text = report.to_tsv();
-    assert!(text.contains("# tpch_benchmark_native_fallback_policy=gpu_only\n"));
+    assert!(text.contains("# tpch_benchmark_relational_execution=native_no_datafusion_cpu\n"));
     assert!(text.contains(
         "q01\taccepted_replaced\tbounded_accepted_parity_matched\tnone\tnone\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
     ));

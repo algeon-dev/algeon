@@ -75,16 +75,16 @@ structured `rejected` verdict.
 | `no_cpu_in_planned_path` | The inspected physical path has no known DataFusion CPU execution. | Ship it — but read `runtime_caveats`. |
 | `partial_gpu_planned` | GPU fragments exist, but at least one CPU boundary is in the path (`gpu_fragments` / `cpu_boundaries` counts are in the JSON). | Read `fallback_reasons` to find the operator / expression / type / source that forced CPU. |
 | `cpu_only` | Nothing was admitted to the GPU. | Read `fallback_reasons`; the query shape or source is unsupported. |
-| `rejected` | Validation itself failed — parsing, logical planning, planning IO, or a GPU-only source that cannot fall back. | Check `phase`, `reason_code`, and `retryable` in the JSON. |
+| `rejected` | Validation itself failed — parsing, logical planning, physical planning, or terminal source-resolution IO. | Check `phase`, `reason_code`, and `retryable` in the JSON. |
 
 `rejected` carries a phase (`parsing`, `logical_planning`, `physical_planning`,
 `planning_io`, `native_lowering`) and a `retryable` flag. This matters most for
-Iceberg: a table resolved through the native GPU Iceberg provider has **no CPU
-Arrow reader**, so an inadmissible Iceberg query is a *hard planning error*,
-not a soft CPU fallback. A `planning_io` rejection (credentials, timeouts,
-snapshot or manifest loads) means "fix the environment," not "rewrite the
-query"; `retryable: true` additionally marks failures classified as transient,
-worth retrying as-is.
+Iceberg: common source-resolution failures such as credentials, timeouts,
+missing objects, or corrupt snapshot/manifest metadata remain terminal. Native
+inspection failures and capability misses retain the same wrapper's executable
+CPU delegate under `GpuPreferred`. A `planning_io` rejection means "fix the
+environment," not "rewrite the query"; `retryable: true` additionally marks
+failures classified as transient, worth retrying as-is.
 
 ## Why the axes are separate
 

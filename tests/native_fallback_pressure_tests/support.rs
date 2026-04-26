@@ -669,10 +669,9 @@ pub(super) async fn native_datafusion_planning_report_with_session(
     sql: &str,
     session_config: SessionConfig,
 ) -> NativeDataFusionPlanningReport {
-    let optimizer_config =
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
-            NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
-        );
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
+        NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
+    );
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)

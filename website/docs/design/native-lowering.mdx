@@ -48,7 +48,7 @@ planner inside the adapter.
         admitted candidates with <code>lower_physical_plan_to_native</code>, and
         records every <code>Rewritten</code> or <code>Rejected</code> outcome in
         a <code>PlanningReport</code>. Session wiring also installs a count-only
-        probe and a table-format leaf guard around this rule.</>,
+        probe and the final-plan requirement rule around this rule.</>,
     },
     {
       id: 'native', lane: 'gpu', col: 2,
@@ -67,10 +67,10 @@ planner inside the adapter.
       sub: 'stock DataFusion execution',
       detail: <>A rejected CPU-readable candidate keeps its original DataFusion
         operators. Server deployments bound concurrent CPU fallback statements
-        with a host-side semaphore that is separate from GPU admission.
-        GPU-only table-format leaves cannot execute through a CPU Arrow reader,
-        so the leaf guard converts leftovers into a structured planning error.
-        Either way, rejection is reportable: the
+        with a host-side semaphore that is separate from GPU admission. The
+        unified Iceberg scan delegates to its executable CPU Arrow plan when
+        native inspection or lowering rejects acceleration. Rejection is
+        reportable: the
         <code>FallbackReason</code> says which operator, expression, type,
         source contract, reservation contract, or policy blocked the native
         path.</>,
@@ -92,27 +92,25 @@ planner inside the adapter.
     {from: 'cpu', to: 'out'},
   ]}
   caption={<>The GPU path is a reported rewrite of supported physical subtrees.
-  Rejection preserves CPU-readable DataFusion operators or, for GPU-only
-  table-format leaves, fails before execution with a stable reason code.</>}
+  Rejection preserves CPU-readable DataFusion operators, including the CPU
+  delegate held by a unified Iceberg scan.</>}
 />
 
 :::warning[Runtime failures do not fall back]
 Fallback is a planning-time boundary. If a CPU-readable candidate is rejected,
-DataFusion keeps the CPU plan. If a GPU-only table-format leaf survives native
-planning, the leaf guard fails planning before a placeholder CPU execution path
-can run. Once `NexusNativeExec` or `NexusNativeComposedExec` starts, native
-runtime failures surface as structured errors and metrics; Nexus does not
-silently reroute that already-started native fragment back to CPU.
+DataFusion keeps the CPU plan. A rejected Iceberg native candidate keeps the
+same wrapper's executable CPU delegate. Once `NexusNativeExec` or
+`NexusNativeComposedExec` starts, native runtime failures surface as structured
+errors and metrics; Nexus does not silently reroute that already-started native
+fragment back to CPU.
 :::
 
 ## Fallback policy boundary
 
 `GpuPreferred` means "use native execution where it is proven supported."
 Rejected CPU-readable candidates are reported and left on DataFusion's CPU
-path. GPU-only table-format scan leaves are different: they are metadata-only
-planning leaves with no CPU Arrow reader, so the leaf guard turns a surviving
-leaf into a structured planning error. `GpuOnly` turns the first native rejection
-into a planning error.
+path. Iceberg scans follow the same rule through their executable CPU delegate.
+`GpuOnly` turns the first native rejection into a planning error.
 
 CPU fallback is not priced as GPU work. A fallback statement does not acquire a
 `QueryService` slot or device-memory grant, so it does not appear in the GPU
@@ -130,8 +128,8 @@ part of the operable design.
 | Hook | Position | Why it exists |
 | --- | --- | --- |
 | `datafusion_nexus_native_count_only` | Before DataFusion `aggregate_statistics` | Detect count-only shapes before DataFusion's statistics shortcut hides the native candidate. |
-| `datafusion_nexus_native` | After DataFusion's default rules, before the leaf guard | Run final native lowering, fallback policy, fragment composition, and report capture while DataFusion can still validate the rewritten tree. |
-| `datafusion_nexus_table_format_gpu_only_leaf_guard` | Immediately before `SanityCheckPlan` | Fail fast when a GPU-only table-format leaf survived native planning and would otherwise reach a CPU operator. |
+| `datafusion_nexus_native` | After DataFusion's default rules | Run final native lowering, fallback policy, fragment composition, and report capture while DataFusion can still validate the rewritten tree. |
+| `datafusion_nexus_final_plan_requirement` | After native lowering, before `SanityCheckPlan` | Enforce the configured final plan disposition without treating an executable Iceberg wrapper as a non-executable leaf. |
 
 :::warning[Public optimizer rule name]
 The public rule name `datafusion_nexus_native` is also the deduplication key.

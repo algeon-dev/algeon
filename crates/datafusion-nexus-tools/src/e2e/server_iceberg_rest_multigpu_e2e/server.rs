@@ -207,7 +207,6 @@ impl ServerChild {
             ("NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE", MAX_QUERIES_PER_DEVICE.to_string()),
             ("NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY", "least_loaded".to_string()),
             ("NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS", "120000".to_string()),
-            ("NEXUS_SERVER_SESSION_PROFILE", "native".to_string()),
             ("NEXUS_SERVER_NATIVE_MEMORY_POLICY", "bounded".to_string()),
             ("NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", (8_u64 * 1024 * 1024 * 1024).to_string()),
             ("NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS", "60".to_string()),

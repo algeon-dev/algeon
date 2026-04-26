@@ -20,8 +20,8 @@ use crate::native_exec::NexusNativeExecutionConfig;
 use crate::{
     gpu_coverage_sql::gpu_coverage_table_function,
     planner::{
-        NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
-        NexusTableFormatGpuOnlyLeafGuardRule,
+        NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig,
+        NexusNativePhysicalOptimizerRule,
     },
     session_config::DataFusionNexusSessionConfig,
 };
@@ -211,7 +211,7 @@ fn insert_nexus_native_rules_before_final_validation(
     rules.retain(|existing| {
         existing.name() != NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
             && existing.name() != NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
-            && existing.name() != NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME
+            && existing.name() != NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME
     });
     let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
     let insertion_position =
@@ -221,9 +221,12 @@ fn insert_nexus_native_rules_before_final_validation(
         .iter()
         .rposition(|existing| existing.name() == DATAFUSION_FINAL_VALIDATION_RULE_NAME)
         .map(|position| rules.remove(position));
-    let leaf_guard = Arc::new(NexusTableFormatGpuOnlyLeafGuardRule::with_native_rule(Arc::clone(&native_rule)));
+    let final_plan_requirement = Arc::new(NexusFinalPlanRequirementRule::with_native_rule(
+        native_rule.config().clone(),
+        Arc::clone(&native_rule),
+    ));
     rules.push(native_rule);
-    rules.push(leaf_guard);
+    rules.push(final_plan_requirement);
     if let Some(final_validation) = final_validation {
         rules.push(final_validation);
     }

@@ -1,32 +1,32 @@
 use super::*;
 
 pub(super) async fn run_matrix(params: &RuntimeParams, evidence: &mut RunEvidence) -> E2eResult<()> {
-    if params.profile.runs_native() {
+    if params.scenario_selection.runs_native() {
         run_native_matrix(params, evidence).await?;
     }
-    if params.profile.runs_cpu() && !params.profile_once {
+    if params.scenario_selection.runs_cpu() && !params.native_once {
         run_cpu_phase(params, evidence).await?;
     }
     Ok(())
 }
 
 pub(super) async fn run_native_matrix(params: &RuntimeParams, evidence: &mut RunEvidence) -> E2eResult<()> {
-    let mut server = spawn_server(params, evidence, "native-initial", ChildProfile::Native).await?;
+    let mut server = spawn_server(params, evidence, "native-initial").await?;
     setup_local_table(params, &server.channel, "native-initial").await?;
 
-    let effective_waves = if params.profile_once { 1 } else { params.waves };
+    let effective_waves = if params.native_once { 1 } else { params.waves };
     for wave in 0..effective_waves {
         let (mut rows, wave_evidence) = run_success_wave(params, &server.channel, wave).await?;
         evidence.scenarios.append(&mut rows);
         evidence.waves.push(wave_evidence);
     }
-    if !params.profile_once {
+    if !params.native_once {
         evidence.scenarios.push(run_native_join(params, &server.channel).await?);
         evidence.scenarios.push(run_variable_width_projection(params, &server.channel).await?);
     }
     wait_for_idle_with_timeout(params, &server.channel).await?;
 
-    if params.profile_once {
+    if params.native_once {
         let process = terminate_server(params, &mut server, "TERM", true).await?;
         evidence.processes.push(process);
         return Ok(());
@@ -43,7 +43,7 @@ pub(super) async fn run_native_matrix(params: &RuntimeParams, evidence: &mut Run
         terminate_gracefully_with_in_flight(params, &mut server).await?;
     evidence.processes.push(graceful_exit);
 
-    let mut recovery = spawn_server(params, evidence, "native-graceful-restart", ChildProfile::Native).await?;
+    let mut recovery = spawn_server(params, evidence, "native-graceful-restart").await?;
     setup_local_table(params, &recovery.channel, "native-graceful-restart").await?;
     let recovery_row = run_success_query(params, &recovery.channel, "graceful_restart_recovery", 0).await?;
     wait_for_idle_with_timeout(params, &recovery.channel).await?;
@@ -84,7 +84,7 @@ pub(super) async fn run_native_matrix(params: &RuntimeParams, evidence: &mut Run
         evidence.processes.push(hard_exit);
 
         let label = format!("native-hard-restart-{iteration}");
-        recovery = spawn_server(params, evidence, &label, ChildProfile::Native).await?;
+        recovery = spawn_server(params, evidence, &label).await?;
         setup_local_table(params, &recovery.channel, &label).await?;
         let recovery_row = run_success_query(params, &recovery.channel, "hard_restart_recovery", iteration).await?;
         wait_for_idle_with_timeout(params, &recovery.channel).await?;
@@ -242,7 +242,7 @@ pub(super) async fn run_success_query(
     }
     Ok(ScenarioEvidence {
         scenario: scenario.to_string(),
-        profile: "native".to_string(),
+        execution_path: "native".to_string(),
         query_id,
         correlation_id,
         outcome: "succeeded".to_string(),
@@ -294,7 +294,7 @@ pub(super) async fn run_native_join(params: &RuntimeParams, channel: &Channel) -
     }
     Ok(ScenarioEvidence {
         scenario: "native_join".to_string(),
-        profile: "native".to_string(),
+        execution_path: "native".to_string(),
         query_id,
         correlation_id,
         outcome: "succeeded".to_string(),
@@ -347,7 +347,7 @@ pub(super) async fn run_variable_width_projection(
         parse_artifact(&query_id, Some(&correlation_id), &frames, Some("succeeded"), Some(&params.observability))?;
     Ok(ScenarioEvidence {
         scenario: "variable_width_projection".to_string(),
-        profile: "native".to_string(),
+        execution_path: "native".to_string(),
         query_id,
         correlation_id,
         outcome: "succeeded".to_string(),

@@ -69,11 +69,19 @@ pub(super) struct BfsPathNode {
     predecessor: Option<BfsPathVertex>,
 }
 
+pub(super) struct BoundedBfsPathTarget {
+    vertex: BfsPathVertex,
+    reservation: Arc<MemoryReservation>,
+}
+
 pub(super) fn bfs_path_target_vertex(
     context: &ExecutionContext,
     spec: &CugraphAlgorithmSpec,
     predicate_frames: &[CugraphGpuFrame],
-) -> Result<Option<BfsPathVertex>> {
+    task_context: &TaskContext,
+    max_staging_bytes: usize,
+    metrics: &mut GraphExecutionMetrics<'_>,
+) -> Result<Option<BoundedBfsPathTarget>> {
     let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
         return Ok(None);
     };
@@ -101,23 +109,202 @@ pub(super) fn bfs_path_target_vertex(
             error,
         ))
     })?;
-    let batch = handle.to_host_record_batch().map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "datafusion_nexus.cugraph_sql.path_output",
-            "failed to materialize BFS target predicate source for path reconstruction",
-            error,
-        ))
-    })?;
-    if batch.num_rows() != 1 {
-        return Err(plan_error(format!(
-            "BFS path output requires exactly one target vertex row, found {}",
-            batch.num_rows()
-        )));
+    let output = materialize_gpu_output_eagerly(
+        handle,
+        task_context,
+        context.cancellation().clone(),
+        max_staging_bytes,
+        metrics,
+    )?;
+    let (batches, reservation) = output.into_parts();
+    let row_count = batches
+        .iter()
+        .try_fold(0usize, |rows, batch| rows.checked_add(batch.num_rows()))
+        .ok_or_else(|| host_staging_limit_error("bfs_path_target", "output", 0, usize::MAX, max_staging_bytes))?;
+    if row_count != 1 {
+        return Err(plan_error(format!("BFS path output requires exactly one target vertex row, found {}", row_count)));
     }
+    let batch = batches.iter().find(|batch| batch.num_rows() == 1).expect("row count checked above");
     let column_index = batch.schema().index_of(&target.column).map_err(DataFusionError::from)?;
-    vertex_value(batch.column(column_index).as_ref(), 0).map(Some)
+    let target_bytes = bfs_path_vertex_owned_bytes(batch.column(column_index).as_ref(), 0)?;
+    reserve_bfs_path_bytes(&reservation, "target_vertex", target_bytes, max_staging_bytes)?;
+    let vertex = vertex_value(batch.column(column_index).as_ref(), 0)?;
+    drop(batches);
+    if reservation.size() > target_bytes {
+        reservation.shrink(reservation.size() - target_bytes);
+    }
+    Ok(Some(BoundedBfsPathTarget { vertex, reservation }))
 }
 
+pub(super) fn materialize_bfs_path_output(
+    context: &ExecutionContext,
+    task_context: &TaskContext,
+    handle: GpuResultHandle,
+    spec: &CugraphAlgorithmSpec,
+    target: BoundedBfsPathTarget,
+    projection: Option<&Vec<usize>>,
+    limit: Option<usize>,
+    max_staging_bytes: usize,
+    metrics: &mut GraphExecutionMetrics<'_>,
+) -> Result<(RecordBatch, Arc<MemoryReservation>)> {
+    let BoundedBfsPathTarget { vertex: target, reservation: target_reservation } = target;
+    let available_staging_bytes = max_staging_bytes.checked_sub(target_reservation.size()).ok_or_else(|| {
+        host_staging_limit_error("bfs_path", "target_vertex", target_reservation.size(), 0, max_staging_bytes)
+    })?;
+    if available_staging_bytes == 0 {
+        return Err(host_staging_limit_error(
+            "bfs_path",
+            "traversal_output",
+            target_reservation.size(),
+            1,
+            max_staging_bytes,
+        ));
+    }
+    let raw = materialize_gpu_output_eagerly(
+        handle,
+        task_context,
+        context.cancellation().clone(),
+        available_staging_bytes,
+        metrics,
+    )?;
+    let (batches, reservation) = raw.into_parts();
+    let row_count =
+        batches.iter().try_fold(0usize, |rows, batch| rows.checked_add(batch.num_rows())).ok_or_else(|| {
+            host_staging_limit_error(
+                "bfs_path",
+                "reconstruction_workspace",
+                reservation.size(),
+                usize::MAX,
+                available_staging_bytes,
+            )
+        })?;
+    let workspace_bytes = bfs_path_workspace_upper_bound(reservation.size(), row_count).ok_or_else(|| {
+        host_staging_limit_error(
+            "bfs_path",
+            "reconstruction_workspace",
+            reservation.size(),
+            usize::MAX,
+            available_staging_bytes,
+        )
+    })?;
+    reserve_bfs_path_bytes(&reservation, "reconstruction_workspace", workspace_bytes, available_staging_bytes)?;
+
+    let (source, path, distances) = bfs_path_components(&batches, target.clone())?;
+    validate_bfs_path_vertex_types(&source, &target, &path)?;
+    let final_bytes = bfs_path_output_upper_bound(&source, &target, &path).ok_or_else(|| {
+        host_staging_limit_error("bfs_path", "final_output", reservation.size(), usize::MAX, available_staging_bytes)
+    })?;
+    reserve_bfs_path_bytes(&reservation, "final_output", final_bytes, available_staging_bytes)?;
+    let path = build_bfs_path_batch(Arc::clone(&spec.output_schema), source, target, path, distances)?;
+    let path = project_and_limit_host_batch(path, projection, limit)?;
+    let actual_bytes = get_record_batch_memory_size(&path);
+    if actual_bytes > final_bytes {
+        return Err(Error::new(
+            ErrorCode::CudfInvariantViolation,
+            "datafusion_nexus.cugraph_sql.path_output",
+            "materialized BFS path output exceeded its reserved upper bound",
+        )
+        .with_fact("reserved_final_bytes", final_bytes)
+        .with_fact("actual_final_bytes", actual_bytes)
+        .into());
+    }
+
+    drop(batches);
+    let retained_bytes = reservation.size();
+    if retained_bytes > actual_bytes {
+        reservation.shrink(retained_bytes - actual_bytes);
+    }
+    drop(target_reservation);
+    Ok((path, reservation))
+}
+
+fn validate_bfs_path_vertex_types(
+    source: &BfsPathVertex,
+    target: &BfsPathVertex,
+    path: &[BfsPathVertex],
+) -> Result<()> {
+    let all_int64 = matches!((source, target), (BfsPathVertex::Int64(_), BfsPathVertex::Int64(_)))
+        && path.iter().all(|vertex| matches!(vertex, BfsPathVertex::Int64(_)));
+    let all_utf8 = matches!((source, target), (BfsPathVertex::Utf8(_), BfsPathVertex::Utf8(_)))
+        && path.iter().all(|vertex| matches!(vertex, BfsPathVertex::Utf8(_)));
+    if all_int64 || all_utf8 {
+        return Ok(());
+    }
+    Err(plan_error("BFS path output source, target, and path vertex dtypes must match"))
+}
+
+fn reserve_bfs_path_bytes(
+    reservation: &MemoryReservation,
+    boundary: &'static str,
+    requested_bytes: usize,
+    max_staging_bytes: usize,
+) -> Result<()> {
+    let staged_bytes = reservation.size();
+    let next_bytes = staged_bytes.checked_add(requested_bytes).ok_or_else(|| {
+        host_staging_limit_error("bfs_path", boundary, staged_bytes, requested_bytes, max_staging_bytes)
+    })?;
+    if next_bytes > max_staging_bytes {
+        return Err(host_staging_limit_error("bfs_path", boundary, staged_bytes, requested_bytes, max_staging_bytes));
+    }
+    reservation.try_grow(requested_bytes).map_err(|source| {
+        DataFusionError::from(
+            Error::new(
+                ErrorCode::MemoryReservationFailed,
+                "datafusion_nexus.cugraph_sql.host_staging_reservation",
+                "DataFusion host memory pool denied cuGraph BFS path staging",
+            )
+            .with_fact("boundary", boundary)
+            .with_fact("requested_bytes", requested_bytes)
+            .with_fact("staged_bytes", staged_bytes)
+            .with_source(source),
+        )
+    })
+}
+
+fn bfs_path_workspace_upper_bound(raw_bytes: usize, row_count: usize) -> Option<usize> {
+    raw_bytes.checked_mul(6)?.checked_add(row_count.checked_mul(256)?)?.checked_add(4096)
+}
+
+fn bfs_path_output_upper_bound(
+    source: &BfsPathVertex,
+    target: &BfsPathVertex,
+    path: &[BfsPathVertex],
+) -> Option<usize> {
+    let rows = path.len();
+    let fixed_width_bytes = rows.checked_mul(40)?;
+    let string_bytes = match (source, target) {
+        (BfsPathVertex::Int64(_), BfsPathVertex::Int64(_)) => 0,
+        (BfsPathVertex::Utf8(source), BfsPathVertex::Utf8(target)) => {
+            source.len().checked_mul(rows)?.checked_add(target.len().checked_mul(rows)?)?.checked_add(
+                path.iter().try_fold(0usize, |bytes, vertex| match vertex {
+                    BfsPathVertex::Utf8(value) => bytes.checked_add(value.len()),
+                    BfsPathVertex::Int64(_) => None,
+                })?,
+            )?
+        },
+        _ => return None,
+    };
+    fixed_width_bytes.checked_add(string_bytes)?.checked_mul(2)?.checked_add(4096)
+}
+
+fn bfs_path_vertex_owned_bytes(array: &dyn Array, row: usize) -> Result<usize> {
+    let base = std::mem::size_of::<BfsPathVertex>();
+    if array.is_null(row) {
+        return Ok(base);
+    }
+    let string_bytes = if let Some(array) = array.as_any().downcast_ref::<StringArray>() {
+        array.value(row).len()
+    } else if let Some(array) = array.as_any().downcast_ref::<LargeStringArray>() {
+        array.value(row).len()
+    } else if let Some(array) = array.as_any().downcast_ref::<StringViewArray>() {
+        array.value(row).len()
+    } else {
+        0
+    };
+    base.checked_add(string_bytes).ok_or_else(|| plan_error("BFS path target vertex size overflowed usize"))
+}
+
+#[cfg(test)]
 pub(super) fn reconstruct_bfs_path_batch(
     spec: &CugraphAlgorithmSpec,
     batch: &RecordBatch,
@@ -126,15 +313,30 @@ pub(super) fn reconstruct_bfs_path_batch(
     let CugraphAlgorithmParams::Bfs(_params) = &spec.params else {
         return Err(plan_error("BFS path reconstruction received non-BFS parameters"));
     };
-    let vertex_col = batch.schema().index_of("vertex").map_err(DataFusionError::from)?;
-    let distance_col = batch.schema().index_of("distance").map_err(DataFusionError::from)?;
-    let predecessor_col = batch.schema().index_of("predecessor").map_err(DataFusionError::from)?;
-    let mut nodes = HashMap::with_capacity(batch.num_rows());
-    for row in 0..batch.num_rows() {
-        let vertex = vertex_value(batch.column(vertex_col).as_ref(), row)?;
-        let distance = optional_i64_value(batch.column(distance_col).as_ref(), row)?;
-        let predecessor = optional_vertex_value(batch.column(predecessor_col).as_ref(), row)?;
-        nodes.insert(vertex, BfsPathNode { distance, predecessor });
+    let (source, path, distances) = bfs_path_components(std::slice::from_ref(batch), target.clone())?;
+    validate_bfs_path_vertex_types(&source, &target, &path)?;
+    build_bfs_path_batch(Arc::clone(&spec.output_schema), source, target, path, distances)
+}
+
+fn bfs_path_components(
+    batches: &[RecordBatch],
+    target: BfsPathVertex,
+) -> Result<(BfsPathVertex, Vec<BfsPathVertex>, Vec<i64>)> {
+    let row_count = batches
+        .iter()
+        .try_fold(0usize, |rows, batch| rows.checked_add(batch.num_rows()))
+        .ok_or_else(|| plan_error("BFS path reconstruction row count overflowed usize"))?;
+    let mut nodes = HashMap::with_capacity(row_count);
+    for batch in batches {
+        let vertex_col = batch.schema().index_of("vertex").map_err(DataFusionError::from)?;
+        let distance_col = batch.schema().index_of("distance").map_err(DataFusionError::from)?;
+        let predecessor_col = batch.schema().index_of("predecessor").map_err(DataFusionError::from)?;
+        for row in 0..batch.num_rows() {
+            let vertex = vertex_value(batch.column(vertex_col).as_ref(), row)?;
+            let distance = optional_i64_value(batch.column(distance_col).as_ref(), row)?;
+            let predecessor = optional_vertex_value(batch.column(predecessor_col).as_ref(), row)?;
+            nodes.insert(vertex, BfsPathNode { distance, predecessor });
+        }
     }
     let sources = bfs_path_source_vertices(&nodes);
     let (source, path) = bfs_path_vertices(&nodes, &sources, target.clone())?;
@@ -144,7 +346,7 @@ pub(super) fn reconstruct_bfs_path_batch(
         .enumerate()
         .map(|(index, vertex)| nodes.get(vertex).and_then(|node| node.distance).unwrap_or(index as i64))
         .collect::<Vec<_>>();
-    build_bfs_path_batch(Arc::clone(&spec.output_schema), source, target, path, distances)
+    Ok((source, path, distances))
 }
 
 pub(super) fn bfs_path_source_vertices(nodes: &HashMap<BfsPathVertex, BfsPathNode>) -> HashSet<BfsPathVertex> {

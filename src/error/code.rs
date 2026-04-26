@@ -33,10 +33,21 @@ pub enum ErrorCode {
     SourceObjectNotFound,
     /// Source object storage failed with a retryable transport or service error.
     SourceTemporaryFailure,
+    /// A source reader or source dependency failed permanently while serving the request.
+    SourceDependencyFailure,
     /// A named field was not present in a resolved schema.
     FieldNotFound,
+    /// Materialized graph edges or side inputs violate the graph operation's
+    /// declared input contract.
+    GraphInputInvalid,
     /// The optimizer intentionally rejected a native candidate.
     NativeCandidateRejected,
+    /// A completed-plan requirement needed a GPU operation that the exact
+    /// final physical plan could not provide.
+    RequiredGpuOperationUnsupported,
+    /// The exact completed physical plan did not satisfy a configured final
+    /// plan requirement.
+    FinalPlanRequirementUnsatisfied,
     /// A physical operator is unsupported by the GPU/native adapter path.
     UnsupportedOperator,
     /// A physical expression or expression form is unsupported.
@@ -64,6 +75,9 @@ pub enum ErrorCode {
     /// One unsplittable Arrow host row exceeds the configured deterministic
     /// materialization ceiling.
     HostMaterializationLimitExceeded,
+    /// A bounded host-staging boundary exceeded its configured cumulative byte
+    /// ceiling before GPU admission or a device-to-host copy.
+    HostStagingLimitExceeded,
     /// cuDF reported a temporary dependency/runtime failure.
     CudfTemporaryFailure,
     /// cuDF reported a persistent dependency/runtime failure.
@@ -109,8 +123,12 @@ impl ErrorCode {
             Self::SourceUnauthenticated => "source_unauthenticated",
             Self::SourceObjectNotFound => "source_object_not_found",
             Self::SourceTemporaryFailure => "source_temporary_failure",
+            Self::SourceDependencyFailure => "source_dependency_failure",
             Self::FieldNotFound => "field_not_found",
+            Self::GraphInputInvalid => "graph_input_invalid",
             Self::NativeCandidateRejected => "native_candidate_rejected",
+            Self::RequiredGpuOperationUnsupported => "required_gpu_operation_unsupported",
+            Self::FinalPlanRequirementUnsatisfied => "final_plan_requirement_unsatisfied",
             Self::UnsupportedOperator => "unsupported_operator",
             Self::UnsupportedExpression => "unsupported_expression",
             Self::UnsupportedType => "unsupported_type",
@@ -121,6 +139,7 @@ impl ErrorCode {
             Self::CudfResourceExhausted => "cudf_resource_exhausted",
             Self::SizeOverflow => "size_overflow",
             Self::HostMaterializationLimitExceeded => "host_materialization_limit_exceeded",
+            Self::HostStagingLimitExceeded => "host_staging_limit_exceeded",
             Self::CudfTemporaryFailure => "cudf_temporary_failure",
             Self::CudfPersistentFailure => "cudf_persistent_failure",
             Self::CudfDependencyFailure => "cudf_dependency_failure",
@@ -256,26 +275,30 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         ErrorCode::DataFusionPlanning
         | ErrorCode::PlanningTimeout
         | ErrorCode::NativeCandidateRejected
+        | ErrorCode::FinalPlanRequirementUnsatisfied
         | ErrorCode::InvalidExecutionPlan => ErrorKind::Planning,
         ErrorCode::ObjectNotFound | ErrorCode::SourceObjectNotFound => ErrorKind::NotFound,
         ErrorCode::SourceAccessDenied => ErrorKind::PermissionDenied,
         ErrorCode::SourceUnauthenticated => ErrorKind::Unauthenticated,
-        ErrorCode::FieldNotFound => ErrorKind::InvalidInput,
-        ErrorCode::UnsupportedOperator | ErrorCode::UnsupportedExpression | ErrorCode::UnsupportedType => {
-            ErrorKind::Unsupported
-        },
+        ErrorCode::FieldNotFound | ErrorCode::GraphInputInvalid => ErrorKind::InvalidInput,
+        ErrorCode::RequiredGpuOperationUnsupported
+        | ErrorCode::UnsupportedOperator
+        | ErrorCode::UnsupportedExpression
+        | ErrorCode::UnsupportedType => ErrorKind::Unsupported,
         ErrorCode::InvalidChildCount => ErrorKind::Internal,
         ErrorCode::CudfInvalidInput => ErrorKind::InvalidInput,
         ErrorCode::CudfUnsupported => ErrorKind::Unsupported,
         ErrorCode::CudfResourceExhausted
         | ErrorCode::SizeOverflow
         | ErrorCode::HostMaterializationLimitExceeded
+        | ErrorCode::HostStagingLimitExceeded
         | ErrorCode::MemoryReservationFailed
         | ErrorCode::ServiceOverloaded
         | ErrorCode::FlightFrameTooLarge => ErrorKind::ResourceExhausted,
         ErrorCode::CudfTemporaryFailure
         | ErrorCode::CudfPersistentFailure
         | ErrorCode::CudfDependencyFailure
+        | ErrorCode::SourceDependencyFailure
         | ErrorCode::SourceTemporaryFailure
         | ErrorCode::ServerTransportFailure => ErrorKind::DependencyFailure,
         ErrorCode::CudfInvariantViolation => ErrorKind::InvariantViolation,
@@ -308,8 +331,11 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::SourceUnauthenticated
         | ErrorCode::SourceObjectNotFound
         | ErrorCode::FieldNotFound
+        | ErrorCode::GraphInputInvalid
         | ErrorCode::FlightFrameTooLarge
         | ErrorCode::NativeCandidateRejected
+        | ErrorCode::RequiredGpuOperationUnsupported
+        | ErrorCode::FinalPlanRequirementUnsatisfied
         | ErrorCode::UnsupportedOperator
         | ErrorCode::UnsupportedExpression
         | ErrorCode::UnsupportedType
@@ -319,7 +345,9 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::CudfUnsupported
         | ErrorCode::SizeOverflow
         | ErrorCode::HostMaterializationLimitExceeded
+        | ErrorCode::HostStagingLimitExceeded
         | ErrorCode::CudfDependencyFailure
+        | ErrorCode::SourceDependencyFailure
         | ErrorCode::CudfInvariantViolation
         | ErrorCode::ServerTransportFailure
         | ErrorCode::Internal => ErrorStatus::Permanent,

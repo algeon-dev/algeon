@@ -14,7 +14,6 @@ use datafusion_nexus::{
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::clickbench::{
@@ -149,8 +148,8 @@ pub fn clickbench_tuned_cpu_session_config() -> SessionConfig {
 ///
 /// Resolves [`NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV`] plus optional
 /// `NEXUS_CLICKBENCH_NATIVE_*` overrides. Defaults remain conservative (64 MiB /
-/// 1 row group) with `GpuPreferred` fallback; callers that need
-/// `gpu_only` should chain `.with_fallback_policy(...)`.
+/// 1 row group); callers select normal or strict native execution when they
+/// install the resulting rule.
 pub fn clickbench_native_optimizer_config() -> NexusNativeOptimizerConfig {
     clickbench_native_optimizer_config_with_profile_settings(&clickbench_native_profile_settings_from_env())
 }
@@ -159,7 +158,7 @@ pub fn clickbench_native_optimizer_config() -> NexusNativeOptimizerConfig {
 pub fn clickbench_native_optimizer_config_with_profile_settings(
     profile: &ClickbenchNativeProfileSettings,
 ) -> NexusNativeOptimizerConfig {
-    NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
+    NexusNativeOptimizerConfig::default().with_native_execution_config(
         NexusNativeExecutionConfig::bounded(
             profile.device_budget_bytes,
             profile.max_source_chunk_bytes,

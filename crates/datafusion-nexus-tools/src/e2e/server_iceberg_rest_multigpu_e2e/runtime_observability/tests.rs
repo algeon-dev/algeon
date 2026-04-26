@@ -117,10 +117,39 @@ fn control_fixture_accepts_pending_active_and_unavailable_states() {
     }
 }
 
+fn runtime_params_fixture() -> RuntimeParams {
+    RuntimeParams {
+        fixture_root: PathBuf::from("/fixture"),
+        catalog_path: PathBuf::from("/catalog"),
+        server_binary: PathBuf::from("/server"),
+        device: 0,
+        concurrency: 2,
+        waves: 1,
+        restart_iterations: 0,
+        scenario_selection: ScenarioSelection::Matrix,
+        bounded_mode: "strict_bounded".to_string(),
+        evidence_path: PathBuf::from("/evidence.json"),
+        server_log_path: PathBuf::from("/server.log"),
+        connect_timeout: Duration::from_secs(1),
+        query_timeout: Duration::from_secs(1),
+        poll_timeout: Duration::from_secs(1),
+        shutdown_timeout: Duration::from_secs(1),
+        native_once: false,
+        observability: ObservabilityLimits {
+            per_query_records: 1,
+            per_query_bytes: 1,
+            retained_count: 2,
+            retained_bytes: 2,
+            ttl_secs: 1,
+            shutdown_grace_secs: 1,
+        },
+    }
+}
+
 #[test]
-fn evidence_v2_separates_capture_and_global_retained_byte_pressure() {
-    assert_eq!(EVIDENCE_SCHEMA, "datafusion_nexus.server_runtime_observability_e2e.v2");
-    assert_eq!(EVIDENCE_VERSION, 2);
+fn evidence_v3_pins_execution_path_payload_shape() {
+    assert_eq!(EVIDENCE_SCHEMA, "datafusion_nexus.server_runtime_observability_e2e.v3");
+    assert_eq!(EVIDENCE_VERSION, 3);
     const {
         assert!(GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES < GLOBAL_BYTE_PRESSURE_RETAINED_BYTES);
         assert!(
@@ -128,6 +157,50 @@ fn evidence_v2_separates_capture_and_global_retained_byte_pressure() {
         );
     }
     assert_eq!(artifact_charge(38_000, 12_000).unwrap(), 50_000);
+
+    let mut evidence = RunEvidence::new(&runtime_params_fixture());
+    evidence.scenarios.push(ScenarioEvidence {
+        scenario: "native".to_string(),
+        execution_path: "native".to_string(),
+        query_id: QUERY_ID.to_string(),
+        correlation_id: TRACE_ID.to_string(),
+        outcome: "succeeded".to_string(),
+        output_batches: 1,
+        output_rows: 1,
+        encoded_frame_count: None,
+        record_batch_chunks: None,
+        max_encoded_frame_bytes: None,
+        stats_assertions: Vec::new(),
+        artifact: ArtifactEvidence {
+            state: "sealed".to_string(),
+            reason: None,
+            frame_count: 0,
+            wire_bytes: 0,
+            jsonl_records: 0,
+            topology_records: 0,
+            timeline_events: 0,
+            plan_execution_ids: Vec::new(),
+            terminal_kind: None,
+            retained_records: None,
+            retained_bytes: None,
+            truncated: None,
+            degraded: None,
+            poison_recoveries: None,
+            dropped_by_class: None,
+            dropped_by_reason: None,
+        },
+        elapsed_ms: 0,
+    });
+    let payload = serde_json::to_value(evidence).unwrap();
+    assert_eq!(payload["schema"], EVIDENCE_SCHEMA);
+    assert_eq!(payload["version"], EVIDENCE_VERSION);
+    let config = payload["config"].as_object().unwrap();
+    assert_eq!(config.get("scenario_selection"), Some(&json!("matrix")));
+    assert_eq!(config.get("native_once"), Some(&json!(false)));
+    assert!(!config.contains_key("profile"));
+    let scenario = payload["scenarios"][0].as_object().unwrap();
+    assert_eq!(scenario.get("execution_path"), Some(&json!("native")));
+    assert!(!scenario.contains_key("profile"));
 }
 
 #[test]

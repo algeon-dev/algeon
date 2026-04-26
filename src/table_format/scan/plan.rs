@@ -201,9 +201,8 @@ impl TableFormatScanPlan {
     /// First local rejection reason implied by retained scan facts.
     ///
     /// This mirrors the native table-format lowering admission order and is
-    /// intentionally credential-free. It is used by late diagnostics, such as
-    /// the GPU-only leaf guard, when the native rule did not retain enough
-    /// context to explain why the scan leaf could not be consumed.
+    /// intentionally credential-free. It classifies the immutable native
+    /// inspection outcome before whole-candidate lowering begins.
     pub fn first_rejection_reason(&self) -> Option<FallbackReason> {
         if self.data_files.is_empty() && self.delete_files.is_empty() && self.unsupported_features.is_empty() {
             return None;

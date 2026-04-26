@@ -45,7 +45,6 @@ use datafusion_nexus::{
     native::lower_physical_plan_to_native,
     native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
     planner::NexusNativeOptimizerConfig,
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
@@ -346,6 +345,35 @@ async fn native_runtime_empty_local_parquet_aggregates_match_cpu() {
     let empty_scan = parquet_scan_without_files(parquet_scan(&path).await);
     assert_empty_local_parquet_aggregate_parity(grouped_sum_aggregate_plan(Arc::clone(&empty_scan))).await;
     assert_empty_local_parquet_aggregate_parity(global_sum_aggregate_plan(empty_scan)).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_physically_empty_parquet_files_match_cpu_without_replay() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-physical-empty-parquet");
+    let zero_row_file = dir.join("zero-rows.parquet");
+    let zero_row_group_file = dir.join("zero-row-group.parquet");
+    write_physically_empty_parquet_file(&zero_row_file);
+    write_zero_row_group_parquet_file(&zero_row_group_file);
+
+    assert_eq!(parquet_row_group_count(&zero_row_file), 0, "empty file fixture must have no row groups");
+    assert_eq!(parquet_row_group_count(&zero_row_group_file), 1, "zero-row-group fixture must retain one row group");
+
+    for path in [&zero_row_file, &zero_row_group_file] {
+        for sql in [SQL_COUNT_ONLY_QUERY, SQL_COUNT_STAR_QUERY] {
+            let cpu_batches = cpu_sql_output(path, sql).await;
+            for config in [native_datafusion_config(), unbounded_native_datafusion_config()] {
+                let native_plan = native_datafusion_sql_plan(path, sql, config).await;
+                assert_nexus_native_exec(
+                    &native_plan,
+                    "physical empty parquet aggregate should lower to NexusNativeExec",
+                );
+                let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+                assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+            }
+        }
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }

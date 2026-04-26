@@ -9,7 +9,7 @@ use arrow::{
 };
 use datafusion::{
     common::ScalarValue,
-    execution::context::TaskContext,
+    execution::{context::TaskContext, runtime_env::RuntimeEnvBuilder},
     logical_expr::Operator,
     physical_expr::expressions::{binary, col, lit},
     physical_plan::{collect, empty::EmptyExec, filter::FilterExec},
@@ -40,8 +40,9 @@ use crate::native_exec::{NativeMetricsCapture, NativeMetricsCaptureSink};
 use crate::{
     error::{DataFusionErrorExt, ErrorCode},
     graph_sql::{
-        CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphOptions, CugraphPageRankParams, CugraphSqlConfig,
-        CugraphTableReference, CugraphTriangleCountAllParams, result_schema_for_params,
+        CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphOptions, CugraphGraphPredicateTable,
+        CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference, CugraphTriangleCountAllParams,
+        result_schema_for_params,
     },
     native_exec::{
         QueryAdmissionSource, task_context_with_query_admission_ticket, wrap_plan_with_query_admission_ticket,
@@ -92,6 +93,53 @@ fn memory_edge_source(rows: usize) -> Arc<dyn ExecutionPlan> {
     let weight = Arc::new(Float64Array::from_iter_values((0..rows).map(|_| 1.0))) as ArrayRef;
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![src, dst, weight]).unwrap();
     MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap() as Arc<dyn ExecutionPlan>
+}
+
+#[derive(Debug)]
+struct CountingExec {
+    input: Arc<dyn ExecutionPlan>,
+    execute_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl CountingExec {
+    fn new(input: Arc<dyn ExecutionPlan>, execute_count: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        Self { input, execute_count }
+    }
+}
+
+impl DisplayAs for CountingExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.input.fmt_as(t, f)
+    }
+}
+
+impl ExecutionPlan for CountingExec {
+    fn name(&self) -> &str {
+        "CountingExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        self.input.properties()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn with_new_children(self: Arc<Self>, mut children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return Err(DataFusionError::Plan(format!("CountingExec expected one child, received {}", children.len())));
+        }
+        Ok(Arc::new(Self {
+            input: children.pop().expect("child count checked"),
+            execute_count: Arc::clone(&self.execute_count),
+        }))
+    }
+
+    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+        self.execute_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.input.execute(partition, task_context)
+    }
 }
 
 fn write_edge_parquet(path: &std::path::Path) {
@@ -303,6 +351,350 @@ fn bfs_utf8_spec() -> CugraphAlgorithmSpec {
     }
 }
 
+fn bfs_utf8_path_spec() -> CugraphAlgorithmSpec {
+    let mut spec = bfs_utf8_spec();
+    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
+    params.output.mode = CugraphBfsOutputMode::Path;
+    spec.output_schema = result_schema_for_params(CugraphAlgorithm::Bfs, &spec.params);
+    spec
+}
+
+#[test]
+fn logical_bfs_edge_id_capability_is_rejected_during_exec_construction() {
+    let mut spec = bfs_utf8_spec();
+    spec.edge_id_col = Some("edge_id".to_string());
+    let edge_source = Arc::new(EmptyExec::new(string_edge_schema())) as Arc<dyn ExecutionPlan>;
+
+    let error =
+        CugraphAlgoExec::try_new(spec, edge_source, vec![], None, None, NexusNativeExecutionConfig::unbounded())
+            .expect_err("logical BFS edge-id input must fail capability preflight");
+    let nexus = error.find_nexus_error().expect("capability preflight must remain a structured adapter error");
+
+    assert_eq!(nexus.code(), ErrorCode::RequiredGpuOperationUnsupported);
+    assert_eq!(nexus.fact_value("edge_id_col"), Some("true"));
+    assert_eq!(nexus.fact_value("include_edge_ids"), Some("false"));
+}
+
+#[test]
+fn logical_bfs_include_edge_ids_capability_is_rejected_during_exec_construction() {
+    let mut spec = bfs_utf8_spec();
+    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
+    params.predicates.include_edge_ids =
+        Some(CugraphGraphPredicateTable::new(CugraphTableReference::parse("edge_ids").unwrap(), "edge_id"));
+    let edge_source = Arc::new(EmptyExec::new(string_edge_schema())) as Arc<dyn ExecutionPlan>;
+    let predicate_schema = Arc::new(Schema::new(vec![Field::new("edge_id", DataType::Int64, false)]));
+    let predicate_source = Arc::new(EmptyExec::new(predicate_schema)) as Arc<dyn ExecutionPlan>;
+
+    let error = CugraphAlgoExec::try_new(
+        spec,
+        edge_source,
+        vec![predicate_source],
+        None,
+        None,
+        NexusNativeExecutionConfig::unbounded(),
+    )
+    .expect_err("logical BFS include-edge-id input must fail capability preflight");
+    let nexus = error.find_nexus_error().expect("capability preflight must remain a structured adapter error");
+
+    assert_eq!(nexus.code(), ErrorCode::RequiredGpuOperationUnsupported);
+    assert_eq!(nexus.fact_value("edge_id_col"), Some("false"));
+    assert_eq!(nexus.fact_value("include_edge_ids"), Some("true"));
+}
+
+#[test]
+fn cugraph_algo_exec_does_not_request_input_repartitioning() {
+    let exec = CugraphAlgoExec::try_new(
+        triangle_spec(),
+        memory_edge_source(16),
+        vec![],
+        None,
+        None,
+        NexusNativeExecutionConfig::unbounded(),
+    )
+    .expect("cuGraph exec should build");
+
+    assert_eq!(exec.benefits_from_input_partitioning(), vec![false]);
+}
+
+#[test]
+fn logical_bfs_path_decode_keeps_the_three_column_traversal_schema() {
+    let spec = bfs_utf8_path_spec();
+
+    let schema = bfs_decoded_output_schema_for_host(&spec);
+
+    assert_eq!(schema.fields().len(), 3);
+    assert_eq!(schema.field(0).name(), "vertex");
+    assert_eq!(schema.field(1).name(), "distance");
+    assert_eq!(schema.field(2).name(), "predecessor");
+}
+
+#[test]
+fn logical_bfs_path_reconstruction_applies_the_final_schema_after_decode() {
+    let spec = bfs_utf8_path_spec();
+    let traversal_schema = bfs_decoded_output_schema_for_host(&spec);
+    let traversal = RecordBatch::try_new(
+        traversal_schema,
+        vec![
+            Arc::new(StringArray::from(vec!["alice", "bob"])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
+            Arc::new(StringArray::from(vec![None, Some("alice")])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+
+    let path = reconstruct_bfs_path_batch(&spec, &traversal, BfsPathVertex::Utf8("bob".to_string()))
+        .expect("three-column traversal output should reconstruct into the five-column path schema");
+
+    assert_eq!(path.schema(), spec.output_schema);
+    assert_eq!(path.num_columns(), 5);
+    assert_eq!(path.num_rows(), 2);
+}
+
+#[tokio::test]
+async fn cugraph_producer_preparation_stages_host_inputs_before_gpu_execution() {
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let exec = Arc::new(
+        CugraphAlgoExec::try_new(
+            triangle_spec(),
+            memory_edge_source(16),
+            vec![],
+            None,
+            None,
+            NexusNativeExecutionConfig::unbounded(),
+        )
+        .expect("cuGraph producer should build"),
+    );
+    let plan = Arc::clone(&exec) as Arc<dyn ExecutionPlan>;
+
+    let prepared = exec
+        .prepare_execution_plan(plan, task_context)
+        .await
+        .expect("host inputs should stage during producer preparation");
+
+    assert!(
+        prepared
+            .downcast_ref::<CugraphAlgoExec>()
+            .expect("prepared plan should remain cuGraph")
+            .prepared_staged_inputs
+            .is_some()
+    );
+    assert!(runtime.memory_pool.reserved() > 0, "staged host batches must retain their reservation");
+    drop(prepared);
+    assert_eq!(runtime.memory_pool.reserved(), 0, "dropping staged inputs must release their reservation");
+}
+
+#[tokio::test]
+async fn cugraph_producer_prepared_inputs_transfer_once_across_plan_clones() {
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let exec = Arc::new(
+        CugraphAlgoExec::try_new(
+            triangle_spec(),
+            memory_edge_source(16),
+            vec![],
+            None,
+            None,
+            NexusNativeExecutionConfig::unbounded(),
+        )
+        .expect("cuGraph producer should build"),
+    );
+    let plan = Arc::clone(&exec) as Arc<dyn ExecutionPlan>;
+    let prepared = exec
+        .prepare_execution_plan(plan, task_context)
+        .await
+        .expect("host inputs should stage during producer preparation");
+    let prepared_exec = prepared.downcast_ref::<CugraphAlgoExec>().expect("prepared plan should remain cuGraph");
+    let prepared_clone = prepared_exec.clone();
+
+    let staged_inputs = prepared_exec.take_prepared_staged_inputs().expect("first plan clone owns the staged inputs");
+    assert!(runtime.memory_pool.reserved() > 0, "transferred staged inputs retain the reservation");
+    let error = prepared_clone
+        .take_prepared_staged_inputs()
+        .expect_err("the shared staged-input slot must be consumed exactly once");
+    let nexus = error.find_nexus_error().expect("consumed staged-input failure remains structured");
+
+    assert_eq!(nexus.code(), ErrorCode::InvalidExecutionPlan);
+    assert_eq!(nexus.fact_value("staged_input_state"), Some("already_consumed"));
+    drop(prepared_clone);
+    drop(prepared);
+    assert!(runtime.memory_pool.reserved() > 0, "only the transferred owner retains the reservation");
+    drop(staged_inputs);
+    assert_eq!(runtime.memory_pool.reserved(), 0, "dropping the sole staged-input owner releases the reservation");
+}
+
+#[tokio::test]
+async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute() {
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let config = NexusNativeExecutionConfig::unbounded();
+    let context_lease = config.execution_context().expect("graph context builds");
+    let metrics_set = ExecutionPlanMetricsSet::new();
+    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
+    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, RuntimeObservationConfig::native_execution());
+    let staged_inputs = stage_cugraph_inputs(
+        &triangle_spec(),
+        memory_edge_source(16),
+        vec![],
+        Arc::clone(&task_context),
+        config.cancellation(),
+        1024 * 1024,
+    )
+    .await
+    .expect("host graph inputs should stage");
+    assert!(runtime.memory_pool.reserved() > 0, "staged host batches must be reserved before upload");
+
+    let uploaded = staged_inputs
+        .upload(context_lease.context(), &mut graph_metrics, task_context)
+        .await
+        .expect("staged host graph inputs should upload");
+
+    assert_eq!(
+        runtime.memory_pool.reserved(),
+        0,
+        "host-input reservation must be released before graph compute receives uploaded inputs",
+    );
+    drop(uploaded);
+}
+
+#[tokio::test]
+async fn cugraph_host_staging_completes_before_unbounded_gpu_admission() {
+    let limiter = crate::native_exec::UnboundedNativeExecutionLimiter::new(
+        std::num::NonZeroUsize::new(1).expect("one is non-zero"),
+    );
+    let held_permit = limiter.acquire().await.expect("test owns the only unbounded GPU permit");
+    let execute_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let edge_source = Arc::new(CountingExec::new(memory_edge_source(16), Arc::clone(&execute_count)));
+    let config = NexusNativeExecutionConfig::unbounded().with_unbounded_native_execution_limiter(limiter.clone());
+    let exec = Arc::new(
+        CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
+            .expect("cuGraph exec should build"),
+    );
+    let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("cuGraph stream should build");
+    let execution = tokio::spawn(async move { stream.try_next().await });
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while execute_count.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("host staging must run while unbounded GPU admission is occupied");
+
+    assert_eq!(execute_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!execution.is_finished(), "execution must wait for GPU admission only after staging completes");
+    execution.abort();
+    assert!(execution.await.expect_err("aborted execution should not complete").is_cancelled());
+    drop(held_permit);
+}
+
+#[tokio::test]
+async fn cugraph_producer_preparation_enforces_the_cumulative_input_cap() {
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let edge_source = memory_edge_source(16);
+    let edge_batches = collect(Arc::clone(&edge_source), Arc::clone(&task_context)).await.unwrap();
+    let edge_bytes = edge_batches.iter().map(get_record_batch_memory_size).sum();
+    drop(edge_batches);
+    let spec = triangle_spec();
+
+    let error = stage_cugraph_inputs(
+        &spec,
+        edge_source,
+        vec![memory_edge_source(1)],
+        task_context,
+        &ExecutionCancellation::new(),
+        edge_bytes,
+    )
+    .await
+    .expect_err("edge plus side input larger than the configured cumulative cap must be rejected");
+    let nexus = error.find_nexus_error().expect("staging cap failure must remain structured");
+
+    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
+    assert_eq!(nexus.status(), crate::error::ErrorStatus::Permanent);
+    assert_eq!(nexus.fact_value("source_kind"), Some("side_input"));
+    let edge_bytes = edge_bytes.to_string();
+    assert_eq!(nexus.fact_value("staged_bytes"), Some(edge_bytes.as_str()));
+    assert_eq!(runtime.memory_pool.reserved(), 0, "failed cumulative staging must release its reservation");
+}
+
+#[tokio::test]
+async fn cugraph_producer_preparation_charges_the_exact_utf8_literal_source_batch_to_the_input_cap() {
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let spec = bfs_utf8_spec();
+    let source_batch = bfs_literal_string_source_batch(&spec)
+        .expect("UTF-8 BFS source batch should build")
+        .expect("UTF-8 BFS source should have a staged literal batch");
+    let source_bytes = get_record_batch_memory_size(&source_batch);
+    let max_staging_bytes = source_bytes.checked_sub(1).expect("UTF-8 source batch must retain host bytes");
+    let edge_source = Arc::new(EmptyExec::new(string_edge_schema())) as Arc<dyn ExecutionPlan>;
+
+    let error = stage_cugraph_inputs(
+        &spec,
+        edge_source,
+        vec![],
+        task_context,
+        &ExecutionCancellation::new(),
+        max_staging_bytes,
+    )
+    .await
+    .expect_err("UTF-8 literal source batch larger than the island-wide cap must be rejected");
+    let nexus = error.find_nexus_error().expect("literal source staging cap failure must remain structured");
+    let source_bytes = source_bytes.to_string();
+    let max_staging_bytes = max_staging_bytes.to_string();
+
+    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
+    assert_eq!(nexus.fact_value("source_kind"), Some("source_vertices"));
+    assert_eq!(nexus.fact_value("staged_bytes"), Some("0"));
+    assert_eq!(nexus.fact_value("next_batch_bytes"), Some(source_bytes.as_str()));
+    assert_eq!(nexus.fact_value("max_staging_bytes"), Some(max_staging_bytes.as_str()));
+    assert_eq!(runtime.memory_pool.reserved(), 0, "failed literal staging must release its reservation");
+}
+
+#[tokio::test]
+async fn cugraph_producer_preparation_charges_utf8_relation_sources_to_the_same_input_cap() {
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let mut spec = bfs_utf8_spec();
+    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
+    params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new(
+        CugraphTableReference::parse("source_vertices").unwrap(),
+        "source_vertex",
+    ));
+    let source_schema = Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Utf8, false)]));
+    let source_batch = RecordBatch::try_new(
+        Arc::clone(&source_schema),
+        vec![Arc::new(StringArray::from(vec!["alice", "bob"])) as ArrayRef],
+    )
+    .unwrap();
+    let source_bytes = get_record_batch_memory_size(&source_batch);
+    let max_staging_bytes = source_bytes.checked_sub(1).expect("UTF-8 relation batch must retain host bytes");
+    let source_exec = MemorySourceConfig::try_new_exec(&[vec![source_batch]], source_schema, None).unwrap();
+    let edge_source = Arc::new(EmptyExec::new(string_edge_schema())) as Arc<dyn ExecutionPlan>;
+
+    let error = stage_cugraph_inputs(
+        &spec,
+        edge_source,
+        vec![source_exec],
+        task_context,
+        &ExecutionCancellation::new(),
+        max_staging_bytes,
+    )
+    .await
+    .expect_err("UTF-8 relation source larger than the island-wide cap must be rejected");
+    let nexus = error.find_nexus_error().expect("relation source staging cap failure must remain structured");
+    let source_bytes = source_bytes.to_string();
+    let max_staging_bytes = max_staging_bytes.to_string();
+
+    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
+    assert_eq!(nexus.fact_value("source_kind"), Some("side_input"));
+    assert_eq!(nexus.fact_value("staged_bytes"), Some("0"));
+    assert_eq!(nexus.fact_value("next_batch_bytes"), Some(source_bytes.as_str()));
+    assert_eq!(nexus.fact_value("max_staging_bytes"), Some(max_staging_bytes.as_str()));
+    assert_eq!(runtime.memory_pool.reserved(), 0, "failed relation staging must release its reservation");
+}
+
 #[cfg(feature = "server")]
 #[derive(Default)]
 struct GraphCaptureSink {
@@ -363,6 +755,36 @@ fn observed_graph_exec(
         Arc::new(
             CugraphAlgoExec::try_new(spec, edge_source, vec![], None, None, config)
                 .expect("observed graph exec builds"),
+        ),
+        sink,
+    )
+}
+
+#[cfg(feature = "server")]
+fn observed_graph_exec_with_edge_source(
+    query_id: &'static str,
+    spec: CugraphAlgorithmSpec,
+    cancellation: ExecutionCancellation,
+    edge_source: Arc<dyn ExecutionPlan>,
+    host_boundary_config: GpuIslandHostBoundaryConfig,
+) -> (Arc<CugraphAlgoExec>, Arc<GraphCaptureSink>) {
+    let sink = Arc::new(GraphCaptureSink::default());
+    let erased_sink: Arc<dyn NativeMetricsCaptureSink> = sink.clone();
+    let config = NexusNativeExecutionConfig::unbounded()
+        .with_cancellation(cancellation)
+        .with_metrics_capture(NativeMetricsCapture::new(query_id, erased_sink));
+    (
+        Arc::new(
+            CugraphAlgoExec::try_new_with_host_boundary_config(
+                spec,
+                edge_source,
+                vec![],
+                None,
+                None,
+                config,
+                host_boundary_config,
+            )
+            .expect("observed graph exec builds"),
         ),
         sink,
     )
@@ -492,7 +914,7 @@ async fn graph_native_failure_retains_failed_evidence_and_original_error() {
 
     let nexus = error.find_nexus_error().expect("DataFusion boundary preserves the typed adapter error");
     assert_eq!(nexus.code(), ErrorCode::CudfInvalidInput);
-    assert_eq!(nexus.operation(), "datafusion_nexus.cugraph_sql.execute");
+    assert_eq!(nexus.operation(), "datafusion_nexus.cugraph_sql.execute_gpu");
     assert_eq!(nexus.fact_value("native_code"), Some("cudf_invalid_input"));
     assert_eq!(nexus.fact_value("native_operation"), Some("nexus_query_engine.graph_algorithm.pagerank_params"));
     let retained = owner.runtime_observations();
@@ -523,7 +945,52 @@ async fn graph_native_failure_retains_failed_evidence_and_original_error() {
 
 #[cfg(feature = "server")]
 #[tokio::test]
-async fn graph_cancellation_retains_cancelled_evidence_and_original_error() {
+async fn graph_failure_after_gpu_start_has_one_attempt_no_output_and_no_cpu_replay() {
+    let execute_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let edge_source = Arc::new(CountingExec::new(memory_edge_source(16), Arc::clone(&execute_count)));
+    let host_boundary_config =
+        GpuIslandHostBoundaryConfig::try_new(GpuIslandHostBoundaryConfig::DEFAULT_MAX_INPUT_STAGING_BYTES, 1)
+            .expect("one-byte output staging cap is valid");
+    let (exec, sink) = observed_graph_exec_with_edge_source(
+        "graph-post-gpu-start-failure",
+        triangle_spec(),
+        ExecutionCancellation::new(),
+        edge_source,
+        host_boundary_config,
+    );
+    let owner = exec.metrics_capture.clone().expect("graph wrapper owns local evidence");
+    let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("graph stream builds");
+    let mut output_batches = 0usize;
+
+    let error = loop {
+        match stream.try_next().await {
+            Ok(Some(_batch)) => output_batches = output_batches.saturating_add(1),
+            Ok(None) => panic!("forced graph failure must not end successfully"),
+            Err(error) => break error,
+        }
+    };
+
+    let nexus = error.find_nexus_error().expect("post-start graph failure remains structured");
+    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
+    assert_eq!(output_batches, 0, "post-start graph failure must not expose a partial output batch");
+    assert_eq!(
+        execute_count.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the staged CPU source must not be replayed after native graph execution starts",
+    );
+    let retained = owner.runtime_observations();
+    assert_eq!(retained.len(), 1, "exactly one native graph attempt is observed");
+    assert_eq!(retained[0].manifest().query_id.as_str(), "graph-post-gpu-start-failure");
+    assert_eq!(retained[0].footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
+    let published = sink.query_metrics.lock().unwrap();
+    assert_eq!(published.len(), 1, "the failed GPU attempt publishes exactly once");
+    assert_eq!(published[0].graph_algorithm_runtime_rows.len(), 1, "exactly one graph runtime row is retained");
+    assert_eq!(published[0].boundary.device_to_host_materializations, 0, "no output batch crossed to the host");
+}
+
+#[cfg(feature = "server")]
+#[tokio::test]
+async fn graph_pre_staging_cancellation_returns_without_a_graph_runtime_attempt() {
     let cancellation = ExecutionCancellation::new();
     cancellation.cancel();
     let (exec, sink) = observed_graph_exec("graph-observation-cancelled", bfs_spec(), cancellation);
@@ -536,12 +1003,34 @@ async fn graph_cancellation_retains_cancelled_evidence_and_original_error() {
     assert_eq!(nexus.code(), ErrorCode::Cancelled);
     assert_eq!(nexus.fact_value("native_code"), Some("cancelled"));
     let retained = owner.runtime_observations();
-    assert_eq!(retained.len(), 1);
-    assert_eq!(retained[0].manifest().query_id.as_str(), "graph-observation-cancelled");
-    assert_eq!(retained[0].footer().terminal, Some(RuntimeTerminalOutcome::Cancelled));
-    assert!(retained[0].footer().complete);
-    assert!(!retained[0].events().is_empty());
-    assert_eq!(sink.query_metrics.lock().unwrap().len(), 1, "cancelled edge stage publishes once");
+    assert!(retained.is_empty(), "cancellation before input staging must not start a graph runtime attempt");
+    assert_eq!(sink.query_metrics.lock().unwrap().len(), 0, "pre-staging cancellation publishes no graph metrics");
+}
+
+#[cfg(feature = "server")]
+#[tokio::test]
+async fn graph_gpu_producer_rejects_unprepared_direct_spi_execution() {
+    let config = NexusNativeExecutionConfig::unbounded();
+    let edge_source = native_literal_edge_source(&config, true);
+    let exec = CugraphAlgoExec::try_new(bfs_utf8_spec(), edge_source, vec![], None, None, config)
+        .expect("logical BFS graph exec builds");
+    let context_lease = exec.native_execution_config.execution_context().expect("graph context builds");
+
+    let result = GpuResidentProducer::execute_gpu_result_with_context(
+        &exec,
+        context_lease.context(),
+        0,
+        Arc::new(TaskContext::default()),
+    )
+    .await;
+    let error = match result {
+        Ok(_) => panic!("direct GPU producer execution must reject unstaged inputs"),
+        Err(error) => error,
+    };
+    let nexus = error.find_nexus_error().expect("unprepared producer failure remains structured");
+
+    assert_eq!(nexus.code(), ErrorCode::InvalidExecutionPlan);
+    assert_eq!(nexus.operation(), "datafusion_nexus.cugraph_sql.execute_gpu");
 }
 
 #[cfg(feature = "server")]
@@ -564,19 +1053,23 @@ async fn graph_logical_bfs_gpu_projection_retains_three_stages_and_publishes_onc
             .with_runtime_observation_config(observation_config),
     );
     let edge_source = native_literal_edge_source(&config, true);
-    let exec = CugraphAlgoExec::try_new(bfs_utf8_spec(), edge_source, vec![], Some(vec![0, 1]), Some(2), config)
-        .expect("logical BFS projection graph exec builds");
+    let exec = Arc::new(
+        CugraphAlgoExec::try_new(bfs_utf8_spec(), edge_source, vec![], Some(vec![0, 1]), Some(2), config)
+            .expect("logical BFS projection graph exec builds"),
+    );
     let owner = exec.metrics_capture.clone().expect("graph wrapper owns local evidence");
-    let context_lease = exec.native_execution_config.execution_context().expect("graph context builds");
+    let task_context = Arc::new(TaskContext::default());
+    let plan = Arc::clone(&exec) as Arc<dyn ExecutionPlan>;
+    let prepared = GpuResidentProducer::prepare_execution_plan(exec.as_ref(), plan, Arc::clone(&task_context))
+        .await
+        .expect("logical BFS producer inputs stage before native context acquisition");
+    let prepared = prepared.downcast_ref::<CugraphAlgoExec>().expect("prepared graph plan remains cuGraph");
+    let context_lease = prepared.native_execution_config.execution_context().expect("graph context builds");
 
-    let (_, handle) = GpuResidentProducer::execute_gpu_result_with_context(
-        &exec,
-        context_lease.context(),
-        0,
-        Arc::new(TaskContext::default()),
-    )
-    .await
-    .expect("logical BFS GPU projection succeeds");
+    let (_, handle) =
+        GpuResidentProducer::execute_gpu_result_with_context(prepared, context_lease.context(), 0, task_context)
+            .await
+            .expect("logical BFS GPU projection succeeds");
     let batch = handle.to_host_record_batch().expect("projected graph result materializes");
 
     assert_eq!(batch.num_rows(), 2);
@@ -590,7 +1083,8 @@ async fn graph_logical_bfs_gpu_projection_retains_three_stages_and_publishes_onc
     }));
     assert_eq!(sink.query_metrics.lock().unwrap().len(), 1, "BFS projection path publishes once");
     assert_eq!(
-        exec.metrics()
+        prepared
+            .metrics()
             .expect("graph metrics registered")
             .sum_by_name("native_graph_runtime_rows")
             .expect("graph runtime row metric registered")
@@ -1160,7 +1654,9 @@ async fn cugraph_prepares_nested_native_source_metadata_before_graph_admission()
             .expect("test wrapper should accept the native child"),
     ) as Arc<dyn ExecutionPlan>;
 
-    let prepared = prepare_cugraph_source_metadata(wrapped, &TaskContext::default()).await;
+    let prepared = prepare_cugraph_source_metadata(wrapped, Arc::new(TaskContext::default()))
+        .await
+        .expect("metadata preparation should succeed");
 
     assert!(prepared.downcast_ref::<RepartitionExec>().is_some(), "host wrapper must be preserved");
     let children = prepared.children();

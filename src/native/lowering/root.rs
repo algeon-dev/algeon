@@ -24,7 +24,7 @@ use super::{
     lower_native_input, lower_native_input_with_scan_limit, projection_outputs,
     sort::lower_sort_ordering_with_input,
     source::{
-        SourceUnprojectedFilterOutput, lower_empty_table_format_count_star_source,
+        SourceUnprojectedFilterOutput, available_table_format_scan_plan, lower_empty_table_format_count_star_source,
         lower_required_file_source_projection_exprs, lower_source_filter_and_projection,
         lower_table_format_count_star_fallback_source, lower_table_format_count_star_mixed_row_count_source,
         lower_table_format_zero_column_count_source, preserve_resolved_source_diagnostics,
@@ -41,8 +41,7 @@ use crate::{
     native::{
         expression_contract::validate_physical_expr,
         normalize::{
-            NormalizedNativeAggregateRoot, NormalizedNativeInput, NormalizedNativeInputRoot,
-            NormalizedNativeLiteralSource, NormalizedNativePlan, NormalizedNativeScan, NormalizedNativeSortExprs,
+            NormalizedNativeAggregateRoot, NormalizedNativeInputRoot, NormalizedNativePlan, NormalizedNativeSortExprs,
         },
         pruning::scan_predicate_without_dynamic_filter_hints,
         source::{
@@ -100,9 +99,6 @@ pub(super) fn lower_slice1_plan(
         post_aggregate_projection,
     })?;
     if local_parquet_scan_is_empty(file_scan) {
-        if aggregate.group_expr().has_grouping_set() {
-            return Err(FallbackReason::NativeSourceEmpty);
-        }
         return lower_joined_aggregate_plan(normalized, root);
     }
     validate_slice1_parquet_scan(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
@@ -285,6 +281,7 @@ pub(super) fn lower_table_format_zero_column_count_plan(
 ) -> Result<NativeQueryPlan, FallbackReason> {
     let source = normalized.single_source_input().ok_or(FallbackReason::UnsupportedOperator)?;
     let scan_exec = source.table_format_scan_exec().ok_or_else(|| table_format_scan_rejection(source))?;
+    let scan_plan = available_table_format_scan_plan(scan_exec)?;
     let aggregate = root.aggregate;
     let post_aggregate_projection = root.post_aggregate_projection;
     let sort = normalized.sort.as_ref();
@@ -296,14 +293,14 @@ pub(super) fn lower_table_format_zero_column_count_plan(
     }
 
     let mut builder = NativeQueryPlanBuilder::new();
-    let count_weight_input = table_format_zero_column_count_metadata_is_available(scan_exec.scan_plan())
-        || table_format_count_star_mixed_row_count_metadata_can_split(scan_exec.scan_plan())
-        || table_format_count_star_probe_can_lower(scan_exec.scan_plan());
-    let source_input = if scan_exec.scan_plan().data_files.is_empty() {
+    let count_weight_input = table_format_zero_column_count_metadata_is_available(scan_plan)
+        || table_format_count_star_mixed_row_count_metadata_can_split(scan_plan)
+        || table_format_count_star_probe_can_lower(scan_plan);
+    let source_input = if scan_plan.data_files.is_empty() {
         lower_empty_table_format_count_star_source(scan_exec, &mut builder)?
-    } else if table_format_zero_column_count_metadata_is_available(scan_exec.scan_plan()) {
+    } else if table_format_zero_column_count_metadata_is_available(scan_plan) {
         lower_table_format_zero_column_count_source(scan_exec, &mut builder)?
-    } else if table_format_count_star_mixed_row_count_metadata_can_split(scan_exec.scan_plan()) {
+    } else if table_format_count_star_mixed_row_count_metadata_can_split(scan_plan) {
         lower_table_format_count_star_mixed_row_count_source(scan_exec, &mut builder)?
     } else {
         lower_table_format_count_star_fallback_source(scan_exec, &mut builder)?
@@ -353,9 +350,6 @@ pub(super) fn lower_joined_aggregate_plan(
     let post_aggregate_projection = root.post_aggregate_projection;
     let sort = normalized.sort.as_ref();
 
-    if aggregate.group_expr().has_grouping_set() && normalized_input_contains_empty_source(&root.input) {
-        return Err(FallbackReason::NativeSourceEmpty);
-    }
     validate_aggregate_root_operator_schemas(root, pre_aggregate_projection, post_aggregate_projection, sort)?;
     validate_aggregate_for_native_lowering(aggregate, root.aggregate_allows_partial)?;
     validate_joined_aggregate_scalar_expressions(root)?;
@@ -407,35 +401,6 @@ pub(super) fn lower_joined_aggregate_plan(
         )
     };
     finish_with_post_projection_sort_limit(builder, aggregate_output, post_aggregate_projection, sort, normalized.limit)
-}
-
-fn normalized_input_contains_empty_source(input: &NormalizedNativeInput<'_>) -> bool {
-    match input {
-        NormalizedNativeInput::Source(source) => match source.scan {
-            NormalizedNativeScan::LocalParquet(source_exec) => source_exec
-                .downcast_to_file_source::<ParquetSource>()
-                .is_some_and(|(file_scan, _)| local_parquet_scan_is_empty(file_scan)),
-            NormalizedNativeScan::TableFormat(scan_exec) => scan_exec.scan_plan().data_files.is_empty(),
-        },
-        NormalizedNativeInput::LiteralSource(source) => matches!(source, NormalizedNativeLiteralSource::Empty(_)),
-        NormalizedNativeInput::GpuResidentSource(_) => false,
-        NormalizedNativeInput::Filter(filter) => normalized_input_contains_empty_source(&filter.input),
-        NormalizedNativeInput::Projection(projection) => normalized_input_contains_empty_source(&projection.input),
-        NormalizedNativeInput::Limit(limit) => normalized_input_contains_empty_source(&limit.input),
-        NormalizedNativeInput::Aggregate(aggregate) => normalized_input_contains_empty_source(&aggregate.input),
-        NormalizedNativeInput::Sort(sort) => normalized_input_contains_empty_source(&sort.input),
-        NormalizedNativeInput::Window(window) => normalized_input_contains_empty_source(&window.input),
-        NormalizedNativeInput::HashJoin(join) => {
-            normalized_input_contains_empty_source(&join.left) || normalized_input_contains_empty_source(&join.right)
-        },
-        NormalizedNativeInput::CrossJoin(join) => {
-            normalized_input_contains_empty_source(&join.left) || normalized_input_contains_empty_source(&join.right)
-        },
-        NormalizedNativeInput::NestedLoopJoin(join) => {
-            normalized_input_contains_empty_source(&join.left) || normalized_input_contains_empty_source(&join.right)
-        },
-        NormalizedNativeInput::Union(union) => union.inputs.iter().any(normalized_input_contains_empty_source),
-    }
 }
 
 pub(super) fn lower_input_root_plan(

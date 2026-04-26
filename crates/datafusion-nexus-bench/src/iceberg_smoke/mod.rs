@@ -35,7 +35,7 @@ use datafusion_nexus::{
         compare_record_batches, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::{FallbackReason, GpuFallbackPolicy},
+    policy::FallbackReason,
     session::NexusSessionStateBuilderExt,
     source_cardinality::{register_source_unique_keys_for_path, schema_with_source_unique_keys},
     table_format::{
@@ -48,7 +48,7 @@ use datafusion_nexus::{
             NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_ICEBERG_GLUE_TABLE_ENV,
             NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NexusIcebergTableProvider,
             catalog::{IcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig},
-            iceberg_schema_to_datafusion_arrow_schema, load_glue_table,
+            load_glue_table,
         },
         resolve_table_format_parquet_source_with_metadata,
     },
@@ -63,6 +63,7 @@ use iceberg::{
     io::FileIO,
     table::{StaticTable, Table},
 };
+use iceberg_datafusion::IcebergStaticTableProvider;
 use nexus_query_engine::{
     mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
     runtime::SourceSchedulerPolicy,
@@ -150,7 +151,6 @@ const NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str = "NEXUS_ICEBERG_NATIVE_MAX_SO
 const NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
     "NEXUS_ICEBERG_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
 const NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "NEXUS_ICEBERG_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
-const NATIVE_FALLBACK_POLICY_ENV: &str = "NEXUS_ICEBERG_NATIVE_FALLBACK_POLICY";
 const TPCH_SCALE_FACTOR_ENV: &str = "NEXUS_ICEBERG_TPCH_SCALE_FACTOR";
 const TPCDS_SCALE_FACTOR_ENV: &str = "NEXUS_ICEBERG_TPCDS_SCALE_FACTOR";
 const OBJECT_STORE_STAGING_ENV: &str = "NEXUS_ICEBERG_SMOKE_OBJECT_STORE_STAGING";
@@ -182,19 +182,14 @@ const TPCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_DEFAULT: usize = 2;
 
 fn native_session_execution_config_from_env(
     profile: NativeExecutionProfile,
-) -> SmokeResult<(NexusNativeExecutionConfig, GpuFallbackPolicy)> {
+) -> SmokeResult<NexusNativeExecutionConfig> {
     let execution_config = native_execution_config_for_profile_with_env(profile, |name| std::env::var(name).ok())?;
-    let fallback_policy = match std::env::var(NATIVE_FALLBACK_POLICY_ENV) {
-        Ok(value) => crate::report_workload::parse_gpu_fallback_policy(&value).map_err(smoke_error),
-        Err(std::env::VarError::NotPresent) => Ok(GpuFallbackPolicy::GpuPreferred),
-        Err(error) => Err(smoke_error(format!("failed to read {NATIVE_FALLBACK_POLICY_ENV}: {error}"))),
-    }?;
     eprintln!(
-        "[native_iceberg_smoke_report] stage=native_session_config fallback_policy={} native_pipeline_execution_mode={}",
-        crate::report_workload::gpu_fallback_policy_label(fallback_policy),
+        "[native_iceberg_smoke_report] stage=native_session_config relational_execution={} native_pipeline_execution_mode={}",
+        crate::report_workload::RelationalExecutionSelection::strict_native().as_str(),
         execution_config.native_pipeline_execution_mode().as_str(),
     );
-    Ok((execution_config, fallback_policy))
+    Ok(execution_config)
 }
 
 mod config;
@@ -220,7 +215,7 @@ pub use cpu_baseline::{
     cpu_baseline_listing_file_extension, cpu_baseline_listing_urls_from_scan_plan, cpu_baseline_session_config,
     fingerprint_output_batches, smoke_parity_uses_ordered_rows,
 };
-pub(crate) use fixture::{iceberg_table_arrow_schema, load_iceberg_table};
+pub(crate) use fixture::load_iceberg_table;
 pub(crate) use metrics::*;
 pub use report::{IcebergNativeSmokeReport, IcebergNativeSmokeReportRow, write_smoke_tsv_header, write_smoke_tsv_row};
 pub use runner::{run_from_env, run_report, run_report_streaming, run_single_tpch_query_report_with_execution_mode};

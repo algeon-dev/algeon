@@ -390,6 +390,41 @@ pub(super) fn single_all_row_groups_chunk(
     }
 }
 
+/// Builds the synthetic zero-weight chunk for a represented empty COUNT(*) source.
+///
+/// A metadata-only count source models each selected file as one count weight.
+/// When no row groups survive planning, that source still needs the additive
+/// identity so the lowered `SUM(weight)` yields `COUNT(*) = 0` rather than
+/// SQL `SUM(empty) = NULL`.
+pub(super) fn zero_column_count_identity_chunk(
+    source_node_id: NodeId,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    file_index: usize,
+    chunk_index: usize,
+    policy: SourceChunkPlanningPolicy,
+    reader_decimal_types: &[ParquetReaderDecimalType],
+    reader_decimal_types_footer_verified: bool,
+) -> SourceChunk {
+    let mut chunk = single_all_row_groups_chunk(
+        source_node_id,
+        source,
+        file,
+        file_index,
+        chunk_index,
+        policy,
+        reader_decimal_types,
+        reader_decimal_types_footer_verified,
+    );
+    chunk.reads_all_row_groups = false;
+    chunk.known_row_count = Some(0);
+    chunk.estimated_chunk_bytes = Some(0);
+    chunk.estimated_source_read_bytes = Some(0);
+    chunk.exact_source_read_preflight_bytes = exact_source_read_preflight_bytes(source, chunk.known_row_count, true);
+    chunk.size_estimate_based = false;
+    chunk
+}
+
 pub(super) fn proportional_bytes(
     total_bytes: Option<u64>,
     child_row_groups: usize,

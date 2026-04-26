@@ -76,9 +76,17 @@ impl StagingTableFormatPlanner {
 }
 
 impl TableFormatPlanner for StagingTableFormatPlanner {
-    fn plan_scan(
+    fn resolve_scan(
         &self,
         request: TableFormatScanRequest,
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
+        Box::pin(async move { self.inner.resolve_table_format_scan(request).await })
+    }
+
+    fn inspect_native_scan(
+        &self,
+        request: TableFormatScanRequest,
+        resolved_scan: TableFormatScanPlan,
     ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
         Box::pin(async move {
             eprintln!(
@@ -86,7 +94,7 @@ impl TableFormatPlanner for StagingTableFormatPlanner {
                 self.table_name,
                 self.mode.code(),
             );
-            let scan_plan = self.inner.plan_table_format_scan(request).await?;
+            let scan_plan = self.inner.inspect_table_format_scan(request, resolved_scan).await?;
             let table_stage_dir = self.tempdir.path().join(sanitize_staged_path_component(&self.table_name));
             tokio::fs::create_dir_all(&table_stage_dir).await.map_err(|error| {
                 Error::new(

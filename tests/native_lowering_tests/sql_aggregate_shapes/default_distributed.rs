@@ -123,7 +123,7 @@ async fn default_sql_distributed_rollup_aggregate_lowers_to_native_grouping_sets
 }
 
 #[tokio::test]
-async fn grouping_sets_over_empty_local_parquet_remain_structured_cpu_fallbacks() {
+async fn grouping_sets_over_empty_local_parquet_lower_through_empty_literal_source() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-empty-grouping-sets");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -136,8 +136,17 @@ async fn grouping_sets_over_empty_local_parquet_remain_structured_cpu_fallbacks(
 
         let result = lower_physical_plan_to_native(plan);
 
-        assert_native_rejection(&result, FallbackReason::NativeSourceEmpty);
-        assert_eq!(result.report.outcomes().len(), 1, "{label}");
+        assert_eq!(result.candidate_count(), 1, "{label}");
+        assert_eq!(result.rewritten_count(), 1, "{label}: outcomes={:?}", result.report.outcomes());
+        assert_eq!(result.rejected_count(), 0, "{label}: outcomes={:?}", result.report.outcomes());
+        assert!(native_local_parquet_sources(&result.plans[0]).is_empty(), "{label}");
+        let literal_sources = native_literal_batch_sources(&result.plans[0]);
+        assert_eq!(literal_sources.len(), 1, "{label}");
+        assert_eq!(literal_sources[0].row_count(), 0, "{label}");
+        assert!(
+            native_aggregate_nodes(&result.plans[0]).iter().all(|aggregate| aggregate.spec.grouping_sets.is_some()),
+            "{label} must retain native grouping-set semantics"
+        );
     }
 
     fs::remove_dir_all(dir).unwrap();

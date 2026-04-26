@@ -18,7 +18,6 @@ use datafusion_nexus::{
     native_exec::NexusNativeExecutionConfig,
     native_report::NativeDataFusionPlanningReport,
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
@@ -187,11 +186,10 @@ async fn native_datafusion_planning_report_with_session(
     sql: &str,
     session_config: SessionConfig,
 ) -> NativeDataFusionPlanningReport {
-    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(
-            NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
-                .with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env()),
-        );
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
+        NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
+            .with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env()),
+    );
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)

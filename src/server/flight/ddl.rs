@@ -54,7 +54,6 @@ impl DatafusionNexusFlightSqlService {
                 .instrument(Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "planning")) => match result {
                 Ok(plan) => plan,
                 Err(error) => {
-                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
                     let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation());
                     let status = status_with_query_id(
                         datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
@@ -114,7 +113,6 @@ impl DatafusionNexusFlightSqlService {
                 .instrument(Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "planning")) => match result {
                 Ok(df) => df,
                 Err(error) => {
-                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
                     let (status, captured) = match self.ddl_read_only_registration_error(
                         query_ctx,
                         &plan_for_error,
@@ -170,7 +168,6 @@ impl DatafusionNexusFlightSqlService {
                 .instrument(Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "native_execution")) => match result {
                 Ok(batches) => batches,
                 Err(error) => {
-                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
                     let captured = datafusion_error_to_captured_error(&error, statement_kind.collect_operation());
                     let status = status_with_query_id(
                         datafusion_error_to_status_for_operation(error, statement_kind.collect_operation()),

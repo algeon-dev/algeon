@@ -7,7 +7,7 @@ use datafusion::{
 };
 use nexus_query_engine::{metrics::QueryId, plan::PlanNode, runtime::QueryPlacementHint};
 
-use super::NexusNativeOptimizerConfig;
+use super::{FinalPlanDisposition, FinalPlanRequirement, NexusNativeOptimizerConfig, classify_final_plan};
 use crate::{
     error::{Error, ErrorCode},
     native::lakehouse_pruning,
@@ -21,7 +21,7 @@ use crate::{
     },
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
     physical_plan::physical_plan_shape,
-    report::PlanningReport,
+    report::{CandidateOutcome, PlanningReport},
     session::{NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME},
 };
 
@@ -31,14 +31,109 @@ mod strict_bounded;
 
 pub use adaptive::{NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics};
 use attempt::{
-    NativeOptimizationAttempt, apply_native_fallback_policy, optimize_count_only_native_plan,
-    optimize_final_native_plan, peel_cooperative_native_exec,
+    NativeOptimizationAttempt, optimize_count_only_native_plan, optimize_final_native_plan,
+    peel_cooperative_native_exec,
 };
 pub use strict_bounded::{
     NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
     NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
     STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
 };
+
+/// Internal optimizer-rule identity for completed-plan requirements.
+pub const NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME: &str = "datafusion_nexus_final_plan_requirement";
+
+/// Enforces configured requirements against the exact physical plan produced by
+/// the preceding native rewrite and leaf-guard rules.
+#[derive(Debug, Clone)]
+pub struct NexusFinalPlanRequirementRule {
+    config: NexusNativeOptimizerConfig,
+    native_rule: Option<Arc<NexusNativePhysicalOptimizerRule>>,
+}
+
+impl NexusFinalPlanRequirementRule {
+    /// Create a requirement gate without native-planning diagnostics.
+    pub fn new(config: NexusNativeOptimizerConfig) -> Self {
+        Self { config, native_rule: None }
+    }
+
+    pub(crate) fn with_native_rule(
+        config: NexusNativeOptimizerConfig,
+        native_rule: Arc<NexusNativePhysicalOptimizerRule>,
+    ) -> Self {
+        Self { config, native_rule: Some(native_rule) }
+    }
+
+    fn planning_report(&self) -> Option<PlanningReport> {
+        self.native_rule.as_ref().and_then(|rule| rule.last_report())
+    }
+}
+
+impl PhysicalOptimizerRule for NexusFinalPlanRequirementRule {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        _config: &ConfigOptions,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if self.config.final_plan_requirements().is_empty() {
+            return Ok(plan);
+        }
+        let disposition = classify_final_plan(plan.as_ref());
+        for requirement in self.config.final_plan_requirements() {
+            if *requirement == FinalPlanRequirement::NoDataFusionCpu && disposition != FinalPlanDisposition::Native {
+                return Err(final_plan_requirement_error(
+                    plan.as_ref(),
+                    disposition,
+                    *requirement,
+                    self.planning_report().as_ref(),
+                )
+                .into());
+            }
+        }
+        Ok(plan)
+    }
+
+    fn name(&self) -> &str {
+        NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
+fn final_plan_requirement_error(
+    plan: &dyn ExecutionPlan,
+    disposition: FinalPlanDisposition,
+    requirement: FinalPlanRequirement,
+    report: Option<&PlanningReport>,
+) -> Error {
+    let mut error = Error::new(
+        ErrorCode::FinalPlanRequirementUnsatisfied,
+        "datafusion_nexus.planner.final_plan_requirement",
+        "exact final physical plan does not satisfy the configured GPU execution requirement",
+    )
+    .with_fact("requirement", requirement.as_str())
+    .with_fact("observed_final_plan_disposition", disposition.as_str())
+    .with_fact("terminal_plan_disposition", FinalPlanDisposition::Rejected.as_str())
+    .with_fact("physical_plan_root", plan.name());
+    if let Some((candidate, reason)) = report.and_then(first_native_rejection) {
+        error = error
+            .with_fact("candidate_shape", candidate.shape.as_str())
+            .with_fact("fallback_reason", reason.code())
+            .with_fact("operator_count", candidate.operator_count);
+    }
+    error
+}
+
+fn first_native_rejection(
+    report: &PlanningReport,
+) -> Option<(&crate::report::GpuCandidate, crate::policy::FallbackReason)> {
+    report.outcomes().iter().find_map(|outcome| match outcome {
+        CandidateOutcome::Rejected { candidate, reason } => Some((candidate, *reason)),
+        CandidateOutcome::Rewritten { .. } => None,
+    })
+}
 
 /// Last-observed native planning diagnostics from a retained optimizer rule.
 ///
@@ -71,8 +166,9 @@ pub struct NativePlanningDiagnostics {
 /// The rule is reusable across sessions when callers want to inspect
 /// [`last_planning_diagnostics`](Self::last_planning_diagnostics). Session
 /// insertion deduplicates by the public rule names in [`crate::session`].
-/// `GpuPreferred` leaves rejected candidates on the original DataFusion plan;
-/// `GpuOnly` reports the first native rejection as an optimizer error.
+/// Candidate misses leave the original DataFusion plan intact. Optional
+/// completed-plan requirements run in a later rule after native planning has
+/// completed.
 #[derive(Debug)]
 pub struct NexusNativePhysicalOptimizerRule {
     config: NexusNativeOptimizerConfig,
@@ -255,31 +351,7 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
                 native_plan_preference_options,
             )?,
         };
-        if self.stage == NativeOptimizerStage::Final
-            && effective_config.fallback_policy() == crate::policy::GpuFallbackPolicy::GpuOnly
-        {
-            // Retain final-stage evidence before the terminal GpuOnly policy
-            // can return an error. Otherwise the shared rule state would still
-            // describe the earlier count-only probe miss and observability
-            // would misattribute the final planning failure to that probe.
-            self.store_optimization_attempt(&optimized)?;
-        }
-        // The early count-only pass is a probe, not the GpuOnly admission
-        // boundary. Its normal miss must leave the DataFusion plan intact so
-        // the final native planner can evaluate the general plan shape. Only
-        // the final stage may turn a rejected native candidate into the
-        // caller-visible GpuOnly planning error.
-        let mut optimized = match self.stage {
-            NativeOptimizerStage::Final | NativeOptimizerStage::CountOnlyProbe
-                if effective_config.fallback_policy() == crate::policy::GpuFallbackPolicy::CpuOnly =>
-            {
-                apply_native_fallback_policy(Arc::clone(&plan), optimized, &effective_config)?
-            },
-            NativeOptimizerStage::Final => {
-                apply_native_fallback_policy(Arc::clone(&plan), optimized, &effective_config)?
-            },
-            NativeOptimizerStage::CountOnlyProbe => optimized,
-        };
+        let mut optimized = optimized;
         let query_admission_ticket = if optimized.rewritten {
             plan_query_admission_ticket_for_optimized_plan(optimized.plan.as_ref(), native_execution_config)?
         } else {
@@ -578,7 +650,62 @@ mod tests {
     };
 
     use super::*;
-    use crate::native_exec::QueryAdmissionSource;
+    use crate::{
+        error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
+        native_exec::QueryAdmissionSource,
+    };
+
+    fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::empty());
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            "/tmp/datafusion-nexus-final-plan-classifier-not-read.parquet",
+            schema,
+            Vec::new(),
+        )));
+        Arc::new(
+            NexusNativeExec::try_new(builder.finish_with_host_sink(source), NexusNativeExecutionConfig::unbounded())
+                .expect("native runtime leaf should build without opening its source"),
+        )
+    }
+
+    #[test]
+    fn final_plan_classifier_distinguishes_datafusion_and_native_runtime_nodes() {
+        let datafusion: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+
+        assert_eq!(classify_final_plan(datafusion.as_ref()), FinalPlanDisposition::DataFusion);
+        assert_eq!(classify_final_plan(native_exec_leaf().as_ref()), FinalPlanDisposition::Native);
+        assert_eq!(FinalPlanDisposition::Rejected.as_str(), "rejected");
+    }
+
+    #[test]
+    fn no_datafusion_cpu_requirement_rejects_the_exact_datafusion_final_plan() {
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        let rule = NexusFinalPlanRequirementRule::new(
+            NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement(),
+        );
+
+        let error = rule
+            .optimize(plan, &ConfigOptions::default())
+            .expect_err("the requirement must reject a CPU-only final plan");
+        let error = error.find_nexus_error().expect("typed adapter error");
+
+        assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+        assert_eq!(error.status(), ErrorStatus::Permanent);
+        assert_eq!(error.fact_value("requirement"), Some("no_datafusion_cpu"));
+        assert_eq!(error.fact_value("observed_final_plan_disposition"), Some("datafusion"));
+        assert_eq!(error.fact_value("terminal_plan_disposition"), Some("rejected"));
+    }
+
+    #[test]
+    fn empty_final_plan_requirement_set_returns_the_original_plan_without_replanning() {
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        let rule = NexusFinalPlanRequirementRule::new(NexusNativeOptimizerConfig::default());
+
+        let returned = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+
+        assert!(Arc::ptr_eq(&plan, &returned));
+    }
 
     fn attempt(rewritten: bool) -> NativeOptimizationAttempt {
         NativeOptimizationAttempt {

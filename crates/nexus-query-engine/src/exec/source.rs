@@ -235,16 +235,16 @@ fn read_local_parquet_source_uncached(
     source: &LocalParquetSource,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    if source.is_zero_column_count_source() {
+        return read_zero_column_count_source(context, source, metrics);
+    }
+
     if source.scan_limit == Some(0) {
         let frame = empty_local_parquet_execution_frame(context, source)?;
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
         let frame = append_source_order_columns(context, frame, 0)?;
         metrics.record_input_batch(0);
         return Ok(GpuDataFrame::new(frame));
-    }
-
-    if source.is_zero_column_count_source() {
-        return read_zero_column_count_source(context, source, metrics);
     }
 
     if source_requires_position_delete_chunk_reads(source) {
@@ -417,14 +417,6 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     context.check_cancellation("nexus_query_engine.local_parquet_chunk.read")?;
-    if chunk.scan_limit_rows == Some(0) {
-        let frame = empty_local_parquet_execution_frame(context, source)?;
-        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
-        let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
-        metrics.record_input_batch(0);
-        return Ok(GpuDataFrame::new(frame));
-    }
-
     if chunk.zero_column_count {
         let row_count = chunk.known_row_count.ok_or_else(|| {
             QueryError::new(
@@ -445,6 +437,14 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
                     .with_fact("file_index", chunk.file_index)
                     .with_row_group_facts(chunk)
             });
+    }
+
+    if chunk.scan_limit_rows == Some(0) {
+        let frame = empty_local_parquet_execution_frame(context, source)?;
+        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
+        let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
+        metrics.record_input_batch(0);
+        return Ok(GpuDataFrame::new(frame));
     }
 
     let _cache_read_pin =

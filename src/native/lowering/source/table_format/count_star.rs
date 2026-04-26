@@ -1,10 +1,10 @@
 use super::*;
 
 pub(in crate::native::lowering) fn lower_table_format_zero_column_count_source(
-    scan_exec: &NexusTableFormatScanExec,
+    scan_exec: &NexusIcebergScanExec,
     builder: &mut NativeQueryPlanBuilder,
 ) -> Result<LoweredNativeInput, FallbackReason> {
-    let scan_plan = scan_exec.scan_plan();
+    let scan_plan = available_table_format_scan_plan(scan_exec)?;
     validate_table_format_scan_plan(scan_plan)?;
     let source_node = add_table_format_zero_column_count_source_node(scan_plan, builder)?;
     Ok(LoweredNativeInput::with_bindings(source_node, scan_exec.schema(), Vec::new()))
@@ -59,10 +59,10 @@ pub(in crate::native::lowering) fn table_format_count_star_probe_can_lower(scan_
 }
 
 pub(in crate::native::lowering) fn lower_table_format_count_star_mixed_row_count_source(
-    scan_exec: &NexusTableFormatScanExec,
+    scan_exec: &NexusIcebergScanExec,
     builder: &mut NativeQueryPlanBuilder,
 ) -> Result<LoweredNativeInput, FallbackReason> {
-    let scan_plan = scan_exec.scan_plan();
+    let scan_plan = available_table_format_scan_plan(scan_exec)?;
     if !table_format_count_star_mixed_row_count_metadata_can_split(scan_plan) {
         return Err(FallbackReason::TableFormatUnsupported);
     }
@@ -106,10 +106,10 @@ pub(in crate::native::lowering) fn lower_table_format_count_star_mixed_row_count
 }
 
 pub(in crate::native::lowering) fn lower_table_format_count_star_fallback_source(
-    scan_exec: &NexusTableFormatScanExec,
+    scan_exec: &NexusIcebergScanExec,
     builder: &mut NativeQueryPlanBuilder,
 ) -> Result<LoweredNativeInput, FallbackReason> {
-    let scan_plan = scan_exec.scan_plan();
+    let scan_plan = available_table_format_scan_plan(scan_exec)?;
     validate_table_format_scan_plan(scan_plan)?;
     lower_table_format_count_star_fallback_source_for_plan(scan_plan, builder)
 }
@@ -214,11 +214,12 @@ pub(super) fn table_format_count_weight_schema() -> SchemaRef {
 }
 
 pub(in crate::native::lowering) fn lower_empty_table_format_count_star_source(
-    scan_exec: &NexusTableFormatScanExec,
+    scan_exec: &NexusIcebergScanExec,
     builder: &mut NativeQueryPlanBuilder,
 ) -> Result<LoweredNativeInput, FallbackReason> {
-    if !table_format_scan_plan_is_empty_admissible(scan_exec.scan_plan()) {
-        return Err(table_format_scan_plan_rejection(scan_exec.scan_plan()));
+    let scan_plan = available_table_format_scan_plan(scan_exec)?;
+    if !table_format_scan_plan_is_empty_admissible(scan_plan) {
+        return Err(table_format_scan_plan_rejection(scan_plan));
     }
     let schema = scan_exec.schema();
     validate_schema(Arc::clone(&schema))?;

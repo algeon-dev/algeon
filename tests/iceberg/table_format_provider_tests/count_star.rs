@@ -2,7 +2,7 @@
 async fn iceberg_provider_count_star_lowers_to_table_format_zero_column_count_source() {
     let schema = iceberg_test_schema();
     let planner = Arc::new(RecordingPlanner::new(native_admissible_empty_scan_plan()));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -21,10 +21,31 @@ async fn iceberg_provider_count_star_lowers_to_table_format_zero_column_count_so
 }
 
 #[tokio::test]
+async fn iceberg_provider_exact_empty_cpu_delegate_returns_zero_without_native_scan_execution() {
+    let schema = iceberg_test_schema();
+    let planner = Arc::new(RecordingPlanner::new(native_admissible_empty_scan_plan()));
+    let cpu_provider: Arc<dyn TableProvider> =
+        Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![]]).expect("empty CPU provider must build"));
+    let provider =
+        Arc::new(NexusIcebergTableProvider::from_cpu_provider_and_native_planner(cpu_provider, None, planner.clone()));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select count(*) from iceberg_t").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let batches = collect(physical_plan, Arc::new(TaskContext::default())).await.unwrap();
+
+    assert_eq!(planner.requests()[0].projected_column_names.as_deref(), Some(&[][..]));
+    assert_eq!(batches.len(), 1);
+    let counts = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(counts.values(), &[0]);
+}
+
+#[tokio::test]
 async fn iceberg_provider_count_star_reads_fallback_column_when_row_count_metadata_is_missing() {
     let schema = iceberg_test_schema();
     let planner = Arc::new(RecordingPlanner::new(mixed_row_count_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -54,7 +75,7 @@ async fn iceberg_provider_count_star_reads_fallback_column_when_row_count_metada
 async fn iceberg_provider_count_star_reads_deleted_files_even_with_row_count_metadata() {
     let schema = iceberg_test_schema();
     let planner = Arc::new(RecordingPlanner::new(position_delete_row_count_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -85,7 +106,7 @@ async fn iceberg_provider_count_star_probe_rejects_unproven_remote_carrier_colum
     let schema = iceberg_test_schema();
     let planner =
         Arc::new(RecordingPlanner::new(remote_mixed_row_count_scan_plan_without_probe_mapping(Arc::clone(&schema))));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -115,7 +136,7 @@ async fn iceberg_provider_count_star_fallback_executes_with_mixed_row_count_meta
         &first_path,
         &second_path,
     )));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -146,7 +167,7 @@ async fn iceberg_provider_count_star_fallback_executes_with_mixed_row_count_meta
 async fn iceberg_provider_count_star_ignores_unused_non_identity_partition_transform_facts() {
     let schema = transformed_partition_test_schema();
     let planner = Arc::new(RecordingPlanner::new(identity_and_day_partition_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 

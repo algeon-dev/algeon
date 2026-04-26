@@ -4,12 +4,26 @@ pub(in crate::native::lowering) fn table_format_scan_rejection(source: &Normaliz
     let Some(scan_exec) = source.table_format_scan_exec() else {
         return FallbackReason::TableFormatUnsupported;
     };
-    scan_exec
-        .scan_plan()
+    if let Some(reason) = scan_exec.native_outcome().rejection_reason() {
+        return reason;
+    }
+    let Some(scan_plan) = scan_exec.scan_plan() else {
+        return FallbackReason::TableFormatPlanningFailed;
+    };
+    scan_plan
         .unsupported_fallback_reasons()
         .into_iter()
         .next()
-        .unwrap_or_else(|| table_format_scan_plan_rejection(scan_exec.scan_plan()))
+        .unwrap_or_else(|| table_format_scan_plan_rejection(scan_plan))
+}
+
+pub(in crate::native::lowering) fn available_table_format_scan_plan(
+    scan_exec: &NexusIcebergScanExec,
+) -> Result<&TableFormatScanPlan, FallbackReason> {
+    if let Some(reason) = scan_exec.native_outcome().rejection_reason() {
+        return Err(reason);
+    }
+    scan_exec.scan_plan().ok_or(FallbackReason::TableFormatPlanningFailed)
 }
 
 pub(super) fn validate_table_format_scan_plan(plan: &TableFormatScanPlan) -> Result<(), FallbackReason> {

@@ -1,23 +1,7 @@
 use super::*;
 
-#[derive(Debug, Clone, Copy)]
-pub(super) enum ChildProfile {
-    Native,
-    CpuFallback,
-}
-
-impl ChildProfile {
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::CpuFallback => "cpu_fallback",
-        }
-    }
-}
-
 pub(super) struct RunningServer {
     pub(super) label: String,
-    pub(super) profile: ChildProfile,
     pub(super) pid: Option<u32>,
     pub(super) stdout_log: PathBuf,
     pub(super) stderr_log: PathBuf,
@@ -30,7 +14,6 @@ pub(super) async fn spawn_server(
     params: &RuntimeParams,
     evidence: &mut RunEvidence,
     label: &str,
-    profile: ChildProfile,
 ) -> E2eResult<RunningServer> {
     let addr = reserve_loopback_addr()?;
     let stdout_log = suffixed_log_path(&params.server_log_path, label, "stdout");
@@ -44,7 +27,6 @@ pub(super) async fn spawn_server(
         ("NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE".to_string(), params.concurrency.to_string()),
         ("NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY".to_string(), "least_loaded".to_string()),
         ("NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS".to_string(), params.query_timeout.as_millis().to_string()),
-        ("NEXUS_SERVER_SESSION_PROFILE".to_string(), profile.label().to_string()),
         ("NEXUS_SERVER_NATIVE_MEMORY_POLICY".to_string(), "bounded".to_string()),
         ("NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE".to_string(), params.bounded_mode.clone()),
         ("NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS".to_string(), params.concurrency.to_string()),
@@ -57,9 +39,6 @@ pub(super) async fn spawn_server(
         (OBS_TTL_ENV.to_string(), params.observability.ttl_secs.to_string()),
         (OBS_GRACE_ENV.to_string(), params.observability.shutdown_grace_secs.to_string()),
     ]);
-    if matches!(profile, ChildProfile::CpuFallback) {
-        env.insert("DATAFUSION_EXECUTION_TARGET_PARTITIONS".to_string(), "1".to_string());
-    }
     let started = Instant::now();
     let mut child = ServerChild::spawn_config(ServerSpawnConfig {
         server_binary: params.server_binary.clone(),
@@ -73,7 +52,7 @@ pub(super) async fn spawn_server(
     let url = format!("http://{addr}");
     let channel = child.connect_with_timeout(&url, params.connect_timeout).await?;
     child.require_running(label)?;
-    Ok(RunningServer { label: label.to_string(), profile, pid, stdout_log, stderr_log, started, child, channel })
+    Ok(RunningServer { label: label.to_string(), pid, stdout_log, stderr_log, started, child, channel })
 }
 
 pub(super) async fn terminate_server(
@@ -93,7 +72,6 @@ pub(super) fn process_evidence(server: &RunningServer, exit: ProcessExit) -> Pro
     ProcessEvidence {
         label: server.label.clone(),
         pid: server.pid,
-        profile: server.profile.label().to_string(),
         stdout_log: server.stdout_log.clone(),
         stderr_log: server.stderr_log.clone(),
         exit_success: exit.success,

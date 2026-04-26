@@ -12,20 +12,22 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use nexus_query_engine::{
-    plan::QueryPlanBuilder,
+    expr::Expr,
+    plan::{ProjectionOutput, QueryPlanBuilder},
     source::{LocalParquetSource, SourceNode},
 };
 
-use super::{
-    physical::{cugraph_child_stays_gpu_resident, walk_gpu_coverage},
-    *,
-};
+#[cfg(feature = "cugraph")]
+use super::physical::cugraph_child_stays_gpu_resident;
+use super::{physical::walk_gpu_coverage, *};
+#[cfg(feature = "cugraph")]
+use crate::native_exec::NexusNativeComposedExec;
 use crate::{
     error::{Error, ErrorCode},
-    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig},
+    native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
     native_report::NativeDataFusionPostNativeExecutionPath,
     planner::NexusNativeOptimizerConfig,
-    policy::{FallbackReason, GpuFallbackPolicy},
+    policy::FallbackReason,
     session::NexusSessionStateBuilderExt,
 };
 
@@ -33,13 +35,12 @@ fn test_execution_config() -> NexusNativeExecutionConfig {
     NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
 }
 
-fn unbounded_optimizer_config(policy: GpuFallbackPolicy) -> NexusNativeOptimizerConfig {
-    NexusNativeOptimizerConfig::new(policy).with_native_execution_config(NexusNativeExecutionConfig::unbounded())
+fn unbounded_optimizer_config() -> NexusNativeOptimizerConfig {
+    NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::unbounded())
 }
 
-fn validation_context(policy: GpuFallbackPolicy) -> SessionContext {
-    let state =
-        SessionStateBuilder::new_with_default_features().with_nexus_native(unbounded_optimizer_config(policy)).build();
+fn validation_context(config: NexusNativeOptimizerConfig) -> SessionContext {
+    let state = SessionStateBuilder::new_with_default_features().with_nexus_native(config).build();
     SessionContext::new_with_state(state)
 }
 
@@ -59,6 +60,21 @@ fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
 }
 
 #[cfg(feature = "cugraph")]
+fn native_edge_exec() -> Arc<dyn ExecutionPlan> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/query-gpu-coverage-edges-not-read.parquet",
+        schema,
+        vec!["src".to_string(), "dst".to_string()],
+    )));
+    Arc::new(NexusNativeExec::try_new(builder.finish_with_host_sink(source), test_execution_config()).unwrap())
+}
+
+#[cfg(feature = "cugraph")]
 fn composed_exec_with_child(child: Arc<dyn ExecutionPlan>, input_name: impl Into<String>) -> Arc<dyn ExecutionPlan> {
     let schema = one_column_schema();
     let mut builder = QueryPlanBuilder::new();
@@ -73,10 +89,7 @@ fn composed_exec_with_child(child: Arc<dyn ExecutionPlan>, input_name: impl Into
 #[tokio::test]
 async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() {
     let state = SessionStateBuilder::new()
-        .with_nexus_native(
-            NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-                .with_native_execution_config(test_execution_config()),
-        )
+        .with_nexus_native(NexusNativeOptimizerConfig::default().with_native_execution_config(test_execution_config()))
         .build();
     let ctx = SessionContext::new_with_state(state);
 
@@ -172,10 +185,7 @@ async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() 
 async fn validate_query_preflight_uses_session_sql_dialect() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(SessionConfig::new().set_str("datafusion.sql_parser.dialect", "postgresql"))
-        .with_nexus_native(
-            NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-                .with_native_execution_config(test_execution_config()),
-        )
+        .with_nexus_native(NexusNativeOptimizerConfig::default().with_native_execution_config(test_execution_config()))
         .build();
 
     let rejection = preflight_single_query(&state, "SELECT $$nexus_explain_coverage('SELECT 1')$$ AS marker");
@@ -184,7 +194,7 @@ async fn validate_query_preflight_uses_session_sql_dialect() {
 
 #[tokio::test]
 async fn validate_query_reports_cpu_only_and_partial_fallback_axes() {
-    let ctx = validation_context(GpuFallbackPolicy::GpuPreferred);
+    let ctx = validation_context(unbounded_optimizer_config());
 
     let cpu = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
     assert_eq!(cpu.overall, QueryGpuCoverageOverall::CpuOnly);
@@ -194,33 +204,67 @@ async fn validate_query_reports_cpu_only_and_partial_fallback_axes() {
             && reason.kind == QueryGpuFallbackReasonKind::Expression)
     );
 
-    let partial = validate_query(&ctx, "SELECT array[1, 2] AS values").await.unwrap();
-    assert!(matches!(partial.overall, QueryGpuCoverageOverall::PartialGpuPlanned { .. }));
-    assert_eq!(partial.domains.nexus_native_coverage, QueryGpuNexusNativeCoverage::Partial);
-    assert_eq!(partial.domains.datafusion_cpu_ingest_or_boundary, QueryGpuPresence::Present);
-    assert!(partial.fallback_reasons.iter().any(|reason| reason.reason_code == FallbackReason::UnsupportedType.code()
-        && reason.kind == QueryGpuFallbackReasonKind::ArrowType));
+    let unsupported = validate_query(&ctx, "SELECT array[1, 2] AS values").await.unwrap();
+    assert_eq!(unsupported.overall, QueryGpuCoverageOverall::CpuOnly);
+    assert_eq!(unsupported.domains.nexus_native_coverage, QueryGpuNexusNativeCoverage::None);
+    assert_eq!(unsupported.domains.datafusion_cpu_ingest_or_boundary, QueryGpuPresence::Absent);
+    assert!(
+        unsupported.fallback_reasons.iter().any(|reason| reason.reason_code == FallbackReason::UnsupportedType.code()
+            && reason.kind == QueryGpuFallbackReasonKind::ArrowType)
+    );
 }
 
 #[tokio::test]
-async fn validate_query_stamps_actual_policy_but_uses_diagnostic_gpu_preferred() {
-    let cpu_only_ctx = validation_context(GpuFallbackPolicy::CpuOnly);
-    let cpu_only = validate_query(&cpu_only_ctx, "SELECT 1").await.unwrap();
-    assert_eq!(cpu_only.validated_under.actual_policy, GpuFallbackPolicy::CpuOnly.to_string());
-    assert_eq!(cpu_only.validated_under.diagnostic_policy, GpuFallbackPolicy::GpuPreferred.to_string());
-    assert_eq!(cpu_only.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);
+async fn validate_query_preserves_the_installed_final_plan_requirement() {
+    let ctx = validation_context(unbounded_optimizer_config().with_no_datafusion_cpu_requirement());
+    let coverage = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
 
-    let gpu_only_ctx = validation_context(GpuFallbackPolicy::GpuOnly);
-    let gpu_only = validate_query(&gpu_only_ctx, "SELECT random() AS r").await.unwrap();
-    assert_eq!(gpu_only.validated_under.actual_policy, GpuFallbackPolicy::GpuOnly.to_string());
-    assert_eq!(gpu_only.validated_under.diagnostic_policy, GpuFallbackPolicy::GpuPreferred.to_string());
-    assert_eq!(gpu_only.overall, QueryGpuCoverageOverall::CpuOnly);
-    assert!(gpu_only.runtime_caveats.iter().any(|caveat| caveat.code == "gpu_only_policy_would_error"));
+    assert!(
+        matches!(
+            coverage.overall,
+            QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::PhysicalPlanning, .. }
+        ),
+        "coverage={coverage:?}"
+    );
+    assert!(
+        matches!(&coverage.overall, QueryGpuCoverageOverall::Rejected { detail, .. } if detail.contains("final physical plan")),
+        "coverage={coverage:?}"
+    );
+    assert_eq!(coverage.validated_under.final_plan_requirements, ["no_datafusion_cpu"]);
+}
+
+#[tokio::test]
+async fn validate_query_without_a_native_rule_keeps_the_default_session_cpu_baseline() {
+    let ctx = SessionContext::new();
+
+    let coverage = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
+
+    assert_eq!(coverage.overall, QueryGpuCoverageOverall::CpuOnly);
+    assert!(!coverage.validated_under.native_optimizer_rule_installed);
+    assert_eq!(coverage.validated_under.optimizer_config_source, "native_rule_absent");
+    assert_eq!(coverage.validated_under.execution_mode, None);
+    assert!(coverage.validated_under.final_plan_requirements.is_empty());
+    assert!(coverage.fallback_reasons.is_empty(), "coverage={coverage:?}");
+}
+
+#[tokio::test]
+async fn validate_query_metadata_uses_effective_session_optimizer_options() {
+    let ctx = validation_context(
+        NexusNativeOptimizerConfig::default()
+            .with_native_execution_config(test_execution_config())
+            .with_no_datafusion_cpu_requirement(),
+    );
+    ctx.sql("SET datafusion_nexus.native.pipeline_execution_mode = 'adaptive'").await.unwrap().collect().await.unwrap();
+
+    let coverage = validate_query(&ctx, "SELECT 1 AS value").await.unwrap();
+
+    assert_eq!(coverage.validated_under.execution_mode.as_deref(), Some("adaptive"));
+    assert_eq!(coverage.validated_under.final_plan_requirements, ["no_datafusion_cpu"]);
 }
 
 #[tokio::test]
 async fn validate_query_concurrent_calls_do_not_share_retained_rule_state() {
-    let ctx = validation_context(GpuFallbackPolicy::GpuPreferred);
+    let ctx = validation_context(unbounded_optimizer_config());
 
     let (native, cpu) =
         tokio::join!(validate_query(&ctx, "SELECT 1 AS value"), validate_query(&ctx, "SELECT random() AS r"));
@@ -279,13 +323,20 @@ mod cugraph {
         array::{ArrayRef, Int64Array},
         record_batch::RecordBatch,
     };
-    use datafusion::{datasource::memory::MemorySourceConfig, physical_plan::coop::CooperativeExec};
+    use datafusion::{
+        common::config::ConfigOptions, datasource::memory::MemorySourceConfig,
+        physical_optimizer::PhysicalOptimizerRule, physical_plan::coop::CooperativeExec,
+    };
 
     use super::*;
-    use crate::graph_sql::{
-        CugraphAlgoExec, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
-        CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, CugraphTriangleCountAllParams,
-        result_schema_for_params,
+    use crate::{
+        error::DataFusionErrorExt,
+        graph_sql::{
+            CugraphAlgoExec, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
+            CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, CugraphTriangleCountAllParams,
+            result_schema_for_params,
+        },
+        planner::{FinalPlanDisposition, NexusFinalPlanRequirementRule, classify_final_plan},
     };
 
     fn edge_schema() -> Arc<Schema> {
@@ -329,6 +380,51 @@ mod cugraph {
         )
     }
 
+    fn composed_cugraph_edge_plan() -> Arc<dyn ExecutionPlan> {
+        let child = cugraph_exec(memory_edge_source());
+        let input_name = child.coverage_gpu_result_input_name().to_string();
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(nexus_query_engine::source::GpuResidentSource::new(
+            input_name,
+            child.schema(),
+        )));
+        let projected = builder.add_projection(
+            source,
+            vec![
+                ProjectionOutput::new(Expr::column("vertex"), Field::new("src", DataType::Int64, false)),
+                ProjectionOutput::new(Expr::column("triangle_count"), Field::new("dst", DataType::Int64, false)),
+            ],
+        );
+        Arc::new(
+            NexusNativeComposedExec::try_new(
+                builder.finish_with_host_sink(projected),
+                vec![child],
+                test_execution_config(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn composed_cugraph_plan(edge_source: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        let cugraph = cugraph_exec(edge_source);
+        let input_name = cugraph.coverage_gpu_result_input_name().to_string();
+        composed_exec_with_child(cugraph, input_name)
+    }
+
+    fn assert_no_datafusion_cpu_requirement_rejects_mixed_plan(plan: Arc<dyn ExecutionPlan>) {
+        assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Mixed);
+        let rule = NexusFinalPlanRequirementRule::new(
+            NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement(),
+        );
+
+        let error =
+            rule.optimize(plan, &ConfigOptions::default()).expect_err("the requirement must reject a mixed final plan");
+        let error = error.find_nexus_error().expect("typed adapter error");
+
+        assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+        assert_eq!(error.fact_value("observed_final_plan_disposition"), Some("mixed"));
+    }
+
     #[test]
     fn cugraph_child_residency_matches_runtime_one_level_cooperative_unwrap() {
         let single_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_exec_leaf()));
@@ -340,8 +436,26 @@ mod cugraph {
     }
 
     #[test]
+    fn no_datafusion_cpu_requirement_rejects_composed_cugraph_cpu_edge_path() {
+        assert_no_datafusion_cpu_requirement_rejects_mixed_plan(composed_cugraph_plan(memory_edge_source()));
+    }
+
+    #[test]
+    fn no_datafusion_cpu_requirement_rejects_nested_cooperative_cugraph_input() {
+        let inner: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_exec()));
+        let nested: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(inner));
+
+        assert_no_datafusion_cpu_requirement_rejects_mixed_plan(composed_cugraph_plan(nested));
+    }
+
+    #[test]
+    fn no_datafusion_cpu_requirement_rejects_cugraph_composed_child_with_cpu_producer() {
+        assert_no_datafusion_cpu_requirement_rejects_mixed_plan(cugraph_exec(composed_cugraph_edge_plan()));
+    }
+
+    #[test]
     fn bare_cugraph_with_native_child_is_no_cpu_even_when_cudf_axis_is_none() {
-        let plan: Arc<dyn ExecutionPlan> = cugraph_exec(native_exec_leaf());
+        let plan: Arc<dyn ExecutionPlan> = cugraph_exec(native_edge_exec());
         let walk = walk_gpu_coverage(plan.as_ref());
         let coverage = QueryGpuCoverage::planned(
             validated_under_for_tests(),
@@ -381,7 +495,7 @@ mod cugraph {
 
     #[test]
     fn wrapped_cugraph_with_native_child_stays_full() {
-        let cugraph = cugraph_exec(native_exec_leaf());
+        let cugraph = cugraph_exec(native_edge_exec());
         let input_name = cugraph.coverage_gpu_result_input_name().to_string();
         let plan = composed_exec_with_child(cugraph, input_name);
         let walk = walk_gpu_coverage(plan.as_ref());
@@ -402,10 +516,10 @@ mod cugraph {
 
 fn validated_under_for_tests() -> QueryGpuValidatedUnder {
     QueryGpuValidatedUnder {
-        actual_policy: "gpu_preferred".to_string(),
-        diagnostic_policy: "gpu_preferred".to_string(),
+        native_optimizer_rule_installed: true,
         optimizer_config_source: "test".to_string(),
-        execution_mode: "strict_bounded".to_string(),
+        execution_mode: Some("strict_bounded".to_string()),
+        final_plan_requirements: Vec::new(),
         session_config_fingerprint: "test".to_string(),
         optimizer_fingerprint: "test".to_string(),
         catalog_snapshot: "test".to_string(),

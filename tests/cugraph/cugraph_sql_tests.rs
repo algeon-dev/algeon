@@ -25,7 +25,7 @@ use datafusion::{
 };
 use datafusion_nexus::{
     backend::{NexusAdmissionPolicy, NexusGpuBackend},
-    error::{DataFusionErrorExt, Error},
+    error::{DataFusionErrorExt, Error, ErrorCode},
     graph_sql::{
         CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
         CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode,
@@ -35,7 +35,6 @@ use datafusion_nexus::{
     native_exec::{NexusNativeComposedExec, NexusNativeExec},
     native_report::NativeDataFusionExecutionMetrics,
     planner::NexusNativeOptimizerConfig,
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
 };
 use nexus_query_engine::runtime::SlotGuarantee;

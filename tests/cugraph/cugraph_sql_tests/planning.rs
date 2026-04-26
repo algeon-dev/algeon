@@ -1,6 +1,31 @@
 use super::{support::*, *};
 
 #[tokio::test]
+async fn cugraph_sql_planning_preserves_structured_logical_edge_id_capability_errors() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_string_bfs_edges_with_edge_id(&ctx, "string_edges");
+    register_string_vertex_memtable(&ctx, "edge_ids", "edge_id", &["e0"]);
+
+    for (options, expected_include_edge_ids) in [
+        (r#"{"edge_id_col":"edge_id"}"#, "false"),
+        (r#"{"edge_id_col":"edge_id","include_edge_ids_table":"edge_ids","include_edge_ids_col":"edge_id"}"#, "true"),
+    ] {
+        let df = ctx
+            .sql(&format!("SELECT * FROM cugraph_bfs('string_edges', 'a', 'src', 'dst', NULL, '{options}')"))
+            .await
+            .expect("logical BFS SQL should parse before physical capability preflight");
+        let error =
+            df.create_physical_plan().await.expect_err("logical edge-id BFS must fail physical capability preflight");
+        let nexus = typed_nexus_error(&error);
+
+        assert_eq!(nexus.code(), ErrorCode::RequiredGpuOperationUnsupported);
+        assert_eq!(nexus.fact_value("edge_id_col"), Some("true"));
+        assert_eq!(nexus.fact_value("include_edge_ids"), Some(expected_include_edge_ids));
+    }
+}
+
+#[tokio::test]
 async fn cugraph_sql_planning_exposes_stable_output_schemas() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
@@ -109,31 +134,46 @@ async fn cugraph_undirected_only_algorithms_reject_directed_graph_option() {
 #[tokio::test]
 async fn cugraph_table_function_scan_rejects_int64_for_legacy_int32_only_algorithms() {
     let state = SessionStateBuilder::new_with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "edges_i64", DataType::Int64, DataType::Int64, DataType::Float64);
     register_edge_memtable(&ctx, "edges_i32", DataType::Int32, DataType::Int32, DataType::Float64);
 
-    for (int64_sql, int32_sql) in [
+    for (int64_sql, int32_sql, expected_algorithm) in [
         (
             "SELECT * FROM cugraph_minimum_spanning_tree('edges_i64', 'src', 'dst', 'weight')",
             "SELECT * FROM cugraph_minimum_spanning_tree('edges_i32', 'src', 'dst', 'weight')",
+            "cugraph_minimum_spanning_tree",
         ),
         (
             "SELECT * FROM cugraph_spectral_modularity_maximization('edges_i64')",
             "SELECT * FROM cugraph_spectral_modularity_maximization('edges_i32')",
+            "cugraph_spectral_modularity_maximization",
         ),
     ] {
         let int64_df = ctx.sql(int64_sql).await.unwrap();
-        let error = int64_df.create_physical_plan().await.unwrap_err().to_string();
-        assert!(error.contains("unsupported dtype Int64"), "unexpected planning error: {error}");
-        assert!(error.contains("supported vertex dtypes: Int32"), "unexpected planning error: {error}");
+        let error = int64_df.create_physical_plan().await.unwrap_err();
+        let nexus = typed_nexus_error(&error);
+        assert_eq!(nexus.code(), ErrorCode::RequiredGpuOperationUnsupported);
+        assert_eq!(nexus.fact_value("algorithm"), Some(expected_algorithm));
+        assert_eq!(nexus.fact_value("vertex_dtype"), Some("Int64"));
+        assert_eq!(nexus.fact_value("supported_vertex_dtypes"), Some("Int32"));
 
         let int32_df = ctx.sql(int32_sql).await.unwrap();
         int32_df.create_physical_plan().await.unwrap();
     }
+
+    let malformed = ctx
+        .sql("SELECT * FROM cugraph_minimum_spanning_tree('edges_i64', 'missing_src', 'dst', 'weight')")
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap_err();
+    assert!(malformed.find_nexus_error().is_none(), "missing columns must remain a planning error: {malformed}");
+    assert!(malformed.to_string().contains("missing source column 'missing_src'"));
 }
 
 #[tokio::test]
@@ -292,7 +332,7 @@ async fn cugraph_bfs_normalized_output_mode_is_opt_in() {
 #[tokio::test]
 async fn cugraph_bfs_table_function_scan_rejects_mixed_logical_vertex_domains() {
     let state = SessionStateBuilder::new_with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -342,7 +382,7 @@ async fn cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema()
 #[tokio::test]
 async fn cugraph_bfs_predicate_options_plan_as_exec_side_inputs() {
     let state = SessionStateBuilder::new_with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -479,7 +519,7 @@ async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_
 
     let state = SessionStateBuilder::new()
         .with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -541,7 +581,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
 
     let state = SessionStateBuilder::new()
         .with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);

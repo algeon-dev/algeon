@@ -37,6 +37,7 @@ use iceberg::{
     },
     table::Table,
 };
+use iceberg_datafusion::IcebergStaticTableProvider;
 use nexus_query_engine::datatypes::is_supported_arrow_type;
 use parquet::file::{
     FOOTER_SIZE,
@@ -55,12 +56,13 @@ use crate::{
             TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
             credential_free_endpoint_identity, resolve_table_format_parquet_source_with_metadata,
         },
-        scan_exec::NexusTableFormatScanExec,
+        scan_exec::{NexusIcebergNativeScanOutcome, NexusIcebergScanExec, translate_iceberg_cpu_delegate_error},
     },
 };
 
 const PLAN_SCAN_OPERATION: &str = "datafusion_nexus.table_format.iceberg.plan_scan";
 const PLAN_SCAN_TIMEOUT_OPERATION: &str = "datafusion_nexus.table_format.iceberg.plan_scan_timeout";
+const BUILD_CPU_DELEGATE_OPERATION: &str = "datafusion_nexus.table_format.iceberg.build_cpu_delegate";
 const TASK_CONVERSION_OPERATION: &str = "datafusion_nexus.table_format.iceberg.convert_file_scan_tasks";
 // Manifest planning is remote-IO bound; this keeps large snapshots moving without unbounded fanout.
 const REMOTE_ICEBERG_METADATA_PLANNING_CONCURRENCY: usize = 128;
@@ -80,8 +82,8 @@ use tasks::*;
 
 type SharedTableFormatPlanner = Arc<dyn TableFormatPlanner + Send + Sync>;
 
-/// DataFusion table provider that plans Iceberg metadata into adapter-owned
-/// scan facts instead of delegating to the upstream Arrow reader path.
+/// DataFusion table provider that exposes one Iceberg scan through both an
+/// executable upstream CPU delegate and optional native scan facts.
 ///
 /// The provider treats DataFusion filters as inexact pushdown: DataFusion keeps
 /// a parent filter for correctness, while native lowering can still see the
@@ -90,9 +92,17 @@ type SharedTableFormatPlanner = Arc<dyn TableFormatPlanner + Send + Sync>;
 #[derive(Clone)]
 pub struct NexusIcebergTableProvider {
     schema: SchemaRef,
+    cpu_source: NexusIcebergCpuSource,
+    resolved_snapshot_id: Option<i64>,
     planner: SharedTableFormatPlanner,
     catalog_type: Option<String>,
     scan_planning_timeout: Option<Duration>,
+}
+
+#[derive(Clone)]
+enum NexusIcebergCpuSource {
+    ResolvedTable(Table),
+    InjectedProvider(Arc<dyn TableProvider>),
 }
 
 impl NexusIcebergTableProvider {
@@ -101,8 +111,7 @@ impl NexusIcebergTableProvider {
     /// The table schema is converted eagerly; file planning remains lazy and
     /// happens in `TableProvider::scan`.
     pub fn try_new(table: Table) -> Result<Self> {
-        let schema = iceberg_schema_to_datafusion_arrow_schema(table.current_schema_ref().as_ref())?;
-        Ok(Self::from_table_format_planner(schema, Arc::new(IcebergTableFormatPlanner::new(table))))
+        Self::try_new_with_optional_parquet_read_strategy_config(table, None)
     }
 
     /// Builds a provider from an `iceberg-rust` table handle with an explicit
@@ -111,19 +120,61 @@ impl NexusIcebergTableProvider {
         table: Table,
         config: TableFormatParquetReadStrategyConfig,
     ) -> Result<Self> {
-        let schema = iceberg_schema_to_datafusion_arrow_schema(table.current_schema_ref().as_ref())?;
-        Ok(Self::from_table_format_planner(
-            schema,
-            Arc::new(IcebergTableFormatPlanner::new(table).with_parquet_read_strategy_config(config)),
-        ))
+        Self::try_new_with_optional_parquet_read_strategy_config(table, Some(config))
     }
 
-    /// Builds a provider around an already supplied table-format planner.
-    ///
-    /// This keeps tests and custom catalog integrations credential-free at the
-    /// DataFusion provider boundary.
-    pub fn from_table_format_planner(schema: SchemaRef, planner: Arc<dyn TableFormatPlanner + Send + Sync>) -> Self {
-        Self { schema, planner, catalog_type: None, scan_planning_timeout: None }
+    fn try_new_with_optional_parquet_read_strategy_config(
+        table: Table,
+        config: Option<TableFormatParquetReadStrategyConfig>,
+    ) -> Result<Self> {
+        let resolved_snapshot_id = table.metadata().current_snapshot_id();
+        let iceberg_schema = match resolved_snapshot_id {
+            Some(snapshot_id) => table
+                .metadata()
+                .snapshot_by_id(snapshot_id)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
+                        PLAN_SCAN_OPERATION,
+                        "resolved Iceberg snapshot is missing from table metadata",
+                    )
+                    .with_fact("table_format", TableFormat::Iceberg.code())
+                    .with_fact("snapshot_id", snapshot_id)
+                })?
+                .schema(table.metadata())
+                .map_err(|error| iceberg_planning_error("failed to resolve Iceberg snapshot schema", error))?,
+            None => table.current_schema_ref().clone(),
+        };
+        let schema = iceberg_schema_to_datafusion_arrow_schema(iceberg_schema.as_ref())?;
+        let planner = match config {
+            Some(config) => IcebergTableFormatPlanner::new(table.clone()).with_parquet_read_strategy_config(config),
+            None => IcebergTableFormatPlanner::new(table.clone()),
+        };
+        Ok(Self {
+            schema,
+            cpu_source: NexusIcebergCpuSource::ResolvedTable(table),
+            resolved_snapshot_id,
+            planner: Arc::new(planner),
+            catalog_type: None,
+            scan_planning_timeout: None,
+        })
+    }
+
+    /// Builds a provider from an executable CPU provider and a native metadata planner.
+    pub fn from_cpu_provider_and_native_planner(
+        cpu_provider: Arc<dyn TableProvider>,
+        resolved_snapshot_id: Option<i64>,
+        planner: Arc<dyn TableFormatPlanner + Send + Sync>,
+    ) -> Self {
+        let schema = Arc::new(strip_arrow_schema_metadata(cpu_provider.schema().as_ref().clone()));
+        Self {
+            schema,
+            cpu_source: NexusIcebergCpuSource::InjectedProvider(cpu_provider),
+            resolved_snapshot_id,
+            planner,
+            catalog_type: None,
+            scan_planning_timeout: None,
+        }
     }
 
     /// Records a stable catalog label in scan requests and diagnostics.
@@ -147,6 +198,7 @@ impl fmt::Debug for NexusIcebergTableProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NexusIcebergTableProvider")
             .field("schema", &self.schema)
+            .field("resolved_snapshot_id", &self.resolved_snapshot_id)
             .field("catalog_type", &self.catalog_type)
             .field("scan_planning_timeout", &self.scan_planning_timeout)
             .finish_non_exhaustive()
@@ -165,12 +217,41 @@ impl TableProvider for NexusIcebergTableProvider {
 
     async fn scan(
         &self,
-        _state: &dyn Session,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        let projected_schema = project_schema(&self.schema, projection)?;
+        let snapshot_id = self.resolved_snapshot_id.map(|snapshot_id| snapshot_id.to_string());
+        let cpu_provider: Arc<dyn TableProvider> = match &self.cpu_source {
+            NexusIcebergCpuSource::ResolvedTable(table) => {
+                let provider = match self.resolved_snapshot_id {
+                    Some(snapshot_id) => {
+                        IcebergStaticTableProvider::try_new_from_table_snapshot(table.clone(), snapshot_id).await
+                    },
+                    None => IcebergStaticTableProvider::try_new_from_table(table.clone()).await,
+                }
+                .map_err(|error| {
+                    translate_iceberg_cpu_delegate_error(
+                        DataFusionError::External(Box::new(error)),
+                        snapshot_id.as_deref(),
+                        BUILD_CPU_DELEGATE_OPERATION,
+                        "failed to build the executable Iceberg CPU scan provider",
+                    )
+                })?;
+                Arc::new(provider)
+            },
+            NexusIcebergCpuSource::InjectedProvider(provider) => Arc::clone(provider),
+        };
+        let cpu_delegate = cpu_provider.scan(state, projection, filters, limit).await.map_err(|error| {
+            translate_iceberg_cpu_delegate_error(
+                error,
+                snapshot_id.as_deref(),
+                BUILD_CPU_DELEGATE_OPERATION,
+                "failed to build the executable Iceberg CPU scan delegate",
+            )
+        })?;
+        let canonical_schema = project_schema(&self.schema, projection)?;
         let projected_column_names = projection
             .map(|indices| indices.iter().map(|index| self.schema.field(*index).name().clone()).collect::<Vec<_>>());
         let predicate = datafusion_filters_to_table_format_predicate(filters);
@@ -179,13 +260,35 @@ impl TableProvider for NexusIcebergTableProvider {
             .with_scan_limit(limit)
             .with_predicate(predicate);
         request.projected_column_names = projected_column_names;
+        request.snapshot_id = snapshot_id;
         if let Some(catalog_type) = self.catalog_type.as_ref() {
             request.catalog_type = Some(catalog_type.clone());
         }
-        let scan_plan = plan_scan_with_optional_timeout(Arc::clone(&self.planner), request, self.scan_planning_timeout)
-            .await
-            .map_err(DataFusionError::from)?;
-        Ok(Arc::new(NexusTableFormatScanExec::new(scan_plan, projected_schema)))
+        let resolved_scan =
+            resolve_scan_with_optional_timeout(Arc::clone(&self.planner), request.clone(), self.scan_planning_timeout)
+                .await
+                .map_err(DataFusionError::from)?;
+        let resolved_rejection = resolved_scan.first_rejection_reason();
+        let native_outcome = match inspect_native_scan_with_optional_timeout(
+            Arc::clone(&self.planner),
+            request,
+            resolved_scan.clone(),
+            self.scan_planning_timeout,
+        )
+        .await
+        {
+            // Native inspection may trim a predicate-free limited scan. That
+            // can remove a file-local rejection, so classify the inspected
+            // facts rather than preserving the pre-inspection rejection.
+            Ok(scan_plan) => NexusIcebergNativeScanOutcome::from_scan_plan(scan_plan),
+            // Inspection is optional acceleration work. A known resolved
+            // capability miss remains more precise than the inspection
+            // failure; only otherwise-admissible source facts report the
+            // inspection failure as native evidence.
+            Err(_error) if resolved_rejection.is_some() => NexusIcebergNativeScanOutcome::from_scan_plan(resolved_scan),
+            Err(error) => NexusIcebergNativeScanOutcome::InspectionFailed { resolved_scan, error: Arc::new(error) },
+        };
+        Ok(Arc::new(NexusIcebergScanExec::try_new(cpu_delegate, canonical_schema, native_outcome)?))
     }
 
     fn supports_filters_pushdown(
@@ -196,13 +299,13 @@ impl TableProvider for NexusIcebergTableProvider {
     }
 }
 
-async fn plan_scan_with_optional_timeout(
+async fn resolve_scan_with_optional_timeout(
     planner: SharedTableFormatPlanner,
     request: TableFormatScanRequest,
     timeout: Option<Duration>,
 ) -> Result<TableFormatScanPlan> {
     let Some(timeout) = timeout else {
-        return planner.plan_scan(request).await;
+        return planner.resolve_scan(request).await;
     };
     let deadline = TableFormatPlanningDeadline::from_timeout(timeout);
     let timeout_ms = deadline.timeout_ms();
@@ -210,7 +313,7 @@ async fn plan_scan_with_optional_timeout(
     let snapshot_id = request.snapshot_id.clone();
     let planning_failure_facts = planner.planning_failure_facts();
 
-    let mut planning_task = tokio::spawn(async move { planner.plan_scan_with_deadline(request, deadline).await });
+    let mut planning_task = tokio::spawn(async move { planner.resolve_scan_with_deadline(request, deadline).await });
     tokio::select! {
         biased;
 
@@ -225,7 +328,44 @@ async fn plan_scan_with_optional_timeout(
                 catalog_type,
                 snapshot_id,
                 planning_failure_facts,
-                "provider_timeout",
+                "source_resolution_provider_timeout",
+            ))
+        },
+    }
+}
+
+async fn inspect_native_scan_with_optional_timeout(
+    planner: SharedTableFormatPlanner,
+    request: TableFormatScanRequest,
+    resolved_scan: TableFormatScanPlan,
+    timeout: Option<Duration>,
+) -> Result<TableFormatScanPlan> {
+    let Some(timeout) = timeout else {
+        return planner.inspect_native_scan(request, resolved_scan).await;
+    };
+    let deadline = TableFormatPlanningDeadline::from_timeout(timeout);
+    let timeout_ms = deadline.timeout_ms();
+    let catalog_type = request.catalog_type.clone();
+    let snapshot_id = request.snapshot_id.clone();
+    let planning_failure_facts = planner.planning_failure_facts();
+
+    let mut planning_task =
+        tokio::spawn(async move { planner.inspect_native_scan_with_deadline(request, resolved_scan, deadline).await });
+    tokio::select! {
+        biased;
+
+        result = &mut planning_task => match result {
+            Ok(result) => result,
+            Err(error) => Err(iceberg_planning_task_error(error)),
+        },
+        _ = tokio::time::sleep(timeout) => {
+            planning_task.abort();
+            Err(iceberg_scan_planning_timeout_error(
+                timeout_ms,
+                catalog_type,
+                snapshot_id,
+                planning_failure_facts,
+                "native_inspection_provider_timeout",
             ))
         },
     }
@@ -349,16 +489,16 @@ impl IcebergTableFormatPlanner {
         self
     }
 
-    /// Resolves Iceberg scan metadata into adapter-owned scan facts.
+    /// Resolves Iceberg scan metadata into adapter-owned immutable scan facts.
     ///
     /// The result is metadata-only: data files, delete files, partition values,
     /// projected columns, and unsupported-feature facts. It does not read data
     /// files and must not expose credentials in diagnostics.
-    pub async fn plan_table_format_scan(&self, request: TableFormatScanRequest) -> Result<TableFormatScanPlan> {
-        self.plan_table_format_scan_with_timeout_context(request, None).await
+    pub async fn resolve_table_format_scan(&self, request: TableFormatScanRequest) -> Result<TableFormatScanPlan> {
+        self.resolve_table_format_scan_with_timeout_context(request, None).await
     }
 
-    async fn plan_table_format_scan_with_timeout_context(
+    async fn resolve_table_format_scan_with_timeout_context(
         &self,
         request: TableFormatScanRequest,
         timeout_context: Option<IcebergScanPlanningTimeoutContext>,
@@ -420,7 +560,6 @@ impl IcebergTableFormatPlanner {
             .snapshot_id
             .clone()
             .or_else(|| self.table.metadata().current_snapshot_id().map(|id| id.to_string()));
-        let request_has_predicate = request.predicate.is_some();
         let mut plan = if let Some(plan) = self
             .try_plan_predicate_free_limited_scan(
                 &request,
@@ -466,16 +605,44 @@ impl IcebergTableFormatPlanner {
                 );
             }
 
-            iceberg_file_scan_tasks_to_table_format_scan_plan_with_config_and_filter_enforcement(
+            iceberg_file_scan_tasks_to_table_format_scan_plan_with_filter_enforcement(
                 snapshot_id,
                 catalog_type,
                 tasks,
-                &self.parquet_read_strategy_config,
                 parent_filter_enforces_iceberg_predicate,
                 timeout_context.as_ref(),
             )?
         }
         .with_scan_limit(request.scan_limit);
+        if row_selection_enabled {
+            plan.unsupported_features.push(TableFormatUnsupportedFeature::new(
+                TableFormatUnsupportedFeatureCode::IcebergRowSelectionUnsupported,
+                "Iceberg row selection/page-index semantics are not represented by Milestone B native scan facts",
+            ));
+        }
+        Ok(plan)
+    }
+
+    /// Enriches resolved scan facts with acceleration-only source and footer evidence.
+    pub async fn inspect_table_format_scan(
+        &self,
+        request: TableFormatScanRequest,
+        resolved_scan: TableFormatScanPlan,
+    ) -> Result<TableFormatScanPlan> {
+        self.inspect_table_format_scan_with_timeout_context(request, resolved_scan, None).await
+    }
+
+    async fn inspect_table_format_scan_with_timeout_context(
+        &self,
+        request: TableFormatScanRequest,
+        mut plan: TableFormatScanPlan,
+        timeout_context: Option<IcebergScanPlanningTimeoutContext>,
+    ) -> Result<TableFormatScanPlan> {
+        if let Some(context) = timeout_context.as_ref() {
+            context.check("native_inspection_start")?;
+        }
+        attach_native_parquet_source_strategies(&mut plan, &self.parquet_read_strategy_config)?;
+        let request_has_predicate = request.predicate.is_some();
         attach_remote_delete_file_row_counts_for_scan_limit(
             &mut plan,
             self.table.file_io(),
@@ -486,12 +653,6 @@ impl IcebergTableFormatPlanner {
         trim_predicate_free_scan_limit_data_files(&mut plan, request_has_predicate);
         attach_remote_footer_schemas_for_field_id_proof(&mut plan, self.table.file_io(), timeout_context.as_ref())
             .await?;
-        if row_selection_enabled {
-            plan.unsupported_features.push(TableFormatUnsupportedFeature::new(
-                TableFormatUnsupportedFeatureCode::IcebergRowSelectionUnsupported,
-                "Iceberg row selection/page-index semantics are not represented by Milestone B native scan facts",
-            ));
-        }
         Ok(plan)
     }
 
@@ -596,7 +757,7 @@ impl IcebergTableFormatPlanner {
                     deletes,
                     request.case_sensitive,
                 );
-                append_task_facts(&mut plan, task_index, task, &self.parquet_read_strategy_config, false)?;
+                append_task_facts(&mut plan, task_index, task, false)?;
                 let data_file_index = plan.data_files.len() - 1;
                 attach_manifest_delete_metadata(&mut plan, data_file_index, &limited_deletes);
                 task_index += 1;
@@ -612,11 +773,11 @@ impl IcebergTableFormatPlanner {
 }
 
 impl TableFormatPlanner for IcebergTableFormatPlanner {
-    fn plan_scan(&self, request: TableFormatScanRequest) -> BoxFuture<'_, Result<TableFormatScanPlan>> {
-        Box::pin(async move { self.plan_table_format_scan(request).await })
+    fn resolve_scan(&self, request: TableFormatScanRequest) -> BoxFuture<'_, Result<TableFormatScanPlan>> {
+        Box::pin(async move { self.resolve_table_format_scan(request).await })
     }
 
-    fn plan_scan_with_deadline(
+    fn resolve_scan_with_deadline(
         &self,
         request: TableFormatScanRequest,
         deadline: TableFormatPlanningDeadline,
@@ -624,7 +785,28 @@ impl TableFormatPlanner for IcebergTableFormatPlanner {
         Box::pin(async move {
             let timeout_context =
                 IcebergScanPlanningTimeoutContext::new(deadline, &request, self.planning_failure_facts());
-            self.plan_table_format_scan_with_timeout_context(request, Some(timeout_context)).await
+            self.resolve_table_format_scan_with_timeout_context(request, Some(timeout_context)).await
+        })
+    }
+
+    fn inspect_native_scan(
+        &self,
+        request: TableFormatScanRequest,
+        resolved_scan: TableFormatScanPlan,
+    ) -> BoxFuture<'_, Result<TableFormatScanPlan>> {
+        Box::pin(async move { self.inspect_table_format_scan(request, resolved_scan).await })
+    }
+
+    fn inspect_native_scan_with_deadline(
+        &self,
+        request: TableFormatScanRequest,
+        resolved_scan: TableFormatScanPlan,
+        deadline: TableFormatPlanningDeadline,
+    ) -> BoxFuture<'_, Result<TableFormatScanPlan>> {
+        Box::pin(async move {
+            let timeout_context =
+                IcebergScanPlanningTimeoutContext::new(deadline, &request, self.planning_failure_facts());
+            self.inspect_table_format_scan_with_timeout_context(request, resolved_scan, Some(timeout_context)).await
         })
     }
 
@@ -673,9 +855,13 @@ fn default_schema_name_mapping(table: &Table) -> Result<Option<Arc<IcebergNameMa
         .transpose()
 }
 fn iceberg_planning_error(message: &'static str, source: iceberg::Error) -> Error {
-    Error::new(ErrorCode::InvalidExecutionPlan, PLAN_SCAN_OPERATION, message)
-        .with_fact("table_format", TableFormat::Iceberg.code())
-        .with_source(source)
+    let error = Error::new(
+        crate::table_format::iceberg::catalog::classify_iceberg_scan_error(&source),
+        PLAN_SCAN_OPERATION,
+        message,
+    )
+    .with_fact("table_format", TableFormat::Iceberg.code());
+    crate::table_format::iceberg::catalog::apply_iceberg_catalog_error_facts(error, &source).with_source(source)
 }
 
 #[cfg(test)]

@@ -15,7 +15,6 @@ use crate::{
 #[non_exhaustive]
 pub enum TriageCode {
     Cancelled,
-    ExplicitCpuPolicy,
     CpuPreferred,
     UnsupportedPlanShape,
     UnsupportedOperator,
@@ -43,7 +42,6 @@ impl TriageCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Cancelled => "cancelled",
-            Self::ExplicitCpuPolicy => "explicit_cpu_policy",
             Self::CpuPreferred => "cpu_preferred",
             Self::UnsupportedPlanShape => "unsupported_plan_shape",
             Self::UnsupportedOperator => "unsupported_operator",
@@ -84,6 +82,7 @@ impl From<QueryErrorCode> for TriageCode {
             QueryErrorCode::UnsupportedType => Self::UnsupportedType,
             QueryErrorCode::CudfUnsupported => Self::UnsupportedPlanShape,
             QueryErrorCode::InvalidPlan => Self::InvalidPlan,
+            QueryErrorCode::GraphInputInvalid => Self::InvalidInput,
             QueryErrorCode::CudfInvalidInput => Self::InvalidInput,
             QueryErrorCode::MemoryReservationFailed => Self::MemoryReservationDenied,
             QueryErrorCode::CudfResourceExhausted

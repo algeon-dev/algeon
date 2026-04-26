@@ -139,111 +139,39 @@ fn log_iceberg_metadata_lookup(
     );
 }
 
-/// Which DataFusion [`TableProvider`] implementation to wrap loaded Iceberg
-/// tables in.
-///
-/// The dynamic catalog stays neutral — the choice is decided once at server
-/// startup based on [`crate::server::ServerSessionProfile`] (when the
-/// server is built with both `iceberg` and `iceberg-cpu`).
-///
-/// `Gpu` wraps loaded tables in the adapter's native
-/// `NexusIcebergTableProvider` (GPU-only `NexusTableFormatScanExec` leaf).
-/// `Cpu` wraps them in upstream `iceberg-datafusion`'s
-/// `IcebergStaticTableProvider`, which provides a real CPU Arrow reader and
-/// is only available when the `iceberg-cpu` feature is enabled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IcebergProviderKind {
-    /// Native GPU planning leaf via [`crate::table_format::iceberg::NexusIcebergTableProvider`].
-    Gpu,
-    /// CPU Arrow reader via `iceberg_datafusion::IcebergStaticTableProvider`.
-    ///
-    /// Requires the `iceberg-cpu` feature. Building [`NexusIcebergSchemaProvider`]
-    /// with this variant when the feature is off returns an error at startup
-    /// rather than at first-query time.
-    Cpu,
-}
-
-impl IcebergProviderKind {
-    /// Returns a stable string label suitable for tracing.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Gpu => "gpu",
-            Self::Cpu => "cpu",
-        }
-    }
-}
-
 /// Options applied when wrapping loaded Iceberg tables in DataFusion table providers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IcebergProviderOptions {
-    /// Optional wall-clock budget for GPU table-format scan planning.
+    /// Optional wall-clock budget for each table-format scan-planning phase.
     pub scan_planning_timeout: Option<Duration>,
 }
 
 impl IcebergProviderOptions {
-    /// Sets the optional GPU scan-planning timeout.
+    /// Sets the optional source-resolution and native-inspection timeout.
     pub fn with_scan_planning_timeout(mut self, timeout: Option<Duration>) -> Self {
         self.scan_planning_timeout = timeout;
         self
     }
 }
 
-/// Wraps a loaded Iceberg table in the [`TableProvider`] selected by `kind`.
-///
-/// `Gpu` always succeeds (the native provider has no runtime preconditions).
-/// `Cpu` requires the `iceberg-cpu` feature; without it this returns
-/// [`ErrorCode::CudfInvalidInput`] so server startup fails loudly instead of
-/// silently downgrading.
-async fn build_table_provider(
+/// Wraps a loaded Iceberg table in the unified dual-mode provider.
+fn build_table_provider(
     table: iceberg::table::Table,
-    kind: IcebergProviderKind,
     catalog_type: &str,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
     provider_options: &IcebergProviderOptions,
 ) -> Result<Arc<dyn TableProvider>> {
-    match kind {
-        IcebergProviderKind::Gpu => {
-            let provider = match parquet_read_strategy_config {
-                Some(config) => {
-                    crate::table_format::iceberg::NexusIcebergTableProvider::try_new_with_parquet_read_strategy_config(
-                        table, config,
-                    )?
-                },
-                None => crate::table_format::iceberg::NexusIcebergTableProvider::try_new(table)?,
-            };
-            Ok(Arc::new(
-                provider
-                    .with_catalog_type(catalog_type)
-                    .with_scan_planning_timeout(provider_options.scan_planning_timeout),
-            ))
+    let provider = match parquet_read_strategy_config {
+        Some(config) => {
+            crate::table_format::iceberg::NexusIcebergTableProvider::try_new_with_parquet_read_strategy_config(
+                table, config,
+            )?
         },
-        IcebergProviderKind::Cpu => {
-            #[cfg(feature = "iceberg-cpu")]
-            {
-                let _ = catalog_type;
-                let provider = iceberg_datafusion::IcebergStaticTableProvider::try_new_from_table(table)
-                    .await
-                    .map_err(|error| {
-                        Error::new(
-                            ErrorCode::CudfDependencyFailure,
-                            CATALOG_BACKEND_OP,
-                            "failed to build iceberg-datafusion CPU table provider",
-                        )
-                        .with_source(error)
-                    })?;
-                Ok(Arc::new(provider))
-            }
-            #[cfg(not(feature = "iceberg-cpu"))]
-            {
-                let _ = (table, catalog_type);
-                Err(Error::new(
-                    ErrorCode::CudfInvalidInput,
-                    CATALOG_BACKEND_OP,
-                    "IcebergProviderKind::Cpu requires the `iceberg-cpu` feature to be enabled at build time",
-                ))
-            }
-        },
-    }
+        None => crate::table_format::iceberg::NexusIcebergTableProvider::try_new(table)?,
+    };
+    Ok(Arc::new(
+        provider.with_catalog_type(catalog_type).with_scan_planning_timeout(provider_options.scan_planning_timeout),
+    ))
 }
 
 /// Backend-neutral Iceberg catalog listing and table-loading interface.
@@ -328,7 +256,6 @@ pub struct NexusIcebergSchemaProvider {
     known_table_names: Vec<String>,
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: String,
-    provider_kind: IcebergProviderKind,
     provider_options: IcebergProviderOptions,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
     table_cache: RwLock<HashMap<String, Arc<dyn TableProvider>>>,
@@ -341,7 +268,6 @@ impl NexusIcebergSchemaProvider {
         known_table_names: Vec<String>,
         backend: Arc<dyn IcebergCatalogBackend>,
         catalog_type: impl Into<String>,
-        provider_kind: IcebergProviderKind,
         provider_options: IcebergProviderOptions,
         parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
     ) -> Self {
@@ -350,7 +276,6 @@ impl NexusIcebergSchemaProvider {
             known_table_names,
             backend,
             catalog_type: catalog_type.into(),
-            provider_kind,
             provider_options,
             parquet_read_strategy_config,
             table_cache: RwLock::new(HashMap::new()),
@@ -468,12 +393,10 @@ impl SchemaProvider for NexusIcebergSchemaProvider {
         };
         let provider = build_table_provider(
             table,
-            self.provider_kind,
             &self.catalog_type,
             self.parquet_read_strategy_config.clone(),
             &self.provider_options,
         )
-        .await
         .map_err(DataFusionError::from)?;
 
         // Insert into cache; under concurrent first-access races both paths
@@ -520,27 +443,19 @@ impl SchemaProvider for NexusIcebergSchemaProvider {
 pub async fn build_catalog_provider_from_backend(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: impl Into<String>,
-    provider_kind: IcebergProviderKind,
 ) -> Result<NexusIcebergCatalogProvider> {
-    build_catalog_provider_from_backend_with_options(
-        backend,
-        catalog_type,
-        provider_kind,
-        IcebergProviderOptions::default(),
-    )
-    .await
+    build_catalog_provider_from_backend_with_options(backend, catalog_type, IcebergProviderOptions::default()).await
 }
 
 /// Builds a [`NexusIcebergCatalogProvider`] with explicit provider options.
 pub async fn build_catalog_provider_from_backend_with_options(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: impl Into<String>,
-    provider_kind: IcebergProviderKind,
     provider_options: IcebergProviderOptions,
 ) -> Result<NexusIcebergCatalogProvider> {
     let catalog_type = catalog_type.into();
     let namespaces = backend.list_namespaces().await?;
-    build_catalog_provider_for_namespaces(backend, catalog_type, namespaces, provider_kind, provider_options).await
+    build_catalog_provider_for_namespaces(backend, catalog_type, namespaces, provider_options).await
 }
 
 /// Builds a [`NexusIcebergCatalogProvider`] scoped to one configured namespace.
@@ -555,13 +470,11 @@ pub async fn build_scoped_catalog_provider_from_backend(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: impl Into<String>,
     namespace: &str,
-    provider_kind: IcebergProviderKind,
 ) -> Result<NexusIcebergCatalogProvider> {
     build_scoped_catalog_provider_from_backend_with_options(
         backend,
         catalog_type,
         namespace,
-        provider_kind,
         IcebergProviderOptions::default(),
     )
     .await
@@ -572,25 +485,16 @@ pub async fn build_scoped_catalog_provider_from_backend_with_options(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: impl Into<String>,
     namespace: &str,
-    provider_kind: IcebergProviderKind,
     provider_options: IcebergProviderOptions,
 ) -> Result<NexusIcebergCatalogProvider> {
     let namespace = namespace_ident_from_flat_name(namespace)?;
-    build_catalog_provider_for_namespaces(
-        backend,
-        catalog_type.into(),
-        vec![namespace],
-        provider_kind,
-        provider_options,
-    )
-    .await
+    build_catalog_provider_for_namespaces(backend, catalog_type.into(), vec![namespace], provider_options).await
 }
 
 async fn build_catalog_provider_for_namespaces(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: String,
     namespaces: Vec<NamespaceIdent>,
-    provider_kind: IcebergProviderKind,
     provider_options: IcebergProviderOptions,
 ) -> Result<NexusIcebergCatalogProvider> {
     let mut schemas: BTreeMap<String, Arc<NexusIcebergSchemaProvider>> = BTreeMap::new();
@@ -636,7 +540,6 @@ async fn build_catalog_provider_for_namespaces(
             known_table_names,
             Arc::clone(&backend),
             &catalog_type,
-            provider_kind,
             provider_options.clone(),
             backend.parquet_read_strategy_config(),
         ));
@@ -709,10 +612,7 @@ mod tests {
         };
         let backend = Arc::new(StrategyMockBackend { parquet_read_strategy_config: Some(strategy.clone()) });
 
-        let provider =
-            build_scoped_catalog_provider_from_backend(backend, "rest", "tpch_sf1", IcebergProviderKind::Gpu)
-                .await
-                .unwrap();
+        let provider = build_scoped_catalog_provider_from_backend(backend, "rest", "tpch_sf1").await.unwrap();
         let schema = provider.schema_concrete("tpch_sf1").expect("scoped schema provider");
 
         assert_eq!(schema.parquet_read_strategy_config, Some(strategy));

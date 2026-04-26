@@ -325,10 +325,7 @@ mod get_tables_prefilter_tests {
     };
 
     use super::*;
-    use crate::{
-        policy::GpuFallbackPolicy,
-        server::auth::{AuthMode, TokenStore},
-    };
+    use crate::server::auth::{AuthMode, TokenStore};
 
     #[derive(Debug)]
     struct CountingCatalog {
@@ -418,8 +415,7 @@ mod get_tables_prefilter_tests {
         ctx.register_catalog("counting", Arc::new(CountingCatalog { schema }));
         DatafusionNexusFlightSqlService::new(
             ctx,
-            NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
-            ServerSessionProfile::Native,
+            NexusNativeOptimizerConfig::default(),
             Arc::new(QueryAdmission::new(1).expect("test admission limit")),
             Duration::from_secs(30),
             AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),

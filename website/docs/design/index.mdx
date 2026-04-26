@@ -37,8 +37,8 @@ DataFusion session.
 ## The design contract
 
 - **DataFusion stays in charge:** SQL, catalogs, physical planning, and
-  CPU-readable fallback remain stock DataFusion. GPU-only table-format leaves
-  fail planning if native lowering cannot consume them.
+  CPU-readable fallback remain stock DataFusion. Every Iceberg scan keeps an
+  executable upstream CPU delegate alongside its optional native scan facts.
 - **The adapter translates:** `src/` recognizes DataFusion physical shapes,
   lowers supported candidates into `QueryPlan`, and exposes reports.
 - **The engine owns native execution:** `crates/nexus-query-engine` has no
@@ -81,8 +81,7 @@ let state = backend
 
 `GpuPreferred` leaves rejected CPU-readable candidates on DataFusion's CPU
 path; `GpuOnly` turns the first native rejection into a planning error. The
-full boundary — including how GPU-only table-format scan leaves fail planning
-instead of falling back — is described in
+full boundary is described in
 [Fallback policy boundary](./native-lowering.mdx#fallback-policy-boundary).
 
 ### Feature gates
@@ -91,8 +90,7 @@ instead of falling back — is described in
 | --- | --- |
 | `cugraph` | cuGraph SQL algorithms and engine graph execution support. |
 | `server-cugraph` | Flight SQL server plus cuGraph SQL. |
-| `iceberg` | Iceberg / Glue / REST / S3 source integration through native table-format scans. |
-| `iceberg-cpu` | Opt-in CPU Arrow Iceberg reader for CPU-fallback server profiles. |
+| `iceberg` | Unified CPU-executable and native-accelerated Iceberg / Glue / REST / S3 source integration. |
 | `server` | Arrow Flight SQL service, auth, cancellation, admission, workspace, and diagnostics. |
 
 ## Native Lowering and Admission

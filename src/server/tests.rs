@@ -30,7 +30,21 @@ const TEST_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
 const TEST_MAX_RETRY_ATTEMPTS: usize = 3;
 const TEST_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 
-fn base_config(profile: ServerSessionProfile) -> ServerConfig {
+#[test]
+fn server_session_configuration_preserves_datafusion_settings() {
+    let mut base = datafusion::prelude::SessionConfig::new().with_target_partitions(16).with_repartition_joins(false);
+    base.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+
+    let session_config = super::session::enable_session_discovery(base);
+    let options = session_config.options();
+
+    assert_eq!(options.execution.target_partitions, 16);
+    assert!(!options.optimizer.repartition_joins);
+    assert!(!options.optimizer.enable_dynamic_filter_pushdown);
+    assert!(options.catalog.information_schema);
+}
+
+fn base_config() -> ServerConfig {
     ServerConfig {
         bind_addr: "127.0.0.1:0".parse().expect("test bind address"),
         log_filter: "info".to_string(),
@@ -43,7 +57,6 @@ fn base_config(profile: ServerSessionProfile) -> ServerConfig {
         statement_ticket_ttl: std::time::Duration::from_secs(60),
         observability: ServerObservabilityConfig::default(),
         native_optimizer_config: NexusNativeOptimizerConfig::default(),
-        session_profile: profile,
         auth: auth::AuthConfig::default(),
         workspace: None,
         #[cfg(feature = "iceberg")]
@@ -54,7 +67,7 @@ fn base_config(profile: ServerSessionProfile) -> ServerConfig {
 }
 
 fn bounded_config(max_concurrent_queries: usize) -> ServerConfig {
-    let mut config = base_config(ServerSessionProfile::Native);
+    let mut config = base_config();
     config.max_in_flight = max_concurrent_queries;
     config.admission_policy = NexusAdmissionPolicy::default().with_max_concurrent_queries(max_concurrent_queries);
     config.native_optimizer_config =
@@ -69,7 +82,7 @@ fn bounded_config(max_concurrent_queries: usize) -> ServerConfig {
 }
 
 fn unbounded_config() -> ServerConfig {
-    let mut config = base_config(ServerSessionProfile::Native);
+    let mut config = base_config();
     config.max_in_flight = 1;
     config.admission_policy = NexusAdmissionPolicy::default().with_max_concurrent_queries(1);
     config.native_optimizer_config =
@@ -641,63 +654,6 @@ fn distinct_librmm_mappings_counts_deleted_and_ignores_lookalikes() {
 fn single_librmm_runtime_mapping_check_passes_in_this_process() {
     ensure_single_librmm_runtime_mapping()
         .expect("this test process must not map two librmm.so builds; a failure here is a real regression");
-}
-
-#[test]
-fn testing_profile_inactive_for_native_profile() {
-    let config = base_config(ServerSessionProfile::Native);
-    assert!(!is_testing_profile_active(&config));
-}
-
-#[test]
-fn testing_profile_inactive_for_cpu_fallback_without_iceberg() {
-    // Without an Iceberg catalog the cpu_fallback profile is the correct
-    // choice for any CPU-readable source — no warning should fire.
-    let config = base_config(ServerSessionProfile::CpuFallback);
-    assert!(!is_testing_profile_active(&config));
-}
-
-#[cfg(feature = "iceberg")]
-#[test]
-fn testing_profile_active_only_for_cpu_fallback_plus_iceberg() {
-    let iceberg = config::IcebergServerConfig {
-        catalog_name: "glue".to_string(),
-        namespace: "tpch_sf1".to_string(),
-        tables: Vec::new(),
-        backend: config::IcebergCatalogBackendConfig::Glue(config::GlueServerBackendConfig {
-            catalog_handle: "glue".to_string(),
-            warehouse: "s3://test/".to_string(),
-            region: "us-east-1".to_string(),
-            catalog_id: None,
-            profile: None,
-            uri: None,
-            s3_endpoint: None,
-            s3_region: None,
-            s3_path_style_access: None,
-        }),
-        parquet_read_strategy_config: crate::table_format::TableFormatParquetReadStrategyConfig::default(),
-        scan_planning_timeout: std::time::Duration::from_secs(60),
-    };
-
-    let mut config = base_config(ServerSessionProfile::CpuFallback);
-    config.iceberg = Some(iceberg.clone());
-    // With `iceberg-cpu` compiled in the pairing is supported by
-    // iceberg_datafusion::IcebergStaticTableProvider; without it the
-    // GPU-only leaf still applies and the WARN must fire.
-    #[cfg(feature = "iceberg-cpu")]
-    assert!(
-        !is_testing_profile_active(&config),
-        "cpu_fallback + iceberg + iceberg-cpu is production-supported via iceberg-datafusion",
-    );
-    #[cfg(not(feature = "iceberg-cpu"))]
-    assert!(is_testing_profile_active(&config), "cpu_fallback + iceberg without iceberg-cpu must arm the WARN",);
-
-    let mut config = base_config(ServerSessionProfile::Native);
-    config.iceberg = Some(iceberg);
-    assert!(
-        !is_testing_profile_active(&config),
-        "native + iceberg must stay silent — that is the recommended production setup",
-    );
 }
 
 #[cfg(feature = "iceberg")]

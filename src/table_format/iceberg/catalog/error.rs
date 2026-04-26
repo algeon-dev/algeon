@@ -47,21 +47,78 @@ fn catalog_backend_error_code(source: &iceberg::Error, aws_facts: Option<&AwsCat
 }
 
 pub(in crate::table_format::iceberg) fn classify_iceberg_catalog_error(source: &iceberg::Error) -> ErrorCode {
-    let aws_facts = AwsCatalogErrorFacts::from_iceberg_error(source);
+    let aws_facts = AwsCatalogErrorFacts::from_error(source);
     catalog_backend_error_code(source, aws_facts.as_ref())
 }
 
-pub(in crate::table_format::iceberg) fn apply_iceberg_catalog_error_facts(
-    mut error: Error,
-    source: &iceberg::Error,
-) -> Error {
+pub(crate) fn classify_iceberg_scan_error(source: &iceberg::Error) -> ErrorCode {
+    let aws_facts = AwsCatalogErrorFacts::from_error(source);
+    let code = catalog_backend_error_code(source, aws_facts.as_ref());
+    if code != ErrorCode::CudfDependencyFailure {
+        return code;
+    }
+    find_source_error::<opendal::Error>(source)
+        .map(classify_opendal_scan_error)
+        .unwrap_or(ErrorCode::SourceDependencyFailure)
+}
+
+pub(crate) fn classify_opendal_scan_error(source: &opendal::Error) -> ErrorCode {
+    if let Some(aws_facts) = AwsCatalogErrorFacts::from_error(source) {
+        if matches!(
+            aws_facts.error_code,
+            Some("ExpiredTokenException" | "InvalidAccessKeyId" | "UnrecognizedClientException")
+        ) || matches!(aws_facts.detail, Some("http_401" | "missing_credentials"))
+        {
+            return ErrorCode::SourceUnauthenticated;
+        }
+        if matches!(aws_facts.error_code, Some("AccessDeniedException" | "SignatureDoesNotMatch"))
+            || matches!(aws_facts.detail, Some("http_403" | "access_denied"))
+        {
+            return ErrorCode::SourceAccessDenied;
+        }
+    }
+    match source.kind() {
+        opendal::ErrorKind::NotFound => ErrorCode::SourceObjectNotFound,
+        opendal::ErrorKind::PermissionDenied => ErrorCode::SourceAccessDenied,
+        opendal::ErrorKind::RateLimited => ErrorCode::SourceTemporaryFailure,
+        _ if source.is_temporary() => ErrorCode::SourceTemporaryFailure,
+        _ => ErrorCode::SourceDependencyFailure,
+    }
+}
+
+pub(crate) fn apply_opendal_scan_error_facts(mut error: Error, source: &opendal::Error) -> Error {
     error = error
-        .with_fact("iceberg_error_kind", source.kind().into_static())
-        .with_fact("iceberg_retryable", source.retryable());
-    if let Some(aws_facts) = AwsCatalogErrorFacts::from_iceberg_error(source) {
+        .with_fact("opendal_error_kind", source.kind().into_static())
+        .with_fact("opendal_temporary", source.is_temporary())
+        .with_fact("opendal_persistent", source.is_persistent());
+    if let Some(aws_facts) = AwsCatalogErrorFacts::from_error(source) {
         error = aws_facts.apply(error);
     }
     error
+}
+
+pub(crate) fn apply_iceberg_catalog_error_facts(mut error: Error, source: &iceberg::Error) -> Error {
+    error = error
+        .with_fact("iceberg_error_kind", source.kind().into_static())
+        .with_fact("iceberg_retryable", source.retryable());
+    let opendal = find_source_error::<opendal::Error>(source);
+    if let Some(opendal) = opendal {
+        error = apply_opendal_scan_error_facts(error, opendal);
+    } else if let Some(aws_facts) = AwsCatalogErrorFacts::from_error(source) {
+        error = aws_facts.apply(error);
+    }
+    error
+}
+
+fn find_source_error<'a, E>(mut source: &'a (dyn StdError + 'static)) -> Option<&'a E>
+where E: StdError + 'static {
+    for _ in 0..32 {
+        if let Some(source) = source.downcast_ref::<E>() {
+            return Some(source);
+        }
+        source = source.source()?;
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,20 +131,23 @@ struct AwsCatalogErrorFacts {
 }
 
 impl AwsCatalogErrorFacts {
-    fn from_iceberg_error(source: &iceberg::Error) -> Option<Self> {
+    fn from_error(source: &(dyn StdError + 'static)) -> Option<Self> {
         let text = error_chain_text(source);
-        if !text.contains("aws sdk error") && !text.contains("ErrorMetadata") && !text.contains("aws_request_id") {
-            return None;
-        }
         let error_code = aws_error_code_fact(&text);
         let detail = aws_error_detail_fact(&text, error_code);
-        Some(Self {
+        let facts = Self {
             error_code,
             request_id: aws_request_id_fact(&text),
             http_status: aws_http_status_fact(&text),
             retryable: aws_retryable_fact(&text),
             detail,
-        })
+        };
+        (facts.error_code.is_some()
+            || facts.request_id.is_some()
+            || facts.http_status.is_some()
+            || facts.retryable.is_some()
+            || facts.detail.is_some())
+        .then_some(facts)
     }
 
     fn apply(self, mut error: Error) -> Error {
@@ -150,9 +210,9 @@ fn aws_error_detail_fact(text: &str, error_code: Option<&'static str>) -> Option
         Some("EntityNotFoundException") => return Some("not_found"),
         _ => {},
     }
-    if contains_any(&lower, &["401 unauthorized", "status code: 401", "http 401"]) {
+    if contains_any(&lower, &["401 unauthorized", "status code: 401", "status: 401", "http 401"]) {
         Some("http_401")
-    } else if contains_any(&lower, &["403 forbidden", "status code: 403", "http 403"]) {
+    } else if contains_any(&lower, &["403 forbidden", "status code: 403", "status: 403", "http 403"]) {
         Some("http_403")
     } else if contains_any(&lower, &["no credentials", "missing credentials", "could not load credentials"]) {
         Some("missing_credentials")
@@ -164,16 +224,17 @@ fn aws_error_detail_fact(text: &str, error_code: Option<&'static str>) -> Option
 fn aws_request_id_fact(text: &str) -> Option<String> {
     extract_quoted_marker(text, "aws_request_id\": \"")
         .or_else(|| extract_quoted_marker(text, "aws_request_id: \""))
+        .or_else(|| extract_quoted_marker(text, "x-amz-request-id\": \""))
         .or_else(|| extract_value_after(text, "request id: "))
 }
 
 fn aws_http_status_fact(text: &str) -> Option<&'static str> {
     let lower = text.to_ascii_lowercase();
-    if contains_any(&lower, &["status code: 401", "http 401", "401 unauthorized"]) {
+    if contains_any(&lower, &["status code: 401", "status: 401", "http 401", "401 unauthorized"]) {
         Some("401")
-    } else if contains_any(&lower, &["status code: 403", "http 403", "403 forbidden"]) {
+    } else if contains_any(&lower, &["status code: 403", "status: 403", "http 403", "403 forbidden"]) {
         Some("403")
-    } else if contains_any(&lower, &["status code: 404", "http 404", "404 not found"]) {
+    } else if contains_any(&lower, &["status code: 404", "status: 404", "http 404", "404 not found"]) {
         Some("404")
     } else {
         None

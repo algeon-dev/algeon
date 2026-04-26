@@ -395,10 +395,10 @@ fn partition_spec_source_absent_from_scan_schema_is_structured_rejection() {
 async fn table_format_planner_carries_plan_files_partition_spec_into_scan_plan() {
     let fixture = MetadataOnlyIcebergFixture::new();
     fixture.write_current_manifest_list().await;
-    let plan = IcebergTableFormatPlanner::new(fixture.table)
-        .plan_table_format_scan(TableFormatScanRequest::default())
-        .await
-        .unwrap();
+    let planner = IcebergTableFormatPlanner::new(fixture.table);
+    let request = TableFormatScanRequest::default();
+    let resolved = planner.resolve_table_format_scan(request.clone()).await.unwrap();
+    let plan = planner.inspect_table_format_scan(request, resolved).await.unwrap();
 
     assert!(plan.is_native_admissible());
     assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());

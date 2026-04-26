@@ -702,6 +702,51 @@ fn empty_bfs_result_for_trivial_path_endpoint(
     Ok(None)
 }
 
+pub(super) fn resolve_empty_bfs_edge_input(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    sanitized_edges: &DataFrame,
+    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.empty_input",
+            "BFS empty-input policy was attached to incompatible parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+    let (mut edges, vertex_type) = project_edge_list(sanitized_edges, spec)?;
+    let predicate_columns = BfsPredicateColumns::from_side_inputs(
+        context,
+        params,
+        side_inputs,
+        vertex_type,
+        spec.edge_columns.edge_id.is_some(),
+        spec,
+        &mut edges,
+    )?;
+    debug_assert_eq!(edges.num_rows(), 0, "empty-edge policy must run after all BFS edge filters");
+
+    if let Some(result) = empty_bfs_result_for_trivial_path_endpoint(context, spec, params, &edges, &predicate_columns)?
+    {
+        return Ok(result);
+    }
+    validate_bfs_non_endpoint_predicate_membership(&edges, spec, &predicate_columns)?;
+    Err(QueryError::new(
+        QueryErrorCode::GraphInputInvalid,
+        "nexus_query_engine.graph_algorithm.empty_input",
+        "BFS requires a graph containing its source vertex",
+    )
+    .with_fact("algorithm", spec.algorithm.as_str())
+    .with_fact("input_role", "edge")
+    .with_fact("reason", "bfs_source_requires_nonempty_graph")
+    .with_fact("input_rows", sanitized_edges.num_rows())
+    .with_fact("sanitized_input_rows", edges.num_rows())
+    .with_fact("empty_input_policy", spec.algorithm.definition().empty_input_policy().edge_input.as_str())
+    .with_fact("source_rows", predicate_columns.source_vertices.as_ref().map_or(1, cudf::Series::len)))
+}
+
 fn graph_bfs_error_for_missing_path_endpoint(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
@@ -748,7 +793,7 @@ fn validate_bfs_non_endpoint_predicate_membership(
             && input_rows > 0
         {
             return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
+                QueryErrorCode::GraphInputInvalid,
                 "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
                 "BFS include_edges predicate cannot match an empty graph after edge-source filters",
             )
@@ -793,7 +838,7 @@ fn validate_predicate_membership(vertices: &cudf::Series, domain: &DataFrame, ro
 
 fn predicate_membership_error(role: &'static str, predicate_rows: usize, valid_rows: usize) -> QueryError {
     QueryError::new(
-        QueryErrorCode::InvalidPlan,
+        QueryErrorCode::GraphInputInvalid,
         "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
         "BFS predicate contains values absent from the graph after edge-source filters",
     )
@@ -941,44 +986,6 @@ fn empty_bfs_result(
     })
 }
 
-fn empty_graph_result_frame(context: &ExecutionContext, schema: &arrow::datatypes::SchemaRef) -> Result<DataFrame> {
-    if schema.fields().is_empty() {
-        return Ok(context.runtime()?.empty_dataframe());
-    }
-    let columns = schema
-        .fields()
-        .iter()
-        .map(|field| {
-            let dtype = crate::datatypes::cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedType,
-                    "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
-                    "empty BFS result column type is not supported by native execution",
-                )
-                .with_fact("column", field.name().as_str())
-                .with_fact("data_type", format!("{:?}", field.data_type()))
-            })?;
-            let series = context.runtime()?.empty_series(dtype).map_err(|error| {
-                QueryError::from_cudf(
-                    "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
-                    "failed to build empty BFS result column",
-                    error,
-                )
-                .with_fact("column", field.name().as_str())
-                .with_fact("data_type", format!("{:?}", field.data_type()))
-            })?;
-            Ok((field.name().clone(), series))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    DataFrame::from_series(columns).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
-            "failed to build empty BFS result frame",
-            error,
-        )
-    })
-}
-
 fn predicate_series(
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
     input: Option<&crate::plan::GraphPredicateInput>,
@@ -1016,13 +1023,15 @@ fn source_vertex_series(
         predicate_series(side_inputs, Some(input), "source_vertices", vertex_type)?.expect("input was Some above");
     if series.is_empty() && endpoint_policy != crate::plan::GraphBfsEndpointPolicy::EmptyOnMissingPathEndpoint {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::GraphInputInvalid,
             "nexus_query_engine.graph_algorithm.bfs_source",
             "BFS source-vertices side input must contain at least one row",
         )
-        .with_fact("input", input.input)
+        .with_fact("input_role", "source_vertices")
+        .with_fact("side_input_node", input.input)
         .with_fact("column", &input.column)
-        .with_fact("actual_rows", series.len()));
+        .with_fact("side_input_rows", series.len())
+        .with_fact("reason", "required_side_input_empty"));
     }
     Ok(Some(series))
 }

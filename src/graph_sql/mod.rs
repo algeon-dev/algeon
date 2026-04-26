@@ -35,16 +35,35 @@ pub use types::{
     CugraphKatzCentralityParams, CugraphLeidenParams, CugraphLouvainParams, CugraphMstParams,
     CugraphOperationDefinition, CugraphOutDegreesAllParams, CugraphPageRankParams, CugraphPageRankPersonalizationTable,
     CugraphPersonalizedPageRankParams, CugraphSccParams, CugraphSpectralClusteringParams, CugraphSqlConfig,
-    CugraphSsspParams, CugraphTableReference, CugraphTriangleCountAllParams, CugraphWccParams, bfs_result_schema,
-    result_schema_for_params, stable_result_schema,
+    CugraphSsspParams, CugraphTableReference, CugraphTriangleCountAllParams, CugraphWccParams,
+    GpuIslandHostBoundaryConfig, bfs_result_schema, result_schema_for_params, stable_result_schema,
 };
 pub(crate) use types::{
     CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain, validate_vertex_id_domain_support_for_call,
     vertex_id_domain_for_call,
 };
 
+use crate::error::{Error, ErrorCode};
+
 fn plan_error(message: impl Into<String>) -> DataFusionError {
     DataFusionError::Plan(message.into())
+}
+
+fn validate_bfs_logical_edge_id_capability(spec: &CugraphAlgorithmSpec, logical_mapping: bool) -> Result<()> {
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return Ok(());
+    };
+    if !logical_mapping || (spec.edge_id_col.is_none() && params.predicates.include_edge_ids.is_none()) {
+        return Ok(());
+    }
+    Err(Error::new(
+        ErrorCode::RequiredGpuOperationUnsupported,
+        "datafusion_nexus.cugraph_sql.logical_mapping.preflight",
+        "cuGraph BFS logical vertex-id mapping does not support edge-id inputs",
+    )
+    .with_fact("edge_id_col", spec.edge_id_col.is_some())
+    .with_fact("include_edge_ids", params.predicates.include_edge_ids.is_some())
+    .into())
 }
 
 fn datafusion_table_reference(table: &CugraphTableReference) -> TableReference {

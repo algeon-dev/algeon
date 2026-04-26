@@ -1,17 +1,14 @@
-//! Regression tests for Flight SQL Iceberg native planning and CPU fallback.
+//! Regression tests for Flight SQL Iceberg native planning and CPU execution.
 //!
 //! These tests pin the exact regression surface for two scenarios:
 //!
-//! - Under the native-friendly server session profile, Iceberg-backed
+//! - Under DataFusion's standard session configuration, Iceberg-backed
 //!   `GROUP BY ... ORDER BY` and `JOIN + GROUP BY + ORDER BY` queries must
-//!   rewrite to native and leave no `NexusTableFormatScanExec` behind.
-//! - Under a CPU-style session profile that re-enables DataFusion
-//!   repartitioning, the same `GROUP BY ... ORDER BY` shape includes a full
+//!   rewrite to native and leave no `NexusIcebergScanExec` behind.
+//! - Under an explicit multi-partition configuration with DataFusion sort
+//!   repartitioning enabled, the same `GROUP BY ... ORDER BY` shape includes a full
 //!   `SortPreservingMergeExec`; native lowering must absorb that SPM as an
-//!   explicit native sort and still leave no GPU-only leaf behind.
-//! - A leaf-guard unit test asserts that a leftover `NexusTableFormatScanExec`
-//!   beneath a non-rewritable wrapper produces the structured
-//!   `table_format_gpu_only_leaf_not_rewritten` error.
+//!   explicit native sort and still leave no executable Iceberg wrapper behind.
 //!
 //! All tests are credential-free; the Iceberg provider is driven by a
 //! [`TableFormatPlanner`] returning a hand-built native-admissible
@@ -32,25 +29,21 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::DataFusionError,
+    datasource::{MemTable, TableProvider},
     execution::SessionStateBuilder,
     parquet::arrow::ArrowWriter,
-    physical_optimizer::PhysicalOptimizerRule,
-    physical_plan::{ExecutionPlan, displayable, sorts::sort_preserving_merge::SortPreservingMergeExec},
+    physical_plan::{ExecutionPlan, displayable},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
     planner::{
-        NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
-        NexusTableFormatGpuOnlyLeafGuardRule,
+        FinalPlanDisposition, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule, classify_final_plan,
     },
-    policy::{FallbackReason, GpuFallbackPolicy},
-    server::{FlightSqlNativeRejectClass, ServerSessionProfile, apply_session_profile, log_leaf_guard_rejection},
     session::NexusSessionStateBuilderExt,
     table_format::{
-        NexusTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole,
-        TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat, TableFormatPlanner,
-        TableFormatReadCapability, TableFormatScanPlan, TableFormatScanRequest,
+        NexusIcebergScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
+        TableFormatDataFile, TableFormatDataFileFormat, TableFormatPlanner, TableFormatReadCapability,
+        TableFormatScanPlan, TableFormatScanRequest,
         iceberg::NexusIcebergTableProvider,
         scan::{TableFormatPredicate, TableFormatPredicateOp},
     },
@@ -72,17 +65,16 @@ async fn native_profile_iceberg_group_by_order_by_rewrites_with_no_leftover_leaf
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_lead_window_ordering_uses_host_window_over_native_scan() {
+async fn native_profile_iceberg_lead_window_remains_executable_on_datafusion() {
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[("iceberg_t", plan)],
         "SELECT id, LEAD(id) OVER (ORDER BY id) AS next_id FROM iceberg_t",
     )
     .await
-    .expect("native profile must rewrite the Iceberg scan under the LEAD window");
+    .expect("native-unsupported LEAD must retain an executable DataFusion plan");
 
-    assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_nexus_native_exec(physical_plan.as_ref());
+    assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
     assert_plan_contains_operator(physical_plan.as_ref(), "BoundedWindowAggExec");
     assert_plan_contains_operator(physical_plan.as_ref(), "SortExec");
 }
@@ -156,7 +148,7 @@ async fn native_profile_iceberg_q1_style_cast_round_aggregate_order_limit_rewrit
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_cte_aggregate_join_back_fully_lowers_to_native() {
+async fn native_profile_iceberg_cte_aggregate_join_back_remains_executable_on_datafusion() {
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[("iceberg_t", plan)],
@@ -169,17 +161,15 @@ async fn native_profile_iceberg_cte_aggregate_join_back_fully_lowers_to_native()
          LIMIT 5",
     )
     .await
-    .expect("native profile must rewrite native-safe CTE aggregate fragments");
+    .expect("P0.2-unlowerable CTE join must retain an executable DataFusion plan");
 
-    assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_query_fully_lowered_to_native(physical_plan.as_ref());
-    assert_plan_contains_operator(physical_plan.as_ref(), "NexusNativeGpuProducerExec");
-    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "HashJoinExec");
-    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "SortExec");
+    assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
+    assert_plan_contains_operator(physical_plan.as_ref(), "HashJoinExec");
+    assert_plan_contains_operator(physical_plan.as_ref(), "SortExec");
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_not_in_count_distinct_composes_gpu_resident_child() {
+async fn native_profile_iceberg_not_in_count_distinct_remains_executable_on_datafusion() {
     let schema = iceberg_test_schema();
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[
@@ -191,12 +181,11 @@ async fn native_profile_iceberg_not_in_count_distinct_composes_gpu_resident_chil
          WHERE t.id NOT IN (SELECT u.id FROM iceberg_u u WHERE u.value IS NOT NULL)",
     )
     .await
-    .expect("native profile must plan NOT IN plus COUNT(DISTINCT) over Iceberg without a leftover GPU-only leaf");
+    .expect("P0.2-unlowerable NOT IN plus COUNT(DISTINCT) must retain an executable DataFusion plan");
 
-    assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_nexus_native_exec(physical_plan.as_ref());
-    assert_plan_contains_operator(physical_plan.as_ref(), "NexusNativeGpuProducerExec");
-    assert_query_root_is_native(physical_plan.as_ref());
+    assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
+    assert_plan_contains_operator(physical_plan.as_ref(), "HashJoinExec");
+    assert_plan_contains_operator(physical_plan.as_ref(), "AggregateExec");
 }
 
 #[tokio::test]
@@ -262,7 +251,7 @@ async fn native_profile_iceberg_not_exists_anti_join_rewrites_with_no_leftover_l
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_union_all_aggregate_branches_rewrites_with_no_leftover_leaf() {
+async fn native_profile_iceberg_union_all_aggregate_branches_remain_executable_on_datafusion() {
     let schema = iceberg_test_schema();
     let plan = high_empty_low_nonempty_scan_plan(Arc::clone(&schema));
     let physical_plan = run_iceberg_sql_under_native_profile(
@@ -273,10 +262,11 @@ async fn native_profile_iceberg_union_all_aggregate_branches_rewrites_with_no_le
          ORDER BY bucket",
     )
     .await
-    .expect("native profile must rewrite UNION ALL aggregate branches over Iceberg with an empty branch");
+    .expect("P0.2-unlowerable UNION ALL aggregate branches must retain an executable DataFusion plan");
 
-    assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_query_fully_lowered_to_native(physical_plan.as_ref());
+    assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
+    assert_plan_contains_operator(physical_plan.as_ref(), "UnionExec");
+    assert_plan_contains_operator(physical_plan.as_ref(), "SortPreservingMergeExec");
 }
 
 #[tokio::test]
@@ -316,7 +306,7 @@ async fn native_profile_iceberg_correlated_scalar_max_fully_lowers_to_native() {
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_cte_aggregate_scalar_filter_plans_with_no_leftover_leaf() {
+async fn native_profile_iceberg_cte_aggregate_scalar_filter_remains_executable_on_datafusion() {
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[("iceberg_t", plan)],
@@ -324,17 +314,17 @@ async fn native_profile_iceberg_cte_aggregate_scalar_filter_plans_with_no_leftov
          SELECT COUNT(*) AS n FROM c WHERE cnt > (SELECT AVG(cnt) FROM c)",
     )
     .await
-    .expect("native profile must rewrite CTE aggregate scalar filter over Iceberg");
+    .expect("P0.2-unlowerable CTE scalar filter must retain an executable DataFusion plan");
 
-    assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_nexus_native_exec(physical_plan.as_ref());
-    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "ScalarSubqueryExec");
+    assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
+    assert_plan_contains_operator(physical_plan.as_ref(), "ScalarSubqueryExec");
+    assert_plan_contains_operator(physical_plan.as_ref(), "AggregateExec");
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_physical_scalar_subquery_rewrites_children_with_no_leftover_leaf() {
+async fn physical_scalar_subquery_retains_executable_iceberg_datafusion_plan() {
     let schema = iceberg_test_schema();
-    let mut session_config = apply_session_profile(SessionConfig::new(), ServerSessionProfile::Native);
+    let mut session_config = SessionConfig::new();
     session_config.options_mut().optimizer.enable_physical_uncorrelated_scalar_subquery = true;
     let physical_plan = run_iceberg_sql_with_session_config(
         &[
@@ -349,22 +339,21 @@ async fn native_profile_iceberg_physical_scalar_subquery_rewrites_children_with_
         session_config,
     )
     .await
-    .expect("native profile must rewrite table-format children under physical scalar subqueries");
+    .expect("P0.2 physical scalar subqueries must retain an executable DataFusion Iceberg plan");
 
     assert!(
         plan_contains_operator(physical_plan.as_ref(), "ScalarSubqueryExec"),
         "test must exercise DataFusion's physical scalar-subquery wrapper"
     );
-    assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_nexus_native_exec(physical_plan.as_ref());
+    assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_scalar_subquery_scope_skips_mixed_regular_parquet_branch() {
+async fn physical_scalar_subquery_with_mixed_parquet_retains_executable_datafusion_plan() {
     let dir = unique_temp_dir("datafusion-nexus-iceberg-scalar-scope");
     let parquet_path = dir.join("regular.parquet");
     write_scalar_subquery_probe_parquet(&parquet_path);
-    let mut session_config = apply_session_profile(SessionConfig::new(), ServerSessionProfile::Native);
+    let mut session_config = SessionConfig::new();
     session_config.options_mut().optimizer.enable_physical_uncorrelated_scalar_subquery = true;
     let physical_plan = run_mixed_iceberg_parquet_sql_with_session_config(
         &[
@@ -386,14 +375,13 @@ async fn native_profile_iceberg_scalar_subquery_scope_skips_mixed_regular_parque
         session_config,
     )
     .await
-    .expect("native profile must rewrite only table-format children under mixed physical scalar subqueries");
+    .expect("P0.2 mixed physical scalar subqueries must retain an executable DataFusion Iceberg plan");
 
     assert!(
         plan_contains_operator(physical_plan.as_ref(), "ScalarSubqueryExec"),
         "test must exercise DataFusion's physical scalar-subquery wrapper"
     );
-    assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_nexus_native_exec(physical_plan.as_ref());
+    assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
     let scalar_subquery = find_operator(physical_plan.as_ref(), "ScalarSubqueryExec")
         .expect("physical scalar subquery should remain in the optimized plan");
     let regular_parquet_subquery = scalar_subquery
@@ -403,7 +391,7 @@ async fn native_profile_iceberg_scalar_subquery_scope_skips_mixed_regular_parque
         .expect("regular Parquet branch should remain under the mixed scalar-subquery child");
     assert!(
         plan_contains_operator(regular_parquet_subquery.as_ref(), "DataSourceExec"),
-        "regular Parquet branch should remain a DataFusion subtree even when its sibling table-format branch is rewritten:\n{}",
+        "regular Parquet branch should remain a DataFusion subtree alongside the executable Iceberg leaf:\n{}",
         displayable(physical_plan.as_ref()).indent(false)
     );
 
@@ -412,111 +400,41 @@ async fn native_profile_iceberg_scalar_subquery_scope_skips_mixed_regular_parque
 
 #[tokio::test]
 async fn cpu_style_profile_iceberg_group_by_order_by_full_spm_lowers_to_native_sort() {
-    // The CPU-style profile mirrors the pre-Milestone-2 audit scenario:
-    // DataFusion is allowed to repartition sorts so an unbounded GROUP BY +
-    // ORDER BY plan produces a root SortPreservingMergeExec over the GPU-only
-    // NexusTableFormatScanExec. Full SPM is now lowerable as an explicit native
-    // sort, so this profile should rewrite the whole subtree instead of falling
-    // through to the leaf guard.
+    // This explicit multi-partition setup lets DataFusion repartition sorts so
+    // an unbounded GROUP BY +
+    // ORDER BY plan produces a root SortPreservingMergeExec over the Iceberg
+    // scan wrapper. Full SPM is lowerable as an explicit native sort, so this
+    // configuration should rewrite the whole subtree.
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_cpu_profile(
         &[("iceberg_t", plan)],
         "SELECT value, COUNT(*) AS c FROM iceberg_t GROUP BY value ORDER BY value",
     )
     .await
-    .expect("CPU-style profile should rewrite GROUP BY + ORDER BY over Iceberg after full SPM support");
+    .expect("multi-partition configuration should rewrite GROUP BY + ORDER BY over Iceberg after full SPM support");
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
     assert_query_fully_lowered_to_native(physical_plan.as_ref());
 }
 
-#[tokio::test]
-async fn cpu_style_profile_rejection_is_recognised_by_diagnostics_helper() {
-    // Milestone 4 ships a Flight SQL diagnostics helper that the server uses to
-    // emit a `tracing::warn!` line when a query fails because the Milestone 1
-    // GPU-only leaf guard fired. The macro itself is hard to assert on
-    // without a tracing-subscriber, but the helper is a thin wrapper around
-    // `log_leaf_guard_rejection` which calls a `pub(crate)`
-    // `leaf_guard_event_fields` extractor exercised by `server::diagnostics`
-    // unit tests. Here we pin the end-to-end contract: a real leaf-guard error
-    // is recognised by the public helper (does not panic + classifies
-    // correctly).
-    let error = leftover_table_format_scan_under_spm_leaf_guard_error();
-
-    log_leaf_guard_rejection("test-query-id", &error, ServerSessionProfile::CpuFallback);
-
-    let adapter_error = adapter_error_from(&error);
-    let facts = collect_facts(adapter_error);
-    let bucket = FlightSqlNativeRejectClass::from_reason(FallbackReason::TableFormatGpuOnlyLeafNotRewritten);
-    assert_eq!(
-        bucket.as_str(),
-        facts.get("fallback_reason").map(String::as_str).unwrap(),
-        "the leaf-guard rejection bucket label must equal the structured fallback_reason",
-    );
-}
-
-#[test]
-fn leaf_guard_rejects_leftover_table_format_scan_under_spm_wrapper() {
-    // The Milestone 1 leaf guard is a `PhysicalOptimizerRule` that runs after the
-    // native rewrite. This test exercises it directly with a wrapper around a
-    // NexusTableFormatScanExec so the leaf is still present when the guard runs.
-    let error = leftover_table_format_scan_under_spm_leaf_guard_error();
-
-    let adapter_error = adapter_error_from(&error);
-    let facts = collect_facts(adapter_error);
-    assert_eq!(
-        facts.get("fallback_reason").map(String::as_str),
-        Some(FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code()),
-    );
-    assert_eq!(facts.get("leftover_operator").map(String::as_str), Some("NexusTableFormatScanExec"));
-    assert_eq!(facts.get("table_format").map(String::as_str), Some("iceberg"));
-    assert_eq!(facts.get("cpu_arrow_reader_fallback").map(String::as_str), Some("false"));
-    assert_eq!(facts.get("physical_plan_root").map(String::as_str), Some("SortPreservingMergeExec"));
-    let shape = facts.get("physical_plan_shape").map(String::as_str).expect("shape fact");
-    assert!(shape.contains("SortPreservingMergeExec("), "shape must reproduce the wrapper: {shape}");
-    assert!(shape.contains("NexusTableFormatScanExec"), "shape must mention the surviving leaf: {shape}");
-}
-
 // ----- helpers ---------------------------------------------------------------
-
-fn leftover_table_format_scan_under_spm_leaf_guard_error() -> DataFusionError {
-    let schema = iceberg_test_schema();
-    let scan: Arc<dyn ExecutionPlan> =
-        Arc::new(NexusTableFormatScanExec::new(native_admissible_scan_plan(Arc::clone(&schema)), schema));
-    let ordering = datafusion::physical_expr::LexOrdering::new([datafusion::physical_expr::PhysicalSortExpr::new(
-        datafusion::physical_expr::expressions::col("id", scan.schema().as_ref()).unwrap(),
-        arrow::compute::SortOptions::new(false, false),
-    )])
-    .expect("non-empty LexOrdering");
-    let wrapper: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(ordering, scan));
-
-    let rule = NexusTableFormatGpuOnlyLeafGuardRule::new();
-    assert_eq!(rule.name(), NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME);
-    rule.optimize(wrapper, &datafusion::common::config::ConfigOptions::new())
-        .expect_err("leaf guard must reject a plan that retains a NexusTableFormatScanExec")
-}
 
 async fn run_iceberg_sql_under_native_profile(
     tables: &[(&str, TableFormatScanPlan)],
     sql: &str,
 ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-    let session_config = apply_session_profile(SessionConfig::new(), ServerSessionProfile::Native);
-    run_iceberg_sql_with_session_config(tables, sql, session_config).await
+    run_iceberg_sql_with_session_config(tables, sql, SessionConfig::new()).await
 }
 
 async fn run_iceberg_sql_under_cpu_profile(
     tables: &[(&str, TableFormatScanPlan)],
     sql: &str,
 ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-    // The CPU-fallback profile mirrors the `scripts/dev/run_server.sh` legacy
-    // setup the audit captured: DataFusion's defaults plus an explicit
-    // multi-partition target so the EnforceDistribution rule actually injects
-    // the repartition / SortPreservingMergeExec shape. `apply_session_profile(CpuFallback)` only flips
-    // `information_schema`, so the rest is just DataFusion defaults.
+    // The explicit multi-partition target makes EnforceDistribution inject the
+    // repartition / SortPreservingMergeExec shape.
     let mut base = SessionConfig::new().with_target_partitions(16);
     base = base.with_repartition_sorts(true);
-    let session_config = apply_session_profile(base, ServerSessionProfile::CpuFallback);
-    run_iceberg_sql_with_session_config(tables, sql, session_config).await
+    run_iceberg_sql_with_session_config(tables, sql, base).await
 }
 
 async fn run_iceberg_sql_with_session_config(
@@ -524,7 +442,7 @@ async fn run_iceberg_sql_with_session_config(
     sql: &str,
     session_config: SessionConfig,
 ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+    let optimizer_config = NexusNativeOptimizerConfig::default();
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
@@ -535,7 +453,7 @@ async fn run_iceberg_sql_with_session_config(
     for (name, plan) in tables {
         let schema = plan.logical_schema.clone();
         let planner = Arc::new(RecordingPlanner::new(plan.clone()));
-        let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(schema, planner));
+        let provider = Arc::new(test_iceberg_provider(schema, planner));
         ctx.register_table(*name, provider).expect("test should register a unique table name once");
     }
 
@@ -549,7 +467,7 @@ async fn run_mixed_iceberg_parquet_sql_with_session_config(
     sql: &str,
     session_config: SessionConfig,
 ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+    let optimizer_config = NexusNativeOptimizerConfig::default();
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
@@ -560,7 +478,7 @@ async fn run_mixed_iceberg_parquet_sql_with_session_config(
     for (name, plan) in iceberg_tables {
         let schema = plan.logical_schema.clone();
         let planner = Arc::new(RecordingPlanner::new(plan.clone()));
-        let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(schema, planner));
+        let provider = Arc::new(test_iceberg_provider(schema, planner));
         ctx.register_table(*name, provider).expect("test should register a unique table name once");
     }
     for (name, path) in parquet_tables {
@@ -575,8 +493,20 @@ async fn run_mixed_iceberg_parquet_sql_with_session_config(
 fn assert_no_leftover_table_format_scan(plan: &dyn ExecutionPlan) {
     if find_table_format_scan(plan).is_some() {
         let rendered = displayable(plan).indent(false).to_string();
-        panic!("native profile rewrite left a NexusTableFormatScanExec in place; plan:\n{rendered}");
+        panic!("native profile rewrite left a NexusIcebergScanExec in place; plan:\n{rendered}");
     }
+}
+
+fn assert_executable_iceberg_datafusion_plan(plan: &dyn ExecutionPlan) {
+    let rendered = displayable(plan).indent(false).to_string();
+    assert!(
+        find_table_format_scan(plan).is_some(),
+        "DataFusion fallback plan must retain the executable Iceberg wrapper; plan:\n{rendered}"
+    );
+    assert_eq!(classify_final_plan(plan), FinalPlanDisposition::DataFusion, "plan:\n{rendered}");
+    assert!(!plan_contains_operator(plan, "NexusNativeExec"), "plan:\n{rendered}");
+    assert!(!plan_contains_operator(plan, "NexusNativeComposedExec"), "plan:\n{rendered}");
+    assert!(!plan_contains_operator(plan, "NexusNativeGpuProducerExec"), "plan:\n{rendered}");
 }
 
 /// Milestone 3 requires the *entire* native-friendly query shape to lower into a
@@ -608,13 +538,6 @@ fn assert_query_fully_lowered_to_native(plan: &dyn ExecutionPlan) {
 
 const CPU_PIPELINE_OPERATORS_ABSORBED_BY_NATIVE_REWRITE: &[&str] =
     &["AggregateExec", "SortExec", "HashJoinExec", "RepartitionExec", "SortPreservingMergeExec"];
-
-fn assert_plan_contains_nexus_native_exec(plan: &dyn ExecutionPlan) {
-    if !plan_contains_operator(plan, "NexusNativeExec") && !plan_contains_operator(plan, "NexusNativeComposedExec") {
-        let rendered = displayable(plan).indent(false).to_string();
-        panic!("native profile rewrite did not produce any native execution wrapper; plan:\n{rendered}");
-    }
-}
 
 fn assert_plan_does_not_contain_operator(plan: &dyn ExecutionPlan, operator: &str) {
     if plan_contains_operator(plan, operator) {
@@ -677,29 +600,11 @@ fn find_nexus_native_exec_root(plan: &dyn ExecutionPlan) -> Option<NativeRootDes
     }
 }
 
-fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&NexusTableFormatScanExec> {
-    if let Some(scan) = plan.downcast_ref::<NexusTableFormatScanExec>() {
+fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&NexusIcebergScanExec> {
+    if let Some(scan) = plan.downcast_ref::<NexusIcebergScanExec>() {
         return Some(scan);
     }
     plan.children().into_iter().find_map(|child| find_table_format_scan(child.as_ref()))
-}
-
-fn adapter_error_from(error: &DataFusionError) -> &datafusion_nexus::error::Error {
-    // `DataFusionError::Context` wraps the inner planning error with the
-    // optimizer rule name; recurse into it before downcasting.
-    if let DataFusionError::Context(_, inner) = error {
-        return adapter_error_from(inner);
-    }
-    let DataFusionError::External(boxed) = error else {
-        panic!("expected datafusion_nexus::error::Error to cross DataFusion as `External`, got: {error:?}");
-    };
-    boxed
-        .downcast_ref::<datafusion_nexus::error::Error>()
-        .expect("external errors emitted by datafusion-nexus must downcast to datafusion_nexus::error::Error")
-}
-
-fn collect_facts(error: &datafusion_nexus::error::Error) -> std::collections::BTreeMap<&'static str, String> {
-    error.facts().iter().map(|(key, value)| (key, value.to_string())).collect()
 }
 
 fn iceberg_test_schema() -> Arc<Schema> {
@@ -864,7 +769,7 @@ impl RecordingPlanner {
 }
 
 impl TableFormatPlanner for RecordingPlanner {
-    fn plan_scan(
+    fn resolve_scan(
         &self,
         request: TableFormatScanRequest,
     ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
@@ -885,9 +790,8 @@ impl TableFormatPlanner for RecordingPlanner {
     }
 }
 
-// Milestone 1 retained a sibling reference on the leaf guard so emitted facts can
-// quote the first native rejection. The `last_report` accessor is the dependency
-// the guard reads at fire time; pin the method in the type system so dropping it
-// fails compilation for this suite.
-const _: fn(&NexusNativePhysicalOptimizerRule) -> Option<datafusion_nexus::report::PlanningReport> =
-    NexusNativePhysicalOptimizerRule::last_report;
+fn test_iceberg_provider(schema: Arc<Schema>, planner: Arc<RecordingPlanner>) -> NexusIcebergTableProvider {
+    let cpu_provider: Arc<dyn TableProvider> =
+        Arc::new(MemTable::try_new(schema, vec![vec![]]).expect("test CPU provider must build"));
+    NexusIcebergTableProvider::from_cpu_provider_and_native_planner(cpu_provider, None, planner)
+}

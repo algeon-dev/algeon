@@ -445,6 +445,32 @@ fn object_store_zero_column_count_uses_synthetic_row_count_metadata() {
 }
 
 #[test]
+fn empty_zero_column_count_source_plans_one_zero_weight_identity() {
+    let file = LocalParquetFile::object_store_uri("s3://bucket/table/empty.parquet")
+        .expect("valid s3 object URI")
+        .with_file_size_bytes(1024)
+        .with_row_groups(Vec::new())
+        .with_row_group_rows(Vec::new());
+    let source = LocalParquetSource::zero_column_count(vec![file]);
+    let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+        &source,
+        bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
+        SourceChunkPlanningMode::Conservative,
+    );
+
+    let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_internal_use(3), &source, policy).unwrap();
+
+    assert_eq!(plan.chunk_count(), 1);
+    let identity = &plan.chunks[0];
+    assert!(identity.zero_column_count);
+    assert!(!identity.reads_all_row_groups);
+    assert!(identity.row_group_indexes.is_empty());
+    assert_eq!(identity.known_row_count, Some(0));
+    assert_eq!(identity.estimated_source_read_bytes, Some(0));
+    assert!(identity.exact_source_read_preflight_bytes.is_some());
+}
+
+#[test]
 fn chunk_planning_prefers_footer_row_counts_over_whole_file_synthetic_count() {
     let path = std::env::temp_dir().join(format!(
         "nexus-query-engine-zero-column-count-footer-{}-{}.parquet",

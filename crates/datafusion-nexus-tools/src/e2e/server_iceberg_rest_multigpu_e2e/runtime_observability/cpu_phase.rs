@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) async fn run_cpu_phase(params: &RuntimeParams, evidence: &mut RunEvidence) -> E2eResult<()> {
-    let mut server = spawn_server(params, evidence, "cpu-fallback", ChildProfile::CpuFallback).await?;
+    let mut server = spawn_server(params, evidence, "cpu-fallback").await?;
     setup_local_table(params, &server.channel, "cpu-fallback").await?;
     evidence.scenarios.push(run_cpu_fallback(params, &server.channel).await?);
     wait_for_idle_with_timeout(params, &server.channel).await?;
@@ -68,7 +68,7 @@ pub(super) async fn run_cpu_fallback(params: &RuntimeParams, channel: &Channel) 
     }
     Ok(ScenarioEvidence {
         scenario: "cpu_fallback".to_string(),
-        profile: "cpu_fallback".to_string(),
+        execution_path: "cpu".to_string(),
         query_id,
         correlation_id,
         outcome: "succeeded".to_string(),

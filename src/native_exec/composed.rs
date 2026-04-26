@@ -177,20 +177,21 @@ impl NexusNativeComposedExec {
         self.metrics_capture.clone()
     }
 
-    pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: &TaskContext) -> Self {
-        if !self.execution_config.lakehouse_footer_pruning() {
-            return self.clone();
-        }
+    pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: Arc<TaskContext>) -> DataFusionResult<Self> {
         let mut prepared = self.clone();
-        prepared.plan =
-            super::lakehouse::resolve_query_plan(&self.execution_config, self.plan.clone(), task_context).await;
+        if self.execution_config.lakehouse_footer_pruning() {
+            prepared.plan =
+                super::lakehouse::resolve_query_plan(&self.execution_config, self.plan.clone(), task_context.as_ref())
+                    .await;
+        }
         let mut prepared_inputs = Vec::with_capacity(self.gpu_inputs.len());
         for input in &self.gpu_inputs {
-            prepared_inputs.push(prepare_gpu_resident_producer_for_execution(Arc::clone(input), task_context).await);
+            prepared_inputs
+                .push(prepare_gpu_resident_producer_for_execution(Arc::clone(input), Arc::clone(&task_context)).await?);
         }
         prepared.gpu_inputs = prepared_inputs;
         prepared.execution_config = prepared.execution_config.with_lakehouse_footer_pruning(false);
-        prepared
+        Ok(prepared)
     }
 }
 
@@ -299,7 +300,7 @@ impl ExecutionPlan for NexusNativeComposedExec {
                 let mut prepared_gpu_inputs = Vec::with_capacity(gpu_inputs.len());
                 for input in gpu_inputs {
                     prepared_gpu_inputs
-                        .push(prepare_gpu_resident_producer_for_execution(input, task_context.as_ref()).await);
+                        .push(prepare_gpu_resident_producer_for_execution(input, Arc::clone(&task_context)).await?);
                 }
                 // Build one native context for all producer fragments and the consumer so device-resident
                 // handles are compatible across the composed execution.

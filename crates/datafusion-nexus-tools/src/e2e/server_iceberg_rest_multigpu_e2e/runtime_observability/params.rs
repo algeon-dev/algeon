@@ -4,8 +4,8 @@ pub(super) const DEFAULT_FIXTURE_ROOT: &str = "/opt/dlami/nvme/fixture/data";
 pub(super) const DEFAULT_SERVER_BINARY: &str = "target/release/datafusion_nexus_server";
 pub(super) const DEFAULT_EVIDENCE_PATH: &str = "target/runtime_observability_e2e/evidence.json";
 pub(super) const DEFAULT_SERVER_LOG_PATH: &str = "target/runtime_observability_e2e/server";
-pub(super) const EVIDENCE_SCHEMA: &str = "datafusion_nexus.server_runtime_observability_e2e.v2";
-pub(super) const EVIDENCE_VERSION: u32 = 2;
+pub(super) const EVIDENCE_SCHEMA: &str = "datafusion_nexus.server_runtime_observability_e2e.v3";
+pub(super) const EVIDENCE_VERSION: u32 = 3;
 pub(super) const TABLE_NAME: &str = "runtime_observability_lineitem";
 pub(super) const ORDERS_TABLE_NAME: &str = "runtime_observability_orders";
 pub(super) const OBS_RECORDS_ENV: &str = "NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS";
@@ -27,7 +27,7 @@ pub(super) fn print_usage() {
            --concurrency N              Overlapping queries and per-device limit (default: 4)\n\
            --waves N                    Native success waves (default: 2)\n\
            --restart-iterations N       Hard termination/restart iterations (default: 1)\n\
-           --profile matrix|native|cpu_fallback\n\
+           --scenarios matrix|native|cpu_fallback\n\
            --bounded-mode strict_bounded|adaptive\n\
            --evidence-json PATH         Machine-readable evidence output\n\
            --server-log PATH            Prefix for per-process stdout/stderr logs\n\
@@ -41,24 +41,24 @@ pub(super) fn print_usage() {
            --retained-bytes N\n\
            --retention-ttl-secs N\n\
            --shutdown-grace-secs N\n\
-           --profile-once               One short overlapping native wave, then exit"
+           --native-once                One short overlapping native wave, then exit"
     );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ProfileSelection {
+pub(super) enum ScenarioSelection {
     Matrix,
     Native,
     CpuFallback,
 }
 
-impl ProfileSelection {
+impl ScenarioSelection {
     pub(super) fn parse(raw: &str) -> E2eResult<Self> {
         match raw {
             "matrix" => Ok(Self::Matrix),
             "native" => Ok(Self::Native),
             "cpu_fallback" | "cpu-fallback" => Ok(Self::CpuFallback),
-            _ => Err(format!("--profile must be matrix, native, or cpu_fallback; got {raw:?}").into()),
+            _ => Err(format!("--scenarios must be matrix, native, or cpu_fallback; got {raw:?}").into()),
         }
     }
 
@@ -98,7 +98,7 @@ pub(super) struct RuntimeParams {
     pub(super) concurrency: usize,
     pub(super) waves: usize,
     pub(super) restart_iterations: usize,
-    pub(super) profile: ProfileSelection,
+    pub(super) scenario_selection: ScenarioSelection,
     pub(super) bounded_mode: String,
     pub(super) evidence_path: PathBuf,
     pub(super) server_log_path: PathBuf,
@@ -106,7 +106,7 @@ pub(super) struct RuntimeParams {
     pub(super) query_timeout: Duration,
     pub(super) poll_timeout: Duration,
     pub(super) shutdown_timeout: Duration,
-    pub(super) profile_once: bool,
+    pub(super) native_once: bool,
     pub(super) observability: ObservabilityLimits,
 }
 
@@ -119,7 +119,7 @@ impl RuntimeParams {
         let mut concurrency = 4usize;
         let mut waves = 2usize;
         let mut restart_iterations = 1usize;
-        let mut profile = ProfileSelection::Matrix;
+        let mut scenario_selection = ScenarioSelection::Matrix;
         let mut bounded_mode = "strict_bounded".to_string();
         let mut evidence_path = PathBuf::from(DEFAULT_EVIDENCE_PATH);
         let mut server_log_path = PathBuf::from(DEFAULT_SERVER_LOG_PATH);
@@ -127,7 +127,7 @@ impl RuntimeParams {
         let mut query_timeout = Duration::from_secs(180);
         let mut poll_timeout = Duration::from_secs(30);
         let mut shutdown_timeout = Duration::from_secs(30);
-        let mut profile_once = false;
+        let mut native_once = false;
         let mut per_query_records = None;
         let mut per_query_bytes = None;
         let mut retained_count = None;
@@ -141,8 +141,8 @@ impl RuntimeParams {
             if !seen.insert(flag.to_string()) {
                 return Err(format!("duplicate option {flag}").into());
             }
-            if flag == "--profile-once" {
-                profile_once = true;
+            if flag == "--native-once" {
+                native_once = true;
                 index += 1;
                 continue;
             }
@@ -155,7 +155,7 @@ impl RuntimeParams {
                 "--concurrency" => concurrency = parse_usize(flag, value)?,
                 "--waves" => waves = parse_usize(flag, value)?,
                 "--restart-iterations" => restart_iterations = parse_usize(flag, value)?,
-                "--profile" => profile = ProfileSelection::parse(value)?,
+                "--scenarios" => scenario_selection = ScenarioSelection::parse(value)?,
                 "--bounded-mode" if matches!(value.as_str(), "strict_bounded" | "adaptive") => {
                     bounded_mode.clone_from(value)
                 },
@@ -206,13 +206,13 @@ impl RuntimeParams {
         if observability.retained_bytes < observability.per_query_bytes {
             return Err("--retained-bytes must be at least --per-query-bytes".into());
         }
-        if profile.runs_native() && !profile_once && observability.retained_bytes > 2 * 1024 * 1024 {
+        if scenario_selection.runs_native() && !native_once && observability.retained_bytes > 2 * 1024 * 1024 {
             return Err(
                 "--retained-bytes must not exceed 2 MiB for the explicit serialized-byte pressure scenario".into()
             );
         }
-        if profile_once && !profile.runs_native() {
-            return Err("--profile-once requires --profile native or matrix".into());
+        if native_once && !scenario_selection.runs_native() {
+            return Err("--native-once requires --scenarios native or matrix".into());
         }
         if evidence_path == server_log_path {
             return Err("--evidence-json and --server-log must be different paths".into());
@@ -225,7 +225,7 @@ impl RuntimeParams {
             concurrency,
             waves,
             restart_iterations,
-            profile,
+            scenario_selection,
             bounded_mode,
             evidence_path,
             server_log_path,
@@ -233,7 +233,7 @@ impl RuntimeParams {
             query_timeout,
             poll_timeout,
             shutdown_timeout,
-            profile_once,
+            native_once,
             observability,
         })
     }

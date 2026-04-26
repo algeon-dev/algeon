@@ -3,38 +3,176 @@
 //! The planner exposes one public optimizer rule, but session integration
 //! inserts it in two optimizer stages: a count-only probe before DataFusion aggregate
 //! statistics and the final native rewrite immediately before final plan
-//! validation. `GpuPreferred` keeps DataFusion CPU fallback available during
-//! planning; `GpuOnly` turns native candidate rejection into an optimizer
-//! error. Once a native execution node starts running, CPU fallback is no
-//! longer attempted.
+//! validation. Native candidate misses preserve the DataFusion baseline plan.
+//! Final-plan requirements, when configured, inspect that exact resulting plan
+//! after native rewrite; they never trigger a second plan.
 
-use std::{fmt, num::NonZeroUsize, time::Duration};
+use std::{num::NonZeroUsize, time::Duration};
 
-use datafusion::common::{Result as DataFusionResult, config::ConfigOptions};
+use datafusion::{
+    common::{Result as DataFusionResult, config::ConfigOptions},
+    physical_plan::ExecutionPlan,
+};
 
 use crate::{
-    error::{Error, ErrorCode},
     native_exec::{CpuFallbackStatementLimiter, NexusNativeExecutionConfig},
-    policy::{FallbackReason, GpuFallbackPolicy},
-    report::GpuCandidate,
     session_config::optimizer_config_with_datafusion_options,
 };
 
-mod leaf_guard;
 mod native;
 
-pub use leaf_guard::{NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, NexusTableFormatGpuOnlyLeafGuardRule};
 pub use native::{
-    NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics,
-    NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
-    NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
-    NexusNativePhysicalOptimizerRule, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
+    NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NativeAdaptivePipelineCandidateDiagnostics,
+    NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
+    NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
+    NativeStrictBoundedRejectedCandidateDiagnostics, NexusFinalPlanRequirementRule, NexusNativePhysicalOptimizerRule,
+    STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
 };
+
+/// The execution ownership observed in a completed physical plan.
+///
+/// [`Self::DataFusion`], [`Self::Native`], and [`Self::Mixed`] are returned by
+/// [`classify_final_plan`]. [`Self::Rejected`] records the terminal outcome
+/// when a final-plan requirement rejects an otherwise completed plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FinalPlanDisposition {
+    /// The final plan contains only DataFusion execution.
+    DataFusion,
+    /// The final plan executes entirely through a recognized native runtime node.
+    Native,
+    /// The final plan combines native runtime nodes with DataFusion execution.
+    Mixed,
+    /// A final-plan requirement rejected the completed planning result.
+    Rejected,
+}
+
+impl FinalPlanDisposition {
+    /// Stable label for diagnostics and typed requirement errors.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DataFusion => "datafusion",
+            Self::Native => "native",
+            Self::Mixed => "mixed",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+impl std::fmt::Display for FinalPlanDisposition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A non-default constraint applied to the completed physical plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FinalPlanRequirement {
+    /// Reject a final plan that executes any DataFusion CPU operator.
+    NoDataFusionCpu,
+}
+
+impl FinalPlanRequirement {
+    /// Stable label used in structured requirement errors.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoDataFusionCpu => "no_datafusion_cpu",
+        }
+    }
+}
+
+impl std::fmt::Display for FinalPlanRequirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Classify the exact completed physical plan without invoking planning.
+///
+/// The classifier intentionally recognizes only runtime nodes whose execution
+/// ownership is known at this adapter boundary. Unknown wrappers or operators
+/// around native fragments are conservative [`FinalPlanDisposition::Mixed`]
+/// plans rather than being treated as native-only.
+pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
+    if plan.downcast_ref::<crate::native_exec::NexusNativeExec>().is_some()
+        || plan.downcast_ref::<crate::native_exec::NexusNativeGpuProducerExec>().is_some()
+    {
+        return FinalPlanDisposition::Native;
+    }
+    if plan.downcast_ref::<crate::native_exec::NexusNativeComposedExec>().is_some() {
+        return classify_native_composed_final_plan(plan);
+    }
+    if crate::native_exec::graph::graph_execution_plan(plan).is_some() {
+        return classify_graph_final_plan(plan);
+    }
+    if is_transparent_native_runtime_wrapper(plan)
+        && let [child] = plan.children().as_slice()
+    {
+        return classify_final_plan(child.as_ref());
+    }
+
+    let child_dispositions = plan.children();
+    if child_dispositions.is_empty() {
+        return FinalPlanDisposition::DataFusion;
+    }
+    if child_dispositions.iter().any(|child| classify_final_plan(child.as_ref()) != FinalPlanDisposition::DataFusion) {
+        FinalPlanDisposition::Mixed
+    } else {
+        FinalPlanDisposition::DataFusion
+    }
+}
+
+fn classify_native_composed_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
+    // A composed wrapper owns its native consumer, but its producer children
+    // may contain DataFusion work before they yield GPU-resident results.
+    // Treat the complete composed plan as native only when every producer is
+    // independently native.
+    if plan.children().iter().all(|child| matches!(classify_final_plan(child.as_ref()), FinalPlanDisposition::Native)) {
+        FinalPlanDisposition::Native
+    } else {
+        FinalPlanDisposition::Mixed
+    }
+}
+
+fn classify_graph_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
+    if plan.children().iter().all(|child| graph_child_is_gpu_resident_at_runtime(child.as_ref())) {
+        FinalPlanDisposition::Native
+    } else {
+        // A graph runtime node is native, but any non-native edge or predicate
+        // child still executes through DataFusion before it runs.
+        FinalPlanDisposition::Mixed
+    }
+}
+
+fn graph_child_is_gpu_resident_at_runtime(plan: &dyn ExecutionPlan) -> bool {
+    if is_native_graph_runtime_child(plan) {
+        return classify_final_plan(plan) == FinalPlanDisposition::Native;
+    }
+    if plan.name() != "CooperativeExec" {
+        return false;
+    }
+    let children = plan.children();
+    let [child] = children.as_slice() else {
+        return false;
+    };
+    is_native_graph_runtime_child(child.as_ref()) && classify_final_plan(child.as_ref()) == FinalPlanDisposition::Native
+}
+
+fn is_native_graph_runtime_child(plan: &dyn ExecutionPlan) -> bool {
+    plan.downcast_ref::<crate::native_exec::NexusNativeExec>().is_some()
+        || plan.downcast_ref::<crate::native_exec::NexusNativeComposedExec>().is_some()
+}
+
+fn is_transparent_native_runtime_wrapper(plan: &dyn ExecutionPlan) -> bool {
+    crate::native_exec::plan_is_query_admission_wrapped(plan)
+        || crate::native_exec::plan_is_unbounded_native_execution_limited(plan)
+}
 
 /// DataFusion-facing native optimizer configuration.
 ///
-/// Defaults are production-oriented: GPU is preferred but not mandatory,
-/// native execution uses an auto-sized bounded profile, and query-engine
+/// Defaults preserve the DataFusion baseline when native candidates are not
+/// accepted. Native execution uses an auto-sized bounded profile, query-engine
 /// optimizer options use their own defaults, and plan-preference fallback is
 /// disabled unless a workload opts in. The native
 /// [`ExecutionContext`](nexus_query_engine::runtime::ExecutionContext) is still built
@@ -43,10 +181,10 @@ pub use native::{
 /// than during rule construction.
 #[derive(Debug, Clone)]
 pub struct NexusNativeOptimizerConfig {
-    fallback_policy: GpuFallbackPolicy,
     native_execution_config: NexusNativeExecutionConfig,
     native_optimizer_options: nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_plan_preference_options: nexus_query_engine::plan::NativePlanPreferenceOptions,
+    final_plan_requirements: Vec<FinalPlanRequirement>,
     cpu_fallback_statement_limiter: Option<CpuFallbackStatementLimiter>,
     cpu_fallback_wait_timeout: Option<Duration>,
 }
@@ -54,10 +192,10 @@ pub struct NexusNativeOptimizerConfig {
 impl Default for NexusNativeOptimizerConfig {
     fn default() -> Self {
         Self {
-            fallback_policy: GpuFallbackPolicy::default(),
             native_execution_config: NexusNativeExecutionConfig::bounded_auto_sized(),
             native_optimizer_options: nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
             native_plan_preference_options: nexus_query_engine::plan::NativePlanPreferenceOptions::disabled(),
+            final_plan_requirements: Vec::new(),
             cpu_fallback_statement_limiter: None,
             cpu_fallback_wait_timeout: None,
         }
@@ -65,23 +203,6 @@ impl Default for NexusNativeOptimizerConfig {
 }
 
 impl NexusNativeOptimizerConfig {
-    /// Build from an explicit fallback policy; all other fields use conservative defaults.
-    pub fn new(fallback_policy: GpuFallbackPolicy) -> Self {
-        Self { fallback_policy, ..Self::default() }
-    }
-
-    /// Planning fallback policy used after native candidate analysis.
-    pub fn fallback_policy(&self) -> GpuFallbackPolicy {
-        self.fallback_policy
-    }
-
-    /// Replace the planning fallback policy while preserving all other native
-    /// optimizer settings.
-    pub fn with_fallback_policy(mut self, fallback_policy: GpuFallbackPolicy) -> Self {
-        self.fallback_policy = fallback_policy;
-        self
-    }
-
     /// Native execution settings copied into rewritten execution nodes.
     pub fn native_execution_config(&self) -> &NexusNativeExecutionConfig {
         &self.native_execution_config
@@ -99,6 +220,25 @@ impl NexusNativeOptimizerConfig {
     /// shows native fixed overhead dominates small selective shapes.
     pub fn native_plan_preference_options(&self) -> &nexus_query_engine::plan::NativePlanPreferenceOptions {
         &self.native_plan_preference_options
+    }
+
+    /// Completed-plan constraints enforced after native rewriting, without
+    /// planning a second time.
+    pub fn final_plan_requirements(&self) -> &[FinalPlanRequirement] {
+        &self.final_plan_requirements
+    }
+
+    /// Add a completed-plan requirement. Repeating a requirement is idempotent.
+    pub fn with_final_plan_requirement(mut self, requirement: FinalPlanRequirement) -> Self {
+        if !self.final_plan_requirements.contains(&requirement) {
+            self.final_plan_requirements.push(requirement);
+        }
+        self
+    }
+
+    /// Require the exact completed physical plan to contain no DataFusion CPU execution.
+    pub fn with_no_datafusion_cpu_requirement(self) -> Self {
+        self.with_final_plan_requirement(FinalPlanRequirement::NoDataFusionCpu)
     }
 
     /// Host-side concurrency limiter for physical plans that remain on DataFusion CPU fallback.
@@ -231,31 +371,5 @@ impl NexusNativeOptimizerConfig {
     /// to this optimizer config.
     pub fn with_datafusion_config_options(&self, options: &ConfigOptions) -> DataFusionResult<Self> {
         optimizer_config_with_datafusion_options(self, options)
-    }
-}
-
-fn candidate_rejected_error(
-    candidate: &GpuCandidate,
-    reason: FallbackReason,
-    config: &NexusNativeOptimizerConfig,
-) -> Error {
-    Error::new(
-        ErrorCode::NativeCandidateRejected,
-        "datafusion_nexus.native.optimize_plan",
-        "cuDF native candidate rejected by adapter policy",
-    )
-    .with_fact("candidate_shape", candidate.shape.as_str())
-    .with_fact("fallback_reason", reason.code())
-    .with_fact("fallback_policy", config.fallback_policy())
-    .with_fact("operator_count", candidate.operator_count)
-}
-
-impl fmt::Display for GpuFallbackPolicy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::GpuOnly => f.write_str("GpuOnly"),
-            Self::GpuPreferred => f.write_str("GpuPreferred"),
-            Self::CpuOnly => f.write_str("CpuOnly"),
-        }
     }
 }
