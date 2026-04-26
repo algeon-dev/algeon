@@ -26,8 +26,8 @@ use cugraph::{
 fn layout_result_to_dataframe() {
     use cugraph::{layout::ForceAtlas2Params, params::IterationCount, random::RngState};
 
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let mut rng = RngState::new(&handle, TEST_LAYOUT_PRIMARY_SEED).expect("rng");
 
     let src = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
@@ -72,8 +72,8 @@ fn layout_result_to_dataframe() {
 
 #[test]
 fn bfs_result_to_dataframe_with_predecessors() {
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
 
     let src = DeviceArray::from_slice(&handle, BFS_GRAPH_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, BFS_GRAPH_DST_I32).expect("dst");
@@ -113,8 +113,8 @@ fn bfs_result_to_dataframe_with_predecessors() {
 
 #[test]
 fn centrality_to_dataframe_write_parquet_roundtrip() {
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
 
     let src = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
@@ -155,8 +155,8 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
 
 #[test]
 fn betweenness_result_to_dataframe() {
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
 
     let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_STAR_DST_I32).expect("dst");
@@ -186,8 +186,8 @@ fn betweenness_result_to_dataframe() {
 
 #[test]
 fn louvain_result_to_dataframe() {
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
 
     let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
@@ -215,8 +215,8 @@ fn louvain_result_to_dataframe() {
 
 #[test]
 fn pagerank_result_preserves_external_vertex_ids_for_renumbered_graphs() {
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
 
     let expected_vertices = vec![10_i32, 20, 40, 80];
     let src_data = vec![10_i32, 20, 40, 80, 20, 40, 80, 10];
@@ -247,8 +247,8 @@ fn pagerank_result_preserves_external_vertex_ids_for_renumbered_graphs() {
 
 #[test]
 fn louvain_result_preserves_external_vertex_ids_for_renumbered_graphs() {
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
 
     let expected_vertices = vec![10_i32, 20, 40, 80];
     let src_data = vec![10_i32, 20, 40, 80, 20, 40, 80, 10];
@@ -285,8 +285,8 @@ fn louvain_result_preserves_external_vertex_ids_for_renumbered_graphs() {
 fn layout_result_preserves_external_vertex_ids_for_renumbered_graphs() {
     use cugraph::{layout::ForceAtlas2Params, params::IterationCount, random::RngState};
 
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let mut rng = RngState::new(&handle, TEST_LAYOUT_PRIMARY_SEED).expect("rng");
 
     let expected_vertices = vec![10_i32, 20, 40, 80];

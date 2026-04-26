@@ -27,8 +27,8 @@
 //! ```no_run
 //! # use cudf::Runtime;
 //! # use cugraph::{DeviceArray, GraphBuilder, ResourceHandle, Transposed};
-//! # let runtime = Runtime::new().unwrap();
-//! # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+//! # let runtime = std::sync::Arc::new(Runtime::new().unwrap());
+//! # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
 //! # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
 //! # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
 //! let src_view = src.view().unwrap();
@@ -39,7 +39,7 @@
 //!     .unwrap();
 //! ```
 
-use std::{marker::PhantomData, ptr};
+use std::{any::Any, marker::PhantomData, ptr, sync::Arc};
 
 use cugraph_sys::{
     cugraph_decompress_to_edgelist, cugraph_edgelist_free, cugraph_edgelist_get_destinations,
@@ -47,6 +47,7 @@ use cugraph_sys::{
     cugraph_graph_free, cugraph_graph_t, cugraph_type_erased_device_array_view_t,
     cugraph_type_erased_device_array_view_type,
 };
+use rapids_interop::CompletionWitness;
 
 use crate::{
     array::{DeviceArrayView, RawDeviceArrayView},
@@ -115,8 +116,31 @@ pub struct Graph<T = Forward> {
     properties: GraphProperties,
     vertex_dtype: DataType,
     weight_dtype: DataType,
+    pending_input_completion: Option<DeferredInputCompletion>,
     _nosend_nosync: PhantomData<*mut ()>,
     _transposition: PhantomData<T>,
+}
+
+pub(crate) struct DeferredInputCompletion {
+    owners: Vec<Arc<dyn Any + Send + Sync>>,
+    witnesses: Vec<CompletionWitness>,
+}
+
+impl DeferredInputCompletion {
+    pub(crate) fn new(owners: Vec<Arc<dyn Any + Send + Sync>>, witnesses: Vec<CompletionWitness>) -> Option<Self> {
+        if owners.is_empty() || witnesses.is_empty() {
+            return None;
+        }
+
+        Some(Self { owners, witnesses })
+    }
+
+    pub(crate) fn synchronize(self) {
+        for witness in &self.witnesses {
+            let _ = witness.synchronize();
+        }
+        drop(self.owners);
+    }
 }
 
 struct DecompressedEdgelist {
@@ -278,6 +302,11 @@ impl<T> Graph<T> {
         self.weight_dtype
     }
 
+    pub(crate) fn with_pending_input_completion(mut self, pending: DeferredInputCompletion) -> Self {
+        self.pending_input_completion = Some(pending);
+        self
+    }
+
     /// Structural properties declared when this graph was constructed.
     ///
     /// These are the graph-construction properties Rust passed to cuGraph
@@ -432,8 +461,8 @@ impl<T> std::fmt::Debug for Graph<T> {
 /// ```no_run
 /// # use cudf::Runtime;
 /// # use cugraph::{DeviceArray, GraphBuilder, ResourceHandle, Transposed};
-/// # let runtime = Runtime::new().unwrap();
-/// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+/// # let runtime = std::sync::Arc::new(Runtime::new().unwrap());
+/// # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
 /// # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
 /// # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
 /// # let wgt = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0]).unwrap();
@@ -489,8 +518,8 @@ impl<'a> GraphBuilder<'a> {
     /// ```no_run
     /// # use cudf::Runtime;
     /// # use cugraph::{DeviceArray, Forward, GraphBuilder, ResourceHandle};
-    /// # let runtime = Runtime::new().unwrap();
-    /// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+    /// # let runtime = std::sync::Arc::new(Runtime::new().unwrap());
+    /// # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
     /// let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
     /// let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
     ///
@@ -700,6 +729,7 @@ impl<'a> GraphBuilder<'a> {
             properties: self.properties,
             vertex_dtype,
             weight_dtype,
+            pending_input_completion: None,
             _nosend_nosync: PhantomData,
             _transposition: PhantomData,
         })
@@ -949,8 +979,8 @@ impl Graph<Transposed> {
     /// #     centrality::PageRankParams,
     /// #     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
     /// # };
-    /// # let runtime = cudf::Runtime::new().unwrap();
-    /// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+    /// # let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
+    /// # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
     /// # let src = runtime.series(&[0i32, 1, 2]).unwrap();
     /// # let dst = runtime.series(&[1i32, 2, 0]).unwrap();
     /// # let edges = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).unwrap();
@@ -1090,8 +1120,8 @@ impl Graph<Forward> {
     /// #     cudf_interop::{DataFrameGraphOptions, device_array_view_from_slice, graph_from_dataframe},
     /// #     traversal::BfsParams,
     /// # };
-    /// # let runtime = cudf::Runtime::new().unwrap();
-    /// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+    /// # let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
+    /// # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
     /// # let src = runtime.series(&[0i32, 1, 2]).unwrap();
     /// # let dst = runtime.series(&[1i32, 2, 0]).unwrap();
     /// # let edges = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).unwrap();
@@ -1138,8 +1168,8 @@ impl Graph<Forward> {
     /// #     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
     /// #     types::GraphProperties,
     /// # };
-    /// # let runtime = cudf::Runtime::new().unwrap();
-    /// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+    /// # let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
+    /// # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
     /// # let src = runtime.series(&[0i32, 1, 1, 2]).unwrap();
     /// # let dst = runtime.series(&[1i32, 0, 2, 1]).unwrap();
     /// # let weight = runtime.series(&[1.0f32, 1.0, 1.0, 1.0]).unwrap();
@@ -1214,8 +1244,8 @@ impl<T: Transposition> Graph<T> {
     /// #     layout::ForceAtlas2Params,
     /// #     random::RngState,
     /// # };
-    /// # let runtime = cudf::Runtime::new().unwrap();
-    /// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+    /// # let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
+    /// # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
     /// # let mut rng = RngState::new(&handle, 42).unwrap();
     /// # let src = runtime.series(&[0i32, 1, 2]).unwrap();
     /// # let dst = runtime.series(&[1i32, 2, 0]).unwrap();
@@ -1298,6 +1328,9 @@ impl<T: Transposition> Graph<T> {
 
 impl<T> Drop for Graph<T> {
     fn drop(&mut self) {
+        if let Some(pending) = self.pending_input_completion.take() {
+            pending.synchronize();
+        }
         if !self.raw.is_null() {
             let _guard = DeviceGuard::switch_to_for_drop(self.device, "Graph::drop").ok();
             // SAFETY: `self.raw` is owned by this Graph instance and is freed

@@ -48,8 +48,8 @@ fn device_array_view_from_slice_rejects_mismatch() {
 
 #[test]
 fn graph_from_series_weighted_pagerank() {
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
 
     let src = runtime.series(UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
     let dst = runtime.series(UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
@@ -69,8 +69,8 @@ fn graph_from_series_weighted_pagerank() {
 
 #[test]
 fn graph_from_series_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
 
     let src = runtime.series(&[0i32, 1, 1, 2]).expect("src");
     let dst = runtime.series(&[1i32, 0, 2, 1]).expect("dst");
@@ -86,8 +86,8 @@ fn graph_from_series_python_cugraph_weighted_undirected_simple_keeps_minimum_rec
 
 #[test]
 fn graph_bfs_host_slice_matches_typed_view_path() {
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
 
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
@@ -113,8 +113,8 @@ fn graph_bfs_host_slice_matches_typed_view_path() {
 
 #[test]
 fn into_series_bfs_results() {
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
 
     let src = DeviceArray::from_slice(&handle, SIMPLE_CHAIN_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, SIMPLE_CHAIN_DST_I32).expect("dst");
@@ -135,8 +135,8 @@ fn into_series_bfs_results() {
 
 #[test]
 fn into_series_layout_results() {
-    let runtime = explicit_runtime();
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let mut rng = RngState::new(&handle, 42).expect("rng");
 
     let src = DeviceArray::from_slice(&handle, UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
