@@ -18,13 +18,13 @@ of the Rust dependency graph) is fetched by Cargo, not cloned.
 export NEXUS_ROOT=~/nexus # pick any root
 mkdir -p "$NEXUS_ROOT" && cd "$NEXUS_ROOT"
 
-git clone https://github.com/morristai/cudf-rs.git
+git clone https://github.com/DataFusion-Nexus/cudf-rs.git
 git -C cudf-rs submodule update --init cudf          # libcudf fork sources
 
-git clone https://github.com/morristai/cugraph-rs.git
+git clone https://github.com/DataFusion-Nexus/cugraph-rs.git
 git -C cugraph-rs submodule update --init cugraph    # libcugraph fork sources
 
-git clone https://github.com/morristai/datafusion-nexus.git
+git clone https://github.com/DataFusion-Nexus/datafusion-nexus.git
 ```
 
 The `cudf` and `cugraph` submodules are RAPIDS forks; `submodule update` fetches

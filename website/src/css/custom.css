@@ -115,9 +115,9 @@
 }
 
 .navbar__logo img {
-  height: 130%;
-  transform: translateY(0.4rem);
+  height: 100%;
   width: auto;
+  transform: translateY(-0.2rem);
 }
 
 .footer__copyright {
@@ -327,6 +327,11 @@
   --nx-dg-fg: var(--ifm-font-color-base);
   --nx-dg-fg-muted: var(--ifm-color-emphasis-700);
   --nx-dg-fg-subtle: var(--ifm-color-emphasis-600);
+  /* Homepage architecture hierarchy: cards are tangible objects; connectors
+     recede one step so they communicate relationships without dominating. */
+  --nx-arch-card-border: #d7dce1;
+  --nx-arch-edge: #748292;
+  --nx-arch-evidence-edge: #b7c0ca;
   --nx-dg-bar: var(--ifm-color-emphasis-900);
   --nx-dg-bar-fg: var(--ifm-background-color);
   --nx-dg-accent: var(--ifm-color-primary);
@@ -365,6 +370,9 @@
   --nx-dg-fg: var(--nx-ayu-heading);
   --nx-dg-fg-muted: var(--nx-ayu-muted-strong);
   --nx-dg-fg-subtle: #7a8494;
+  --nx-arch-card-border: #313a47;
+  --nx-arch-edge: #8492a5;
+  --nx-arch-evidence-edge: #414b59;
   --nx-dg-bar: var(--nx-ayu-text);
   --nx-dg-bar-fg: var(--nx-ayu-bg);
   --nx-dg-accent: var(--nx-ayu-accent);
@@ -382,6 +390,51 @@
   --nx-design-gpu: #76b900;     /* NVIDIA green */
   --nx-design-graph: #2fb56b;   /* cugraph emerald */
   --nx-design-lake: #5fb3e4;    /* Iceberg lakehouse blue */
+}
+
+/* Blog layout. Keep the existing desktop article-page layout: a fixed recent
+   posts rail and a main column that uses the remaining space. */
+.blog-wrapper .container {
+  max-width: min(1440px, 100%);
+}
+
+@media (min-width: 997px) {
+  .blog-wrapper .row > aside.col {
+    --ifm-col-width: 15rem;
+  }
+
+  .blog-wrapper .row > main.col {
+    flex: 1 1 0;
+    max-width: none;
+    min-width: 0;
+  }
+}
+
+/* Blog overview only: keep its title and post preview in a centered reading
+   column. */
+.blog-wrapper.blog-list-page .container {
+  max-width: min(1280px, 100%);
+}
+
+@media (min-width: 997px) {
+  .blog-wrapper.blog-list-page .row {
+    justify-content: center;
+  }
+
+  .blog-wrapper.blog-list-page .row > aside.col {
+    --ifm-col-width: 14rem;
+  }
+
+  .blog-wrapper.blog-list-page .row > main.col {
+    flex: 0 1 52rem;
+    max-width: 52rem;
+    min-width: 0;
+  }
+}
+
+.blog-wrapper.blog-list-page main > article > header h2 {
+  font-size: clamp(2rem, 2.25vw, 2.35rem);
+  line-height: 1.16;
 }
 
 /* Design page table sizing. */
@@ -407,6 +460,48 @@
     overflow-wrap: anywhere;
     white-space: normal;
   }
+}
+
+/* Footnotes: a quiet endnote block — hairline-separated, smaller and muted
+   so citations support the prose without competing with it. Links inherit
+   the muted tone and only take the link color on hover. */
+.markdown .footnotes {
+  margin-top: 3rem;
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+  padding-top: 1.25rem;
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.markdown .footnotes ol {
+  padding-left: 1.1rem;
+}
+
+.markdown .footnotes p {
+  margin-bottom: 0.4rem;
+}
+
+.markdown .footnotes a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--ifm-color-emphasis-300);
+  text-underline-offset: 2px;
+}
+
+.markdown .footnotes a:hover {
+  color: var(--ifm-link-color);
+  text-decoration-color: currentColor;
+}
+
+.markdown sup a[data-footnote-ref] {
+  color: var(--ifm-color-emphasis-600);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.markdown sup a[data-footnote-ref]:hover {
+  color: var(--ifm-link-color);
 }
 
 /* cuGraph overview cheatsheet: give prose room while keeping the

@@ -119,6 +119,27 @@
   height: 29rem;
 }
 
+/* Wide multi-query charts: keep bar width readable and scroll horizontally. */
+.chartScroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0.35rem;
+}
+
+.chartScrollTrack {
+  height: 29rem;
+  min-width: 100%;
+}
+
+.chartScrollHint {
+  color: var(--ifm-font-color-secondary);
+  font-size: 0.78rem;
+  margin: -0.35rem 0 0.65rem;
+}
+
 .tablePanel {
   max-width: 100%;
   overflow-x: auto;
@@ -168,6 +189,10 @@
   }
 
   .chart {
+    height: 22rem;
+  }
+
+  .chartScrollTrack {
     height: 22rem;
   }
 }

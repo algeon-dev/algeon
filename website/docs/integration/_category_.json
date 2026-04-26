@@ -1,7 +1,7 @@
 {
   "label": "Integrating Nexus",
   "position": 3,
-  "collapsed": false,
+  "collapsed": true,
   "link": {
     "type": "doc",
     "id": "integration/overview"

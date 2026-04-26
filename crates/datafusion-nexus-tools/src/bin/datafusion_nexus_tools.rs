@@ -56,6 +56,9 @@ mod server_iceberg_rest_multigpu_e2e;
 #[cfg(all(feature = "validate-query", not(test)))]
 #[path = "../validate_query.rs"]
 mod validate_query;
+#[cfg(all(feature = "cpu-fallback-contract-validate", not(test)))]
+#[path = "../cpu_fallback_contract_validate.rs"]
+mod cpu_fallback_contract_validate;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ToolResult<()> {
@@ -75,6 +78,9 @@ async fn main() -> ToolResult<()> {
         Some("cugraph-fixture-e2e") => run_cugraph_fixture_e2e(env::args().nth(2)).await,
         Some("validate-query") => run_validate_query(env::args().skip(2).collect()).await,
         Some("clickbench-stage-probe") => run_clickbench_stage_probe(env::args().skip(2).collect()).await,
+        Some("cpu-fallback-contract-validate") => {
+            run_cpu_fallback_contract_validate(env::args().skip(2).collect()).await
+        },
         Some("-h" | "--help") | None => {
             print_usage();
             if command.is_none() { Err("missing tool command".into()) } else { Ok(()) }
@@ -102,7 +108,8 @@ fn print_usage() {
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-rest-multigpu-e2e\n\
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features server-runtime-observability-e2e -- server-runtime-observability-e2e [OPTIONS]\n\
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features embedded-backend-e2e -- embedded-backend-e2e\n\
-           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates>"
+           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates>\n\
+           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features cpu-fallback-contract-validate -- cpu-fallback-contract-validate [--out-dir DIR]"
     );
 }
 
@@ -134,6 +141,16 @@ async fn run_validate_query(args: Vec<String>) -> ToolResult<()> {
 #[cfg(not(all(feature = "validate-query", not(test))))]
 async fn run_validate_query(_args: Vec<String>) -> ToolResult<()> {
     Err("validate-query requires --features validate-query and normal cargo run execution".into())
+}
+
+#[cfg(all(feature = "cpu-fallback-contract-validate", not(test)))]
+async fn run_cpu_fallback_contract_validate(args: Vec<String>) -> ToolResult<()> {
+    cpu_fallback_contract_validate::run(args).await
+}
+
+#[cfg(not(all(feature = "cpu-fallback-contract-validate", not(test))))]
+async fn run_cpu_fallback_contract_validate(_args: Vec<String>) -> ToolResult<()> {
+    Err("cpu-fallback-contract-validate requires --features cpu-fallback-contract-validate and normal cargo run execution".into())
 }
 
 #[cfg(all(feature = "clickbench-stage-probe", not(test)))]

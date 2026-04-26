@@ -32,21 +32,6 @@ cugraph_<algorithm>(table_name [, src_col, dst_col [, weight_col [, options_json
 A few functions take extra positional arguments (for example, `cugraph_bfs`
 takes a source vertex); see each function's page for its exact signature.
 
-## Algorithm families
-
-- **[Centrality](./algorithms/centrality/cugraph_pagerank.mdx)** — importance
-  scores (PageRank, eigenvector, Katz, HITS, betweenness).
-- **[Community Detection](./algorithms/community/cugraph_louvain.mdx)** —
-  partition vertices into communities (Louvain, Leiden, ECG, spectral).
-- **[Traversal & Paths](./algorithms/traversal/cugraph_bfs.mdx)** — BFS and
-  single-source shortest paths.
-- **[Connectivity](./algorithms/connectivity/cugraph_weakly_connected_components.mdx)** —
-  connected components and minimum spanning tree.
-- **[Structure](./algorithms/structure/cugraph_degrees_all.mdx)** — degrees,
-  triangles, core numbers, k-core.
-- **[Layout](./algorithms/layout/cugraph_force_atlas2.mdx)** — 2-D layout
-  coordinates.
-
 ## Recommended workflow
 
 1. **List** — `cugraph_list_algorithms()` to find enabled functions.
@@ -60,10 +45,13 @@ See [Discovery & Validation](./discovery-and-validation.mdx) for details. To
 run these functions in a process or server, see
 [Integrating Nexus](../integration/overview.mdx).
 
-## All functions at a glance
+## Next steps
 
-import Cheatsheet from './_cheatsheet.mdx';
-
-<div className="cugraph-function-cheatsheet">
-<Cheatsheet />
-</div>
+- **[Browse algorithms](./algorithms/index.mdx)** — choose an algorithm by
+  family or compare every available function.
+- **[Discover & validate calls](./discovery-and-validation.mdx)** — inspect the
+  runtime contract and dry-run a concrete call before execution.
+- **[Set graph construction options](./graph-options.mdx)** — choose directed
+  semantics, vertex renumbering, and edge normalization behavior.
+- **[Run the citation-network demo](./demo-dataset.mdx)** — follow the shared
+  dataset and runnable examples used by the algorithm reference.
