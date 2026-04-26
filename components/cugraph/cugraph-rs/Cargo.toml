@@ -21,3 +21,10 @@ rapids-interop = { path = "../../cudf-rs/rapids-interop" }
 anyhow = "1"
 criterion = "0.5"
 static_assertions = "1"
+
+[build-dependencies]
+cc = "1"
+
+[[bin]]
+name = "phase7_allocator_probe"
+path = "tests/bin/phase7_allocator_probe.rs"

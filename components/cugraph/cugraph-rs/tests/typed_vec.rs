@@ -3,8 +3,8 @@
 use cugraph::{array::DeviceArray, handle::ResourceHandle};
 
 fn test_handle() -> ResourceHandle {
-    let runtime = cudf::Runtime::new().expect("runtime");
-    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+    let runtime = std::sync::Arc::new(cudf::Runtime::new().expect("runtime"));
+    ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle")
 }
 
 #[test]

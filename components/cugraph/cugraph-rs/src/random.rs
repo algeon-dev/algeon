@@ -10,8 +10,9 @@
 //! use cudf::Runtime;
 //! use cugraph::{ResourceHandle, random::RngState};
 //!
-//! let runtime = Runtime::new().unwrap();
-//! let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+//! let runtime = std::sync::Arc::new(Runtime::new().unwrap());
+//! let handle =
+//!     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
 //! let rng = RngState::new(&handle, 42).unwrap();
 //! ```
 

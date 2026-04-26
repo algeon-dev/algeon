@@ -4,23 +4,188 @@
 //! underlying CUDA stream and cuGraph resource handle. The handle is **not**
 //! `Send` or `Sync` because GPU state is thread-local.
 
-use std::{fmt, marker::PhantomData, mem::ManuallyDrop, ptr};
+use std::{fmt, marker::PhantomData, mem::ManuallyDrop, ptr, ptr::NonNull, sync::Arc};
 
 use cudf::DeviceId;
 use cugraph_sys::{
     cugraph_create_resource_handle, cugraph_free_resource_handle, cugraph_resource_handle_get_comm_size,
     cugraph_resource_handle_get_rank, cugraph_resource_handle_t,
 };
+use rapids_interop::{ExecutionBinding, InteropError, InteropErrorKind};
 
 use crate::{
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommMetadata {
-    DefaultSingleGpu,
-    ExternalHandle,
+enum ResourceHandleState {
+    LocalOwned {
+        raw: *mut cugraph_resource_handle_t,
+        device: i32,
+    },
+    // Keep `shim` before `runtime` so the native runtime-bound shim is torn
+    // down before releasing the retained cudf runtime owner.
+    RuntimeBound {
+        raw: *mut cugraph_resource_handle_t,
+        device: i32,
+        #[allow(dead_code)]
+        shim: RuntimeResourceHandleOwner,
+        runtime: Arc<cudf::Runtime>,
+    },
+    ExternalBorrowed {
+        raw: *mut cugraph_resource_handle_t,
+        device: i32,
+    },
+    ExternalOwned {
+        raw: *mut cugraph_resource_handle_t,
+        device: i32,
+    },
+}
+
+impl ResourceHandleState {
+    fn raw(&self) -> *mut cugraph_resource_handle_t {
+        match self {
+            Self::LocalOwned { raw, .. }
+            | Self::RuntimeBound { raw, .. }
+            | Self::ExternalBorrowed { raw, .. }
+            | Self::ExternalOwned { raw, .. } => *raw,
+        }
+    }
+
+    fn raw_mut(&mut self) -> &mut *mut cugraph_resource_handle_t {
+        match self {
+            Self::LocalOwned { raw, .. }
+            | Self::RuntimeBound { raw, .. }
+            | Self::ExternalBorrowed { raw, .. }
+            | Self::ExternalOwned { raw, .. } => raw,
+        }
+    }
+
+    fn device(&self) -> i32 {
+        match self {
+            Self::LocalOwned { device, .. }
+            | Self::RuntimeBound { device, .. }
+            | Self::ExternalBorrowed { device, .. }
+            | Self::ExternalOwned { device, .. } => *device,
+        }
+    }
+
+    fn runtime(&self) -> Option<&cudf::Runtime> {
+        match self {
+            Self::RuntimeBound { runtime, .. } => Some(runtime.as_ref()),
+            Self::LocalOwned { .. } | Self::ExternalBorrowed { .. } | Self::ExternalOwned { .. } => None,
+        }
+    }
+
+    fn is_runtime_bound(&self) -> bool {
+        matches!(self, Self::RuntimeBound { .. })
+    }
+
+    fn uses_external_comm_metadata(&self) -> bool {
+        matches!(self, Self::ExternalBorrowed { .. } | Self::ExternalOwned { .. })
+    }
+
+    fn owns_raw(&self) -> bool {
+        matches!(self, Self::LocalOwned { .. } | Self::ExternalOwned { .. })
+    }
+}
+
+#[repr(C)]
+#[allow(non_camel_case_types)]
+struct cugraph_rs_runtime_resource_handle_t {
+    _private: [u8; 0],
+}
+
+extern "C" {
+    fn cugraph_rs_runtime_resource_handle_create(
+        cuda_stream: *mut std::ffi::c_void,
+        device_memory_resource: *mut std::ffi::c_void,
+    ) -> *mut cugraph_rs_runtime_resource_handle_t;
+    fn cugraph_rs_runtime_resource_handle_get(
+        handle: *mut cugraph_rs_runtime_resource_handle_t,
+    ) -> *mut cugraph_resource_handle_t;
+    fn cugraph_rs_runtime_resource_handle_destroy(handle: *mut cugraph_rs_runtime_resource_handle_t);
+}
+
+struct RuntimeResourceHandleOwner {
+    raw: NonNull<cugraph_rs_runtime_resource_handle_t>,
+    device: i32,
+}
+
+impl RuntimeResourceHandleOwner {
+    fn create(runtime: &Arc<cudf::Runtime>, operation: &'static str) -> Result<(Self, *mut cugraph_resource_handle_t)> {
+        let binding =
+            runtime.execution_binding().map_err(|error| map_runtime_execution_binding_error(error, operation))?;
+        let runtime_device = runtime.device().ordinal() as i32;
+        validate_runtime_binding_device(runtime_device, binding, operation)?;
+
+        let _guard = DeviceGuard::switch_to(runtime_device, operation)?;
+        // SAFETY: `binding` is borrowed from a live explicit cudf runtime. The
+        // shim borrows the stream and memory-resource handles for exactly the
+        // lifetime guarded by the retained `Arc<cudf::Runtime>`.
+        let shim = unsafe {
+            cugraph_rs_runtime_resource_handle_create(
+                binding.cuda_stream().as_raw(),
+                binding.memory_resource().as_raw(),
+            )
+        };
+        let raw = NonNull::new(shim).ok_or_else(|| {
+            Error::new(ErrorKind::Unexpected, operation)
+                .with_message("failed to create runtime-bound cuGraph resource handle shim")
+                .with_context("device", runtime_device.to_string())
+        })?;
+
+        // SAFETY: `raw` is a newly created live shim handle.
+        let resource_handle = unsafe { cugraph_rs_runtime_resource_handle_get(raw.as_ptr()) };
+        if resource_handle.is_null() {
+            // SAFETY: `raw` owns a live shim handle created just above.
+            unsafe { cugraph_rs_runtime_resource_handle_destroy(raw.as_ptr()) };
+            return Err(Error::new(ErrorKind::Unexpected, operation)
+                .with_message("runtime-bound handle shim returned a null cuGraph resource handle")
+                .with_context("device", runtime_device.to_string()));
+        }
+
+        Ok((Self { raw, device: runtime_device }, resource_handle))
+    }
+}
+
+impl Drop for RuntimeResourceHandleOwner {
+    fn drop(&mut self) {
+        let _guard = DeviceGuard::switch_to_for_drop(self.device, "RuntimeResourceHandleOwner::drop").ok();
+        // SAFETY: this owner is the unique runtime-bound owner for the shim.
+        unsafe { cugraph_rs_runtime_resource_handle_destroy(self.raw.as_ptr()) };
+    }
+}
+
+fn map_runtime_execution_binding_error(error: InteropError, operation: &'static str) -> Error {
+    let mut mapped = match error.kind() {
+        InteropErrorKind::ExecutionBindingUnavailable => Error::new(ErrorKind::Unexpected, operation),
+        _ => Error::new(ErrorKind::InvalidState, operation),
+    }
+    .with_message("failed to extract cudf runtime execution binding")
+    .with_context("interop_kind", format!("{:?}", error.kind()))
+    .set_source(error.clone());
+
+    for (key, value) in error.context() {
+        mapped = mapped.with_context(key, value.clone());
+    }
+
+    mapped
+}
+
+fn validate_runtime_binding_device(
+    runtime_device: i32,
+    binding: ExecutionBinding<'_>,
+    operation: &'static str,
+) -> Result<()> {
+    if binding.device() == runtime_device {
+        return Ok(());
+    }
+
+    Err(Error::new(ErrorKind::InvalidState, operation)
+        .with_message("runtime execution binding device did not match the runtime owner device")
+        .with_context("runtime_device", runtime_device.to_string())
+        .with_context("binding_device", binding.device().to_string()))
 }
 
 /// RAII wrapper around `cugraph_resource_handle_t`.
@@ -31,11 +196,7 @@ enum CommMetadata {
 /// an external cuGraph resource handle). Not thread-safe — must be used from
 /// the thread that created it.
 pub struct ResourceHandle {
-    raw: *mut cugraph_resource_handle_t,
-    device: i32,
-    /// Whether this wrapper owns the handle and should free it on drop.
-    owned: bool,
-    comm_metadata: CommMetadata,
+    state: ResourceHandleState,
     // !Send + !Sync marker: cuGraph handle owns thread-affine GPU resources.
     _nosend_nosync: PhantomData<*mut ()>,
 }
@@ -70,17 +231,22 @@ impl ResourceHandle {
         Self::new_on_device(Self::current_device_ordinal("ResourceHandle::for_current_device")?)
     }
 
-    /// Create a new resource handle on the same CUDA device as a cudf runtime.
+    /// Create a new resource handle bound to a cudf runtime owner.
     ///
-    /// This aligns cuGraph device placement with the supplied
-    /// [`cudf::Runtime`], but it does not reuse the runtime's CUDA stream or
-    /// memory resource.
-    pub fn for_runtime_device(runtime: &cudf::Runtime) -> Result<Self> {
-        Self::new_on_device(runtime.device().ordinal() as i32)
+    /// This constructor binds cuGraph to the runtime's CUDA stream and RAFT
+    /// workspace/resource-aware allocation context through a local native shim
+    /// that owns both the RAFT handle and the cuGraph resource-handle wrapper.
+    pub fn for_runtime(runtime: Arc<cudf::Runtime>) -> Result<Self> {
+        let operation = "ResourceHandle::for_runtime";
+        let device = runtime.device().ordinal() as i32;
+        let (shim, raw) = RuntimeResourceHandleOwner::create(&runtime, operation)?;
+        Ok(Self {
+            state: ResourceHandleState::RuntimeBound { raw, device, shim, runtime },
+            _nosend_nosync: PhantomData,
+        })
     }
 
-    /// Create a new resource handle on the specified CUDA device.
-    pub(crate) fn new_on_device(device: i32) -> Result<Self> {
+    fn new_on_device(device: i32) -> Result<Self> {
         if device < 0 {
             return Err(Error::new(ErrorKind::InvalidInput, "ResourceHandle::new_on_device")
                 .with_message(format!("device ordinal must be >= 0, got {}", device)));
@@ -100,13 +266,7 @@ impl ResourceHandle {
             return Err(Error::new(ErrorKind::Unexpected, "ResourceHandle::new_on_device")
                 .with_message("cugraph_create_resource_handle returned NULL"));
         }
-        Ok(Self {
-            raw,
-            device,
-            owned: true,
-            comm_metadata: CommMetadata::DefaultSingleGpu,
-            _nosend_nosync: PhantomData,
-        })
+        Ok(Self { state: ResourceHandleState::LocalOwned { raw, device }, _nosend_nosync: PhantomData })
     }
 
     /// Wrap an existing cuGraph resource handle created externally.
@@ -134,7 +294,7 @@ impl ResourceHandle {
                 .with_message("resource handle pointer must not be null"));
         }
         let device = Self::current_device_ordinal("ResourceHandle::from_raw_resource_handle")?;
-        Ok(Self { raw, device, owned: false, comm_metadata: CommMetadata::ExternalHandle, _nosend_nosync: PhantomData })
+        Ok(Self { state: ResourceHandleState::ExternalBorrowed { raw, device }, _nosend_nosync: PhantomData })
     }
 
     /// Adopt ownership of an existing cuGraph resource handle created externally.
@@ -164,7 +324,7 @@ impl ResourceHandle {
                 .with_message("resource handle pointer must not be null"));
         }
         let device = Self::current_device_ordinal("ResourceHandle::adopt_raw_resource_handle")?;
-        Ok(Self { raw, device, owned: true, comm_metadata: CommMetadata::ExternalHandle, _nosend_nosync: PhantomData })
+        Ok(Self { state: ResourceHandleState::ExternalOwned { raw, device }, _nosend_nosync: PhantomData })
     }
 
     /// Wrap an existing external cuGraph resource handle.
@@ -187,7 +347,7 @@ impl ResourceHandle {
 
     /// Get the raw C pointer. For internal use by other modules.
     pub(crate) fn as_ptr(&self) -> *mut cugraph_resource_handle_t {
-        self.raw
+        self.state.raw()
     }
 
     /// Borrow the underlying raw cuGraph resource-handle pointer.
@@ -196,7 +356,7 @@ impl ResourceHandle {
     /// while `self` remains alive, and callers must not free it unless
     /// ownership has been transferred separately.
     pub fn as_raw_resource_handle(&self) -> *mut cugraph_resource_handle_t {
-        self.raw
+        self.state.raw()
     }
 
     /// Consume this wrapper and return the underlying raw handle pointer.
@@ -209,57 +369,73 @@ impl ResourceHandle {
     ///   eventually freeing it
     /// - if `self` only borrowed the handle, the caller still does not own it
     ///   and must follow the original external destruction contract
-    pub fn into_raw_resource_handle(self) -> *mut cugraph_resource_handle_t {
+    ///
+    /// Runtime-bound handles cannot be converted into standalone raw resource
+    /// handles because the native shim must continue to own the paired RAFT
+    /// handle and destroy both objects together.
+    pub fn into_raw_resource_handle(self) -> Result<*mut cugraph_resource_handle_t> {
+        if self.state.is_runtime_bound() {
+            return Err(Error::new(ErrorKind::InvalidState, "ResourceHandle::into_raw_resource_handle")
+                .with_message("runtime-bound handles cannot be converted into standalone raw resource handles"));
+        }
+
         let this = ManuallyDrop::new(self);
-        this.raw
+        Ok(this.state.raw())
     }
 
     /// The CUDA device this handle was created on.
     pub fn device(&self) -> i32 {
-        self.device
+        self.state.device()
+    }
+
+    pub(crate) fn runtime(&self) -> Option<&cudf::Runtime> {
+        self.state.runtime()
     }
 
     /// The communicator rank carried by this handle.
     ///
-    /// Handles created through [`for_runtime_device`](Self::for_runtime_device)
+    /// Handles created through [`for_runtime`](Self::for_runtime)
     /// always return `0`.
     ///
     /// Externally wrapped handles query cuGraph's communicator metadata and
     /// are intended for MTMG/MG-native handles that already carry a valid
     /// communicator.
     pub fn rank(&self) -> i32 {
-        match self.comm_metadata {
-            CommMetadata::DefaultSingleGpu => 0,
+        if self.state.uses_external_comm_metadata() {
             // SAFETY: externally wrapped handles promise a live cuGraph
             // resource handle for the lifetime of `self`.
-            CommMetadata::ExternalHandle => unsafe { cugraph_resource_handle_get_rank(self.raw) },
+            unsafe { cugraph_resource_handle_get_rank(self.state.raw()) }
+        } else {
+            0
         }
     }
 
     /// The communicator size carried by this handle.
     ///
-    /// Handles created through [`for_runtime_device`](Self::for_runtime_device)
+    /// Handles created through [`for_runtime`](Self::for_runtime)
     /// always return `1`.
     ///
     /// Externally wrapped handles query cuGraph's communicator metadata and
     /// are intended for MTMG/MG-native handles that already carry a valid
     /// communicator.
     pub fn comm_size(&self) -> i32 {
-        match self.comm_metadata {
-            CommMetadata::DefaultSingleGpu => 1,
+        if self.state.uses_external_comm_metadata() {
             // SAFETY: externally wrapped handles promise a live cuGraph
             // resource handle for the lifetime of `self`.
-            CommMetadata::ExternalHandle => unsafe { cugraph_resource_handle_get_comm_size(self.raw) },
+            unsafe { cugraph_resource_handle_get_comm_size(self.state.raw()) }
+        } else {
+            1
         }
     }
 }
 
 impl Drop for ResourceHandle {
     fn drop(&mut self) {
-        if self.owned && !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "ResourceHandle::drop").ok();
+        if self.state.owns_raw() && !self.state.raw().is_null() {
+            let _guard = DeviceGuard::switch_to_for_drop(self.state.device(), "ResourceHandle::drop").ok();
             // SAFETY: owned handles are freed exactly once here.
-            unsafe { cugraph_free_resource_handle(self.raw) };
+            unsafe { cugraph_free_resource_handle(self.state.raw()) };
+            *self.state.raw_mut() = ptr::null_mut();
         }
     }
 }
@@ -272,11 +448,27 @@ mod tests {
 
     use super::*;
 
+    fn state_variant_name(state: &ResourceHandleState) -> &'static str {
+        match state {
+            ResourceHandleState::LocalOwned { .. } => "LocalOwned",
+            ResourceHandleState::RuntimeBound { .. } => "RuntimeBound",
+            ResourceHandleState::ExternalBorrowed { .. } => "ExternalBorrowed",
+            ResourceHandleState::ExternalOwned { .. } => "ExternalOwned",
+        }
+    }
+
     #[test]
     fn test_resource_handle_creation() {
         let handle = ResourceHandle::new().expect("Failed to create resource handle");
         // Handle should be non-null and droppable
         assert!(!handle.as_ptr().is_null());
+        match &handle.state {
+            ResourceHandleState::LocalOwned { raw, device } => {
+                assert_eq!(*raw, handle.as_ptr(), "local owned state must carry the created raw handle");
+                assert_eq!(*device, handle.device(), "local owned state must carry the handle device");
+            },
+            state => panic!("expected local owned state variant, got {}", state_variant_name(state)),
+        }
     }
 
     #[test]
@@ -285,11 +477,43 @@ mod tests {
     }
 
     #[test]
-    fn test_for_runtime_device_matches_runtime_device() {
-        let runtime = cudf::Runtime::builder().build().expect("runtime");
-        let handle = ResourceHandle::for_runtime_device(&runtime).expect("resource handle");
+    fn test_for_runtime_matches_runtime_device() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("resource handle");
 
         assert_eq!(handle.device(), runtime.device().ordinal() as i32);
+    }
+
+    #[test]
+    fn test_for_runtime_retains_execution_owner() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        assert_eq!(Arc::strong_count(&runtime), 1, "test setup should hold one runtime owner");
+
+        let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("resource handle");
+        assert_eq!(handle.device(), runtime.device().ordinal() as i32);
+        assert_eq!(Arc::strong_count(&runtime), 2, "runtime-bound handle should retain the runtime owner");
+
+        drop(handle);
+        assert_eq!(Arc::strong_count(&runtime), 1, "dropping the handle should release the retained runtime owner");
+    }
+
+    #[test]
+    fn test_for_runtime_uses_runtime_shim_instead_of_direct_cugraph_ownership() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+
+        let handle = ResourceHandle::for_runtime(runtime).expect("resource handle");
+
+        match &handle.state {
+            ResourceHandleState::RuntimeBound { raw, device, shim, .. } => {
+                assert!(!raw.is_null(), "runtime-bound state must retain the live cuGraph handle pointer");
+                assert_eq!(*device, handle.device(), "runtime-bound state must carry the handle device");
+                assert!(
+                    shim.device >= 0,
+                    "runtime-bound state must retain the native shim that owns the coupled RAFT + cuGraph lifetime"
+                );
+            },
+            state => panic!("expected runtime-bound state variant, got {}", state_variant_name(state)),
+        }
     }
 
     #[test]
@@ -310,6 +534,13 @@ mod tests {
         // new current-device based constructor path.
         let wrapped = unsafe { ResourceHandle::from_raw_resource_handle(raw) }.expect("from_raw_resource_handle");
         assert_eq!(wrapped.device(), current.ordinal() as i32);
+        match &wrapped.state {
+            ResourceHandleState::ExternalBorrowed { raw: state_raw, device } => {
+                assert_eq!(*state_raw, raw);
+                assert_eq!(*device, current.ordinal() as i32);
+            },
+            state => panic!("expected external borrowed state variant, got {}", state_variant_name(state)),
+        }
     }
 
     #[test]
@@ -361,7 +592,12 @@ mod tests {
         // SAFETY: ownership of `raw` is intentionally transferred to the wrapper.
         let adopted = unsafe { ResourceHandle::adopt_raw_resource_handle(raw) }.expect("adopt_raw_resource_handle");
         assert_eq!(adopted.as_ptr(), raw);
-        assert!(adopted.owned, "adopted handle should transfer destruction to Rust");
+        match &adopted.state {
+            ResourceHandleState::ExternalOwned { raw: state_raw, .. } => {
+                assert_eq!(*state_raw, raw, "external owned state must retain the adopted raw handle");
+            },
+            state => panic!("expected external owned state variant, got {}", state_variant_name(state)),
+        }
     }
 
     #[test]
@@ -373,11 +609,21 @@ mod tests {
     #[test]
     fn test_into_raw_resource_handle_releases_rust_ownership() {
         let handle = ResourceHandle::new().expect("resource handle");
-        let raw = handle.into_raw_resource_handle();
+        let raw = handle.into_raw_resource_handle().expect("into_raw_resource_handle");
         assert!(!raw.is_null(), "into_raw_resource_handle should return the underlying pointer");
 
         // SAFETY: ownership was intentionally released from `handle` above.
         unsafe { cugraph_free_resource_handle(raw) };
+    }
+
+    #[test]
+    fn test_runtime_bound_into_raw_resource_handle_is_rejected() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let handle = ResourceHandle::for_runtime(runtime).expect("resource handle");
+
+        let err = handle.into_raw_resource_handle().expect_err("runtime-bound handle should reject raw extraction");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "ResourceHandle::into_raw_resource_handle");
     }
 
     #[test]

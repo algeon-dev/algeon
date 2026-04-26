@@ -14,8 +14,9 @@
 //!     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
 //! };
 //!
-//! let runtime = cudf::Runtime::new().unwrap();
-//! let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+//! let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
+//! let handle =
+//!     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
 //!
 //! let src = runtime.series(&[0i32, 1, 2, 3]).unwrap();
 //! let dst = runtime.series(&[1i32, 2, 3, 0]).unwrap();
