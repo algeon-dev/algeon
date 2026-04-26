@@ -66,10 +66,11 @@ runs.
   outcomes and the exact completed-plan disposition.
   [GPU coverage validation](./integration/gpu-coverage-validation.mdx) turns
   that into a question you can ask before a query runs:
-  `SELECT * FROM nexus_explain_coverage('<sql>')` returns the verdict and the
-  candidate evidence as machine-readable JSON. Errors cross the DataFusion
-  boundary as typed values with stable identity rather than log text, a surface
-  application code and agents can consume directly.
+  `SELECT * FROM nexus_explain_coverage('<sql>')` returns shared summary and
+  candidate evidence, including remedies; Flight SQL exposes the same result as
+  `EXPLAIN GPU <sql>`. Errors cross the DataFusion boundary as typed values with
+  stable identity rather than log text, a surface application code and agents
+  can consume directly.
 - **Bounded GPU memory.** Bounded mode plans each query against a GPU memory
   budget: shapes without a provable memory contract are rejected at planning
   time, and admitted queries receive their reservation before execution.

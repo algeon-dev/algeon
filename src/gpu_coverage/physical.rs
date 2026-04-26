@@ -2,15 +2,19 @@
 
 use datafusion::physical_plan::ExecutionPlan;
 
-use super::model::{
-    QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCandidateSelectionOutcome, QueryGpuCugraphCall,
-    QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
+use super::{
+    model::{
+        QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCandidateSelectionOutcome, QueryGpuCugraphCall,
+        QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
+    },
+    remedy::{capability_remedy, cost_remedy},
 };
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphAlgoExec;
 use crate::{
     capability::CapabilityReason,
     final_plan_observation::FinalPlanObservation,
+    native_report::candidate_shape_family,
     report::{CandidateOutcome, PlanningReport},
 };
 
@@ -47,26 +51,32 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
         .map(|outcome| match outcome {
             CandidateOutcome::Selected { candidate } => QueryGpuCandidateOutcome {
                 selection: QueryGpuCandidateSelectionOutcome::Selected,
+                candidate_family: candidate_shape_family(candidate),
                 reason_code: None,
                 reason_kind: None,
                 detail: candidate.shape.clone(),
                 category: None,
+                remedy: None,
                 cost_evidence: None,
             },
             CandidateOutcome::NotSupported { candidate, capability_reason } => QueryGpuCandidateOutcome {
                 selection: QueryGpuCandidateSelectionOutcome::NotSupported,
+                candidate_family: candidate_shape_family(candidate),
                 reason_code: Some(capability_reason.code().to_string()),
                 reason_kind: Some(capability_reason_kind(*capability_reason)),
                 detail: candidate.shape.clone(),
                 category: Some(capability_reason.triage_code().as_str().to_string()),
+                remedy: Some(capability_remedy(*capability_reason)),
                 cost_evidence: None,
             },
             CandidateOutcome::NotSelectedByCost { candidate, cost_reason, evidence } => QueryGpuCandidateOutcome {
                 selection: QueryGpuCandidateSelectionOutcome::NotSelectedByCost,
+                candidate_family: candidate_shape_family(candidate),
                 reason_code: Some(cost_reason.code().to_string()),
                 reason_kind: Some(QueryGpuCandidateReasonKind::Cost),
                 detail: candidate.shape.clone(),
                 category: Some("cost".to_string()),
+                remedy: Some(cost_remedy(*cost_reason)),
                 cost_evidence: Some(evidence.clone()),
             },
         })

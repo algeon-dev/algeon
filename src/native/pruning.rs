@@ -295,7 +295,7 @@ pub(super) fn validate_pruning_only_parquet_predicate(
     }
 }
 
-pub(super) fn scan_predicate_exactly_matches_filter(
+pub(crate) fn scan_predicate_exactly_matches_filter(
     parquet_source: &ParquetSource,
     filter: Option<&FilterExec>,
 ) -> bool {

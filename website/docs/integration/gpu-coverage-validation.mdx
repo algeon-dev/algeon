@@ -20,51 +20,65 @@ On a session with the Nexus native optimizer installed, call the table function
 with one query string literal:
 
 ```sql
-SELECT overall,
-       final_disposition,
-       native_fragment_count,
-       explicit_gpu_island_count,
-       datafusion_boundary_count,
-       host_materialization_count,
-       confidence,
-       planning_did_io,
-       candidate_outcome_count,
-       runtime_caveat_count,
+SELECT row_kind,
+       gpu_path,
+       candidate_shape,
+       reason_code,
+       remedy_code,
+       remedy_kind,
+       remedy,
        coverage_json
 FROM nexus_explain_coverage('SELECT l_returnflag, sum(l_quantity)
                              FROM lineitem GROUP BY l_returnflag');
 ```
 
-The function returns one row.
+The table function returns one `summary` row followed by one `candidate` row
+per native-planning outcome. The Flight SQL server accepts the same projection
+without a string-literal escape layer:
+
+```sql
+EXPLAIN GPU SELECT l_returnflag, sum(l_quantity)
+FROM lineitem GROUP BY l_returnflag;
+
+EXPLAIN GPU FORMAT JSON SELECT l_returnflag, sum(l_quantity)
+FROM lineitem GROUP BY l_returnflag;
+```
+
+`VERBOSE` is accepted as the complete row mode. `FORMAT JSON` uses the same
+Arrow schema but returns only the summary row, whose `coverage_json` contains
+all candidate evidence. `EXPLAIN GPU` is Flight SQL statement-query syntax; it
+cannot be prepared or sent to an update endpoint. Both the UDTF and Flight
+schema carry `datafusion_nexus.explain_gpu.schema_version=1` in Arrow schema
+metadata so clients can identify this shared row contract without inspecting
+its columns.
 
 | Column | Meaning |
 | --- | --- |
-| `overall` | `no_cpu_in_planned_path`, `partial_gpu_planned`, `cpu_only`, or `rejected`. |
-| `final_disposition` | Exact final result: `datafusion`, `native`, `mixed`, or terminal `rejected`. |
-| `native_fragment_count` | Number of recognized Nexus native execution fragments. |
-| `explicit_gpu_island_count` | Number of required explicit GPU operations, such as a cuGraph plan node. |
-| `datafusion_boundary_count` | Host DataFusion execution boundaries around GPU work. |
-| `host_materialization_count` | GPU-to-host Arrow result materializations. This does not by itself make a plan mixed. |
-| `confidence` | Always `plan_time_only`. |
-| `planning_did_io` | Whether planning inspected a source that required planning-time I/O. |
-| `candidate_outcome_count` | Number of relational candidate-selection diagnostics in `coverage_json`. |
-| `runtime_caveat_count` | Number of runtime caveats in `coverage_json`. |
-| `coverage_json` | The complete structured result, including configuration stamps and candidate evidence. |
+| `query_id` | Flight SQL query identifier; null for an embedded UDTF call with no server query. |
+| `row_kind` | `summary` for final-plan coverage or `candidate` for one native candidate-selection outcome. |
+| `gpu_path` | `native`, `partial_native`, `cpu`, or terminal `rejected`. |
+| `gpu_fragments`, `cpu_boundaries` | Summary-row counts for GPU fragments and DataFusion CPU boundaries. |
+| `physical_root`, `post_native_plan_root` | Summary-row physical-plan roots. `physical_root` is the authoritative pre-native root captured by the retained optimizer diagnostics (null when no native optimizer diagnostic exists); `post_native_plan_root` is the completed executable plan's root. |
+| `candidate_shape`, `candidate_family`, `outcome` | Candidate-row shape, stable shape family, and selection (`selected`, `not_supported`, or `not_selected_by_cost`). The summary outcome is `accepted_replaced`, `retained_datafusion`, or `rejected_before_execution`. |
+| `reason_code`, `unsupported_category` | Stable candidate or terminal-rejection reason and its triage category. |
+| `remedy_code`, `remedy_kind`, `remedy` | Stable actionable advice for a non-selected candidate. Kinds include `user_action`, `config_action`, `engine_gap`, `cudf_rs_gap`, and `cpu_preferred`. |
+| `detail_json` | Summary metadata or candidate detail and cost evidence. |
+| `coverage_json` | The complete structured result on the summary row; null on candidate rows. |
 
 Validation accepts exactly one query statement. Empty input, multiple
 statements, non-query statements, and direct or view-indirect recursive calls
 to `nexus_explain_coverage` return a structured terminal result.
 
-## Final disposition and overall verdict
+## Final disposition and GPU path
 
 The final disposition is derived by walking the executable final physical plan.
 It is not inferred from whether an optimizer attempted a native rewrite.
 
-| Final disposition | Overall verdict | Meaning |
+| Final disposition | `gpu_path` | Meaning |
 | --- | --- | --- |
-| `native` | `no_cpu_in_planned_path` | The planned path contains no known DataFusion CPU execution. GPU fragments and explicit GPU islands are counted separately. |
-| `mixed` | `partial_gpu_planned` | The same executable plan contains GPU runtime work and at least one DataFusion CPU boundary. |
-| `datafusion` | `cpu_only` | The executable plan has no selected GPU runtime node. |
+| `native` | `native` | The planned path contains no known DataFusion CPU execution. GPU fragments and explicit GPU islands are counted together. |
+| `mixed` | `partial_native` | The same executable plan contains GPU runtime work and at least one DataFusion CPU boundary. |
+| `datafusion` | `cpu` | The executable plan has no selected GPU runtime node. |
 | `rejected` | `rejected` | Planning returned no executable plan. |
 
 `rejected` includes the phase, stable `reason_code`, retryability, and safe
@@ -86,7 +100,10 @@ values:
 | `not_supported` | The exact relational candidate is outside the native capability contract. | `reason_code`, `reason_kind`, candidate shape (`detail`), and category. |
 | `not_selected_by_cost` | The candidate is native-capable, but an enabled preference rule retained the DataFusion plan. | The same fields plus `cost_evidence` projected from native plan-preference facts. |
 
-These are independent from `final_disposition`. A report can contain candidate
+Every candidate carries its stable `candidate_family`; every non-selected
+candidate also carries `remedy_code`, `remedy_kind`, and human-readable
+`remedy` both in its table row and in `coverage_json`. These
+are independent from `final_disposition`. A report can contain candidate
 diagnostics while the final plan is native because another selected candidate
 covers the executable path. Conversely, a `not_supported` or
 `not_selected_by_cost` outcome normally produces an executable DataFusion plan,
@@ -139,6 +156,9 @@ match coverage.final_disposition {
                 outcome.category.as_deref().unwrap_or("absent"),
                 outcome.detail,
             );
+            if let Some(remedy) = outcome.remedy {
+                eprintln!("{} {}: {}", remedy.code, remedy.kind.as_str(), remedy.guidance);
+            }
         }
     }
     FinalPlanDisposition::Rejected => {

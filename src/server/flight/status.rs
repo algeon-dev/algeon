@@ -59,6 +59,11 @@ pub(super) fn verify_flight_info_plan(
     match ticket_kind {
         StatementTicketKind::Statement => verify_statement_query_plan(plan),
         StatementTicketKind::PreparedStatement => verify_prepared_query_plan(plan),
+        StatementTicketKind::ExplainGpuRows | StatementTicketKind::ExplainGpuJson => Err(Error::new(
+            ErrorCode::Internal,
+            "datafusion_nexus.server.flight.get_flight_info_statement.explain_gpu",
+            "EXPLAIN GPU must bypass ordinary Flight SQL logical-plan verification",
+        )),
     }
 }
 

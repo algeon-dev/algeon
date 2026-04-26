@@ -76,12 +76,12 @@ For ad-hoc SQL, validate against the same catalog and server configuration that
 will execute the query:
 
 ```sql
-SELECT overall,
-       final_disposition,
-       native_fragment_count,
-       explicit_gpu_island_count,
-       datafusion_boundary_count,
-       candidate_outcome_count,
+SELECT row_kind,
+       gpu_path,
+       candidate_shape,
+       reason_code,
+       remedy_code,
+       remedy,
        coverage_json
 FROM nexus_explain_coverage('
   SELECT l_returnflag, sum(l_quantity)
@@ -92,11 +92,11 @@ FROM nexus_explain_coverage('
 ');
 ```
 
-`final_disposition` describes the exact planned path: `datafusion`, `native`,
-or `mixed`; `rejected` means planning returned no executable plan. Candidate
-outcomes in `coverage_json` are separate diagnostics: `not_supported` is a
-capability miss, while `not_selected_by_cost` records an enabled preference
-decision with structured cost evidence. `no_cpu_in_planned_path` is the
-strongest plan-time result. Read `runtime_caveats` too: admission,
-data-dependent memory, and device-side graph validation are execution-time
-contracts.
+The `summary` row reports `gpu_path`: `native`, `partial_native`, `cpu`, or
+`rejected`. Candidate rows make the stable reason and remedy first-class
+columns; `coverage_json` on the summary retains projected candidate
+source-capability and cost evidence, plus runtime and configuration evidence.
+Flight SQL users can write `EXPLAIN GPU <query>` for
+the identical schema without escaping the query into a SQL literal. Read
+`runtime_caveats` too: admission, data-dependent memory, and device-side graph
+validation are execution-time contracts.

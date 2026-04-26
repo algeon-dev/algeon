@@ -235,21 +235,19 @@ candidate selection evidence and the disposition of the exact final plan. You
 can ask the question before running anything:
 
 ```sql
-SELECT overall, final_disposition,
-       native_fragment_count, explicit_gpu_island_count,
-       datafusion_boundary_count, candidate_outcome_count, coverage_json
+SELECT row_kind, gpu_path, candidate_shape,
+       reason_code, remedy_code, remedy, coverage_json
 FROM nexus_explain_coverage('SELECT l_returnflag, sum(l_quantity)
                              FROM lineitem GROUP BY l_returnflag');
 ```
 
-The verdict comes back as columns and JSON, not prose: `overall` is one of
-`no_cpu_in_planned_path`, `partial_gpu_planned`, `cpu_only`, or `rejected`;
-`final_disposition` is `datafusion`, `native`, `mixed`, or terminal `rejected`.
-The JSON keeps non-selected candidate outcomes distinct: `not_supported` names
-an exact capability miss, while `not_selected_by_cost` includes structured cost
-evidence. A capability miss is not itself a planning error. Errors cross the
-DataFusion boundary the same way — as typed values with stable identity rather
-than log text.
+The summary and candidate rows come back as columns and JSON, not prose:
+`gpu_path` is `native`, `partial_native`, `cpu`, or `rejected`, while each
+non-selected candidate carries a stable reason and actionable remedy. The
+summary JSON retains the complete evidence; Flight SQL users can request the
+same projection with `EXPLAIN GPU <query>`. A capability miss is not itself a
+planning error. Errors cross the DataFusion boundary the same way — as typed
+values with stable identity rather than log text.
 
 This matters for the engineers operating the system, and it matters just as
 much for the agents increasingly sitting between users and data. An agent

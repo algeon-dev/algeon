@@ -201,27 +201,22 @@ async fn validate_query_reports_capability_misses_without_terminal_rejection() {
     assert_eq!(cpu.overall, QueryGpuCoverageOverall::CpuOnly);
     assert_eq!(cpu.final_disposition, FinalPlanDisposition::DataFusion);
     assert_eq!(cpu.domains.native_fragment_count, 0);
-    assert!(
-        cpu.candidate_outcomes
-            .iter()
-            .any(|outcome| outcome.selection == QueryGpuCandidateSelectionOutcome::NotSupported
-                && outcome.reason_code.as_deref() == Some(CapabilityReason::UnsupportedExpression.code())
-                && outcome.reason_kind == Some(QueryGpuCandidateReasonKind::Expression))
-    );
+    assert!(cpu.candidate_outcomes.iter().any(|outcome| outcome.selection
+        == QueryGpuCandidateSelectionOutcome::NotSupported
+        && outcome.reason_code.as_deref() == Some(CapabilityReason::UnsupportedExpression.code())
+        && outcome.reason_kind == Some(QueryGpuCandidateReasonKind::Expression)
+        && outcome.remedy.as_ref().is_some_and(|remedy| remedy.code == "rewrite_expression")));
 
     let unsupported = validate_query(&ctx, "SELECT array[1, 2] AS values").await.unwrap();
     assert_eq!(unsupported.overall, QueryGpuCoverageOverall::CpuOnly);
     assert_eq!(unsupported.final_disposition, FinalPlanDisposition::DataFusion);
     assert_eq!(unsupported.domains.native_fragment_count, 0);
     assert_eq!(unsupported.domains.datafusion_boundary_count, 0);
-    assert!(
-        unsupported
-            .candidate_outcomes
-            .iter()
-            .any(|outcome| outcome.selection == QueryGpuCandidateSelectionOutcome::NotSupported
-                && outcome.reason_code.as_deref() == Some(CapabilityReason::UnsupportedType.code())
-                && outcome.reason_kind == Some(QueryGpuCandidateReasonKind::ArrowType))
-    );
+    assert!(unsupported.candidate_outcomes.iter().any(|outcome| outcome.selection
+        == QueryGpuCandidateSelectionOutcome::NotSupported
+        && outcome.reason_code.as_deref() == Some(CapabilityReason::UnsupportedType.code())
+        && outcome.reason_kind == Some(QueryGpuCandidateReasonKind::ArrowType)
+        && outcome.remedy.as_ref().is_some_and(|remedy| remedy.code == "cast_or_exclude_type")));
 }
 
 #[test]
@@ -235,9 +230,11 @@ fn candidate_outcomes_retain_selected_candidates_without_selection_reasons() {
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].selection, QueryGpuCandidateSelectionOutcome::Selected);
     assert_eq!(outcomes[0].detail, "ProjectionExec");
+    assert_eq!(outcomes[0].candidate_family, "other_local_parquet_input");
     assert_eq!(outcomes[0].reason_code, None);
     assert_eq!(outcomes[0].reason_kind, None);
     assert_eq!(outcomes[0].category, None);
+    assert_eq!(outcomes[0].remedy, None);
     assert_eq!(outcomes[0].cost_evidence, None);
 }
 
@@ -272,6 +269,22 @@ fn candidate_outcomes_classify_cost_decisions_as_cost() {
     assert_eq!(outcomes[0].reason_kind, Some(QueryGpuCandidateReasonKind::Cost));
     assert_eq!(outcomes[0].category.as_deref(), Some("cost"));
     assert_eq!(outcomes[0].reason_code.as_deref(), Some("native_small_selective_topk_not_selected_by_cost"));
+    assert_eq!(outcomes[0].remedy.as_ref().map(|remedy| remedy.code), Some("keep_cpu_for_small_selective_work"));
+}
+
+#[test]
+fn candidate_outcomes_retain_shape_families_for_unsupported_candidates() {
+    let report = PlanningReport::from_outcomes([CandidateOutcome::NotSupported {
+        candidate: GpuCandidate::new("UnsupportedNativePhysicalPlan", 1),
+        capability_reason: CapabilityReason::UnsupportedExpression,
+    }]);
+
+    let outcomes = candidate_outcomes_from_report(&report);
+
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].selection, QueryGpuCandidateSelectionOutcome::NotSupported);
+    assert_eq!(outcomes[0].candidate_family, "unsupported_native_physical_plan");
+    assert_eq!(outcomes[0].reason_kind, Some(QueryGpuCandidateReasonKind::Expression));
 }
 
 #[tokio::test]
@@ -344,20 +357,27 @@ async fn validate_query_concurrent_calls_do_not_share_retained_rule_state() {
         outcome.selection == QueryGpuCandidateSelectionOutcome::Selected
             && outcome.reason_code.is_none()
             && outcome.reason_kind.is_none()
+            && !outcome.candidate_family.is_empty()
     }));
+    assert!(native.input_physical_plan_root.is_some(), "coverage={native:?}");
+    assert!(native.input_physical_plan_shape.is_some(), "coverage={native:?}");
     assert!(native.to_json()["candidate_outcomes"].as_array().is_some_and(|outcomes| {
         outcomes.iter().any(|outcome| {
             outcome["outcome"].as_str() == Some("selected")
                 && outcome["reason_code"].is_null()
                 && outcome["reason_kind"].is_null()
+                && outcome["candidate_family"].as_str().is_some_and(|family| !family.is_empty())
                 && outcome["category"].is_null()
+                && outcome["remedy_code"].is_null()
+                && outcome["remedy_kind"].is_null()
+                && outcome["remedy"].is_null()
                 && outcome["cost_evidence"].is_null()
         })
     }));
     assert_eq!(cpu.overall, QueryGpuCoverageOverall::CpuOnly);
-    assert!(
-        cpu.candidate_outcomes.iter().any(|outcome| outcome.reason_code.as_deref() == Some("unsupported_expression"))
-    );
+    assert!(cpu.candidate_outcomes.iter().any(|outcome| {
+        outcome.reason_code.as_deref() == Some("unsupported_expression") && !outcome.candidate_family.is_empty()
+    }));
 }
 
 #[test]
@@ -418,6 +438,7 @@ fn generic_cpu_parent_over_native_fragment_is_partial() {
         Vec::new(),
         Vec::new(),
         false,
+        None,
     );
 
     assert!(matches!(coverage.overall, QueryGpuCoverageOverall::PartialGpuPlanned { .. }));
@@ -572,6 +593,7 @@ mod cugraph {
             Vec::new(),
             super::physical::cugraph_calls(plan.as_ref()),
             false,
+            None,
         );
 
         assert_eq!(coverage.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);
@@ -594,6 +616,7 @@ mod cugraph {
             Vec::new(),
             super::physical::cugraph_calls(plan.as_ref()),
             false,
+            None,
         );
 
         assert!(matches!(coverage.overall, QueryGpuCoverageOverall::PartialGpuPlanned { .. }));
@@ -616,6 +639,7 @@ mod cugraph {
             Vec::new(),
             super::physical::cugraph_calls(plan.as_ref()),
             false,
+            None,
         );
 
         assert_eq!(coverage.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);

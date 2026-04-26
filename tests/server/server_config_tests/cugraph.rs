@@ -29,15 +29,21 @@ async fn server_session_exposes_gpu_coverage_table_function() {
     );
 
     let batches = ctx
-        .sql("SELECT overall, coverage_json FROM nexus_explain_coverage('SELECT 1')")
+        .sql(
+            "SELECT row_kind, gpu_path, coverage_json \
+             FROM nexus_explain_coverage('SELECT 1') \
+             WHERE row_kind = 'summary'",
+        )
         .await
         .unwrap()
         .collect()
         .await
         .unwrap();
     assert_eq!(batches[0].num_rows(), 1);
-    let json: serde_json::Value = serde_json::from_str(batch_string_value(&batches[0], 1)).unwrap();
-    assert_eq!(json["overall"]["verdict"], batch_string_value(&batches[0], 0));
+    assert_eq!(batch_string_value(&batches[0], 0), "summary");
+    assert_eq!(batch_string_value(&batches[0], 1), "native");
+    let json: serde_json::Value = serde_json::from_str(batch_string_value(&batches[0], 2)).unwrap();
+    assert_eq!(json["overall"]["verdict"], "no_cpu_in_planned_path");
 }
 
 #[cfg(feature = "cugraph")]

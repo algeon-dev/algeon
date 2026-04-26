@@ -33,7 +33,8 @@ feature adds SQL-visible `cugraph_*` table functions on these surfaces, and the
 5. Before shipping a query, check whether its planned path stays on the GPU —
    and why not, if it doesn't — with
    [GPU coverage validation](./gpu-coverage-validation.mdx)
-   (`nexus_explain_coverage` in SQL, `validate_query` in Rust).
+   (`nexus_explain_coverage` in embedded SQL, `EXPLAIN GPU` through Flight SQL,
+   and `validate_query` in Rust).
 6. At your application boundary, enrich errors that carry a typed Nexus source,
    then keep your existing policy for ordinary DataFusion failures. See
    [Handling Errors](./handling-errors.mdx).

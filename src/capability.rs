@@ -121,6 +121,52 @@ pub enum CapabilityReason {
 }
 
 impl CapabilityReason {
+    /// Every stable capability reason emitted by native planning.
+    ///
+    /// Internal diagnostics projections use this list to assert that a new
+    /// reason cannot accidentally ship without actionable guidance.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 38] = [
+        Self::UnsupportedOperator,
+        Self::UnsupportedExpression,
+        Self::UnsupportedType,
+        Self::NativeSortPreservingMergeUnsupported,
+        Self::NativeDistributedAggregateUnsupported,
+        Self::NativePartitionPreservingSortUnsupported,
+        Self::NativeBoundedJoinUnsupported,
+        Self::NativeAdaptivePipelineUnsupported,
+        Self::NativeOrderedOutputUnsupported,
+        Self::NativeSourceNonLocalObjectStore,
+        Self::NativeSourcePartitionColumns,
+        Self::NativeSourceExprAdapter,
+        Self::NativeSourceParquetFileReaderFactory,
+        Self::NativeSourceScanLimit,
+        Self::NativeSourcePreserveOrder,
+        Self::NativeSourceOutputOrdering,
+        Self::NativeSourcePushedDownParquetPredicate,
+        Self::NativeSourceEmpty,
+        Self::NativeSourcePartitionValues,
+        Self::NativeSourceByteRange,
+        Self::NativeSourceFileOrdering,
+        Self::NativeSourceRowSelection,
+        Self::NativeSourceSchemaMapping,
+        Self::TableFormatUnsupported,
+        Self::TableFormatPlanningFailed,
+        Self::IcebergNonParquetDataFile,
+        Self::IcebergDeleteFilesUnsupported,
+        Self::IcebergFieldIdMappingUnsupported,
+        Self::IcebergNameMappingUnsupported,
+        Self::IcebergNestedProjectionUnsupported,
+        Self::IcebergPartitionTransformUnsupported,
+        Self::IcebergResidualPredicateUnsupported,
+        Self::IcebergRowSelectionUnsupported,
+        Self::IcebergObjectStoreReadUnsupported,
+        Self::IcebergFileIoSourceAccessUnverified,
+        Self::IcebergSnapshotUnsupported,
+        Self::IcebergEncryptedFileUnsupported,
+        Self::IcebergScalarValueUnsupported,
+    ];
+
     /// Stable snake-case reason code used by reports and tests.
     pub const fn code(self) -> &'static str {
         match self {

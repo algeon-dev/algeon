@@ -40,21 +40,43 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
             planning_lease.fail("planning", captured);
             return Err(status);
         }
+        let explain_gpu = match parse_explain_gpu(&sql) {
+            Ok(statement) => statement,
+            Err(error) => {
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                log_statement_status(&query_id, "planning", planning_started_at, &status);
+                planning_lease.fail("planning", captured);
+                return Err(status);
+            },
+        };
         drop(_query_enter);
-        let info = match self
-            .statement_flight_info(
+        let descriptor = request.into_inner();
+        let info_result = if let Some(explain_gpu) = explain_gpu {
+            self.explain_gpu_flight_info(
+                planning_lease,
+                query_id.clone(),
+                explain_gpu.inner_sql,
+                explain_gpu.output_mode,
+                correlation_id.clone(),
+                descriptor,
+                planning_started_at,
+            )
+        } else {
+            self.statement_flight_info(
                 planning_lease,
                 query_id.clone(),
                 sql,
                 correlation_id.clone(),
-                request.into_inner(),
+                descriptor,
                 planning_started_at,
                 StatementTicketKind::Statement,
                 None,
             )
             .instrument(query_span.clone())
             .await
-        {
+        };
+        let info = match info_result {
             Ok(info) => info,
             Err(status) => {
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
@@ -112,6 +134,16 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                 return Err(status);
             },
         };
+        if let Some(error) = explain_gpu_endpoint_error(
+            &sql,
+            "datafusion_nexus.server.flight.get_flight_info_prepared_statement.explain_gpu",
+            "EXPLAIN GPU cannot be executed through a prepared statement; use the statement query endpoint",
+        ) {
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.fail("planning", captured);
+            return Err(status);
+        }
         self.coordinator.set_sql(&query_id, sql.clone());
 
         let planning_started_at = Instant::now();
@@ -509,6 +541,16 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
             planning_lease.fail("planning", captured);
             return Err(status);
         }
+        if let Some(error) = explain_gpu_endpoint_error(
+            &sql,
+            "datafusion_nexus.server.flight.do_put_statement_update.explain_gpu",
+            "EXPLAIN GPU is a statement-query operation; use the Flight SQL statement query endpoint",
+        ) {
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.fail("planning", captured);
+            return Err(status);
+        }
         self.execute_update_sql(planning_lease, sql, correlation_id, UpdateStatementKind::Statement).await
     }
 
@@ -555,6 +597,16 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                 return Err(status);
             },
         };
+        if let Some(error) = explain_gpu_endpoint_error(
+            &sql,
+            "datafusion_nexus.server.flight.do_put_prepared_statement_update.explain_gpu",
+            "EXPLAIN GPU is a statement-query operation and cannot be executed through a prepared update",
+        ) {
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.fail("planning", captured);
+            return Err(status);
+        }
         self.coordinator.set_sql(&query_id, sql.clone());
 
         // DataGrip-class clients may re-run the held handle after executing a
@@ -608,6 +660,16 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         let _query_enter = query_span.enter();
         if query.transaction_id.is_some() {
             let (status, captured) = adapter_error_to_status_and_capture(flight_sql_transactions_unsupported_error());
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("planning", &status, captured);
+            return Err(status);
+        }
+        if let Some(error) = explain_gpu_endpoint_error(
+            &sql,
+            "datafusion_nexus.server.flight.do_action_create_prepared_statement.explain_gpu",
+            "EXPLAIN GPU cannot be prepared; use the Flight SQL statement query endpoint",
+        ) {
+            let (status, captured) = adapter_error_to_status_and_capture(error);
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
             planning_lease.finish_captured("planning", &status, captured);
             return Err(status);
@@ -844,4 +906,11 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
     }
 
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
+}
+
+fn explain_gpu_endpoint_error(sql: &str, operation: &'static str, message: &'static str) -> Option<Error> {
+    match parse_explain_gpu(sql) {
+        Ok(Some(_)) | Err(_) => Some(Error::new(ErrorCode::InvalidRequest, operation, message)),
+        Ok(None) => None,
+    }
 }
