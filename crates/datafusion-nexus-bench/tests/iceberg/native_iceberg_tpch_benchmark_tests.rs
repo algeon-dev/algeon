@@ -1,9 +1,3 @@
-// Integration tests share the benchmark binary sources. Allow unused helpers that
-// only the CLI path exercises.
-#[allow(dead_code)]
-#[path = "../../src/bin/native_iceberg_tpch_benchmark.rs"]
-mod native_iceberg_tpch_benchmark;
-
 use std::{collections::HashMap, sync::Arc};
 
 use arrow::{
@@ -20,16 +14,19 @@ use datafusion_nexus::{
         TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatReadCapability, TableFormatScanPlan,
     },
 };
-use datafusion_nexus_workloads::tpch::TPCH_QUERIES;
-use native_iceberg_tpch_benchmark::{
-    BenchmarkTimeoutCategory, IcebergTpchBenchmarkConfig, IcebergTpchBenchmarkReport, IcebergTpchBenchmarkRow,
-    native_iceberg_smoke_report::{
-        self, CpuBaselineSessionProfile, IcebergNativeSmokeReportRow, NativeExecutionProfile, ObjectStoreStagingMode,
+use datafusion_nexus_bench::{
+    iceberg_smoke as native_iceberg_smoke_report,
+    iceberg_smoke::{
+        CpuBaselineSessionProfile, IcebergNativeSmokeReportRow, NativeExecutionProfile, ObjectStoreStagingMode,
         ObjectStoreStagingStatus, ObjectStoreStagingSummary,
     },
-    set_iteration_report_elapsed_ms, validate_full_sf1_staged_s3_gate_for_config, write_benchmark_tsv_header,
-    write_benchmark_tsv_row,
+    iceberg_tpch_benchmark::{
+        self as native_iceberg_tpch_benchmark, BenchmarkTimeoutCategory, IcebergTpchBenchmarkConfig,
+        IcebergTpchBenchmarkReport, IcebergTpchBenchmarkRow, set_iteration_report_elapsed_ms,
+        validate_full_sf1_staged_s3_gate_for_config, write_benchmark_tsv_header, write_benchmark_tsv_row,
+    },
 };
+use datafusion_nexus_workloads::tpch::TPCH_QUERIES;
 use nexus_query_engine::{
     mode::StatisticalAggregateExecutionMode,
     runtime::MemoryControlPolicy,

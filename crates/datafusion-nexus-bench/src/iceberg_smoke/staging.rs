@@ -35,7 +35,7 @@ pub enum ObjectStoreStagingStatus {
 }
 
 impl ObjectStoreStagingStatus {
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::NotNeeded => "not_needed",
             Self::DirectNative => "direct_s3_native",

@@ -464,10 +464,24 @@ impl QueryHandle {
                 "query service root context mutex was poisoned",
             )
         })?;
-        if let Some(context) = root_context.as_ref() {
-            let context = context.with_runtime_gpu_stream_scope(stream_scope);
+        if let Some(template) = root_context.as_ref().cloned() {
+            // Concurrent fragments under one admitted query must not share the
+            // root stream: cuDF rejects a second live query-domain budget token
+            // on the same stream. Bind each secondary acquire to a dedicated
+            // service stream while preserving the shared grant/domain.
             drop(root_context);
-            let context = context.with_query_resource_anchor(query_anchor);
+            let stream_acquire_deadline =
+                Instant::now().checked_add(self.service.config.admission_wait_timeout).unwrap_or_else(Instant::now);
+            let stream_lease = device.stream_pool().acquire_observed_with_cancellation_deadline(
+                &cancellation,
+                stream_acquire_deadline,
+                "nexus_query_engine.query_service.context.stream_acquire",
+                self.lifetime.observation.clone(),
+                stream_scope,
+            )?;
+            validate_service_stream_pool_device(device.stream_pool(), stream_lease.device())?;
+            let context =
+                template.with_owned_stream_lease(stream_lease)?.into_context().with_query_resource_anchor(query_anchor);
             self.lifetime.query_epoch.check_open(operation).map_err(|_error| self.lifetime.released_error())?;
             return Ok(TenantQueryContext { context });
         }

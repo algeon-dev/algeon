@@ -1,12 +1,21 @@
 use std::fs;
 
-/// The wall-time benchmark binary's admission env vars and TSV metadata keys
-/// are part of its public shell contract. Pin them by source so renames fail
-/// here rather than disappearing from orchestration scripts and artifacts.
+/// The wall-time benchmark's admission env vars and TSV metadata keys are
+/// part of its public shell contract. Like the other wall-time benches, the
+/// cargo binary is only a thin `run_main` wrapper; the contract lives in the
+/// implementation module (and the shared clickbench workload helpers), same
+/// as this test already pins for `report_workload/clickbench.rs`.
 #[test]
 fn native_clickbench_benchmark_admission_contract_is_stable() {
-    let src = fs::read_to_string("src/bin/native_clickbench_benchmark.rs")
-        .expect("binary source must be readable from the package root");
+    let bin_src = fs::read_to_string("src/bin/native_clickbench_benchmark.rs")
+        .expect("benchmark binary source must be readable from the package root");
+    assert!(
+        bin_src.contains("datafusion_nexus_bench::clickbench_benchmark::run_main"),
+        "benchmark binary must stay wired to clickbench_benchmark::run_main",
+    );
+
+    let src = fs::read_to_string("src/clickbench_benchmark/mod.rs")
+        .expect("benchmark module source must be readable from the package root");
     for required in [
         "CUDF_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY",
         "clickbench_native_profile_settings_from_env",
@@ -21,7 +30,7 @@ fn native_clickbench_benchmark_admission_contract_is_stable() {
         "# clickbench_benchmark_native_source_chunk_planning_mode=",
         "# clickbench_benchmark_kvikio_compat_mode=",
     ] {
-        assert!(src.contains(required), "benchmark binary missing contract surface {required}");
+        assert!(src.contains(required), "benchmark module missing contract surface {required}");
     }
 
     let workload_src = fs::read_to_string("src/report_workload/clickbench.rs")

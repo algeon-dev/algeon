@@ -107,6 +107,8 @@ const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] = &[
 mod analytical_olap;
 #[path = "native_fallback_pressure_tests/execution_reports.rs"]
 mod execution_reports;
+#[path = "native_fallback_pressure_tests/mixed_fallback.rs"]
+mod mixed_fallback;
 #[path = "native_fallback_pressure_tests/sql.rs"]
 mod sql;
 #[path = "native_fallback_pressure_tests/support.rs"]

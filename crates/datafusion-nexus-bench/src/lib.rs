@@ -4,6 +4,8 @@
 //! `datafusion-nexus-workloads` crate. This crate exposes only adapter-specific
 //! orchestration and application support; it does not re-export workloads.
 
+pub mod clickbench_benchmark;
+pub mod query_service_tpcds_stress;
 pub mod query_service_tpch_stress;
 pub mod report_metadata;
 pub mod report_workload;
@@ -15,6 +17,13 @@ pub mod stress_harness;
 
 #[cfg(feature = "cugraph")]
 pub mod cugraph_admission_stress;
+#[cfg(feature = "cugraph")]
+pub mod cugraph_sql_construction_report;
 
 #[cfg(feature = "iceberg")]
 pub mod iceberg_smoke;
+#[cfg(feature = "iceberg")]
+pub mod query_service_iceberg_stress;
+
+#[cfg(feature = "iceberg")]
+pub mod iceberg_tpch_benchmark;

@@ -28,6 +28,17 @@ SELECT COUNT(*) AS count_rows
 FROM bench
 ";
 
+// Runtime-filtered empty ROLLUP contract (defect D3).
+// The parquet is nonempty; the filter selects zero rows. CPU DataFusion still
+// emits the grand-total row; native must match and stay on the native path.
+pub(super) const SQL_FILTERED_EMPTY_ROLLUP_SUM_QUERY: &str = "
+SELECT key, SUM(payload) AS s
+FROM bench
+WHERE key > 100000
+GROUP BY ROLLUP(key)
+ORDER BY key
+";
+
 pub(super) const SQL_AVG_AGGREGATE_QUERY: &str = "
 SELECT key, AVG(m00) AS avg_m00
 FROM bench

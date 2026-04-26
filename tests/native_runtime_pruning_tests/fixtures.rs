@@ -38,6 +38,26 @@ pub(super) fn write_sorting_columns_parquet_file(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
+pub(super) fn write_filtered_empty_rollup_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from((0..32).map(|i| i % 4).collect::<Vec<_>>())),
+            Arc::new(Int64Array::from((0..32).map(|i| i as i64).collect::<Vec<_>>())),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 pub(super) fn write_row_group_pruning_parquet_file(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),

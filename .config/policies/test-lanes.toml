@@ -14,41 +14,6 @@ lane = "cpu"
 reason = "Benchmark library unit tests validate workload/report construction; benchmark GPU execution is an explicit cargo-run path."
 
 [[binary]]
-id = "datafusion-nexus-bench::bin/cpu_tpch_profile_sweep"
-lane = "cpu"
-reason = "The bin target's tests are CPU-side CLI/config checks; its named workload is explicitly CPU profiling."
-
-[[binary]]
-id = "datafusion-nexus-bench::bin/cugraph_sql_construction_report"
-lane = "cpu"
-reason = "The bin target has no Cargo-test GPU execution; report execution is an explicit cargo-run path."
-
-[[binary]]
-id = "datafusion-nexus-bench::bin/native_clickbench_benchmark"
-lane = "cpu"
-reason = "The bin target has no Cargo-test GPU execution; native benchmark execution is outside nextest."
-
-[[binary]]
-id = "datafusion-nexus-bench::bin/native_iceberg_tpch_benchmark"
-lane = "cpu"
-reason = "The bin target has no Cargo-test GPU execution; Iceberg TPCH execution is an explicit benchmark."
-
-[[binary]]
-id = "datafusion-nexus-bench::bin/query_service_iceberg_stress"
-lane = "cpu"
-reason = "The bin target has no Cargo-test GPU execution; service stress is explicit provisioned tooling."
-
-[[binary]]
-id = "datafusion-nexus-bench::bin/query_service_tpcds_stress"
-lane = "cpu"
-reason = "The bin target has no Cargo-test GPU execution; service stress is explicit provisioned tooling."
-
-[[binary]]
-id = "datafusion-nexus-bench::bin/tpcds_outlier_triage"
-lane = "cpu"
-reason = "The bin target has no Cargo-test GPU execution; triage execution is an explicit benchmark command."
-
-[[binary]]
 id = "datafusion-nexus-bench::iceberg_bin_tests"
 lane = "cpu"
 reason = "Tests validate Iceberg CLI item shapes and environment handling without contacting services or CUDA."
