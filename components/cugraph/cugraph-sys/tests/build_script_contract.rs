@@ -5,6 +5,11 @@ fn read_build_rs() -> String {
     fs::read_to_string(manifest_dir.join("build.rs")).expect("failed to read build.rs")
 }
 
+fn read_build_support_rs() -> String {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(manifest_dir.join("build_support.rs")).expect("failed to read build_support.rs")
+}
+
 fn read_cargo_toml() -> String {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     fs::read_to_string(manifest_dir.join("Cargo.toml")).expect("failed to read Cargo.toml")
@@ -92,25 +97,40 @@ fn build_rs_honors_cc_for_system_include_probing() {
 }
 
 #[test]
-fn build_rs_tracks_conda_and_prefix_env_changes_for_library_discovery() {
+fn build_rs_tracks_explicit_native_contract_env_changes() {
     let build_rs = read_build_rs();
 
-    for env_var in ["CONDA_PREFIX", "LIBRARY_PREFIX", "PREFIX"] {
+    for env_var in [
+        "CUGRAPH_NATIVE_INCLUDE_DIRS",
+        "CUGRAPH_NATIVE_LINK_DIRS",
+        "CUGRAPH_RUNTIME_LIB_DIRS",
+        "CUGRAPH_CMAKE_BUILD_DIR",
+    ] {
         assert!(
             build_rs.contains(&format!("cargo:rerun-if-env-changed={env_var}")),
-            "build.rs should rerun when {env_var} changes because fallback library discovery depends on it"
+            "build.rs should rerun when {env_var} changes because the explicit native contract depends on it"
         );
     }
 }
 
 #[test]
-fn build_rs_tracks_pkg_config_env_changes_for_discovery() {
+fn build_rs_does_not_track_discovery_fallback_env_vars() {
     let build_rs = read_build_rs();
 
-    for env_var in ["PKG_CONFIG", "PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR"] {
+    for env_var in [
+        "CUGRAPH_INCLUDE_DIR",
+        "CUGRAPH_LIBRARY_DIR",
+        "CONDA_PREFIX",
+        "LIBRARY_PREFIX",
+        "PREFIX",
+        "PKG_CONFIG",
+        "PKG_CONFIG_PATH",
+        "PKG_CONFIG_LIBDIR",
+        "PKG_CONFIG_SYSROOT_DIR",
+    ] {
         assert!(
-            build_rs.contains(&format!("cargo:rerun-if-env-changed={env_var}")),
-            "build.rs should rerun when {env_var} changes because pkg-config discovery depends on it"
+            !build_rs.contains(&format!("cargo:rerun-if-env-changed={env_var}")),
+            "build.rs should not track {env_var} because fallback discovery is no longer part of the contract"
         );
     }
 }
@@ -120,17 +140,21 @@ fn build_rs_emits_runtime_library_metadata_for_downstream_consumers() {
     let build_rs = read_build_rs();
 
     assert!(
-        build_rs.contains("cargo:metadata=runtime-lib-dir="),
-        "build.rs should emit the legacy single runtime library metadata key for downstream consumers"
-    );
-    assert!(
         build_rs.contains("cargo:metadata=runtime-lib-dirs="),
         "build.rs should emit the multi-path runtime library metadata key for downstream consumers"
+    );
+    assert!(
+        build_rs.contains("cargo:metadata=native-include-dirs="),
+        "build.rs should emit native include metadata for downstream shim compilation"
+    );
+    assert!(
+        build_rs.contains("cargo:metadata=native-link-dirs="),
+        "build.rs should emit native link metadata for downstream shim dependencies"
     );
 }
 
 #[test]
-fn downstream_build_rs_consumes_runtime_library_metadata_without_guessing_submodule_paths() {
+fn downstream_build_rs_consumes_runtime_library_metadata_without_native_guessing() {
     let build_rs = read_downstream_build_rs();
 
     assert!(
@@ -142,20 +166,49 @@ fn downstream_build_rs_consumes_runtime_library_metadata_without_guessing_submod
         "cugraph-rs/build.rs should parse DEP_CUGRAPH_RUNTIME_LIB_DIRS as an OS-native path list"
     );
     assert!(
-        !build_rs.contains("../cugraph/cpp/build"),
-        "cugraph-rs/build.rs should not guess workspace-local cuGraph build directories on its own"
+        build_rs.contains("DEP_CUGRAPH_NATIVE_INCLUDE_DIRS"),
+        "cugraph-rs/build.rs should consume the native include metadata exported by cugraph-sys"
     );
+    assert!(
+        build_rs.contains("DEP_CUGRAPH_NATIVE_LINK_DIRS"),
+        "cugraph-rs/build.rs should consume the native link metadata exported by cugraph-sys"
+    );
+    assert!(
+        !build_rs.contains("DEP_CUGRAPH_METADATA"),
+        "cugraph-rs/build.rs should consume the formal metadata keys directly instead of reparsing ad hoc metadata blobs"
+    );
+    for forbidden in ["CONDA_PREFIX", "LIBRARY_PREFIX", "PREFIX", "CUDA_HOME", "CUDA_PATH"] {
+        assert!(
+            !build_rs.contains(forbidden),
+            "cugraph-rs/build.rs should not compensate for missing native metadata via {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn build_rs_uses_cmake_export_fallback_instead_of_pkg_config_or_deps_scanning() {
+    let build_rs = read_build_rs();
+    let build_support = read_build_support_rs();
+
+    assert!(
+        build_rs.contains("CUGRAPH_CMAKE_BUILD_DIR"),
+        "build.rs should support an explicit CMake export root for native metadata resolution"
+    );
+    assert!(
+        build_support.contains("../cugraph/cpp/build"),
+        "build_support.rs should support the workspace-local CMake export root for repo-local builds"
+    );
+    assert!(!build_support.contains("pkg-config"), "build_support.rs should not fall back to pkg-config discovery");
+    assert!(!build_rs.contains("_deps"), "build.rs should not scan private dependency layout details directly");
 }
 
 #[test]
 fn include_sensitive_tests_reuse_build_support_include_resolution() {
-    for path in ["tests/api_coverage.rs", "tests/layout_header_contract.rs"] {
-        let source = read_test_source(path);
-        assert!(
-            source.contains("resolve_include_dir"),
-            "{path} should reuse build_support::resolve_include_dir so an invalid CUGRAPH_INCLUDE_DIR fails instead of silently falling back"
-        );
-    }
+    let source = read_test_source("tests/support.rs");
+    assert!(
+        source.contains("resolve_native_build_contract"),
+        "tests/support.rs should reuse build_support::resolve_native_build_contract so the test include path follows the formal native contract"
+    );
 }
 
 #[test]

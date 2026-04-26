@@ -9,9 +9,16 @@ pub fn manifest_dir() -> PathBuf {
 }
 
 pub fn include_dir() -> PathBuf {
-    let submodule_include = manifest_dir().join("../cugraph/cpp/include");
-    build_support::resolve_include_dir(std::env::var("CUGRAPH_INCLUDE_DIR").ok().as_deref(), &submodule_include)
-        .unwrap_or_else(|err| panic!("{err}"))
+    let manifest_dir = manifest_dir();
+    let contract = build_support::resolve_native_build_contract(
+        &manifest_dir,
+        std::env::var_os("CUGRAPH_NATIVE_INCLUDE_DIRS"),
+        std::env::var_os("CUGRAPH_NATIVE_LINK_DIRS"),
+        std::env::var_os("CUGRAPH_RUNTIME_LIB_DIRS"),
+        std::env::var_os("CUGRAPH_CMAKE_BUILD_DIR"),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    build_support::primary_cugraph_include_dir(&contract.native_include_dirs).unwrap_or_else(|err| panic!("{err}"))
 }
 
 pub fn strip_c_comments(source: &str) -> String {
