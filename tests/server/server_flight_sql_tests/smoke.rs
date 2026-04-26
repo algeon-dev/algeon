@@ -155,7 +155,7 @@ async fn unbounded_local_parquet_server_shutdown_allows_fresh_generation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn flight_sql_cpu_fallback_statement_never_enters_gpu_ledger() {
+async fn flight_sql_datafusion_baseline_statement_never_enters_gpu_ledger() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
@@ -175,7 +175,7 @@ async fn flight_sql_cpu_fallback_statement_never_enters_gpu_ledger() {
 
     // Case-insensitive LIKE remains a structured native expression rejection.
     // Keep this independent of regexp_replace lowering coverage so the test
-    // continues to exercise host-side CPU fallback admission, not the GPU ledger.
+    // continues to exercise DataFusion-baseline execution, not the GPU ledger.
     let flight_info = client.execute("select 'ABC' ilike 'a%' as label_match".to_string(), None).await.unwrap();
     wait_for_empty_gpu_ledger(&backend).await;
     let snapshot = backend.query_service().admission_snapshot().unwrap();
@@ -184,11 +184,11 @@ async fn flight_sql_cpu_fallback_statement_never_enters_gpu_ledger() {
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
     // Drain any async GPU pool cleanup path before reading counters so a pure
-    // CPU-fallback statement cannot race with unrelated pool bookkeeping.
+    // DataFusion-baseline statement cannot race with unrelated pool bookkeeping.
     wait_for_empty_gpu_ledger(&backend).await;
     let snapshot = backend.query_service().admission_snapshot().unwrap();
-    assert_eq!(snapshot.active_queries, 0, "DoGet CPU fallback must not occupy GPU admission: {snapshot:?}");
-    assert_eq!(snapshot.queued_queries, 0, "DoGet CPU fallback must not queue GPU admission: {snapshot:?}");
+    assert_eq!(snapshot.active_queries, 0, "DoGet DataFusion baseline must not occupy GPU admission: {snapshot:?}");
+    assert_eq!(snapshot.queued_queries, 0, "DoGet DataFusion baseline must not queue GPU admission: {snapshot:?}");
 
     drop(client);
     shutdown.cancel();

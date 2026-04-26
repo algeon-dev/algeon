@@ -2,7 +2,7 @@
 // GPU execution against tuned CPU DataFusion.
 //
 // Run separate invocations per session: native_gpu, cpu_datafusion, and
-// hybrid_cpu_preferred for CPU-preferred native plans. Each invocation registers
+// cost_declined_datafusion for native plans declined by cost. Each invocation registers
 // the TPC-DS tables once, then runs every requested query through DataFusion
 // `(warmups + iterations)` times, printing one TSV row per measured iteration.
 
@@ -45,7 +45,7 @@ use crate::report_workload::{
     tpcds::{
         NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
         TpcdsNativeProfileSettings, register_tpcds_tables_with_native_metadata,
-        tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings,
+        tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings,
         tpcds_native_analytics_optimizer_config_with_profile_settings, tpcds_native_profile_settings_from_env,
         tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
     },
@@ -99,7 +99,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
 enum Engine {
     NativeGpu,
     CpuDataFusion,
-    HybridCpuPreferred,
+    CostDeclinedDataFusion,
 }
 
 impl Engine {
@@ -107,7 +107,7 @@ impl Engine {
         match self {
             Engine::NativeGpu => "native_gpu",
             Engine::CpuDataFusion => "cpu_datafusion",
-            Engine::HybridCpuPreferred => "hybrid_cpu_preferred",
+            Engine::CostDeclinedDataFusion => "cost_declined_datafusion",
         }
     }
 }
@@ -116,7 +116,7 @@ struct BenchRuntime {
     execution_ctx: SessionContext,
     optimizer: Option<Arc<NexusNativePhysicalOptimizerRule>>,
     native_planning: Option<NativePlanningRuntime>,
-    skip_cpu_preferred: bool,
+    skip_cost_declined: bool,
 }
 
 struct NativePlanningRuntime {
@@ -155,12 +155,12 @@ struct IterOutcome {
 struct PlanningSummary {
     planning_outcome: String,
     native_runtime_started: bool,
-    cpu_preferred_reason: Option<String>,
+    cost_reason: Option<String>,
 }
 
 async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
     if let Some(native_planning) = runtime.native_planning.as_ref() {
-        return run_hybrid_cpu_preferred_once(&runtime.execution_ctx, native_planning, query).await;
+        return run_cost_declined_datafusion_once(&runtime.execution_ctx, native_planning, query).await;
     }
 
     run_query_collect(
@@ -169,27 +169,27 @@ async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
         query,
         None,
         None,
-        runtime.skip_cpu_preferred,
+        runtime.skip_cost_declined,
     )
     .await
 }
 
-async fn run_hybrid_cpu_preferred_once(
+async fn run_cost_declined_datafusion_once(
     cpu_ctx: &SessionContext,
     native_planning: &NativePlanningRuntime,
     query: &TpcdsQuery,
 ) -> IterOutcome {
-    let native_planning_summary =
-        match plan_native_preference(&native_planning.ctx, &native_planning.optimizer, query).await {
-            Ok(summary) => summary,
-            Err(outcome) => return outcome,
-        };
+    let native_planning_summary = match plan_native_cost(&native_planning.ctx, &native_planning.optimizer, query).await
+    {
+        Ok(summary) => summary,
+        Err(outcome) => return outcome,
+    };
 
-    let Some(reason) = native_planning_summary.cpu_preferred_reason.as_ref() else {
+    let Some(reason) = native_planning_summary.cost_reason.as_ref() else {
         return IterOutcome {
             wall: None,
-            outcome: "skipped_not_cpu_preferred",
-            planning_outcome: format!("gpu_preferred native_planning={}", native_planning_summary.planning_outcome),
+            outcome: "skipped_continue_native",
+            planning_outcome: format!("continue_native native_planning={}", native_planning_summary.planning_outcome),
             output_batches: None,
             output_rows: None,
             output_bytes: None,
@@ -207,14 +207,17 @@ async fn run_hybrid_cpu_preferred_once(
         cpu_ctx,
         None,
         query,
-        Some(format!("cpu_preferred reason={reason} native_planning={}", native_planning_summary.planning_outcome)),
+        Some(format!(
+            "not_selected_by_cost cost_reason={reason} native_planning={}",
+            native_planning_summary.planning_outcome
+        )),
         Some(false),
         false,
     )
     .await
 }
 
-async fn plan_native_preference(
+async fn plan_native_cost(
     ctx: &SessionContext,
     optimizer: &NexusNativePhysicalOptimizerRule,
     query: &TpcdsQuery,
@@ -267,7 +270,7 @@ async fn run_query_collect(
     query: &TpcdsQuery,
     planning_outcome_override: Option<String>,
     native_runtime_started_override: Option<bool>,
-    skip_cpu_preferred: bool,
+    skip_cost_declined: bool,
 ) -> IterOutcome {
     let started_plan = Instant::now();
     let df = match ctx.sql(query.sql).await {
@@ -314,11 +317,11 @@ async fn run_query_collect(
     let planning_outcome = planning_outcome_override.unwrap_or(planning_summary.planning_outcome);
     let physical_plan_contains_native_runtime = plan_contains_native_runtime(plan.as_ref());
     let native_runtime_started = native_runtime_started_override.unwrap_or(physical_plan_contains_native_runtime);
-    if skip_cpu_preferred && let Some(reason) = planning_summary.cpu_preferred_reason {
+    if skip_cost_declined && let Some(reason) = planning_summary.cost_reason {
         return IterOutcome {
             wall: None,
-            outcome: "cpu_preferred_not_run",
-            planning_outcome: format!("{planning_outcome} cpu_preferred_reason={reason}"),
+            outcome: "not_selected_by_cost",
+            planning_outcome: format!("{planning_outcome} cost_reason={reason}"),
             output_batches: None,
             output_rows: None,
             output_bytes: None,
@@ -331,7 +334,7 @@ async fn run_query_collect(
             failure: None,
         };
     }
-    if skip_cpu_preferred && !physical_plan_contains_native_runtime {
+    if skip_cost_declined && !physical_plan_contains_native_runtime {
         return IterOutcome {
             wall: None,
             outcome: "native_rejected_not_run",
@@ -432,46 +435,43 @@ fn planning_summary(optimizer: Option<&NexusNativePhysicalOptimizerRule>) -> Pla
     optimizer
         .and_then(|rule| rule.last_planning_diagnostics())
         .map(|diag| {
-            let rewritten = diag.report.rewritten_count();
-            let rejected = diag.report.rejected_count();
+            let selected = diag.report.selected_count();
+            let not_selected = diag.report.not_selected_count();
             let reasons = diag
                 .report
                 .outcomes()
                 .iter()
                 .filter_map(|outcome| match outcome {
-                    CandidateOutcome::Rejected { reason, .. } => Some(reason.code()),
-                    CandidateOutcome::Rewritten { .. } => None,
+                    CandidateOutcome::NotSupported { capability_reason, .. } => Some(capability_reason.code()),
+                    CandidateOutcome::NotSelectedByCost { cost_reason, .. } => Some(cost_reason.code()),
+                    CandidateOutcome::Selected { .. } => None,
                 })
                 .collect::<Vec<_>>();
             let reasons_text = reasons.join(",");
             let planning_outcome = if reasons_text.is_empty() {
-                format!("rewritten={rewritten} rejected={rejected}")
+                format!("selected={selected} not_selected={not_selected}")
             } else {
-                format!("rewritten={rewritten} rejected={rejected} reasons={reasons_text}")
+                format!("selected={selected} not_selected={not_selected} reasons={reasons_text}")
             };
             PlanningSummary {
                 planning_outcome,
-                native_runtime_started: rewritten > 0,
-                cpu_preferred_reason: reasons
-                    .iter()
-                    .copied()
-                    .find(|reason| cpu_preferred_reason_code(reason))
-                    .map(str::to_string),
+                native_runtime_started: selected > 0,
+                cost_reason: reasons.iter().copied().find(|reason| cost_reason_code(reason)).map(str::to_string),
             }
         })
         .unwrap_or_else(|| PlanningSummary {
             planning_outcome: String::from("cpu_only"),
             native_runtime_started: false,
-            cpu_preferred_reason: None,
+            cost_reason: None,
         })
 }
 
-fn cpu_preferred_reason_code(reason: &str) -> bool {
+fn cost_reason_code(reason: &str) -> bool {
     matches!(
         reason,
-        "native_small_selective_topk_cpu_preferred"
-            | "native_small_selective_residual_join_cpu_preferred"
-            | "native_small_selective_full_sort_cpu_preferred"
+        "native_small_selective_topk_not_selected_by_cost"
+            | "native_small_selective_residual_join_not_selected_by_cost"
+            | "native_small_selective_full_sort_not_selected_by_cost"
     )
 }
 

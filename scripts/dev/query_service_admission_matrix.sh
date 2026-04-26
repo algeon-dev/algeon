@@ -152,7 +152,7 @@ validate_report() {
         && grant_bytes != "none" \
         && (grant_bytes + 0) < sf100_large_query_native_grant_floor
       if (sf100_large_grant_limited && $(col["native_runtime_outcome"]) == "failed") {
-        if ($(col["planning_outcome"]) != "accepted_replaced") {
+        if ($(col["planning_outcome"]) != "selected") {
           printf("FAIL %s: grant-limited %s planning_outcome=%s\n", FILENAME, query_id, $(col["planning_outcome"])) > "/dev/stderr"
           status = 1
         }
@@ -179,7 +179,7 @@ validate_report() {
         printf("FAIL %s: %s parity_status=%s\n", FILENAME, query_id, $(col["parity_status"])) > "/dev/stderr"
         status = 1
       }
-      if ($(col["planning_outcome"]) != "accepted_replaced") {
+      if ($(col["planning_outcome"]) != "selected") {
         printf("FAIL %s: %s planning_outcome=%s\n", FILENAME, query_id, $(col["planning_outcome"])) > "/dev/stderr"
         status = 1
       }

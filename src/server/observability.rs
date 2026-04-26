@@ -15,6 +15,7 @@ use datafusion::{
 
 use crate::{
     error::{Error, ErrorCode, ErrorSourceDiagnostics, Facts},
+    final_plan_observation::observe_final_plan,
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeGpuProducerExec},
     native_report::{
         NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate,
@@ -363,6 +364,7 @@ impl CapturedQuery {
             let _ = write!(diagnostics_probe, "{diagnostics:?}");
         }
         let candidate_count = diagnostics.as_ref().map_or(0, |diagnostics| diagnostics.report.outcomes().len());
+        let final_plan_has_gpu_runtime = observe_final_plan(planned_plan.as_ref()).has_gpu_runtime();
         let planning_truncated = diagnostics_probe.truncated
             || physical_explain.truncated
             || native_explain.as_ref().is_some_and(|text| text.truncated)
@@ -392,6 +394,7 @@ impl CapturedQuery {
                 CapturedTsvReport::from_tsv(planning_report.to_tsv()),
                 NativeDataFusionExecutionTsvTemplate::from_report(execution_report),
                 metrics,
+                final_plan_has_gpu_runtime,
             )
         });
         CapturedPlanningRender { planning, physical_explain, native_explain, diagnostics_truncated: planning_truncated }
@@ -518,7 +521,7 @@ impl CapturedQuery {
             let planning_written =
                 output.write_atomic("\n[planning]\n") && planning.planning_report.write_atomic(&mut output);
             metric_projection_truncated = planning.metrics.truncated;
-            let runtime = self.runtime_for_planning(planning.metrics.metrics());
+            let runtime = self.runtime_for_planning(planning.metrics.metrics(), planning.final_plan_has_gpu_runtime);
             if planning_written && output.write_atomic("\n[execution]\n") {
                 let _ = write_tsv_atomic(&mut output, &planning.execution_report.to_tsv(runtime));
             }
@@ -586,22 +589,28 @@ impl CapturedQuery {
         QueryStatsPayload { bytes: Arc::from(output.into_bytes()), incomplete }
     }
 
-    fn runtime_for_planning(&self, metrics: Option<MetricsSet>) -> NativeDataFusionRuntime {
+    fn runtime_for_planning(
+        &self,
+        metrics: Option<MetricsSet>,
+        final_plan_has_gpu_runtime: bool,
+    ) -> NativeDataFusionRuntime {
         match &self.outcome {
-            QueryOutcome::Succeeded => NativeDataFusionRuntime::Succeeded {
+            QueryOutcome::Succeeded if final_plan_has_gpu_runtime => NativeDataFusionRuntime::Succeeded {
                 output_batches: self.metrics.output_batches.unwrap_or(0),
                 output_rows: self.metrics.output_rows.unwrap_or(0),
                 output_bytes: self.metrics.output_bytes.unwrap_or(0),
                 metrics: metrics.unwrap_or_default(),
             },
+            QueryOutcome::Succeeded => NativeDataFusionRuntime::NotStarted,
             QueryOutcome::Failed { error, .. } => {
                 let stage = error.fact_value("native_datafusion_stage");
                 let has_runtime_metric_evidence = metrics.as_ref().is_some_and(|metrics| {
                     NativeDataFusionExecutionMetrics::from_metrics(metrics)
                         != NativeDataFusionExecutionMetrics::default()
                 });
-                if stage == Some("runtime_execution")
-                    || (stage != Some("runtime_context") && has_runtime_metric_evidence)
+                if final_plan_has_gpu_runtime
+                    && (stage == Some("runtime_execution")
+                        || (stage != Some("runtime_context") && has_runtime_metric_evidence))
                 {
                     NativeDataFusionRuntime::Failed { message: error.diagnostic.clone(), metrics }
                 } else {
@@ -677,6 +686,7 @@ struct CapturedPlanning {
     planning_report: CapturedTsvReport,
     execution_report: NativeDataFusionExecutionTsvTemplate,
     metrics: CapturedMetricHandles,
+    final_plan_has_gpu_runtime: bool,
     retained_capacity_bytes: u64,
 }
 
@@ -685,6 +695,7 @@ impl CapturedPlanning {
         planning_report: CapturedTsvReport,
         execution_report: NativeDataFusionExecutionTsvTemplate,
         metrics: MetricsProjection,
+        final_plan_has_gpu_runtime: bool,
     ) -> Self {
         let retained_capacity_bytes = planning_report
             .retained_capacity_bytes
@@ -694,6 +705,7 @@ impl CapturedPlanning {
             planning_report,
             execution_report,
             metrics: CapturedMetricHandles { handles: metrics.handles, truncated: metrics.truncated },
+            final_plan_has_gpu_runtime,
             retained_capacity_bytes,
         }
     }

@@ -396,8 +396,8 @@ pub(super) fn native_query_runtime_error(
 /// `cpu_fallback_after_native_start=false`.
 ///
 /// Callers use these facts to distinguish context setup from query runtime,
-/// and to assert that native execution does not silently fall back to CPU
-/// once started.
+/// and to assert that a started native attempt is terminal rather than replayed
+/// through DataFusion.
 pub(super) fn mark_native_runtime_error(error: Error, stage: &'static str) -> Error {
     error
         .with_log_safe_fact("native_datafusion_stage", stage)
@@ -413,10 +413,25 @@ mod tests {
 
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
 
-    use super::HostOutputReservation;
-    use crate::error::{DataFusionErrorExt, ErrorCode};
+    use super::{HostOutputReservation, mark_native_runtime_error};
+    use crate::error::{DataFusionErrorExt, Error, ErrorCode};
 
     const TEST_CONSUMER: &str = "NativeHostOutputReservation[test]";
+
+    #[test]
+    fn native_runtime_error_marks_started_attempt_terminal_without_datafusion_replay() {
+        let error = mark_native_runtime_error(
+            Error::new(ErrorCode::MemoryReservationFailed, "datafusion_nexus.test", "memory reservation failed"),
+            "runtime_execution",
+        );
+
+        assert_eq!(error.fact_value("native_datafusion_stage"), Some("runtime_execution"));
+        assert_eq!(
+            error.fact_value("cpu_fallback_after_native_start"),
+            Some("false"),
+            "a started native attempt must be terminal rather than replayed through DataFusion"
+        );
+    }
 
     #[test]
     fn host_output_reservations_account_concurrent_queries_globally_and_release_exactly() {

@@ -245,8 +245,8 @@ impl ExecutionPlan for NexusNativeExec {
                         let context = context_lease.context().with_runtime_gpu_stream_scope(gpu_stream_scope);
                         let gpu_plan = plan.clone_with_deferred_host_materialization_sink();
                         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-                        // Once native execution starts there is no CPU fallback; errors are surfaced with stable
-                        // facts by `native_query_runtime_error`.
+                        // Once native execution starts, the attempt is terminal: errors are surfaced with stable
+                        // facts by `native_query_runtime_error` and are not replayed through DataFusion.
                         let outcome = execute_query_plan_observed(&context, &gpu_plan, runtime_observation_config);
                         let output = metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
                             DataFusionError::from(native_query_runtime_error(

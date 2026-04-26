@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_nexus::table_format::iceberg::catalog::RestIcebergCatalogConfig;
+use datafusion_nexus::table_format::iceberg::{SourceAccessPolicy, catalog::RestIcebergCatalogConfig};
 use tokio::process::{Child, Command};
 use tonic::transport::Channel;
 use url::Url;
@@ -102,10 +102,14 @@ impl Params {
     }
 
     pub(super) fn rest_config(&self) -> RestIcebergCatalogConfig {
+        let source_access = SourceAccessPolicy::S3(
+            SourceAccessPolicy::s3_custom_endpoint(self.s3_endpoint.clone(), Some(self.s3_region.clone()), Some(true))
+                .as_s3()
+                .clone()
+                .with_static_credentials(self.s3_access_key.clone(), self.s3_secret_key.clone(), None),
+        );
         RestIcebergCatalogConfig::new("rest", self.rest_uri.clone(), self.warehouse.clone())
-            .with_s3_endpoint(self.s3_endpoint.clone())
-            .with_s3_region(self.s3_region.clone())
-            .with_s3_path_style_access(true)
+            .with_source_access_policy(source_access)
     }
 
     pub(super) fn table(&self, name: &str) -> String {

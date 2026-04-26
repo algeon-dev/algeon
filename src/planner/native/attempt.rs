@@ -17,13 +17,13 @@ use super::{
     },
 };
 use crate::{
+    capability::CapabilityReason,
     error::{Error, ErrorCode},
     native_exec::{
         NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig,
         producer::gpu_resident_producer_input_name,
     },
-    policy::FallbackReason,
-    report::{CandidateOutcome, GpuCandidate, PlanningReport},
+    report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
 };
 
 /// Optimizer attempt output, including the replacement plan and all report evidence.
@@ -38,27 +38,11 @@ pub(super) struct NativeOptimizationAttempt {
     pub(super) rewritten: bool,
 }
 
-fn native_preference_fallback_reason(
-    reason: nexus_query_engine::plan::NativePlanCpuPreferenceReason,
-) -> FallbackReason {
-    match reason {
-        nexus_query_engine::plan::NativePlanCpuPreferenceReason::SmallSelectiveTopK => {
-            FallbackReason::NativeSmallSelectiveTopkCpuPreferred
-        },
-        nexus_query_engine::plan::NativePlanCpuPreferenceReason::SmallSelectiveResidualJoin => {
-            FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred
-        },
-        nexus_query_engine::plan::NativePlanCpuPreferenceReason::SmallSelectiveFullSort => {
-            FallbackReason::NativeSmallSelectiveFullSortCpuPreferred
-        },
-    }
-}
-
 pub(super) fn optimize_count_only_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
-    native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
+    native_plan_cost_options: &nexus_query_engine::plan::NativePlanCostOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering_input = peel_output_requirement_exec(Arc::clone(&plan));
     let lowering = crate::native::lower_count_only_physical_plan_to_native(lowering_input);
@@ -68,7 +52,7 @@ pub(super) fn optimize_count_only_native_plan(
         lowering,
         native_execution_config,
         native_optimizer_options,
-        native_plan_preference_options,
+        native_plan_cost_options,
     )
 }
 
@@ -76,7 +60,7 @@ pub(super) fn optimize_final_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
-    native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
+    native_plan_cost_options: &nexus_query_engine::plan::NativePlanCostOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
     replace_lowered_root_or_keep_plan(
@@ -85,7 +69,7 @@ pub(super) fn optimize_final_native_plan(
         lowering,
         native_execution_config,
         native_optimizer_options,
-        native_plan_preference_options,
+        native_plan_cost_options,
     )
 }
 
@@ -95,12 +79,12 @@ fn replace_lowered_root_or_keep_plan(
     lowering: crate::native::NativeLoweringResult,
     native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
-    native_plan_preference_options: &nexus_query_engine::plan::NativePlanPreferenceOptions,
+    native_plan_cost_options: &nexus_query_engine::plan::NativePlanCostOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let properties_plan = properties_plan.unwrap_or_else(|| Arc::clone(&plan));
     let mut lowering = lowering;
     stamp_planning_report_correlation(&mut lowering.report, native_execution_config);
-    if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
+    if lowering.plans.len() != 1 || lowering.selected_count() != 1 {
         return Ok(NativeOptimizationAttempt {
             plan,
             report: lowering.report,
@@ -111,10 +95,10 @@ fn replace_lowered_root_or_keep_plan(
             rewritten: false,
         });
     }
-    lowering.report.anchor_rewritten_candidates_to_plan_node(lowering.plans[0].root_id());
+    lowering.report.anchor_selected_candidates_to_plan_node(lowering.plans[0].root_id());
     let candidate_before_declared_output_sort = lowering
         .report
-        .single_rewritten_candidate()
+        .single_selected_candidate()
         .cloned()
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
     let optimizer_options = native_optimizer_options_for_execution(native_optimizer_options, native_execution_config)
@@ -150,20 +134,24 @@ fn replace_lowered_root_or_keep_plan(
             },
         };
     if appended_declared_output_sort {
-        lowering.report.wrap_rewritten_candidates_with_outer_operator("SortExec");
+        lowering.report.wrap_selected_candidates_with_outer_operator("SortExec");
     }
-    lowering.report.anchor_rewritten_candidates_to_plan_node(native_plan.root_id());
+    lowering.report.anchor_selected_candidates_to_plan_node(native_plan.root_id());
     let candidate = lowering
         .report
-        .single_rewritten_candidate()
+        .single_selected_candidate()
         .cloned()
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
-    if let nexus_query_engine::plan::NativePlanPreferenceDecision::CpuPreferred { reason, .. } =
-        nexus_query_engine::plan::native_plan_preference_decision(&native_plan, native_plan_preference_options)
+    if let nexus_query_engine::plan::NativePlanCostDecision::NotSelectedByCost { reason, facts } =
+        nexus_query_engine::plan::native_plan_cost_decision(&native_plan, native_plan_cost_options)
     {
         return Ok(NativeOptimizationAttempt {
             plan,
-            report: native_execution_rejection_report(&lowering.report, native_preference_fallback_reason(reason)),
+            report: native_execution_cost_selection_report(
+                &lowering.report,
+                reason,
+                NativeCandidateCostEvidence::from_cost_facts(facts),
+            ),
             native_optimizer,
             source_diagnostics: lowering.source_diagnostics,
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
@@ -183,7 +171,7 @@ fn replace_lowered_root_or_keep_plan(
                 plan,
                 report: native_execution_rejection_report_for_candidate(
                     candidate.clone(),
-                    FallbackReason::NativeAdaptivePipelineUnsupported,
+                    CapabilityReason::NativeAdaptivePipelineUnsupported,
                     &lowering.report,
                 ),
                 native_optimizer,
@@ -215,7 +203,7 @@ fn replace_lowered_root_or_keep_plan(
     if native_execution_boundary_is_rejected(&native_plan, native_execution_config)? {
         let report = native_execution_rejection_report_for_candidate(
             candidate.clone(),
-            FallbackReason::NativeBoundedJoinUnsupported,
+            CapabilityReason::NativeBoundedJoinUnsupported,
             &lowering.report,
         );
         return Ok(NativeOptimizationAttempt {
@@ -371,13 +359,26 @@ fn native_execution_boundary_is_rejected(
     strict_bounded_admission_is_rejected(plan, execution_config)
 }
 
-fn native_execution_rejection_report(report: &PlanningReport, rejection_reason: FallbackReason) -> PlanningReport {
+fn native_execution_cost_selection_report(
+    report: &PlanningReport,
+    cost_reason: nexus_query_engine::plan::NativePlanCostReason,
+    evidence: NativeCandidateCostEvidence,
+) -> PlanningReport {
     PlanningReport::from_outcomes(report.outcomes().iter().map(|outcome| match outcome {
-        CandidateOutcome::Rewritten { candidate } => {
-            CandidateOutcome::Rejected { candidate: candidate.clone(), reason: rejection_reason }
+        CandidateOutcome::Selected { candidate } => CandidateOutcome::NotSelectedByCost {
+            candidate: candidate.clone(),
+            cost_reason,
+            evidence: evidence.clone(),
         },
-        CandidateOutcome::Rejected { candidate, reason } => {
-            CandidateOutcome::Rejected { candidate: candidate.clone(), reason: *reason }
+        CandidateOutcome::NotSupported { candidate, capability_reason } => {
+            CandidateOutcome::NotSupported { candidate: candidate.clone(), capability_reason: *capability_reason }
+        },
+        CandidateOutcome::NotSelectedByCost { candidate, cost_reason, evidence } => {
+            CandidateOutcome::NotSelectedByCost {
+                candidate: candidate.clone(),
+                cost_reason: *cost_reason,
+                evidence: evidence.clone(),
+            }
         },
     }))
     .with_correlation_from(report)
@@ -385,10 +386,10 @@ fn native_execution_rejection_report(report: &PlanningReport, rejection_reason: 
 
 fn native_execution_rejection_report_for_candidate(
     candidate: GpuCandidate,
-    rejection_reason: FallbackReason,
+    rejection_reason: CapabilityReason,
     source_report: &PlanningReport,
 ) -> PlanningReport {
-    PlanningReport::from_outcomes([CandidateOutcome::Rejected { candidate, reason: rejection_reason }])
+    PlanningReport::from_outcomes([CandidateOutcome::NotSupported { candidate, capability_reason: rejection_reason }])
         .with_correlation_from(source_report)
 }
 
@@ -449,6 +450,50 @@ pub(super) fn peel_cooperative_native_exec(plan: &Arc<dyn ExecutionPlan>) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cost_selection_preserves_full_cost_evidence() {
+        let facts = nexus_query_engine::plan::NativePlanCostFacts {
+            node_count: 7,
+            source_count: 1,
+            local_parquet_source_count: 1,
+            selected_row_groups_known: true,
+            selected_row_groups: Some(2),
+            estimated_source_rows: Some(128),
+            estimated_source_bytes: Some(4_096),
+            selected_source_bytes_known: true,
+            join_count: 1,
+            residual_join_count: 0,
+            aggregate_count: 1,
+            grouped_aggregate_count: 1,
+            sort_count: 1,
+            limit_count: 1,
+            min_topk_fetch: Some(10),
+        };
+        let report = PlanningReport::from_outcomes([CandidateOutcome::Selected {
+            candidate: GpuCandidate::new("SortExec(HashJoinExec)", 3),
+        }]);
+
+        let report = native_execution_cost_selection_report(
+            &report,
+            nexus_query_engine::plan::NativePlanCostReason::SmallSelectiveTopK,
+            NativeCandidateCostEvidence::from_cost_facts(facts.clone()),
+        );
+
+        assert!(matches!(
+            report.outcomes(),
+            [CandidateOutcome::NotSelectedByCost { cost_reason, evidence, .. }]
+                if *cost_reason == nexus_query_engine::plan::NativePlanCostReason::SmallSelectiveTopK
+                    && evidence.node_count == facts.node_count
+                    && evidence.selected_row_groups == facts.selected_row_groups
+                    && evidence.estimated_source_bytes == facts.estimated_source_bytes
+                    && evidence.min_topk_fetch == facts.min_topk_fetch
+        ));
+        let json = report.to_json();
+        assert_eq!(json["outcomes"][0]["outcome"], "not_selected_by_cost");
+        assert_eq!(json["outcomes"][0]["cost_reason_code"], "native_small_selective_topk_not_selected_by_cost");
+        assert_eq!(json["outcomes"][0]["cost_evidence"]["estimated_source_bytes"], 4_096);
+    }
 
     #[test]
     fn optimizer_options_for_execution_copy_dynamic_filter_policy_from_execution_config() {

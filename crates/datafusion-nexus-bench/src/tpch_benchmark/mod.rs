@@ -17,8 +17,8 @@ use datafusion_nexus::{
     error::{DataFusionErrorExt, Error as AdapterError},
     native_exec::NexusNativeExecutionConfig,
     native_report::{
-        NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
-        NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
+        FinalPlanDisposition, NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics,
+        NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
         NativeDataFusionRuntimeOutcome, NativeDynamicFilterRuntimeMetricRow, NativeGraphReservationMetricRow,
         NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow, NativeSourceDiagnosticSummary,
         NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,

@@ -7,7 +7,7 @@ use super::*;
 pub(super) struct ServerFileOverlay {
     pub(super) auth: AuthConfig,
     pub(super) admission: ServerAdmissionFileConfig,
-    pub(super) fallback: ServerFallbackFileConfig,
+    pub(super) host_execution_qos: ServerHostExecutionQosFileConfig,
     pub(super) native: ServerNativeFileConfig,
     pub(super) observability: ServerObservabilityFileConfig,
 }
@@ -40,7 +40,7 @@ pub(super) struct ServerAdmissionFileConfig {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
-pub(super) struct ServerFallbackFileConfig {
+pub(super) struct ServerHostExecutionQosFileConfig {
     pub(super) max_concurrent_statements: Option<usize>,
     pub(super) wait_timeout_ms: Option<u64>,
 }

@@ -629,7 +629,7 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
   const rule: DiagramNode = {
     kind: 'DataFusion optimizer rule',
     name: 'datafusion_nexus_native',
-    note: 'promotes each supported candidate subtree',
+    note: 'selects a whole relational candidate',
     tone: 'engine',
   };
   const source: DiagramNode = {
@@ -644,18 +644,18 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
     kind: 'native · same process',
     name: 'GPU execution',
     note: [
-      'native plan · cuDF / cuGraph / cuVS',
+      'whole relational plan · explicit GPU islands',
+      'cuDF / cuGraph / cuVS',
       'admission queue · GPU memory ledger'
     ],
     tone: 'gpu',
   };
   const cpu: DiagramNode = {
-    kind: 'fallback · when valid',
+    kind: 'DataFusion baseline',
     name: 'DataFusion CPU execution',
     note: [
-      'original operators · stock readers',
-      'no valid CPU path → structured error',
-      'native Iceberg cannot fall back',
+      'non-selected relational candidate',
+      'stock operators · unified Iceberg CPU delegate',
     ],
     tone: 'plain',
   };

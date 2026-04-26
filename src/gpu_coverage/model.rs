@@ -3,33 +3,25 @@
 use datafusion::physical_plan::ExecutionPlan;
 use serde_json::{Value, json};
 
-use super::{
-    physical::{
-        QueryGpuCoverageWalk, fallback_reasons_from_report, root_is_gpu_runtime_node, runtime_caveats,
-        runtime_caveats_for_overall,
-    },
-    preflight::QueryGpuRejection,
-};
+use super::preflight::QueryGpuRejection;
 use crate::{
-    native_report::NativeDataFusionPostNativeExecutionPath, physical_plan::physical_plan_shape, report::PlanningReport,
+    final_plan_observation::FinalPlanObservation,
+    physical_plan::physical_plan_shape,
+    planner::FinalPlanDisposition,
+    report::{NativeCandidateCostEvidence, PlanningReport},
 };
 
 /// Structured answer for "will this query's planned path avoid DataFusion CPU execution?"
-///
-/// `fallback_reasons` are per-candidate planning diagnostics retained from the
-/// native optimizer. They can be non-empty alongside
-/// [`QueryGpuCoverageOverall::NoCpuInPlannedPath`] when rejected candidates were
-/// not on the final planned path.
-///
-/// `validated_under.catalog_snapshot` is a constant label describing when the
-/// session state was cloned for validation. It is not a catalog fingerprint, so
-/// verdicts are not comparable across catalog, view, or table-state changes by
-/// that value alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuCoverage {
     pub overall: QueryGpuCoverageOverall,
+    /// Final disposition of the exact physical plan, or `Rejected` for a
+    /// terminal planning result with no executable plan.
+    pub final_disposition: FinalPlanDisposition,
     pub domains: QueryGpuCoverageDomains,
-    pub fallback_reasons: Vec<QueryGpuFallbackReason>,
+    /// Native candidate selections retained independently from final-plan
+    /// disposition.
+    pub candidate_outcomes: Vec<QueryGpuCandidateOutcome>,
     pub cugraph_calls: Vec<QueryGpuCugraphCall>,
     pub runtime_caveats: Vec<QueryGpuRuntimeCaveat>,
     pub planning_did_io: bool,
@@ -43,39 +35,34 @@ impl QueryGpuCoverage {
     pub(super) fn planned(
         validated_under: QueryGpuValidatedUnder,
         plan: &dyn ExecutionPlan,
-        nexus_native_path: NativeDataFusionPostNativeExecutionPath,
-        walk: QueryGpuCoverageWalk,
-        fallback_reasons: Vec<QueryGpuFallbackReason>,
+        observation: FinalPlanObservation,
+        candidate_outcomes: Vec<QueryGpuCandidateOutcome>,
+        cugraph_calls: Vec<QueryGpuCugraphCall>,
         planning_did_io: bool,
     ) -> Self {
-        let overall = if walk.has_gpu {
-            if walk.all_gpu_covered && root_is_gpu_runtime_node(plan) {
-                QueryGpuCoverageOverall::NoCpuInPlannedPath
-            } else {
-                QueryGpuCoverageOverall::PartialGpuPlanned {
-                    gpu_fragments: walk.gpu_fragment_count,
-                    cpu_boundaries: walk.cpu_boundary_count,
-                }
-            }
-        } else {
-            QueryGpuCoverageOverall::CpuOnly
-        };
-        let runtime_caveats = runtime_caveats(&walk, &overall, &validated_under);
-        let domains = QueryGpuCoverageDomains {
-            nexus_native_coverage: QueryGpuNexusNativeCoverage::from_post_native_path(nexus_native_path),
-            cugraph_operator: if walk.cugraph_present {
-                QueryGpuCugraphOperatorDomain::Present
-            } else {
-                QueryGpuCugraphOperatorDomain::Absent
+        debug_assert_ne!(observation.disposition, FinalPlanDisposition::Rejected);
+        let overall = match observation.disposition {
+            FinalPlanDisposition::Native => QueryGpuCoverageOverall::NoCpuInPlannedPath,
+            FinalPlanDisposition::Mixed => QueryGpuCoverageOverall::PartialGpuPlanned {
+                gpu_fragments: observation.native_fragment_count + observation.explicit_gpu_island_count,
+                cpu_boundaries: observation.datafusion_boundary_count,
             },
-            datafusion_cpu_ingest_or_boundary: QueryGpuPresence::from_bool(walk.cpu_boundary_count > 0),
-            host_output_materialization: QueryGpuPresence::from_bool(walk.host_output_materialization),
+            FinalPlanDisposition::DataFusion => QueryGpuCoverageOverall::CpuOnly,
+            FinalPlanDisposition::Rejected => unreachable!("an executable final plan cannot be rejected"),
+        };
+        let runtime_caveats = super::physical::runtime_caveats(observation, &cugraph_calls, &validated_under);
+        let domains = QueryGpuCoverageDomains {
+            native_fragment_count: observation.native_fragment_count,
+            explicit_gpu_island_count: observation.explicit_gpu_island_count,
+            datafusion_boundary_count: observation.datafusion_boundary_count,
+            host_materialization_count: observation.host_materialization_count,
         };
         Self {
             overall,
+            final_disposition: observation.disposition,
             domains,
-            fallback_reasons,
-            cugraph_calls: walk.cugraph_calls,
+            candidate_outcomes,
+            cugraph_calls,
             runtime_caveats,
             planning_did_io,
             validated_under,
@@ -101,18 +88,13 @@ impl QueryGpuCoverage {
             retryable: rejection.retryable,
             detail: rejection.detail,
         };
-        let runtime_caveats = runtime_caveats_for_overall(&overall, Vec::new());
         Self {
             overall,
-            domains: QueryGpuCoverageDomains {
-                nexus_native_coverage: QueryGpuNexusNativeCoverage::None,
-                cugraph_operator: QueryGpuCugraphOperatorDomain::Absent,
-                datafusion_cpu_ingest_or_boundary: QueryGpuPresence::Absent,
-                host_output_materialization: QueryGpuPresence::Absent,
-            },
-            fallback_reasons: report.map(fallback_reasons_from_report).unwrap_or_default(),
+            final_disposition: FinalPlanDisposition::Rejected,
+            domains: QueryGpuCoverageDomains::default(),
+            candidate_outcomes: report.map(super::physical::candidate_outcomes_from_report).unwrap_or_default(),
             cugraph_calls: Vec::new(),
-            runtime_caveats,
+            runtime_caveats: Vec::new(),
             planning_did_io,
             validated_under,
             confidence: QueryGpuCoverageConfidence::PlanTimeOnly,
@@ -125,8 +107,9 @@ impl QueryGpuCoverage {
     pub fn to_json(&self) -> Value {
         json!({
             "overall": self.overall.to_json(),
+            "final_disposition": self.final_disposition.as_str(),
             "domains": self.domains.to_json(),
-            "fallback_reasons": self.fallback_reasons.iter().map(QueryGpuFallbackReason::to_json).collect::<Vec<_>>(),
+            "candidate_outcomes": self.candidate_outcomes.iter().map(QueryGpuCandidateOutcome::to_json).collect::<Vec<_>>(),
             "cugraph_calls": self.cugraph_calls.iter().map(QueryGpuCugraphCall::to_json).collect::<Vec<_>>(),
             "runtime_caveats": self.runtime_caveats.iter().map(QueryGpuRuntimeCaveat::to_json).collect::<Vec<_>>(),
             "planning_did_io": self.planning_did_io,
@@ -201,115 +184,56 @@ impl QueryGpuRejectionPhase {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Final-plan execution domains derived from the shared observation walk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueryGpuCoverageDomains {
-    pub nexus_native_coverage: QueryGpuNexusNativeCoverage,
-    pub cugraph_operator: QueryGpuCugraphOperatorDomain,
-    pub datafusion_cpu_ingest_or_boundary: QueryGpuPresence,
-    pub host_output_materialization: QueryGpuPresence,
+    pub native_fragment_count: usize,
+    pub explicit_gpu_island_count: usize,
+    pub datafusion_boundary_count: usize,
+    pub host_materialization_count: usize,
 }
 
 impl QueryGpuCoverageDomains {
-    fn to_json(&self) -> Value {
+    fn to_json(self) -> Value {
         json!({
-            "nexus_native_coverage": self.nexus_native_coverage.as_str(),
-            "cugraph_operator": self.cugraph_operator.as_str(),
-            "datafusion_cpu_ingest_or_boundary": self.datafusion_cpu_ingest_or_boundary.as_str(),
-            "host_output_materialization": self.host_output_materialization.as_str(),
+            "native_fragment_count": self.native_fragment_count,
+            "explicit_gpu_island_count": self.explicit_gpu_island_count,
+            "datafusion_boundary_count": self.datafusion_boundary_count,
+            "host_materialization_count": self.host_materialization_count,
         })
     }
 }
 
+/// Selection class for a candidate retained in coverage diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueryGpuNexusNativeCoverage {
-    Full,
-    Partial,
-    None,
+pub enum QueryGpuCandidateSelectionOutcome {
+    Selected,
+    NotSupported,
+    NotSelectedByCost,
 }
 
-impl QueryGpuNexusNativeCoverage {
-    fn from_post_native_path(path: NativeDataFusionPostNativeExecutionPath) -> Self {
-        match path {
-            NativeDataFusionPostNativeExecutionPath::Native => Self::Full,
-            NativeDataFusionPostNativeExecutionPath::PartialNative => Self::Partial,
-            NativeDataFusionPostNativeExecutionPath::Cpu => Self::None,
-        }
-    }
-
+impl QueryGpuCandidateSelectionOutcome {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Full => "full",
-            Self::Partial => "partial",
-            Self::None => "none",
+            Self::Selected => "selected",
+            Self::NotSupported => "not_supported",
+            Self::NotSelectedByCost => "not_selected_by_cost",
         }
     }
 }
 
+/// Reason category for a candidate selection result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueryGpuCugraphOperatorDomain {
-    Present,
-    Absent,
-}
-
-impl QueryGpuCugraphOperatorDomain {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Present => "present",
-            Self::Absent => "absent",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueryGpuPresence {
-    Present,
-    Absent,
-}
-
-impl QueryGpuPresence {
-    fn from_bool(present: bool) -> Self {
-        if present { Self::Present } else { Self::Absent }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Present => "present",
-            Self::Absent => "absent",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueryGpuFallbackReason {
-    pub reason_code: String,
-    pub kind: QueryGpuFallbackReasonKind,
-    pub detail: String,
-    pub category: String,
-}
-
-impl QueryGpuFallbackReason {
-    fn to_json(&self) -> Value {
-        json!({
-            "reason_code": self.reason_code,
-            "kind": self.kind.as_str(),
-            "detail": self.detail,
-            "category": self.category,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueryGpuFallbackReasonKind {
+pub enum QueryGpuCandidateReasonKind {
     Operator,
     Expression,
     ArrowType,
     Source,
     PlanShape,
-    Policy,
-    Preference,
+    Cost,
 }
 
-impl QueryGpuFallbackReasonKind {
+impl QueryGpuCandidateReasonKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Operator => "operator",
@@ -317,9 +241,35 @@ impl QueryGpuFallbackReasonKind {
             Self::ArrowType => "arrow_type",
             Self::Source => "source",
             Self::PlanShape => "plan_shape",
-            Self::Policy => "policy",
-            Self::Preference => "preference",
+            Self::Cost => "cost",
         }
+    }
+}
+
+/// Candidate selection diagnostic retained independently from final coverage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryGpuCandidateOutcome {
+    pub selection: QueryGpuCandidateSelectionOutcome,
+    /// Present only when a capability or cost decision has a stable reason.
+    pub reason_code: Option<String>,
+    /// Present only when a capability or cost decision has a reason category.
+    pub reason_kind: Option<QueryGpuCandidateReasonKind>,
+    pub detail: String,
+    /// Triage category for an unselected candidate, when available.
+    pub category: Option<String>,
+    pub cost_evidence: Option<NativeCandidateCostEvidence>,
+}
+
+impl QueryGpuCandidateOutcome {
+    fn to_json(&self) -> Value {
+        json!({
+            "outcome": self.selection.as_str(),
+            "reason_code": self.reason_code,
+            "reason_kind": self.reason_kind.map(QueryGpuCandidateReasonKind::as_str),
+            "detail": self.detail,
+            "category": self.category,
+            "cost_evidence": self.cost_evidence.as_ref().map(|evidence| evidence.to_json()),
+        })
     }
 }
 
@@ -361,13 +311,9 @@ impl QueryGpuRuntimeCaveat {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuValidatedUnder {
-    /// Whether the caller had a native optimizer rule installed in the
-    /// session state cloned for validation.
     pub native_optimizer_rule_installed: bool,
     pub optimizer_config_source: String,
-    /// Native execution mode when a native optimizer rule was installed.
     pub execution_mode: Option<String>,
-    /// Ordered completed-plan requirements from the effective native optimizer configuration.
     pub final_plan_requirements: Vec<String>,
     pub session_config_fingerprint: String,
     pub optimizer_fingerprint: String,

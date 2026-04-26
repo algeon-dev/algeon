@@ -1,6 +1,7 @@
 use datafusion_nexus::native_report::{
-    NATIVE_TPCDS_PARITY_TSV_HEADER, NativeDataFusionPostNativeExecutionPath, NativeTpcdsParityExternalOutputSummary,
-    NativeTpcdsParityReport, NativeTpcdsParityRow, ParityComparisonMode, ParityFloatTolerance, ParityStatus,
+    FinalPlanDisposition, NATIVE_TPCDS_PARITY_TSV_HEADER, NativeDataFusionPlanningOutcome,
+    NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityReport, NativeTpcdsParityRow, ParityComparisonMode,
+    ParityFloatTolerance, ParityStatus,
 };
 
 #[test]
@@ -49,11 +50,10 @@ fn parity_report_to_tsv_emits_metadata_and_header() {
         query_id: "q01".to_string(),
         cpu_planning_status: datafusion_nexus::native_report::ParityStageStatus::Succeeded,
         cpu_runtime_status: datafusion_nexus::native_report::ParityStageStatus::Succeeded,
-        native_planning_outcome:
-            datafusion_nexus::native_report::NativeTpcdsParityPlanningOutcome::RejectedBeforeExecution,
+        native_planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
         native_reason_code: Some("unsupported_operator".to_string()),
         native_unsupported_category: Some("operator_join".to_string()),
-        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        final_disposition: FinalPlanDisposition::DataFusion,
         native_plan_fragment_count: 0,
         host_datafusion_boundary_count: 0,
         native_runtime_started: false,

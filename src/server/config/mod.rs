@@ -4,7 +4,6 @@ use std::{
     collections::BTreeMap,
     fs,
     net::SocketAddr,
-    num::NonZeroUsize,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -27,7 +26,7 @@ use crate::table_format::scan::{DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_I
 use crate::{
     backend::{MemoryShare, NexusAdmissionPolicy},
     native_exec::NexusNativeExecutionConfig,
-    planner::NexusNativeOptimizerConfig,
+    planner::{HostExecutionQosConfig, NexusNativeOptimizerConfig},
 };
 #[cfg(feature = "cugraph")]
 use crate::{graph_sql::CugraphGraphConstructionPolicy, graph_sql::CugraphGraphOptions};
@@ -54,14 +53,14 @@ pub use admission::{
     NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV, NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV,
     NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV,
     NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV,
-    NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV, NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV,
-    NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV,
-    NEXUS_SERVER_MAX_IN_FLIGHT_ENV,
+    NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV,
+    NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV, NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV,
+    NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV,
 };
 use admission::{
     first_non_neutral_unbounded_admission_field, server_admission_placement_config, server_admission_policy,
-    server_admission_workload_profile, server_cpu_fallback_max_concurrent_statements, server_cpu_fallback_wait_timeout,
-    server_gpu_devices, server_max_concurrent_queries, server_placement_eligible_device_count,
+    server_admission_workload_profile, server_gpu_devices, server_host_execution_qos_max_concurrent_statements,
+    server_host_execution_qos_wait_timeout, server_max_concurrent_queries, server_placement_eligible_device_count,
     validate_admission_grant_min_capacity,
 };
 #[cfg(feature = "cugraph")]
@@ -130,8 +129,9 @@ pub struct ServerConfig {
     pub log_filter: String,
     pub max_in_flight: usize,
     pub admission_policy: NexusAdmissionPolicy,
-    pub cpu_fallback_max_concurrent_statements: Option<NonZeroUsize>,
-    pub cpu_fallback_wait_timeout: Option<Duration>,
+    /// Optional host-side statement execution bound. This is separate from
+    /// relational native selection and GPU query admission.
+    pub host_execution_qos: Option<HostExecutionQosConfig>,
     pub gpu_devices: Vec<usize>,
     pub device_budget_fraction: Option<f64>,
     /// Wall-clock time a planned Flight SQL statement ticket may wait for
@@ -189,23 +189,23 @@ impl ServerConfig {
             admission_placement,
         )?;
         let mut admission_policy = admission.policy.clone();
-        let cpu_fallback_max_concurrent_statements =
-            server_cpu_fallback_max_concurrent_statements(&mut values, &overlay.fallback)?;
-        let cpu_fallback_wait_timeout = server_cpu_fallback_wait_timeout(&mut values, &overlay.fallback)?;
+        let host_execution_qos_max_concurrent_statements =
+            server_host_execution_qos_max_concurrent_statements(&mut values, &overlay.host_execution_qos)?;
+        let host_execution_qos_wait_timeout =
+            server_host_execution_qos_wait_timeout(&mut values, &overlay.host_execution_qos)?;
         let device_budget_fraction = values.optional_f64(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV)?;
         let statement_ticket_ttl = checked_config_duration(
             NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
             values.positive_u64(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, DEFAULT_STATEMENT_TICKET_TTL_SECS)?,
         )?;
         let observability = server_observability_config(&mut values, &overlay.observability)?;
-        let mut native_optimizer_config =
+        let native_optimizer_config =
             native_optimizer_config(&mut values, &overlay.native, &gpu_devices, device_budget_fraction)?;
         validate_admission_grant_min_capacity(&admission, &native_optimizer_config)?;
-        if let Some(limit) = cpu_fallback_max_concurrent_statements {
-            native_optimizer_config = native_optimizer_config
-                .with_cpu_fallback_wait_timeout(cpu_fallback_wait_timeout.unwrap_or(Duration::ZERO))
-                .with_cpu_fallback_max_concurrent_statements(limit);
-        }
+        let host_execution_qos = host_execution_qos_max_concurrent_statements.map(|limit| {
+            let config = HostExecutionQosConfig::new(limit);
+            host_execution_qos_wait_timeout.map_or(config.clone(), |timeout| config.with_wait_timeout(timeout))
+        });
         #[cfg(feature = "iceberg")]
         let mut native_optimizer_config = native_optimizer_config;
 
@@ -214,7 +214,7 @@ impl ServerConfig {
 
         #[cfg(feature = "iceberg")]
         if let Some(config) = iceberg.as_mut() {
-            let profile = iceberg_source_storage_profile(config, &mut values);
+            let profile = iceberg_source_storage_profile(config);
             config.parquet_read_strategy_config = config
                 .parquet_read_strategy_config
                 .clone()
@@ -264,8 +264,7 @@ impl ServerConfig {
             log_filter,
             max_in_flight,
             admission_policy,
-            cpu_fallback_max_concurrent_statements,
-            cpu_fallback_wait_timeout,
+            host_execution_qos,
             gpu_devices,
             device_budget_fraction,
             statement_ticket_ttl,

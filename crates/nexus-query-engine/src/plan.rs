@@ -57,7 +57,6 @@ pub use nodes::{
     SortNode, UnionNode, WindowFrame, WindowFunction, WindowNode, WindowSpec,
 };
 pub use preference::{
-    NativePlanCpuPreferenceReason, NativePlanPreferenceDecision, NativePlanPreferenceFacts,
-    NativePlanPreferenceOptions, native_plan_preference_decision,
+    NativePlanCostDecision, NativePlanCostFacts, NativePlanCostOptions, NativePlanCostReason, native_plan_cost_decision,
 };
 pub use sink::ResultSink;

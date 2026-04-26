@@ -5,13 +5,17 @@
 //! native subplans, but the final DataFusion-facing boundary still streams
 //! host Arrow.
 
+use std::sync::Arc;
+
+use datafusion::physical_plan::ExecutionPlan;
+
 pub(crate) mod admission;
 mod common;
 mod composed;
 mod config;
-mod fallback;
 pub mod graph;
 mod host;
+mod host_execution_qos;
 pub(crate) mod lakehouse;
 mod metrics;
 pub mod producer;
@@ -32,11 +36,13 @@ pub(crate) use self::metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics
 pub(crate) use self::metrics::{
     NativeMetricsCapture, NativeObservationActivityFactory, SERVER_CAPTURE_LOSS_METRIC_NAME,
 };
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", test))]
 pub(crate) use self::unbounded_native::UnboundedNativeExecutionLimiter;
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
-    fallback::{CpuFallbackStatementLimiter, plan_is_cpu_fallback_limited, wrap_plan_with_cpu_fallback_limit},
+    host_execution_qos::{
+        HostExecutionQosLimiter, plan_is_host_execution_qos_limited, wrap_plan_with_host_execution_qos,
+    },
     metrics::NativeRuntimeObservation,
     unbounded_native::{plan_is_unbounded_native_execution_limited, wrap_plan_with_unbounded_native_execution_limit},
 };
@@ -44,3 +50,14 @@ pub use self::{
     composed::NexusNativeComposedExec, config::NexusNativeExecutionConfig, host::NexusNativeExec,
     metrics::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES, producer::NexusNativeGpuProducerExec,
 };
+
+/// Return the wrapped plan for an adapter-owned transparent root wrapper.
+///
+/// These wrappers intentionally delegate [`ExecutionPlan::children`] to their
+/// inputs, so callers that need to inspect the actual root must not infer the
+/// wrapped input from `children()`.
+pub(crate) fn transparent_root_wrapper_input(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {
+    host_execution_qos::host_execution_qos_wrapped_input(plan)
+        .or_else(|| admission::query_admission_wrapped_input(plan))
+        .or_else(|| unbounded_native::unbounded_native_execution_limited_input(plan))
+}

@@ -681,7 +681,7 @@ pub enum SubgraphInvariantKind {
     BlockingRollupRankTopKFullScan,
     /// A floating statistical aggregate participates in a join pipeline whose
     /// final output is a full sort; strict bounded admission needs an explicit
-    /// exactness envelope before this can leave CPU fallback.
+    /// exactness envelope before this can replace the DataFusion baseline.
     StatisticalJoinFinalSortExactness,
     /// Every reachable resident producer remains valid for all of its admitted
     /// consumers, and no rejected producer-consumer edge is hidden by the

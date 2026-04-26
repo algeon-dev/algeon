@@ -92,6 +92,7 @@ impl NativeDataFusionPlanningWorkloadItem {
         }
     }
 
+    #[cfg(feature = "server")]
     pub(crate) fn new_shared(
         query_id: impl Into<String>,
         planned_plan: Arc<dyn ExecutionPlan>,
@@ -167,6 +168,7 @@ impl NativeDataFusionExecutionWorkloadItem {
         }
     }
 
+    #[cfg(feature = "server")]
     pub(crate) fn new_shared(
         query_id: impl Into<String>,
         planned_plan: Arc<dyn ExecutionPlan>,

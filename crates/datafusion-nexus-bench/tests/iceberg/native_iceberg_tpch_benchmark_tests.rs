@@ -7,8 +7,8 @@ use arrow::{
 };
 use datafusion_nexus::{
     native_report::{
-        NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome,
-        ParityComparisonMode, ParityStatus,
+        FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome, ParityComparisonMode,
+        ParityStatus,
     },
     table_format::{
         TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatReadCapability, TableFormatScanPlan,
@@ -276,9 +276,9 @@ fn benchmark_report_tsv_exposes_runtime_timing_and_parity_fields() {
         "tpch_sf1_all_tables".to_string(),
         "select 1".to_string(),
         plan.diagnostics(),
-        NativeDataFusionPlanningOutcome::AcceptedReplaced,
+        Some(NativeDataFusionPlanningOutcome::Selected),
         None,
-        NativeDataFusionPostNativeExecutionPath::Native,
+        FinalPlanDisposition::Native,
         None,
         ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Auto, ObjectStoreStagingStatus::StagedLocal),
         "aws_profile_env".to_string(),
@@ -538,9 +538,9 @@ fn staged_s3_matched_row(query_id: &str) -> IcebergTpchBenchmarkRow {
         "tpch_sf1_all_tables".to_string(),
         "select 1".to_string(),
         plan.diagnostics(),
-        NativeDataFusionPlanningOutcome::AcceptedReplaced,
+        Some(NativeDataFusionPlanningOutcome::Selected),
         None,
-        NativeDataFusionPostNativeExecutionPath::Native,
+        FinalPlanDisposition::Native,
         None,
         staging_summary,
         "aws_profile_env".to_string(),

@@ -43,8 +43,8 @@ async fn iceberg_provider_lowers_q09_style_scalar_aggregate_subqueries_as_one_na
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.plans.len(), 1);
     assert_eq!(
         result.plans[0].output_schema().fields().len(),
@@ -79,7 +79,7 @@ fn native_lowering_preserves_fetch_pushed_to_table_format_filter_and_coalesce() 
 
     let result = lower_physical_plan_to_native(coalesce);
 
-    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.selected_count(), 1);
     assert!(native_plan_limit_count(&result.plans[0]) >= 1);
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.scan_limit, None, "fetch above an inexact filter must lower after the native filter");
@@ -93,9 +93,9 @@ fn native_lowering_lowers_table_format_scan_to_local_parquet_source() {
     let result = lower_physical_plan_to_native(scan);
 
     assert_eq!(result.plans.len(), 1);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("expected table-format scan to be rewritten by Milestone D lowering");
     };
     assert_eq!(candidate.shape, "TableFormatScan(iceberg)");
@@ -124,9 +124,9 @@ fn native_lowering_lowers_s3_table_format_scan_to_object_store_parquet_source() 
 
     let result = lower_physical_plan_to_native(scan);
 
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("expected S3 table-format scan to be rewritten through remote KvikIO lowering");
     };
     assert_eq!(candidate.shape, "TableFormatScan(iceberg)");
@@ -161,7 +161,7 @@ fn native_lowering_preserves_remote_direct_reader_contract_for_dispatch() {
 
     let result = lower_physical_plan_to_native(scan);
 
-    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.selected_count(), 1);
     let source = native_local_parquet_source(&result.plans[0]);
     let file = &source.files[0];
     assert_eq!(file.resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect);
@@ -182,10 +182,10 @@ async fn table_format_scan_preserves_unsupported_feature_reason_and_executes_cpu
 
     let result = lower_physical_plan_to_native(Arc::clone(&scan) as Arc<dyn ExecutionPlan>);
 
-    let CandidateOutcome::Rejected { reason, .. } = &result.report.outcomes()[0] else {
-        panic!("expected rejected native candidate");
+    let CandidateOutcome::NotSupported { capability_reason, .. } = &result.report.outcomes()[0] else {
+        panic!("expected unsupported native candidate");
     };
-    assert_eq!(*reason, FallbackReason::IcebergDeleteFilesUnsupported);
+    assert_eq!(*capability_reason, CapabilityReason::IcebergDeleteFilesUnsupported);
 
     let batches = collect(scan, Arc::new(TaskContext::default()))
         .await

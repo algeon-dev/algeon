@@ -50,14 +50,14 @@ fn benchmark_planning_row_selection_handles_multi_candidate_reports() {
 
     let selected = execution::select_benchmark_planning_row(
         "q01",
-        vec![accepted_planning_row("q01"), rejected_planning_row("q01")],
+        vec![accepted_planning_row("q01"), not_supported_planning_row("q01")],
     )
     .expect("benchmark planning should select a unique whole-native accepted row from retained candidate reports");
     assert_eq!(selected.query_id, "q01");
 
     let error = execution::select_benchmark_planning_row(
         "q01",
-        vec![accepted_planning_row("q01"), accepted_planning_row("q01"), rejected_planning_row("q01")],
+        vec![accepted_planning_row("q01"), accepted_planning_row("q01"), not_supported_planning_row("q01")],
     )
     .expect_err("benchmark planning must reject genuinely ambiguous accepted reports");
     assert!(error.to_string().contains("requires exactly one whole-native accepted planning row"));
@@ -126,11 +126,11 @@ fn benchmark_query_progress_line_identifies_named_sf100_profile() {
 fn accepted_planning_row_must_use_native_execution_path() {
     execution::validate_decision_grade_native_planning_row("q01", &accepted_planning_row("q01")).unwrap();
 
-    let mut partial_native = accepted_planning_row("q01");
-    partial_native.post_native_execution_path = NativeDataFusionPostNativeExecutionPath::PartialNative;
-    let error = execution::validate_decision_grade_native_planning_row("q01", &partial_native)
-        .expect_err("TPC-H native readiness benchmark must not accept partial native execution");
-    assert!(error.to_string().contains("requires post_native_execution_path=native"));
+    let mut mixed_plan = accepted_planning_row("q01");
+    mixed_plan.final_disposition = FinalPlanDisposition::Mixed;
+    let error = execution::validate_decision_grade_native_planning_row("q01", &mixed_plan)
+        .expect_err("TPC-H native readiness benchmark must not accept mixed-plan execution");
+    assert!(error.to_string().contains("requires final_disposition=native"));
 }
 
 #[test]
@@ -155,26 +155,26 @@ fn accepted_planning_row_must_not_carry_rejection_fields() {
 }
 
 #[test]
-fn rejected_planning_row_must_carry_stable_rejection_fields() {
-    execution::validate_decision_grade_native_rejection_row("q02", &rejected_planning_row("q02")).unwrap();
+fn not_selected_planning_row_preserves_the_executable_baseline() {
+    execution::validate_decision_grade_native_not_selected_row("q02", &not_supported_planning_row("q02")).unwrap();
 
-    let mut missing_rejected_flag = rejected_planning_row("q02");
-    missing_rejected_flag.rejected_before_execution = false;
-    let error = execution::validate_decision_grade_native_rejection_row("q02", &missing_rejected_flag)
-        .expect_err("benchmark rejected rows must identify pre-execution rejection");
-    assert!(error.to_string().contains("must set rejected_before_execution=true"));
+    let mut terminal_flag = not_supported_planning_row("q02");
+    terminal_flag.rejected_before_execution = true;
+    let error = execution::validate_decision_grade_native_not_selected_row("q02", &terminal_flag)
+        .expect_err("not-selected benchmark rows must not identify a terminal rejection");
+    assert!(error.to_string().contains("must not set rejected_before_execution=true"));
 
-    let mut missing_reason = rejected_planning_row("q02");
+    let mut missing_reason = not_supported_planning_row("q02");
     missing_reason.reason_code = None;
-    let error = execution::validate_decision_grade_native_rejection_row("q02", &missing_reason)
-        .expect_err("benchmark rejected rows must carry stable reason codes");
+    let error = execution::validate_decision_grade_native_not_selected_row("q02", &missing_reason)
+        .expect_err("not-selected benchmark rows must carry stable reason codes");
     assert!(error.to_string().contains("must include a stable reason_code"));
 
-    let mut native_path = rejected_planning_row("q02");
-    native_path.post_native_execution_path = NativeDataFusionPostNativeExecutionPath::Native;
-    let error = execution::validate_decision_grade_native_rejection_row("q02", &native_path)
-        .expect_err("benchmark rejected rows must not be classified as native execution");
-    assert!(error.to_string().contains("must not report post_native_execution_path=native"));
+    let mut native_path = not_supported_planning_row("q02");
+    native_path.final_disposition = FinalPlanDisposition::Native;
+    let error = execution::validate_decision_grade_native_not_selected_row("q02", &native_path)
+        .expect_err("not-selected benchmark rows must not be classified as native execution");
+    assert!(error.to_string().contains("must preserve an executable DataFusion or mixed final disposition"));
 }
 
 #[test]
@@ -193,7 +193,7 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
                 Ok(timed_cpu_run("output-fnv1a64:0000000000000001")),
                 Ok(timed_native_run("output-fnv1a64:0000000000000001")),
             ),
-            NativeTpchBenchmarkRow::rejected("q02", rejected_planning_row("q02")),
+            NativeTpchBenchmarkRow::not_selected("q02", not_supported_planning_row("q02")),
             NativeTpchBenchmarkRow::planning_failure(
                 "q03",
                 DataFusionError::Plan("planning failed before execution".to_string()),
@@ -225,7 +225,13 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
             .contains("\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\t")
     );
 
+    let planning_outcome_index = header_index(&header_fields, "planning_outcome");
     let bounded_status_index = header_index(&header_fields, "bounded_status");
+    assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tpost_native_execution_path\t"));
+    assert!(!NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tfinal_disposition\t"));
+    // This frozen column name carries the current final-plan disposition value.
+    let final_disposition_index = header_index(&header_fields, "post_native_execution_path");
+    let rejected_before_execution_index = header_index(&header_fields, "rejected_before_execution");
     let native_started_index = header_index(&header_fields, "native_runtime_started");
     let output_fingerprint_index = header_index(&header_fields, "output_fingerprint");
     let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
@@ -238,18 +244,25 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
         match fields[0] {
             "q01" => {
                 assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
+                assert_eq!(fields[final_disposition_index], "native");
                 assert_eq!(fields[native_started_index], "true");
                 assert_eq!(fields[runtime_outcome_index], "succeeded");
                 assert_eq!(fields[output_fingerprint_index], "output-fnv1a64:0000000000000001");
             },
             "q02" => {
+                assert_eq!(fields[planning_outcome_index], "not_supported");
                 assert_eq!(fields[bounded_status_index], "bounded_rejected");
+                assert_eq!(fields[final_disposition_index], "datafusion");
+                assert_eq!(fields[rejected_before_execution_index], "false");
                 assert_eq!(fields[native_started_index], "false");
                 assert_eq!(fields[runtime_outcome_index], "not_started");
                 assert_eq!(fields[output_fingerprint_index], "not_run");
             },
             "q03" => {
+                assert_eq!(fields[planning_outcome_index], "none");
                 assert_eq!(fields[bounded_status_index], "bounded_planning_failed");
+                assert_eq!(fields[final_disposition_index], "rejected");
+                assert_eq!(fields[rejected_before_execution_index], "true");
                 assert_eq!(fields[native_started_index], "false");
                 assert_eq!(fields[runtime_outcome_index], "not_started");
                 assert_eq!(fields[output_fingerprint_index], "not_run");
@@ -416,7 +429,7 @@ fn accepted_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         physical_shape: "NexusNativeExec".to_string(),
         native_candidate_shape: Some("NexusNativeExec".to_string()),
         native_candidate_shape_family: Some("sort_local_parquet_aggregate".to_string()),
-        outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+        outcome: Some(NativeDataFusionPlanningOutcome::Selected),
         reason_code: None,
         unsupported_category: None,
         strict_bounded_contract_rows: Vec::new(),
@@ -427,21 +440,21 @@ fn accepted_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "NexusNativeExec".to_string(),
-        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Native,
+        final_disposition: FinalPlanDisposition::Native,
         native_plan_fragment_count: 1,
         host_datafusion_boundary_count: 0,
         rejected_before_execution: false,
     }
 }
 
-fn rejected_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
+fn not_supported_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
     NativeDataFusionPlanningRow {
         query_id: query_id.to_string(),
         physical_root: "SortExec".to_string(),
         physical_shape: "SortExec(HashJoinExec)".to_string(),
         native_candidate_shape: Some("SortExec(HashJoinExec)".to_string()),
         native_candidate_shape_family: Some("sort_hash_join_aggregate".to_string()),
-        outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+        outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
         reason_code: Some("native_bounded_join_unsupported".to_string()),
         unsupported_category: Some("operator_hashjoin".to_string()),
         strict_bounded_contract_rows: Vec::new(),
@@ -452,10 +465,10 @@ fn rejected_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "SortExec".to_string(),
-        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        final_disposition: FinalPlanDisposition::DataFusion,
         native_plan_fragment_count: 0,
         host_datafusion_boundary_count: 0,
-        rejected_before_execution: true,
+        rejected_before_execution: false,
     }
 }
 

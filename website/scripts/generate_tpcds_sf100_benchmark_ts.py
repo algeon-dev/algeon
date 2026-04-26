@@ -143,7 +143,6 @@ def main() -> None:
         "nativeSourceChunkPlanningMode": gpu_meta.get(
             "tpcds_benchmark_native_source_chunk_planning_mode", "local_parquet_throughput"
         ),
-        "nativeFallbackPolicy": gpu_meta.get("tpcds_benchmark_native_fallback_policy", "gpu_only"),
         "nativeStatisticalAggregateExecutionMode": gpu_meta.get(
             "tpcds_benchmark_native_statistical_aggregate_execution_mode", "gpu_native_tolerant"
         ),

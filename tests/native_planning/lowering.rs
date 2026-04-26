@@ -55,12 +55,12 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
+    capability::CapabilityReason,
     native::{NativeLoweringResult, lower_physical_plan_to_native},
     native_report::{
         NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadInput,
         NativeFallbackPressureWorkloadItem,
     },
-    policy::FallbackReason,
     report::CandidateOutcome,
 };
 use datafusion_nexus_workloads::tpch::write_tiny_tpch_parquet_dataset;
@@ -175,19 +175,19 @@ fn aggregate_expr_on_column_with_alias(
     )
 }
 
-fn assert_distributed_aggregate_rejection(result: &NativeLoweringResult, expected_reason: FallbackReason) {
+fn assert_distributed_aggregate_rejection(result: &NativeLoweringResult, expected_reason: CapabilityReason) {
     assert_native_rejection(result, expected_reason);
 }
 
-fn assert_native_rejection(result: &NativeLoweringResult, expected_reason: FallbackReason) {
+fn assert_native_rejection(result: &NativeLoweringResult, expected_reason: CapabilityReason) {
     assert!(result.plans.is_empty());
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 0);
-    assert_eq!(result.rejected_count(), 1);
-    let CandidateOutcome::Rejected { reason, .. } = result.report.outcomes()[0].clone() else {
+    assert_eq!(result.selected_count(), 0);
+    assert_eq!(result.not_selected_count(), 1);
+    let CandidateOutcome::NotSupported { capability_reason, .. } = result.report.outcomes()[0].clone() else {
         panic!("expected rejected native candidate");
     };
-    assert_eq!(reason, expected_reason);
+    assert_eq!(capability_reason, expected_reason);
 }
 
 fn direct_friendly_sql_session_config() -> SessionConfig {
@@ -317,8 +317,8 @@ fn native_joins(plan: &nexus_query_engine::plan::QueryPlan) -> Vec<&nexus_query_
 
 fn rewritten_native_join(result: &NativeLoweringResult) -> &nexus_query_engine::plan::JoinNode {
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     result.plans[0]
         .nodes()
         .iter()

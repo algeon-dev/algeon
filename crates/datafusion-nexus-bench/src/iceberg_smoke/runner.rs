@@ -36,15 +36,15 @@ pub(crate) async fn run_report_with_optional_stream(
         config.fixture.table_ident_display(),
         config.fixture.credential_source(),
     );
-    let table = load_iceberg_table(&config.fixture).await?;
+    let resolved = load_iceberg_table(&config.fixture).await?;
     eprintln!(
         "[native_iceberg_smoke_report] stage=iceberg_table_load_finish fixture_mode={} table_ident={}",
         config.fixture.mode_code(),
         config.fixture.table_ident_display(),
     );
-    let file_io = table.file_io().clone();
+    let file_io = resolved.table().file_io().clone();
     let catalog_type = config.fixture.catalog_type().to_string();
-    let planner = IcebergTableFormatPlanner::new(table.clone())
+    let planner = IcebergTableFormatPlanner::new(resolved.clone())
         .with_catalog_type(catalog_type.clone())
         .with_parquet_read_strategy_config(config.fixture.parquet_read_strategy_config());
     let staging_records = Arc::new(Mutex::new(Vec::new()));
@@ -58,7 +58,7 @@ pub(crate) async fn run_report_with_optional_stream(
         config.table_alias.clone(),
     ));
 
-    let provider = Arc::new(provider_with_native_planner(&table, planner, &catalog_type).await?);
+    let provider = Arc::new(provider_with_native_planner(&resolved, planner, &catalog_type).await?);
     let (ctx, native_rule) =
         native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::Smoke).await?;
     ctx.register_table(config.table_alias.as_str(), provider)?;
@@ -135,14 +135,14 @@ pub(crate) async fn run_tpch_subset_report_with_execution_mode(
             table_fixture.table_ident_display(),
             table_fixture.credential_source(),
         );
-        let table = load_iceberg_table(&table_fixture).await?;
+        let resolved = load_iceberg_table(&table_fixture).await?;
         eprintln!(
             "[native_iceberg_smoke_report] stage=iceberg_table_load_finish fixture_mode={} table_ident={}",
             table_fixture.mode_code(),
             table_fixture.table_ident_display(),
         );
-        let file_io = table.file_io().clone();
-        let planner = IcebergTableFormatPlanner::new(table.clone())
+        let file_io = resolved.table().file_io().clone();
+        let planner = IcebergTableFormatPlanner::new(resolved.clone())
             .with_catalog_type(catalog_type.clone())
             .with_parquet_read_strategy_config(table_fixture.parquet_read_strategy_config());
         let staging_planner = Arc::new(StagingTableFormatPlanner::new(
@@ -153,7 +153,7 @@ pub(crate) async fn run_tpch_subset_report_with_execution_mode(
             Arc::clone(&staging_records),
             (*table_name).to_string(),
         ));
-        let provider = Arc::new(provider_with_native_planner(&table, staging_planner, &catalog_type).await?);
+        let provider = Arc::new(provider_with_native_planner(&resolved, staging_planner, &catalog_type).await?);
         ctx.register_table(*table_name, provider)?;
     }
 
@@ -244,14 +244,14 @@ pub(crate) async fn run_tpcds_subset_report(
             table_fixture.table_ident_display(),
             table_fixture.credential_source(),
         );
-        let table = load_iceberg_table(&table_fixture).await?;
+        let resolved = load_iceberg_table(&table_fixture).await?;
         eprintln!(
             "[native_iceberg_smoke_report] stage=iceberg_table_load_finish fixture_mode={} table_ident={}",
             table_fixture.mode_code(),
             table_fixture.table_ident_display(),
         );
-        let file_io = table.file_io().clone();
-        let planner = IcebergTableFormatPlanner::new(table.clone())
+        let file_io = resolved.table().file_io().clone();
+        let planner = IcebergTableFormatPlanner::new(resolved.clone())
             .with_catalog_type(catalog_type.clone())
             .with_parquet_read_strategy_config(table_fixture.parquet_read_strategy_config());
         let staging_planner = Arc::new(StagingTableFormatPlanner::new(
@@ -262,7 +262,7 @@ pub(crate) async fn run_tpcds_subset_report(
             Arc::clone(&staging_records),
             (*table_name).to_string(),
         ));
-        let provider = Arc::new(provider_with_native_planner(&table, staging_planner, &catalog_type).await?);
+        let provider = Arc::new(provider_with_native_planner(&resolved, staging_planner, &catalog_type).await?);
         ctx.register_table(*table_name, provider)?;
     }
 
@@ -461,14 +461,14 @@ pub(crate) async fn register_custom_probe_table(
         table_fixture.table_ident_display(),
         table_fixture.credential_source(),
     );
-    let table = load_iceberg_table(table_fixture).await?;
+    let resolved = load_iceberg_table(table_fixture).await?;
     eprintln!(
         "[native_iceberg_smoke_report] stage=iceberg_table_load_finish fixture_mode={} table_ident={}",
         table_fixture.mode_code(),
         table_fixture.table_ident_display(),
     );
-    let file_io = table.file_io().clone();
-    let planner = IcebergTableFormatPlanner::new(table.clone())
+    let file_io = resolved.table().file_io().clone();
+    let planner = IcebergTableFormatPlanner::new(resolved.clone())
         .with_catalog_type(catalog_type.to_string())
         .with_parquet_read_strategy_config(table_fixture.parquet_read_strategy_config());
     let staging_planner = Arc::new(StagingTableFormatPlanner::new(
@@ -479,25 +479,25 @@ pub(crate) async fn register_custom_probe_table(
         staging_records,
         table_name.to_string(),
     ));
-    let provider = Arc::new(provider_with_native_planner(&table, staging_planner, catalog_type).await?);
+    let provider = Arc::new(provider_with_native_planner(&resolved, staging_planner, catalog_type).await?);
     ctx.register_table(table_name, provider)?;
     Ok(())
 }
 
 async fn provider_with_native_planner<P>(
-    table: &Table,
+    resolved: &ResolvedIcebergTable,
     planner: Arc<P>,
     catalog_type: &str,
 ) -> SmokeResult<NexusIcebergTableProvider>
 where
     P: TableFormatPlanner + Send + Sync + 'static,
 {
-    let resolved_snapshot_id = table.metadata().current_snapshot_id();
+    let resolved_snapshot_id = resolved.facts().snapshot.snapshot_id;
     let cpu_provider = match resolved_snapshot_id {
         Some(snapshot_id) => {
-            IcebergStaticTableProvider::try_new_from_table_snapshot(table.clone(), snapshot_id).await?
+            IcebergStaticTableProvider::try_new_from_table_snapshot(resolved.table().clone(), snapshot_id).await?
         },
-        None => IcebergStaticTableProvider::try_new_from_table(table.clone()).await?,
+        None => IcebergStaticTableProvider::try_new_from_table(resolved.table().clone()).await?,
     };
     let cpu_provider: Arc<dyn datafusion::datasource::TableProvider> = Arc::new(cpu_provider);
     Ok(NexusIcebergTableProvider::from_cpu_provider_and_native_planner(cpu_provider, resolved_snapshot_id, planner)
@@ -521,9 +521,9 @@ pub(crate) fn query_error_report_row(
         table_ident,
         sql,
         aggregate_scan_diagnostics(&records),
-        NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+        None,
         Some("query_error".to_string()),
-        NativeDataFusionPostNativeExecutionPath::Cpu,
+        FinalPlanDisposition::Rejected,
         None,
         aggregate_staging_summary(&records),
         credential_source,
@@ -587,20 +587,24 @@ pub(crate) async fn run_query_with_registered_native_tables(
         sql.clone(),
         diagnostics,
         planning_row.outcome,
-        planning_row.reason_code.as_deref().and_then(FallbackReason::from_code).map(|reason| reason.code().to_string()),
-        planning_row.post_native_execution_path,
+        planning_row
+            .reason_code
+            .as_deref()
+            .and_then(CapabilityReason::from_code)
+            .map(|reason| reason.code().to_string()),
+        planning_row.final_disposition,
         None,
         staging_summary,
         credential_source,
     );
 
-    let should_execute_native = planning_row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced
-        && planning_row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native;
+    let should_execute_native = planning_row.outcome == Some(NativeDataFusionPlanningOutcome::Selected)
+        && planning_row.final_disposition == FinalPlanDisposition::Native;
     eprintln!(
-        "[native_iceberg_smoke_report] stage=query_planning_finish query_id={} native_planning_outcome={} post_native_execution_path={} planned_data_file_count={} native_source_read_capability={}",
+        "[native_iceberg_smoke_report] stage=query_planning_finish query_id={} native_planning_outcome={} final_disposition={} planned_data_file_count={} native_source_read_capability={}",
         row.query_id,
-        row.native_planning_outcome.as_str(),
-        row.post_native_execution_path.as_str(),
+        row.native_planning_outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
+        row.final_disposition.as_str(),
         row.diagnostics.planned_data_file_count,
         empty_as_none(&row.diagnostics.native_source_read_capability),
     );
@@ -828,16 +832,16 @@ fn log_native_plan_debug_row(
     post_native_plan: &dyn ExecutionPlan,
 ) {
     eprintln!(
-        "[native_iceberg_smoke_report] stage=native_plan_debug query_id={} physical_root={} physical_shape={} native_candidate_shape={} native_candidate_shape_family={} outcome={} reason_code={} post_native_plan_root={} post_native_execution_path={} native_plan_fragment_count={} host_datafusion_boundary_count={}",
+        "[native_iceberg_smoke_report] stage=native_plan_debug query_id={} physical_root={} physical_shape={} native_candidate_shape={} native_candidate_shape_family={} outcome={} reason_code={} post_native_plan_root={} final_disposition={} native_plan_fragment_count={} host_datafusion_boundary_count={}",
         query_id,
         stable_tsv_field(&planning_row.physical_root),
         stable_tsv_field(&planning_row.physical_shape),
         stable_tsv_field(planning_row.native_candidate_shape.as_deref().unwrap_or("none")),
         stable_tsv_field(planning_row.native_candidate_shape_family.as_deref().unwrap_or("none")),
-        planning_row.outcome.as_str(),
+        planning_row.outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
         stable_tsv_field(planning_row.reason_code.as_deref().unwrap_or("none")),
         stable_tsv_field(&planning_row.post_native_plan_root),
-        planning_row.post_native_execution_path.as_str(),
+        planning_row.final_disposition.as_str(),
         planning_row.native_plan_fragment_count,
         planning_row.host_datafusion_boundary_count,
     );

@@ -184,6 +184,7 @@ impl NativeMetricsCapture {
         }
     }
 
+    #[cfg(any(feature = "server", test))]
     pub(crate) fn coordinated(query_id: impl Into<Arc<str>>, observation: RuntimeObservationHandle) -> Self {
         let metric_capture_limits = observation.config().limits();
         Self {
@@ -196,6 +197,7 @@ impl NativeMetricsCapture {
         }
     }
 
+    #[cfg(any(feature = "server", test))]
     pub(crate) fn with_observation_activity_factory(mut self, factory: NativeObservationActivityFactory) -> Self {
         self.coordinated_activity = Some(factory);
         self

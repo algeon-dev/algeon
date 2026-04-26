@@ -117,7 +117,7 @@ fn register(coordinator: &Arc<QueryCoordinator>, query_id: &str) -> QueryPlannin
 
 fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
     let mut report = PlanningReport::new();
-    report.push_rewritten(GpuCandidate::new("test_native_plan", 1));
+    report.push_selected(GpuCandidate::new("test_native_plan", 1));
     NativePlanningDiagnostics {
         input_plan_root: "EmptyExec".to_string(),
         input_plan_shape: "EmptyExec".to_string(),
@@ -1150,6 +1150,50 @@ fn structured_failure_stats_keep_log_safe_facts_and_first_terminal() {
 }
 
 #[test]
+fn terminal_runtime_footer_preserves_structured_error_identity_after_capture_truncation() {
+    let mut limited = config();
+    limited.per_query_capture_max_bytes = 1;
+    let coordinator = QueryCoordinator::new(limited);
+    let mut execution = register(&coordinator, "terminal-error-identity").into_execution().unwrap();
+    execution.finish_failed(
+        "collect",
+        CapturedError {
+            code: "cudf_resource_exhausted".to_string(),
+            kind: "resource_exhausted".to_string(),
+            status: "temporary".to_string(),
+            operation: "datafusion_nexus.test.terminal_error_identity".to_string(),
+            message: "native execution failed".to_string(),
+            facts: Vec::new(),
+            diagnostic: "native execution failed".to_string(),
+            source_chain: None,
+            root_cause: None,
+        },
+    );
+
+    let jsonl = {
+        let state = coordinator.lock_state();
+        let key = state.current.get("terminal-error-identity").expect("query remains addressable");
+        let record = state.records.get(key).expect("terminal record remains retained");
+        record
+            .retained
+            .as_ref()
+            .and_then(|bundle| bundle.runtime_jsonl.as_ref())
+            .expect("capture-truncated records retain their runtime JSONL internally")
+            .clone()
+    };
+    let footer = std::str::from_utf8(&jsonl)
+        .expect("runtime JSONL is UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("runtime JSONL is valid"))
+        .find(|record| record["record_type"] == "footer")
+        .expect("sealed runtime JSONL has one footer");
+
+    assert_eq!(footer["data"]["terminal"]["kind"], "failed");
+    assert_eq!(footer["data"]["terminal"]["error_code"], "cudf_resource_exhausted");
+    assert_eq!(footer["data"]["terminal"]["error_status"], "temporary");
+}
+
+#[test]
 fn over_budget_terminal_becomes_explicit_unavailable_tombstone() {
     let mut limited = config();
     limited.retained_max_bytes = 1;
@@ -1554,10 +1598,11 @@ fn hot_counter_saturation_is_truthfully_exported_as_incomplete() {
 }
 
 #[test]
-fn full_stats_projection_distinguishes_context_and_runtime_failures() {
-    for (query_id, stage, expected_started, expected_outcome) in [
-        ("context-failure", "runtime_context", "false", "not_started"),
-        ("execution-failure", "runtime_execution", "true", "failed"),
+fn full_stats_projection_keeps_cpu_baseline_failures_not_started() {
+    for (query_id, stage) in [
+        ("context-failure", "runtime_context"),
+        // Error staging alone cannot turn a DataFusion-only final plan into native runtime.
+        ("execution-failure", "runtime_execution"),
     ] {
         let coordinator = QueryCoordinator::new(config());
         let planning = register(&coordinator, query_id);
@@ -1571,8 +1616,8 @@ fn full_stats_projection_distinguishes_context_and_runtime_failures() {
 
         let payload = coordinator.query_stats(query_id).unwrap();
         let payload = std::str::from_utf8(&payload).unwrap();
-        assert_eq!(tsv_value(payload, "execution", "native_runtime_started"), expected_started, "{payload}");
-        assert_eq!(tsv_value(payload, "execution", "runtime_outcome"), expected_outcome, "{payload}");
+        assert_eq!(tsv_value(payload, "execution", "native_runtime_started"), "false", "{payload}");
+        assert_eq!(tsv_value(payload, "execution", "runtime_outcome"), "not_started", "{payload}");
     }
 }
 

@@ -1,17 +1,6 @@
 use std::{num::NonZeroUsize, sync::Barrier};
 
-use arrow::datatypes::{DataType, Field, Schema};
-use datafusion::{
-    common::config::ConfigOptions,
-    logical_expr::Operator,
-    physical_expr::expressions::{binary, col},
-    physical_optimizer::PhysicalOptimizerRule,
-    physical_plan::{
-        ExecutionPlan,
-        empty::EmptyExec,
-        projection::{ProjectionExec, ProjectionExpr},
-    },
-};
+use datafusion::execution::SessionStateBuilder;
 use nexus_query_engine::runtime::{QueryPlacementPolicy, SlotGuarantee};
 use tokio_util::sync::CancellationToken;
 
@@ -19,9 +8,11 @@ use super::*;
 use crate::{
     backend::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusMemoryPolicy},
     native_exec::{NativeMetricsCapture, NexusNativeExecutionConfig},
-    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::FallbackReason,
-    report::CandidateOutcome,
+    planner::{
+        HostExecutionQosConfig, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NEXUS_HOST_EXECUTION_QOS_RULE_NAME,
+        NexusNativeOptimizerConfig,
+    },
+    session::NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
 };
 
 const TEST_DEVICE_BUDGET_BYTES: u64 = 4096;
@@ -50,8 +41,7 @@ fn base_config() -> ServerConfig {
         log_filter: "info".to_string(),
         max_in_flight: 1,
         admission_policy: crate::backend::NexusAdmissionPolicy::default().with_max_concurrent_queries(1),
-        cpu_fallback_max_concurrent_statements: None,
-        cpu_fallback_wait_timeout: None,
+        host_execution_qos: None,
         gpu_devices: vec![0],
         device_budget_fraction: None,
         statement_ticket_ttl: std::time::Duration::from_secs(60),
@@ -330,24 +320,6 @@ async fn supervisor_uses_captured_expired_plan_after_coordinator_finalization_cl
     assert!(admission.try_acquire().is_err(), "admission cleanup closes the gate under the captured plan");
 }
 
-fn empty_exec_plan() -> Arc<dyn ExecutionPlan> {
-    Arc::new(EmptyExec::new(Arc::new(Schema::empty())))
-}
-
-fn unsupported_projection_plan() -> Arc<dyn ExecutionPlan> {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("m00", DataType::Int64, false),
-        Field::new("m01", DataType::Int64, false),
-    ]));
-    let input = Arc::new(EmptyExec::new(Arc::clone(&schema))) as Arc<dyn ExecutionPlan>;
-    let remainder =
-        binary(col("m00", &schema).unwrap(), Operator::Modulo, col("m01", &schema).unwrap(), &schema).unwrap();
-
-    Arc::new(
-        ProjectionExec::try_new([ProjectionExpr { expr: remainder, alias: "remainder".to_string() }], input).unwrap(),
-    )
-}
-
 #[tokio::test]
 async fn builder_rejects_session_context_without_injected_backend() {
     let config = bounded_config(1);
@@ -500,31 +472,64 @@ async fn builder_rejects_injected_backend_device_budget_fraction_conflict() {
 }
 
 #[tokio::test]
-async fn builder_rejects_injected_backend_fallback_wait_timeout_conflict() {
-    let mut backend_config = bounded_config(1);
-    backend_config.native_optimizer_config = backend_config
-        .native_optimizer_config
-        .with_cpu_fallback_wait_timeout(std::time::Duration::from_millis(7000))
-        .with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
-    let backend = NexusGpuBackend::from_optimizer_config_for_admission_only(
-        backend_config.native_optimizer_config.clone(),
-        backend_config.gpu_devices.clone(),
-        admission::server_admission_policy(&backend_config),
-        nexus_query_engine::runtime::TenantId::new("default"),
-    )
-    .unwrap()
-    .expect("bounded config should build backend");
-
+async fn injected_backend_allows_independent_host_execution_qos() {
+    let backend = admission_only_backend(1);
     let mut config = bounded_config(1);
-    config.native_optimizer_config = config
-        .native_optimizer_config
-        .with_cpu_fallback_wait_timeout(std::time::Duration::from_millis(5000))
-        .with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
+    config.host_execution_qos = Some(
+        HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap())
+            .with_wait_timeout(std::time::Duration::from_millis(5000)),
+    );
 
-    let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+    let ctx = build_session_context_with_backend(&config, Some(&backend))
+        .await
+        .expect("host QoS is server-owned and must not conflict with backend GPU admission");
+    let state = ctx.state();
+    let rules = state.physical_optimizers();
+    let native = rules
+        .iter()
+        .position(|rule| rule.name() == NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME)
+        .expect("backend native selection rule installed");
+    let host_qos = rules
+        .iter()
+        .position(|rule| rule.name() == NEXUS_HOST_EXECUTION_QOS_RULE_NAME)
+        .expect("server host QoS rule installed");
+    let requirement = rules
+        .iter()
+        .position(|rule| rule.name() == NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME)
+        .expect("final-plan requirement rule installed");
 
-    assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("fallback.wait_timeout_ms"));
+    assert!(native < host_qos && host_qos < requirement);
+}
+
+#[tokio::test]
+async fn builder_requires_injected_session_host_execution_qos_to_match_config() {
+    let backend = admission_only_backend(1);
+    let mut config = bounded_config(1);
+    config.host_execution_qos = Some(HostExecutionQosConfig::new(NonZeroUsize::new(2).unwrap()));
+
+    let missing_qos_state = backend.install_on(SessionStateBuilder::new()).unwrap().build();
+    let missing_qos_ctx = Arc::new(SessionContext::new_with_state(missing_qos_state));
+    let error = builder_error(
+        FlightSqlServer::builder().config(config.clone()).backend(backend.clone()).session_context(missing_qos_ctx),
+    )
+    .await;
+    assert_eq!(error.fact_value("reason"), Some("server_session_host_execution_qos_mismatch"));
+
+    let matching_qos_ctx = Arc::new(
+        build_session_context_with_backend(&config, Some(&backend)).await.expect("matching host QoS installs"),
+    );
+    let server = FlightSqlServer::builder()
+        .config(config)
+        .backend(backend)
+        .session_context(matching_qos_ctx)
+        .build()
+        .await
+        .expect("matching injected host QoS is accepted");
+    assert_eq!(
+        crate::session::installed_host_execution_qos_config(&server.session_context().state())
+            .map(|qos| qos.max_concurrent_statements().get()),
+        Some(2)
+    );
 }
 
 #[tokio::test]
@@ -541,38 +546,6 @@ async fn build_session_context_with_backend_installs_backend_admission_source() 
         optimizer_config
             .native_execution_config()
             .query_admission_source_matches(backend.query_service(), backend.tenant_id())
-    );
-}
-
-#[test]
-fn server_cpu_fallback_limit_reaches_optimizer_fallback_plan() {
-    let mut config = bounded_config(1);
-    config.native_optimizer_config =
-        config.native_optimizer_config.with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
-    let rule = NexusNativePhysicalOptimizerRule::new(config.native_optimizer_config.clone());
-    let fallback_plan = unsupported_projection_plan();
-
-    let optimized = rule.optimize(fallback_plan, &ConfigOptions::new()).unwrap();
-    let fallback_report = rule.last_report().expect("optimizer should retain a fallback planning report");
-
-    assert_eq!(fallback_report.rewritten_count(), 0, "outcomes={:?}", fallback_report.outcomes());
-    assert!(matches!(
-        fallback_report.outcomes(),
-        [CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }]
-    ));
-    assert!(
-        crate::native_exec::plan_is_cpu_fallback_limited(optimized.as_ref()),
-        "configured server fallback limit must wrap non-rewritten CPU fallback plans"
-    );
-
-    let optimized_empty = rule.optimize(empty_exec_plan(), &ConfigOptions::new()).unwrap();
-    let empty_report = rule.last_report().expect("optimizer should retain an empty-input planning report");
-
-    assert_eq!(empty_report.rewritten_count(), 1, "outcomes={:?}", empty_report.outcomes());
-    assert_eq!(empty_report.rejected_count(), 0, "outcomes={:?}", empty_report.outcomes());
-    assert!(
-        !crate::native_exec::plan_is_cpu_fallback_limited(optimized_empty.as_ref()),
-        "rewritten EmptyExec plans must not take the CPU fallback limiter"
     );
 }
 
@@ -664,11 +637,15 @@ fn iceberg_backend_snapshot_sanitizes_rest_urls_for_logs() {
             "lake",
             "https://user:rest-secret@rest.local:8181/catalog?token=secret#frag",
             "s3://lakehouse/warehouse",
-        )
-        .with_s3_endpoint("http://user:s3-secret@rustfs.local:9000/path?sig=secret#frag"),
+        ),
+    );
+    let source_access = crate::table_format::iceberg::SourceAccessPolicy::s3_custom_endpoint(
+        "http://user:s3-secret@rustfs.local:9000/path?sig=secret#frag",
+        None,
+        Some(true),
     );
 
-    let snapshot = iceberg_backend_snapshot(&backend);
+    let snapshot = iceberg_backend_snapshot(&backend, &source_access);
 
     assert_eq!(snapshot.rest_uri, "https://rest.local:8181/catalog");
     assert_eq!(snapshot.rest_s3_endpoint, "http://rustfs.local:9000/path");

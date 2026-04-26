@@ -20,6 +20,7 @@ use super::{
     naming::unique_name_with_suffix,
 };
 use crate::{
+    capability::CapabilityReason,
     native::{
         expression_contract::{
             JoinResidualCastMode, ScalarFunctionKind, ValidatedJoinResidual, case_expr_data_type,
@@ -27,7 +28,6 @@ use crate::{
         },
         literal::{literal_i32, substring_stop_position},
     },
-    policy::FallbackReason,
 };
 
 /// Residual predicate lowered for a native join, plus the input columns and
@@ -48,19 +48,22 @@ pub(super) struct JoinResidualMaterializations {
 }
 
 impl JoinResidualMaterializations {
-    fn side_mut(&mut self, side: DataFusionJoinSide) -> Result<&mut Vec<JoinResidualMaterialization>, FallbackReason> {
+    fn side_mut(
+        &mut self,
+        side: DataFusionJoinSide,
+    ) -> Result<&mut Vec<JoinResidualMaterialization>, CapabilityReason> {
         match side {
             DataFusionJoinSide::Left => Ok(&mut self.left),
             DataFusionJoinSide::Right => Ok(&mut self.right),
-            DataFusionJoinSide::None => Err(FallbackReason::UnsupportedExpression),
+            DataFusionJoinSide::None => Err(CapabilityReason::UnsupportedExpression),
         }
     }
 
-    pub(super) fn side(&self, side: DataFusionJoinSide) -> Result<&[JoinResidualMaterialization], FallbackReason> {
+    pub(super) fn side(&self, side: DataFusionJoinSide) -> Result<&[JoinResidualMaterialization], CapabilityReason> {
         match side {
             DataFusionJoinSide::Left => Ok(&self.left),
             DataFusionJoinSide::Right => Ok(&self.right),
-            DataFusionJoinSide::None => Err(FallbackReason::UnsupportedExpression),
+            DataFusionJoinSide::None => Err(CapabilityReason::UnsupportedExpression),
         }
     }
 }
@@ -95,7 +98,7 @@ pub(super) fn lower_join_filter(
     contract: &ValidatedJoinResidual<'_>,
     canonical: CanonicalJoin,
     bindings: Option<JoinResidualInputBindings<'_>>,
-) -> Result<LoweredJoinResidual, FallbackReason> {
+) -> Result<LoweredJoinResidual, CapabilityReason> {
     // Supported residual vocabulary is deliberately small. Expressions the
     // cuDF join AST cannot represent directly may be materialized on one input
     // side, but a residual predicate must still reference both sides.
@@ -132,7 +135,7 @@ fn lower_join_filter_expr(
     left_required: &mut BTreeSet<usize>,
     right_required: &mut BTreeSet<usize>,
     materializations: &mut JoinResidualMaterializations,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         return lower_join_filter_column(column, context, left_required, right_required);
     }
@@ -201,7 +204,7 @@ fn lower_join_filter_expr(
                 );
                 lower_join_filter_expr(item, context, left_required, right_required, materializations)
             })
-            .collect::<Result<Vec<_>, FallbackReason>>()?;
+            .collect::<Result<Vec<_>, CapabilityReason>>()?;
         return Ok(if in_list.negated() {
             NativeExpr::not_in_list(expr, list)
         } else {
@@ -226,7 +229,7 @@ fn lower_join_filter_case_expr(
     left_required: &mut BTreeSet<usize>,
     right_required: &mut BTreeSet<usize>,
     materializations: &mut JoinResidualMaterializations,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let base_expr = case
         .expr()
         .map(|expr| lower_join_filter_expr(expr, context, left_required, right_required, materializations))
@@ -248,7 +251,7 @@ fn lower_join_filter_case_expr(
                 lower_join_filter_expr(then, context, left_required, right_required, materializations)?,
             ))
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let else_expr = match case.else_expr() {
         Some(else_expr) => lower_join_filter_expr(else_expr, context, left_required, right_required, materializations)?,
         None => {
@@ -266,7 +269,7 @@ fn materialize_join_residual_expr(
     left_required: &mut BTreeSet<usize>,
     right_required: &mut BTreeSet<usize>,
     materializations: &mut JoinResidualMaterializations,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     // Materializations are valid only when the whole expression belongs to one
     // DataFusion side. Cross-side expressions must remain in the residual AST.
     let side = context.contract.single_side(expr).expect("validated materialized residual must belong to one side");
@@ -300,7 +303,7 @@ fn lower_join_filter_side_expr(
     side_schema: &SchemaRef,
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         let column_index = context
             .filter
@@ -375,7 +378,7 @@ fn lower_join_filter_side_expr(
                 debug_assert!(!literal.value().is_null(), "null materialized IN entry cannot carry a validation proof");
                 lower_join_filter_side_expr(item, context, side_schema, side, required)
             })
-            .collect::<Result<Vec<_>, FallbackReason>>()?;
+            .collect::<Result<Vec<_>, CapabilityReason>>()?;
         return Ok(if in_list.negated() {
             NativeExpr::not_in_list(expr, list)
         } else {
@@ -397,7 +400,7 @@ fn lower_join_filter_side_case_expr(
     side_schema: &SchemaRef,
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let base_expr =
         case.expr().map(|expr| lower_join_filter_side_expr(expr, context, side_schema, side, required)).transpose()?;
     let branches = case
@@ -414,7 +417,7 @@ fn lower_join_filter_side_case_expr(
             };
             Ok(NativeCaseWhen::new(when, lower_join_filter_side_expr(then, context, side_schema, side, required)?))
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let else_expr = match case.else_expr() {
         Some(else_expr) => lower_join_filter_side_expr(else_expr, context, side_schema, side, required)?,
         None => {
@@ -432,7 +435,7 @@ fn lower_join_filter_side_scalar_function_expr(
     side_schema: &SchemaRef,
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     match ScalarFunctionKind::from_name(function.name()).expect("validated join residual scalar function") {
         ScalarFunctionKind::Substring => {
             lower_join_filter_side_substring_function(function, context, side_schema, side, required)
@@ -463,7 +466,7 @@ fn lower_join_filter_side_substring_function(
     side_schema: &SchemaRef,
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let args = function.args();
     debug_assert!((2..=3).contains(&args.len()), "invalid SUBSTRING arity cannot carry a residual proof");
     let start = literal_i32(&args[1]).expect("validated residual SUBSTRING start must be an i32 literal");
@@ -491,7 +494,7 @@ fn lower_join_filter_side_string_case_function(
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
     constructor: fn(NativeExpr) -> NativeExpr,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let [expr] = function.args() else { unreachable!("validated residual string case must have one argument") };
     Ok(constructor(lower_join_filter_side_expr(expr, context, side_schema, side, required)?))
 }
@@ -529,7 +532,7 @@ fn lower_join_filter_column(
     context: JoinFilterLoweringContext<'_>,
     left_required: &mut BTreeSet<usize>,
     right_required: &mut BTreeSet<usize>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let column_index = context
         .filter
         .column_indices()
@@ -556,7 +559,7 @@ fn side_native_name<'a>(
     side: DataFusionJoinSide,
     frontend_index: usize,
     fallback_name: &'a str,
-) -> Result<&'a str, FallbackReason> {
+) -> Result<&'a str, CapabilityReason> {
     let Some(bindings) = context.bindings else {
         return Ok(fallback_name);
     };

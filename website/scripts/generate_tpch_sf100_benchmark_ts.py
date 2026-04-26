@@ -143,7 +143,7 @@ def main() -> None:
         "cpuTotalMs": round(cpu_total, 3),
         "gpuTotalMs": round(gpu_total, 3),
         "speedup": round(speedup, 3) if speedup == speedup else None,
-        "allPlanningAccepted": all(r.get("planning_outcome") == "accepted_replaced" for r in rows),
+        "allPlanningAccepted": all(r.get("planning_outcome") == "selected" for r in rows),
         "allRuntimeSucceeded": all(r.get("runtime_outcome") == "succeeded" for r in rows),
         "allParityMatched": all(r.get("parity_status") == "matched" for r in rows),
         "sourceCacheHits": sum(inum(r.get("source_cache_hits")) for r in rows),
@@ -223,7 +223,6 @@ def main() -> None:
             "tpch_benchmark_native_source_cache_max_retained_bytes", "none"
         ),
         "kvikioCompatMode": args.kvikio_compat_mode,
-        "nativeFallbackPolicy": meta_or("tpch_benchmark_native_fallback_policy", "gpu_only"),
     }
 
     payload = {

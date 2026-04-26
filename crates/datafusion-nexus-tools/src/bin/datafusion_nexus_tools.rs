@@ -14,9 +14,6 @@ mod clickbench_stage_probe;
 #[cfg(any(not(test), feature = "server-runtime-observability-e2e"))]
 #[path = "../connection_retry.rs"]
 mod connection_retry;
-#[cfg(all(feature = "cpu-fallback-contract-validate", not(test)))]
-#[path = "../cpu_fallback_contract_validate.rs"]
-mod cpu_fallback_contract_validate;
 #[cfg(all(feature = "cugraph-oracle", not(test)))]
 #[path = "../../../../tests/cugraph/cugraph_bfs_predicate_fixture.rs"]
 mod cugraph_bfs_predicate_fixture;
@@ -29,6 +26,9 @@ mod cugraph_optional_fixture;
 // helpers are only exercised by Cargo test modules that this binary does not pull in.
 #[allow(dead_code, unused_imports)]
 mod cugraph_sql_tests;
+#[cfg(all(feature = "datafusion-baseline-contract-validate", not(test)))]
+#[path = "../datafusion_baseline_contract_validate.rs"]
+mod datafusion_baseline_contract_validate;
 #[cfg(all(feature = "embedded-backend-e2e", not(test)))]
 #[path = "../e2e/embedded_backend_e2e.rs"]
 mod embedded_backend_e2e;
@@ -56,7 +56,7 @@ mod server_iceberg_rest_multigpu_e2e;
 #[cfg(all(feature = "server-runtime-observability-e2e", test))]
 #[path = "../e2e/server_iceberg_rest_multigpu_e2e.rs"]
 mod server_iceberg_rest_multigpu_e2e;
-#[cfg(all(feature = "validate-query", not(test)))]
+#[cfg(feature = "validate-query")]
 #[path = "../validate_query.rs"]
 mod validate_query;
 #[tokio::main(flavor = "current_thread")]
@@ -77,8 +77,8 @@ async fn main() -> ToolResult<()> {
         Some("cugraph-fixture-e2e") => run_cugraph_fixture_e2e(env::args().nth(2)).await,
         Some("validate-query") => run_validate_query(env::args().skip(2).collect()).await,
         Some("clickbench-stage-probe") => run_clickbench_stage_probe(env::args().skip(2).collect()).await,
-        Some("cpu-fallback-contract-validate") => {
-            run_cpu_fallback_contract_validate(env::args().skip(2).collect()).await
+        Some("datafusion-baseline-contract-validate") => {
+            run_datafusion_baseline_contract_validate(env::args().skip(2).collect()).await
         },
         Some("-h" | "--help") | None => {
             print_usage();
@@ -108,7 +108,7 @@ fn print_usage() {
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features server-runtime-observability-e2e -- server-runtime-observability-e2e [OPTIONS]\n\
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features embedded-backend-e2e -- embedded-backend-e2e\n\
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates>\n\
-           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features cpu-fallback-contract-validate -- cpu-fallback-contract-validate [--out-dir DIR]"
+           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features datafusion-baseline-contract-validate -- datafusion-baseline-contract-validate [--out-dir DIR]"
     );
 }
 
@@ -132,24 +132,27 @@ async fn run_flight_sql_query(_args: Vec<String>) -> ToolResult<()> {
     Err("flight-sql-query requires normal cargo run execution".into())
 }
 
-#[cfg(all(feature = "validate-query", not(test)))]
+#[cfg(feature = "validate-query")]
 async fn run_validate_query(args: Vec<String>) -> ToolResult<()> {
     validate_query::run(args).await
 }
 
-#[cfg(not(all(feature = "validate-query", not(test))))]
+#[cfg(not(feature = "validate-query"))]
 async fn run_validate_query(_args: Vec<String>) -> ToolResult<()> {
-    Err("validate-query requires --features validate-query and normal cargo run execution".into())
+    Err("validate-query requires --features validate-query".into())
 }
 
-#[cfg(all(feature = "cpu-fallback-contract-validate", not(test)))]
-async fn run_cpu_fallback_contract_validate(args: Vec<String>) -> ToolResult<()> {
-    cpu_fallback_contract_validate::run(args).await
+#[cfg(all(feature = "datafusion-baseline-contract-validate", not(test)))]
+async fn run_datafusion_baseline_contract_validate(args: Vec<String>) -> ToolResult<()> {
+    datafusion_baseline_contract_validate::run(args).await
 }
 
-#[cfg(not(all(feature = "cpu-fallback-contract-validate", not(test))))]
-async fn run_cpu_fallback_contract_validate(_args: Vec<String>) -> ToolResult<()> {
-    Err("cpu-fallback-contract-validate requires --features cpu-fallback-contract-validate and normal cargo run execution".into())
+#[cfg(not(all(feature = "datafusion-baseline-contract-validate", not(test))))]
+async fn run_datafusion_baseline_contract_validate(_args: Vec<String>) -> ToolResult<()> {
+    Err(
+        "datafusion-baseline-contract-validate requires --features datafusion-baseline-contract-validate and normal cargo run execution"
+            .into(),
+    )
 }
 
 #[cfg(all(feature = "clickbench-stage-probe", not(test)))]

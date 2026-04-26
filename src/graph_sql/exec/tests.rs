@@ -923,7 +923,10 @@ async fn graph_native_failure_retains_failed_evidence_and_original_error() {
     assert_eq!(retained[0].footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
     assert_eq!(
         retained[1].footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed { error_code: "cudf_invalid_input".to_string() })
+        Some(RuntimeTerminalOutcome::Failed {
+            error_code: "cudf_invalid_input".to_string(),
+            error_status: ErrorCode::CudfInvalidInput.status().as_str().to_string(),
+        })
     );
     assert!(retained[1].footer().complete);
     assert!(retained[1].events().len() >= 2, "failure retains query and plan start evidence");

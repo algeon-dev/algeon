@@ -7,7 +7,9 @@ use datafusion::{
 };
 use nexus_query_engine::{metrics::QueryId, plan::PlanNode, runtime::QueryPlacementHint};
 
-use super::{FinalPlanDisposition, FinalPlanRequirement, NexusNativeOptimizerConfig, classify_final_plan};
+use super::{
+    FinalPlanDisposition, FinalPlanRequirement, HostExecutionQosConfig, NexusNativeOptimizerConfig, classify_final_plan,
+};
 use crate::{
     error::{Error, ErrorCode},
     native::lakehouse_pruning,
@@ -15,9 +17,9 @@ use crate::{
         NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
         admission::QueryAdmissionTicket,
         graph::{GraphAdmissionModelAsk, graph_execution_plan},
-        plan_is_cpu_fallback_limited, plan_is_query_admission_wrapped, plan_is_unbounded_native_execution_limited,
-        wrap_plan_with_cpu_fallback_limit, wrap_plan_with_query_admission_ticket,
-        wrap_plan_with_unbounded_native_execution_limit,
+        plan_is_host_execution_qos_limited, plan_is_query_admission_wrapped,
+        plan_is_unbounded_native_execution_limited, wrap_plan_with_host_execution_qos,
+        wrap_plan_with_query_admission_ticket, wrap_plan_with_unbounded_native_execution_limit,
     },
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
     physical_plan::physical_plan_shape,
@@ -42,6 +44,53 @@ pub use strict_bounded::{
 
 /// Internal optimizer-rule identity for completed-plan requirements.
 pub const NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME: &str = "datafusion_nexus_final_plan_requirement";
+/// Internal optimizer-rule identity for host-side statement execution QoS.
+pub const NEXUS_HOST_EXECUTION_QOS_RULE_NAME: &str = "datafusion_nexus_host_execution_qos";
+
+/// Applies host-side statement QoS to exact completed DataFusion and mixed
+/// physical plans. Native-only plans continue directly to GPU admission.
+#[derive(Debug, Clone)]
+pub struct NexusHostExecutionQosRule {
+    config: HostExecutionQosConfig,
+}
+
+impl NexusHostExecutionQosRule {
+    /// Create an outer statement-final host QoS rule.
+    pub fn new(config: HostExecutionQosConfig) -> Self {
+        Self { config }
+    }
+
+    #[cfg(feature = "server")]
+    pub(crate) fn config(&self) -> &HostExecutionQosConfig {
+        &self.config
+    }
+}
+
+impl PhysicalOptimizerRule for NexusHostExecutionQosRule {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        _config: &ConfigOptions,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if plan_is_host_execution_qos_limited(plan.as_ref()) {
+            return Ok(plan);
+        }
+        match classify_final_plan(plan.as_ref()) {
+            FinalPlanDisposition::DataFusion | FinalPlanDisposition::Mixed => {
+                Ok(wrap_plan_with_host_execution_qos(plan, self.config.limiter()))
+            },
+            FinalPlanDisposition::Native | FinalPlanDisposition::Rejected => Ok(plan),
+        }
+    }
+
+    fn name(&self) -> &str {
+        NEXUS_HOST_EXECUTION_QOS_RULE_NAME
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
 
 /// Enforces configured requirements against the exact physical plan produced by
 /// the preceding native rewrite and leaf-guard rules.
@@ -117,21 +166,21 @@ fn final_plan_requirement_error(
     .with_fact("observed_final_plan_disposition", disposition.as_str())
     .with_fact("terminal_plan_disposition", FinalPlanDisposition::Rejected.as_str())
     .with_fact("physical_plan_root", plan.name());
-    if let Some((candidate, reason)) = report.and_then(first_native_rejection) {
+    if let Some((candidate, capability_reason)) = report.and_then(first_native_not_supported) {
         error = error
             .with_fact("candidate_shape", candidate.shape.as_str())
-            .with_fact("fallback_reason", reason.code())
+            .with_fact("capability_reason", capability_reason.code())
             .with_fact("operator_count", candidate.operator_count);
     }
     error
 }
 
-fn first_native_rejection(
+fn first_native_not_supported(
     report: &PlanningReport,
-) -> Option<(&crate::report::GpuCandidate, crate::policy::FallbackReason)> {
+) -> Option<(&crate::report::GpuCandidate, crate::capability::CapabilityReason)> {
     report.outcomes().iter().find_map(|outcome| match outcome {
-        CandidateOutcome::Rejected { candidate, reason } => Some((candidate, *reason)),
-        CandidateOutcome::Rewritten { .. } => None,
+        CandidateOutcome::NotSupported { candidate, capability_reason } => Some((candidate, *capability_reason)),
+        CandidateOutcome::Selected { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
     })
 }
 
@@ -308,7 +357,7 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         if plan_is_unbounded_native_execution_limited(plan.as_ref()) {
             return Ok(plan);
         }
-        if plan_is_cpu_fallback_limited(plan.as_ref()) {
+        if plan_is_host_execution_qos_limited(plan.as_ref()) {
             return Ok(plan);
         }
         if plan.downcast_ref::<NexusNativeExec>().is_some() || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
@@ -335,20 +384,20 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         let effective_config = effective_config.with_native_execution_config(native_execution_config);
         let native_execution_config = effective_config.native_execution_config();
         let native_optimizer_options = effective_config.native_optimizer_options();
-        let native_plan_preference_options = effective_config.native_plan_preference_options();
+        let native_plan_cost_options = effective_config.native_plan_cost_options();
 
         let optimized = match self.stage {
             NativeOptimizerStage::CountOnlyProbe => optimize_count_only_native_plan(
                 Arc::clone(&plan),
                 native_execution_config,
                 native_optimizer_options,
-                native_plan_preference_options,
+                native_plan_cost_options,
             )?,
             NativeOptimizerStage::Final => optimize_final_native_plan(
                 Arc::clone(&plan),
                 native_execution_config,
                 native_optimizer_options,
-                native_plan_preference_options,
+                native_plan_cost_options,
             )?,
         };
         let mut optimized = optimized;
@@ -357,13 +406,7 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         } else {
             None
         };
-        apply_execution_admission_wrappers(
-            self.stage,
-            &mut optimized,
-            &effective_config,
-            native_execution_config,
-            query_admission_ticket,
-        );
+        apply_execution_admission_wrappers(&mut optimized, native_execution_config, query_admission_ticket);
         self.store_optimization_attempt(&optimized)?;
         Ok(optimized.plan)
     }
@@ -406,9 +449,7 @@ impl NexusNativePhysicalOptimizerRule {
 }
 
 fn apply_execution_admission_wrappers(
-    stage: NativeOptimizerStage,
     optimized: &mut NativeOptimizationAttempt,
-    effective_config: &NexusNativeOptimizerConfig,
     native_execution_config: &NexusNativeExecutionConfig,
     query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
 ) {
@@ -424,11 +465,6 @@ fn apply_execution_admission_wrappers(
         && let Some(limiter) = native_execution_config.unbounded_native_execution_limiter()
     {
         optimized.plan = wrap_plan_with_unbounded_native_execution_limit(Arc::clone(&optimized.plan), limiter);
-    } else if !optimized.rewritten
-        && stage == NativeOptimizerStage::Final
-        && let Some(limiter) = effective_config.cpu_fallback_statement_limiter()
-    {
-        optimized.plan = wrap_plan_with_cpu_fallback_limit(Arc::clone(&optimized.plan), limiter);
     }
 }
 
@@ -636,7 +672,11 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
+    use datafusion::{
+        common::ScalarValue,
+        physical_expr::expressions::lit,
+        physical_plan::{empty::EmptyExec, filter::FilterExec, union::UnionExec},
+    };
     use nexus_query_engine::{
         plan::{
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
@@ -705,18 +745,6 @@ mod tests {
         let returned = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
         assert!(Arc::ptr_eq(&plan, &returned));
-    }
-
-    fn attempt(rewritten: bool) -> NativeOptimizationAttempt {
-        NativeOptimizationAttempt {
-            plan: Arc::new(EmptyExec::new(Arc::new(Schema::empty()))),
-            report: PlanningReport::new(),
-            native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
-            source_diagnostics: Vec::new(),
-            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
-            rewritten,
-        }
     }
 
     fn nongds_deployment() -> DeploymentIoCapability {
@@ -808,45 +836,54 @@ mod tests {
     }
 
     #[test]
-    fn final_rewritten_plan_does_not_consume_cpu_fallback_limiter_in_library_mode() {
-        let config = NexusNativeOptimizerConfig::default()
-            .with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
-        let native_execution_config = config.native_execution_config().clone();
-        let mut optimized = attempt(true);
+    fn host_execution_qos_wraps_datafusion_and_mixed_final_plans_once() {
+        let rule = NexusHostExecutionQosRule::new(HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap()));
+        let datafusion: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        let native = native_exec_leaf();
+        let mixed: Arc<dyn ExecutionPlan> =
+            Arc::new(FilterExec::try_new(lit(ScalarValue::Boolean(Some(true))), native).unwrap());
 
-        apply_execution_admission_wrappers(
-            NativeOptimizerStage::Final,
-            &mut optimized,
-            &config,
-            &native_execution_config,
-            native_execution_config.query_admission_ticket(),
-        );
+        for plan in [datafusion, mixed] {
+            let disposition = classify_final_plan(plan.as_ref());
+            let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
-        assert!(
-            !plan_is_cpu_fallback_limited(optimized.plan.as_ref()),
-            "rewritten GPU plans must not be wrapped by the CPU fallback limiter"
-        );
+            assert!(plan_is_host_execution_qos_limited(optimized.as_ref()));
+            assert_eq!(classify_final_plan(optimized.as_ref()), disposition);
+            let optimized_again = rule.optimize(Arc::clone(&optimized), &ConfigOptions::default()).unwrap();
+            assert!(Arc::ptr_eq(&optimized, &optimized_again), "host QoS must wrap once per final statement");
+        }
     }
 
     #[test]
-    fn final_non_rewritten_plan_is_cpu_fallback_limited_when_configured() {
-        let config = NexusNativeOptimizerConfig::default()
-            .with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
-        let native_execution_config = config.native_execution_config().clone();
-        let mut optimized = attempt(false);
-
-        apply_execution_admission_wrappers(
-            NativeOptimizerStage::Final,
-            &mut optimized,
-            &config,
-            &native_execution_config,
-            native_execution_config.query_admission_ticket(),
+    fn final_plan_requirement_observes_unary_mixed_plan_under_host_execution_qos() {
+        let native = native_exec_leaf();
+        let mixed: Arc<dyn ExecutionPlan> =
+            Arc::new(FilterExec::try_new(lit(ScalarValue::Boolean(Some(true))), native).unwrap());
+        let host_qos = NexusHostExecutionQosRule::new(HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap()));
+        let mixed = host_qos.optimize(mixed, &ConfigOptions::default()).unwrap();
+        let requirement = NexusFinalPlanRequirementRule::new(
+            NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement(),
         );
 
-        assert!(
-            plan_is_cpu_fallback_limited(optimized.plan.as_ref()),
-            "non-rewritten final plans should be wrapped by the configured CPU fallback limiter"
-        );
+        let error = requirement
+            .optimize(mixed, &ConfigOptions::default())
+            .expect_err("NoDataFusionCpu must reject the unary mixed plan under host QoS");
+        let error = error.find_nexus_error().expect("typed adapter error");
+
+        assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+        assert_eq!(error.fact_value("observed_final_plan_disposition"), Some("mixed"));
+    }
+
+    #[test]
+    fn host_execution_qos_leaves_native_final_plans_unwrapped() {
+        let rule = NexusHostExecutionQosRule::new(HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap()));
+        let native = native_exec_leaf();
+
+        let optimized = rule.optimize(Arc::clone(&native), &ConfigOptions::default()).unwrap();
+
+        assert!(Arc::ptr_eq(&native, &optimized));
+        assert!(!plan_is_host_execution_qos_limited(optimized.as_ref()));
+        assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::Native);
     }
 
     #[test]

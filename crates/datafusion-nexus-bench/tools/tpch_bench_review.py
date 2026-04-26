@@ -2,7 +2,7 @@
 """Summarize a native_tpch_benchmark TSV into a CPU-vs-GPU review table.
 
 Reads the TSV emitted by `native_tpch_benchmark` (schema v32+), prints:
-  - per-query CPU/GPU wall, speedup, parity, execution path, dominant runtime
+  - per-query CPU/GPU wall, speedup, parity, final disposition, dominant runtime
     class and the GPU time breakdown that explains where the wall went;
   - overall totals (sum CPU, sum GPU, overall ratio, peak live reservation);
   - a flagged list of queries where GPU is slower or anomalous.
@@ -11,6 +11,10 @@ Usage: tpch_bench_review.py <tsv> [--slow-threshold 2.0]
 """
 from __future__ import annotations
 import sys, argparse
+
+# The TSV header is frozen for downstream compatibility, but its values are
+# FinalPlanDisposition labels: datafusion, native, mixed, or rejected.
+FINAL_DISPOSITION_TSV_COLUMN = "post_native_execution_path"
 
 def load(tsv):
     meta = {}
@@ -55,7 +59,7 @@ def main():
           f"exec_mode={meta.get('tpch_benchmark_native_pipeline_execution_mode','?')}")
     print()
     # header
-    cols = ["query", "path", "parity", "cpu_ms", "gpu_ms", "speedup", "rt_class",
+    cols = ["query", "disposition", "parity", "cpu_ms", "gpu_ms", "speedup", "rt_class",
             "src_read", "operator", "fmerge", "fsort", "matzn", "rsv_peak_GiB", "retry", "denied"]
     print("  ".join(c.ljust(w) for c, w in zip(cols,
           [5,14,9,9,9,7,16,9,9,8,8,8,12,5,6])))
@@ -67,7 +71,7 @@ def main():
     for r in rows:
         q = r["query_id"]
         cpu = f(r["cpu_wall_ms"]); gpu = f(r["native_wall_ms"]); sp = f(r["speedup_vs_cpu"])
-        path = r.get("post_native_execution_path", "?")
+        disposition = r.get(FINAL_DISPOSITION_TSV_COLUMN, "?")
         parity = r.get("parity_status", "?")
         rt = r.get("runtime_operator_class", "?")
         rsv = f(r.get("reservation_live_peak_bytes")) or 0
@@ -78,7 +82,7 @@ def main():
         if gpu: total_gpu += gpu
         rsv_gib = rsv / (1024**3)
         print("  ".join([
-            q.ljust(5), path.ljust(14), parity.ljust(9),
+            q.ljust(5), disposition.ljust(14), parity.ljust(9),
             fmt_ms(cpu), fmt_ms(gpu),
             (f"{sp:6.2f}" if sp is not None else "   n/a").ljust(7),
             rt[:16].ljust(16),
@@ -87,9 +91,9 @@ def main():
             fmt_ms(r.get("materialization_time_ms")),
             f"{rsv_gib:10.2f}", str(retry).rjust(5), str(denied).rjust(6),
         ]))
-        per.append((q, cpu, gpu, sp, path, parity, rt))
-        if sp is None or sp < args.slow_threshold or path != "native" or parity != "matched":
-            flagged.append((q, cpu, gpu, sp, path, parity, rt))
+        per.append((q, cpu, gpu, sp, disposition, parity, rt))
+        if sp is None or sp < args.slow_threshold or disposition != "native" or parity != "matched":
+            flagged.append((q, cpu, gpu, sp, disposition, parity, rt))
 
     print()
     overall = (total_cpu / total_gpu) if total_gpu else float("nan")
@@ -98,9 +102,9 @@ def main():
     n_gpu_faster = sum(1 for p in per if p[3] is not None and p[3] > 1.0)
     print(f"queries GPU faster (speedup>1): {n_gpu_faster}/{len(per)}")
     print()
-    print(f"FLAGGED (speedup<{args.slow_threshold} or not fully native or parity!=matched):")
-    for q, cpu, gpu, sp, path, parity, rt in sorted(flagged, key=lambda x: (x[3] if x[3] is not None else -1)):
-        print(f"  {q}: speedup={sp if sp is not None else 'n/a'} path={path} parity={parity} "
+    print(f"FLAGGED (speedup<{args.slow_threshold} or final disposition is not native or parity!=matched):")
+    for q, cpu, gpu, sp, disposition, parity, rt in sorted(flagged, key=lambda x: (x[3] if x[3] is not None else -1)):
+        print(f"  {q}: speedup={sp if sp is not None else 'n/a'} disposition={disposition} parity={parity} "
               f"rt_class={rt} cpu={cpu}ms gpu={gpu}ms")
 
 if __name__ == "__main__":

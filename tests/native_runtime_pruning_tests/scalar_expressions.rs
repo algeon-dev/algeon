@@ -9,8 +9,8 @@ async fn native_runtime_scalar_expressions_match_cpu_and_collect_required_column
     let cpu_batches = cpu_sql_output(&path, SQL_SCALAR_EXPRESSIONS_QUERY).await;
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_SCALAR_EXPRESSIONS_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.source_diagnostics[0].read_column_count, 3);
     assert_eq!(lowering.source_diagnostics[0].projected_output_column_count, 3);
     assert_eq!(lowering.source_diagnostics[0].pure_filter_column_count, 0);
@@ -43,8 +43,8 @@ async fn native_runtime_nullable_scalar_expressions_match_cpu() {
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_NULLABLE_SCALAR_EXPRESSIONS_QUERY).await;
     let plan_display = displayable(native_physical_plan.as_ref()).indent(true).to_string();
     let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}\n{plan_display}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}\n{plan_display}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}\n{plan_display}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}\n{plan_display}", lowering.report.outcomes());
     assert_eq!(lowering.source_diagnostics[0].read_column_count, 3);
     assert_eq!(lowering.source_diagnostics[0].projected_output_column_count, 3);
     assert_eq!(lowering.source_diagnostics[0].pure_filter_column_count, 0);
@@ -81,7 +81,7 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
         ("extract", SQL_NULL_SEMANTICS_EXTRACT_QUERY),
         ("date-trunc-fixed-grains", SQL_DATE_TRUNC_FIXED_GRAINS_QUERY),
         ("interval", SQL_NULL_SEMANTICS_INTERVAL_QUERY),
-        // Integer modulo now has a dedicated CPU-fallback test below.
+        // Integer modulo now has a dedicated DataFusion-baseline retention test below.
         ("bitwise", SQL_BITWISE_SCALAR_QUERY),
         ("is-null", SQL_NULL_SEMANTICS_IS_NULL_QUERY),
         ("round", SQL_ROUND_SCALAR_QUERY),
@@ -104,8 +104,13 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
         let plan_display = displayable(native_physical_plan.as_ref()).indent(true).to_string();
         let lowering = lower_physical_plan_to_native(native_physical_plan);
-        assert_eq!(lowering.rewritten_count(), 1, "{name} outcomes={:?}\n{plan_display}", lowering.report.outcomes());
-        assert_eq!(lowering.rejected_count(), 0, "{name} outcomes={:?}\n{plan_display}", lowering.report.outcomes());
+        assert_eq!(lowering.selected_count(), 1, "{name} outcomes={:?}\n{plan_display}", lowering.report.outcomes());
+        assert_eq!(
+            lowering.not_selected_count(),
+            0,
+            "{name} outcomes={:?}\n{plan_display}",
+            lowering.report.outcomes()
+        );
 
         let context = bounded_execution_context();
         let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -132,13 +137,13 @@ async fn native_runtime_ilike_rejects_before_native_execution() {
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_NULL_SEMANTICS_ILIKE_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
 
-    assert_eq!(lowering.rewritten_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert!(
         matches!(
             lowering.report.outcomes()[0],
-            datafusion_nexus::report::CandidateOutcome::Rejected {
-                reason: datafusion_nexus::policy::FallbackReason::UnsupportedExpression,
+            datafusion_nexus::report::CandidateOutcome::NotSupported {
+                capability_reason: datafusion_nexus::capability::CapabilityReason::UnsupportedExpression,
                 ..
             }
         ),
@@ -151,7 +156,7 @@ async fn native_runtime_ilike_rejects_before_native_execution() {
 
 #[tokio::test]
 async fn native_runtime_integer_modulo_rejects_before_native_execution() {
-    // SQL integer modulo stays on CPU until GPU by-zero semantics match DataFusion.
+    // SQL integer modulo retains the DataFusion baseline until GPU by-zero semantics match DataFusion.
     let dir = unique_temp_dir("datafusion-nexus-native-runtime-integer-modulo-reject");
     let path = dir.join("input.parquet");
     write_nullable_scalar_expression_input_parquet(&path);
@@ -159,13 +164,13 @@ async fn native_runtime_integer_modulo_rejects_before_native_execution() {
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_NULL_SEMANTICS_MODULO_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
 
-    assert_eq!(lowering.rewritten_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert!(
         matches!(
             lowering.report.outcomes()[0],
-            datafusion_nexus::report::CandidateOutcome::Rejected {
-                reason: datafusion_nexus::policy::FallbackReason::UnsupportedExpression,
+            datafusion_nexus::report::CandidateOutcome::NotSupported {
+                capability_reason: datafusion_nexus::capability::CapabilityReason::UnsupportedExpression,
                 ..
             }
         ),
@@ -192,13 +197,13 @@ async fn native_runtime_invalid_scalar_expressions_reject_before_native_executio
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
         let lowering = lower_physical_plan_to_native(native_physical_plan);
 
-        assert_eq!(lowering.rewritten_count(), 0, "{name} should not rewrite: {:?}", lowering.report.outcomes());
-        assert_eq!(lowering.rejected_count(), 1, "{name} should reject: {:?}", lowering.report.outcomes());
+        assert_eq!(lowering.selected_count(), 0, "{name} should not rewrite: {:?}", lowering.report.outcomes());
+        assert_eq!(lowering.not_selected_count(), 1, "{name} should reject: {:?}", lowering.report.outcomes());
         assert!(
             matches!(
                 lowering.report.outcomes()[0],
-                datafusion_nexus::report::CandidateOutcome::Rejected {
-                    reason: datafusion_nexus::policy::FallbackReason::UnsupportedExpression,
+                datafusion_nexus::report::CandidateOutcome::NotSupported {
+                    capability_reason: datafusion_nexus::capability::CapabilityReason::UnsupportedExpression,
                     ..
                 }
             ),
@@ -223,13 +228,13 @@ async fn native_runtime_date_trunc_calendrical_grains_reject_before_native_execu
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
         let lowering = lower_physical_plan_to_native(native_physical_plan);
 
-        assert_eq!(lowering.rewritten_count(), 0, "{name} should not rewrite: {:?}", lowering.report.outcomes());
-        assert_eq!(lowering.rejected_count(), 1, "{name} should reject: {:?}", lowering.report.outcomes());
+        assert_eq!(lowering.selected_count(), 0, "{name} should not rewrite: {:?}", lowering.report.outcomes());
+        assert_eq!(lowering.not_selected_count(), 1, "{name} should reject: {:?}", lowering.report.outcomes());
         assert!(
             matches!(
                 lowering.report.outcomes()[0],
-                datafusion_nexus::report::CandidateOutcome::Rejected {
-                    reason: datafusion_nexus::policy::FallbackReason::UnsupportedExpression,
+                datafusion_nexus::report::CandidateOutcome::NotSupported {
+                    capability_reason: datafusion_nexus::capability::CapabilityReason::UnsupportedExpression,
                     ..
                 }
             ),
@@ -250,8 +255,8 @@ async fn native_runtime_substring_max_start_length_one_is_in_contract() {
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_SUBSTRING_MAX_START_LENGTH_ONE_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
 
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
 
     fs::remove_dir_all(dir).unwrap();
 }

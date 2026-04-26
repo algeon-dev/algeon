@@ -381,15 +381,23 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
             if let Some(report) = rule.last_report() {
                 for outcome in report.outcomes() {
                     match outcome {
-                        CandidateOutcome::Rewritten { candidate } => {
-                            eprintln!("[planning] {} REWRITTEN shape={}", request.spec.label, candidate.shape);
+                        CandidateOutcome::Selected { candidate } => {
+                            eprintln!("[planning] {} SELECTED shape={}", request.spec.label, candidate.shape);
                         },
-                        CandidateOutcome::Rejected { candidate, reason } => {
+                        CandidateOutcome::NotSupported { candidate, capability_reason } => {
                             eprintln!(
-                                "[planning] {} REJECTED shape={} reason={}",
+                                "[planning] {} NOT_SUPPORTED shape={} reason={}",
                                 request.spec.label,
                                 candidate.shape,
-                                reason.code()
+                                capability_reason.code()
+                            );
+                        },
+                        CandidateOutcome::NotSelectedByCost { candidate, cost_reason, .. } => {
+                            eprintln!(
+                                "[planning] {} NOT_SELECTED_BY_COST shape={} reason={}",
+                                request.spec.label,
+                                candidate.shape,
+                                cost_reason.code()
                             );
                         },
                     }

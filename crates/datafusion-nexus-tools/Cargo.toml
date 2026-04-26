@@ -13,7 +13,7 @@ workspace = true
 [features]
 default = []
 validate-query = ["dep:datafusion", "dep:datafusion-nexus"]
-cpu-fallback-contract-validate = [
+datafusion-baseline-contract-validate = [
   "dep:cudf",
   "dep:datafusion",
   "dep:datafusion-nexus",
@@ -37,7 +37,7 @@ iceberg-e2e = [
   "datafusion-nexus/iceberg",
 ]
 server-iceberg-e2e = ["iceberg-e2e", "datafusion-nexus/server"]
-server-runtime-observability-e2e = ["server-iceberg-e2e"]
+server-runtime-observability-e2e = ["server-iceberg-e2e", "dep:nexus-query-engine"]
 embedded-backend-e2e = ["server-iceberg-e2e", "dep:reqwest"]
 
 [dependencies]

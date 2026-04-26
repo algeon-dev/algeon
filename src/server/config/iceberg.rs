@@ -81,6 +81,11 @@ pub struct IcebergServerConfig {
     /// combinations unrepresentable (a Glue payload cannot carry a REST URI and
     /// vice versa). Selected by [`NEXUS_ICEBERG_CATALOG_KIND_ENV`].
     pub backend: IcebergCatalogBackendConfig,
+    /// The one frozen storage policy used by the leaf catalog/FileIO and
+    /// converted by the root exactly once into the native source profile.
+    /// It owns all credential selection; no server path may rediscover those
+    /// credentials from the process environment later.
+    source_access: crate::table_format::iceberg::SourceAccessPolicy,
     /// Server-validated table-format Parquet strategy passed into catalog
     /// planning paths. Server mode must not let those paths reread process env.
     pub parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
@@ -96,9 +101,22 @@ impl fmt::Debug for IcebergServerConfig {
             .field("namespace", &self.namespace)
             .field("tables", &self.tables)
             .field("backend", &self.backend)
+            .field("source_access", &self.source_access)
             .field("parquet_read_strategy_config", &"<redacted>")
             .field("scan_planning_timeout", &self.scan_planning_timeout)
             .finish()
+    }
+}
+
+#[cfg(feature = "iceberg")]
+impl IcebergServerConfig {
+    /// Returns the source-access policy frozen while parsing server config.
+    ///
+    /// The connected leaf catalog places this exact policy in every
+    /// `ResolvedIcebergTable`; the root uses the same value to build its
+    /// native source-storage profile.
+    pub const fn source_access_policy(&self) -> &crate::table_format::iceberg::SourceAccessPolicy {
+        &self.source_access
     }
 }
 
@@ -161,39 +179,8 @@ pub struct IcebergTableRegistrationConfig {
 #[cfg(feature = "iceberg")]
 pub(super) fn iceberg_source_storage_profile(
     config: &IcebergServerConfig,
-    values: &mut EnvValues<'_>,
 ) -> nexus_query_engine::runtime::SourceStorageProfile {
-    match &config.backend {
-        IcebergCatalogBackendConfig::Glue(glue) => {
-            let mut catalog_config = crate::table_format::iceberg::catalog::GlueIcebergCatalogConfig::new(
-                glue.catalog_handle.clone(),
-                glue.warehouse.clone(),
-                glue.region.clone(),
-            );
-            if let Some(catalog_id) = glue.catalog_id.as_ref() {
-                catalog_config = catalog_config.with_catalog_id(catalog_id.clone());
-            }
-            if let Some(profile) = glue.profile.as_ref() {
-                catalog_config = catalog_config.with_profile(profile.clone());
-            }
-            if let Some(uri) = glue.uri.as_ref() {
-                catalog_config = catalog_config.with_uri(uri.clone());
-            }
-            if let Some(endpoint) = glue.s3_endpoint.as_ref() {
-                catalog_config = catalog_config.with_s3_endpoint(endpoint.clone());
-            }
-            if let Some(region) = glue.s3_region.as_ref() {
-                catalog_config = catalog_config.with_s3_region(region.clone());
-            }
-            if let Some(path_style) = glue.s3_path_style_access {
-                catalog_config = catalog_config.with_s3_path_style_access(path_style);
-            }
-            catalog_config.source_storage_profile_with_env(|name| values.string_uncached(name))
-        },
-        IcebergCatalogBackendConfig::Rest(rest) => {
-            rest.source_storage_profile_with_env(|name| values.string_uncached(name))
-        },
-    }
+    crate::table_format::iceberg::source_access_policy_to_native_source_storage_profile(config.source_access_policy())
 }
 
 #[cfg(feature = "iceberg")]
@@ -297,7 +284,8 @@ pub(super) fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<Iceber
         IcebergCatalogKind::Glue => IcebergCatalogBackendConfig::Glue(glue_backend_config(values, &warehouse)?),
         IcebergCatalogKind::Rest => IcebergCatalogBackendConfig::Rest(rest_backend_config(values, warehouse.clone())?),
     };
-    let parquet_read_strategy_config = iceberg_parquet_read_strategy_config(values, &backend)?;
+    let source_access = iceberg_source_access_policy(values, &backend)?;
+    let parquet_read_strategy_config = iceberg_parquet_read_strategy_config(values, &source_access)?;
     let scan_planning_timeout = Duration::from_secs(
         values
             .positive_u64(NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, DEFAULT_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS)?,
@@ -308,6 +296,7 @@ pub(super) fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<Iceber
         namespace,
         tables,
         backend,
+        source_access,
         parquet_read_strategy_config,
         scan_planning_timeout,
     }))
@@ -316,42 +305,87 @@ pub(super) fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<Iceber
 #[cfg(feature = "iceberg")]
 pub(super) fn iceberg_parquet_read_strategy_config(
     values: &mut EnvValues<'_>,
-    backend: &IcebergCatalogBackendConfig,
+    source_access_policy: &crate::table_format::iceberg::SourceAccessPolicy,
 ) -> Result<TableFormatParquetReadStrategyConfig> {
     let mut config = table_format_parquet_read_strategy_config(values)?;
     config.storage_profile_id = Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string());
-    if let Some(endpoint) = iceberg_backend_s3_endpoint(backend).filter(|endpoint| !endpoint.trim().is_empty()) {
-        config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
-    }
-    if iceberg_backend_requires_scoped_remote_direct_profile(backend) {
+    let source_access = source_access_policy.s3_access();
+    config.storage_endpoint =
+        source_access.endpoint.filter(|endpoint| !endpoint.trim().is_empty()).map(credential_free_endpoint_identity);
+    if source_access.endpoint.is_some()
+        || source_access.region.is_some()
+        || source_access.path_style_access.is_some()
+        || !matches!(source_access.credential, datafusion_nexus_iceberg::S3CredentialRef::DefaultChain)
+    {
         config.credential_mode = nexus_query_engine::source::CredentialMode::ScopedResolved;
     }
     Ok(config)
 }
 
 #[cfg(feature = "iceberg")]
-pub(super) fn iceberg_backend_s3_endpoint(backend: &IcebergCatalogBackendConfig) -> Option<&str> {
-    match backend {
-        IcebergCatalogBackendConfig::Glue(glue) => glue.s3_endpoint.as_deref(),
-        IcebergCatalogBackendConfig::Rest(rest) => rest.s3_endpoint.as_deref(),
-    }
-}
+fn iceberg_source_access_policy(
+    values: &mut EnvValues<'_>,
+    backend: &IcebergCatalogBackendConfig,
+) -> Result<crate::table_format::iceberg::SourceAccessPolicy> {
+    let (configured_endpoint, region, path_style_access, allow_aws_static_credentials) = match backend {
+        IcebergCatalogBackendConfig::Glue(glue) => (
+            glue.s3_endpoint.clone(),
+            glue.s3_region.clone().or_else(|| Some(glue.region.clone())),
+            glue.s3_path_style_access,
+            true,
+        ),
+        IcebergCatalogBackendConfig::Rest(_) => (
+            values.string(NEXUS_ICEBERG_S3_ENDPOINT_ENV),
+            values.string(NEXUS_ICEBERG_S3_REGION_ENV),
+            values.optional_bool(NEXUS_ICEBERG_S3_PATH_STYLE_ENV)?,
+            false,
+        ),
+    };
+    // Standard AWS endpoint overrides are accepted by the existing server
+    // strategy parser. Fold them into the leaf policy too, so FileIO, CPU,
+    // and native access cannot select different endpoints.
+    let endpoint = configured_endpoint
+        .or_else(|| values.string(AWS_ENDPOINT_URL_S3_ENV))
+        .or_else(|| values.string(AWS_ENDPOINT_URL_ENV));
+    let mut s3 = match endpoint {
+        Some(endpoint) if !endpoint.trim().is_empty() => {
+            crate::table_format::iceberg::SourceAccessPolicy::s3_custom_endpoint(endpoint, region, path_style_access)
+                .as_s3()
+                .clone()
+        },
+        _ => crate::table_format::iceberg::SourceAccessPolicy::s3_default_chain(region).as_s3().clone(),
+    };
 
-#[cfg(feature = "iceberg")]
-pub(super) fn iceberg_backend_requires_scoped_remote_direct_profile(backend: &IcebergCatalogBackendConfig) -> bool {
-    match backend {
-        IcebergCatalogBackendConfig::Glue(glue) => {
-            !glue.region.trim().is_empty()
-                || glue.s3_region.as_ref().is_some_and(|region| !region.trim().is_empty())
-                || glue.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
-                || glue.s3_path_style_access.is_some()
+    let explicit_credentials = (
+        values.string(crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV),
+        values.string(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV),
+        values.string(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV),
+    );
+    let explicit_default_chain = values.string(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV).is_some_and(|raw| {
+        raw.trim().eq_ignore_ascii_case(crate::table_format::iceberg::NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN)
+    });
+    let aws_credentials = (
+        values.string(crate::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV),
+        values.string(crate::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV),
+        values
+            .string(crate::table_format::iceberg::AWS_SESSION_TOKEN_ENV)
+            .or_else(|| values.string(crate::table_format::iceberg::AWS_SECURITY_TOKEN_ENV)),
+    );
+
+    s3 = match explicit_credentials {
+        (Some(access_key_id), Some(secret_access_key), session_token) => {
+            s3.with_static_credentials(access_key_id, secret_access_key, session_token)
         },
-        IcebergCatalogBackendConfig::Rest(rest) => {
-            rest.s3_region.as_ref().is_some_and(|region| !region.trim().is_empty())
-                || rest.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
-                || rest.s3_path_style_access.is_some()
+        _ if explicit_default_chain => s3.with_default_chain(),
+        _ if allow_aws_static_credentials && s3.endpoint().is_none() => match aws_credentials {
+            (Some(access_key_id), Some(secret_access_key), session_token) => {
+                s3.with_static_credentials(access_key_id, secret_access_key, session_token)
+            },
+            _ => s3,
         },
-    }
+        _ => s3,
+    };
+    Ok(crate::table_format::iceberg::SourceAccessPolicy::S3(s3))
 }
 
 #[cfg(feature = "iceberg")]
@@ -492,16 +526,7 @@ pub(super) fn rest_backend_config(
         config = config.with_prefix(prefix);
     }
     if let Some(token) = values.string(NEXUS_ICEBERG_REST_TOKEN_ENV) {
-        config = config.with_token(token);
-    }
-    if let Some(endpoint) = values.string(NEXUS_ICEBERG_S3_ENDPOINT_ENV) {
-        config = config.with_s3_endpoint(endpoint);
-    }
-    if let Some(region) = values.string(NEXUS_ICEBERG_S3_REGION_ENV) {
-        config = config.with_s3_region(region);
-    }
-    if let Some(path_style) = values.optional_bool(NEXUS_ICEBERG_S3_PATH_STYLE_ENV)? {
-        config = config.with_s3_path_style_access(path_style);
+        config = config.with_bearer_token(token);
     }
     Ok(config)
 }

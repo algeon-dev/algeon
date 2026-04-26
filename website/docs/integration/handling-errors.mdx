@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2.75
 sidebar_label: Handling Errors
-description: Discover typed DataFusion Nexus errors, preserve ordinary DataFusion fallback policy, and disclose diagnostics safely.
+description: Discover typed DataFusion Nexus errors, preserve ordinary DataFusion error handling, and disclose diagnostics safely.
 ---
 
 # Handling Errors
@@ -9,7 +9,7 @@ description: Discover typed DataFusion Nexus errors, preserve ordinary DataFusio
 Nexus errors cross an embedded DataFusion boundary as typed sources. Handle
 them as an enrichment layer: look for a Nexus `Error` first, and only use its
 stable identity when one is present. If discovery returns `None`, keep the
-DataFusion error and your application's existing fallback policy.
+DataFusion error and your application's existing error-handling policy.
 
 ```rust
 use datafusion::common::DataFusionError;
@@ -39,7 +39,7 @@ impl AppError {
 
 This is the pattern used by the embedded backend example's REST frontend. It
 does not reproduce the Nexus code taxonomy or attempt to infer Nexus identity
-from error text. The fallback branch remains free to map DataFusion planning,
+from error text. The ordinary-DataFusion branch remains free to map planning,
 schema, resource, and internal failures according to that application's own
 HTTP or job policy.
 

@@ -65,7 +65,6 @@ impl AdaptivePipelineReport {
             adaptive_strategy,
             runtime_actions_allowed: runtime_evidence.runtime_actions_allowed,
             memory_history_evidence: runtime_evidence.memory_history_evidence,
-            runtime_action_counts: AdaptiveRuntimeActionCounts::default(),
             final_sink_boundary: AdaptiveFinalSinkBoundary::for_sink(plan.sink()),
             rejection_reason,
         };
@@ -90,7 +89,7 @@ impl AdaptivePipelineReport {
     /// Serializes this adaptive pipeline report as named JSON.
     pub fn to_json(&self) -> Value {
         json!({
-            "schema": "nexus_query_engine.adaptive_pipeline_report.v1",
+            "schema": "nexus_query_engine.adaptive_pipeline_report.v2",
             "query_id": self.query_id.as_ref().map(QueryId::as_str),
             "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
             "triage": self.triage_summary().to_json(),
@@ -133,7 +132,6 @@ impl AdaptivePipelineReport {
             adaptive_strategy: AdaptiveStrategy::Unsupported,
             runtime_actions_allowed: AdaptiveRuntimeActionsAllowed::default(),
             memory_history_evidence: AdaptiveMemoryHistoryEvidence::NotUsed,
-            runtime_action_counts: AdaptiveRuntimeActionCounts::default(),
             final_sink_boundary: AdaptiveFinalSinkBoundary::for_sink(plan.sink()),
             rejection_reason: Some(rejection_reason),
         };
@@ -173,8 +171,6 @@ pub struct AdaptivePipelineReportRow {
     pub runtime_actions_allowed: AdaptiveRuntimeActionsAllowed,
     /// Memory-history evidence consulted during admission.
     pub memory_history_evidence: AdaptiveMemoryHistoryEvidence,
-    /// Adaptive runtime actions observed or promised for this row.
-    pub runtime_action_counts: AdaptiveRuntimeActionCounts,
     /// Final sink and materialization mode for the candidate.
     pub final_sink_boundary: AdaptiveFinalSinkBoundary,
     /// Stable rejection reason, or `None` for admitted rows.
@@ -187,16 +183,13 @@ impl AdaptivePipelineReportRow {
     /// Empty lists use `none`; absent rejection reasons use `none`.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "execution_mode={},candidate_status={},missing_strict_contracts={},adaptive_strategy={},runtime_actions_allowed={},memory_history_evidence={},retry_count={},spill_count={},downgrade_count={},final_sink_boundary={},materialization_mode={},rejection_reason={}",
+            "execution_mode={},candidate_status={},missing_strict_contracts={},adaptive_strategy={},runtime_actions_allowed={},memory_history_evidence={},final_sink_boundary={},materialization_mode={},rejection_reason={}",
             self.execution_mode.as_str(),
             self.candidate_status.as_str(),
             format_missing_strict_contracts(&self.missing_strict_contracts),
             self.adaptive_strategy.as_str(),
             self.runtime_actions_allowed.to_stable_value(),
             self.memory_history_evidence.to_stable_value(),
-            self.runtime_action_counts.retry_count,
-            self.runtime_action_counts.spill_count,
-            self.runtime_action_counts.downgrade_count,
             self.final_sink_boundary.sink_kind.as_str(),
             self.final_sink_boundary.materialization_mode.as_str(),
             self.rejection_reason.unwrap_or("none"),
@@ -212,7 +205,6 @@ impl AdaptivePipelineReportRow {
             "adaptive_strategy": self.adaptive_strategy.as_str(),
             "runtime_actions_allowed": self.runtime_actions_allowed.to_json(),
             "memory_history_evidence": self.memory_history_evidence.to_json(),
-            "runtime_action_counts": self.runtime_action_counts.to_json(),
             "final_sink_boundary": self.final_sink_boundary.to_json(),
             "rejection_reason": self.rejection_reason,
         })
@@ -403,28 +395,6 @@ impl AdaptiveMemoryHistoryEvidence {
                 },
             }),
         }
-    }
-}
-
-/// Runtime action counters owned by adaptive mode.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct AdaptiveRuntimeActionCounts {
-    /// Number of adaptive retry actions.
-    pub retry_count: u64,
-    /// Number of adaptive spill actions.
-    pub spill_count: u64,
-    /// Number of adaptive downgrade actions.
-    pub downgrade_count: u64,
-}
-
-impl AdaptiveRuntimeActionCounts {
-    /// Serializes runtime action counters as named JSON.
-    pub fn to_json(self) -> Value {
-        json!({
-            "retry_count": self.retry_count,
-            "spill_count": self.spill_count,
-            "downgrade_count": self.downgrade_count,
-        })
     }
 }
 

@@ -60,37 +60,37 @@ pub const NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
 /// [`NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`], with the
 /// same accepted values.
 pub const NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
-/// Enables or disables CPU preference for TPC-DS hybrid analytics planning.
+/// Enables or disables native cost selection for TPC-DS analytics planning.
 ///
-/// Native all-GPU report/parity surfaces intentionally keep CPU preference
+/// Native all-GPU report/parity surfaces intentionally keep cost selection
 /// disabled while SQL may include GPU-only `cugraph_*` table functions.
-pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV: &str = "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE";
-/// Row-group threshold for small/selective CPU preference on the TPC-DS hybrid
+pub const NEXUS_TPCDS_NATIVE_COST_SELECTION_ENV: &str = "NEXUS_TPCDS_NATIVE_COST_SELECTION";
+/// Row-group threshold for small/selective cost selection on the TPC-DS
 /// analytics surface.
-pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV: &str =
-    "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS";
-/// Source-read byte threshold for small/selective CPU preference on the TPC-DS
-/// hybrid analytics surface.
-pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV: &str =
-    "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES";
-/// Row-group threshold for residual-join CPU preference on the TPC-DS hybrid
+pub const NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV: &str =
+    "NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS";
+/// Source-read byte threshold for small/selective cost selection on the TPC-DS
 /// analytics surface.
-pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV: &str =
-    "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS";
-/// Source-read byte threshold for residual-join CPU preference on the TPC-DS
-/// hybrid analytics surface.
-pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &str =
-    "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES";
-/// Top-k fetch threshold for small/selective CPU preference on the TPC-DS
-/// hybrid analytics surface.
-pub const NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV: &str =
-    "NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH";
-/// Hybrid analytics residual-join row-group threshold.
+pub const NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV: &str =
+    "NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES";
+/// Row-group threshold for residual-join cost selection on the TPC-DS
+/// analytics surface.
+pub const NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV: &str =
+    "NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS";
+/// Source-read byte threshold for residual-join cost selection on the TPC-DS
+/// analytics surface.
+pub const NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &str =
+    "NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES";
+/// Top-k fetch threshold for small/selective cost selection on the TPC-DS
+/// analytics surface.
+pub const NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV: &str =
+    "NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH";
+/// TPC-DS cost-selection residual-join row-group threshold.
 ///
 /// This stays intentionally close to the engine default while admitting
 /// low-byte residual joins whose pruning evidence is spread across a modest
 /// number of Parquet row groups.
-pub const TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS: usize = 32;
+pub const TPCDS_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS: usize = 32;
 
 /// Conservative bounded profile: current production-safe defaults.
 pub const TPCDS_NATIVE_PROFILE_CONSERVATIVE: &str = "conservative";
@@ -190,7 +190,7 @@ fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
 ///
 /// Numeric env vars parse unsigned integers. Source chunk bytes, row-group
 /// limits are planning targets; positive-value validation happens when the
-/// native execution context is built. CPU-preference knobs are intentionally
+/// native execution context is built. Cost-selection knobs are intentionally
 /// dormant until the native SQL surface can distinguish ordinary TPC-DS shapes
 /// from GPU-only `cugraph_*` calls.
 pub fn tpcds_native_optimizer_config() -> NexusNativeOptimizerConfig {
@@ -233,53 +233,53 @@ pub fn tpcds_native_analytics_optimizer_config_with_profile_settings(
     )
 }
 
-/// Analytics/performance optimizer config for the `hybrid_cpu_preferred`
-/// benchmark surface. Ordinary native TPC-DS report/parity surfaces keep CPU
-/// preference disabled so all-native validation remains exact; the hybrid
-/// benchmark uses this config to quantify the conservative CPU-preference model.
-pub fn tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings(
+/// Analytics/performance optimizer config for the `cost_declined_datafusion`
+/// benchmark surface. Ordinary native TPC-DS report/parity surfaces keep cost
+/// selection disabled so all-native validation remains exact; the comparison
+/// benchmark uses this config to quantify the conservative cost model.
+pub fn tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings(
     profile: &TpcdsNativeProfileSettings,
 ) -> NexusNativeOptimizerConfig {
     tpcds_native_analytics_optimizer_config_with_profile_settings(profile)
-        .with_native_plan_preference_options(tpcds_native_cpu_preference_options_from_env())
+        .with_native_plan_cost_options(tpcds_native_cost_selection_options_from_env())
 }
 
-/// Resolves TPC-DS hybrid analytics CPU-preference options from env.
-pub fn tpcds_native_cpu_preference_options_from_env() -> nexus_query_engine::plan::NativePlanPreferenceOptions {
-    tpcds_native_cpu_preference_options_with_env(|name| std::env::var(name).ok())
+/// Resolves TPC-DS analytics cost-selection options from env.
+pub fn tpcds_native_cost_selection_options_from_env() -> nexus_query_engine::plan::NativePlanCostOptions {
+    tpcds_native_cost_selection_options_with_env(|name| std::env::var(name).ok())
 }
 
-/// Resolves TPC-DS hybrid analytics CPU-preference options using an injected
+/// Resolves TPC-DS analytics cost-selection options using an injected
 /// env reader for tests and benchmark harnesses.
-pub fn tpcds_native_cpu_preference_options_with_env(
+pub fn tpcds_native_cost_selection_options_with_env(
     mut get: impl FnMut(&'static str) -> Option<String>,
-) -> nexus_query_engine::plan::NativePlanPreferenceOptions {
-    let mut options = nexus_query_engine::plan::NativePlanPreferenceOptions {
-        max_small_selective_residual_join_row_groups: TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS,
-        ..nexus_query_engine::plan::NativePlanPreferenceOptions::default()
+) -> nexus_query_engine::plan::NativePlanCostOptions {
+    let mut options = nexus_query_engine::plan::NativePlanCostOptions {
+        max_small_selective_residual_join_row_groups: TPCDS_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS,
+        ..nexus_query_engine::plan::NativePlanCostOptions::default()
     };
 
-    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV) {
-        options.enabled = parse_env_bool(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV, value);
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_COST_SELECTION_ENV) {
+        options.enabled = parse_env_bool(NEXUS_TPCDS_NATIVE_COST_SELECTION_ENV, value);
     }
-    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV) {
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV) {
         options.max_small_selective_row_groups =
-            parse_env_usize(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV, value);
+            parse_env_usize(NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV, value);
     }
-    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV) {
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV) {
         options.max_small_selective_source_bytes =
-            parse_env_u64(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV, value);
+            parse_env_u64(NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV, value);
     }
-    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV) {
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV) {
         options.max_small_selective_residual_join_row_groups =
-            parse_env_usize(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, value);
+            parse_env_usize(NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, value);
     }
-    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV) {
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV) {
         options.max_small_selective_residual_join_source_bytes =
-            parse_env_u64(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV, value);
+            parse_env_u64(NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV, value);
     }
-    if let Some(value) = get(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV) {
-        options.max_topk_fetch = parse_env_usize(NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, value);
+    if let Some(value) = get(NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV) {
+        options.max_topk_fetch = parse_env_usize(NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV, value);
     }
 
     options
@@ -301,12 +301,11 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
 ) -> NexusNativeOptimizerConfig {
     let statistical_aggregate_execution_mode =
         optional_env_statistical_aggregate_execution_mode().unwrap_or(statistical_aggregate_execution_mode_default);
-    // Keep CPU preference disabled for now: users can submit SQL containing
+    // Keep cost selection disabled for ordinary report surfaces: users can submit SQL containing
     // `cugraph_*` table functions, and those plans must stay on the GPU rather
-    // than being routed through DataFusion CPU fallback as a small/selective
-    // preference. Leave the env constants above in place so the old benchmark
-    // gate can be restored once graph SQL has an explicit GPU-only boundary.
-    let preference_options = nexus_query_engine::plan::NativePlanPreferenceOptions::disabled();
+    // than being declined by cost. The dedicated comparison benchmark installs
+    // its own cost-selection configuration after the GPU-island boundary is explicit.
+    let cost_options = nexus_query_engine::plan::NativePlanCostOptions::disabled();
     NexusNativeOptimizerConfig::default()
         .with_native_execution_config(
             NexusNativeExecutionConfig::bounded(
@@ -319,7 +318,7 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
             .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode)
             .with_source_chunk_planning_mode(profile.source_chunk_planning_mode),
         )
-        .with_native_plan_preference_options(preference_options)
+        .with_native_plan_cost_options(cost_options)
 }
 
 /// Resolves the TPC-DS native bounded memory/source profile from env.
@@ -689,7 +688,7 @@ pub async fn tpcds_datafusion_execution_workload_items_filtered(
             Ok(df) => match df.create_physical_plan().await {
                 Ok(plan) => match native_rule.last_planning_diagnostics() {
                     Some(diagnostics) => {
-                        let runtime = if diagnostics.report.rewritten_count() > 0 {
+                        let runtime = if diagnostics.report.selected_count() > 0 {
                             execute_tpcds_native_plan(Arc::clone(&plan)).await
                         } else {
                             NativeDataFusionRuntime::NotStarted

@@ -252,7 +252,7 @@ impl QueryPlanningLease {
             let captured = CapturedError::from_adapter_error(
                 &error.adapter_error("datafusion_nexus.server.query_coordinator.issue_ticket"),
             );
-            self.finish(QueryTerminal::Failed { stage: "ticket", error: Arc::new(captured) });
+            self.finish(QueryTerminal::failed("ticket", captured));
             return Err(error);
         }
         self.released = true;
@@ -267,7 +267,7 @@ impl QueryPlanningLease {
             let captured = CapturedError::from_adapter_error(
                 &error.adapter_error("datafusion_nexus.server.query_coordinator.promote_execution"),
             );
-            self.finish(QueryTerminal::Failed { stage: "planning", error: Arc::new(captured) });
+            self.finish(QueryTerminal::failed("planning", captured));
             return Err(error);
         }
         self.released = true;
@@ -281,7 +281,7 @@ impl QueryPlanningLease {
     }
 
     pub(in crate::server) fn fail(mut self, stage: &'static str, error: CapturedError) {
-        self.finish(QueryTerminal::Failed { stage, error: Arc::new(error) });
+        self.finish(QueryTerminal::failed(stage, error));
     }
 
     pub(in crate::server) fn succeed(mut self) {
@@ -297,7 +297,7 @@ impl QueryPlanningLease {
         let terminal = if status.code() == tonic::Code::Cancelled {
             QueryTerminal::Cancelled { stage, error: Arc::new(error) }
         } else {
-            QueryTerminal::Failed { stage, error: Arc::new(error) }
+            QueryTerminal::failed(stage, error)
         };
         self.finish(terminal);
     }
@@ -364,7 +364,7 @@ impl QueryExecutionLease {
     }
 
     pub(in crate::server) fn finish_failed(&mut self, stage: &'static str, error: CapturedError) {
-        self.finish(QueryTerminal::Failed { stage, error: Arc::new(error) });
+        self.finish(QueryTerminal::failed(stage, error));
     }
 
     pub(in crate::server) fn finish_cancelled(&mut self, stage: &'static str, error: CapturedError) {

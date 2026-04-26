@@ -7,15 +7,15 @@ authors: morris
 ---
 
 DataFusion Nexus is a GPU query engine built on
-[Apache DataFusion](https://datafusion.apache.org/). It takes the physical
-plans DataFusion already produces and executes the supported parts on the GPU:
-SQL runs on [NVIDIA cuDF](https://docs.rapids.ai/api/cudf/stable/), graph
+[Apache DataFusion](https://datafusion.apache.org/). It evaluates whole
+relational physical-plan candidates and selects supported candidates for GPU
+execution with [NVIDIA cuDF](https://docs.rapids.ai/api/cudf/stable/). Graph
 algorithms from [cuGraph](https://docs.rapids.ai/api/cugraph/stable/) are
-callable directly from SQL, and data is read from
+explicit GPU islands callable directly from SQL, and data is read from
 [Apache Iceberg](https://iceberg.apache.org/) tables and Parquet files — on
-S3-compatible object storage or on local disk. Operators outside that
-boundary keep the standard DataFusion CPU path. It embeds as a Rust library
-inside your own service, or serves remote clients over Flight SQL.
+S3-compatible object storage or on local disk. A relational candidate that is
+not selected keeps the executable DataFusion baseline. It embeds as a Rust
+library inside your own service, or serves remote clients over Flight SQL.
 
 Before walking through what Nexus does, this first post explains why it
 exists: where today's GPU analytics stack falls short, and what we think 
@@ -91,8 +91,8 @@ but "why does the query engine still route everything through the CPU?"
 not just a query engine; it is a query engine *library*, with a public,
 composable physical-plan representation. A GPU backend does not need to
 reimplement SQL parsing, logical optimization, catalogs, or the DataFrame
-API — it can accept DataFusion's physical plan and take over exactly the
-subtrees it knows how to run.
+API — it can accept DataFusion's physical plan and select a whole relational
+candidate when its native contract is met.
 
 This layer is also where the memory math above actually holds up. An
 enterprise lakehouse can run to terabytes or beyond — past any single card's
@@ -112,17 +112,15 @@ one card and not.
 
 DataFusion Nexus is a physical optimizer rule plus a native execution engine —
 not a replacement for DataFusion, and not a universal GPU port of it. When a
-query is planned, Nexus walks the DataFusion physical plan, identifies the
-subtrees it can execute — scans, filters, projections, joins, aggregations,
-sorts, and window functions over the common relational types — and lowers
-them into its own GPU plan, executed with cuDF. Every lowering decision is
-local and reported: a subtree either satisfies a capability contract and moves
-to the GPU, or it stays on the stock DataFusion CPU implementation. Under the
-default `GpuPreferred` policy an unsupported construct is therefore a
-fallback rather than a failure — wherever a CPU path exists. (Iceberg scans
-are the deliberate exception: they are GPU-only by default, so an inadmissible
-Iceberg leaf fails planning with a structured error instead of silently
-falling back.)
+query is planned, Nexus evaluates the exact DataFusion physical candidate for
+scans, filters, projections, joins, aggregations, sorts, and window functions
+over the common relational types, then lowers selected candidates into its own
+cuDF plan. Every decision is local and reported: an unsupported candidate, or
+one not selected by an enabled cost rule, leaves the executable DataFusion
+baseline intact. A caller that needs a final plan without DataFusion CPU
+execution expresses that as a requirement on the completed physical plan, not as a different candidate
+policy. Iceberg follows the same model: one unified scan owns both its native
+facts and its executable CPU delegate.
 
 Around that core, five design decisions define the project.
 
@@ -230,24 +228,28 @@ the diagram hides a hop through host RAM.
 
 ### Explainable planning, structured errors
 
-A hybrid CPU/GPU engine has a failure mode all its own: the query silently
-runs on the slow path and nobody knows why. We consider this a contract
-problem, not a logging problem. Every planning decision in Nexus is recorded
-in a structured report — which subtrees were lowered, which fell back, and a
-stable, machine-readable reason for each. You can ask the question before
-running anything:
+A hybrid CPU/GPU engine has a failure mode all its own: a query runs on a
+different execution domain than its owner expected and nobody knows why. We
+consider this a contract problem, not a logging problem. Nexus records both
+candidate selection evidence and the disposition of the exact final plan. You
+can ask the question before running anything:
 
 ```sql
-SELECT overall, nexus_native_coverage, fallback_reason_count, coverage_json
+SELECT overall, final_disposition,
+       native_fragment_count, explicit_gpu_island_count,
+       datafusion_boundary_count, candidate_outcome_count, coverage_json
 FROM nexus_explain_coverage('SELECT l_returnflag, sum(l_quantity)
                              FROM lineitem GROUP BY l_returnflag');
 ```
 
 The verdict comes back as columns and JSON, not prose: `overall` is one of
-`no_cpu_in_planned_path`, `partial_gpu_planned`, `cpu_only`, or `rejected`,
-and `fallback_reasons` names the exact operator, expression, type, or data
-source that forces CPU execution. Errors cross the DataFusion boundary the
-same way — as typed values with stable identity rather than log text.
+`no_cpu_in_planned_path`, `partial_gpu_planned`, `cpu_only`, or `rejected`;
+`final_disposition` is `datafusion`, `native`, `mixed`, or terminal `rejected`.
+The JSON keeps non-selected candidate outcomes distinct: `not_supported` names
+an exact capability miss, while `not_selected_by_cost` includes structured cost
+evidence. A capability miss is not itself a planning error. Errors cross the
+DataFusion boundary the same way — as typed values with stable identity rather
+than log text.
 
 This matters for the engineers operating the system, and it matters just as
 much for the agents increasingly sitting between users and data. An agent
@@ -337,9 +339,9 @@ just as concrete:
   device.
 - **Parquet only**, and Iceberg merge-on-read support is partial: position
   deletes are applied natively (not yet on a fast path), while equality
-  deletes and delete vectors are unsupported — and because Iceberg is
-  GPU-only by default, such tables fail planning with a structured error
-  rather than falling back.
+  deletes and delete vectors are unsupported. The unified Iceberg scan retains
+  its executable DataFusion CPU delegate when native acceleration is not
+  selected.
 - **Read-only, by design.** There is no INSERT, UPDATE, DELETE, or COPY, and
   no path that writes to Iceberg or to storage. If your workflow needs to
   persist query output back to the lakehouse, that is another engine's job.

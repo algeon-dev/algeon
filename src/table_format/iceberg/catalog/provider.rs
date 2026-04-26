@@ -1,122 +1,5 @@
 use super::*;
 
-pub(super) async fn catalog_backend_list_namespaces(
-    catalog: &Arc<dyn Catalog>,
-    catalog_type: &'static str,
-    message: &'static str,
-) -> Result<Vec<NamespaceIdent>> {
-    catalog.list_namespaces(None).await.map_err(|error| catalog_backend_error(message, catalog_type, error))
-}
-
-pub(super) async fn catalog_backend_list_tables(
-    catalog: &Arc<dyn Catalog>,
-    namespace: &NamespaceIdent,
-    catalog_type: &'static str,
-    message: &'static str,
-) -> Result<Vec<TableIdent>> {
-    catalog.list_tables(namespace).await.map_err(|error| {
-        catalog_backend_error(message, catalog_type, error).with_fact("namespace", namespace.to_string())
-    })
-}
-
-pub(super) async fn catalog_backend_load_table(
-    catalog: &Arc<dyn Catalog>,
-    table: &TableIdent,
-    catalog_type: &'static str,
-    message: &'static str,
-) -> Result<iceberg::table::Table> {
-    catalog.load_table(table).await.map_err(|error| {
-        catalog_backend_error(message, catalog_type, error)
-            .with_fact("namespace", table.namespace().to_string())
-            .with_fact("table", table.name())
-    })
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct S3FileIoConfig<'a> {
-    endpoint: Option<&'a str>,
-    region: Option<&'a str>,
-    path_style_access: Option<bool>,
-}
-
-impl<'a> S3FileIoConfig<'a> {
-    pub(super) fn from_glue(config: &'a GlueIcebergCatalogConfig) -> Self {
-        Self {
-            endpoint: config.s3_endpoint.as_deref(),
-            region: config.s3_region.as_deref(),
-            path_style_access: config.s3_path_style_access,
-        }
-    }
-
-    pub(super) fn from_rest(config: &'a RestIcebergCatalogConfig) -> Self {
-        Self {
-            endpoint: config.s3_endpoint.as_deref(),
-            region: config.s3_region.as_deref(),
-            path_style_access: config.s3_path_style_access,
-        }
-    }
-
-    pub(super) fn apply_parquet_read_strategy_config(
-        self,
-        mut config: TableFormatParquetReadStrategyConfig,
-        force_scoped_resolved: bool,
-    ) -> TableFormatParquetReadStrategyConfig {
-        config.storage_profile_id = Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string());
-        if let Some(endpoint) = self.non_empty_endpoint() {
-            config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
-        }
-        if force_scoped_resolved
-            || self.non_empty_region().is_some()
-            || self.non_empty_endpoint().is_some()
-            || self.path_style_access.is_some()
-        {
-            config.credential_mode = nexus_query_engine::source::CredentialMode::ScopedResolved;
-        }
-        if self.non_empty_endpoint().is_some() && self.path_style_access == Some(false) {
-            config.remote_direct_profile_unsupported_reason = Some("remote_direct_virtual_hosted_endpoint_unsupported");
-        }
-        config
-    }
-
-    pub(super) fn apply_catalog_props(self, props: &mut HashMap<String, String>) {
-        if let Some(endpoint) = self.non_empty_endpoint() {
-            props.insert(S3_ENDPOINT.to_string(), endpoint.to_string());
-        }
-        if let Some(region) = self.non_empty_region() {
-            props.insert(S3_REGION.to_string(), region.to_string());
-        }
-        if let Some(path_style) = self.path_style_access {
-            props.insert(S3_PATH_STYLE_ACCESS.to_string(), path_style.to_string());
-        }
-    }
-
-    pub(super) fn apply_source_storage_profile(
-        self,
-        mut s3: S3SourceStorageProfile,
-        fallback_region: Option<&str>,
-    ) -> (S3SourceStorageProfile, bool) {
-        if let Some(region) = self.non_empty_region().or(fallback_region) {
-            s3 = s3.with_region(region.to_string());
-        }
-        let has_s3_endpoint = self.non_empty_endpoint().is_some();
-        if let Some(endpoint) = self.non_empty_endpoint() {
-            s3 = s3.with_endpoint(endpoint.to_string());
-        }
-        if let Some(path_style) = self.path_style_access {
-            s3 = s3.with_path_style_access(path_style);
-        }
-        (s3, has_s3_endpoint)
-    }
-
-    pub(super) fn non_empty_endpoint(self) -> Option<&'a str> {
-        self.endpoint.filter(|endpoint| !endpoint.trim().is_empty())
-    }
-
-    pub(super) fn non_empty_region(self) -> Option<&'a str> {
-        self.region.filter(|region| !region.trim().is_empty())
-    }
-}
-
 #[cfg(feature = "server")]
 fn log_iceberg_metadata_lookup(
     operation: &'static str,
@@ -156,18 +39,18 @@ impl IcebergProviderOptions {
 
 /// Wraps a loaded Iceberg table in the unified dual-mode provider.
 fn build_table_provider(
-    table: iceberg::table::Table,
+    resolved: datafusion_nexus_iceberg::ResolvedIcebergTable,
     catalog_type: &str,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
     provider_options: &IcebergProviderOptions,
 ) -> Result<Arc<dyn TableProvider>> {
     let provider = match parquet_read_strategy_config {
         Some(config) => {
-            crate::table_format::iceberg::NexusIcebergTableProvider::try_new_with_parquet_read_strategy_config(
-                table, config,
+            crate::table_format::iceberg::NexusIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(
+                resolved, config,
             )?
         },
-        None => crate::table_format::iceberg::NexusIcebergTableProvider::try_new(table)?,
+        None => crate::table_format::iceberg::NexusIcebergTableProvider::try_new_resolved(resolved)?,
     };
     Ok(Arc::new(
         provider.with_catalog_type(catalog_type).with_scan_planning_timeout(provider_options.scan_planning_timeout),
@@ -193,8 +76,12 @@ pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
     /// List all tables in the given namespace.
     async fn list_tables(&self, namespace: &NamespaceIdent) -> Result<Vec<TableIdent>>;
 
-    /// Load the Iceberg table for the given identifier.
-    async fn load_table(&self, table: &TableIdent) -> Result<iceberg::table::Table>;
+    /// Load and freeze the Iceberg table for the given identifier.
+    ///
+    /// The DataFusion wrapper consumes the returned resolution directly, so
+    /// the CPU delegate, leaf scan candidate, and native source policy share
+    /// the same snapshot and source-access facts.
+    async fn load_table(&self, table: &TableIdent) -> Result<datafusion_nexus_iceberg::ResolvedIcebergTable>;
 
     /// Table-format Parquet read-strategy config associated with this catalog.
     ///
@@ -204,6 +91,119 @@ pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
     /// native execution config.
     fn parquet_read_strategy_config(&self) -> Option<TableFormatParquetReadStrategyConfig> {
         None
+    }
+}
+
+/// DataFusion-facing view of a connected leaf catalog backend.
+///
+/// The leaf owns catalog connection, FileIO, and the immutable
+/// [`datafusion_nexus_iceberg::SourceAccessPolicy`] stored in every resolved
+/// table. The root owns only the DataFusion conversion and its independent
+/// table-format read strategy. Keeping that strategy here prevents a dynamic
+/// catalog from silently dropping server cache or native read settings.
+#[derive(Debug, Clone)]
+pub struct NexusIcebergCatalogSource {
+    backend: Arc<datafusion_nexus_iceberg::IcebergCatalogBackend>,
+    parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
+}
+
+impl NexusIcebergCatalogSource {
+    /// Adapts an owned, already-connected leaf backend for DataFusion.
+    pub fn new(backend: datafusion_nexus_iceberg::IcebergCatalogBackend) -> Self {
+        Self::from_shared_backend(Arc::new(backend))
+    }
+
+    /// Adapts a shared, already-connected leaf backend for DataFusion.
+    pub fn from_shared_backend(backend: Arc<datafusion_nexus_iceberg::IcebergCatalogBackend>) -> Self {
+        Self { backend, parquet_read_strategy_config: None }
+    }
+
+    /// Attaches root-owned native read strategy facts for all dynamic tables.
+    pub fn with_parquet_read_strategy_config(mut self, config: TableFormatParquetReadStrategyConfig) -> Self {
+        self.parquet_read_strategy_config = Some(config);
+        self
+    }
+
+    /// Returns the connected leaf backend without exposing its credentials.
+    pub const fn backend(&self) -> &Arc<datafusion_nexus_iceberg::IcebergCatalogBackend> {
+        &self.backend
+    }
+}
+
+/// Converts leaf catalog identities and normalized failures at the one
+/// DataFusion boundary. The leaf backend intentionally has no implementation
+/// of this root trait: callers must choose an explicit root read strategy.
+#[async_trait]
+impl IcebergCatalogBackend for NexusIcebergCatalogSource {
+    async fn list_namespaces(&self) -> Result<Vec<NamespaceIdent>> {
+        self.backend
+            .list_namespaces()
+            .await
+            .map_err(|error| {
+                crate::table_format::iceberg::adapter::root_error_from_iceberg(
+                    error,
+                    "datafusion_nexus.table_format.iceberg.catalog.list_namespaces",
+                    "failed to list Iceberg catalog namespaces for DataFusion adaptation",
+                )
+            })?
+            .into_iter()
+            .map(|namespace| {
+                NamespaceIdent::from_vec(namespace.parts).map_err(|error| {
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
+                        "datafusion_nexus.table_format.iceberg.catalog.list_namespaces",
+                        "Iceberg leaf catalog returned an invalid namespace identity",
+                    )
+                    .with_source(error)
+                })
+            })
+            .collect()
+    }
+
+    async fn list_tables(&self, namespace: &NamespaceIdent) -> Result<Vec<TableIdent>> {
+        self.backend
+            .list_tables(datafusion_nexus_iceberg::IcebergNamespace { parts: namespace.as_ref().clone() })
+            .await
+            .map_err(|error| {
+                crate::table_format::iceberg::adapter::root_error_from_iceberg(
+                    error,
+                    "datafusion_nexus.table_format.iceberg.catalog.list_tables",
+                    "failed to list Iceberg catalog tables for DataFusion adaptation",
+                )
+            })?
+            .into_iter()
+            .map(|table| {
+                let namespace = NamespaceIdent::from_vec(table.namespace).map_err(|error| {
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
+                        "datafusion_nexus.table_format.iceberg.catalog.list_tables",
+                        "Iceberg leaf catalog returned a table with an invalid namespace identity",
+                    )
+                    .with_source(error)
+                })?;
+                Ok(TableIdent::new(namespace, table.name))
+            })
+            .collect()
+    }
+
+    async fn load_table(&self, table: &TableIdent) -> Result<datafusion_nexus_iceberg::ResolvedIcebergTable> {
+        self.backend
+            .load_table(datafusion_nexus_iceberg::IcebergTableIdentifier {
+                namespace: table.namespace().as_ref().clone(),
+                name: table.name().to_string(),
+            })
+            .await
+            .map_err(|error| {
+                crate::table_format::iceberg::adapter::root_error_from_iceberg(
+                    error,
+                    "datafusion_nexus.table_format.iceberg.catalog.load_table",
+                    "failed to load and freeze an Iceberg table for DataFusion adaptation",
+                )
+            })
+    }
+
+    fn parquet_read_strategy_config(&self) -> Option<TableFormatParquetReadStrategyConfig> {
+        self.parquet_read_strategy_config.clone()
     }
 }
 
@@ -549,16 +549,6 @@ async fn build_catalog_provider_for_namespaces(
     Ok(NexusIcebergCatalogProvider::new(schemas))
 }
 
-/// Builds a [`TableIdent`] from a flat dotted namespace scope and a bare table
-/// name. Backend-agnostic helper used by server alias seeding to route table
-/// loads through [`IcebergCatalogBackend::load_table`] regardless of catalog
-/// kind.
-#[cfg(feature = "server")]
-pub(crate) fn table_ident_from_flat_name(namespace: &str, table: &str) -> Result<TableIdent> {
-    let namespace = namespace_ident_from_flat_name(namespace)?;
-    Ok(TableIdent::new(namespace, table.to_string()))
-}
-
 fn namespace_ident_from_flat_name(namespace: &str) -> Result<NamespaceIdent> {
     let parts = namespace.split('.').collect::<Vec<_>>();
     if parts.is_empty() || parts.iter().any(|part| part.is_empty()) {
@@ -594,7 +584,7 @@ mod tests {
             Ok(vec![TableIdent::new(namespace.clone(), "nation".to_string())])
         }
 
-        async fn load_table(&self, _table: &TableIdent) -> Result<iceberg::table::Table> {
+        async fn load_table(&self, _table: &TableIdent) -> Result<datafusion_nexus_iceberg::ResolvedIcebergTable> {
             unreachable!("this test only inspects schema-provider construction")
         }
 

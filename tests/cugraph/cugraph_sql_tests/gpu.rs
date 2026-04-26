@@ -1,7 +1,7 @@
 use datafusion::{common::config::ConfigOptions, physical_optimizer::PhysicalOptimizerRule};
 use datafusion_nexus::planner::{
-    FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
-    classify_final_plan,
+    FinalPlanDisposition, HostExecutionQosConfig, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig,
+    NexusNativePhysicalOptimizerRule, classify_final_plan,
 };
 
 use super::{support::*, *};
@@ -134,7 +134,7 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
     );
     let report = native_rule.last_report().expect("native selection must retain a planning report");
     assert_eq!(
-        report.rewritten_count(),
+        report.selected_count(),
         1,
         "the post-island native consumer is an explicit declared GPU-island binding"
     );
@@ -142,7 +142,7 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
         report
             .outcomes()
             .iter()
-            .any(|outcome| matches!(outcome, datafusion_nexus::report::CandidateOutcome::Rewritten { .. })),
+            .any(|outcome| matches!(outcome, datafusion_nexus::report::CandidateOutcome::Selected { .. })),
         "the report must retain the explicit-island selection: {report:?}"
     );
 
@@ -167,6 +167,46 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
     let observation = &metrics.graph_runtime_rows[0];
     assert_eq!(observation.algorithm, "degrees_all");
     assert_eq!(observation.runtime_outcome, "succeeded");
+}
+
+#[tokio::test]
+async fn cugraph_nested_planning_uses_the_outer_host_execution_qos_permit_once() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
+        .with_host_execution_qos(HostExecutionQosConfig::new(std::num::NonZeroUsize::new(1).unwrap()))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edges_with_upstream_only_list(&ctx, "raw_edges");
+    ctx.sql(
+        "CREATE VIEW filtered_edges AS \
+         SELECT src, dst FROM raw_edges WHERE array_length(tags) > 0",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    let plan = ctx
+        .sql(
+            "SELECT vertex, out_degree \
+             FROM cugraph_degrees_all('filtered_edges', 'src', 'dst') \
+             WHERE out_degree > 0 ORDER BY vertex",
+        )
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Mixed);
+
+    let batches =
+        tokio::time::timeout(Duration::from_secs(5), datafusion::physical_plan::collect(plan, ctx.task_ctx()))
+            .await
+            .expect("nested cuGraph planning must not reacquire the outer host QoS permit")
+            .expect("mixed CPU -> cuGraph -> CPU statement should execute");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
 }
 
 #[tokio::test]

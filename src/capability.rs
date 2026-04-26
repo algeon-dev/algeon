@@ -1,20 +1,22 @@
 //! CPU/GPU candidate-outcome reason codes.
 //!
-//! `FallbackReason::code()` produces the snake-case strings that planning,
-//! execution, and fallback-pressure reports emit verbatim. Changing a code is
+//! Capability reason codes for native candidate selection.
+//!
+//! `CapabilityReason::code()` produces the snake-case strings that planning
+//! and report projections emit verbatim. Changing a code is
 //! a TSV schema break and requires bumping the consuming report's schema
 //! version.
 
 use nexus_query_engine::triage::TriageCode;
 
-/// Stable reason codes explaining why a candidate physical plan stayed on CPU
-/// or was rejected by the native GPU path.
+/// Stable reason codes explaining why a candidate cannot execute on the native
+/// GPU path.
 ///
 /// Operator/expression/type reasons describe unsupported DataFusion plan
 /// semantics, while `NativeSource*` reasons describe source-adapter
 /// requirements that could not be mapped to a native local-Parquet source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FallbackReason {
+pub enum CapabilityReason {
     /// Physical operator is not supported by native lowering.
     UnsupportedOperator,
     /// Physical expression is not supported by native lowering.
@@ -34,15 +36,6 @@ pub enum FallbackReason {
     NativeBoundedJoinUnsupported,
     /// Adaptive native pipeline admission rejected the shape.
     NativeAdaptivePipelineUnsupported,
-    /// Native GPU execution is supported, but conservative plan-preference
-    /// facts predict CPU will be better for a small selective top-k shape.
-    NativeSmallSelectiveTopkCpuPreferred,
-    /// Native GPU execution is supported, but conservative plan-preference
-    /// facts predict CPU will be better for a small selective residual join.
-    NativeSmallSelectiveResidualJoinCpuPreferred,
-    /// Native GPU execution is supported, but conservative plan-preference
-    /// facts predict CPU will be better for a small selective full-sort shape.
-    NativeSmallSelectiveFullSortCpuPreferred,
     /// The replaced subtree declares an output ordering the lowered native plan
     /// cannot reproduce.
     NativeOrderedOutputUnsupported,
@@ -112,15 +105,22 @@ pub enum FallbackReason {
     IcebergRowSelectionUnsupported,
     /// Iceberg object-store read cannot be lowered to native local reads.
     IcebergObjectStoreReadUnsupported,
+    /// Iceberg remote S3 FileIO cannot be proven to use the frozen
+    /// CPU/native source-access policy.
+    IcebergFileIoSourceAccessUnverified,
     /// Iceberg snapshot selection or loading is unsupported.
     ///
     /// Reserved: no current raising site (time travel by snapshot id works;
     /// branch/tag refs are not modeled in scan requests). Kept because reason
     /// codes are a stable report contract.
     IcebergSnapshotUnsupported,
+    /// Iceberg metadata contains an encrypted data or delete file.
+    IcebergEncryptedFileUnsupported,
+    /// An Iceberg metadata scalar cannot be materialized by the native source.
+    IcebergScalarValueUnsupported,
 }
 
-impl FallbackReason {
+impl CapabilityReason {
     /// Stable snake-case reason code used by reports and tests.
     pub const fn code(self) -> &'static str {
         match self {
@@ -132,9 +132,6 @@ impl FallbackReason {
             Self::NativePartitionPreservingSortUnsupported => "native_partition_preserving_sort_unsupported",
             Self::NativeBoundedJoinUnsupported => "native_bounded_join_unsupported",
             Self::NativeAdaptivePipelineUnsupported => "native_adaptive_pipeline_unsupported",
-            Self::NativeSmallSelectiveTopkCpuPreferred => "native_small_selective_topk_cpu_preferred",
-            Self::NativeSmallSelectiveResidualJoinCpuPreferred => "native_small_selective_residual_join_cpu_preferred",
-            Self::NativeSmallSelectiveFullSortCpuPreferred => "native_small_selective_full_sort_cpu_preferred",
             Self::NativeOrderedOutputUnsupported => "native_ordered_output_unsupported",
             Self::NativeSourceNonLocalObjectStore => "native_source_non_local_object_store",
             Self::NativeSourcePartitionColumns => "native_source_partition_columns",
@@ -161,19 +158,19 @@ impl FallbackReason {
             Self::IcebergResidualPredicateUnsupported => "iceberg_residual_predicate_unsupported",
             Self::IcebergRowSelectionUnsupported => "iceberg_row_selection_unsupported",
             Self::IcebergObjectStoreReadUnsupported => "iceberg_object_store_read_unsupported",
+            Self::IcebergFileIoSourceAccessUnverified => "iceberg_file_io_source_access_unverified",
             Self::IcebergSnapshotUnsupported => "iceberg_snapshot_unsupported",
+            Self::IcebergEncryptedFileUnsupported => "iceberg_encrypted_file_unsupported",
+            Self::IcebergScalarValueUnsupported => "iceberg_scalar_value_unsupported",
         }
     }
 
-    /// Shared triage code for this planning fallback reason.
+    /// Shared triage code for this capability miss.
     pub const fn triage_code(self) -> TriageCode {
         match self {
             Self::UnsupportedOperator => TriageCode::UnsupportedOperator,
             Self::UnsupportedExpression => TriageCode::UnsupportedExpression,
             Self::UnsupportedType => TriageCode::UnsupportedType,
-            Self::NativeSmallSelectiveTopkCpuPreferred
-            | Self::NativeSmallSelectiveResidualJoinCpuPreferred
-            | Self::NativeSmallSelectiveFullSortCpuPreferred => TriageCode::CpuPreferred,
             Self::NativeBoundedJoinUnsupported => TriageCode::StrictBoundedRejected,
             Self::NativeAdaptivePipelineUnsupported => TriageCode::AdaptivePipelineRejected,
             Self::NativeSourceNonLocalObjectStore
@@ -200,7 +197,10 @@ impl FallbackReason {
             | Self::IcebergResidualPredicateUnsupported
             | Self::IcebergRowSelectionUnsupported
             | Self::IcebergObjectStoreReadUnsupported
-            | Self::IcebergSnapshotUnsupported => TriageCode::UnsupportedSource,
+            | Self::IcebergFileIoSourceAccessUnverified
+            | Self::IcebergSnapshotUnsupported
+            | Self::IcebergEncryptedFileUnsupported
+            | Self::IcebergScalarValueUnsupported => TriageCode::UnsupportedSource,
             Self::TableFormatPlanningFailed => TriageCode::InvalidPlan,
             Self::NativeSortPreservingMergeUnsupported
             | Self::NativeDistributedAggregateUnsupported

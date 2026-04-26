@@ -1,20 +1,19 @@
 use nexus_query_engine::plan::{
-    NativePlanCpuPreferenceReason, NativePlanPreferenceDecision, NativePlanPreferenceOptions,
-    native_plan_preference_decision,
+    NativePlanCostDecision, NativePlanCostOptions, NativePlanCostReason, native_plan_cost_decision,
 };
 
 use super::*;
 
 #[test]
-fn small_selective_topk_join_prefers_cpu() {
+fn small_selective_topk_join_is_not_selected_by_cost() {
     let plan = topk_join_plan(4, 10_000, 1024 * 1024);
 
-    let decision = native_plan_preference_decision(&plan, &NativePlanPreferenceOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
 
-    let NativePlanPreferenceDecision::CpuPreferred { reason, facts } = decision else {
-        panic!("small top-k join should prefer CPU");
+    let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
+        panic!("small top-k join should not be selected by cost");
     };
-    assert_eq!(reason, NativePlanCpuPreferenceReason::SmallSelectiveTopK);
+    assert_eq!(reason, NativePlanCostReason::SmallSelectiveTopK);
     assert_eq!(facts.selected_row_groups, Some(8));
     assert_eq!(facts.estimated_source_bytes, Some(2 * 1024 * 1024));
     assert!(facts.selected_source_bytes_known);
@@ -24,26 +23,26 @@ fn small_selective_topk_join_prefers_cpu() {
 }
 
 #[test]
-fn tiny_residual_join_prefers_cpu() {
+fn tiny_residual_join_is_not_selected_by_cost() {
     let plan = residual_topk_join_plan(4);
 
-    let decision = native_plan_preference_decision(&plan, &NativePlanPreferenceOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
 
-    let NativePlanPreferenceDecision::CpuPreferred { reason, facts } = decision else {
-        panic!("tiny residual join should prefer CPU");
+    let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
+        panic!("tiny residual join should not be selected by cost");
     };
-    assert_eq!(reason, NativePlanCpuPreferenceReason::SmallSelectiveResidualJoin);
+    assert_eq!(reason, NativePlanCostReason::SmallSelectiveResidualJoin);
     assert_eq!(facts.selected_row_groups, Some(8));
     assert_eq!(facts.residual_join_count, 1);
 }
 
 #[test]
-fn residual_join_over_tight_threshold_keeps_gpu_preferred() {
+fn residual_join_over_tight_threshold_continues_native() {
     let plan = residual_topk_join_plan(31);
 
-    let decision = native_plan_preference_decision(&plan, &NativePlanPreferenceOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
 
-    assert!(!decision.is_cpu_preferred(), "residual joins use a tighter small-shape gate than ordinary top-k");
+    assert!(!decision.is_not_selected_by_cost(), "residual joins use a tighter small-shape gate than ordinary top-k");
     assert_eq!(decision.facts().selected_row_groups, Some(62));
     assert_eq!(decision.facts().residual_join_count, 1);
     assert_eq!(decision.facts().min_topk_fetch, Some(100));
@@ -52,74 +51,72 @@ fn residual_join_over_tight_threshold_keeps_gpu_preferred() {
 #[test]
 fn residual_join_can_use_profile_specific_row_group_threshold() {
     let plan = residual_topk_join_plan(12);
-    let options = NativePlanPreferenceOptions {
-        max_small_selective_residual_join_row_groups: 24,
-        ..NativePlanPreferenceOptions::default()
-    };
+    let options =
+        NativePlanCostOptions { max_small_selective_residual_join_row_groups: 24, ..NativePlanCostOptions::default() };
 
-    let decision = native_plan_preference_decision(&plan, &options);
+    let decision = native_plan_cost_decision(&plan, &options);
 
-    let NativePlanPreferenceDecision::CpuPreferred { reason, facts } = decision else {
-        panic!("profile-specific residual threshold should prefer CPU for a small low-byte residual join");
+    let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
+        panic!("profile-specific residual threshold should decline a small low-byte residual join by cost");
     };
-    assert_eq!(reason, NativePlanCpuPreferenceReason::SmallSelectiveResidualJoin);
+    assert_eq!(reason, NativePlanCostReason::SmallSelectiveResidualJoin);
     assert_eq!(facts.selected_row_groups, Some(24));
     assert_eq!(facts.estimated_source_bytes, Some(2 * 1024 * 1024));
 }
 
 #[test]
-fn larger_topk_join_keeps_gpu_preferred() {
+fn larger_topk_join_continues_native() {
     let plan = topk_join_plan(254, 5_000_000, 512 * 1024 * 1024);
 
-    let decision = native_plan_preference_decision(&plan, &NativePlanPreferenceOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
 
-    assert!(!decision.is_cpu_preferred(), "larger top-k join must not be CPU-preferred by small-shape gate");
+    assert!(!decision.is_not_selected_by_cost(), "larger top-k join must not be declined by the small-shape cost gate");
     assert_eq!(decision.facts().selected_row_groups, Some(508));
 }
 
 #[test]
-fn few_large_row_groups_keep_gpu_preferred() {
+fn few_large_row_groups_continue_native() {
     let plan = topk_join_plan(4, 10_000, 2 << 30);
 
-    let decision = native_plan_preference_decision(&plan, &NativePlanPreferenceOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
 
-    assert!(!decision.is_cpu_preferred(), "selected source bytes must gate small/selective CPU preference");
+    assert!(!decision.is_not_selected_by_cost(), "selected source bytes must gate small/selective cost selection");
     assert_eq!(decision.facts().selected_row_groups, Some(8));
     assert_eq!(decision.facts().estimated_source_bytes, Some(4 << 30));
 }
 
 #[test]
-fn missing_row_group_evidence_keeps_gpu_preferred() {
+fn missing_row_group_evidence_continues_native() {
     let plan = topk_join_without_row_group_metadata();
 
-    let decision = native_plan_preference_decision(&plan, &NativePlanPreferenceOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
 
-    assert!(!decision.is_cpu_preferred(), "missing scan evidence should keep GPU preferred");
+    assert!(!decision.is_not_selected_by_cost(), "missing scan evidence should continue native selection");
     assert!(!decision.facts().selected_row_groups_known);
     assert_eq!(decision.facts().selected_row_groups, None);
 }
 
 #[test]
-fn small_grouped_aggregate_without_topk_or_residual_keeps_gpu_preferred() {
+fn small_grouped_aggregate_without_topk_or_residual_continues_native() {
     let plan = grouped_aggregate_plan(4);
 
-    let decision = native_plan_preference_decision(&plan, &NativePlanPreferenceOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
 
-    assert!(!decision.is_cpu_preferred(), "small final output alone is not enough to prefer CPU");
+    assert!(!decision.is_not_selected_by_cost(), "small final output alone is not enough to decline by cost");
     assert_eq!(decision.facts().grouped_aggregate_count, 1);
     assert_eq!(decision.facts().min_topk_fetch, None);
 }
 
 #[test]
-fn small_selective_full_sort_join_aggregate_prefers_cpu() {
+fn small_selective_full_sort_join_aggregate_is_not_selected_by_cost() {
     let plan = full_sort_join_aggregate_plan(4, 10_000, 1024 * 1024);
 
-    let decision = native_plan_preference_decision(&plan, &NativePlanPreferenceOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
 
-    let NativePlanPreferenceDecision::CpuPreferred { reason, facts } = decision else {
-        panic!("small full-sort join/aggregate should prefer CPU");
+    let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
+        panic!("small full-sort join/aggregate should not be selected by cost");
     };
-    assert_eq!(reason, NativePlanCpuPreferenceReason::SmallSelectiveFullSort);
+    assert_eq!(reason, NativePlanCostReason::SmallSelectiveFullSort);
     assert_eq!(facts.selected_row_groups, Some(8));
     assert_eq!(facts.sort_count, 1);
     assert_eq!(facts.join_count, 1);
@@ -128,12 +125,12 @@ fn small_selective_full_sort_join_aggregate_prefers_cpu() {
 }
 
 #[test]
-fn disabled_preference_options_keep_gpu_preferred() {
+fn disabled_cost_options_continue_native() {
     let plan = topk_join_plan(4, 10_000, 1024 * 1024);
 
-    let decision = native_plan_preference_decision(&plan, &NativePlanPreferenceOptions::disabled());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::disabled());
 
-    assert!(!decision.is_cpu_preferred());
+    assert!(!decision.is_not_selected_by_cost());
 }
 
 fn topk_join_plan(
@@ -163,7 +160,7 @@ fn topk_join_plan_with_residual(
         Field::new("label", DataType::Utf8, true),
     ]));
     let left = builder.add_source(SourceNode::LocalParquet(parquet_source(
-        "/tmp/preference-left.parquet",
+        "/tmp/cost-left.parquet",
         Arc::clone(&left_schema),
         vec!["k", "v"],
         row_groups_per_source,
@@ -171,7 +168,7 @@ fn topk_join_plan_with_residual(
         bytes_per_source,
     )));
     let right = builder.add_source(SourceNode::LocalParquet(parquet_source(
-        "/tmp/preference-right.parquet",
+        "/tmp/cost-right.parquet",
         Arc::clone(&right_schema),
         vec!["k", "label"],
         row_groups_per_source,
@@ -211,12 +208,12 @@ fn topk_join_without_row_group_metadata() -> nexus_query_engine::plan::QueryPlan
         Field::new("label", DataType::Utf8, true),
     ]));
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/preference-left-unknown.parquet")],
+        vec![LocalParquetFile::new("/tmp/cost-left-unknown.parquet")],
         Arc::clone(&left_schema),
         vec!["k".to_string(), "v".to_string()],
     )));
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/preference-right-unknown.parquet")],
+        vec![LocalParquetFile::new("/tmp/cost-right-unknown.parquet")],
         Arc::clone(&right_schema),
         vec!["k".to_string(), "label".to_string()],
     )));
@@ -252,7 +249,7 @@ fn grouped_aggregate_plan(row_groups: usize) -> nexus_query_engine::plan::QueryP
         Field::new("sum_v", DataType::Int64, true),
     ]));
     let source = builder.add_source(SourceNode::LocalParquet(parquet_source(
-        "/tmp/preference-aggregate.parquet",
+        "/tmp/cost-aggregate.parquet",
         Arc::clone(&source_schema),
         vec!["k", "v"],
         row_groups,
@@ -292,7 +289,7 @@ fn full_sort_join_aggregate_plan(
         Field::new("sum_v", DataType::Int64, true),
     ]));
     let left = builder.add_source(SourceNode::LocalParquet(parquet_source(
-        "/tmp/preference-full-sort-left.parquet",
+        "/tmp/cost-full-sort-left.parquet",
         Arc::clone(&left_schema),
         vec!["k", "v"],
         row_groups_per_source,
@@ -300,7 +297,7 @@ fn full_sort_join_aggregate_plan(
         bytes_per_source,
     )));
     let right = builder.add_source(SourceNode::LocalParquet(parquet_source(
-        "/tmp/preference-full-sort-right.parquet",
+        "/tmp/cost-full-sort-right.parquet",
         Arc::clone(&right_schema),
         vec!["k", "label"],
         row_groups_per_source,

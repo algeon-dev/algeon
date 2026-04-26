@@ -13,11 +13,11 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.plans.len(), 1);
     assert_eq!(result.plans[0].node_count(), 6);
-    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Selected { .. }));
 
     let plan = &result.plans[0];
     let PlanNode::Limit(limit) = &plan.root_node().kind else {
@@ -93,8 +93,8 @@ fn multi_full_file_parquet_scan_lowers_to_one_native_source() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let plan = &result.plans[0];
     let source = plan
         .nodes()
@@ -133,8 +133,8 @@ fn explicit_parquet_row_group_access_plan_lowers_to_native_row_groups() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.file_count(), 1);
     assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1, 3][..]));
@@ -169,10 +169,10 @@ fn parquet_row_level_access_plan_is_rejected_with_source_reason() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceRowSelection, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceRowSelection, .. }
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].file_count, 1);
@@ -194,10 +194,10 @@ fn integer_modulo_projection_expression_is_rejected_during_native_planning() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -213,10 +213,10 @@ fn modulo_with_non_integral_operands_is_rejected_during_native_planning() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedType, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -232,8 +232,8 @@ fn tpch_like_source_types_do_not_reject_native_planning() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(
         source.read_columns,
@@ -253,8 +253,8 @@ fn order_insensitive_pushed_down_scan_limit_lowers_to_native_source() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.scan_limit, Some(1));
     assert_eq!(source.diagnostics.scan_limit_disposition.as_str(), "represented");
@@ -275,8 +275,8 @@ fn order_sensitive_single_file_group_scan_limit_lowers_to_native_source() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.scan_limit, Some(1));
     assert_eq!(source.diagnostics.scan_limit_disposition.as_str(), "represented");
@@ -298,8 +298,8 @@ fn parquet_sorting_columns_scan_limit_lowers_to_native_source() {
 
     let result = lower_physical_plan_to_native(scan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.scan_limit, Some(1));
     assert_eq!(source.diagnostics.scan_limit_disposition.as_str(), "represented");
@@ -322,10 +322,10 @@ fn order_sensitive_multi_file_group_scan_limit_remains_rejected() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePreserveOrder, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourcePreserveOrder, .. }
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].scan_limit_disposition.as_str(), "rejected");
@@ -345,10 +345,10 @@ fn preserve_order_multi_file_group_without_scan_limit_remains_rejected() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePreserveOrder, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourcePreserveOrder, .. }
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].scan_limit_disposition.as_str(), "absent");
@@ -368,8 +368,8 @@ fn declared_output_ordering_single_file_group_scan_lowers_to_native_source() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.file_count(), 1);
     assert!(source.diagnostics.rejected_features.is_empty());
@@ -389,8 +389,8 @@ fn parquet_sorting_columns_inferred_output_ordering_lowers_to_native_source() {
 
     let result = lower_physical_plan_to_native(scan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.file_count(), 1);
     assert!(source.diagnostics.rejected_features.is_empty());
@@ -410,8 +410,8 @@ fn declared_output_ordering_single_file_group_multi_file_scan_lowers_to_native_s
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.file_count(), 2);
     assert!(source.diagnostics.rejected_features.is_empty());
@@ -433,10 +433,10 @@ fn declared_output_ordering_multi_file_group_scan_with_overlapping_keys_is_rejec
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceOutputOrdering, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceOutputOrdering, .. }
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "output_ordering"));
@@ -455,9 +455,9 @@ fn declared_output_ordering_claim_through_aggregate_is_reestablished_with_native
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("ordered aggregate should lower with an explicit native sort");
     };
     assert!(
@@ -485,7 +485,7 @@ fn declared_output_ordering_limit_above_aggregate_is_rejected_instead_of_sorted_
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::NativeOrderedOutputUnsupported);
+    assert_native_rejection(&result, CapabilityReason::NativeOrderedOutputUnsupported);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -517,7 +517,7 @@ fn ordered_window_over_order_breaking_aggregate_is_rejected_before_root_sort_rep
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::NativeOrderedOutputUnsupported);
+    assert_native_rejection(&result, CapabilityReason::NativeOrderedOutputUnsupported);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -540,10 +540,10 @@ fn declared_output_ordering_multi_partition_memory_source_is_rejected() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeOrderedOutputUnsupported, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeOrderedOutputUnsupported, .. }
     ));
 }
 
@@ -566,9 +566,9 @@ fn sort_preserving_merge_over_partition_preserving_memory_sort_lowers() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("partition-preserving SPM should lower to native");
     };
     assert_eq!(candidate.shape, "SortPreservingMergeExec(SortExec(MemorySource))");
@@ -592,9 +592,9 @@ fn sort_preserving_merge_over_ordered_memory_source_lowers_without_child_sort() 
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("SPM over an ordered input should lower to native");
     };
     assert_eq!(candidate.shape, "SortPreservingMergeExec(MemorySource)");
@@ -615,9 +615,9 @@ fn partition_preserving_sort_with_single_input_partition_lowers() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("single-partition partition-preserving sort should lower to native");
     };
     assert_eq!(candidate.shape, "SortExec(MemorySource)");
@@ -641,10 +641,13 @@ fn partition_preserving_sort_with_multiple_input_partitions_is_rejected() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativePartitionPreservingSortUnsupported, .. }
+        CandidateOutcome::NotSupported {
+            capability_reason: CapabilityReason::NativePartitionPreservingSortUnsupported,
+            ..
+        }
     ));
 }
 
@@ -658,8 +661,8 @@ fn topk_sort_fetch_lowers_to_native_sort_plus_limit() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
     let PlanNode::Limit(limit) = &result.plans[0].root_node().kind else {
         panic!("native root should be a limit node");
     };
@@ -680,9 +683,9 @@ fn input_tree_sort_fetch_lowers_to_native_sort_plus_limit() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("input-tree top-k aggregate should lower to native");
     };
     assert_eq!(candidate.shape, "AggregateExec(SortExec(fetch)(LocalParquetScan))");
@@ -722,9 +725,9 @@ fn sort_without_fetch_over_aggregate_lowers_without_native_limit() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Selected { .. }));
     assert!(matches!(&result.plans[0].root_node().kind, PlanNode::Sort(_)));
     assert!(!result.plans[0].nodes().iter().any(|node| matches!(&node.kind, PlanNode::Limit(_))));
 
@@ -743,8 +746,8 @@ fn aggregate_root_global_limit_does_not_push_scan_limit_to_source() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.scan_limit, None, "LIMIT after aggregate must not be applied before aggregate input");
     assert!(matches!(result.plans[0].root_node().kind, PlanNode::Limit(_)));
@@ -763,7 +766,7 @@ fn nested_limit_offsets_push_enough_rows_to_source() {
 
     let result = lower_physical_plan_to_native(outer);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(
         source.scan_limit,
@@ -783,7 +786,7 @@ fn zero_fetch_global_limit_pushes_zero_scan_limit_to_source() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.scan_limit, Some(0), "LIMIT 0 can be answered without reading source rows");
 
@@ -802,9 +805,9 @@ fn sort_preserving_merge_without_fetch_lowers_to_native_sort() {
 
     let result = lower_physical_plan_to_native(merge);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("non-fetch SPM should lower to native");
     };
     assert!(
@@ -830,8 +833,8 @@ fn sort_preserving_merge_fetch_with_matching_child_sort_lowers_to_native_sort_pl
 
     let result = lower_physical_plan_to_native(merge);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let PlanNode::Limit(limit) = &result.plans[0].root_node().kind else {
         panic!("SPM fetch should lower to a native limit above sort:\n{}", result.plans[0]);
     };
@@ -855,10 +858,13 @@ fn sort_preserving_merge_fetch_without_child_ordering_is_rejected() {
     let result = lower_physical_plan_to_native(merge);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSortPreservingMergeUnsupported, .. }
+        CandidateOutcome::NotSupported {
+            capability_reason: CapabilityReason::NativeSortPreservingMergeUnsupported,
+            ..
+        }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -884,10 +890,13 @@ fn sort_preserving_merge_fetch_with_mismatched_child_sort_is_rejected() {
     let result = lower_physical_plan_to_native(merge);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSortPreservingMergeUnsupported, .. }
+        CandidateOutcome::NotSupported {
+            capability_reason: CapabilityReason::NativeSortPreservingMergeUnsupported,
+            ..
+        }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -910,10 +919,13 @@ fn sort_preserving_merge_with_same_name_different_index_ordering_is_rejected() {
     let result = lower_physical_plan_to_native(merge);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSortPreservingMergeUnsupported, .. }
+        CandidateOutcome::NotSupported {
+            capability_reason: CapabilityReason::NativeSortPreservingMergeUnsupported,
+            ..
+        }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -934,10 +946,13 @@ fn sort_preserving_merge_with_child_fetch_smaller_than_root_fetch_is_rejected() 
     let result = lower_physical_plan_to_native(merge);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSortPreservingMergeUnsupported, .. }
+        CandidateOutcome::NotSupported {
+            capability_reason: CapabilityReason::NativeSortPreservingMergeUnsupported,
+            ..
+        }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -952,8 +967,8 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let plan = &result.plans[0];
     let synthetic_projection = plan
         .nodes()

@@ -25,6 +25,7 @@ use super::{
     source_reader_pushdown_predicate,
 };
 use crate::{
+    capability::CapabilityReason,
     native::{
         expression_contract::validate_physical_expr,
         lowering::{
@@ -38,7 +39,6 @@ use crate::{
         },
         validate::validate_schema,
     },
-    policy::FallbackReason,
 };
 
 pub(super) fn lower_local_parquet_source_input(
@@ -47,9 +47,9 @@ pub(super) fn lower_local_parquet_source_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let (file_scan, parquet_source) =
-        source_exec.downcast_to_file_source::<ParquetSource>().ok_or(FallbackReason::UnsupportedOperator)?;
+        source_exec.downcast_to_file_source::<ParquetSource>().ok_or(CapabilityReason::UnsupportedOperator)?;
     let required_scan_output_indices =
         required_source_scan_output_indices(source_exec.schema(), filter, required_output_fields)?;
     let column_requirements = required_parquet_column_requirements_for_scan_columns(
@@ -81,7 +81,7 @@ pub(super) fn lower_local_parquet_source_input(
     }
     if local_parquet_scan_is_empty(file_scan) {
         if !native_parquet_object_store_scan_is_supported(file_scan) {
-            return Err(FallbackReason::NativeSourceNonLocalObjectStore);
+            return Err(CapabilityReason::NativeSourceNonLocalObjectStore);
         }
         return lower_empty_local_parquet_source_input(source_exec, filter, builder, required_output_fields);
     }
@@ -241,7 +241,7 @@ fn lower_empty_local_parquet_source_input(
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let frontend_schema = filter.map_or_else(|| source_exec.schema(), |filter| filter.schema());
     let (source_schema, source_bindings) = executable_schema_and_bindings(&frontend_schema, required_output_fields)?;
     validate_schema(Arc::clone(&source_schema))?;

@@ -32,20 +32,20 @@ use super::{
     sort::lower_sort_ordering_with_input,
 };
 use crate::{
+    capability::CapabilityReason,
     native::{
         expression_contract::{is_supported_native_type, validate_physical_expr},
         literal::{NativeLiteralContext, native_literal_value},
         normalize::{NormalizedNativeSort, NormalizedNativeWindow},
         validate::{validate_schema, validate_sort_ordering},
     },
-    policy::FallbackReason,
 };
 
 pub(super) fn lower_sort_input(
     sort: &NormalizedNativeSort<'_>,
     builder: &mut NativeQueryPlanBuilder,
     _required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     validate_schema(Arc::clone(sort.sort.output_schema()))?;
     validate_sort_ordering(sort.sort.ordering(), sort.sort.input_schema())?;
     let mut child_required = BTreeSet::new();
@@ -69,7 +69,7 @@ fn apply_sort_fetch_limit(
     builder: &mut NativeQueryPlanBuilder,
     sorted: LoweredNativeInput,
     fetch: Option<NativeLimitSpec>,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let Some(fetch) = fetch else {
         return Ok(sorted);
     };
@@ -81,7 +81,7 @@ pub(super) fn lower_window_input(
     window: &NormalizedNativeWindow<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let window_schema = window.window.schema();
     let window_input_schema = window.window.input_schema();
     validate_schema(Arc::clone(&window_schema))?;
@@ -102,9 +102,12 @@ pub(super) fn lower_window_input(
     project_required_output_columns(builder, window_node, output_schema, output_bindings, required_output_fields)
 }
 
-fn validate_window_exprs(window_exprs: &[Arc<dyn WindowExpr>], input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+fn validate_window_exprs(
+    window_exprs: &[Arc<dyn WindowExpr>],
+    input_schema: &SchemaRef,
+) -> Result<(), CapabilityReason> {
     if window_exprs.is_empty() {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     for window_expr in window_exprs {
         for expr in window_expr.partition_by() {
@@ -118,48 +121,48 @@ fn validate_window_exprs(window_exprs: &[Arc<dyn WindowExpr>], input_schema: &Sc
         } else if let Some(standard) = window_expr.as_any().downcast_ref::<StandardWindowExpr>() {
             validate_standard_window(standard, input_schema)?;
         } else {
-            return Err(FallbackReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator);
         }
     }
     Ok(())
 }
 
-fn validate_window_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+fn validate_window_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
     validate_physical_expr(expr, input_schema)?;
-    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     if is_supported_native_type(&data_type)
         && !is_timestamp_with_timezone(&data_type)
         && !is_supported_list_carry_type(&data_type)
     {
         Ok(())
     } else {
-        Err(FallbackReason::UnsupportedType)
+        Err(CapabilityReason::UnsupportedType)
     }
 }
 
 fn validate_plain_aggregate_window(
     plain: &PlainAggregateWindowExpr,
     input_schema: &SchemaRef,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     let whole_partition = is_whole_partition_frame(plain.get_window_frame());
     let cumulative = is_rows_unbounded_preceding_to_current_frame(plain.get_window_frame());
     if !whole_partition && !cumulative {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     if !plain.order_by().is_empty() && !cumulative {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     if plain.order_by().is_empty() && !whole_partition {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     let aggregate = plain.get_aggregate_expr();
     if aggregate.is_distinct() || !aggregate.order_bys().is_empty() {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     lower_native_aggregate_function(aggregate.fun().name())?;
     let expressions = aggregate.expressions();
     let [arg] = expressions.as_slice() else {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     };
     validate_window_value_expr(arg, input_schema)
 }
@@ -172,13 +175,13 @@ enum StandardWindowKind {
     Lead,
 }
 
-fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
     match standard_window_kind(standard)? {
-        StandardWindowKind::Rank if standard.order_by().is_empty() => Err(FallbackReason::UnsupportedOperator),
+        StandardWindowKind::Rank if standard.order_by().is_empty() => Err(CapabilityReason::UnsupportedOperator),
         StandardWindowKind::Rank | StandardWindowKind::RowNumber => Ok(()),
         StandardWindowKind::Lag | StandardWindowKind::Lead => {
             if standard.order_by().is_empty() {
-                return Err(FallbackReason::UnsupportedOperator);
+                return Err(CapabilityReason::UnsupportedOperator);
             }
             // Parsing the offset / default literals here keeps validation
             // and lowering in sync. We do not commit a fallback reason for
@@ -190,13 +193,13 @@ fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &Schema
     }
 }
 
-fn standard_window_kind(standard: &StandardWindowExpr) -> Result<StandardWindowKind, FallbackReason> {
+fn standard_window_kind(standard: &StandardWindowExpr) -> Result<StandardWindowKind, CapabilityReason> {
     match standard_window_function_name(standard).to_ascii_lowercase().as_str() {
         "rank" => Ok(StandardWindowKind::Rank),
         "row_number" => Ok(StandardWindowKind::RowNumber),
         "lag" => Ok(StandardWindowKind::Lag),
         "lead" => Ok(StandardWindowKind::Lead),
-        _ => Err(FallbackReason::UnsupportedOperator),
+        _ => Err(CapabilityReason::UnsupportedOperator),
     }
 }
 
@@ -221,25 +224,28 @@ struct LagLeadArgs {
 ///
 /// Use `WindowUDFExpr::args()` because
 /// [`StandardWindowFunctionExpr::expressions`] hides `offset` and `default`.
-fn parse_lag_lead_args(standard: &StandardWindowExpr, input_schema: &SchemaRef) -> Result<LagLeadArgs, FallbackReason> {
+fn parse_lag_lead_args(
+    standard: &StandardWindowExpr,
+    input_schema: &SchemaRef,
+) -> Result<LagLeadArgs, CapabilityReason> {
     let udf = standard
         .get_standard_func_expr()
         .as_any()
         .downcast_ref::<WindowUDFExpr>()
-        .ok_or(FallbackReason::UnsupportedOperator)?;
+        .ok_or(CapabilityReason::UnsupportedOperator)?;
     let args = udf.args();
     if args.is_empty() || args.len() > 3 {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     }
     let value_expr = args[0].clone();
     validate_physical_expr(&value_expr, input_schema)?;
     let value_type =
-        value_expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        value_expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     if !is_supported_native_type(&value_type)
         || is_timestamp_with_timezone(&value_type)
         || is_supported_list_carry_type(&value_type)
     {
-        return Err(FallbackReason::UnsupportedType);
+        return Err(CapabilityReason::UnsupportedType);
     }
     let offset = match args.get(1) {
         None => 1u32,
@@ -252,21 +258,21 @@ fn parse_lag_lead_args(standard: &StandardWindowExpr, input_schema: &SchemaRef) 
     Ok(LagLeadArgs { value_expr, offset, default })
 }
 
-fn validate_window_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+fn validate_window_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
     validate_physical_expr(expr, input_schema)?;
-    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     if is_supported_native_type(&data_type)
         && !is_timestamp_with_timezone(&data_type)
         && !is_supported_list_carry_type(&data_type)
     {
         Ok(())
     } else {
-        Err(FallbackReason::UnsupportedType)
+        Err(CapabilityReason::UnsupportedType)
     }
 }
 
-fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, FallbackReason> {
-    let literal = expr.downcast_ref::<Literal>().ok_or(FallbackReason::UnsupportedExpression)?;
+fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, CapabilityReason> {
+    let literal = expr.downcast_ref::<Literal>().ok_or(CapabilityReason::UnsupportedExpression)?;
     match literal.value() {
         ScalarValue::Null => Ok(1u32),
         ScalarValue::Int8(None)
@@ -285,9 +291,9 @@ fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, FallbackRe
         ScalarValue::UInt16(Some(value)) => Ok(u32::from(*value)),
         ScalarValue::UInt32(Some(value)) => offset_from_u32(*value),
         ScalarValue::UInt64(Some(value)) => {
-            offset_from_i64(i64::try_from(*value).map_err(|_| FallbackReason::UnsupportedExpression)?)
+            offset_from_i64(i64::try_from(*value).map_err(|_| CapabilityReason::UnsupportedExpression)?)
         },
-        _ => Err(FallbackReason::UnsupportedExpression),
+        _ => Err(CapabilityReason::UnsupportedExpression),
     }
 }
 
@@ -298,20 +304,20 @@ fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, FallbackRe
 /// `[0, i32::MAX]`. Rejecting larger offsets here means the plan falls back
 /// to CPU DataFusion instead of admitting a native plan that would error at
 /// execute time.
-fn offset_from_i64(value: i64) -> Result<u32, FallbackReason> {
+fn offset_from_i64(value: i64) -> Result<u32, CapabilityReason> {
     if value < 0 {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     }
-    let value = u64::try_from(value).map_err(|_| FallbackReason::UnsupportedExpression)?;
+    let value = u64::try_from(value).map_err(|_| CapabilityReason::UnsupportedExpression)?;
     if value > i32::MAX as u64 {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     }
     Ok(value as u32)
 }
 
-fn offset_from_u32(value: u32) -> Result<u32, FallbackReason> {
+fn offset_from_u32(value: u32) -> Result<u32, CapabilityReason> {
     if value > i32::MAX as u32 {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     }
     Ok(value)
 }
@@ -319,8 +325,8 @@ fn offset_from_u32(value: u32) -> Result<u32, FallbackReason> {
 fn parse_lag_lead_default(
     expr: &Arc<dyn PhysicalExpr>,
     value_type: &arrow::datatypes::DataType,
-) -> Result<Option<NativeLiteralValue>, FallbackReason> {
-    let literal = expr.downcast_ref::<Literal>().ok_or(FallbackReason::UnsupportedExpression)?;
+) -> Result<Option<NativeLiteralValue>, CapabilityReason> {
+    let literal = expr.downcast_ref::<Literal>().ok_or(CapabilityReason::UnsupportedExpression)?;
     let scalar = literal.value();
     // Match DataFusion's lag/lead constructor, which encodes the missing
     // `default` argument as `ScalarValue::Null`. Treat that as the no-default
@@ -336,7 +342,7 @@ fn parse_lag_lead_default(
         return Ok(None);
     }
     if &lowered.data_type() != value_type {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     }
     // Mirror the literal families that the engine's
     // `build_lag_lead_value_fill_scalar` can lower to a cudf-rs Scalar today.
@@ -366,7 +372,7 @@ fn parse_lag_lead_default(
         | NativeLiteralValue::Timestamp { .. }
         | NativeLiteralValue::Duration { .. }
         | NativeLiteralValue::IntervalMonthDayNano { .. }
-        | NativeLiteralValue::Null(_) => Err(FallbackReason::UnsupportedExpression),
+        | NativeLiteralValue::Null(_) => Err(CapabilityReason::UnsupportedExpression),
     }
 }
 
@@ -389,9 +395,9 @@ fn scalar_is_unbounded(value: &ScalarValue) -> bool {
 fn native_window_output_schema_and_bindings(
     input: &LoweredNativeInput,
     window_schema: &SchemaRef,
-) -> Result<(SchemaRef, Vec<FieldBinding>), FallbackReason> {
+) -> Result<(SchemaRef, Vec<FieldBinding>), CapabilityReason> {
     if window_schema.fields().len() < input.bindings.len() {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     }
 
     let frontend_names = window_schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
@@ -400,7 +406,7 @@ fn native_window_output_schema_and_bindings(
     let mut bindings = input.bindings.clone();
 
     for output_index in input.bindings.len()..window_schema.fields().len() {
-        let field = window_schema.fields().get(output_index).ok_or(FallbackReason::UnsupportedExpression)?;
+        let field = window_schema.fields().get(output_index).ok_or(CapabilityReason::UnsupportedExpression)?;
         let native_name = unique_window_output_name(output_index, field.name(), &frontend_names, &used_native_names);
         used_native_names.insert(native_name.clone());
         fields.push(rename_field(field.as_ref(), native_name.as_str()));
@@ -425,7 +431,7 @@ fn materialize_window_key_expressions(
     window_exprs: &[Arc<dyn WindowExpr>],
     input_schema: &SchemaRef,
     input: LoweredNativeInput,
-) -> Result<PreparedWindowInput, FallbackReason> {
+) -> Result<PreparedWindowInput, CapabilityReason> {
     let mut used_names = input.schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
     let mut materialized_keys = Vec::<MaterializedWindowKey>::new();
     let mut prepared_keys = Vec::with_capacity(window_exprs.len());
@@ -446,7 +452,7 @@ fn materialize_window_key_expressions(
                     sort_expr.options.nulls_first,
                 ))
             })
-            .collect::<Result<Vec<_>, FallbackReason>>()?;
+            .collect::<Result<Vec<_>, CapabilityReason>>()?;
         prepared_keys.push(PreparedWindowKeys { partition_by, order_by });
     }
 
@@ -486,15 +492,15 @@ fn window_key_expr(
     input: &LoweredNativeInput,
     used_names: &mut BTreeSet<String>,
     materialized_keys: &mut Vec<MaterializedWindowKey>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         let binding = input.binding_for_column(column)?;
         return Ok(NativeExpr::column(binding.native_name.as_str()));
     }
 
     let lowered = lower_physical_expr_with_bindings(expr, input_schema, Some(&input.bindings))?;
-    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-    let nullable = expr.nullable(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
+    let nullable = expr.nullable(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     let signature = format!("{lowered}::{data_type:?}:nullable={nullable}");
     if let Some(existing) = materialized_keys.iter().find(|key| key.signature == signature) {
         return Ok(NativeExpr::column(existing.name.as_str()));
@@ -522,29 +528,29 @@ fn lower_window_spec(
     input: &LoweredNativeInput,
     output_bindings: &[FieldBinding],
     prepared_keys: &[PreparedWindowKeys],
-) -> Result<NativeWindowSpec, FallbackReason> {
+) -> Result<NativeWindowSpec, CapabilityReason> {
     let input_field_count = input_schema.fields().len();
     if output_bindings.len() != input_field_count + window_exprs.len() || prepared_keys.len() != window_exprs.len() {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     }
 
     let mut expected_partition_by = None;
     let mut expected_order_by = None;
     let mut functions = Vec::with_capacity(window_exprs.len());
     for (function_index, window_expr) in window_exprs.iter().enumerate() {
-        let keys = prepared_keys.get(function_index).ok_or(FallbackReason::UnsupportedExpression)?;
+        let keys = prepared_keys.get(function_index).ok_or(CapabilityReason::UnsupportedExpression)?;
         let partition_by = keys.partition_by.clone();
         let order_by = keys.order_by.clone();
         if let Some(expected) = &expected_partition_by {
             if expected != &partition_by {
-                return Err(FallbackReason::UnsupportedOperator);
+                return Err(CapabilityReason::UnsupportedOperator);
             }
         } else {
             expected_partition_by = Some(partition_by.clone());
         }
         if let Some(expected) = &expected_order_by {
             if expected != &order_by {
-                return Err(FallbackReason::UnsupportedOperator);
+                return Err(CapabilityReason::UnsupportedOperator);
             }
         } else {
             expected_order_by = Some(order_by.clone());
@@ -552,14 +558,14 @@ fn lower_window_spec(
 
         let alias = output_bindings
             .get(input_field_count + function_index)
-            .ok_or(FallbackReason::UnsupportedExpression)?
+            .ok_or(CapabilityReason::UnsupportedExpression)?
             .native_name
             .clone();
         if let Some(plain) = window_expr.as_any().downcast_ref::<PlainAggregateWindowExpr>() {
             let aggregate = plain.get_aggregate_expr();
             let expressions = aggregate.expressions();
             let [arg] = expressions.as_slice() else {
-                return Err(FallbackReason::UnsupportedExpression);
+                return Err(CapabilityReason::UnsupportedExpression);
             };
             let expr = lower_physical_expr_with_bindings(arg, input_schema, Some(&input.bindings))?;
             let frame = if is_whole_partition_frame(plain.get_window_frame()) {
@@ -567,7 +573,7 @@ fn lower_window_spec(
             } else if is_rows_unbounded_preceding_to_current_frame(plain.get_window_frame()) {
                 NativeWindowFrame::RowsUnboundedPrecedingToCurrent
             } else {
-                return Err(FallbackReason::UnsupportedOperator);
+                return Err(CapabilityReason::UnsupportedOperator);
             };
             functions.push(NativeWindowFunction::Aggregate {
                 function: lower_native_aggregate_function(aggregate.fun().name())?,
@@ -598,7 +604,7 @@ fn lower_window_spec(
                 },
             }
         } else {
-            return Err(FallbackReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator);
         }
     }
 

@@ -8,6 +8,7 @@ use nexus_query_engine::{
 };
 
 use crate::{
+    capability::CapabilityReason,
     native::{
         lowering::{expr::lower_physical_expr_with_bindings, source::source_bindings_for_schema},
         pruning::{
@@ -15,7 +16,6 @@ use crate::{
             scan_predicate_without_dynamic_filter_hints, validate_pruning_only_parquet_predicate,
         },
     },
-    policy::FallbackReason,
     source_cardinality::reader_predicate_proves_source_at_most_one_row,
 };
 
@@ -42,7 +42,7 @@ pub(in crate::native::lowering) fn source_reader_pushdown_predicate(
     source_output_schema: &SchemaRef,
     frontend_schema: SchemaRef,
     native_source: &NativeLocalParquetSource,
-) -> Result<Option<SourceReaderPushdownPredicate>, FallbackReason> {
+) -> Result<Option<SourceReaderPushdownPredicate>, CapabilityReason> {
     if parquet_source.filter().is_none() {
         return Ok(None);
     }
@@ -55,7 +55,7 @@ pub(in crate::native::lowering) fn source_reader_pushdown_predicate(
     }
     let reader_scan_predicate = scan_predicate_without_dynamic_filter_hints(&scan_predicate);
     if scan_limit.is_some() {
-        return if filter.is_some() { Ok(None) } else { Err(FallbackReason::NativeSourcePushedDownParquetPredicate) };
+        return if filter.is_some() { Ok(None) } else { Err(CapabilityReason::NativeSourcePushedDownParquetPredicate) };
     }
     if let Some(filter) = filter
         && validate_pruning_only_parquet_predicate(parquet_source, Some(filter), source_output_schema).is_err()

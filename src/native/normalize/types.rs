@@ -513,7 +513,7 @@ impl NormalizedNativeUnion<'_> {
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NativePlanRejection {
     pub(in crate::native) candidate: GpuCandidate,
-    pub(in crate::native) reason: FallbackReason,
+    pub(in crate::native) reason: CapabilityReason,
 }
 
 /// Supported root wrappers outside the aggregate/input subtree. These variants

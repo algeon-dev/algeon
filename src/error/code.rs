@@ -40,8 +40,6 @@ pub enum ErrorCode {
     /// Materialized graph edges or side inputs violate the graph operation's
     /// declared input contract.
     GraphInputInvalid,
-    /// The optimizer intentionally rejected a native candidate.
-    NativeCandidateRejected,
     /// A completed-plan requirement needed a GPU operation that the exact
     /// final physical plan could not provide.
     RequiredGpuOperationUnsupported,
@@ -126,7 +124,6 @@ impl ErrorCode {
             Self::SourceDependencyFailure => "source_dependency_failure",
             Self::FieldNotFound => "field_not_found",
             Self::GraphInputInvalid => "graph_input_invalid",
-            Self::NativeCandidateRejected => "native_candidate_rejected",
             Self::RequiredGpuOperationUnsupported => "required_gpu_operation_unsupported",
             Self::FinalPlanRequirementUnsatisfied => "final_plan_requirement_unsatisfied",
             Self::UnsupportedOperator => "unsupported_operator",
@@ -274,7 +271,6 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         ErrorCode::InvalidRequest => ErrorKind::InvalidInput,
         ErrorCode::DataFusionPlanning
         | ErrorCode::PlanningTimeout
-        | ErrorCode::NativeCandidateRejected
         | ErrorCode::FinalPlanRequirementUnsatisfied
         | ErrorCode::InvalidExecutionPlan => ErrorKind::Planning,
         ErrorCode::ObjectNotFound | ErrorCode::SourceObjectNotFound => ErrorKind::NotFound,
@@ -333,7 +329,6 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::FieldNotFound
         | ErrorCode::GraphInputInvalid
         | ErrorCode::FlightFrameTooLarge
-        | ErrorCode::NativeCandidateRejected
         | ErrorCode::RequiredGpuOperationUnsupported
         | ErrorCode::FinalPlanRequirementUnsatisfied
         | ErrorCode::UnsupportedOperator

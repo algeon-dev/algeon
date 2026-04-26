@@ -4,8 +4,8 @@ pub(super) async fn run_matrix(params: &RuntimeParams, evidence: &mut RunEvidenc
     if params.scenario_selection.runs_native() {
         run_native_matrix(params, evidence).await?;
     }
-    if params.scenario_selection.runs_cpu() && !params.native_once {
-        run_cpu_phase(params, evidence).await?;
+    if params.scenario_selection.runs_datafusion_baseline() && !params.native_once {
+        run_datafusion_baseline_phase(params, evidence).await?;
     }
     Ok(())
 }

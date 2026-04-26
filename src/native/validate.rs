@@ -20,22 +20,22 @@ use super::expression_contract::{
     is_list_carry_type, is_supported_native_type, is_timestamp_with_timezone_type, resolve_column,
     validate_physical_expr,
 };
-use crate::policy::FallbackReason;
+use crate::capability::CapabilityReason;
 
-pub(super) fn validate_schema(schema: SchemaRef) -> Result<(), FallbackReason> {
+pub(super) fn validate_schema(schema: SchemaRef) -> Result<(), CapabilityReason> {
     for field in schema.fields() {
         if !is_supported_native_type(field.data_type()) {
-            return Err(FallbackReason::UnsupportedType);
+            return Err(CapabilityReason::UnsupportedType);
         }
     }
     Ok(())
 }
 
-pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), FallbackReason> {
+pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), CapabilityReason> {
     if !(matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::SinglePartitioned)
         || allow_partial && matches!(aggregate.mode(), AggregateMode::Partial))
     {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     let group_by = aggregate.group_expr();
     if group_by.has_grouping_set() {
@@ -43,29 +43,29 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
     } else if !group_by.expr().is_empty()
         && (group_by.groups().len() != 1 || group_by.groups()[0].iter().any(|is_null| *is_null))
     {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     if aggregate_has_median_and_floating_statistical(aggregate) {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     for aggregate_expr in aggregate.aggr_expr() {
         if aggregate_expr.is_distinct() && !aggregate_expr.fun().name().eq_ignore_ascii_case("count") {
-            return Err(FallbackReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator);
         }
         if !aggregate_expr.order_bys().is_empty() {
-            return Err(FallbackReason::UnsupportedExpression);
+            return Err(CapabilityReason::UnsupportedExpression);
         }
         if !is_supported_native_aggregate_function(aggregate_expr.fun().name()) {
-            return Err(FallbackReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator);
         }
         if matches!(aggregate.mode(), AggregateMode::Partial)
             && aggregate_expr.fun().name().eq_ignore_ascii_case("median")
         {
-            return Err(FallbackReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator);
         }
         let expressions = aggregate_expr.expressions();
         let [arg] = expressions.as_slice() else {
-            return Err(FallbackReason::UnsupportedExpression);
+            return Err(CapabilityReason::UnsupportedExpression);
         };
         validate_physical_expr(arg, &aggregate.input().schema())?;
         validate_operator_value_expr(arg, &aggregate.input().schema())?;
@@ -90,7 +90,7 @@ fn aggregate_has_median_and_floating_statistical(aggregate: &AggregateExec) -> b
 pub(super) fn validate_aggregate_for_native_lowering(
     aggregate: &AggregateExec,
     allow_partial: bool,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     if aggregate.group_expr().has_grouping_set() {
         validate_grouping_set_aggregate(aggregate, allow_partial)
     } else {
@@ -98,11 +98,11 @@ pub(super) fn validate_aggregate_for_native_lowering(
     }
 }
 
-fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), FallbackReason> {
+fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), CapabilityReason> {
     if !(matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::SinglePartitioned)
         || allow_partial && matches!(aggregate.mode(), AggregateMode::Partial))
     {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     let group_by = aggregate.group_expr();
     if !group_by.has_grouping_set()
@@ -111,21 +111,21 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
         || group_by.groups().is_empty()
         || group_by.groups().iter().any(|group| group.len() != group_by.expr().len())
     {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     for aggregate_expr in aggregate.aggr_expr() {
         if aggregate_expr.is_distinct() || !aggregate_expr.order_bys().is_empty() {
-            return Err(FallbackReason::UnsupportedExpression);
+            return Err(CapabilityReason::UnsupportedExpression);
         }
         if !is_supported_native_aggregate_function(aggregate_expr.fun().name()) {
-            return Err(FallbackReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator);
         }
         if aggregate_expr.fun().name().eq_ignore_ascii_case("median") {
-            return Err(FallbackReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator);
         }
         let expressions = aggregate_expr.expressions();
         let [arg] = expressions.as_slice() else {
-            return Err(FallbackReason::UnsupportedExpression);
+            return Err(CapabilityReason::UnsupportedExpression);
         };
         validate_physical_expr(arg, &aggregate.input().schema())?;
         validate_operator_value_expr(arg, &aggregate.input().schema())?;
@@ -140,14 +140,14 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
     Ok(())
 }
 
-fn validate_aggregate_filters(aggregate: &AggregateExec) -> Result<(), FallbackReason> {
+fn validate_aggregate_filters(aggregate: &AggregateExec) -> Result<(), CapabilityReason> {
     for filter in aggregate.filter_expr().iter().flatten() {
         validate_physical_expr(filter, &aggregate.input().schema())?;
         let data_type = filter
             .data_type(aggregate.input().schema().as_ref())
-            .map_err(|_error| FallbackReason::UnsupportedExpression)?;
+            .map_err(|_error| CapabilityReason::UnsupportedExpression)?;
         if !matches!(data_type, DataType::Boolean) {
-            return Err(FallbackReason::UnsupportedType);
+            return Err(CapabilityReason::UnsupportedType);
         }
     }
     Ok(())
@@ -155,23 +155,23 @@ fn validate_aggregate_filters(aggregate: &AggregateExec) -> Result<(), FallbackR
 
 fn validate_grouping_sets(
     group_by: &datafusion::physical_plan::aggregates::PhysicalGroupBy,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     let group_expr_count = group_by.expr().len();
     if group_expr_count == 0 || group_expr_count > 64 {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     if group_by.null_expr().len() != group_expr_count {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     if group_by.groups().is_empty() || group_by.groups().iter().any(|group| group.len() != group_expr_count) {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     Ok(())
 }
 
-pub(super) fn validate_sort_ordering(ordering: &LexOrdering, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+pub(super) fn validate_sort_ordering(ordering: &LexOrdering, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
     if ordering.is_empty() {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     }
     for sort_expr in ordering {
         validate_operator_key_expr(&sort_expr.expr, input_schema)?;
@@ -179,23 +179,26 @@ pub(super) fn validate_sort_ordering(ordering: &LexOrdering, input_schema: &Sche
     Ok(())
 }
 
-fn validate_operator_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+fn validate_operator_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
     validate_physical_expr(expr, input_schema)?;
     validate_operator_value_expr(expr, input_schema)
 }
 
-fn validate_operator_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
-    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+fn validate_operator_value_expr(
+    expr: &Arc<dyn PhysicalExpr>,
+    input_schema: &SchemaRef,
+) -> Result<(), CapabilityReason> {
+    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     if is_timestamp_with_timezone_type(&data_type) || is_list_carry_type(&data_type) {
-        Err(FallbackReason::UnsupportedType)
+        Err(CapabilityReason::UnsupportedType)
     } else {
         Ok(())
     }
 }
 
-fn validate_median_input_type(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
-    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-    if is_cudf_median_input_type(&data_type) { Ok(()) } else { Err(FallbackReason::UnsupportedType) }
+fn validate_median_input_type(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
+    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
+    if is_cudf_median_input_type(&data_type) { Ok(()) } else { Err(CapabilityReason::UnsupportedType) }
 }
 
 fn is_cudf_median_input_type(data_type: &DataType) -> bool {
@@ -279,7 +282,7 @@ pub(super) fn collect_required_columns(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: &SchemaRef,
     required: &mut BTreeSet<String>,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         required.insert(resolve_column(column, input_schema)?.field().name().to_string());
         return Ok(());
@@ -314,15 +317,15 @@ pub(super) fn collect_required_columns(
     }
     if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
         if in_list.is_empty() {
-            return Err(FallbackReason::UnsupportedExpression);
+            return Err(CapabilityReason::UnsupportedExpression);
         }
         collect_required_columns(in_list.expr(), input_schema, required)?;
         for expr in in_list.list() {
             let Some(literal) = expr.downcast_ref::<Literal>() else {
-                return Err(FallbackReason::UnsupportedExpression);
+                return Err(CapabilityReason::UnsupportedExpression);
             };
             if literal.value().is_null() {
-                return Err(FallbackReason::UnsupportedExpression);
+                return Err(CapabilityReason::UnsupportedExpression);
             }
             collect_required_columns(expr, input_schema, required)?;
         }
@@ -342,7 +345,7 @@ pub(super) fn collect_required_columns(
         return Ok(());
     }
     if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
-        let current = dynamic_filter.current().map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        let current = dynamic_filter.current().map_err(|_error| CapabilityReason::UnsupportedExpression)?;
         return collect_required_columns(&current, input_schema, required);
     }
     if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
@@ -353,14 +356,14 @@ pub(super) fn collect_required_columns(
         collect_required_columns(try_cast.expr(), input_schema, required)?;
         return Ok(());
     }
-    Err(FallbackReason::UnsupportedExpression)
+    Err(CapabilityReason::UnsupportedExpression)
 }
 
 fn collect_required_columns_for_scalar_function(
     function: &ScalarFunctionExpr,
     input_schema: &SchemaRef,
     required: &mut BTreeSet<String>,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     for arg in function.args() {
         collect_required_columns(arg, input_schema, required)?;
     }

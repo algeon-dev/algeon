@@ -157,8 +157,8 @@ pub(super) fn select_benchmark_planning_row(
                         row.query_id
                     )));
                 }
-                if row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced
-                    && row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native
+                if row.outcome == Some(NativeDataFusionPlanningOutcome::Selected)
+                    && row.final_disposition == FinalPlanDisposition::Native
                     && row.native_plan_fragment_count == 1
                     && row.host_datafusion_boundary_count == 0
                     && !row.rejected_before_execution
@@ -180,15 +180,15 @@ pub(super) fn validate_decision_grade_native_planning_row(
     query_id: &str,
     row: &NativeDataFusionPlanningRow,
 ) -> DataFusionResult<()> {
-    if row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced
-        && row.post_native_execution_path != NativeDataFusionPostNativeExecutionPath::Native
+    if row.outcome == Some(NativeDataFusionPlanningOutcome::Selected)
+        && row.final_disposition != FinalPlanDisposition::Native
     {
         return Err(plan_error(format!(
-            "native TPC-H benchmark requires post_native_execution_path=native for accepted query {query_id}; observed {}",
-            row.post_native_execution_path.as_str()
+            "native TPC-H benchmark requires final_disposition=native for accepted query {query_id}; observed {}",
+            row.final_disposition.as_str()
         )));
     }
-    if row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced {
+    if row.outcome == Some(NativeDataFusionPlanningOutcome::Selected) {
         if row.rejected_before_execution {
             return Err(plan_error(format!(
                 "native TPC-H benchmark accepted planning row for {query_id} must not set rejected_before_execution=true"
@@ -208,31 +208,45 @@ pub(super) fn validate_decision_grade_native_planning_row(
     Ok(())
 }
 
-pub(super) fn validate_decision_grade_native_rejection_row(
+pub(super) fn validate_decision_grade_native_not_selected_row(
     query_id: &str,
     row: &NativeDataFusionPlanningRow,
 ) -> DataFusionResult<()> {
-    if row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced {
-        return Ok(());
-    }
-    if !row.rejected_before_execution {
+    let Some(outcome) = row.outcome else {
         return Err(plan_error(format!(
-            "native TPC-H benchmark rejected planning row for {query_id} must set rejected_before_execution=true"
+            "native TPC-H benchmark terminal planning result for {query_id} must be reported as a planning failure"
+        )));
+    };
+    if outcome == NativeDataFusionPlanningOutcome::Selected {
+        return Err(plan_error(format!(
+            "native TPC-H benchmark not-selected planning row for {query_id} must not report outcome=selected"
+        )));
+    }
+    if row.rejected_before_execution {
+        return Err(plan_error(format!(
+            "native TPC-H benchmark not-selected planning row for {query_id} must not set rejected_before_execution=true"
         )));
     }
     if row.reason_code.as_deref().is_none_or(str::is_empty) {
         return Err(plan_error(format!(
-            "native TPC-H benchmark rejected planning row for {query_id} must include a stable reason_code"
+            "native TPC-H benchmark not-selected planning row for {query_id} must include a stable reason_code"
         )));
     }
-    if row.unsupported_category.as_deref().is_none_or(str::is_empty) {
+    if outcome == NativeDataFusionPlanningOutcome::NotSupported
+        && row.unsupported_category.as_deref().is_none_or(str::is_empty)
+    {
         return Err(plan_error(format!(
-            "native TPC-H benchmark rejected planning row for {query_id} must include a stable unsupported_category"
+            "native TPC-H benchmark not-supported planning row for {query_id} must include a stable unsupported_category"
         )));
     }
-    if row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native {
+    if outcome == NativeDataFusionPlanningOutcome::NotSelectedByCost && row.unsupported_category.is_some() {
         return Err(plan_error(format!(
-            "native TPC-H benchmark rejected planning row for {query_id} must not report post_native_execution_path=native"
+            "native TPC-H benchmark cost-not-selected planning row for {query_id} must not include an unsupported_category"
+        )));
+    }
+    if matches!(row.final_disposition, FinalPlanDisposition::Native | FinalPlanDisposition::Rejected) {
+        return Err(plan_error(format!(
+            "native TPC-H benchmark not-selected planning row for {query_id} must preserve an executable DataFusion or mixed final disposition"
         )));
     }
     Ok(())
@@ -288,7 +302,7 @@ pub(super) async fn run_native_query_iterations(
     for _ in 0..config.warmup_iterations {
         let planned =
             plan_native_query_with_resources(metadata, query, config, resources).await.map_err(native_not_started)?;
-        if planned.planning_row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced {
+        if planned.planning_row.outcome == Some(NativeDataFusionPlanningOutcome::Selected) {
             validate_replanned_native_row(query.id, expected_planning_row, &planned.planning_row)
                 .map_err(native_not_started)?;
             let _ = collect_native_plan_once(planned.plan).await.map_err(native_started)?;
@@ -307,7 +321,7 @@ pub(super) async fn run_native_query_iterations(
     for _ in 0..config.iterations {
         let planned =
             plan_native_query_with_resources(metadata, query, config, resources).await.map_err(native_not_started)?;
-        if planned.planning_row.outcome != NativeDataFusionPlanningOutcome::AcceptedReplaced {
+        if planned.planning_row.outcome != Some(NativeDataFusionPlanningOutcome::Selected) {
             return Err(NativeRunFailure {
                 runtime_started: false,
                 message: format!("{} stopped being a native accepted query during execution", query.id),

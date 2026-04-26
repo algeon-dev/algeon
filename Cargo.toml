@@ -1,6 +1,6 @@
 [package]
 name = "datafusion-nexus"
-description = "DataFusion physical-plan adapter for native cuDF/cuGraph GPU execution."
+description = "DataFusion physical-plan adapter for native GPU execution."
 version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }
@@ -13,6 +13,7 @@ readme = "README.md"
 members = [
   ".",
   "crates/datafusion-nexus-workloads",
+  "crates/datafusion-nexus-iceberg",
   "crates/nexus-query-engine",
   "crates/datafusion-nexus-bench",
   "crates/datafusion-nexus-tools",
@@ -85,16 +86,13 @@ cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf-rs CUDA/RMM inventory.
 nvml = ["nexus-query-engine/nvml"]
 iceberg = [
-  "dep:aws-config",
-  "dep:aws-credential-types",
+  "dep:datafusion-nexus-iceberg",
   "dep:iceberg",
-  "dep:iceberg-catalog-glue",
-  "dep:iceberg-catalog-rest",
   "dep:iceberg-datafusion",
-  "dep:iceberg-storage-opendal",
   "dep:object_store",
   "dep:opendal",
   "dep:tempfile",
+  "datafusion-nexus-iceberg/all-catalogs",
 ]
 server = [
   "dep:arrow-flight",
@@ -120,8 +118,6 @@ arrow-flight = { workspace = true, optional = true }
 async-trait = "0.1"
 base64 = { version = "0.22", optional = true }
 bytes = "1"
-aws-config = { workspace = true, optional = true }
-aws-credential-types = { workspace = true, optional = true }
 cudf = { workspace = true }
 # Direct (non-transitive) dep on cudf-sys so this crate's build.rs receives
 # DEP_CUDF_RUST_RUNTIME_LIB_DIR from cudf-sys's `links = "cudf_rust"`
@@ -136,12 +132,10 @@ cugraph-sys = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true }
 dashmap = { version = "6.2", optional = true }
 datafusion = { workspace = true }
+datafusion-nexus-iceberg = { path = "crates/datafusion-nexus-iceberg", optional = true, default-features = false }
 futures = { workspace = true }
 iceberg = { workspace = true, optional = true }
-iceberg-catalog-glue = { workspace = true, optional = true }
-iceberg-catalog-rest = { workspace = true, optional = true }
 iceberg-datafusion = { workspace = true, optional = true }
-iceberg-storage-opendal = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true }
 opendal = { workspace = true, optional = true }
 parquet = { workspace = true }

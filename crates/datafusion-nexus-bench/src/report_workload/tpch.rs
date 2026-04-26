@@ -289,7 +289,7 @@ pub async fn tpch_datafusion_execution_workload_items_with_optimizer_config(
             Ok(df) => match df.create_physical_plan().await {
                 Ok(plan) => match native_rule.last_planning_diagnostics() {
                     Some(diagnostics) => {
-                        let runtime = if diagnostics.report.rewritten_count() > 0 {
+                        let runtime = if diagnostics.report.selected_count() > 0 {
                             execute_tpch_native_plan(Arc::clone(&plan)).await
                         } else {
                             NativeDataFusionRuntime::NotStarted

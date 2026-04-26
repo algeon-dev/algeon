@@ -15,7 +15,7 @@ use crate::{
 #[non_exhaustive]
 pub enum TriageCode {
     Cancelled,
-    CpuPreferred,
+    NotSelectedByCost,
     UnsupportedPlanShape,
     UnsupportedOperator,
     UnsupportedExpression,
@@ -42,7 +42,7 @@ impl TriageCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Cancelled => "cancelled",
-            Self::CpuPreferred => "cpu_preferred",
+            Self::NotSelectedByCost => "not_selected_by_cost",
             Self::UnsupportedPlanShape => "unsupported_plan_shape",
             Self::UnsupportedOperator => "unsupported_operator",
             Self::UnsupportedExpression => "unsupported_expression",
@@ -108,7 +108,7 @@ pub enum TriageVerdict {
     Healthy,
     Degraded,
     Failed,
-    FellBack,
+    NotSelected,
 }
 
 impl TriageVerdict {
@@ -118,7 +118,7 @@ impl TriageVerdict {
             Self::Healthy => "healthy",
             Self::Degraded => "degraded",
             Self::Failed => "failed",
-            Self::FellBack => "fell_back",
+            Self::NotSelected => "not_selected",
         }
     }
 }
@@ -389,12 +389,12 @@ impl StrictBoundedContractReport {
                 .with_evidence(evidence)
             })
             .collect::<Vec<_>>();
-        TriageSummary::new(TriageVerdict::FellBack, signals)
+        TriageSummary::new(TriageVerdict::NotSelected, signals)
     }
 }
 
 impl AdaptivePipelineReport {
-    /// Builds a compact triage summary for adaptive pipeline admission/runtime actions.
+    /// Builds a compact triage summary for adaptive pipeline admission.
     pub fn triage_summary(&self) -> TriageSummary {
         let mut signals = Vec::new();
         let row = self.row();
@@ -418,43 +418,10 @@ impl AdaptivePipelineReport {
                 .with_evidence(evidence),
             );
         }
-        if row.runtime_action_counts.retry_count > 0 {
-            signals.push(maybe_with_evidence(
-                TriageSignal::new(
-                    TriageSeverity::Warning,
-                    TriageCode::AdaptiveRetry,
-                    format!("{} adaptive retry action(s) were recorded", row.runtime_action_counts.retry_count),
-                ),
-                adaptive_row_evidence(query_id.clone()),
-            ));
-        }
-        if row.runtime_action_counts.spill_count > 0 {
-            signals.push(maybe_with_evidence(
-                TriageSignal::new(
-                    TriageSeverity::Warning,
-                    TriageCode::AdaptiveSpill,
-                    format!("{} adaptive spill action(s) were recorded", row.runtime_action_counts.spill_count),
-                ),
-                adaptive_row_evidence(query_id.clone()),
-            ));
-        }
-        if row.runtime_action_counts.downgrade_count > 0 {
-            signals.push(maybe_with_evidence(
-                TriageSignal::new(
-                    TriageSeverity::Warning,
-                    TriageCode::AdaptiveDowngrade,
-                    format!("{} adaptive downgrade action(s) were recorded", row.runtime_action_counts.downgrade_count),
-                ),
-                adaptive_row_evidence(query_id.clone()),
-            ));
-        }
-
         let verdict = if row.candidate_status == AdaptiveCandidateStatus::Rejected {
-            TriageVerdict::FellBack
-        } else if signals.is_empty() {
-            TriageVerdict::Healthy
+            TriageVerdict::NotSelected
         } else {
-            TriageVerdict::Degraded
+            TriageVerdict::Healthy
         };
         TriageSummary::new(verdict, signals)
     }
@@ -465,14 +432,6 @@ fn maybe_with_evidence(signal: TriageSignal, evidence: Option<TriageEvidenceRef>
         Some(evidence) => signal.with_evidence(evidence),
         None => signal,
     }
-}
-
-fn adaptive_row_evidence(query_id: Option<QueryId>) -> Option<TriageEvidenceRef> {
-    let mut evidence = TriageEvidenceRef::new("adaptive_pipeline_report.row");
-    if let Some(query_id) = query_id {
-        evidence = evidence.with_query_id(query_id);
-    }
-    Some(evidence)
 }
 
 fn strict_owner_plan_node_id(owner: &StrictBoundedContractOwner) -> Option<PlanNodeId> {

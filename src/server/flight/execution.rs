@@ -239,7 +239,7 @@ impl DatafusionNexusFlightSqlService {
         let logical_plan_tables = referenced_table_names(df.logical_plan());
         // Physical planning runs the retained native optimizer rule. Capture
         // the post-optimizer plan and retained diagnostics before execution so
-        // query_stats can report both native rewrites and complete CPU fallback.
+        // query_stats can report both native rewrites and retained DataFusion baselines.
         let plan = tokio::select! {
             result = df.create_physical_plan()
                 .instrument(Self::query_stage_span(

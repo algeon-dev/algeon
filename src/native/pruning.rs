@@ -28,7 +28,7 @@ use datafusion::{
 use nexus_query_engine::source::PredicateDisposition as NativePredicateDisposition;
 
 use super::expression_contract::validate_physical_expr;
-use crate::policy::FallbackReason;
+use crate::capability::CapabilityReason;
 
 #[path = "pruning/row_groups.rs"]
 mod row_groups;
@@ -73,17 +73,17 @@ struct RangeCoverage<'a> {
 
 pub(super) fn coalesced_local_parquet_scan_files<'a>(
     files: &[&'a PartitionedFile],
-) -> Result<Vec<CoalescedLocalParquetFile<'a>>, FallbackReason> {
+) -> Result<Vec<CoalescedLocalParquetFile<'a>>, CapabilityReason> {
     let mut coverages = Vec::<FileCoverage<'a>>::new();
     for file in files {
         if let Some(range) = &file.range
             && (range.start < 0
                 || range.end <= range.start
-                || u64::try_from(range.end).map_err(|_error| FallbackReason::NativeSourceByteRange)?
+                || u64::try_from(range.end).map_err(|_error| CapabilityReason::NativeSourceByteRange)?
                     > file.object_meta.size
                 || !range_extensions_are_supported(file)?)
         {
-            return Err(FallbackReason::NativeSourceByteRange);
+            return Err(CapabilityReason::NativeSourceByteRange);
         }
 
         let location = file.object_meta.location.as_ref().to_string();
@@ -106,10 +106,10 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
         };
         let coverage = &mut coverages[coverage_index];
         if coverage.size != file.object_meta.size {
-            return Err(FallbackReason::NativeSourceByteRange);
+            return Err(CapabilityReason::NativeSourceByteRange);
         }
         if coverage.partition_values != file.partition_values.as_slice() {
-            return Err(FallbackReason::NativeSourcePartitionValues);
+            return Err(CapabilityReason::NativeSourcePartitionValues);
         }
         coverage.entry_count += 1;
         if let Some(range) = &file.range {
@@ -125,7 +125,7 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
     for coverage in &mut coverages {
         if coverage.saw_unranged {
             if coverage.entry_count != 1 || !coverage.ranges.is_empty() {
-                return Err(FallbackReason::NativeSourceByteRange);
+                return Err(CapabilityReason::NativeSourceByteRange);
             }
             continue;
         }
@@ -149,8 +149,8 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
         .collect())
 }
 
-fn ranges_cover_full_file(coverage: &mut FileCoverage<'_>) -> Result<bool, FallbackReason> {
-    let size = i64::try_from(coverage.size).map_err(|_error| FallbackReason::NativeSourceByteRange)?;
+fn ranges_cover_full_file(coverage: &mut FileCoverage<'_>) -> Result<bool, CapabilityReason> {
+    let size = i64::try_from(coverage.size).map_err(|_error| CapabilityReason::NativeSourceByteRange)?;
     coverage.ranges.sort_unstable_by_key(|range| (range.start, range.end));
     let mut next_start = 0i64;
     for range in &coverage.ranges {
@@ -162,33 +162,33 @@ fn ranges_cover_full_file(coverage: &mut FileCoverage<'_>) -> Result<bool, Fallb
     Ok(next_start == size)
 }
 
-fn row_groups_for_byte_ranges(coverage: &mut FileCoverage<'_>) -> Result<Vec<usize>, FallbackReason> {
+fn row_groups_for_byte_ranges(coverage: &mut FileCoverage<'_>) -> Result<Vec<usize>, CapabilityReason> {
     if !ranges_are_non_overlapping(coverage) {
-        return Err(FallbackReason::NativeSourceByteRange);
+        return Err(CapabilityReason::NativeSourceByteRange);
     }
     let path = local_object_path_to_filesystem(coverage.location.as_str());
     let reader =
-        SerializedFileReader::try_from(path.as_path()).map_err(|_error| FallbackReason::NativeSourceByteRange)?;
+        SerializedFileReader::try_from(path.as_path()).map_err(|_error| CapabilityReason::NativeSourceByteRange)?;
     let metadata = reader.metadata();
     let row_group_count = metadata.num_row_groups();
     let ranges = coverage
         .ranges
         .iter()
         .map(|range| {
-            u64::try_from(range.start).map_err(|_error| FallbackReason::NativeSourceByteRange)?;
-            u64::try_from(range.end).map_err(|_error| FallbackReason::NativeSourceByteRange)?;
+            u64::try_from(range.start).map_err(|_error| CapabilityReason::NativeSourceByteRange)?;
+            u64::try_from(range.end).map_err(|_error| CapabilityReason::NativeSourceByteRange)?;
             if let Some(access_plan) = range.file.extensions.get::<ParquetAccessPlan>()
                 && access_plan.len() != row_group_count
             {
-                return Err(FallbackReason::NativeSourceByteRange);
+                return Err(CapabilityReason::NativeSourceByteRange);
             }
             Ok(range)
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let mut row_groups = Vec::new();
     for (index, row_group) in metadata.row_groups().iter().enumerate() {
         let Some(start) = row_group_range_pruning_offset(row_group) else {
-            return Err(FallbackReason::NativeSourceByteRange);
+            return Err(CapabilityReason::NativeSourceByteRange);
         };
         let mut selected = false;
         for range in &ranges {
@@ -216,17 +216,17 @@ fn ranges_are_non_overlapping(coverage: &mut FileCoverage<'_>) -> bool {
     true
 }
 
-fn range_access_plan_selects_row_group(range: &RangeCoverage<'_>, index: usize) -> Result<bool, FallbackReason> {
+fn range_access_plan_selects_row_group(range: &RangeCoverage<'_>, index: usize) -> Result<bool, CapabilityReason> {
     let Some(access_plan) = range.file.extensions.get::<ParquetAccessPlan>() else {
         return Ok(true);
     };
     let Some(access) = access_plan.inner().get(index) else {
-        return Err(FallbackReason::NativeSourceByteRange);
+        return Err(CapabilityReason::NativeSourceByteRange);
     };
     match access {
         RowGroupAccess::Skip => Ok(false),
         RowGroupAccess::Scan => Ok(true),
-        RowGroupAccess::Selection(_) => Err(FallbackReason::NativeSourceRowSelection),
+        RowGroupAccess::Selection(_) => Err(CapabilityReason::NativeSourceRowSelection),
     }
 }
 
@@ -239,7 +239,7 @@ fn first_dictionary_or_data_page_offset(column: &ColumnChunkMetaData) -> i64 {
     column.dictionary_page_offset().unwrap_or_else(|| column.data_page_offset())
 }
 
-fn range_extensions_are_supported(file: &PartitionedFile) -> Result<bool, FallbackReason> {
+fn range_extensions_are_supported(file: &PartitionedFile) -> Result<bool, CapabilityReason> {
     if file.extensions.is_empty() {
         return Ok(true);
     }
@@ -273,7 +273,7 @@ pub(super) fn validate_pruning_only_parquet_predicate(
     parquet_source: &ParquetSource,
     filter: Option<&FilterExec>,
     _source_schema: &SchemaRef,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     let Some(scan_predicate) = parquet_source.filter() else {
         return Ok(());
     };
@@ -283,7 +283,7 @@ pub(super) fn validate_pruning_only_parquet_predicate(
         return if scan_predicate_is_dynamic_filter_hint(scan_predicate.as_ref()) {
             Ok(())
         } else {
-            Err(FallbackReason::NativeSourcePushedDownParquetPredicate)
+            Err(CapabilityReason::NativeSourcePushedDownParquetPredicate)
         };
     };
     let filter_schema = filter.input().schema();
@@ -291,7 +291,7 @@ pub(super) fn validate_pruning_only_parquet_predicate(
     if scan_predicate_matches_filter(scan_predicate.as_ref(), filter.predicate().as_ref()) {
         Ok(())
     } else {
-        Err(FallbackReason::NativeSourcePushedDownParquetPredicate)
+        Err(CapabilityReason::NativeSourcePushedDownParquetPredicate)
     }
 }
 
@@ -439,7 +439,7 @@ fn physical_expr_slices_eq(left: &[Arc<dyn PhysicalExpr>], right: &[Arc<dyn Phys
         && left.iter().zip(right).all(|(left, right)| physical_expr_eq(left.as_ref(), right.as_ref()))
 }
 
-pub(super) fn explicit_row_group_selection(file: &PartitionedFile) -> Result<Option<Vec<usize>>, FallbackReason> {
+pub(super) fn explicit_row_group_selection(file: &PartitionedFile) -> Result<Option<Vec<usize>>, CapabilityReason> {
     let Some(access_plan) = file.extensions.get::<ParquetAccessPlan>() else {
         return Ok(None);
     };
@@ -449,7 +449,7 @@ pub(super) fn explicit_row_group_selection(file: &PartitionedFile) -> Result<Opt
         match access {
             RowGroupAccess::Skip => {},
             RowGroupAccess::Scan => row_groups.push(index),
-            RowGroupAccess::Selection(_) => return Err(FallbackReason::NativeSourceRowSelection),
+            RowGroupAccess::Selection(_) => return Err(CapabilityReason::NativeSourceRowSelection),
         }
     }
     Ok(Some(row_groups))

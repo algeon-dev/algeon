@@ -9,12 +9,12 @@ async fn native_pipeline_analytical_olap_fallback_report_pins_lowering_diagnosti
     let report = NativeFallbackPressureReport::collect(items);
 
     assert_eq!(report.rows.len(), ANALYTICAL_OLAP_QUERY_COUNT);
-    assert_eq!(report.rewritten_count(), ANALYTICAL_OLAP_QUERY_COUNT);
-    assert_eq!(report.rejected_count(), 0);
+    assert_eq!(report.selected_count(), ANALYTICAL_OLAP_QUERY_COUNT);
+    assert_eq!(report.not_selected_count(), 0);
 
     for query in ANALYTICAL_OLAP_QUERIES {
         let row = report_row(&report, query.id);
-        assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rewritten, "unexpected outcome for {}", query.id);
+        assert_eq!(row.outcome, Some(NativeFallbackPressureOutcome::Selected), "unexpected outcome for {}", query.id);
         assert_eq!(row.reason_code, None, "unexpected reason for {}", query.id);
         assert_eq!(row.unsupported_category, None, "unexpected unsupported category for {}", query.id);
         assert!(row.native_candidate_shape.as_deref().is_some_and(|shape| shape.contains("JoinExec")));
@@ -66,7 +66,7 @@ async fn native_pipeline_analytical_olap_strict_planning_report_pins_capability_
             "{} must have an explicit strict-admission expectation",
             query.id
         );
-        assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{}", query.id);
+        assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected), "{}", query.id);
         assert_eq!(row.reason_code, None, "{}", query.id);
         assert!(!row.rejected_before_execution, "{}", query.id);
         assert!(!row.strict_bounded_contract_rows.is_empty(), "{} should emit strict gate rows", query.id);
@@ -74,7 +74,7 @@ async fn native_pipeline_analytical_olap_strict_planning_report_pins_capability_
         if query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin {
             assert_eq!(
                 row.outcome,
-                NativeDataFusionPlanningOutcome::AcceptedReplaced,
+                Some(NativeDataFusionPlanningOutcome::Selected),
                 "{} expected superset win should be admitted by capability-first strict planning",
                 query.id
             );

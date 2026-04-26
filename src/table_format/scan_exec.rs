@@ -15,8 +15,8 @@ use datafusion::{
 use futures::TryStreamExt;
 
 use crate::{
+    capability::CapabilityReason,
     error::{DataFusionErrorExt, Error, ErrorCode},
-    policy::FallbackReason,
     table_format::{TableFormat, TableFormatScanDiagnostics, TableFormatScanPlan},
 };
 
@@ -33,7 +33,7 @@ pub enum NexusIcebergNativeScanOutcome {
     /// Native scan facts are available for whole-candidate lowering.
     Available(TableFormatScanPlan),
     /// Inspection completed, but the resolved scan has a known native capability miss.
-    NotSupported { scan_plan: TableFormatScanPlan, reason: FallbackReason },
+    NotSupported { scan_plan: TableFormatScanPlan, reason: CapabilityReason },
     /// Optional native inspection failed. The typed error remains available for
     /// diagnostics while the CPU delegate remains executable.
     InspectionFailed { resolved_scan: TableFormatScanPlan, error: Arc<Error> },
@@ -42,7 +42,7 @@ pub enum NexusIcebergNativeScanOutcome {
 impl NexusIcebergNativeScanOutcome {
     /// Classifies successfully resolved scan facts without changing CPU executability.
     pub fn from_scan_plan(scan_plan: TableFormatScanPlan) -> Self {
-        match scan_plan.first_rejection_reason() {
+        match scan_plan.first_not_supported_reason() {
             Some(reason) => Self::NotSupported { scan_plan, reason },
             None => Self::Available(scan_plan),
         }
@@ -73,11 +73,11 @@ impl NexusIcebergNativeScanOutcome {
     }
 
     /// Returns the stable candidate rejection reason, if native lowering must not start.
-    pub fn rejection_reason(&self) -> Option<FallbackReason> {
+    pub fn rejection_reason(&self) -> Option<CapabilityReason> {
         match self {
             Self::Available(_) => None,
             Self::NotSupported { reason, .. } => Some(*reason),
-            Self::InspectionFailed { .. } => Some(FallbackReason::TableFormatPlanningFailed),
+            Self::InspectionFailed { .. } => Some(CapabilityReason::TableFormatPlanningFailed),
         }
     }
 

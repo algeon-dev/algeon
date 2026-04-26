@@ -18,6 +18,7 @@ pub struct CugraphAlgoExec {
 }
 
 impl CugraphAlgoExec {
+    #[cfg(test)]
     pub(crate) fn try_new(
         spec: CugraphAlgorithmSpec,
         edge_source: Arc<dyn ExecutionPlan>,
@@ -914,6 +915,8 @@ impl ExecutionPlan for CugraphAlgoExec {
                     DataFusionError::from(
                         error
                             .with_fact("cugraph_sql_stage", "runtime_context")
+                            // This graph attempt has entered native runtime context. A
+                            // failure is terminal and must not replay through DataFusion.
                             .with_fact("cpu_fallback_after_native_start", false),
                     )
                 })?;

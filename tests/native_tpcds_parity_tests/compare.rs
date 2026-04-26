@@ -358,7 +358,7 @@ fn int_string_batch(schema: &Arc<Schema>, ids: &[i64], labels: &[Option<&str>]) 
 
 fn accepted_native_planning(schema: &Arc<Schema>) -> NativeTpcdsParityNativePlanningOutcome {
     let mut report = PlanningReport::new();
-    report.push_rewritten(GpuCandidate::new("test_native_plan", schema.fields().len()));
+    report.push_selected(GpuCandidate::new("test_native_plan", schema.fields().len()));
     NativeTpcdsParityNativePlanningOutcome::Planned {
         accepted: true,
         planned_plan: Arc::new(EmptyExec::new(Arc::clone(schema))) as Arc<dyn ExecutionPlan>,

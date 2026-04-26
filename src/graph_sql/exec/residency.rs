@@ -50,7 +50,7 @@ pub(super) fn cugraph_datafusion_edge_plan_residency_analysis(
     native_spec: &GraphAlgorithmSpec,
 ) -> GraphResidencyPlanAnalysis {
     let lowering = crate::native::lower_physical_plan_to_native(edge_source);
-    if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
+    if lowering.plans.len() != 1 || lowering.selected_count() != 1 {
         return GraphResidencyPlanAnalysis::Bypass(GraphSourceFingerprintBypassReason::NonLocalParquetSource);
     }
     let native_plan = &lowering.plans[0];

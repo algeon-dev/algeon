@@ -8,7 +8,7 @@ use datafusion::physical_expr::expressions::Column;
 use nexus_query_engine::plan::NodeId as NativeNodeId;
 
 use super::naming::{sanitize_field_name, unique_name_with_suffix};
-use crate::policy::FallbackReason;
+use crate::capability::CapabilityReason;
 
 /// Native node plus the schema visible to its parent lowering step.
 #[derive(Debug)]
@@ -27,20 +27,20 @@ impl LoweredNativeInput {
         Self { node, schema, bindings }
     }
 
-    pub(super) fn binding_for_column(&self, column: &Column) -> Result<&FieldBinding, FallbackReason> {
+    pub(super) fn binding_for_column(&self, column: &Column) -> Result<&FieldBinding, CapabilityReason> {
         self.binding_for_frontend_index(column.index())
     }
 
-    pub(super) fn binding_for_frontend_index(&self, frontend_index: usize) -> Result<&FieldBinding, FallbackReason> {
+    pub(super) fn binding_for_frontend_index(&self, frontend_index: usize) -> Result<&FieldBinding, CapabilityReason> {
         self.bindings
             .iter()
             .find(|binding| binding.frontend_index == frontend_index)
-            .ok_or(FallbackReason::UnsupportedExpression)
+            .ok_or(CapabilityReason::UnsupportedExpression)
     }
 
-    pub(super) fn frontend_schema(&self) -> Result<SchemaRef, FallbackReason> {
+    pub(super) fn frontend_schema(&self) -> Result<SchemaRef, CapabilityReason> {
         if self.schema.fields().len() != self.bindings.len() {
-            return Err(FallbackReason::UnsupportedExpression);
+            return Err(CapabilityReason::UnsupportedExpression);
         }
         let fields = self
             .schema
@@ -93,24 +93,24 @@ impl RequiredFields {
         }
     }
 
-    pub(super) fn requested_indices(&self, field_count: usize) -> Result<Vec<usize>, FallbackReason> {
+    pub(super) fn requested_indices(&self, field_count: usize) -> Result<Vec<usize>, CapabilityReason> {
         match self {
             Self::All => Ok((0..field_count).collect()),
             Self::Only { indices, .. } => {
                 if indices.iter().any(|index| *index >= field_count) {
-                    return Err(FallbackReason::UnsupportedExpression);
+                    return Err(CapabilityReason::UnsupportedExpression);
                 }
                 Ok(indices.iter().copied().collect())
             },
         }
     }
 
-    pub(super) fn predicate_indices(&self, field_count: usize) -> Result<Vec<usize>, FallbackReason> {
+    pub(super) fn predicate_indices(&self, field_count: usize) -> Result<Vec<usize>, CapabilityReason> {
         match self {
             Self::All => Ok(Vec::new()),
             Self::Only { predicate_indices, .. } => {
                 if predicate_indices.iter().any(|index| *index >= field_count) {
-                    return Err(FallbackReason::UnsupportedExpression);
+                    return Err(CapabilityReason::UnsupportedExpression);
                 }
                 Ok(predicate_indices.iter().copied().collect())
             },
@@ -121,11 +121,11 @@ impl RequiredFields {
 pub(super) fn executable_schema_and_bindings(
     frontend_schema: &SchemaRef,
     required: &RequiredFields,
-) -> Result<(SchemaRef, Vec<FieldBinding>), FallbackReason> {
+) -> Result<(SchemaRef, Vec<FieldBinding>), CapabilityReason> {
     let indices = required.requested_indices(frontend_schema.fields().len())?;
     let mut name_counts = BTreeMap::<&str, usize>::new();
     for index in &indices {
-        let field = frontend_schema.fields().get(*index).ok_or(FallbackReason::UnsupportedExpression)?;
+        let field = frontend_schema.fields().get(*index).ok_or(CapabilityReason::UnsupportedExpression)?;
         *name_counts.entry(field.name().as_str()).or_default() += 1;
     }
 
@@ -136,7 +136,7 @@ pub(super) fn executable_schema_and_bindings(
                 .fields()
                 .get(*index)
                 .map(|field| field.name().clone())
-                .ok_or(FallbackReason::UnsupportedExpression)
+                .ok_or(CapabilityReason::UnsupportedExpression)
         })
         .collect::<Result<BTreeSet<_>, _>>()?;
 
@@ -144,7 +144,7 @@ pub(super) fn executable_schema_and_bindings(
     let mut fields = Vec::with_capacity(indices.len());
     let mut bindings = Vec::with_capacity(indices.len());
     for frontend_index in indices {
-        let field = frontend_schema.fields().get(frontend_index).ok_or(FallbackReason::UnsupportedExpression)?;
+        let field = frontend_schema.fields().get(frontend_index).ok_or(CapabilityReason::UnsupportedExpression)?;
         let frontend_name = field.name().clone();
         let native_name = if name_counts.get(frontend_name.as_str()).copied().unwrap_or_default() == 1
             && !used_native_names.contains(frontend_name.as_str())

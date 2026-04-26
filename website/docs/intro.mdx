@@ -11,13 +11,13 @@ import {ArchitectureDiagram} from '@site/src/components/design/Diagram';
 # Welcome to DataFusion Nexus
 
 DataFusion Nexus is a GPU query engine for
-[Apache DataFusion](https://datafusion.apache.org/). It takes the physical plans
-DataFusion already produces and executes the parts it supports on the GPU: SQL
-runs on [Nvidia cuDF](https://docs.rapids.ai/api/cudf/stable/), graph algorithms
-from [cuGraph](https://docs.rapids.ai/api/cugraph/stable/) are callable directly
-from SQL, and data is read from [Apache Iceberg](https://iceberg.apache.org/)
-and Parquet. Operators it does not support remain on the standard DataFusion CPU
-path.
+[Apache DataFusion](https://datafusion.apache.org/). It evaluates whole
+relational physical-plan candidates and selects supported candidates for
+[Nvidia cuDF](https://docs.rapids.ai/api/cudf/stable/) execution. Graph
+algorithms from [cuGraph](https://docs.rapids.ai/api/cugraph/stable/) are
+explicit GPU islands callable directly from SQL, and data is read from
+[Apache Iceberg](https://iceberg.apache.org/) and Parquet. A relational
+candidate that is not selected keeps its executable DataFusion baseline.
 
 Nexus is designed to sit inside your own architecture. Graph workloads are
 exposed as ordinary SQL table functions over your existing data, and planning
@@ -28,22 +28,23 @@ runs.
 ## Architecture at a glance
 
 <ArchitectureDiagram
-  caption={<>Each physical plan is decided one candidate subtree at a time.
-  Supported subtrees execute in-process with cuDF and cuGraph; remaining
-  operators keep stock DataFusion only when a CPU path exists. Iceberg metadata
-  comes from REST or Glue catalogs, and KvikIO reads Parquet from S3-compatible
-  storage into the GPU. A unified Iceberg scan keeps an executable CPU delegate
-  when its native candidate is inadmissible.
+  caption={<>Nexus selects supported whole relational candidates for in-process
+  cuDF execution. Explicit GPU islands such as cuGraph retain their own required
+  boundary; non-selected relational candidates keep the executable DataFusion
+  baseline. Iceberg metadata comes from REST or Glue catalogs, and KvikIO reads
+  Parquet from S3-compatible storage into the GPU. A unified Iceberg scan keeps
+  an executable CPU delegate when native acceleration is not selected.{' '}
   <code>PlanningReport</code> and <code>nexus_explain_coverage</code> expose
-  stable reasons before execution,  and Arrow batches return through the caller's original interface.</>}
+  stable reasons before execution, and Arrow batches return through the caller's original interface.</>}
 />
 
 ## Features
 
-- **GPU SQL execution.** The parts of a query that Nexus supports execute on
-  cuDF. Under the default `GpuPreferred` policy, the remainder runs on the
-  standard DataFusion CPU path, so an unsupported operator is a fallback rather
-  than a failure.
+- **GPU SQL execution.** Nexus selects an entire supported relational physical
+  candidate for cuDF execution. `not_supported` and `not_selected_by_cost` are
+  planning diagnostics; they leave an otherwise valid executable DataFusion
+  plan intact. A caller that requires no DataFusion CPU execution adds a
+  final-plan requirement instead.
 - **Graph algorithms in SQL.** The `cugraph_*` table functions (PageRank, BFS,
   Louvain, ForceAtlas2, and more) run cuGraph over an edge table or view and
   return ordinary rows, so a graph traversal, a join, and an aggregation can
@@ -58,17 +59,17 @@ runs.
   tables.
 - **Lakehouse data access.** Query Iceberg tables from REST catalogs, AWS Glue,
   or S3-compatible object stores, with KvikIO streaming Parquet from object
-  storage directly into GPU memory. Remote catalogs are read-only; views and
-  scratch tables can live in an opt-in mutable local workspace overlay.
-- **Explainable planning.** Planning reports record which parts of a plan ran on
-  the GPU, which fell back to CPU, and the reason for each.
+  storage directly into GPU memory. The unified Iceberg scan shares resolved
+  facts with its executable CPU delegate; remote catalogs are read-only, and
+  views and scratch tables can live in an opt-in mutable local workspace overlay.
+- **Explainable planning.** Planning reports record relational candidate
+  outcomes and the exact completed-plan disposition.
   [GPU coverage validation](./integration/gpu-coverage-validation.mdx) turns
   that into a question you can ask before a query runs:
-  `SELECT * FROM nexus_explain_coverage('<sql>')` returns the verdict — which
-  operator, expression, type, or source forces CPU execution — as
-  machine-readable JSON. Errors cross the DataFusion boundary as typed values
-  with stable identity rather than log text, a surface application code and
-  agents can consume directly.
+  `SELECT * FROM nexus_explain_coverage('<sql>')` returns the verdict and the
+  candidate evidence as machine-readable JSON. Errors cross the DataFusion
+  boundary as typed values with stable identity rather than log text, a surface
+  application code and agents can consume directly.
 - **Bounded GPU memory.** Bounded mode plans each query against a GPU memory
   budget: shapes without a provable memory contract are rejected at planning
   time, and admitted queries receive their reservation before execution.
@@ -80,29 +81,31 @@ runs.
 
 - **A subset of Arrow data types.** Native execution covers the common
   relational types — booleans, integers, floats, `Decimal128`, strings, dates,
-  timestamps, and durations. Nested and binary types and most list shapes stay
-  on the DataFusion CPU path, including through the unified Iceberg CPU
-  delegate under `GpuPreferred`. [Data Type Support](./reference/data-type-support.md)
-  lists the exact boundaries.
+  timestamps, and durations. Nested and binary types and most list shapes keep
+  the DataFusion baseline, including through the unified Iceberg CPU delegate.
+  [Data Type Support](./reference/data-type-support.md) lists the exact
+  boundaries.
 - **No cross-GPU communication.** Independent queries can be placed on different
   GPUs, but a single query cannot exchange data between GPUs.
 - **Partial Iceberg merge-on-read.** Position deletes are applied natively, but
   not on a fast path. Equality deletes and delete vectors are unsupported:
   the unified Iceberg provider rejects native acceleration for those scans and
-  keeps its executable DataFusion CPU delegate under `GpuPreferred`.
+  keeps its executable DataFusion CPU delegate.
 - **Parquet only.** Parquet is the only supported data file format for now.
 - **No Substrait query-plan input.** Queries enter as SQL text, through an
   embedded DataFusion session or Flight SQL.
 
 ## Repository layout
 
-The Cargo workspace has six packages:
+The Cargo workspace has seven packages:
 
 - `datafusion-nexus` — the DataFusion-facing adapter: optimizer rule, table
   functions, Iceberg integration, the Flight SQL server, and reports.
 - `nexus-query-engine` — the DataFusion-free native plan and GPU executor.
 - `datafusion-nexus-workloads` — adapter-neutral TPC-H, TPC-DS, and ClickBench
   catalogs, fixtures, dataset discovery, and DataFusion registration.
+- `datafusion-nexus-iceberg` — DataFusion-independent Iceberg resolution and
+  scan-fact types shared by the adapter and source integrations.
 - `datafusion-nexus-bench` — benchmark, report, triage, and stress binaries.
 - `datafusion-nexus-tools` — developer and operator tools, including local
   end-to-end runners.

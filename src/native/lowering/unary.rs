@@ -16,18 +16,18 @@ use super::{
     lower_native_input, projection_outputs,
 };
 use crate::{
+    capability::CapabilityReason,
     native::{
         expression_contract::validate_physical_expr,
         normalize::{NormalizedNativeFilter, NormalizedNativeProjection},
     },
-    policy::FallbackReason,
 };
 
 pub(super) fn lower_filter_input(
     filter: &NormalizedNativeFilter<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let validated_predicate = validate_physical_expr(filter.filter.predicate(), &filter.filter.input().schema())?;
     let selection = required_filter_output_selection(filter.filter, required_output_fields)?;
     let mut predicate_required = BTreeSet::new();
@@ -38,7 +38,7 @@ pub(super) fn lower_filter_input(
     )?;
     for output_index in required_output_fields.predicate_indices(filter.filter.schema().fields().len())? {
         let input_index = if let Some(projection) = filter.filter.projection() {
-            *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?
+            *projection.get(output_index).ok_or(CapabilityReason::UnsupportedExpression)?
         } else {
             output_index
         };
@@ -70,7 +70,7 @@ pub(super) fn lower_filter_input(
                 output_binding.native_name.as_str(),
             ))
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let node = builder.add_projection(filtered_node, projection_outputs(expressions, &selection.schema)?);
     Ok(LoweredNativeInput::with_bindings(node, selection.schema, selection.bindings))
 }
@@ -93,7 +93,7 @@ impl FilterOutputSelection {
 fn required_filter_output_selection(
     filter: &datafusion::physical_plan::filter::FilterExec,
     required_output_fields: &RequiredFields,
-) -> Result<FilterOutputSelection, FallbackReason> {
+) -> Result<FilterOutputSelection, CapabilityReason> {
     let input_schema = filter.input().schema();
     let output_schema = filter.schema();
     let (schema, bindings) = executable_schema_and_bindings(&output_schema, required_output_fields)?;
@@ -101,13 +101,13 @@ fn required_filter_output_selection(
     for binding in &bindings {
         let output_index = binding.frontend_index;
         if let Some(projection) = filter.projection() {
-            let input_index = *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?;
-            input_schema.fields().get(input_index).ok_or(FallbackReason::UnsupportedExpression)?;
+            let input_index = *projection.get(output_index).ok_or(CapabilityReason::UnsupportedExpression)?;
+            input_schema.fields().get(input_index).ok_or(CapabilityReason::UnsupportedExpression)?;
         } else {
-            input_schema.fields().get(output_index).ok_or(FallbackReason::UnsupportedExpression)?;
+            input_schema.fields().get(output_index).ok_or(CapabilityReason::UnsupportedExpression)?;
         };
         let input_index = if let Some(projection) = filter.projection() {
-            *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?
+            *projection.get(output_index).ok_or(CapabilityReason::UnsupportedExpression)?
         } else {
             output_index
         };
@@ -120,7 +120,7 @@ pub(super) fn lower_projection_input(
     projection: &NormalizedNativeProjection<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let required_projection = required_projection_exprs(projection.projection, required_output_fields)?;
     let mut child_required = BTreeSet::new();
     let mut validated_projection = Vec::with_capacity(required_projection.len());
@@ -135,7 +135,7 @@ pub(super) fn lower_projection_input(
     }
     let mut child_predicate_required = BTreeSet::new();
     for index in required_output_fields.predicate_indices(projection.projection.schema().fields().len())? {
-        let projection_expr = projection.projection.expr().get(index).ok_or(FallbackReason::UnsupportedExpression)?;
+        let projection_expr = projection.projection.expr().get(index).ok_or(CapabilityReason::UnsupportedExpression)?;
         collect_required_field_indices(
             &projection_expr.expr,
             &projection.projection.input().schema(),
@@ -157,7 +157,7 @@ pub(super) fn lower_projection_input(
             let expr = lower_validated_physical_expr_with_bindings(validated, Some(&input.bindings))?;
             Ok(alias_if_needed(expr, binding.native_name.as_str()))
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
@@ -166,7 +166,7 @@ pub(super) fn add_projection_node_with_input(
     builder: &mut NativeQueryPlanBuilder,
     input: LoweredNativeInput,
     projection: &ProjectionExec,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let required = RequiredFields::all();
     let (schema, bindings) = executable_schema_and_bindings(&projection.schema(), &required)?;
     let expressions = projection
@@ -181,7 +181,7 @@ pub(super) fn add_projection_node_with_input(
             )?;
             Ok(alias_if_needed(expr, binding.native_name.as_str()))
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
@@ -193,14 +193,14 @@ struct RequiredProjectionExpr<'a> {
 fn required_projection_exprs<'a>(
     projection: &'a ProjectionExec,
     required_output_fields: &RequiredFields,
-) -> Result<Vec<RequiredProjectionExpr<'a>>, FallbackReason> {
+) -> Result<Vec<RequiredProjectionExpr<'a>>, CapabilityReason> {
     let indices = required_output_fields.requested_indices(projection.expr().len())?;
     let exprs = indices
         .into_iter()
         .map(|index| {
-            let projection_expr = projection.expr().get(index).ok_or(FallbackReason::UnsupportedExpression)?;
+            let projection_expr = projection.expr().get(index).ok_or(CapabilityReason::UnsupportedExpression)?;
             Ok(RequiredProjectionExpr { expr: &projection_expr.expr })
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     Ok(exprs)
 }

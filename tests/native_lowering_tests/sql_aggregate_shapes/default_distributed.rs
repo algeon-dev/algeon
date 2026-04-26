@@ -10,9 +10,9 @@ async fn default_sql_physical_plan_lowers_to_native_plan() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("default SQL plan should lower to native");
     };
     assert_eq!(
@@ -47,8 +47,8 @@ async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Avg);
@@ -85,11 +85,14 @@ async fn default_sql_distributed_median_aggregate_remains_rejected() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(
         matches!(
             result.report.outcomes()[0],
-            CandidateOutcome::Rejected { reason: FallbackReason::NativeDistributedAggregateUnsupported, .. }
+            CandidateOutcome::NotSupported {
+                capability_reason: CapabilityReason::NativeDistributedAggregateUnsupported,
+                ..
+            }
         ),
         "outcomes={:?}",
         result.report.outcomes()
@@ -108,8 +111,8 @@ async fn default_sql_distributed_rollup_aggregate_lowers_to_native_grouping_sets
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let aggregates = native_aggregate_nodes(&result.plans[0]);
     assert_eq!(aggregates.len(), 1);
     let grouping_sets = aggregates[0].spec.grouping_sets.as_ref().expect("ROLLUP should lower as grouping sets");
@@ -137,8 +140,8 @@ async fn grouping_sets_over_empty_local_parquet_lower_through_empty_literal_sour
         let result = lower_physical_plan_to_native(plan);
 
         assert_eq!(result.candidate_count(), 1, "{label}");
-        assert_eq!(result.rewritten_count(), 1, "{label}: outcomes={:?}", result.report.outcomes());
-        assert_eq!(result.rejected_count(), 0, "{label}: outcomes={:?}", result.report.outcomes());
+        assert_eq!(result.selected_count(), 1, "{label}: outcomes={:?}", result.report.outcomes());
+        assert_eq!(result.not_selected_count(), 0, "{label}: outcomes={:?}", result.report.outcomes());
         assert!(native_local_parquet_sources(&result.plans[0]).is_empty(), "{label}");
         let literal_sources = native_literal_batch_sources(&result.plans[0]);
         assert_eq!(literal_sources.len(), 1, "{label}");
@@ -162,8 +165,8 @@ async fn default_sql_distributed_aggregate_filter_lowers_to_native_filter() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
@@ -191,8 +194,8 @@ async fn default_sql_distributed_distinct_aggregate_lowers_as_explicit_aggregate
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(
         native_aggregate_nodes(&result.plans[0]).len() >= 2,
         "distinct COUNT should be represented by DataFusion's explicit aggregate stack"
@@ -214,7 +217,7 @@ async fn distributed_final_partial_aggregate_function_mismatch_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+    assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -238,7 +241,7 @@ async fn distributed_final_aggregate_state_schema_mismatch_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+    assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -274,8 +277,8 @@ async fn distributed_partial_aggregate_filter_lowers_to_native_filter() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
     assert_eq!(aggregate_exprs.len(), 1);
     assert!(
@@ -319,7 +322,7 @@ async fn distributed_final_aggregate_filter_expr_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+    assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -338,7 +341,7 @@ async fn distributed_aggregate_distinct_expr_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+    assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -370,7 +373,7 @@ async fn distributed_aggregate_order_by_expr_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+    assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -385,7 +388,7 @@ async fn distributed_aggregate_without_partial_source_shape_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+    assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 
     fs::remove_dir_all(dir).unwrap();
 }

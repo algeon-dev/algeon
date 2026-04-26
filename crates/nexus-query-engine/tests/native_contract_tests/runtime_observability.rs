@@ -173,7 +173,10 @@ fn explicit_observed_execution_uses_manifest_identity_on_query_mismatch() {
     assert_eq!(snapshot.manifest().trace_id.as_ref().map(RuntimeTraceId::as_str), Some("shared-trace"));
     assert_eq!(
         snapshot.footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed { error_code: QueryErrorCode::InvalidPlan.to_string() })
+        Some(RuntimeTerminalOutcome::Failed {
+            error_code: QueryErrorCode::InvalidPlan.to_string(),
+            error_status: QueryErrorCode::InvalidPlan.status().as_str().to_string(),
+        })
     );
 }
 
@@ -318,7 +321,10 @@ fn first_terminal_wins_and_live_snapshots_remain_explicitly_incomplete() {
 
     let first = session.seal(RuntimeTerminalOutcome::Succeeded).expect("first seal succeeds");
     let second = session
-        .seal(RuntimeTerminalOutcome::Failed { error_code: "internal".to_string() })
+        .seal(RuntimeTerminalOutcome::Failed {
+            error_code: "internal".to_string(),
+            error_status: QueryErrorCode::Internal.status().as_str().to_string(),
+        })
         .expect("subsequent seal returns winner");
     assert!(first.footer().complete);
     assert_eq!(first.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
@@ -434,7 +440,7 @@ fn jsonl_is_schema_versioned_ordered_and_round_trips() {
 }
 
 #[test]
-fn jsonl_v1_matches_fixed_golden_bytes() {
+fn jsonl_v2_matches_fixed_golden_bytes() {
     let clock = Arc::new(DeterministicRuntimeObservationClock::new(Some(1_234)));
     let session = RuntimeObservationSession::with_clock(
         "golden-query",
@@ -487,7 +493,10 @@ fn jsonl_v1_matches_fixed_golden_bytes() {
     clock.set_monotonic_ns(13);
     session.record(query_started);
     let snapshot = session
-        .seal(RuntimeTerminalOutcome::Failed { error_code: "golden_failure".to_string() })
+        .seal(RuntimeTerminalOutcome::Failed {
+            error_code: "golden_failure".to_string(),
+            error_status: "permanent".to_string(),
+        })
         .expect("golden session seals");
     assert!(matches!(
         snapshot.events().last().map(|event| &event.payload),
@@ -496,8 +505,8 @@ fn jsonl_v1_matches_fixed_golden_bytes() {
 
     let mut actual = Vec::new();
     write_runtime_observation_jsonl(&snapshot, &mut actual).expect("golden JSONL exports");
-    let expected = include_bytes!("../fixtures/runtime_observation_v1.jsonl");
-    assert_eq!(actual.as_slice(), expected, "JSONL v1 bytes changed:\n{}", String::from_utf8_lossy(&actual));
+    let expected = include_bytes!("../fixtures/runtime_observation_v2.jsonl");
+    assert_eq!(actual.as_slice(), expected, "JSONL v2 bytes changed:\n{}", String::from_utf8_lossy(&actual));
     assert!(actual.ends_with(b"\n"));
 }
 
@@ -580,7 +589,10 @@ fn recover_recorded_owner(failure: RuntimeObservationBuildError) -> nexus_query_
     let live = observation.live_snapshot().expect("failed build returns a live owner");
     assert_eq!(live.events().len(), 1, "records captured before the build failure remain available");
     let sealed = observation
-        .seal(RuntimeTerminalOutcome::Failed { error_code: error.code().to_string() })
+        .seal(RuntimeTerminalOutcome::Failed {
+            error_code: error.code().to_string(),
+            error_status: error.status().as_str().to_string(),
+        })
         .expect("recovered owner remains sealable");
     assert!(sealed.footer().complete);
     assert_eq!(sealed.events().len(), 1);

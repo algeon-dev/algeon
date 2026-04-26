@@ -36,7 +36,7 @@ use super::{
     validation::{parse_u64_field, tsv_section_single_row, wait_for_idle},
 };
 
-mod cpu_phase;
+mod datafusion_baseline_phase;
 mod evidence;
 mod failures;
 mod native_matrix;
@@ -45,7 +45,7 @@ mod process;
 mod retention_restart;
 mod util;
 
-use cpu_phase::*;
+use datafusion_baseline_phase::*;
 use evidence::*;
 use failures::*;
 use native_matrix::*;

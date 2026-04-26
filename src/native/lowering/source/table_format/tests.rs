@@ -69,7 +69,7 @@ fn table_format_local_footer_field_id_mismatch_rejects_direct_file_column() {
     let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
     let result = table_format_source_read_groups(&scan_plan, &requirements, output_schema);
 
-    assert_eq!(result.unwrap_err(), FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(result.unwrap_err(), CapabilityReason::IcebergFieldIdMappingUnsupported);
     fs::remove_dir_all(dir).ok();
 }
 
@@ -199,7 +199,7 @@ fn table_format_footer_missing_field_id_rejects_ambiguous_name_mapping_aliases()
 
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn table_format_footer_missing_field_id_rejects_ambiguous_aliases_before_type_fi
 
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
 }
 
 #[test]
@@ -284,7 +284,7 @@ fn table_format_footer_alias_with_conflicting_field_id_rejects_name_mapping_fall
 
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
 }
 
 #[test]
@@ -323,7 +323,7 @@ fn table_format_footer_malformed_field_id_metadata_rejects_same_name_fallback() 
 
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
 }
 
 #[test]
@@ -632,7 +632,7 @@ fn table_format_attached_remote_footer_same_name_unsafe_type_mismatch_rejects_in
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema)
         .expect_err("same-name Parquet columns with unsafe schema mismatch must not materialize as missing nulls");
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
 }
 
 #[test]
@@ -888,7 +888,7 @@ fn table_format_filter_only_same_name_unsafe_type_mismatch_rejects_instead_of_mi
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema)
         .expect_err("filter-only same-name unsafe mismatch must not become a missing-null predicate column");
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
 }
 
 #[test]
@@ -942,7 +942,7 @@ fn table_format_filter_only_absent_nullable_field_id_rejects_instead_of_missing_
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema)
         .expect_err("predicate fields absent from Iceberg Parquet footers must not become all-null filters");
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
 }
 
 #[test]
@@ -985,7 +985,7 @@ fn table_format_parent_predicate_absent_nullable_field_id_rejects_instead_of_mis
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema)
         .expect_err("parent predicate fields absent from Iceberg Parquet footers must not become all-null filters");
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
 }
 
 #[test]
@@ -1077,7 +1077,7 @@ fn table_format_field_id_mapping_rejects_non_parquet_list_child_metadata_drift()
 
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
 }
 
 #[test]
@@ -1158,7 +1158,7 @@ fn table_format_field_id_mapping_rejects_nullable_footer_for_required_logical_fi
 
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
 }
 
 #[test]
@@ -1243,7 +1243,7 @@ fn table_format_missing_nullable_list_column_is_rejected_before_native_source_ma
 
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
 
-    assert_eq!(error, FallbackReason::UnsupportedType);
+    assert_eq!(error, CapabilityReason::UnsupportedType);
 }
 
 #[test]
@@ -1358,7 +1358,7 @@ fn table_format_equality_delete_hidden_key_rejects_without_delete_footer_field_i
     )
     .unwrap_err();
 
-    assert_eq!(error, FallbackReason::IcebergDeleteFilesUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergDeleteFilesUnsupported);
     fs::remove_dir_all(dir).ok();
 }
 
@@ -1603,7 +1603,7 @@ fn table_format_count_star_fallback_rejects_field_id_mismatch_on_carrier_column(
     let error = lower_table_format_count_star_fallback_source_for_plan(&scan_plan, &mut builder)
         .expect_err("field-id mismatch must reject COUNT(*) fallback carrier column");
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
     fs::remove_dir_all(dir).ok();
 }
 
@@ -1619,7 +1619,7 @@ fn table_format_count_star_fallback_rejects_iceberg_implicit_local_carrier_colum
     let error = lower_table_format_count_star_fallback_source_for_plan(&scan_plan, &mut builder)
         .expect_err("Iceberg COUNT(*) fallback must not synthesize a name-based carrier column");
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
     fs::remove_dir_all(dir).ok();
 }
 
@@ -1635,7 +1635,7 @@ fn table_format_count_star_fallback_rejects_missing_nullable_carrier_without_pro
     let error = lower_table_format_count_star_fallback_source_for_plan(&scan_plan, &mut builder)
         .expect_err("COUNT(*) fallback must not treat missing/null materialization as row-presence proof");
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
     fs::remove_dir_all(dir).ok();
 }
 
@@ -1769,7 +1769,7 @@ fn table_format_empty_required_fields_rejects_missing_field_id_carrier_column() 
     let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema)
         .expect_err("row-presence carrier must remain backed by a physical file read");
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
     fs::remove_dir_all(dir).ok();
 }
 
@@ -1791,7 +1791,7 @@ fn table_format_empty_required_fields_rejects_iceberg_implicit_local_carrier_col
     )
     .expect_err("Iceberg empty required fields must not synthesize a name-based carrier column");
 
-    assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    assert_eq!(error, CapabilityReason::IcebergFieldIdMappingUnsupported);
     fs::remove_dir_all(dir).ok();
 }
 

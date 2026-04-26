@@ -126,9 +126,6 @@ fn adaptive_admission_reports_use_adaptive_rows_not_strict_contract_rows() {
     assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Admitted);
     assert_eq!(row.adaptive_strategy, AdaptiveStrategy::ConservativeCompiledPipeline);
     assert_eq!(row.runtime_actions_allowed.to_stable_value(), "none");
-    assert_eq!(row.runtime_action_counts.retry_count, 0);
-    assert_eq!(row.runtime_action_counts.spill_count, 0);
-    assert_eq!(row.runtime_action_counts.downgrade_count, 0);
     assert_eq!(row.final_sink_boundary.materialization_mode, QueryOutputMode::MaterializeToHost);
     assert!(
         row.missing_strict_contracts
@@ -139,11 +136,15 @@ fn adaptive_admission_reports_use_adaptive_rows_not_strict_contract_rows() {
     let rendered = report.stable_kv_row();
     assert!(rendered.contains("execution_mode=adaptive"));
     assert!(rendered.contains("adaptive_strategy=conservative_compiled_pipeline"));
-    assert!(rendered.contains("retry_count=0"));
-    assert!(rendered.contains("spill_count=0"));
-    assert!(rendered.contains("downgrade_count=0"));
+    assert!(!rendered.contains("retry_count="));
+    assert!(!rendered.contains("spill_count="));
+    assert!(!rendered.contains("downgrade_count="));
     assert!(!rendered.contains("execution_mode=strict_bounded"));
     assert!(!rendered.contains("unsupported_strict_bounded"));
+
+    let json = report.to_json();
+    assert_eq!(json["schema"], "nexus_query_engine.adaptive_pipeline_report.v2");
+    assert!(json["row"].get("runtime_action_counts").is_none());
 }
 
 #[test]
@@ -160,9 +161,6 @@ fn adaptive_admission_unsupported_adaptive_rows_reference_strict_gaps_without_st
     assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Rejected);
     assert_eq!(row.adaptive_strategy, AdaptiveStrategy::Unsupported);
     assert_eq!(row.runtime_actions_allowed.to_stable_value(), "none");
-    assert_eq!(row.runtime_action_counts.retry_count, 0);
-    assert_eq!(row.runtime_action_counts.spill_count, 0);
-    assert_eq!(row.runtime_action_counts.downgrade_count, 0);
     assert_eq!(row.rejection_reason, Some("unsupported_join_node_capability"));
     assert!(row.missing_strict_contracts.iter().any(|missing| {
         missing.required_contract == "unsupported_join_node_capability"
@@ -217,9 +215,6 @@ fn assert_deferred_envelope_admits_adaptive_contract(plan: &QueryPlan, expected_
     assert!(!row.runtime_actions_allowed.downgrade_to_host_materialized);
     assert!(!row.runtime_actions_allowed.partial_admission);
     assert_eq!(row.memory_history_evidence, AdaptiveMemoryHistoryEvidence::LookupMiss);
-    assert_eq!(row.runtime_action_counts.retry_count, 0);
-    assert_eq!(row.runtime_action_counts.spill_count, 0);
-    assert_eq!(row.runtime_action_counts.downgrade_count, 0);
     assert_eq!(row.runtime_actions_allowed.to_stable_value(), "memory_history_lookup");
 
     let rendered = adaptive_admission.report().stable_kv_row();
@@ -309,9 +304,6 @@ fn adaptive_memory_history_hit_reports_observed_summary_without_changing_strict_
     assert_eq!(summary.max_resident_dataframe_peak_bytes, Some(4096));
     assert_eq!(summary.max_reservation_granted_bytes, 8192);
     assert_eq!(summary.max_source_chunks_committed, 3);
-    assert_eq!(row.runtime_action_counts.retry_count, 0);
-    assert_eq!(row.runtime_action_counts.spill_count, 0);
-    assert_eq!(row.runtime_action_counts.downgrade_count, 0);
 
     let rendered = adaptive_admission.report().stable_kv_row();
     assert!(rendered.contains("memory_history_evidence=observed:observation_count=1"));

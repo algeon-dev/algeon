@@ -2209,8 +2209,6 @@ dependencies = [
  "arrow",
  "arrow-flight",
  "async-trait",
- "aws-config",
- "aws-credential-types",
  "base64",
  "bytes",
  "cudf",
@@ -2219,14 +2217,12 @@ dependencies = [
  "cugraph-sys",
  "dashmap",
  "datafusion",
+ "datafusion-nexus-iceberg",
  "datafusion-nexus-workloads",
  "futures",
  "hex",
  "iceberg",
- "iceberg-catalog-glue",
- "iceberg-catalog-rest",
  "iceberg-datafusion",
- "iceberg-storage-opendal",
  "nexus-query-engine",
  "object_store",
  "opendal",
@@ -2291,6 +2287,24 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "datafusion-nexus-iceberg"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "futures",
+ "iceberg",
+ "iceberg-catalog-glue",
+ "iceberg-catalog-rest",
+ "iceberg-storage-opendal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "typetag",
 ]
 
 [[package]]

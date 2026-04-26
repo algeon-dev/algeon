@@ -343,16 +343,23 @@ lane_safe=1
 gpu_scheduling_summary=""
 doctest_summary="not-run"
 rustdoc_summary="not-run"
+public_terminology_policy_check=0
+if [[ "${mode}" == full || "${lane}" == policy ]]; then
+  public_terminology_policy_check=1
+fi
+policy_selftest_count=$((10 + 2 * public_terminology_policy_check))
 
 PHASE_ORDER=(
   policy-selftests
   rustfmt
   lane-structure
   default-members
+  iceberg-fmt
   live-inventory
   gpu-preflight
   cpu-tests
   bench-tests
+  iceberg-tests
   gpu-shared-tests
   gpu-exclusive-tests
   cargo-diagnostic
@@ -361,9 +368,11 @@ PHASE_ORDER=(
   bench-rustdoc
   clippy
   bench-clippy
+  iceberg-clippy
   tools-check
   examples-check
   bench-check
+  iceberg-check
 )
 declare -A PHASE_COMMAND PHASE_DURATION PHASE_STATUS PHASE_COUNTS
 declare -A PHASE_GPU_CAP PHASE_LOCK PHASE_FEATURES PHASE_LOG PHASE_EXIT
@@ -382,14 +391,16 @@ define_phase() {
   PHASE_EXIT["${id}"]=-
 }
 
-define_phase policy-selftests "9 isolated policy/orchestration scripts"
+define_phase policy-selftests "${policy_selftest_count} isolated policy/orchestration scripts"
 define_phase rustfmt "cargo +${RUSTFMT_TOOLCHAIN} fmt --all --check"
 define_phase lane-structure "test_lane_policy.py check-catalog + generated override check"
 define_phase default-members "cargo check ${FEATURE_ARGS[*]}"
+define_phase iceberg-fmt "cargo +${RUSTFMT_TOOLCHAIN} fmt -p datafusion-nexus-iceberg -- --check"
 define_phase live-inventory "bash scripts/ci/check_gpu_test_lane.sh ${FEATURE_ARGS[*]}"
 define_phase gpu-preflight "cargo nextest show-config --color never -P ${GPU_NEXTEST_PROFILE} test-groups ${FEATURE_ARGS[*]}"
 define_phase cpu-tests "cargo nextest run ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
 define_phase bench-tests "cargo nextest run -p datafusion-nexus-bench --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
+define_phase iceberg-tests "cargo nextest run -p datafusion-nexus-iceberg --all-features --no-fail-fast"
 define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads}"
 define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP}"
 define_phase cargo-diagnostic "RUST_TEST_THREADS=1 flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --no-fail-fast --lib --bins --tests --examples -- --test-threads=1"
@@ -398,13 +409,18 @@ define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc ${FEATURE_ARG
 define_phase bench-rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc -p datafusion-nexus-bench --all-features --no-deps --keep-going"
 define_phase clippy "cargo clippy --all-targets ${FEATURE_ARGS[*]}"
 define_phase bench-clippy "cargo clippy -p datafusion-nexus-bench --all-targets --all-features"
+define_phase iceberg-clippy "cargo clippy -p datafusion-nexus-iceberg --all-targets --all-features"
 define_phase tools-check "cargo check -p datafusion-nexus-tools --all-targets --all-features"
 define_phase examples-check "cargo check -p datafusion-nexus-examples --all-targets"
 define_phase bench-check "cargo check -p datafusion-nexus-bench --all-targets --all-features"
+define_phase iceberg-check "cargo check -p datafusion-nexus-iceberg --all-targets --all-features"
 PHASE_FEATURES[bench-tests]='all(fixed)'
 PHASE_FEATURES[bench-rustdoc]='all(fixed)'
 PHASE_FEATURES[bench-clippy]='all(fixed)'
 PHASE_FEATURES[bench-check]='all(fixed)'
+PHASE_FEATURES[iceberg-tests]='all(fixed)'
+PHASE_FEATURES[iceberg-clippy]='all(fixed)'
+PHASE_FEATURES[iceberg-check]='all(fixed)'
 
 phase_now_ms() {
   local value
@@ -530,9 +546,9 @@ run_phase() {
 
 run_isolated_policy_commands() {
   local policy_status=0
-  local script
-  for script in \
+  local -a scripts=(
     scripts/build/check_cpu_packaging_policy.sh \
+    scripts/ci/check_iceberg_leaf_dependency.sh \
     scripts/build/check_build_support.sh \
     scripts/ci/tests/check_doctest_report_tests.sh \
     scripts/ci/tests/check_phase_test_counts_tests.sh \
@@ -540,7 +556,16 @@ run_isolated_policy_commands() {
     scripts/ci/tests/check_doctest_rustdoc_tests.sh \
     scripts/ci/tests/check_gpu_scheduling_tests.sh \
     scripts/ci/tests/check_clean_target_artifacts_tests.sh \
-    scripts/ci/tests/check_pass_as_skip_policy_tests.sh; do
+    scripts/ci/tests/check_pass_as_skip_policy_tests.sh
+  )
+  if [[ "${public_terminology_policy_check}" -eq 1 ]]; then
+    scripts+=(
+      scripts/ci/check_public_terminology.sh
+      scripts/ci/tests/check_public_terminology_tests.sh
+    )
+  fi
+  local script
+  for script in "${scripts[@]}"; do
     echo
     echo "--> ${script}"
     bash "${script}" || policy_status=1
@@ -661,7 +686,7 @@ bench_rustdoc_command() {
 }
 
 if [[ "${mode}" == full || "${lane}" == policy || "${mode}" == fast ]]; then
-  run_phase policy-selftests literal:checks=9 - - run_isolated_policy_commands || true
+  run_phase policy-selftests "literal:checks=${policy_selftest_count}" - - run_isolated_policy_commands || true
   run_phase rustfmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt --all --check || true
   if ! run_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
     lane_safe=0
@@ -674,6 +699,7 @@ fi
 
 if [[ "${mode}" == full ]]; then
   run_phase default-members none - - cargo check "${FEATURE_ARGS[@]}" || true
+  run_phase iceberg-fmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt -p datafusion-nexus-iceberg -- --check || true
 fi
 
 if [[ "${runner}" == nextest && "${lane}" != policy ]]; then
@@ -712,6 +738,8 @@ if [[ "${runner}" == nextest && "${lane}" != policy ]]; then
     # Full and --lane cpu keep bench CPU pins; --fast and GPU-only lanes omit them.
     if [[ "${needs_cpu}" -eq 1 && "${mode}" != fast ]]; then
       run_phase bench-tests nextest - - bench_test_command || true
+      [[ "${mode}" != full ]] \
+        || run_phase iceberg-tests nextest - - cargo nextest run -p datafusion-nexus-iceberg --all-features --no-fail-fast || true
     fi
     [[ "${needs_shared_gpu}" -eq 0 ]] \
       || run_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}" gpu_shared_test_command || true
@@ -747,9 +775,11 @@ if [[ "${mode}" == full ]]; then
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
   run_phase clippy none - - cargo clippy --all-targets "${FEATURE_ARGS[@]}" || true
   run_phase bench-clippy none - - cargo clippy -p datafusion-nexus-bench --all-targets --all-features || true
+  run_phase iceberg-clippy none - - cargo clippy -p datafusion-nexus-iceberg --all-targets --all-features || true
   run_phase tools-check none - - cargo check -p datafusion-nexus-tools --all-targets --all-features || true
   run_phase examples-check none - - cargo check -p datafusion-nexus-examples --all-targets || true
   run_phase bench-check none - - cargo check -p datafusion-nexus-bench --all-targets --all-features || true
+  run_phase iceberg-check none - - cargo check -p datafusion-nexus-iceberg --all-targets --all-features || true
 fi
 
 sanitize_phase_cell() {

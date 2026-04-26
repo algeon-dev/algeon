@@ -1,58 +1,32 @@
 use super::*;
 
-pub(crate) async fn load_iceberg_table(fixture: &IcebergNativeSmokeFixture) -> SmokeResult<Table> {
+/// Resolves one table exactly once, carrying the same frozen source policy to
+/// the CPU delegate, leaf scan planner, and native execution profile.
+pub(crate) async fn load_iceberg_table(fixture: &IcebergNativeSmokeFixture) -> SmokeResult<ResolvedIcebergTable> {
     match fixture {
         IcebergNativeSmokeFixture::LocalMetadata { metadata_location, table_ident } => {
             let ident = table_ident_from_parts(table_ident)?;
             let table = StaticTable::from_metadata_file(metadata_location, ident, FileIO::new_with_fs()).await?;
-            Ok(table.into_table())
+            Ok(ResolvedIcebergTable::from_table(table.into_table(), SourceAccessPolicy::s3_default_chain(None))?)
         },
-        IcebergNativeSmokeFixture::GlueS3 {
-            catalog_name,
-            database,
-            table,
-            warehouse,
-            catalog_id,
-            region,
-            profile,
-            uri,
-            s3_endpoint,
-            s3_region,
-            s3_path_style_access,
-            ..
-        } => {
-            let mut config = GlueIcebergTableConfig::new(
-                catalog_name.clone(),
-                database.clone(),
-                table.clone(),
-                warehouse.clone(),
-                region.clone(),
-            );
-            if let Some(catalog_id) = catalog_id.clone() {
-                config = config.with_catalog_id(catalog_id);
-            }
-            if let Some(profile) = profile.clone() {
-                config = config.with_profile(profile);
-            }
-            if let Some(uri) = uri.clone() {
-                config = config.with_uri(uri);
-            }
-            if let Some(endpoint) = s3_endpoint.clone() {
-                config = config.with_s3_endpoint(endpoint);
-            }
-            if let Some(region) = s3_region.clone() {
-                config = config.with_s3_region(region);
-            }
-            if let Some(path_style) = s3_path_style_access {
-                config = config.with_s3_path_style_access(*path_style);
-            }
-            Ok(load_glue_table(config).await?.table)
+        IcebergNativeSmokeFixture::GlueS3 { database, table, .. } => {
+            let backend = GlueIcebergCatalogBackend::connect(
+                fixture.glue_catalog_config().expect("Glue fixture has a catalog config"),
+            )
+            .await?
+            .into_backend();
+            Ok(backend
+                .load_table(IcebergTableIdentifier { namespace: vec![database.clone()], name: table.clone() })
+                .await?)
         },
         IcebergNativeSmokeFixture::RestS3 { namespace, table, .. } => {
             let backend =
-                RestIcebergCatalogBackend::from_config_env(fixture.rest_config().expect("rest config")).await?;
-            let ident = TableIdent::new(NamespaceIdent::new(namespace.clone()), table.clone());
-            Ok(backend.load_table(&ident).await?)
+                RestIcebergCatalogBackend::connect(fixture.rest_config().expect("REST fixture has a catalog config"))
+                    .await?
+                    .into_backend();
+            Ok(backend
+                .load_table(IcebergTableIdentifier { namespace: vec![namespace.clone()], name: table.clone() })
+                .await?)
         },
     }
 }

@@ -1,6 +1,8 @@
+use std::num::NonZeroUsize;
+
 use super::{
     env::{DurationZeroPolicy, EnvValues, NativeConfigValue},
-    file::{ServerAdmissionFileConfig, ServerFallbackFileConfig, ServerMemoryShareFileValue},
+    file::{ServerAdmissionFileConfig, ServerHostExecutionQosFileConfig, ServerMemoryShareFileValue},
     native::{
         duration_millis_from_value, optional_duration_millis, optional_duration_millis_value, optional_native_string,
         optional_native_usize, parse_memory_share, parse_query_placement_policy, parse_slot_guarantee,
@@ -40,13 +42,13 @@ pub const NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV: &str = "NEXUS_SERVE
 /// Maximum time a GPU-native query waits in query-service admission before a
 /// structured overload error. Defaults to `60000`.
 pub const NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS";
-/// Maximum concurrent CPU fallback statements. Defaults to `2`; set `0` to
-/// disable the host-side fallback bound.
-pub const NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV: &str =
-    "NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS";
-/// Maximum time a CPU fallback statement waits for the host-side fallback
-/// bound. Defaults to `30000`; set `0` to wait indefinitely.
-pub const NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV: &str = "NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS";
+/// Maximum concurrent host-executing statements. Defaults to `2`; set `0` to
+/// disable host execution QoS.
+pub const NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV: &str =
+    "NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS";
+/// Maximum time a statement waits for host execution QoS. Defaults to
+/// `30000`; set `0` to wait indefinitely.
+pub const NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV: &str = "NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS";
 /// Fraction of a GPU's total memory eligible for server native-query budgets.
 /// The fixed native headroom remains a floor, so `1.0` preserves the historical
 /// auto-sized `total - headroom` behavior.
@@ -57,8 +59,8 @@ pub const NEXUS_SERVER_GPU_DEVICES_ENV: &str = "NEXUS_SERVER_GPU_DEVICES";
 const DEFAULT_MAX_IN_FLIGHT: usize = 2;
 const SMALL_QUERY_PROFILE_MAX_QUERIES_PER_DEVICE: usize = 8;
 const SMALL_QUERY_PROFILE_GRANT_MIN_BYTES: u64 = 1 << 30;
-const DEFAULT_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS: usize = 2;
-const DEFAULT_CPU_FALLBACK_WAIT_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS: usize = 2;
+const DEFAULT_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ServerAdmissionPlacementConfig {
@@ -314,36 +316,36 @@ pub(super) fn server_placement_eligible_device_count(
     }
 }
 
-pub(super) fn server_cpu_fallback_max_concurrent_statements(
+pub(super) fn server_host_execution_qos_max_concurrent_statements(
     values: &mut EnvValues<'_>,
-    file: &ServerFallbackFileConfig,
+    file: &ServerHostExecutionQosFileConfig,
 ) -> Result<Option<NonZeroUsize>> {
-    let selected = match values.optional_usize(NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV)? {
-        Some(value) => NativeConfigValue::new(value, NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV),
+    let selected = match values.optional_usize(NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV)? {
+        Some(value) => NativeConfigValue::new(value, NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV),
         None => file
             .max_concurrent_statements
-            .map(|value| NativeConfigValue::new(value, "fallback.max_concurrent_statements"))
+            .map(|value| NativeConfigValue::new(value, "host_execution_qos.max_concurrent_statements"))
             .unwrap_or(NativeConfigValue::new(
-                DEFAULT_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS,
-                NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV,
+                DEFAULT_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS,
+                NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV,
             )),
     };
     Ok(NonZeroUsize::new(selected.value))
 }
 
-pub(super) fn server_cpu_fallback_wait_timeout(
+pub(super) fn server_host_execution_qos_wait_timeout(
     values: &mut EnvValues<'_>,
-    file: &ServerFallbackFileConfig,
+    file: &ServerHostExecutionQosFileConfig,
 ) -> Result<Option<Duration>> {
     let selected = optional_duration_millis_value(
         values,
-        NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV,
-        "fallback.wait_timeout_ms",
+        NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV,
+        "host_execution_qos.wait_timeout_ms",
         file.wait_timeout_ms,
     )?
     .unwrap_or(NativeConfigValue::new(
-        DEFAULT_CPU_FALLBACK_WAIT_TIMEOUT_MS,
-        NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV,
+        DEFAULT_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS,
+        NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV,
     ));
     duration_millis_from_value(selected, DurationZeroPolicy::Indefinite)
 }

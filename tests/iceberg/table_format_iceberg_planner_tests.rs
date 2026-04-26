@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf, sync::Arc};
 
 use arrow::datatypes::DataType;
 use datafusion_nexus::{
-    policy::FallbackReason,
+    capability::CapabilityReason,
     table_format::{
         TableFormatColumnSource, TableFormatDataFileFormat, TableFormatDeleteFileContent,
         TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatReadCapability,
@@ -304,7 +304,7 @@ fn no_delete_s3_parquet_iceberg_tasks_are_native_admissible_through_remote_kviki
 
     assert!(plan.is_native_admissible());
     assert_eq!(plan.data_files[0].read_capability, TableFormatReadCapability::ObjectStore { scheme: "s3".to_string() });
-    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    assert_eq!(plan.unsupported_capability_reasons(), Vec::<CapabilityReason>::new());
 
     let diagnostics = plan.diagnostics();
     assert_eq!(diagnostics.native_source_read_capability, "object_store:s3");
@@ -323,7 +323,7 @@ fn non_identity_partition_transforms_are_retained_as_facts_without_rejecting_nat
     .unwrap();
 
     assert!(plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    assert_eq!(plan.unsupported_capability_reasons(), Vec::<CapabilityReason>::new());
     assert_eq!(plan.data_files.len(), 1);
     assert_eq!(plan.data_files[0].partition_values.len(), 2);
 
@@ -384,10 +384,10 @@ fn partition_spec_source_absent_from_scan_schema_is_structured_rejection() {
     .unwrap();
 
     assert!(!plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergPartitionTransformUnsupported]);
+    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergPartitionTransformUnsupported]);
     assert_eq!(
         plan.diagnostics().rejected_feature_list,
-        vec![FallbackReason::IcebergPartitionTransformUnsupported.code().to_string()]
+        vec![CapabilityReason::IcebergPartitionTransformUnsupported.code().to_string()]
     );
 }
 
@@ -395,13 +395,13 @@ fn partition_spec_source_absent_from_scan_schema_is_structured_rejection() {
 async fn table_format_planner_carries_plan_files_partition_spec_into_scan_plan() {
     let fixture = MetadataOnlyIcebergFixture::new();
     fixture.write_current_manifest_list().await;
-    let planner = IcebergTableFormatPlanner::new(fixture.table);
+    let planner = IcebergTableFormatPlanner::try_new(fixture.table).unwrap();
     let request = TableFormatScanRequest::default();
     let resolved = planner.resolve_table_format_scan(request.clone()).await.unwrap();
     let plan = planner.inspect_table_format_scan(request, resolved).await.unwrap();
 
     assert!(plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    assert_eq!(plan.unsupported_capability_reasons(), Vec::<CapabilityReason>::new());
     assert_eq!(plan.data_files.len(), 1);
     assert_eq!(plan.data_files[0].partition_values.len(), 1);
     let partition = &plan.data_files[0].partition_values[0];
@@ -439,7 +439,7 @@ fn position_delete_files_are_preserved_and_admit_native_execution() {
     assert_eq!(plan.delete_files[0].size_bytes, Some(512));
     assert_eq!(plan.data_files[0].position_delete_files.len(), 1);
     assert_eq!(plan.data_files[0].position_delete_files[0].id, plan.delete_files[0].id);
-    assert!(plan.unsupported_fallback_reasons().is_empty());
+    assert!(plan.unsupported_capability_reasons().is_empty());
 
     let diagnostics = plan.diagnostics();
     assert_eq!(diagnostics.planned_delete_file_count, 1);
@@ -475,7 +475,7 @@ fn equality_delete_files_are_preserved_but_reject_without_delete_footer_field_id
     assert_eq!(plan.delete_files[0].equality_ids.as_deref(), Some([1].as_slice()));
     assert_eq!(plan.data_files[0].position_delete_files.len(), 0);
     assert_eq!(plan.data_files[0].equality_delete_files.len(), 0);
-    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergDeleteFilesUnsupported]);
+    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergDeleteFilesUnsupported]);
 
     let diagnostics = plan.diagnostics();
     assert_eq!(diagnostics.planned_delete_file_count, 1);
@@ -494,7 +494,7 @@ fn non_parquet_object_store_data_files_are_rejected_with_structured_reasons() {
     .unwrap();
 
     assert!(!plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergNonParquetDataFile]);
+    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergNonParquetDataFile]);
     assert_eq!(plan.data_files[0].format, TableFormatDataFileFormat::Orc);
     assert_eq!(plan.data_files[0].read_capability, TableFormatReadCapability::ObjectStore { scheme: "s3".to_string() });
 
@@ -515,7 +515,7 @@ fn unsupported_object_store_scheme_is_rejected_with_structured_reason() {
     .unwrap();
 
     assert!(!plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergObjectStoreReadUnsupported]);
+    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergObjectStoreReadUnsupported]);
     assert_eq!(plan.data_files[0].read_capability, TableFormatReadCapability::ObjectStore { scheme: "gs".to_string() });
 
     let facts = plan.diagnostics().facts();
@@ -550,7 +550,7 @@ fn identity_name_mapping_is_admitted_natively() {
     .unwrap();
 
     assert!(plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    assert_eq!(plan.unsupported_capability_reasons(), Vec::<CapabilityReason>::new());
 }
 
 #[test]
@@ -569,7 +569,7 @@ fn non_identity_name_mapping_is_admitted_with_field_id_source_names() {
     .unwrap();
 
     assert!(plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    assert_eq!(plan.unsupported_capability_reasons(), Vec::<CapabilityReason>::new());
     let id = plan.projected_columns.iter().find(|mapping| mapping.logical_name == "id").unwrap();
     assert_eq!(id.field_id_source_names, vec!["identifier".to_string()]);
     let shipmode = plan.projected_columns.iter().find(|mapping| mapping.logical_name == "shipmode").unwrap();
@@ -592,7 +592,7 @@ fn count_star_name_mapping_carrier_is_admitted_with_field_id_source_names() {
     .unwrap();
 
     assert!(plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    assert_eq!(plan.unsupported_capability_reasons(), Vec::<CapabilityReason>::new());
     assert!(plan.projected_columns.is_empty());
     assert_eq!(plan.pure_filter_columns.len(), 1);
     let carrier = &plan.pure_filter_columns[0];
@@ -613,7 +613,7 @@ fn count_star_name_mapping_rejects_ambiguous_carrier_aliases() {
     .unwrap();
 
     assert!(!plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergNameMappingUnsupported]);
+    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergNameMappingUnsupported]);
 }
 
 #[test]
@@ -628,7 +628,7 @@ fn name_mapping_missing_projected_field_is_rejected() {
     .unwrap();
 
     assert!(!plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergNameMappingUnsupported]);
+    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergNameMappingUnsupported]);
 }
 
 #[test]
@@ -646,5 +646,5 @@ fn name_mapping_alias_claiming_projected_name_is_rejected() {
     .unwrap();
 
     assert!(!plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergNameMappingUnsupported]);
+    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergNameMappingUnsupported]);
 }

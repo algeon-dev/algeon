@@ -27,15 +27,15 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
+    capability::CapabilityReason,
     error::{Error, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
     native_report::{
-        NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
+        FinalPlanDisposition, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
         NativeDataFusionRuntimeOutcome, ParityComparisonMode, ParityFloatTolerance, ParityStatus,
         compare_record_batches, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::FallbackReason,
     session::NexusSessionStateBuilderExt,
     source_cardinality::{register_source_unique_keys_for_path, schema_with_source_unique_keys},
     table_format::{
@@ -43,12 +43,16 @@ use datafusion_nexus::{
         TableFormatParquetSourceMetadata, TableFormatPlanner, TableFormatReadCapability, TableFormatScanDiagnostics,
         TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeatureCode,
         iceberg::{
-            AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, GlueIcebergCredentialSource,
-            GlueIcebergTableConfig, IcebergTableFormatPlanner, NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
+            AWS_ACCESS_KEY_ID_ENV, AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, AWS_SECRET_ACCESS_KEY_ENV,
+            AWS_SECURITY_TOKEN_ENV, AWS_SESSION_TOKEN_ENV, GlueIcebergCredentialSource, GlueIcebergTableConfig,
+            IcebergTableFormatPlanner, IcebergTableIdentifier, NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
             NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_ICEBERG_GLUE_TABLE_ENV,
-            NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NexusIcebergTableProvider,
-            catalog::{IcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig},
-            load_glue_table,
+            NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV,
+            NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
+            NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV, NexusIcebergTableProvider,
+            ResolvedIcebergTable, SourceAccessPolicy,
+            catalog::{GlueIcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig},
+            source_access_policy_to_native_source_storage_profile,
         },
         resolve_table_format_parquet_source_with_metadata,
     },
@@ -58,11 +62,7 @@ use datafusion_nexus_workloads::{
     tpch::{TPCH_QUERIES, TPCH_TABLES},
 };
 use futures::future::BoxFuture;
-use iceberg::{
-    NamespaceIdent, TableIdent,
-    io::FileIO,
-    table::{StaticTable, Table},
-};
+use iceberg::{TableIdent, io::FileIO, table::StaticTable};
 use iceberg_datafusion::IcebergStaticTableProvider;
 use nexus_query_engine::{
     mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
@@ -104,7 +104,7 @@ const REPORT_COLUMNS: &[&str] = &[
     "staged_bytes",
     "native_planning_outcome",
     "native_reason_code",
-    "post_native_execution_path",
+    "final_disposition",
     "cpu_arrow_reader_fallback",
     "native_runtime_started",
     "native_runtime_outcome",
@@ -229,7 +229,7 @@ pub(crate) use staging::{
 };
 pub use tsv::stable_tsv_field;
 pub(crate) use tsv::{
-    FallbackReasonExt, empty_as_none, list_or_none, optional_duration_ms_text, optional_env_u64_get,
+    CapabilityReasonExt, empty_as_none, list_or_none, optional_duration_ms_text, optional_env_u64_get,
     optional_env_usize_get, optional_u64, optional_u128, optional_usize, parse_optional_bool,
     parse_optional_timeout_secs, smoke_error,
 };

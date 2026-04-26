@@ -401,7 +401,7 @@ async fn run_native_query(
             NativeTpcdsParityNativeRuntimeOutcome::NotStarted,
         );
     };
-    let accepted = diagnostics.report.rewritten_count() > 0;
+    let accepted = diagnostics.report.selected_count() > 0;
     let planning_outcome = NativeTpcdsParityNativePlanningOutcome::Planned {
         accepted,
         planned_plan: Arc::clone(&plan),

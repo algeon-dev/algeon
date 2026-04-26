@@ -43,7 +43,7 @@ pub(super) fn native_execution_config() -> NexusNativeExecutionConfig {
 
 pub(super) fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
     let mut report = PlanningReport::new();
-    report.push_rewritten(GpuCandidate::new("SortExec(fetch)(AggregateExec(LocalParquetScan))", 1));
+    report.push_selected(GpuCandidate::new("SortExec(fetch)(AggregateExec(LocalParquetScan))", 1));
     NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
         input_plan_shape: "SortExec(fetch)(AggregateExec(LocalParquetScan))".to_string(),
@@ -58,7 +58,7 @@ pub(super) fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
 
 pub(super) fn accepted_bounded_join_native_diagnostics() -> NativePlanningDiagnostics {
     let mut report = PlanningReport::new();
-    report.push_rewritten(GpuCandidate::new(
+    report.push_selected(GpuCandidate::new(
         "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))",
         1,
     ));
@@ -70,24 +70,6 @@ pub(super) fn accepted_bounded_join_native_diagnostics() -> NativePlanningDiagno
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
         strict_bounded_contract: accepted_strict_bounded_contract_diagnostics(),
-        adaptive_pipeline: Default::default(),
-    }
-}
-
-pub(super) fn rejected_native_diagnostics() -> NativePlanningDiagnostics {
-    let mut report = PlanningReport::new();
-    report.push_rejected(
-        GpuCandidate::new("SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))", 1),
-        datafusion_nexus::policy::FallbackReason::NativeBoundedJoinUnsupported,
-    );
-    NativePlanningDiagnostics {
-        input_plan_root: "SortExec".to_string(),
-        input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
-        input_join_diagnostics: Vec::new(),
-        report,
-        native_optimizer: Default::default(),
-        source_diagnostics: Vec::new(),
-        strict_bounded_contract: rejected_strict_bounded_contract_diagnostics(),
         adaptive_pipeline: Default::default(),
     }
 }
@@ -135,34 +117,6 @@ pub(super) fn accepted_strict_bounded_contract_diagnostics() -> NativeStrictBoun
             },
         }],
         rejected_candidates: Vec::new(),
-        non_join_bounded_plan_count: 0,
-        non_join_bounded_plan_reason: None,
-    }
-}
-
-pub(super) fn rejected_strict_bounded_contract_diagnostics() -> NativeStrictBoundedContractDiagnostics {
-    NativeStrictBoundedContractDiagnostics {
-        accepted_candidates: Vec::new(),
-        rejected_candidates: vec![NativeStrictBoundedRejectedCandidateDiagnostics {
-            candidate: GpuCandidate::new(
-                "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))",
-                1,
-            ),
-            blocking_contract: StrictBoundedContractGateRow {
-                execution_mode: StrictBoundedExecutionMode::UnsupportedStrictBounded,
-                contract_scope: ReservationRequirementScope::Node,
-                gate_id: StrictBoundedContractGateId::Compiled(ReservationGateId::new(0)),
-                owner: StrictBoundedContractOwner::Compiled(ReservationGateOwner::Task(
-                    nexus_query_engine::pipeline::PipelineTaskId::new(0),
-                )),
-                reservation_kind: ReservationKind::MixedSizeData,
-                memory_boundary: "mixed_keyed_residual_or_conditional_full_retained_size_data",
-                required_contract: "mixed_keyed_residual_or_conditional_full_retained_size_data",
-                contract_status: ContractStatus::BlockedByLowerLevel,
-                contract_quality: ContractQuality::ObservedRetainedState,
-                unresolved_preflight_gap: None,
-            },
-        }],
         non_join_bounded_plan_count: 0,
         non_join_bounded_plan_reason: None,
     }
@@ -547,7 +501,7 @@ pub(super) fn planning_replacement_row<'a>(
     // `whole_plan_planning_row` so those rejections remain visible.
     rows.clone()
         .rev()
-        .find(|row| row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced)
+        .find(|row| row.outcome == Some(NativeDataFusionPlanningOutcome::Selected))
         .or_else(|| rows.into_iter().next())
         .expect("report row should exist")
 }

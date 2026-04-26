@@ -23,7 +23,7 @@ async fn iceberg_provider_accepts_inexact_filter_without_losing_filter_columns()
             .as_ref()
             .is_some_and(|columns| { columns.contains(&"id".to_string()) && columns.contains(&"value".to_string()) })
     );
-    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.selected_count(), 1);
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.scan_limit, None, "the source must not apply LIMIT before the inexact filter");
     assert!(source.read_columns.contains(&"id".to_string()));
@@ -44,7 +44,7 @@ async fn iceberg_provider_keeps_filter_native_when_position_deletes_are_present(
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.files[0].position_delete_files.len(), 1);
     assert!(source.reader_predicate.is_none());
@@ -67,7 +67,7 @@ async fn iceberg_provider_pushes_supported_filter_conjuncts_and_keeps_native_fil
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.selected_count(), 1);
     let source = native_local_parquet_source(&result.plans[0]);
     let reader_predicate = source
         .reader_predicate
@@ -130,7 +130,7 @@ async fn iceberg_provider_keeps_native_filter_for_temporal_table_format_predicat
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.selected_count(), 1);
     let source = native_local_parquet_source(&result.plans[0]);
     assert!(source.read_columns.contains(&"ship_date".to_string()));
     assert!(source.reader_predicate.is_none());
@@ -227,12 +227,12 @@ fn native_lowering_rejects_iceberg_missing_predicate_column_above_hash_join() {
 
     let result = lower_physical_plan_to_native(filter);
 
-    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(
         result.report.outcomes().iter().any(|outcome| {
             matches!(
                 outcome,
-                CandidateOutcome::Rejected { reason: FallbackReason::IcebergFieldIdMappingUnsupported, .. }
+                CandidateOutcome::NotSupported { capability_reason: CapabilityReason::IcebergFieldIdMappingUnsupported, .. }
             )
         }),
         "predicate-required missing Iceberg field above a join must reject instead of materializing NULLs: {:?}",
@@ -327,7 +327,7 @@ fn native_lowering_accepts_iceberg_same_name_signed_widened_predicate_column_abo
 
     let result = lower_physical_plan_to_native(filter);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let sources = native_local_parquet_sources(&result.plans[0]);
     let profile_source = sources
         .into_iter()

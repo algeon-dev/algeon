@@ -6,19 +6,15 @@ fn server_config_defaults_to_two_native_query_admissions() {
     assert_eq!(config.bind_addr.to_string(), "0.0.0.0:50051");
     assert_eq!(config.max_in_flight, 2);
     assert_eq!(config.admission_policy.max_concurrent_queries(), 2);
-    assert_eq!(config.cpu_fallback_max_concurrent_statements.map(|value| value.get()), Some(2));
-    assert_eq!(
-        config.native_optimizer_config.cpu_fallback_max_concurrent_statements().map(|value| value.get()),
-        Some(2)
-    );
+    let host_execution_qos = config.host_execution_qos.as_ref().expect("server defaults install host execution QoS");
+    assert_eq!(host_execution_qos.max_concurrent_statements().get(), 2);
     assert_eq!(config.admission_policy.grant().min, MemoryShare::Fraction(1.0 / 8.0));
     assert_eq!(config.admission_policy.grant().want, MemoryShare::PolicyDefault);
     assert_eq!(config.admission_policy.max_queries_per_device(), None);
     assert_eq!(config.admission_policy.placement_policy(), QueryPlacementPolicy::LeastLoaded);
     assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::GuaranteedMinimum);
     assert_eq!(config.admission_policy.wait_timeout(), Duration::from_secs(60));
-    assert_eq!(config.cpu_fallback_wait_timeout, Some(Duration::from_secs(30)));
-    assert_eq!(config.native_optimizer_config.cpu_fallback_wait_timeout(), Some(Duration::from_secs(30)));
+    assert_eq!(host_execution_qos.wait_timeout(), Some(Duration::from_secs(30)));
     assert_eq!(config.gpu_devices, vec![0]);
     assert_eq!(config.device_budget_fraction, None);
     assert_eq!(config.statement_ticket_ttl.as_secs(), 300);
@@ -148,81 +144,79 @@ fn server_config_rejects_invalid_admission_workload_profile() {
 }
 
 #[test]
-fn server_config_accepts_cpu_fallback_statement_limit_env() {
-    let env = BTreeMap::from([(NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV, "4".to_string())]);
+fn server_config_accepts_host_execution_qos_statement_limit_env() {
+    let env = BTreeMap::from([(NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV, "4".to_string())]);
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-    assert_eq!(config.cpu_fallback_max_concurrent_statements.map(|value| value.get()), Some(4));
     assert_eq!(
-        config.native_optimizer_config.cpu_fallback_max_concurrent_statements().map(|value| value.get()),
+        config.host_execution_qos.as_ref().map(|qos| qos.max_concurrent_statements().get()),
         Some(4)
     );
 }
 
 #[test]
-fn server_config_accepts_cpu_fallback_wait_timeout_env() {
-    let env = BTreeMap::from([(NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV, "250".to_string())]);
+fn server_config_accepts_host_execution_qos_wait_timeout_env() {
+    let env = BTreeMap::from([(NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV, "250".to_string())]);
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-    assert_eq!(config.cpu_fallback_wait_timeout, Some(Duration::from_millis(250)));
-    assert_eq!(config.native_optimizer_config.cpu_fallback_wait_timeout(), Some(Duration::from_millis(250)));
+    assert_eq!(
+        config.host_execution_qos.as_ref().and_then(|qos| qos.wait_timeout()),
+        Some(Duration::from_millis(250))
+    );
 }
 
 #[test]
-fn server_config_zero_cpu_fallback_wait_timeout_waits_indefinitely() {
-    let env = BTreeMap::from([(NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV, "0".to_string())]);
+fn server_config_zero_host_execution_qos_wait_timeout_waits_indefinitely() {
+    let env = BTreeMap::from([(NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV, "0".to_string())]);
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-    assert_eq!(config.cpu_fallback_wait_timeout, None);
-    assert_eq!(config.native_optimizer_config.cpu_fallback_wait_timeout(), None);
+    assert_eq!(config.host_execution_qos.as_ref().and_then(|qos| qos.wait_timeout()), None);
 }
 
 #[test]
-fn server_config_zero_cpu_fallback_statement_limit_disables_bound() {
-    let env = BTreeMap::from([(NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV, "0".to_string())]);
+fn server_config_zero_host_execution_qos_statement_limit_disables_bound() {
+    let env = BTreeMap::from([(NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV, "0".to_string())]);
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-    assert_eq!(config.cpu_fallback_max_concurrent_statements, None);
-    assert_eq!(config.native_optimizer_config.cpu_fallback_max_concurrent_statements(), None);
-    assert_eq!(config.cpu_fallback_wait_timeout, Some(Duration::from_secs(30)));
-    assert_eq!(config.native_optimizer_config.cpu_fallback_wait_timeout(), None);
+    assert!(config.host_execution_qos.is_none());
 }
 
 #[test]
-fn server_config_accepts_toml_cpu_fallback_statement_limit() {
+fn server_config_accepts_toml_host_execution_qos_statement_limit() {
     let (_dir, env) = env_with_server_toml(
         r#"
-[fallback]
+[host_execution_qos]
 max_concurrent_statements = 3
 "#,
     );
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-    assert_eq!(config.cpu_fallback_max_concurrent_statements.map(|value| value.get()), Some(3));
     assert_eq!(
-        config.native_optimizer_config.cpu_fallback_max_concurrent_statements().map(|value| value.get()),
+        config.host_execution_qos.as_ref().map(|qos| qos.max_concurrent_statements().get()),
         Some(3)
     );
 }
 
 #[test]
-fn server_config_accepts_toml_cpu_fallback_wait_timeout() {
+fn server_config_accepts_toml_host_execution_qos_wait_timeout() {
     let (_dir, env) = env_with_server_toml(
         r#"
-[fallback]
+[host_execution_qos]
 wait_timeout_ms = 125
 "#,
     );
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
-    assert_eq!(config.cpu_fallback_wait_timeout, Some(Duration::from_millis(125)));
-    assert_eq!(config.native_optimizer_config.cpu_fallback_wait_timeout(), Some(Duration::from_millis(125)));
+    assert_eq!(
+        config.host_execution_qos.as_ref().and_then(|qos| qos.wait_timeout()),
+        Some(Duration::from_millis(125))
+    );
 }
 
 #[test]

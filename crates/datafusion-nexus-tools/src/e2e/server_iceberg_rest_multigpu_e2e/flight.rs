@@ -12,7 +12,8 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_nexus::{
     native_report::{ParityFloatTolerance, ParityStatus, compare_record_batches},
     table_format::iceberg::catalog::{
-        IcebergCatalogBackend, RestIcebergCatalogBackend, build_scoped_catalog_provider_from_backend,
+        IcebergCatalogBackend, NexusIcebergCatalogSource, RestIcebergCatalogBackend,
+        build_scoped_catalog_provider_from_backend,
     },
 };
 use futures::TryStreamExt;
@@ -118,8 +119,9 @@ pub(super) async fn build_cpu_references(
     params: &Params,
     workloads: &BTreeMap<&'static str, Workload>,
 ) -> E2eResult<BTreeMap<&'static str, CpuReference>> {
-    let backend: Arc<dyn IcebergCatalogBackend> =
-        Arc::new(RestIcebergCatalogBackend::from_config_env(params.rest_config()).await?);
+    let backend: Arc<dyn IcebergCatalogBackend> = Arc::new(NexusIcebergCatalogSource::new(
+        RestIcebergCatalogBackend::connect(params.rest_config()).await?.into_backend(),
+    ));
     let provider = build_scoped_catalog_provider_from_backend(backend, "rest", &params.namespace).await?;
     let context = SessionContext::new_with_config(SessionConfig::new());
     context.register_catalog("lake", Arc::new(provider));
@@ -257,9 +259,9 @@ pub(super) async fn collect_success_from_info(
     let stats_payload = get_query_stats(channel, &query_id).await?;
     let planning = tsv_section_single_row(&stats_payload, "planning")?;
     let execution = tsv_section_single_row(&stats_payload, "execution")?;
-    require_value(&planning, "outcome", "accepted_replaced", &query_id)?;
+    require_value(&planning, "outcome", "selected", &query_id)?;
     require_value(&planning, "post_native_execution_path", "native", &query_id)?;
-    require_value(&execution, "planning_outcome", "accepted_replaced", &query_id)?;
+    require_value(&execution, "planning_outcome", "selected", &query_id)?;
     require_value(&execution, "post_native_execution_path", "native", &query_id)?;
     require_value(&execution, "native_runtime_started", "true", &query_id)?;
     require_value(&execution, "runtime_outcome", "succeeded", &query_id)?;

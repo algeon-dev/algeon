@@ -9,8 +9,8 @@ use nexus_query_engine::{
 
 use super::{FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, join::CanonicalJoin};
 use crate::{
+    capability::CapabilityReason,
     native::normalize::{NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeNestedLoopJoin},
-    policy::FallbackReason,
 };
 
 /// Join output projection plus the exact DataFusion output schema requested by
@@ -45,7 +45,7 @@ impl JoinOutputRequests {
         left: &LoweredNativeInput,
         right: &LoweredNativeInput,
         canonical: CanonicalJoin,
-    ) -> Result<JoinOutputColumns, FallbackReason> {
+    ) -> Result<JoinOutputColumns, CapabilityReason> {
         if self.outputs.is_empty() {
             return hidden_row_count_preserving_output(left, right, canonical);
         }
@@ -80,7 +80,7 @@ impl JoinOutputRequests {
                 );
                 Ok(NativeJoinOutputColumn::new(side, column, output_binding.native_name.clone()))
             })
-            .collect::<Result<Vec<_>, FallbackReason>>()?;
+            .collect::<Result<Vec<_>, CapabilityReason>>()?;
         Ok(JoinOutputColumns {
             projection,
             schema: self.schema,
@@ -94,10 +94,10 @@ fn hidden_row_count_preserving_output(
     left: &LoweredNativeInput,
     right: &LoweredNativeInput,
     canonical: CanonicalJoin,
-) -> Result<JoinOutputColumns, FallbackReason> {
+) -> Result<JoinOutputColumns, CapabilityReason> {
     const HIDDEN_JOIN_ROW_PRESENCE_COLUMN: &str = "__nexus_native_join_row_presence";
     let (datafusion_side, input, input_binding) =
-        hidden_row_count_input(left, right, canonical).ok_or(FallbackReason::UnsupportedExpression)?;
+        hidden_row_count_input(left, right, canonical).ok_or(CapabilityReason::UnsupportedExpression)?;
     let native_side = canonical.native_side_for_datafusion_side(datafusion_side)?;
     let input_ordinal = match native_side {
         NativeJoinSide::Left => 0,
@@ -106,7 +106,7 @@ fn hidden_row_count_preserving_output(
     let input_field = input
         .schema
         .field_with_name(input_binding.native_name.as_str())
-        .map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        .map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     let field = input_field.clone().with_name(HIDDEN_JOIN_ROW_PRESENCE_COLUMN);
     let projection = vec![NativeJoinOutputColumn::new(
         native_side,
@@ -159,7 +159,7 @@ pub(super) struct JoinOutputRequest {
 pub(super) fn hash_join_output_requests(
     join: &NormalizedNativeHashJoin<'_>,
     required_output_fields: &RequiredFields,
-) -> Result<JoinOutputRequests, FallbackReason> {
+) -> Result<JoinOutputRequests, CapabilityReason> {
     join_output_requests(
         required_output_fields,
         &join.join.left().schema(),
@@ -173,7 +173,7 @@ pub(super) fn hash_join_output_requests(
 pub(super) fn nested_loop_join_output_requests(
     join: &NormalizedNativeNestedLoopJoin<'_>,
     required_output_fields: &RequiredFields,
-) -> Result<JoinOutputRequests, FallbackReason> {
+) -> Result<JoinOutputRequests, CapabilityReason> {
     join_output_requests(
         required_output_fields,
         &join.join.left().schema(),
@@ -187,7 +187,7 @@ pub(super) fn nested_loop_join_output_requests(
 pub(super) fn cross_join_output_requests(
     join: &NormalizedNativeCrossJoin<'_>,
     required_output_fields: &RequiredFields,
-) -> Result<JoinOutputRequests, FallbackReason> {
+) -> Result<JoinOutputRequests, CapabilityReason> {
     join_output_requests(
         required_output_fields,
         &join.join.left().schema(),
@@ -205,7 +205,7 @@ fn join_output_requests(
     output_schema: &SchemaRef,
     projection_indices: Option<&[usize]>,
     datafusion_join_type: &JoinType,
-) -> Result<JoinOutputRequests, FallbackReason> {
+) -> Result<JoinOutputRequests, CapabilityReason> {
     // DataFusion owns output ordering, projection, aliases, and semi/anti
     // output-side rules. Convert each requested DataFusion output field into a
     // native side/column reference after canonicalization.
@@ -221,7 +221,7 @@ fn join_output_requests(
         required_output_fields.requested_indices(output_schema.fields().len())?.into_iter().enumerate()
     {
         let join_schema_index = match projection_indices {
-            Some(projection) => *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?,
+            Some(projection) => *projection.get(output_index).ok_or(CapabilityReason::UnsupportedExpression)?,
             None => output_index,
         };
         let (datafusion_side, input_index) =
@@ -235,7 +235,7 @@ fn join_output_requests(
             continue;
         }
         let input_schema = if datafusion_side == DataFusionJoinSide::Left { left_schema } else { right_schema };
-        input_schema.fields().get(input_index).ok_or(FallbackReason::UnsupportedExpression)?;
+        input_schema.fields().get(input_index).ok_or(CapabilityReason::UnsupportedExpression)?;
         outputs.push(JoinOutputRequest {
             datafusion_side,
             input_index,
@@ -250,7 +250,7 @@ pub(super) fn datafusion_join_output_side(
     join_schema_index: usize,
     left_schema: &SchemaRef,
     right_schema: &SchemaRef,
-) -> Result<(DataFusionJoinSide, usize), FallbackReason> {
+) -> Result<(DataFusionJoinSide, usize), CapabilityReason> {
     match join_type {
         JoinType::RightSemi | JoinType::RightAnti => Ok((DataFusionJoinSide::Right, join_schema_index)),
         JoinType::LeftSemi | JoinType::LeftAnti => Ok((DataFusionJoinSide::Left, join_schema_index)),

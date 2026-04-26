@@ -1,11 +1,13 @@
+use arrow::datatypes::TimeUnit;
+
 use super::*;
 
 pub(super) fn table_format_local_parquet_files(
     scan_plan: &TableFormatScanPlan,
     requirements: &NativeParquetColumnRequirements,
-) -> Result<Vec<NativeLocalParquetFile>, FallbackReason> {
+) -> Result<Vec<NativeLocalParquetFile>, CapabilityReason> {
     if scan_plan.data_files.is_empty() {
-        return Err(FallbackReason::NativeSourceEmpty);
+        return Err(CapabilityReason::NativeSourceEmpty);
     }
     scan_plan.data_files.iter().map(|file| table_format_local_parquet_file(scan_plan, file, requirements)).collect()
 }
@@ -13,16 +15,16 @@ pub(super) fn table_format_local_parquet_files(
 pub(super) fn table_format_local_parquet_files_for_group(
     scan_plan: &TableFormatScanPlan,
     group: &TableFormatSourceReadGroup,
-) -> Result<Vec<NativeLocalParquetFile>, FallbackReason> {
+) -> Result<Vec<NativeLocalParquetFile>, CapabilityReason> {
     if group.file_indices.is_empty() {
-        return Err(FallbackReason::NativeSourceEmpty);
+        return Err(CapabilityReason::NativeSourceEmpty);
     }
     group
         .file_indices
         .iter()
         .zip(group.field_id_bindings.iter())
         .map(|(file_index, bindings)| {
-            let file = scan_plan.data_files.get(*file_index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+            let file = scan_plan.data_files.get(*file_index).ok_or(CapabilityReason::NativeSourceSchemaMapping)?;
             table_format_local_parquet_file(scan_plan, file, &group.requirements).map(|native_file| {
                 native_file.with_field_id_read_bindings(
                     bindings.iter().map(TableFormatFieldIdReadBinding::native_binding).collect(),
@@ -36,12 +38,12 @@ pub(super) fn table_format_local_parquet_file(
     scan_plan: &TableFormatScanPlan,
     file: &TableFormatDataFile,
     requirements: &NativeParquetColumnRequirements,
-) -> Result<NativeLocalParquetFile, FallbackReason> {
+) -> Result<NativeLocalParquetFile, CapabilityReason> {
     if file.format != TableFormatDataFileFormat::Parquet {
-        return Err(FallbackReason::IcebergNonParquetDataFile);
+        return Err(CapabilityReason::IcebergNonParquetDataFile);
     }
     if !file.read_capability.is_native_parquet_capable() {
-        return Err(FallbackReason::IcebergObjectStoreReadUnsupported);
+        return Err(CapabilityReason::IcebergObjectStoreReadUnsupported);
     }
     let stable_id = format!("table-format:{}:{}", scan_plan.format.code(), file.id);
     let mut native_file = table_format_native_parquet_file(file)?.with_stable_id(stable_id);
@@ -78,24 +80,25 @@ pub(super) fn table_format_local_parquet_file(
 pub(super) fn table_format_equality_delete_files(
     scan_plan: &TableFormatScanPlan,
     file: &TableFormatDataFile,
-) -> Result<Vec<NativeParquetEqualityDeleteFile>, FallbackReason> {
+) -> Result<Vec<NativeParquetEqualityDeleteFile>, CapabilityReason> {
     file.equality_delete_files
         .iter()
         .map(|delete_file| {
             if !delete_file.is_supported_equality_delete() {
-                return Err(FallbackReason::IcebergDeleteFilesUnsupported);
+                return Err(CapabilityReason::IcebergDeleteFilesUnsupported);
             }
-            let equality_ids = delete_file.equality_ids.clone().ok_or(FallbackReason::IcebergDeleteFilesUnsupported)?;
+            let equality_ids =
+                delete_file.equality_ids.clone().ok_or(CapabilityReason::IcebergDeleteFilesUnsupported)?;
             let equality_columns = equality_delete_column_names(scan_plan, &equality_ids)?;
             let resolved_source =
-                delete_file.resolved_parquet_source.clone().ok_or(FallbackReason::IcebergDeleteFilesUnsupported)?;
+                delete_file.resolved_parquet_source.clone().ok_or(CapabilityReason::IcebergDeleteFilesUnsupported)?;
             let mut native_delete = NativeParquetEqualityDeleteFile::from_resolved_parquet_source(
                 delete_file.id.clone(),
                 resolved_source,
                 equality_ids,
                 equality_columns,
             )
-            .map_err(|_error| FallbackReason::IcebergDeleteFilesUnsupported)?;
+            .map_err(|_error| CapabilityReason::IcebergDeleteFilesUnsupported)?;
             if let Some(size_bytes) = delete_file.size_bytes {
                 native_delete = native_delete.with_file_size_bytes(size_bytes);
             }
@@ -110,7 +113,7 @@ pub(super) fn table_format_equality_delete_files(
 fn equality_delete_column_names(
     scan_plan: &TableFormatScanPlan,
     equality_ids: &[i32],
-) -> Result<Vec<String>, FallbackReason> {
+) -> Result<Vec<String>, CapabilityReason> {
     equality_ids
         .iter()
         .map(|field_id| {
@@ -119,29 +122,29 @@ fn equality_delete_column_names(
                 .iter()
                 .chain(scan_plan.pure_filter_columns.iter())
                 .find(|column| column.field_id == Some(*field_id))
-                .ok_or(FallbackReason::IcebergDeleteFilesUnsupported)?;
+                .ok_or(CapabilityReason::IcebergDeleteFilesUnsupported)?;
             if column.source != TableFormatColumnSource::DirectTopLevelFileColumn {
-                return Err(FallbackReason::IcebergDeleteFilesUnsupported);
+                return Err(CapabilityReason::IcebergDeleteFilesUnsupported);
             }
-            column.source_name.clone().ok_or(FallbackReason::IcebergDeleteFilesUnsupported)
+            column.source_name.clone().ok_or(CapabilityReason::IcebergDeleteFilesUnsupported)
         })
         .collect()
 }
 
 pub(super) fn table_format_position_delete_files(
     file: &TableFormatDataFile,
-) -> Result<Vec<NativeParquetPositionDeleteFile>, FallbackReason> {
+) -> Result<Vec<NativeParquetPositionDeleteFile>, CapabilityReason> {
     file.position_delete_files
         .iter()
         .map(|delete_file| {
             if !delete_file.is_supported_position_delete() {
-                return Err(FallbackReason::IcebergDeleteFilesUnsupported);
+                return Err(CapabilityReason::IcebergDeleteFilesUnsupported);
             }
             let resolved_source =
-                delete_file.resolved_parquet_source.clone().ok_or(FallbackReason::IcebergDeleteFilesUnsupported)?;
+                delete_file.resolved_parquet_source.clone().ok_or(CapabilityReason::IcebergDeleteFilesUnsupported)?;
             let mut native_delete =
                 NativeParquetPositionDeleteFile::from_resolved_parquet_source(delete_file.id.clone(), resolved_source)
-                    .map_err(|_error| FallbackReason::IcebergObjectStoreReadUnsupported)?;
+                    .map_err(|_error| CapabilityReason::IcebergObjectStoreReadUnsupported)?;
             if let Some(size_bytes) = delete_file.size_bytes {
                 native_delete = native_delete.with_file_size_bytes(size_bytes);
             }
@@ -161,7 +164,7 @@ pub(super) fn table_format_position_delete_files(
 pub(super) fn table_format_partition_values(
     file: &TableFormatDataFile,
     requirements: &NativeParquetColumnRequirements,
-) -> Result<Vec<NativeLiteralValue>, FallbackReason> {
+) -> Result<Vec<NativeLiteralValue>, CapabilityReason> {
     requirements
         .partition_columns
         .iter()
@@ -174,9 +177,9 @@ pub(super) fn table_format_partition_values(
                 .partition_values
                 .iter()
                 .find(|value| value.native_materialized_column_name() == column.name)
-                .ok_or(FallbackReason::NativeSourcePartitionValues)?;
+                .ok_or(CapabilityReason::NativeSourcePartitionValues)?;
             if value.transform != TableFormatPartitionTransform::Identity {
-                return Err(FallbackReason::IcebergPartitionTransformUnsupported);
+                return Err(CapabilityReason::IcebergPartitionTransformUnsupported);
             }
             table_format_scalar_value_to_native_literal(&value.value, &column.data_type)
         })
@@ -186,7 +189,7 @@ pub(super) fn table_format_partition_values(
 pub(super) fn table_format_scalar_value_to_native_literal(
     value: &TableFormatScalarValue,
     data_type: &DataType,
-) -> Result<NativeLiteralValue, FallbackReason> {
+) -> Result<NativeLiteralValue, CapabilityReason> {
     Ok(match value {
         TableFormatScalarValue::Null => NativeLiteralValue::Null(data_type.clone()),
         TableFormatScalarValue::Boolean(value) => NativeLiteralValue::Boolean(*value),
@@ -208,15 +211,34 @@ pub(super) fn table_format_scalar_value_to_native_literal(
             };
             NativeLiteralValue::Decimal128 { raw: *value, precision: *precision, scale: *scale }
         },
-        TableFormatScalarValue::Int128(_) => return Err(FallbackReason::UnsupportedType),
+        TableFormatScalarValue::Int128(_) => return Err(CapabilityReason::UnsupportedType),
         TableFormatScalarValue::UInt32(value) => NativeLiteralValue::UInt32(*value),
         TableFormatScalarValue::UInt64(value) => NativeLiteralValue::UInt64(*value),
+        TableFormatScalarValue::Float32(value) => NativeLiteralValue::Float32(*value),
         TableFormatScalarValue::Float64(value) => NativeLiteralValue::Float64(*value),
         TableFormatScalarValue::Utf8(value) if matches!(data_type, DataType::LargeUtf8) => {
             NativeLiteralValue::LargeUtf8(value.clone())
         },
         TableFormatScalarValue::Utf8(value) => NativeLiteralValue::Utf8(value.clone()),
         TableFormatScalarValue::Date32(value) => NativeLiteralValue::Date32(*value),
+        TableFormatScalarValue::Time64Micros(value) if matches!(data_type, DataType::Time64(TimeUnit::Microsecond)) => {
+            NativeLiteralValue::Time64 { raw: *value, unit: TimeUnit::Microsecond }
+        },
+        TableFormatScalarValue::TimestampMicros(value)
+            if matches!(data_type, DataType::Timestamp(TimeUnit::Microsecond, _)) =>
+        {
+            NativeLiteralValue::Timestamp { raw: *value, unit: TimeUnit::Microsecond }
+        },
+        TableFormatScalarValue::TimestampNanos(value)
+            if matches!(data_type, DataType::Timestamp(TimeUnit::Nanosecond, _)) =>
+        {
+            NativeLiteralValue::Timestamp { raw: *value, unit: TimeUnit::Nanosecond }
+        },
+        TableFormatScalarValue::Time64Micros(_)
+        | TableFormatScalarValue::TimestampMicros(_)
+        | TableFormatScalarValue::TimestampNanos(_)
+        | TableFormatScalarValue::Uuid(_)
+        | TableFormatScalarValue::Binary(_) => return Err(CapabilityReason::IcebergScalarValueUnsupported),
     })
 }
 
@@ -235,9 +257,9 @@ pub(super) fn table_format_local_path(location: &str) -> PathBuf {
 
 pub(super) fn table_format_native_parquet_file(
     file: &TableFormatDataFile,
-) -> Result<NativeLocalParquetFile, FallbackReason> {
+) -> Result<NativeLocalParquetFile, CapabilityReason> {
     if !file.read_capability.is_native_parquet_capable() {
-        return Err(FallbackReason::IcebergObjectStoreReadUnsupported);
+        return Err(CapabilityReason::IcebergObjectStoreReadUnsupported);
     }
     let resolved_source = match file.resolved_parquet_source.clone() {
         Some(resolved_source) => resolved_source,
@@ -247,8 +269,8 @@ pub(super) fn table_format_native_parquet_file(
             &TableFormatParquetReadStrategyConfig::from_env(),
             &TableFormatParquetSourceMetadata::from_size_and_row_count(file.size_bytes, file.row_count),
         )
-        .map_err(|_error| FallbackReason::IcebergObjectStoreReadUnsupported)?,
+        .map_err(|_error| CapabilityReason::IcebergObjectStoreReadUnsupported)?,
     };
     NativeLocalParquetFile::from_resolved_parquet_source(resolved_source)
-        .map_err(|_error| FallbackReason::IcebergObjectStoreReadUnsupported)
+        .map_err(|_error| CapabilityReason::IcebergObjectStoreReadUnsupported)
 }

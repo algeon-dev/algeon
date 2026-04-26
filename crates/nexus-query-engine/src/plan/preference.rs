@@ -1,18 +1,18 @@
-//! Native plan preference facts and admission decisions.
+//! Native plan cost facts and selection decisions.
 //!
-//! Capability analysis answers whether a plan can execute natively. Preference
-//! analysis answers whether the current native profile should choose CPU for a
-//! known high-overhead native shape. Decisions here must stay conservative:
-//! missing evidence keeps GPU preferred.
+//! Capability analysis answers whether a plan can execute natively. Cost
+//! analysis answers whether the current native profile should leave a known
+//! high-overhead native shape with DataFusion. Decisions here must stay
+//! conservative: missing evidence continues native selection.
 
 use std::collections::BTreeMap;
 
 use super::*;
 use crate::source::LocalParquetSource;
 
-/// Stable reason for preferring CPU execution over native GPU execution.
+/// Stable reason for not selecting a native-capable plan by cost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativePlanCpuPreferenceReason {
+pub enum NativePlanCostReason {
     /// Small, selective source work feeds a bounded top-k shape whose native
     /// fixed source/join overhead is likely to dominate useful GPU work.
     SmallSelectiveTopK,
@@ -24,40 +24,40 @@ pub enum NativePlanCpuPreferenceReason {
     SmallSelectiveFullSort,
 }
 
-impl NativePlanCpuPreferenceReason {
+impl NativePlanCostReason {
     /// Stable snake-case reason code.
     pub const fn code(self) -> &'static str {
         match self {
-            Self::SmallSelectiveTopK => "native_small_selective_topk_cpu_preferred",
-            Self::SmallSelectiveResidualJoin => "native_small_selective_residual_join_cpu_preferred",
-            Self::SmallSelectiveFullSort => "native_small_selective_full_sort_cpu_preferred",
+            Self::SmallSelectiveTopK => "native_small_selective_topk_not_selected_by_cost",
+            Self::SmallSelectiveResidualJoin => "native_small_selective_residual_join_not_selected_by_cost",
+            Self::SmallSelectiveFullSort => "native_small_selective_full_sort_not_selected_by_cost",
         }
     }
 }
 
-/// Tunable conservative thresholds for native plan preference.
+/// Tunable conservative thresholds for native plan cost selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativePlanPreferenceOptions {
-    /// Whether CPU preference rules are active.
+pub struct NativePlanCostOptions {
+    /// Whether cost selection rules are active.
     pub enabled: bool,
     /// Maximum selected local-Parquet row groups for a shape to be considered
     /// small/selective. All row-group evidence must be known.
     pub max_small_selective_row_groups: usize,
-    /// Maximum selected source-read bytes for ordinary small/selective CPU
-    /// preference. All local-Parquet source byte evidence must be known.
+    /// Maximum selected source-read bytes for ordinary small/selective cost
+    /// selection. All local-Parquet source byte evidence must be known.
     pub max_small_selective_source_bytes: u64,
-    /// Maximum selected local-Parquet row groups for residual-join CPU
-    /// preference. Residual joins use a tighter threshold because CPU fallback
-    /// often runs under the caller's native-session DataFusion config, not the
-    /// tuned CPU benchmark config.
+    /// Maximum selected local-Parquet row groups for residual-join cost
+    /// selection. Residual joins use a tighter threshold because their
+    /// DataFusion comparison often runs under a different session config than
+    /// the native benchmark.
     pub max_small_selective_residual_join_row_groups: usize,
-    /// Maximum selected source-read bytes for residual-join CPU preference.
+    /// Maximum selected source-read bytes for residual-join cost selection.
     pub max_small_selective_residual_join_source_bytes: u64,
     /// Maximum `LIMIT` fetch that qualifies as a top-k/small-output boundary.
     pub max_topk_fetch: usize,
 }
 
-impl Default for NativePlanPreferenceOptions {
+impl Default for NativePlanCostOptions {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -70,8 +70,8 @@ impl Default for NativePlanPreferenceOptions {
     }
 }
 
-impl NativePlanPreferenceOptions {
-    /// Disables preference decisions while still allowing facts to be gathered.
+impl NativePlanCostOptions {
+    /// Disables cost decisions while still allowing facts to be gathered.
     pub const fn disabled() -> Self {
         Self {
             enabled: false,
@@ -84,9 +84,9 @@ impl NativePlanPreferenceOptions {
     }
 }
 
-/// Query-level facts used by preference admission.
+/// Query-level facts used by cost selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativePlanPreferenceFacts {
+pub struct NativePlanCostFacts {
     /// Total native IR nodes.
     pub node_count: usize,
     /// Number of source nodes.
@@ -119,8 +119,8 @@ pub struct NativePlanPreferenceFacts {
     pub min_topk_fetch: Option<usize>,
 }
 
-impl NativePlanPreferenceFacts {
-    /// Builds preference facts from a native query plan.
+impl NativePlanCostFacts {
+    /// Builds cost facts from a native query plan.
     pub fn from_plan(plan: &QueryPlan) -> Self {
         let mut facts = Self {
             node_count: plan.node_count(),
@@ -212,88 +212,82 @@ impl NativePlanPreferenceFacts {
     }
 }
 
-/// Preference admission decision for a native query plan.
+/// Cost-selection decision for a native query plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NativePlanPreferenceDecision {
-    /// Native GPU remains preferred.
-    GpuPreferred {
+pub enum NativePlanCostDecision {
+    /// Native execution remains selected.
+    ContinueNative {
         /// Facts used to make the decision.
-        facts: NativePlanPreferenceFacts,
+        facts: NativePlanCostFacts,
     },
-    /// CPU is preferred for a supported native plan.
-    CpuPreferred {
-        /// Stable reason for the CPU preference.
-        reason: NativePlanCpuPreferenceReason,
+    /// A native-capable plan was not selected by cost.
+    NotSelectedByCost {
+        /// Stable cost-selection reason.
+        reason: NativePlanCostReason,
         /// Facts used to make the decision.
-        facts: NativePlanPreferenceFacts,
+        facts: NativePlanCostFacts,
     },
 }
 
-impl NativePlanPreferenceDecision {
-    /// Returns true when this decision prefers CPU execution.
-    pub fn is_cpu_preferred(&self) -> bool {
-        matches!(self, Self::CpuPreferred { .. })
+impl NativePlanCostDecision {
+    /// Returns true when native execution was not selected by cost.
+    pub fn is_not_selected_by_cost(&self) -> bool {
+        matches!(self, Self::NotSelectedByCost { .. })
     }
 
     /// Returns the decision facts.
-    pub fn facts(&self) -> &NativePlanPreferenceFacts {
+    pub fn facts(&self) -> &NativePlanCostFacts {
         match self {
-            Self::GpuPreferred { facts } | Self::CpuPreferred { facts, .. } => facts,
+            Self::ContinueNative { facts } | Self::NotSelectedByCost { facts, .. } => facts,
         }
     }
 }
 
-/// Decides whether a native plan should run on GPU or fall back to CPU.
-pub fn native_plan_preference_decision(
-    plan: &QueryPlan,
-    options: &NativePlanPreferenceOptions,
-) -> NativePlanPreferenceDecision {
-    let facts = NativePlanPreferenceFacts::from_plan(plan);
+/// Decides whether a native-capable plan should be selected by cost.
+pub fn native_plan_cost_decision(plan: &QueryPlan, options: &NativePlanCostOptions) -> NativePlanCostDecision {
+    let facts = NativePlanCostFacts::from_plan(plan);
     if !options.enabled {
-        return NativePlanPreferenceDecision::GpuPreferred { facts };
+        return NativePlanCostDecision::ContinueNative { facts };
     }
     let Some(selected_row_groups) = facts.selected_row_groups else {
-        return NativePlanPreferenceDecision::GpuPreferred { facts };
+        return NativePlanCostDecision::ContinueNative { facts };
     };
     let Some(selected_source_bytes) = facts.estimated_source_bytes else {
-        return NativePlanPreferenceDecision::GpuPreferred { facts };
+        return NativePlanCostDecision::ContinueNative { facts };
     };
     if !facts.selected_row_groups_known
         || !facts.selected_source_bytes_known
         || selected_row_groups > options.max_small_selective_row_groups
         || selected_source_bytes > options.max_small_selective_source_bytes
     {
-        return NativePlanPreferenceDecision::GpuPreferred { facts };
+        return NativePlanCostDecision::ContinueNative { facts };
     }
     if facts.residual_join_count > 0 {
         if selected_row_groups <= options.max_small_selective_residual_join_row_groups
             && selected_source_bytes <= options.max_small_selective_residual_join_source_bytes
         {
-            return NativePlanPreferenceDecision::CpuPreferred {
-                reason: NativePlanCpuPreferenceReason::SmallSelectiveResidualJoin,
+            return NativePlanCostDecision::NotSelectedByCost {
+                reason: NativePlanCostReason::SmallSelectiveResidualJoin,
                 facts,
             };
         }
-        return NativePlanPreferenceDecision::GpuPreferred { facts };
+        return NativePlanCostDecision::ContinueNative { facts };
     }
     if facts.min_topk_fetch.is_some_and(|fetch| fetch <= options.max_topk_fetch)
         && (facts.join_count > 0 || facts.grouped_aggregate_count > 0)
     {
-        return NativePlanPreferenceDecision::CpuPreferred {
-            reason: NativePlanCpuPreferenceReason::SmallSelectiveTopK,
-            facts,
-        };
+        return NativePlanCostDecision::NotSelectedByCost { reason: NativePlanCostReason::SmallSelectiveTopK, facts };
     }
     if facts.sort_count > 0 && (facts.join_count > 0 || facts.grouped_aggregate_count > 0) {
-        return NativePlanPreferenceDecision::CpuPreferred {
-            reason: NativePlanCpuPreferenceReason::SmallSelectiveFullSort,
+        return NativePlanCostDecision::NotSelectedByCost {
+            reason: NativePlanCostReason::SmallSelectiveFullSort,
             facts,
         };
     }
-    NativePlanPreferenceDecision::GpuPreferred { facts }
+    NativePlanCostDecision::ContinueNative { facts }
 }
 
-fn accumulate_local_parquet_source_facts(facts: &mut NativePlanPreferenceFacts, source: &LocalParquetSource) {
+fn accumulate_local_parquet_source_facts(facts: &mut NativePlanCostFacts, source: &LocalParquetSource) {
     let row_groups = source.selected_row_group_count();
     if row_groups == 0 {
         facts.selected_row_groups_known = false;

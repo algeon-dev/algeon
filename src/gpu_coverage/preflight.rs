@@ -62,8 +62,6 @@ impl QueryGpuRejection {
         if let Some(adapter_error) = error.find_nexus_error() {
             let reason_code = adapter_error
                 .fact_value(GPU_COVERAGE_REJECTION_REASON_FACT)
-                .or_else(|| adapter_error.fact_value("fallback_reason"))
-                .or_else(|| adapter_error.fact_value("leaf_guard_first_rejection"))
                 .unwrap_or_else(|| adapter_error.code().as_str())
                 .to_string();
             let diagnostics = ErrorSourceDiagnostics::from_error(error);
@@ -233,13 +231,6 @@ pub(super) fn classify_physical_planning_error(error: &DataFusionError) -> Query
         | ErrorCode::SourceUnauthenticated
         | ErrorCode::SourceObjectNotFound
         | ErrorCode::SourceTemporaryFailure => QueryGpuRejectionPhase::PlanningIo,
-        ErrorCode::NativeCandidateRejected => QueryGpuRejectionPhase::NativeLowering,
-        _ if adapter_error
-            .fact_value("fallback_reason")
-            .is_some_and(|reason| reason.starts_with("iceberg_") || reason == "table_format_planning_failed") =>
-        {
-            QueryGpuRejectionPhase::PlanningIo
-        },
         _ => QueryGpuRejectionPhase::PhysicalPlanning,
     }
 }

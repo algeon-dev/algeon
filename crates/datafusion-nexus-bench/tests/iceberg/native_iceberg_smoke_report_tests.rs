@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use datafusion_nexus::{
     native_report::{
-        NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
+        FinalPlanDisposition, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
         NativeLakehouseCacheFillEventMetricRow, NativeSourceReadRuntimeMetricRow,
     },
     table_format::{
@@ -283,9 +283,9 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
         "local_db.local_table".to_string(),
         "select count(*) as row_count from local_table".to_string(),
         diagnostics,
-        NativeDataFusionPlanningOutcome::AcceptedReplaced,
+        Some(NativeDataFusionPlanningOutcome::Selected),
         None,
-        NativeDataFusionPostNativeExecutionPath::Native,
+        FinalPlanDisposition::Native,
         Some(7),
         ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Auto, ObjectStoreStagingStatus::NotNeeded),
         "not_applicable".to_string(),
@@ -361,7 +361,7 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
         "staged_bytes",
         "native_planning_outcome",
         "native_reason_code",
-        "post_native_execution_path",
+        "final_disposition",
         "cpu_arrow_reader_fallback",
         "native_runtime_started",
         "native_runtime_outcome",
@@ -415,8 +415,8 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
     assert_eq!(tsv_field(&tsv, "lakehouse_cache_fill_mode"), "disabled");
     assert_eq!(tsv_field(&tsv, "object_store_staging_mode"), "auto");
     assert_eq!(tsv_field(&tsv, "object_store_staging_status"), "not_needed");
-    assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "accepted_replaced");
-    assert_eq!(tsv_field(&tsv, "post_native_execution_path"), "native");
+    assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "selected");
+    assert_eq!(tsv_field(&tsv, "final_disposition"), "native");
     assert_eq!(tsv_field(&tsv, "cpu_runtime_started"), "false");
     assert_eq!(tsv_field(&tsv, "cpu_runtime_outcome"), "not_started");
     assert_eq!(tsv_field(&tsv, "comparison_mode"), "not_applicable");
@@ -459,9 +459,9 @@ fn report_tsv_records_direct_s3_as_remote_direct_native_without_staging() {
         "tpch_sf1.lineitem".to_string(),
         "select count(*) as row_count from lineitem".to_string(),
         plan.diagnostics(),
-        NativeDataFusionPlanningOutcome::AcceptedReplaced,
+        Some(NativeDataFusionPlanningOutcome::Selected),
         None,
-        NativeDataFusionPostNativeExecutionPath::Native,
+        FinalPlanDisposition::Native,
         None,
         ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Disabled, ObjectStoreStagingStatus::DirectNative),
         "aws_profile_env".to_string(),
@@ -473,7 +473,7 @@ fn report_tsv_records_direct_s3_as_remote_direct_native_without_staging() {
     assert_eq!(tsv_field(&tsv, "source_read_strategy"), "remote_direct");
     assert_eq!(tsv_field(&tsv, "object_store_staging_mode"), "disabled");
     assert_eq!(tsv_field(&tsv, "object_store_staging_status"), "direct_s3_native");
-    assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "accepted_replaced");
+    assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "selected");
     assert!(!tsv.contains("staged_local"));
 }
 

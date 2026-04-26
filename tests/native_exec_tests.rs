@@ -24,6 +24,7 @@ use datafusion::{
     },
 };
 use datafusion_nexus::{
+    capability::CapabilityReason,
     error::{DataFusionErrorExt, ErrorCode},
     native::lower_physical_plan_to_native,
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
@@ -31,7 +32,6 @@ use datafusion_nexus::{
         FinalPlanDisposition, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusNativeOptimizerConfig,
         NexusNativePhysicalOptimizerRule, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, classify_final_plan,
     },
-    policy::FallbackReason,
     report::CandidateOutcome,
     session::nexus_native_physical_optimizer_rules,
     session_config::DataFusionNexusSessionConfig,
@@ -42,7 +42,7 @@ use nexus_query_engine::{
     chunk::SourceChunkPlanningOptions,
     mode::{NativePipelineExecutionMode, StrictBoundedExecutionMode},
     pipeline::{PipelineTaskKind, compile_pipeline},
-    plan::NativePlanPreferenceOptions,
+    plan::{NativePlanCostOptions, NativePlanCostReason},
     runtime::{
         BoundedJoinReservationContract, LakehouseCacheFillConfig, MemoryControlPolicy, ReservationKind,
         SourceChunkPlanningMode,
@@ -380,7 +380,7 @@ fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
     assert!(composed.children()[0].downcast_ref::<NexusNativeGpuProducerExec>().is_some());
     assert!(composed.native_plan().to_string().contains("GpuResidentSource input_name=fragment_input"));
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1);
+    assert_eq!(report.selected_count(), 1);
 }
 
 #[test]
@@ -403,7 +403,7 @@ fn native_optimizer_composed_exec_preserves_root_sort_ordering_properties() {
     assert!(optimized.downcast_ref::<NexusNativeComposedExec>().is_some());
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1);
+    assert_eq!(report.selected_count(), 1);
 }
 
 #[test]
@@ -418,10 +418,10 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
 
     assert!(optimized.downcast_ref::<NexusNativeExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1);
+    assert_eq!(report.selected_count(), 1);
     assert!(report.query_id().is_some_and(|query_id| query_id.as_str().starts_with("q-")));
     match &report.outcomes()[0] {
-        CandidateOutcome::Rewritten { candidate } => {
+        CandidateOutcome::Selected { candidate } => {
             assert!(candidate.plan_node_id.is_some(), "rewritten candidate should carry native plan-node evidence");
         },
         other => panic!("expected rewritten candidate, got {other:?}"),
@@ -454,7 +454,7 @@ fn native_optimizer_rule_propagates_declared_scan_output_ordering_to_wrapper_pro
     assert!(optimized.downcast_ref::<NexusNativeExec>().is_some());
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1);
+    assert_eq!(report.selected_count(), 1);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -478,8 +478,8 @@ fn native_optimizer_reestablishes_declared_scan_ordering_through_aggregate() {
     assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::plan::PlanNode::Sort(_)));
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1, "outcomes={:?}", report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &report.outcomes()[0] else {
+    assert_eq!(report.selected_count(), 1, "outcomes={:?}", report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &report.outcomes()[0] else {
         panic!("ordered aggregate should be reported as rewritten");
     };
     assert!(
@@ -492,7 +492,10 @@ fn native_optimizer_reestablishes_declared_scan_ordering_through_aggregate() {
         Some(native.native_plan().root_id().to_string())
     );
     assert!(!report.outcomes().iter().any(|outcome| {
-        matches!(outcome, CandidateOutcome::Rejected { reason: FallbackReason::NativeOrderedOutputUnsupported, .. })
+        matches!(
+            outcome,
+            CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeOrderedOutputUnsupported, .. }
+        )
     }));
 
     fs::remove_dir_all(dir).unwrap();
@@ -591,13 +594,13 @@ fn native_optimizer_rule_uses_datafusion_config_options_at_optimize_time() {
     let display = displayable(native).one_line().to_string();
     assert!(display.contains("memory_control_policy=unbounded"), "{display}");
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1);
+    assert_eq!(report.selected_count(), 1);
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
+fn native_optimizer_rule_preserves_rejected_plan_as_datafusion_baseline() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-optimizer-rejected");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
@@ -608,12 +611,12 @@ fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
 
     assert!(optimized.downcast_ref::<LocalLimitExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 0);
-    assert_eq!(report.rejected_count(), 1);
+    assert_eq!(report.selected_count(), 0);
+    assert_eq!(report.not_selected_count(), 1);
     assert!(report.query_id().is_some_and(|query_id| query_id.as_str().starts_with("q-")));
     assert!(matches!(
         report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -633,66 +636,66 @@ fn session_without_native_rule_preserves_datafusion_plan() {
 }
 
 #[test]
-fn native_optimizer_rule_prefers_cpu_for_small_selective_topk_join_when_enabled() {
-    let dir = unique_temp_dir("datafusion-nexus-native-exec-preference-topk");
+fn native_optimizer_rule_does_not_select_small_selective_topk_join_by_cost_when_enabled() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-cost-topk");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_parquet_file(&left);
     write_parquet_file(&right);
     let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
-    let config = native_optimizer_config().with_native_plan_preference_options(NativePlanPreferenceOptions::default());
+    let config = native_optimizer_config().with_native_plan_cost_options(NativePlanCostOptions::default());
     let rule = NexusNativePhysicalOptimizerRule::new(config);
 
     let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
     assert!(
         optimized.downcast_ref::<NexusNativeExec>().is_none(),
-        "CPU-preferred plan should not be replaced by a native execution boundary"
+        "cost-declined plan should not be replaced by a native execution boundary"
     );
     assert!(Arc::ptr_eq(&optimized, &plan), "a cost-rejected candidate must preserve the exact baseline plan");
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 0);
-    assert_eq!(report.rejected_count(), 1);
+    assert_eq!(report.selected_count(), 0);
+    assert_eq!(report.not_selected_count(), 1);
     assert!(matches!(
         report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSmallSelectiveTopkCpuPreferred, .. }
+        CandidateOutcome::NotSelectedByCost { cost_reason: NativePlanCostReason::SmallSelectiveTopK, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn native_optimizer_rule_prefers_cpu_for_small_selective_full_sort_join_when_enabled() {
-    let dir = unique_temp_dir("datafusion-nexus-native-exec-preference-full-sort");
+fn native_optimizer_rule_does_not_select_small_selective_full_sort_join_by_cost_when_enabled() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-cost-full-sort");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_parquet_file(&left);
     write_parquet_file(&right);
     let plan = join_aggregate_sort_sql_plan(&left, &right);
-    let config = native_optimizer_config().with_native_plan_preference_options(NativePlanPreferenceOptions::default());
+    let config = native_optimizer_config().with_native_plan_cost_options(NativePlanCostOptions::default());
     let rule = NexusNativePhysicalOptimizerRule::new(config);
 
     let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
     assert!(
         optimized.downcast_ref::<NexusNativeExec>().is_none(),
-        "CPU-preferred plan should not be replaced by a native execution boundary"
+        "cost-declined plan should not be replaced by a native execution boundary"
     );
     assert!(Arc::ptr_eq(&optimized, &plan), "a cost-rejected candidate must preserve the exact baseline plan");
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 0);
-    assert_eq!(report.rejected_count(), 1);
+    assert_eq!(report.selected_count(), 0);
+    assert_eq!(report.not_selected_count(), 1);
     assert!(matches!(
         report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSmallSelectiveFullSortCpuPreferred, .. }
+        CandidateOutcome::NotSelectedByCost { cost_reason: NativePlanCostReason::SmallSelectiveFullSort, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn native_optimizer_rule_errors_for_cpu_preferred_plan_under_gpu_only_policy() {
-    let dir = unique_temp_dir("datafusion-nexus-native-exec-preference-gpu-only");
+fn native_optimizer_rule_errors_for_cost_declined_plan_with_no_datafusion_cpu_requirement() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-cost-no-datafusion-cpu");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_parquet_file(&left);
@@ -701,7 +704,7 @@ fn native_optimizer_rule_errors_for_cpu_preferred_plan_under_gpu_only_policy() {
     let config = NexusNativeOptimizerConfig::default()
         .with_no_datafusion_cpu_requirement()
         .with_native_execution_config(bounded_config())
-        .with_native_plan_preference_options(NativePlanPreferenceOptions::default());
+        .with_native_plan_cost_options(NativePlanCostOptions::default());
     let rules = nexus_native_physical_optimizer_rules(config);
     let final_native = rules
         .iter()
@@ -714,7 +717,7 @@ fn native_optimizer_rule_errors_for_cpu_preferred_plan_under_gpu_only_policy() {
     let planned = final_native.optimize(plan, &ConfigOptions::default()).unwrap();
     let error = final_requirement
         .optimize(planned, &ConfigOptions::default())
-        .expect_err("the final-plan requirement must reject a CPU-preferred completed plan");
+        .expect_err("the final-plan requirement must reject a cost-declined completed plan");
     let adapter_error = adapter_error(&error);
 
     assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
@@ -724,8 +727,8 @@ fn native_optimizer_rule_errors_for_cpu_preferred_plan_under_gpu_only_policy() {
 }
 
 #[test]
-fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
-    let dir = unique_temp_dir("datafusion-nexus-native-exec-gpu-only-rejected");
+fn native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-no-datafusion-cpu-rejected");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
@@ -754,8 +757,8 @@ fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
 }
 
 #[test]
-fn gpu_only_count_only_probe_miss_reaches_final_native_optimizer() {
-    let dir = unique_temp_dir("datafusion-nexus-native-exec-gpu-only-probe-miss");
+fn no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-no-datafusion-cpu-probe-miss");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
@@ -774,7 +777,7 @@ fn gpu_only_count_only_probe_miss_reaches_final_native_optimizer() {
 
     let after_probe = count_only_probe
         .optimize(plan, &ConfigOptions::default())
-        .expect("a non-count plan must not be rejected by the GpuOnly count-only probe");
+        .expect("a non-count plan must not be rejected by the NoDataFusionCpu count-only probe");
     assert!(
         after_probe.downcast_ref::<NexusNativeExec>().is_none(),
         "the count-only probe should decline an analytical SUM plan"
@@ -784,8 +787,8 @@ fn gpu_only_count_only_probe_miss_reaches_final_native_optimizer() {
         .expect("count-only optimizer rule should be native")
         .last_report()
         .expect("count-only probe should record its own rejection evidence");
-    assert_eq!(probe_report.rewritten_count(), 0);
-    assert_eq!(probe_report.rejected_count(), 1);
+    assert_eq!(probe_report.selected_count(), 0);
+    assert_eq!(probe_report.not_selected_count(), 1);
 
     let optimized = final_native
         .optimize(after_probe, &ConfigOptions::default())
@@ -799,15 +802,15 @@ fn gpu_only_count_only_probe_miss_reaches_final_native_optimizer() {
         .expect("final optimizer rule should be native")
         .last_report()
         .expect("final optimizer should record separate native rewrite evidence");
-    assert_eq!(final_report.rewritten_count(), 1);
-    assert_eq!(final_report.rejected_count(), 0);
+    assert_eq!(final_report.selected_count(), 1);
+    assert_eq!(final_report.not_selected_count(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn gpu_only_final_rejection_replaces_count_only_probe_diagnostics_before_error() {
-    let dir = unique_temp_dir("datafusion-nexus-native-exec-gpu-only-final-rejection-evidence");
+fn no_datafusion_cpu_final_rejection_replaces_count_only_probe_diagnostics_before_error() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-no-datafusion-cpu-final-rejection-evidence");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
@@ -825,9 +828,9 @@ fn gpu_only_final_rejection_replaces_count_only_probe_diagnostics_before_error()
         .find(|rule| rule.name() == "datafusion_nexus_native")
         .expect("native optimizer rules should contain the final native rule");
 
-    let after_probe = count_only_probe
-        .optimize(plan, &ConfigOptions::default())
-        .expect("a normal count-only probe miss must remain non-terminal under GpuOnly");
+    let after_probe = count_only_probe.optimize(plan, &ConfigOptions::default()).expect(
+        "a normal count-only probe miss must remain non-terminal before NoDataFusionCpu final-plan enforcement",
+    );
     let probe_report = (count_only_probe.as_ref() as &dyn std::any::Any)
         .downcast_ref::<NexusNativePhysicalOptimizerRule>()
         .expect("count-only optimizer rule should be native")
@@ -835,7 +838,7 @@ fn gpu_only_final_rejection_replaces_count_only_probe_diagnostics_before_error()
         .expect("count-only probe should retain its own evidence");
     assert!(matches!(
         probe_report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedOperator, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedOperator, .. }
     ));
 
     let planned = final_native
@@ -848,7 +851,7 @@ fn gpu_only_final_rejection_replaces_count_only_probe_diagnostics_before_error()
         .expect("final rejection should replace the probe's retained evidence before returning an error");
     assert!(matches!(
         final_report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
     let final_requirement = rules
         .iter()
@@ -863,8 +866,8 @@ fn gpu_only_final_rejection_replaces_count_only_probe_diagnostics_before_error()
 }
 
 #[test]
-fn gpu_only_count_only_probe_retains_its_native_rewrite() {
-    let dir = unique_temp_dir("datafusion-nexus-native-exec-gpu-only-count-probe");
+fn no_datafusion_cpu_count_only_probe_retains_its_native_rewrite() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-no-datafusion-cpu-count-probe");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = count_only_sort_limit_plan(parquet_scan(&path));
@@ -883,15 +886,15 @@ fn gpu_only_count_only_probe_retains_its_native_rewrite() {
 
     let after_probe = count_only_probe
         .optimize(plan, &ConfigOptions::default())
-        .expect("GpuOnly count-only probe should retain supported native count rewrites");
+        .expect("NoDataFusionCpu count-only probe should retain supported native count rewrites");
     assert!(after_probe.downcast_ref::<NexusNativeExec>().is_some());
     let probe_report = (count_only_probe.as_ref() as &dyn std::any::Any)
         .downcast_ref::<NexusNativePhysicalOptimizerRule>()
         .expect("count-only optimizer rule should be native")
         .last_report()
         .expect("count-only probe should record its rewrite evidence");
-    assert_eq!(probe_report.rewritten_count(), 1);
-    assert_eq!(probe_report.rejected_count(), 0);
+    assert_eq!(probe_report.selected_count(), 1);
+    assert_eq!(probe_report.not_selected_count(), 0);
     let after_final = final_native
         .optimize(after_probe, &ConfigOptions::default())
         .expect("the final native optimizer should preserve a count-only native rewrite");
@@ -936,18 +939,18 @@ fn native_optimizer_rule_retains_unsupported_relational_parent_as_datafusion() {
     let optimized_tree = displayable(optimized.as_ref()).indent(false).to_string();
     assert!(
         !optimized_tree.contains("NexusNativeExec"),
-        "ordinary relational fallback must not retain a native fragment"
+        "ordinary relational DataFusion baseline must not retain a native fragment"
     );
     assert!(
         !optimized_tree.contains("NexusNativeGpuProducerExec"),
-        "ordinary relational fallback must not producerize a native child"
+        "ordinary relational DataFusion baseline must not producerize a native child"
     );
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 0);
-    assert_eq!(report.rejected_count(), 1);
+    assert_eq!(report.selected_count(), 0);
+    assert_eq!(report.not_selected_count(), 1);
     assert!(matches!(
         report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedOperator, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedOperator, .. }
     ));
     assert!(rule.last_source_diagnostics().is_empty());
 
@@ -956,7 +959,7 @@ fn native_optimizer_rule_retains_unsupported_relational_parent_as_datafusion() {
 
 #[test]
 fn final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion_disposition() {
-    let dir = unique_temp_dir("datafusion-nexus-native-exec-composition-gpu-only");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-composition-no-datafusion-cpu");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let child = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
@@ -992,8 +995,8 @@ fn final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion
         .expect("final optimizer rule should be native")
         .last_report()
         .expect("final native rule should record its rejection");
-    assert_eq!(report.rewritten_count(), 0);
-    assert_eq!(report.rejected_count(), 1);
+    assert_eq!(report.selected_count(), 0);
+    assert_eq!(report.not_selected_count(), 1);
 
     let error = final_requirement
         .optimize(planned, &ConfigOptions::default())
@@ -1029,14 +1032,17 @@ fn native_optimizer_rule_retains_distinct_aggregate_over_anti_join_as_datafusion
         "an unsupported relational parent must preserve its original DataFusion plan"
     );
     assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::DataFusion);
-    assert!(!optimized_tree.contains("NexusNativeExec"), "relational fallback must not retain a native fragment");
+    assert!(
+        !optimized_tree.contains("NexusNativeExec"),
+        "relational DataFusion baseline must not retain a native fragment"
+    );
     assert!(
         !optimized_tree.contains("NexusNativeGpuProducerExec"),
-        "relational fallback must not create a GPU producer"
+        "relational DataFusion baseline must not create a GPU producer"
     );
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 0);
-    assert_eq!(report.rejected_count(), 1);
+    assert_eq!(report.selected_count(), 0);
+    assert_eq!(report.not_selected_count(), 1);
 
     let batches =
         futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
@@ -1064,9 +1070,9 @@ fn native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_
         "stddev subtree should be rewritten once native order tracking is available:\n{optimized_tree}"
     );
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1);
-    assert_eq!(report.rejected_count(), 0);
-    assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(report.selected_count(), 1);
+    assert_eq!(report.not_selected_count(), 0);
+    assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
 
     fs::remove_dir_all(dir).unwrap();
 }

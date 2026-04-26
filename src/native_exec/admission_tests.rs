@@ -118,8 +118,9 @@ async fn admission_ticket_owner_precedes_enqueue_and_seals_rejection() {
     assert_eq!(snapshot.manifest().query_id.as_str(), "ticket-rejected-query");
     assert!(matches!(
         snapshot.footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed { ref error_code })
+        Some(RuntimeTerminalOutcome::Failed { ref error_code, ref error_status })
             if error_code == nexus_query_engine::error::QueryErrorCode::InvalidPlan.as_str()
+                && error_status == nexus_query_engine::error::QueryErrorCode::InvalidPlan.status().as_str()
     ));
     assert!(snapshot.events().iter().any(|event| matches!(
         &event.payload,

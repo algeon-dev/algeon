@@ -11,15 +11,20 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
         .with_workload_dataset_metadata(metadata.to_workload_dataset_metadata());
 
     assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
-    assert_eq!(report.rewritten_count(), TPCH_QUERY_COUNT);
-    assert_eq!(report.rejected_count(), 0);
+    assert_eq!(report.selected_count(), TPCH_QUERY_COUNT);
+    assert_eq!(report.not_selected_count(), 0);
 
     let actual_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
     let expected_ids = tpch_query_ids().collect::<Vec<_>>();
     assert_eq!(actual_ids, expected_ids);
 
     for row in &report.rows {
-        assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rewritten, "unexpected outcome for {}", row.query_id);
+        assert_eq!(
+            row.outcome,
+            Some(NativeFallbackPressureOutcome::Selected),
+            "unexpected outcome for {}",
+            row.query_id
+        );
         assert_eq!(row.reason_code.as_deref(), None, "unexpected reason for {}", row.query_id);
         assert_eq!(row.unsupported_category.as_deref(), None, "unexpected unsupported category for {}", row.query_id);
         assert_eq!(row.physical_root, expected_tpch_physical_root(row.query_id.as_str()));
@@ -74,7 +79,7 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     assert!(text.contains("q01\t"));
     assert!(text.contains("q06\t"));
     assert!(text.contains("q22\t"));
-    assert!(text.contains("\trewritten\t"));
+    assert!(text.contains("\tselected\t"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -96,15 +101,15 @@ async fn tpch_scalar_fallback_pressure_report_pins_expression_categories() {
         ("q01_scalar_interval_minus_date", "expression_interval_arithmetic"),
     ];
     assert_eq!(report.rows.len(), expected.len());
-    assert_eq!(report.rewritten_count(), 0);
-    assert_eq!(report.rejected_count(), expected.len());
+    assert_eq!(report.selected_count(), 0);
+    assert_eq!(report.not_selected_count(), expected.len());
 
     for (query_id, expected_category) in expected {
         let row = report_row(&report, query_id);
-        assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rejected, "unexpected outcome for {query_id}");
+        assert_eq!(row.outcome, Some(NativeFallbackPressureOutcome::NotSupported), "unexpected outcome for {query_id}");
         assert_eq!(row.reason_code.as_deref(), Some("unsupported_expression"), "unexpected reason for {query_id}");
         assert_eq!(row.unsupported_category.as_deref(), Some(expected_category), "unexpected category for {query_id}");
-        assert!(row.rejected_before_execution, "{query_id} should reject before native execution");
+        assert!(!row.rejected_before_execution, "{query_id} should remain on the executable DataFusion baseline");
     }
 
     let text = report.to_tsv();

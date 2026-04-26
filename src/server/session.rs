@@ -60,6 +60,10 @@ pub async fn build_session_context_with_backend(
             builder
         },
     };
+    let builder = match &config.host_execution_qos {
+        Some(host_execution_qos) => builder.with_host_execution_qos(host_execution_qos.clone()),
+        None => builder,
+    };
     let state = builder.build();
     let ctx = SessionContext::new_with_state(state);
 
@@ -101,17 +105,18 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
         return Ok(());
     };
 
-    // Build the catalog backend once; it holds a connected catalog handle that
-    // is reused for all namespace/table listing and lazy table loading. The
-    // backend kind is selected by the validated config enum.
-    let (backend, catalog_type): (Arc<dyn crate::table_format::iceberg::catalog::IcebergCatalogBackend>, &'static str) =
+    // Connect the leaf catalog once. It owns catalog/FileIO credential
+    // application and returns a `ResolvedIcebergTable` that freezes the
+    // table, snapshot, schema, and source policy together.
+    let (backend, catalog_type): (Arc<datafusion_nexus_iceberg::IcebergCatalogBackend>, &'static str) =
         match &iceberg.backend {
             super::config::IcebergCatalogBackendConfig::Glue(glue) => {
-                let mut catalog_config = crate::table_format::iceberg::catalog::GlueIcebergCatalogConfig::new(
+                let mut catalog_config = datafusion_nexus_iceberg::GlueIcebergCatalogConfig::new(
                     glue.catalog_handle.clone(),
                     glue.warehouse.clone(),
                     glue.region.clone(),
-                );
+                )
+                .with_source_access_policy(iceberg.source_access_policy().clone());
                 if let Some(id) = &glue.catalog_id {
                     catalog_config = catalog_config.with_catalog_id(id.clone());
                 }
@@ -121,41 +126,29 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
                 if let Some(uri) = &glue.uri {
                     catalog_config = catalog_config.with_uri(uri.clone());
                 }
-                if let Some(endpoint) = &glue.s3_endpoint {
-                    catalog_config = catalog_config.with_s3_endpoint(endpoint.clone());
-                }
-                if let Some(region) = &glue.s3_region {
-                    catalog_config = catalog_config.with_s3_region(region.clone());
-                }
-                if let Some(path_style) = glue.s3_path_style_access {
-                    catalog_config = catalog_config.with_s3_path_style_access(path_style);
-                }
-                let backend =
-                    crate::table_format::iceberg::catalog::GlueIcebergCatalogBackend::from_config_with_parquet_read_strategy_config(
-                        catalog_config,
-                        |name| std::env::var(name).ok(),
-                        iceberg.parquet_read_strategy_config.clone(),
-                    )
+                let backend = datafusion_nexus_iceberg::GlueIcebergCatalogBackend::connect(catalog_config)
                     .await
-                    .map_err(|error| {
-                        ServerError::session("failed to connect to Glue Iceberg catalog backend", error)
-                    })?;
+                    .map_err(|error| ServerError::session("failed to connect to Glue Iceberg catalog backend", error))?
+                    .into_backend();
                 (Arc::new(backend), "glue")
             },
             super::config::IcebergCatalogBackendConfig::Rest(rest) => {
-                let backend =
-                    crate::table_format::iceberg::catalog::RestIcebergCatalogBackend::from_config_with_parquet_read_strategy_config(
-                        rest.clone(),
-                        |name| std::env::var(name).ok(),
-                        iceberg.parquet_read_strategy_config.clone(),
-                    )
+                let catalog_config = rest.clone().with_source_access_policy(iceberg.source_access_policy().clone());
+                let backend = datafusion_nexus_iceberg::RestIcebergCatalogBackend::connect(catalog_config)
                     .await
-                    .map_err(|error| {
-                        ServerError::session("failed to connect to REST Iceberg catalog backend", error)
-                    })?;
+                    .map_err(|error| ServerError::session("failed to connect to REST Iceberg catalog backend", error))?
+                    .into_backend();
                 (Arc::new(backend), "rest")
             },
         };
+
+    // The root catalog wrapper only adapts DataFusion identities. It delegates
+    // every table load to the leaf backend and retains the validated server
+    // read strategy; it never reconstructs storage credentials.
+    let catalog_backend: Arc<dyn crate::table_format::iceberg::catalog::IcebergCatalogBackend> = Arc::new(
+        crate::table_format::iceberg::catalog::NexusIcebergCatalogSource::from_shared_backend(Arc::clone(&backend))
+            .with_parquet_read_strategy_config(iceberg.parquet_read_strategy_config.clone()),
+    );
 
     // Discover only the configured namespace scope. Individual tables are
     // loaded lazily on first SQL access through the backend.
@@ -163,7 +156,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
         .with_scan_planning_timeout(Some(iceberg.scan_planning_timeout));
     let catalog_provider =
         crate::table_format::iceberg::catalog::build_scoped_catalog_provider_from_backend_with_options(
-            Arc::clone(&backend),
+            catalog_backend,
             catalog_type,
             &iceberg.namespace,
             provider_options,
@@ -176,18 +169,20 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
     // Loading routes through the backend-agnostic IcebergCatalogBackend so the
     // same path serves Glue and REST.
     for table in &iceberg.tables {
-        let table_ident =
-            crate::table_format::iceberg::catalog::table_ident_from_flat_name(&iceberg.namespace, &table.table)
-                .map_err(|error| ServerError::session("invalid Iceberg table identifier for alias seeding", error))?;
+        let table_ident = datafusion_nexus_iceberg::IcebergTableIdentifier::new(
+            iceberg.namespace.split('.').map(str::to_owned).collect(),
+            table.table.clone(),
+        )
+        .map_err(|error| ServerError::session("invalid Iceberg table identifier for alias seeding", error))?;
         let loaded_table = backend
-            .load_table(&table_ident)
+            .load_table(table_ident)
             .await
             .map_err(|error| ServerError::session("failed to load Iceberg table for alias seeding", error))?;
         let provider = build_alias_provider(
             loaded_table,
             catalog_type,
-            backend.parquet_read_strategy_config(),
-            Some(iceberg.scan_planning_timeout),
+            iceberg.parquet_read_strategy_config.clone(),
+            iceberg.scan_planning_timeout,
         )?;
 
         // Seed both real name and alias before catalog registration so first
@@ -257,21 +252,18 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
 /// Uses the same dual-mode provider as the dynamic three-part catalog path.
 #[cfg(feature = "iceberg")]
 fn build_alias_provider(
-    table: iceberg::table::Table,
+    resolved: datafusion_nexus_iceberg::ResolvedIcebergTable,
     catalog_type: &str,
-    parquet_read_strategy_config: Option<crate::table_format::scan::TableFormatParquetReadStrategyConfig>,
-    scan_planning_timeout: Option<std::time::Duration>,
+    parquet_read_strategy_config: crate::table_format::scan::TableFormatParquetReadStrategyConfig,
+    scan_planning_timeout: std::time::Duration,
 ) -> super::error::Result<Arc<dyn datafusion::datasource::TableProvider>> {
-    let provider = match parquet_read_strategy_config {
-        Some(config) => {
-            crate::table_format::iceberg::NexusIcebergTableProvider::try_new_with_parquet_read_strategy_config(
-                table, config,
-            )
-        },
-        None => crate::table_format::iceberg::NexusIcebergTableProvider::try_new(table),
-    }
-    .map_err(|error| ServerError::session("failed to build NexusIcebergTableProvider", error))?
-    .with_catalog_type(catalog_type)
-    .with_scan_planning_timeout(scan_planning_timeout);
+    let provider =
+        crate::table_format::iceberg::NexusIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(
+            resolved,
+            parquet_read_strategy_config,
+        )
+        .map_err(|error| ServerError::session("failed to build NexusIcebergTableProvider", error))?
+        .with_catalog_type(catalog_type)
+        .with_scan_planning_timeout(Some(scan_planning_timeout));
     Ok(Arc::new(provider))
 }

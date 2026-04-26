@@ -9,7 +9,7 @@ use super::{columns::TableFormatUnsupportedColumn, *};
 /// is an optional source-level upper bound, not a final SQL `LIMIT`; when a
 /// parent inexact filter remains, final row limiting is still represented by a
 /// separate native or DataFusion limit operator.
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub struct TableFormatScanPlan {
     /// Table format that produced these scan facts.
     pub format: TableFormat,
@@ -35,11 +35,39 @@ pub struct TableFormatScanPlan {
     pub pure_filter_columns: Vec<TableFormatColumnMapping>,
     /// Unsupported features retained for structured fallback.
     pub unsupported_features: Vec<TableFormatUnsupportedFeature>,
+    /// The lossless Iceberg candidate from which these root-owned native facts
+    /// were adapted.
+    ///
+    /// It intentionally stays opaque to format-neutral callers: native
+    /// capability, KvikIO/source strategy, and cache decisions remain root
+    /// responsibilities. Keeping the candidate here prevents an adapter
+    /// conversion from collapsing Iceberg-only facts (residuals, pruning,
+    /// ranges, sequence values, or name mappings) that root native lowering
+    /// does not currently consume.
+    #[cfg(feature = "iceberg")]
+    iceberg_candidate: Option<Arc<datafusion_nexus_iceberg::IcebergScanCandidate>>,
+}
+
+impl PartialEq for TableFormatScanPlan {
+    fn eq(&self, other: &Self) -> bool {
+        self.format == other.format
+            && self.snapshot_id == other.snapshot_id
+            && self.catalog_type == other.catalog_type
+            && self.scan_limit == other.scan_limit
+            && self.logical_schema == other.logical_schema
+            && self.native_source_schema == other.native_source_schema
+            && self.data_files == other.data_files
+            && self.delete_files == other.delete_files
+            && self.projected_columns == other.projected_columns
+            && self.pure_filter_columns == other.pure_filter_columns
+            && self.unsupported_features == other.unsupported_features
+    }
 }
 
 impl fmt::Debug for TableFormatScanPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TableFormatScanPlan")
+        let mut debug = f.debug_struct("TableFormatScanPlan");
+        debug
             .field("format", &self.format)
             .field("snapshot_id", &self.snapshot_id)
             .field("catalog_type", &self.catalog_type)
@@ -50,8 +78,10 @@ impl fmt::Debug for TableFormatScanPlan {
             .field("delete_files", &self.delete_files)
             .field("projected_columns", &self.projected_columns)
             .field("pure_filter_columns", &self.pure_filter_columns)
-            .field("unsupported_features", &self.unsupported_features)
-            .finish()
+            .field("unsupported_features", &self.unsupported_features);
+        #[cfg(feature = "iceberg")]
+        debug.field("iceberg_candidate_available", &self.iceberg_candidate.is_some());
+        debug.finish()
     }
 }
 
@@ -71,6 +101,8 @@ impl TableFormatScanPlan {
             projected_columns: Vec::new(),
             pure_filter_columns: Vec::new(),
             unsupported_features: Vec::new(),
+            #[cfg(feature = "iceberg")]
+            iceberg_candidate: None,
         }
     }
 
@@ -134,6 +166,22 @@ impl TableFormatScanPlan {
         self
     }
 
+    /// Retains the frozen, lossless Iceberg candidate used to derive this root
+    /// scan plan. This is an adapter boundary value, not a second source of
+    /// native execution facts.
+    #[cfg(feature = "iceberg")]
+    pub fn with_iceberg_candidate(mut self, candidate: Arc<datafusion_nexus_iceberg::IcebergScanCandidate>) -> Self {
+        self.iceberg_candidate = Some(candidate);
+        self
+    }
+
+    /// Returns the frozen Iceberg candidate when this scan originated through
+    /// the Iceberg leaf adapter.
+    #[cfg(feature = "iceberg")]
+    pub fn iceberg_candidate(&self) -> Option<&Arc<datafusion_nexus_iceberg::IcebergScanCandidate>> {
+        self.iceberg_candidate.as_ref()
+    }
+
     /// Number of planned data files.
     pub fn planned_data_file_count(&self) -> usize {
         self.data_files.len()
@@ -178,7 +226,7 @@ impl TableFormatScanPlan {
     }
 
     /// Stable fallback reasons for retained unsupported features.
-    pub fn unsupported_fallback_reasons(&self) -> Vec<FallbackReason> {
+    pub fn unsupported_capability_reasons(&self) -> Vec<CapabilityReason> {
         self.unsupported_features.iter().map(TableFormatUnsupportedFeature::fallback_reason).collect()
     }
 
@@ -203,30 +251,30 @@ impl TableFormatScanPlan {
     /// This mirrors the native table-format lowering admission order and is
     /// intentionally credential-free. It classifies the immutable native
     /// inspection outcome before whole-candidate lowering begins.
-    pub fn first_rejection_reason(&self) -> Option<FallbackReason> {
+    pub fn first_not_supported_reason(&self) -> Option<CapabilityReason> {
         if self.data_files.is_empty() && self.delete_files.is_empty() && self.unsupported_features.is_empty() {
             return None;
         }
-        if let Some(reason) = self.unsupported_fallback_reasons().into_iter().next() {
+        if let Some(reason) = self.unsupported_capability_reasons().into_iter().next() {
             return Some(reason);
         }
         if self.delete_files.iter().any(|file| !file.is_supported_row_delete()) {
-            return Some(FallbackReason::IcebergDeleteFilesUnsupported);
+            return Some(CapabilityReason::IcebergDeleteFilesUnsupported);
         }
         if self.delete_files.iter().any(|file| !self.row_delete_file_is_associated(file)) {
-            return Some(FallbackReason::IcebergDeleteFilesUnsupported);
+            return Some(CapabilityReason::IcebergDeleteFilesUnsupported);
         }
         if self.data_files.is_empty() {
-            return Some(FallbackReason::NativeSourceEmpty);
+            return Some(CapabilityReason::NativeSourceEmpty);
         }
         if self.data_files.iter().any(|file| file.format != TableFormatDataFileFormat::Parquet) {
-            return Some(FallbackReason::IcebergNonParquetDataFile);
+            return Some(CapabilityReason::IcebergNonParquetDataFile);
         }
         if self.data_files.iter().any(|file| !file.read_capability.is_native_parquet_capable()) {
-            return Some(FallbackReason::IcebergObjectStoreReadUnsupported);
+            return Some(CapabilityReason::IcebergObjectStoreReadUnsupported);
         }
         if self.first_unsupported_column().is_some() {
-            return Some(FallbackReason::UnsupportedType);
+            return Some(CapabilityReason::UnsupportedType);
         }
         None
     }

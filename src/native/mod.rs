@@ -13,7 +13,7 @@ mod source;
 mod table_format_pruning_policy;
 mod validate;
 
-impl From<expression_contract::ExpressionRejection> for crate::policy::FallbackReason {
+impl From<expression_contract::ExpressionRejection> for crate::capability::CapabilityReason {
     fn from(rejection: expression_contract::ExpressionRejection) -> Self {
         let _capability = rejection.capability();
         match rejection.kind() {
@@ -61,13 +61,13 @@ impl NativeLoweringResult {
     }
 
     /// Returns the number of candidates successfully lowered.
-    pub fn rewritten_count(&self) -> usize {
-        self.report.rewritten_count()
+    pub fn selected_count(&self) -> usize {
+        self.report.selected_count()
     }
 
     /// Returns the number of rejected candidates.
-    pub fn rejected_count(&self) -> usize {
-        self.report.rejected_count()
+    pub fn not_selected_count(&self) -> usize {
+        self.report.not_selected_count()
     }
 }
 
@@ -104,7 +104,10 @@ fn lower_physical_plan_to_native_with_mode(
                 }) =>
         {
             let mut report = PlanningReport::new();
-            report.push_rejected(normalized.candidate.clone(), crate::policy::FallbackReason::UnsupportedOperator);
+            report.push_not_supported(
+                normalized.candidate.clone(),
+                crate::capability::CapabilityReason::UnsupportedOperator,
+            );
             NativeLoweringResult {
                 plans: Vec::new(),
                 report,
@@ -114,7 +117,7 @@ fn lower_physical_plan_to_native_with_mode(
         Ok(normalized) => lower_normalized_plan(&normalized).map_or_else(
             |reason| {
                 let mut report = PlanningReport::new();
-                report.push_rejected(normalized.candidate.clone(), reason);
+                report.push_not_supported(normalized.candidate.clone(), reason);
                 NativeLoweringResult {
                     plans: Vec::new(),
                     report,
@@ -125,7 +128,10 @@ fn lower_physical_plan_to_native_with_mode(
                 let mut candidate = normalized.candidate.clone();
                 if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
                     let mut report = PlanningReport::new();
-                    report.push_rejected(candidate, crate::policy::FallbackReason::NativeOrderedOutputUnsupported);
+                    report.push_not_supported(
+                        candidate,
+                        crate::capability::CapabilityReason::NativeOrderedOutputUnsupported,
+                    );
                     return NativeLoweringResult {
                         plans: Vec::new(),
                         report,
@@ -138,9 +144,9 @@ fn lower_physical_plan_to_native_with_mode(
                 {
                     if !native_plan_can_append_declared_output_ordering_sort(&native_plan) {
                         let mut report = PlanningReport::new();
-                        report.push_rejected(
+                        report.push_not_supported(
                             candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR),
-                            crate::policy::FallbackReason::NativeOrderedOutputUnsupported,
+                            crate::capability::CapabilityReason::NativeOrderedOutputUnsupported,
                         );
                         return NativeLoweringResult {
                             plans: Vec::new(),
@@ -152,7 +158,7 @@ fn lower_physical_plan_to_native_with_mode(
                         Ok(sort_spec) => sort_spec,
                         Err(reason) => {
                             let mut report = PlanningReport::new();
-                            report.push_rejected(
+                            report.push_not_supported(
                                 candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR),
                                 reason,
                             );
@@ -173,7 +179,10 @@ fn lower_physical_plan_to_native_with_mode(
                     if appended_declared_output_sort {
                         candidate = candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR);
                     }
-                    report.push_rejected(candidate, crate::policy::FallbackReason::NativeOrderedOutputUnsupported);
+                    report.push_not_supported(
+                        candidate,
+                        crate::capability::CapabilityReason::NativeOrderedOutputUnsupported,
+                    );
                     return NativeLoweringResult {
                         plans: Vec::new(),
                         report,
@@ -185,13 +194,13 @@ fn lower_physical_plan_to_native_with_mode(
                 if appended_declared_output_sort {
                     candidate = candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR);
                 }
-                report.push_rewritten(candidate);
+                report.push_selected(candidate);
                 NativeLoweringResult { plans: vec![native_plan], report, source_diagnostics }
             },
         ),
         Err(rejection) => {
             let mut report = PlanningReport::new();
-            report.push_rejected(rejection.candidate, rejection.reason);
+            report.push_not_supported(rejection.candidate, rejection.reason);
             NativeLoweringResult { plans: Vec::new(), report, source_diagnostics: Vec::new() }
         },
     }
@@ -200,18 +209,18 @@ fn lower_physical_plan_to_native_with_mode(
 pub(crate) fn reestablish_declared_output_ordering_if_needed(
     native_plan: NativeQueryPlan,
     ordering: Option<&LexOrdering>,
-) -> Result<(NativeQueryPlan, bool), crate::policy::FallbackReason> {
+) -> Result<(NativeQueryPlan, bool), crate::capability::CapabilityReason> {
     let Some(ordering) = ordering else {
         return Ok((native_plan, false));
     };
     if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
-        return Err(crate::policy::FallbackReason::NativeOrderedOutputUnsupported);
+        return Err(crate::capability::CapabilityReason::NativeOrderedOutputUnsupported);
     }
     if native_plan_reproduces_declared_output_ordering(&native_plan) {
         return Ok((native_plan, false));
     }
     if !native_plan_can_append_declared_output_ordering_sort(&native_plan) {
-        return Err(crate::policy::FallbackReason::NativeOrderedOutputUnsupported);
+        return Err(crate::capability::CapabilityReason::NativeOrderedOutputUnsupported);
     }
     let sort_spec = declared_output_ordering_sort_spec(ordering, native_plan.root_node())?;
     Ok((native_plan.with_appended_sort(sort_spec), true))
@@ -224,9 +233,9 @@ pub(crate) fn wrap_candidate_with_declared_output_ordering_sort(candidate: GpuCa
 fn declared_output_ordering_sort_spec(
     ordering: &LexOrdering,
     output_node: &nexus_query_engine::plan::QueryNode,
-) -> Result<NativeSortSpec, crate::policy::FallbackReason> {
+) -> Result<NativeSortSpec, crate::capability::CapabilityReason> {
     if ordering.is_empty() {
-        return Err(crate::policy::FallbackReason::NativeOrderedOutputUnsupported);
+        return Err(crate::capability::CapabilityReason::NativeOrderedOutputUnsupported);
     }
     let output_schema = output_node.output_schema();
     validate_sort_ordering(ordering, output_schema)?;
@@ -240,13 +249,15 @@ fn declared_output_ordering_sort_spec(
 fn declared_output_ordering_sort_expr(
     sort_expr: &PhysicalSortExpr,
     output_schema: &arrow::datatypes::SchemaRef,
-) -> Result<NativeSortExpr, crate::policy::FallbackReason> {
-    let column =
-        sort_expr.expr.downcast_ref::<Column>().ok_or(crate::policy::FallbackReason::NativeOrderedOutputUnsupported)?;
+) -> Result<NativeSortExpr, crate::capability::CapabilityReason> {
+    let column = sort_expr
+        .expr
+        .downcast_ref::<Column>()
+        .ok_or(crate::capability::CapabilityReason::NativeOrderedOutputUnsupported)?;
     let field = output_schema
         .fields()
         .get(column.index())
-        .ok_or(crate::policy::FallbackReason::NativeOrderedOutputUnsupported)?;
+        .ok_or(crate::capability::CapabilityReason::NativeOrderedOutputUnsupported)?;
     Ok(NativeSortExpr::new(
         NativeExpr::column(field.name().as_str()),
         sort_expr.options.descending,
@@ -408,7 +419,7 @@ mod tests {
     };
 
     use super::{declared_output_ordering_sort_spec, native_plan_reproduces_declared_output_ordering};
-    use crate::policy::FallbackReason;
+    use crate::capability::CapabilityReason;
 
     #[test]
     fn order_reproduction_audit_accepts_local_parquet_filter_projection() {
@@ -491,7 +502,7 @@ mod tests {
         let reason = declared_output_ordering_sort_spec(&ordering, plan.root_node())
             .expect_err("timestamp-with-timezone keys must stay rejected for appended declared-output ordering sorts");
 
-        assert_eq!(reason, FallbackReason::UnsupportedType);
+        assert_eq!(reason, CapabilityReason::UnsupportedType);
     }
 
     #[test]

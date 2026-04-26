@@ -345,6 +345,32 @@ fn bounded_capability_analysis_projects_reservation_facts_without_family_path_vo
 }
 
 #[test]
+fn adaptive_admission_report_is_schema_v2_and_excludes_runtime_action_counts() {
+    let plan = simple_root_join_plan();
+    let admission = nexus_query_engine::admission::adaptive_bounded_pipeline_admission(&plan)
+        .expect("adaptive admission should not fail")
+        .expect("root join should produce adaptive admission evidence");
+    let report = admission.report();
+
+    assert_eq!(
+        report.row().candidate_status,
+        nexus_query_engine::adaptive_report::AdaptiveCandidateStatus::Admitted
+    );
+    let stable_row = report.stable_kv_row();
+    assert!(!stable_row.contains("retry_count="));
+    assert!(!stable_row.contains("spill_count="));
+    assert!(!stable_row.contains("downgrade_count="));
+
+    let json = report.to_json();
+    assert_eq!(json["schema"], "nexus_query_engine.adaptive_pipeline_report.v2");
+    assert!(json["row"].get("runtime_action_counts").is_none());
+
+    let triage = report.triage_summary();
+    assert_eq!(triage.verdict, nexus_query_engine::triage::TriageVerdict::Healthy);
+    assert!(triage.signals.is_empty(), "admission-only triage must not project runtime actions");
+}
+
+#[test]
 fn bounded_capability_analysis_projects_modeled_report_facts_for_simple_root_join() {
     let plan = simple_root_join_plan();
 

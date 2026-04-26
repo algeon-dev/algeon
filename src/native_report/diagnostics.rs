@@ -18,43 +18,12 @@ pub(super) use shape_family::candidate_shape_family;
 pub(super) use crate::physical_plan::physical_plan_shape;
 
 pub(crate) fn post_native_plan_coverage(plan: &dyn ExecutionPlan) -> NativeDataFusionPlanCoverage {
-    let native_fragment_count = count_native_fragments(plan);
-    let host_datafusion_boundary_count = count_host_datafusion_boundaries(plan);
-    let execution_path = if native_plan_root_is_whole_native(plan) {
-        NativeDataFusionPostNativeExecutionPath::Native
-    } else if native_fragment_count > 0 {
-        NativeDataFusionPostNativeExecutionPath::PartialNative
-    } else {
-        NativeDataFusionPostNativeExecutionPath::Cpu
-    };
-    NativeDataFusionPlanCoverage { execution_path, native_fragment_count, host_datafusion_boundary_count }
-}
-
-fn contains_native_exec(plan: &dyn ExecutionPlan) -> bool {
-    count_native_fragments(plan) > 0
-}
-
-fn native_plan_root_is_whole_native(plan: &dyn ExecutionPlan) -> bool {
-    plan.downcast_ref::<NexusNativeExec>().is_some() || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
-}
-
-fn is_native_fragment(plan: &dyn ExecutionPlan) -> bool {
-    plan.downcast_ref::<NexusNativeExec>().is_some()
-        || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
-        || plan.downcast_ref::<NexusNativeGpuProducerExec>().is_some()
-}
-
-fn count_native_fragments(plan: &dyn ExecutionPlan) -> usize {
-    usize::from(is_native_fragment(plan))
-        + plan.children().iter().map(|child| count_native_fragments(child.as_ref())).sum::<usize>()
-}
-
-fn count_host_datafusion_boundaries(plan: &dyn ExecutionPlan) -> usize {
-    let children = plan.children();
-    let direct_native_child_boundary =
-        !is_native_fragment(plan) && children.iter().any(|child| contains_native_exec(child.as_ref()));
-    usize::from(direct_native_child_boundary)
-        + children.iter().map(|child| count_host_datafusion_boundaries(child.as_ref())).sum::<usize>()
+    let observation = crate::final_plan_observation::observe_final_plan(plan);
+    NativeDataFusionPlanCoverage {
+        final_disposition: observation.disposition,
+        native_fragment_count: observation.native_fragment_count,
+        host_datafusion_boundary_count: observation.datafusion_boundary_count,
+    }
 }
 
 pub(crate) fn join_diagnostics(plan: &dyn ExecutionPlan) -> Vec<NativeJoinDiagnosticSummary> {
@@ -148,10 +117,10 @@ fn stable_debug_value(value: &impl std::fmt::Debug) -> String {
 pub(super) fn unsupported_category(
     plan: &dyn ExecutionPlan,
     candidate: &GpuCandidate,
-    reason: FallbackReason,
+    reason: CapabilityReason,
 ) -> Option<String> {
     match reason {
-        FallbackReason::UnsupportedExpression => first_unsupported_expression_category(plan)
+        CapabilityReason::UnsupportedExpression => first_unsupported_expression_category(plan)
             .or_else(|| {
                 first_aggregate_category(plan).filter(|category| {
                     matches!(
@@ -161,52 +130,52 @@ pub(super) fn unsupported_category(
                 })
             })
             .or_else(|| Some("expression".to_string())),
-        FallbackReason::UnsupportedOperator => first_aggregate_category(plan)
+        CapabilityReason::UnsupportedOperator => first_aggregate_category(plan)
             .or_else(|| first_window_category(plan))
             .or_else(|| first_unsupported_operator_category(plan, candidate.shape.as_str()))
             .or_else(|| first_global_aggregate_category(plan))
             .or_else(|| Some("operator_shape".to_string())),
-        FallbackReason::UnsupportedType => first_unsupported_expression_category(plan)
+        CapabilityReason::UnsupportedType => first_unsupported_expression_category(plan)
             .or_else(|| first_literal_source_type_category(plan))
             .or_else(|| Some("type".to_string())),
-        FallbackReason::NativeDistributedAggregateUnsupported => {
+        CapabilityReason::NativeDistributedAggregateUnsupported => {
             first_aggregate_category(plan).or_else(|| Some("aggregate_distributed".to_string()))
         },
-        FallbackReason::NativeSourceNonLocalObjectStore
-        | FallbackReason::NativeSourcePartitionColumns
-        | FallbackReason::NativeSourceExprAdapter
-        | FallbackReason::NativeSourceParquetFileReaderFactory
-        | FallbackReason::NativeSourcePreserveOrder
-        | FallbackReason::NativeSourceOutputOrdering
-        | FallbackReason::NativeSourcePushedDownParquetPredicate
-        | FallbackReason::NativeSourceEmpty
-        | FallbackReason::NativeSourcePartitionValues
-        | FallbackReason::NativeSourceByteRange
-        | FallbackReason::NativeSourceFileOrdering
-        | FallbackReason::NativeSourceRowSelection
-        | FallbackReason::NativeSourceSchemaMapping => Some("source".to_string()),
-        FallbackReason::NativeSourceScanLimit => Some("limit_contract".to_string()),
-        FallbackReason::TableFormatUnsupported
-        | FallbackReason::TableFormatPlanningFailed
-        | FallbackReason::IcebergNonParquetDataFile
-        | FallbackReason::IcebergDeleteFilesUnsupported
-        | FallbackReason::IcebergFieldIdMappingUnsupported
-        | FallbackReason::IcebergNameMappingUnsupported
-        | FallbackReason::IcebergNestedProjectionUnsupported
-        | FallbackReason::IcebergPartitionTransformUnsupported
-        | FallbackReason::IcebergResidualPredicateUnsupported
-        | FallbackReason::IcebergRowSelectionUnsupported
-        | FallbackReason::IcebergObjectStoreReadUnsupported
-        | FallbackReason::IcebergSnapshotUnsupported => Some("table_format".to_string()),
-        FallbackReason::NativeSortPreservingMergeUnsupported
-        | FallbackReason::NativePartitionPreservingSortUnsupported => Some("operator_sort".to_string()),
-        FallbackReason::NativeOrderedOutputUnsupported => Some("operator_ordering".to_string()),
-        FallbackReason::NativeBoundedJoinUnsupported | FallbackReason::NativeAdaptivePipelineUnsupported => {
+        CapabilityReason::NativeSourceNonLocalObjectStore
+        | CapabilityReason::NativeSourcePartitionColumns
+        | CapabilityReason::NativeSourceExprAdapter
+        | CapabilityReason::NativeSourceParquetFileReaderFactory
+        | CapabilityReason::NativeSourcePreserveOrder
+        | CapabilityReason::NativeSourceOutputOrdering
+        | CapabilityReason::NativeSourcePushedDownParquetPredicate
+        | CapabilityReason::NativeSourceEmpty
+        | CapabilityReason::NativeSourcePartitionValues
+        | CapabilityReason::NativeSourceByteRange
+        | CapabilityReason::NativeSourceFileOrdering
+        | CapabilityReason::NativeSourceRowSelection
+        | CapabilityReason::NativeSourceSchemaMapping => Some("source".to_string()),
+        CapabilityReason::NativeSourceScanLimit => Some("limit_contract".to_string()),
+        CapabilityReason::TableFormatUnsupported
+        | CapabilityReason::TableFormatPlanningFailed
+        | CapabilityReason::IcebergNonParquetDataFile
+        | CapabilityReason::IcebergDeleteFilesUnsupported
+        | CapabilityReason::IcebergFieldIdMappingUnsupported
+        | CapabilityReason::IcebergNameMappingUnsupported
+        | CapabilityReason::IcebergNestedProjectionUnsupported
+        | CapabilityReason::IcebergPartitionTransformUnsupported
+        | CapabilityReason::IcebergResidualPredicateUnsupported
+        | CapabilityReason::IcebergRowSelectionUnsupported
+        | CapabilityReason::IcebergObjectStoreReadUnsupported
+        | CapabilityReason::IcebergFileIoSourceAccessUnverified
+        | CapabilityReason::IcebergSnapshotUnsupported
+        | CapabilityReason::IcebergEncryptedFileUnsupported
+        | CapabilityReason::IcebergScalarValueUnsupported => Some("table_format".to_string()),
+        CapabilityReason::NativeSortPreservingMergeUnsupported
+        | CapabilityReason::NativePartitionPreservingSortUnsupported => Some("operator_sort".to_string()),
+        CapabilityReason::NativeOrderedOutputUnsupported => Some("operator_ordering".to_string()),
+        CapabilityReason::NativeBoundedJoinUnsupported | CapabilityReason::NativeAdaptivePipelineUnsupported => {
             first_join_operator_category(plan).or_else(|| Some("operator_join".to_string()))
         },
-        FallbackReason::NativeSmallSelectiveTopkCpuPreferred
-        | FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred
-        | FallbackReason::NativeSmallSelectiveFullSortCpuPreferred => None,
     }
 }
 

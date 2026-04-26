@@ -30,11 +30,11 @@ use super::{
     lower_native_input, projection_outputs,
 };
 use crate::{
+    capability::CapabilityReason,
     native::{
         expression_contract::validate_join_residual,
         normalize::{NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeNestedLoopJoin},
     },
-    policy::FallbackReason,
 };
 
 /// Native join shape after mapping DataFusion-only join variants to the native
@@ -62,20 +62,20 @@ impl CanonicalJoin {
     pub(super) fn native_input_index_for_datafusion_side(
         self,
         side: DataFusionJoinSide,
-    ) -> Result<usize, FallbackReason> {
+    ) -> Result<usize, CapabilityReason> {
         // Residual predicates are expressed in DataFusion sides, while the
         // native IR addresses ordered join inputs. This is the shared mapping.
         match (self.swap_inputs, side) {
             (false, DataFusionJoinSide::Left) | (true, DataFusionJoinSide::Right) => Ok(0),
             (false, DataFusionJoinSide::Right) | (true, DataFusionJoinSide::Left) => Ok(1),
-            (_, DataFusionJoinSide::None) => Err(FallbackReason::UnsupportedExpression),
+            (_, DataFusionJoinSide::None) => Err(CapabilityReason::UnsupportedExpression),
         }
     }
 
     pub(super) fn native_side_for_datafusion_side(
         self,
         side: DataFusionJoinSide,
-    ) -> Result<NativeJoinSide, FallbackReason> {
+    ) -> Result<NativeJoinSide, CapabilityReason> {
         match self.native_input_index_for_datafusion_side(side)? {
             0 => Ok(NativeJoinSide::Left),
             1 => Ok(NativeJoinSide::Right),
@@ -109,7 +109,7 @@ fn add_join_residual_materializations(
     builder: &mut NativeQueryPlanBuilder,
     input: LoweredNativeInput,
     materializations: &[JoinResidualMaterialization],
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     // Residual casts that cannot live in the predicate AST are appended as
     // synthetic pre-join projection columns on the original DataFusion side.
     // Canonical input ordering happens after this step.
@@ -140,7 +140,7 @@ fn add_join_residual_materializations_by_side(
     left: LoweredNativeInput,
     right: LoweredNativeInput,
     residual: &LoweredJoinResidual,
-) -> Result<(LoweredNativeInput, LoweredNativeInput), FallbackReason> {
+) -> Result<(LoweredNativeInput, LoweredNativeInput), CapabilityReason> {
     Ok((
         add_join_residual_materializations(builder, left, residual.materializations.side(DataFusionJoinSide::Left)?)?,
         add_join_residual_materializations(builder, right, residual.materializations.side(DataFusionJoinSide::Right)?)?,
@@ -177,11 +177,11 @@ fn prepare_join_key_expr(
     key_index: usize,
     required: &mut BTreeSet<usize>,
     materializations: &mut Vec<JoinKeyMaterialization>,
-) -> Result<PreparedJoinKeyExpr, FallbackReason> {
+) -> Result<PreparedJoinKeyExpr, CapabilityReason> {
     if let Some(column) = expr.downcast_ref::<Column>() {
-        let field = input_schema.fields().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
+        let field = input_schema.fields().get(column.index()).ok_or(CapabilityReason::UnsupportedExpression)?;
         if is_timestamp_with_timezone(field.data_type()) || is_supported_list_carry_type(field.data_type()) {
-            return Err(FallbackReason::UnsupportedType);
+            return Err(CapabilityReason::UnsupportedType);
         }
         required.insert(column.index());
         return Ok(PreparedJoinKeyExpr { column_index: Some(column.index()), synthetic_alias: None });
@@ -191,7 +191,7 @@ fn prepare_join_key_expr(
     let alias = unique_synthetic_join_key_alias(side, key_index, input_schema, materializations);
     let field = physical_expr_field(expr, input_schema, alias.as_str())?;
     if is_timestamp_with_timezone(field.data_type()) || is_supported_list_carry_type(field.data_type()) {
-        return Err(FallbackReason::UnsupportedType);
+        return Err(CapabilityReason::UnsupportedType);
     }
     materializations.push(JoinKeyMaterialization { expr: Arc::clone(expr), alias: alias.clone(), field });
     Ok(PreparedJoinKeyExpr { column_index: None, synthetic_alias: Some(alias) })
@@ -203,7 +203,7 @@ fn prepare_join_keys(
     right_required: &mut BTreeSet<usize>,
     left_predicate_required: &mut BTreeSet<usize>,
     right_predicate_required: &mut BTreeSet<usize>,
-) -> Result<PreparedJoinKeys, FallbackReason> {
+) -> Result<PreparedJoinKeys, CapabilityReason> {
     let left_schema = join.join.left().schema();
     let right_schema = join.join.right().schema();
     let mut left_materializations = Vec::new();
@@ -238,7 +238,7 @@ fn add_join_key_materializations(
     input: LoweredNativeInput,
     input_schema: &SchemaRef,
     materializations: &[JoinKeyMaterialization],
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     if materializations.is_empty() {
         return Ok(input);
     }
@@ -286,11 +286,11 @@ fn unique_synthetic_join_key_alias(
 fn lowered_join_key_ref<'a>(
     key: &'a PreparedJoinKeyExpr,
     input: &'a LoweredNativeInput,
-) -> Result<(&'a str, &'a str), FallbackReason> {
+) -> Result<(&'a str, &'a str), CapabilityReason> {
     if let Some(alias) = key.synthetic_alias.as_deref() {
         return Ok((alias, alias));
     }
-    let column_index = key.column_index.ok_or(FallbackReason::UnsupportedExpression)?;
+    let column_index = key.column_index.ok_or(CapabilityReason::UnsupportedExpression)?;
     let binding = input.binding_for_frontend_index(column_index)?;
     Ok((binding.native_name.as_str(), binding.frontend_name.as_str()))
 }
@@ -300,7 +300,7 @@ fn lower_prepared_join_keys(
     left: &LoweredNativeInput,
     right: &LoweredNativeInput,
     canonical: CanonicalJoin,
-) -> Result<Vec<NativeJoinKey>, FallbackReason> {
+) -> Result<Vec<NativeJoinKey>, CapabilityReason> {
     prepared
         .iter()
         .map(|(left_key, right_key)| {
@@ -362,7 +362,7 @@ pub(super) fn lower_hash_join_input(
     join: &NormalizedNativeHashJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     // Flow: canonicalize the join type, derive DataFusion-output-preserving
     // projection, collect keys/residual requirements, lower both children, add
     // residual materializations, then order inputs for the native spec.
@@ -474,7 +474,7 @@ pub(super) fn lower_nested_loop_join_input(
     join: &NormalizedNativeNestedLoopJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     // Nested-loop lowering shares the residual/materialization path with hash
     // joins, but has no equality keys. Cross joins are represented as keyless
     // native joins without residual predicates.
@@ -543,7 +543,7 @@ pub(super) fn lower_cross_join_input(
     join: &NormalizedNativeCrossJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let canonical = CanonicalJoin::new(NativeJoinType::Cross, false);
     let output_requests = cross_join_output_requests(join, required_output_fields)?;
     let mut left_required = BTreeSet::<usize>::new();
@@ -609,7 +609,7 @@ const fn opposite_native_side(side: NativeJoinSide) -> NativeJoinSide {
 fn nested_loop_join_canonical(
     join: &NormalizedNativeNestedLoopJoin<'_>,
     required_output_fields: &RequiredFields,
-) -> Result<CanonicalJoin, FallbackReason> {
+) -> Result<CanonicalJoin, CapabilityReason> {
     // Predicate-free inner nested-loop joins are native cross joins.
     // Predicate-free left/right joins are also native cross joins when the null-supplying
     // input is provably a scalar aggregate subtree: a scalar aggregate emits
@@ -644,7 +644,7 @@ fn nested_loop_join_canonical(
 fn nested_loop_join_residual(
     join: &NestedLoopJoinExec,
     canonical: CanonicalJoin,
-) -> Result<Option<LoweredJoinResidual>, FallbackReason> {
+) -> Result<Option<LoweredJoinResidual>, CapabilityReason> {
     // Non-inner nested-loop joins require a residual predicate unless the
     // canonicalizer has proven that the predicate-free join is a cross join.
     if let Some(filter) = join.filter() {
@@ -659,7 +659,7 @@ fn nested_loop_join_residual(
     {
         return Ok(None);
     }
-    Err(FallbackReason::UnsupportedOperator)
+    Err(CapabilityReason::UnsupportedOperator)
 }
 
 fn normalized_input_is_scalar_single_row(input: &crate::native::normalize::NormalizedNativeInput<'_>) -> bool {
@@ -689,12 +689,12 @@ fn normalized_input_is_scalar_single_row(input: &crate::native::normalize::Norma
 fn nested_loop_join_required_outputs_are_right_only(
     join: &NormalizedNativeNestedLoopJoin<'_>,
     required_output_fields: &RequiredFields,
-) -> Result<bool, FallbackReason> {
+) -> Result<bool, CapabilityReason> {
     let mut saw_output = false;
     for output_index in required_output_fields.requested_indices(join.join.schema().fields().len())? {
         saw_output = true;
         let join_schema_index = match join.join.projection().as_deref() {
-            Some(projection) => *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?,
+            Some(projection) => *projection.get(output_index).ok_or(CapabilityReason::UnsupportedExpression)?,
             None => output_index,
         };
         let (datafusion_side, _) = datafusion_join_output_side(
@@ -710,7 +710,7 @@ fn nested_loop_join_required_outputs_are_right_only(
     Ok(saw_output)
 }
 
-fn canonical_join(join_type: &JoinType) -> Result<CanonicalJoin, FallbackReason> {
+fn canonical_join(join_type: &JoinType) -> Result<CanonicalJoin, CapabilityReason> {
     // Native join variants are left-oriented for right/semi/anti cases. Right
     // joins become left joins with swapped inputs, and right semi/anti become
     // left semi/anti with swapped inputs.

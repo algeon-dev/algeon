@@ -11,7 +11,7 @@ async fn iceberg_provider_count_star_lowers_to_table_format_zero_column_count_so
     let result = lower_physical_plan_to_native(physical_plan);
 
     assert_eq!(result.plans.len(), 1);
-    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.selected_count(), 1);
     assert_eq!(planner.requests()[0].projected_column_names.as_deref(), Some(&[][..]));
     let source = native_local_parquet_source(&result.plans[0]);
     assert!(source.is_zero_column_count_source());
@@ -53,8 +53,8 @@ async fn iceberg_provider_count_star_reads_fallback_column_when_row_count_metada
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(planner.requests()[0].projected_column_names.as_deref(), Some(&[][..]));
     assert_eq!(native_plan_union_count(&result.plans[0]), 1);
     let sources = native_local_parquet_sources(&result.plans[0]);
@@ -83,8 +83,8 @@ async fn iceberg_provider_count_star_reads_deleted_files_even_with_row_count_met
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(native_plan_union_count(&result.plans[0]), 1);
     let sources = native_local_parquet_sources(&result.plans[0]);
     assert_eq!(sources.len(), 2);
@@ -114,11 +114,11 @@ async fn iceberg_provider_count_star_probe_rejects_unproven_remote_carrier_colum
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceSchemaMapping, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceSchemaMapping, .. }
     ));
 }
 
@@ -144,7 +144,7 @@ async fn iceberg_provider_count_star_fallback_executes_with_mixed_row_count_meta
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(native_plan_union_count(&result.plans[0]), 1);
     let sources = native_local_parquet_sources(&result.plans[0]);
     assert_eq!(sources.len(), 2);
@@ -175,8 +175,8 @@ async fn iceberg_provider_count_star_ignores_unused_non_identity_partition_trans
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(planner.requests()[0].projected_column_names.as_deref(), Some(&[][..]));
     let source = native_local_parquet_source(&result.plans[0]);
     assert!(source.is_zero_column_count_source());

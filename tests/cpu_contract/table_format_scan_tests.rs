@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::physical_plan::{ExecutionPlan, displayable, empty::EmptyExec};
 use datafusion_nexus::{
-    policy::FallbackReason,
+    capability::CapabilityReason,
     table_format::{
         NexusIcebergNativeScanOutcome, NexusIcebergScanExec, TableFormat, TableFormatColumnMapping,
         TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat,
@@ -77,7 +77,7 @@ fn no_delete_iceberg_parquet_scan_facts_are_native_admissible() {
     assert_eq!(plan.planned_delete_file_count(), 0);
     assert_eq!(plan.planned_bytes(), Some(4096));
     assert_eq!(plan.admitted_native_source_file_count(), 1);
-    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    assert_eq!(plan.unsupported_capability_reasons(), Vec::<CapabilityReason>::new());
 
     let diagnostics = plan.diagnostics();
     assert_eq!(diagnostics.table_format, "iceberg");
@@ -128,7 +128,7 @@ fn non_identity_partition_value_facts_do_not_reject_scan_admission_by_themselves
         .with_data_file(file);
 
     assert!(plan.is_native_admissible());
-    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    assert_eq!(plan.unsupported_capability_reasons(), Vec::<CapabilityReason>::new());
     let diagnostics = plan.diagnostics();
     assert_eq!(diagnostics.admitted_native_source_file_count, 1);
     assert!(diagnostics.rejected_feature_list.is_empty());
@@ -206,8 +206,8 @@ fn delete_file_scan_facts_preserve_rejection_without_reading_credentials() {
     assert_eq!(plan.planned_delete_file_count(), 1);
     assert_eq!(plan.admitted_native_source_file_count(), 0);
     assert_eq!(
-        plan.unsupported_fallback_reasons(),
-        vec![FallbackReason::IcebergDeleteFilesUnsupported, FallbackReason::IcebergObjectStoreReadUnsupported]
+        plan.unsupported_capability_reasons(),
+        vec![CapabilityReason::IcebergDeleteFilesUnsupported, CapabilityReason::IcebergObjectStoreReadUnsupported]
     );
 
     let diagnostics = plan.diagnostics();
@@ -247,44 +247,48 @@ fn delete_file_legacy_constructor_remains_available_for_unassociated_facts() {
 }
 
 #[test]
-fn unsupported_feature_codes_map_to_stable_fallback_reasons() {
+fn unsupported_feature_codes_map_to_stable_capability_reasons() {
     let cases = [
-        (TableFormatUnsupportedFeatureCode::TableFormatUnsupported, FallbackReason::TableFormatUnsupported),
-        (TableFormatUnsupportedFeatureCode::TableFormatPlanningFailed, FallbackReason::TableFormatPlanningFailed),
-        (TableFormatUnsupportedFeatureCode::IcebergNonParquetDataFile, FallbackReason::IcebergNonParquetDataFile),
+        (TableFormatUnsupportedFeatureCode::TableFormatUnsupported, CapabilityReason::TableFormatUnsupported),
+        (TableFormatUnsupportedFeatureCode::TableFormatPlanningFailed, CapabilityReason::TableFormatPlanningFailed),
+        (TableFormatUnsupportedFeatureCode::IcebergNonParquetDataFile, CapabilityReason::IcebergNonParquetDataFile),
         (
             TableFormatUnsupportedFeatureCode::IcebergDeleteFilesUnsupported,
-            FallbackReason::IcebergDeleteFilesUnsupported,
+            CapabilityReason::IcebergDeleteFilesUnsupported,
         ),
         (
             TableFormatUnsupportedFeatureCode::IcebergFieldIdMappingUnsupported,
-            FallbackReason::IcebergFieldIdMappingUnsupported,
+            CapabilityReason::IcebergFieldIdMappingUnsupported,
         ),
         (
             TableFormatUnsupportedFeatureCode::IcebergNameMappingUnsupported,
-            FallbackReason::IcebergNameMappingUnsupported,
+            CapabilityReason::IcebergNameMappingUnsupported,
         ),
         (
             TableFormatUnsupportedFeatureCode::IcebergNestedProjectionUnsupported,
-            FallbackReason::IcebergNestedProjectionUnsupported,
+            CapabilityReason::IcebergNestedProjectionUnsupported,
         ),
         (
             TableFormatUnsupportedFeatureCode::IcebergPartitionTransformUnsupported,
-            FallbackReason::IcebergPartitionTransformUnsupported,
+            CapabilityReason::IcebergPartitionTransformUnsupported,
         ),
         (
             TableFormatUnsupportedFeatureCode::IcebergResidualPredicateUnsupported,
-            FallbackReason::IcebergResidualPredicateUnsupported,
+            CapabilityReason::IcebergResidualPredicateUnsupported,
         ),
         (
             TableFormatUnsupportedFeatureCode::IcebergRowSelectionUnsupported,
-            FallbackReason::IcebergRowSelectionUnsupported,
+            CapabilityReason::IcebergRowSelectionUnsupported,
         ),
         (
             TableFormatUnsupportedFeatureCode::IcebergObjectStoreReadUnsupported,
-            FallbackReason::IcebergObjectStoreReadUnsupported,
+            CapabilityReason::IcebergObjectStoreReadUnsupported,
         ),
-        (TableFormatUnsupportedFeatureCode::IcebergSnapshotUnsupported, FallbackReason::IcebergSnapshotUnsupported),
+        (
+            TableFormatUnsupportedFeatureCode::IcebergFileIoSourceAccessUnverified,
+            CapabilityReason::IcebergFileIoSourceAccessUnverified,
+        ),
+        (TableFormatUnsupportedFeatureCode::IcebergSnapshotUnsupported, CapabilityReason::IcebergSnapshotUnsupported),
     ];
 
     for (code, reason) in cases {

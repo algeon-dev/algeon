@@ -71,11 +71,11 @@ async fn tpch_production_planning_and_scalar_builders_preserve_order_and_diagnos
 
     let planning = NativeDataFusionPlanningReport::collect(planning_items);
     assert_eq!(planning.rows.len(), TPCH_QUERY_COUNT);
-    assert_eq!(planning.accepted_count(), TPCH_QUERY_COUNT);
-    assert_eq!(planning.rejected_count(), 0);
+    assert_eq!(planning.selected_count(), TPCH_QUERY_COUNT);
+    assert_eq!(planning.not_selected_count(), 0);
     for query_id in expected_ids {
         let row = planning.rows.iter().find(|row| row.query_id == query_id).unwrap();
-        assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{query_id}");
+        assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected), "{query_id}");
         assert_eq!(row.reason_code, None, "{query_id}");
         assert_eq!(row.unsupported_category, None, "{query_id}");
     }
@@ -92,18 +92,18 @@ async fn tpch_production_planning_and_scalar_builders_preserve_order_and_diagnos
         ("q07_scalar_extract_hour", "expression_extract_field"),
     ];
     assert_eq!(scalar.rows.len(), expected_scalar.len());
-    assert_eq!(scalar.rewritten_count(), 0);
-    assert_eq!(scalar.rejected_count(), expected_scalar.len());
+    assert_eq!(scalar.selected_count(), 0);
+    assert_eq!(scalar.not_selected_count(), expected_scalar.len());
     assert_eq!(
         scalar.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>(),
         expected_scalar.iter().map(|(query_id, _)| *query_id).collect::<Vec<_>>()
     );
     for (query_id, category) in expected_scalar {
         let row = scalar.rows.iter().find(|row| row.query_id == query_id).unwrap();
-        assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rejected, "{query_id}");
+        assert_eq!(row.outcome, Some(NativeFallbackPressureOutcome::NotSupported), "{query_id}");
         assert_eq!(row.reason_code.as_deref(), Some("unsupported_expression"), "{query_id}");
         assert_eq!(row.unsupported_category.as_deref(), Some(category), "{query_id}");
-        assert!(row.rejected_before_execution, "{query_id}");
+        assert!(!row.rejected_before_execution, "{query_id}");
     }
 
     fs::remove_dir_all(dir).unwrap();
@@ -132,8 +132,8 @@ async fn analytical_olap_production_catalog_and_builders_preserve_mode_specific_
         analytical_olap_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     assert_eq!(fallback_items.iter().map(|item| item.query_id.as_str()).collect::<Vec<_>>(), expected_ids);
     let fallback = NativeFallbackPressureReport::collect(fallback_items);
-    assert_eq!(fallback.rewritten_count(), ANALYTICAL_OLAP_QUERY_COUNT);
-    assert_eq!(fallback.rejected_count(), 0);
+    assert_eq!(fallback.selected_count(), ANALYTICAL_OLAP_QUERY_COUNT);
+    assert_eq!(fallback.not_selected_count(), 0);
     assert!(fallback.rows.iter().all(|row| !row.join_diagnostics.is_empty() && !row.source_diagnostics.is_empty()));
 
     let strict_items =
@@ -144,17 +144,17 @@ async fn analytical_olap_production_catalog_and_builders_preserve_mode_specific_
         let row = strict.rows.iter().find(|row| row.query_id == query.id).unwrap();
         match query.current_strict_admission {
             AnalyticalOlapCurrentStrictAdmission::Accepted => {
-                assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{}", query.id);
+                assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected), "{}", query.id);
                 assert_eq!(row.reason_code, None, "{}", query.id);
             },
             AnalyticalOlapCurrentStrictAdmission::RejectedBeforeExecution => {
-                assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution, "{}", query.id);
+                assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::NotSupported), "{}", query.id);
                 assert!(row.reason_code.is_some(), "{}", query.id);
             },
         }
         assert!(row.adaptive_pipeline_rows.is_empty(), "{}", query.id);
         if query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin {
-            assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{}", query.id);
+            assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected), "{}", query.id);
             assert!(!row.strict_bounded_contract_rows.is_empty(), "{}", query.id);
             assert!(!row.strict_bounded_compiled_graphs.is_empty(), "{}", query.id);
         }

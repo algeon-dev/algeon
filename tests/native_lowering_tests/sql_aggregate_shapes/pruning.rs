@@ -11,8 +11,8 @@ async fn default_sql_pushed_predicate_prunes_native_row_groups_from_metadata() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(total_row_groups, 4);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
     assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(2));
@@ -39,8 +39,8 @@ async fn direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_gro
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(total_row_groups, 4);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
     assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(2));
@@ -65,8 +65,8 @@ async fn direct_friendly_sql_date_conjunction_prunes_native_row_groups_from_meta
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(total_row_groups, 4);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
     assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(3));
     let source = native_local_parquet_source(&result.plans[0]);
@@ -99,8 +99,8 @@ async fn direct_friendly_sql_widening_cast_prunes_native_row_groups_from_metadat
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(2));
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.files[0].row_groups.as_deref(), Some(&[2, 3][..]));
@@ -129,8 +129,8 @@ async fn direct_friendly_sql_in_list_prunes_native_row_groups_from_metadata() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(1));
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.files[0].row_groups.as_deref(), Some(&[0][..]));
@@ -156,8 +156,8 @@ async fn direct_friendly_sql_is_null_prunes_native_row_groups_from_metadata() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(2));
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1, 2][..]));
@@ -188,8 +188,8 @@ async fn direct_friendly_sql_nested_prefix_pruning_uses_parquet_leaf_stats() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(total_row_groups, 2);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(1));
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1][..]));

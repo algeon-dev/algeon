@@ -1,16 +1,16 @@
 ---
 sidebar_position: 1
 slug: /design/native-lowering
-description: "How DataFusion Nexus lowers supported physical plans to native cuDF execution: the rewrite rule, fallback policy, session wiring, and plan-shape admission evidence."
+description: "How DataFusion Nexus lowers supported physical plans to native cuDF execution: candidate selection, final-plan requirements, session wiring, and plan-shape admission evidence."
 ---
 
 import {SystemDiagram} from '@site/src/components/design/Diagram';
 
-# Native Lowering & Fallback
+# Native Lowering & Final Plans
 
 This page covers the *plan-time* native boundary: how a DataFusion physical
-plan candidate becomes a native `QueryPlan`, what happens when it is rejected,
-and what evidence every decision leaves behind. Process-wide runtime admission
+plan candidate becomes a native `QueryPlan`, what happens when it is not
+selected, and what evidence every decision leaves behind. Process-wide runtime admission
 — concurrency slots, grant bands, and device-memory governance — is a separate
 contract described in [Admission & Memory Governance](./admission.mdx). The
 architecture overview and layering rules live on the [Design](./index.mdx)
@@ -18,11 +18,15 @@ page.
 
 ## Relational acceleration path
 
-Supported relational fragments lower after DataFusion physical planning. That
-timing is deliberate: the physical plan already encodes aggregate mode,
+Relational selection is whole-plan: Nexus evaluates one completed relational
+physical candidate, selects it as a native replacement when its contract is
+supported, or preserves the executable DataFusion baseline. It does not
+recursively extract arbitrary relational subtrees into a new CPU/GPU plan.
+That timing is deliberate: the physical plan already encodes aggregate mode,
 partitioning, projection pushdown, join shape, sort requirements, and file scan
 facts. Starting from a logical plan would duplicate DataFusion's physical
-planner inside the adapter.
+planner inside the adapter. cuGraph operations are separate, explicit GPU
+islands with their own required boundary.
 
 <SystemDiagram
   ariaLabel="Relational native execution path"
@@ -44,10 +48,12 @@ planner inside the adapter.
       kind: 'adapter', name: 'native rewrite', note: ['datafusion_nexus_native', 'PlanningReport'], tone: 'engine',
       sub: 'src/session.rs · src/planner/native.rs · src/native/',
       detail: <>The final native rewrite rule is the relational decision point.
-        It normalizes and validates DataFusion physical candidates, lowers
-        admitted candidates with <code>lower_physical_plan_to_native</code>, and
-        records every <code>Rewritten</code> or <code>Rejected</code> outcome in
-        a <code>PlanningReport</code>. Session wiring also installs a count-only
+        It normalizes and validates an exact relational physical candidate,
+        lowers a selected whole candidate with
+        <code>lower_physical_plan_to_native</code>, and
+        records every <code>Selected</code>, <code>NotSupported</code>, or
+        <code>NotSelectedByCost</code> outcome in a <code>PlanningReport</code>.
+        Session wiring also installs a count-only
         probe and the final-plan requirement rule around this rule.</>,
     },
     {
@@ -57,23 +63,22 @@ planner inside the adapter.
       detail: <>DataFusion sees a normal <code>ExecutionPlan</code> wrapper.
         Inside it is an engine-owned <code>QueryPlan</code>. Host Arrow batches
         cross to cuDF at the boundary, the native plan runs through
-        <code>nexus-query-engine</code>, and results return according to the
-        sink: host Arrow batches or a GPU-resident handle for composed
-        fragments.</>,
+        <code>nexus-query-engine</code>, and results return as host Arrow
+        batches. Explicit GPU islands can also consume an eligible
+        device-resident input and return host Arrow to downstream DataFusion
+        operators.</>,
     },
     {
       id: 'cpu', lane: 'host', col: 2,
-      kind: 'fallback', name: 'original operators', note: 'structured rejection', tone: 'reject',
+      kind: 'baseline', name: 'DataFusion baseline', note: 'structured candidate outcome', tone: 'plan',
       sub: 'stock DataFusion execution',
-      detail: <>A rejected CPU-readable candidate keeps its original DataFusion
-        operators. Server deployments bound concurrent CPU fallback statements
-        with a host-side semaphore that is separate from GPU admission. The
-        unified Iceberg scan delegates to its executable CPU Arrow plan when
-        native inspection or lowering rejects acceleration. Rejection is
-        reportable: the
-        <code>FallbackReason</code> says which operator, expression, type,
-        source contract, reservation contract, or policy blocked the native
-        path.</>,
+      detail: <>A relational candidate that is not selected keeps its original
+        executable DataFusion operators. The unified Iceberg scan delegates to its
+        executable CPU Arrow plan when native inspection does not support
+        acceleration. <code>CapabilityReason</code> identifies unsupported
+        operator, expression, type, source, or plan-shape contracts;
+        native-capable candidates declined by a preference rule report a
+        separate cost reason and evidence.</>,
     },
     {
       id: 'out', lane: 'host', col: 3,
@@ -81,43 +86,40 @@ planner inside the adapter.
       sub: 'arrow::RecordBatch',
       detail: <>Both paths produce ordinary Arrow <code>RecordBatch</code>es
         at the DataFusion boundary. A caller using DataFusion or Flight SQL
-        should not need a different API because a subtree ran on the GPU.</>,
+        should not need a different API because a whole relational candidate or
+        explicit GPU island ran on the GPU.</>,
     },
   ]}
   edges={[
     {from: 'df', to: 'rule'},
-    {from: 'rule', to: 'native', label: 'admitted'},
-    {from: 'rule', to: 'cpu', label: 'rejected', dashed: true},
+    {from: 'rule', to: 'native', label: 'selected'},
+    {from: 'rule', to: 'cpu', label: 'baseline retained', dashed: true},
     {from: 'native', to: 'out'},
     {from: 'cpu', to: 'out'},
   ]}
-  caption={<>The GPU path is a reported rewrite of supported physical subtrees.
-  Rejection preserves CPU-readable DataFusion operators, including the CPU
-  delegate held by a unified Iceberg scan.</>}
+  caption={<>The GPU path is a reported rewrite of a supported whole relational
+  candidate. Non-selection preserves the executable DataFusion baseline,
+  including the CPU delegate held by a unified Iceberg scan.</>}
 />
 
-:::warning[Runtime failures do not fall back]
-Fallback is a planning-time boundary. If a CPU-readable candidate is rejected,
-DataFusion keeps the CPU plan. A rejected Iceberg native candidate keeps the
-same wrapper's executable CPU delegate. Once `NexusNativeExec` or
-`NexusNativeComposedExec` starts, native runtime failures surface as structured
-errors and metrics; Nexus does not silently reroute that already-started native
-fragment back to CPU.
+:::warning[Runtime failures do not replay]
+Candidate selection is a planning-time boundary. If a relational candidate is
+not selected, DataFusion keeps its executable baseline. An Iceberg candidate
+that is not selected keeps the same wrapper's executable CPU delegate. Once
+native execution or an explicit GPU island starts, runtime failures surface as
+structured errors and metrics; Nexus does not replay that already-started work
+on CPU.
 :::
 
-## Fallback policy boundary
+## Baseline preservation and final-plan requirements
 
-`GpuPreferred` means "use native execution where it is proven supported."
-Rejected CPU-readable candidates are reported and left on DataFusion's CPU
-path. Iceberg scans follow the same rule through their executable CPU delegate.
-`GpuOnly` turns the first native rejection into a planning error.
-
-CPU fallback is not priced as GPU work. A fallback statement does not acquire a
-`QueryService` slot or device-memory grant, so it does not appear in the GPU
-admission ledger. Server mode still bounds this host-side work with
-`NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS` (default `2`, `0` to
-disable); library mode leaves it unbounded unless the caller installs a
-`NexusNativeOptimizerConfig` fallback limit.
+Installing the native optimizer preserves the executable DataFusion baseline.
+`NotSupported` and `NotSelectedByCost` are candidate outcomes, not planning
+errors. Iceberg scans follow the same rule through their executable CPU
+delegate. A caller that requires a DataFusion-CPU-free final plan configures a
+final-plan requirement such as `NoDataFusionCpu`. Nexus plans once, classifies that exact
+completed plan as `DataFusion`, `Native`, or `Mixed`, then either executes it
+or returns terminal `Rejected` when the requirement is not satisfied.
 
 ## Session wiring
 
@@ -128,7 +130,7 @@ part of the operable design.
 | Hook | Position | Why it exists |
 | --- | --- | --- |
 | `datafusion_nexus_native_count_only` | Before DataFusion `aggregate_statistics` | Detect count-only shapes before DataFusion's statistics shortcut hides the native candidate. |
-| `datafusion_nexus_native` | After DataFusion's default rules | Run final native lowering, fallback policy, fragment composition, and report capture while DataFusion can still validate the rewritten tree. |
+| `datafusion_nexus_native` | After DataFusion's default rules | Run final whole-plan relational candidate selection, lowering, and report capture while DataFusion can still validate the rewritten tree. |
 | `datafusion_nexus_final_plan_requirement` | After native lowering, before `SanityCheckPlan` | Enforce the configured final plan disposition without treating an executable Iceberg wrapper as a non-executable leaf. |
 
 :::warning[Public optimizer rule name]
@@ -149,7 +151,7 @@ are locally supported.
 
 | Boundary | Code | Evidence developers should assert |
 | --- | --- | --- |
-| Adapter candidate selection | `src/native/normalize.rs`, `src/native/validate.rs`, `src/native/lowering/` | `PlanningReport` rows with `CandidateOutcome::Rewritten` or `CandidateOutcome::Rejected` and a `FallbackReason`. |
+| Adapter candidate selection | `src/native/normalize.rs`, `src/native/validate.rs`, `src/native/lowering/` | `PlanningReport` rows with `CandidateOutcome::Selected`, `NotSupported { capability_reason }`, or `NotSelectedByCost { cost_reason, evidence }`. |
 | Engine capability analysis | `crates/nexus-query-engine/src/capability/entry.rs` | Per-node, edge, invariant, aggregate-strategy, and envelope-admission decisions. |
 | Strict bounded execution | `crates/nexus-query-engine/src/exec/bounded/strict.rs` | `StrictBoundedContractReport`; every `ReservationRequirement` is satisfied before execution. |
 | Adaptive bounded execution | `crates/nexus-query-engine/src/exec/bounded/adaptive.rs` | `AdaptivePipelineReport`; runtime-action counts and optional memory-history evidence stay adaptive-only. |
@@ -169,4 +171,4 @@ preflight gaps as adapter-side estimates. Unresolved strict gaps are lower-level
 
 Aggregates follow the same rule: state must be explicit in the engine. AVG is
 partial `SUM + COUNT`, final merge, then final projection; unsupported lookalikes
-stay rejected until their state semantics are modeled and tested.
+stay on the DataFusion baseline until their state semantics are modeled and tested.

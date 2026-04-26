@@ -3,33 +3,26 @@
 //! This module is available with the `iceberg` Cargo feature. Lower-level,
 //! format-neutral scan facts remain under [`crate::table_format`].
 
+mod adapter;
 pub mod catalog;
 mod planner;
 
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 
+pub use adapter::iceberg_scan_candidate_to_table_format_scan_plan;
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, TableReference},
     datasource::TableProvider,
     prelude::SessionContext,
 };
-use iceberg::{
-    Catalog, CatalogBuilder, TableIdent,
-    io::{
-        S3_ACCESS_KEY_ID, S3_DISABLE_CONFIG_LOAD, S3_DISABLE_EC2_METADATA, S3_ENDPOINT, S3_PATH_STYLE_ACCESS,
-        S3_REGION, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN,
-    },
-    table::Table,
+pub use datafusion_nexus_iceberg::{
+    IcebergTableIdentifier, ResolvedIcebergTable, S3CredentialMode, SourceAccessPolicy,
 };
-use iceberg_catalog_glue::{
-    AWS_ACCESS_KEY_ID as GLUE_AWS_ACCESS_KEY_ID, AWS_PROFILE_NAME, AWS_REGION_NAME,
-    AWS_SECRET_ACCESS_KEY as GLUE_AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN as GLUE_AWS_SESSION_TOKEN,
-    GLUE_CATALOG_PROP_CATALOG_ID, GLUE_CATALOG_PROP_URI, GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalogBuilder,
-};
+use iceberg::table::Table;
 
 pub use self::planner::{
     IcebergTableFormatPlanner, NexusIcebergTableProvider, iceberg_file_scan_tasks_to_table_format_scan_plan,
-    iceberg_schema_to_datafusion_arrow_schema,
+    iceberg_schema_to_datafusion_arrow_schema, source_access_policy_to_native_source_storage_profile,
 };
 
 const LOAD_GLUE_TABLE_OPERATION: &str = "datafusion_nexus.iceberg.load_glue_table";
@@ -99,26 +92,6 @@ pub const NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN: &str = "default_chai
 pub(crate) fn s3_credential_source_default_chain_opt_in(mut get: impl FnMut(&str) -> Option<String>) -> bool {
     non_empty(get(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV))
         .is_some_and(|value| value.trim().eq_ignore_ascii_case(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN))
-}
-
-pub(crate) fn insert_explicit_nexus_s3_credentials(
-    props: &mut HashMap<String, String>,
-    mut get: impl FnMut(&str) -> Option<String>,
-    disable_ambient_config_load_on_static_credentials: bool,
-) {
-    if let (Some(access_key_id), Some(secret_access_key)) =
-        (non_empty(get(NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)), non_empty(get(NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)))
-    {
-        props.insert(S3_ACCESS_KEY_ID.to_string(), access_key_id);
-        props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret_access_key);
-        if disable_ambient_config_load_on_static_credentials {
-            props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
-            props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
-        }
-    }
-    if let Some(session_token) = non_empty(get(NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
-        props.insert(S3_SESSION_TOKEN.to_string(), session_token);
-    }
 }
 
 /// Builds the adapter-owned Iceberg provider that plans scans into native
@@ -307,6 +280,15 @@ impl GlueIcebergTableConfig {
         self.diagnostics_with_env(|name| std::env::var(name).ok())
     }
 
+    /// Freezes this legacy single-table configuration into the leaf-owned
+    /// source policy. Callers that must pre-register a native S3 profile use
+    /// this policy rather than rebuilding endpoint or credential choices.
+    pub fn source_access_policy_from_env(&self) -> SourceAccessPolicy {
+        let environment = GlueLoadEnvironment::from_env(|name| std::env::var(name).ok());
+        let diagnostics = self.diagnostics_from_environment(&environment);
+        self.leaf_catalog_config(&environment, &diagnostics).source_access_policy().clone()
+    }
+
     /// Builds credential-safe diagnostics from an injected env lookup.
     pub fn diagnostics_with_env(&self, mut get: impl FnMut(&str) -> Option<String>) -> GlueIcebergTableDiagnostics {
         let profile = self.profile.clone().or_else(|| non_empty(get(AWS_PROFILE_ENV)));
@@ -330,6 +312,128 @@ impl GlueIcebergTableConfig {
             profile,
             credential_source,
         }
+    }
+
+    fn diagnostics_from_environment(&self, environment: &GlueLoadEnvironment) -> GlueIcebergTableDiagnostics {
+        let profile = self.profile.clone().or_else(|| environment.aws_profile.clone());
+        let credential_source = GlueIcebergCredentialSource::from_parts(
+            profile.as_deref(),
+            environment.aws_access_key_id.is_some(),
+            environment.aws_secret_access_key.is_some(),
+            environment.aws_session_token.is_some(),
+        );
+        GlueIcebergTableDiagnostics {
+            catalog_name: self.catalog_name.clone(),
+            database: self.database.clone(),
+            table: self.table.clone(),
+            warehouse: self.warehouse.clone(),
+            catalog_id: self.catalog_id.clone(),
+            region: self.region.clone(),
+            profile,
+            credential_source,
+        }
+    }
+
+    /// Produces the leaf-owned catalog configuration from one frozen process
+    /// environment snapshot. The policy drives both the leaf FileIO and root
+    /// native-profile conversion through the resulting `ResolvedIcebergTable`.
+    fn leaf_catalog_config(
+        &self,
+        environment: &GlueLoadEnvironment,
+        diagnostics: &GlueIcebergTableDiagnostics,
+    ) -> catalog::GlueIcebergCatalogConfig {
+        let storage_region = non_empty(self.s3_region.clone()).or_else(|| non_empty(Some(self.region.clone())));
+        let endpoint = non_empty(self.s3_endpoint.clone());
+        let mut s3 = match endpoint {
+            Some(endpoint) => {
+                SourceAccessPolicy::s3_custom_endpoint(endpoint, storage_region.clone(), self.s3_path_style_access)
+                    .as_s3()
+                    .clone()
+            },
+            None => SourceAccessPolicy::s3_default_chain(storage_region.clone()).as_s3().clone(),
+        };
+        s3 = match (&environment.nexus_access_key_id, &environment.nexus_secret_access_key) {
+            (Some(access_key_id), Some(secret_access_key)) => s3.with_static_credentials(
+                access_key_id.clone(),
+                secret_access_key.clone(),
+                environment.nexus_session_token.clone(),
+            ),
+            _ if environment.default_chain_opt_in() => s3.with_default_chain(),
+            _ if s3.endpoint().is_none() => {
+                match (&environment.aws_access_key_id, &environment.aws_secret_access_key) {
+                    (Some(access_key_id), Some(secret_access_key)) => s3.with_static_credentials(
+                        access_key_id.clone(),
+                        secret_access_key.clone(),
+                        environment.aws_session_token.clone(),
+                    ),
+                    _ => s3,
+                }
+            },
+            _ => s3,
+        };
+
+        let mut catalog_config = catalog::GlueIcebergCatalogConfig::new(
+            self.catalog_name.clone(),
+            self.warehouse.clone(),
+            self.region.clone(),
+        )
+        .with_source_access_policy(SourceAccessPolicy::S3(s3));
+        if diagnostics.profile.is_none()
+            && let (Some(access_key_id), Some(secret_access_key)) =
+                (&environment.aws_access_key_id, &environment.aws_secret_access_key)
+        {
+            catalog_config = catalog_config.with_catalog_static_credentials(
+                access_key_id.clone(),
+                secret_access_key.clone(),
+                environment.aws_session_token.clone(),
+            );
+        }
+        if let Some(catalog_id) = non_empty(self.catalog_id.clone()) {
+            catalog_config = catalog_config.with_catalog_id(catalog_id);
+        }
+        if let Some(profile) = diagnostics.profile.as_ref().filter(|profile| !profile.trim().is_empty()) {
+            catalog_config = catalog_config.with_profile(profile.clone());
+        }
+        if let Some(uri) = self.uri.as_ref().filter(|uri| !uri.trim().is_empty()) {
+            catalog_config = catalog_config.with_uri(uri.clone());
+        }
+        catalog_config
+    }
+}
+
+/// The environment facts consumed exactly once while resolving a legacy
+/// single-table Glue request. This keeps the leaf FileIO and the later native
+/// profile on one immutable credential/access-policy decision.
+#[derive(Debug, Clone, Default)]
+struct GlueLoadEnvironment {
+    aws_profile: Option<String>,
+    aws_access_key_id: Option<String>,
+    aws_secret_access_key: Option<String>,
+    aws_session_token: Option<String>,
+    nexus_access_key_id: Option<String>,
+    nexus_secret_access_key: Option<String>,
+    nexus_session_token: Option<String>,
+    nexus_credential_source: Option<String>,
+}
+
+impl GlueLoadEnvironment {
+    fn from_env(mut get: impl FnMut(&str) -> Option<String>) -> Self {
+        Self {
+            aws_profile: non_empty(get(AWS_PROFILE_ENV)),
+            aws_access_key_id: non_empty(get(AWS_ACCESS_KEY_ID_ENV)),
+            aws_secret_access_key: non_empty(get(AWS_SECRET_ACCESS_KEY_ENV)),
+            aws_session_token: non_empty(get(AWS_SESSION_TOKEN_ENV).or_else(|| get(AWS_SECURITY_TOKEN_ENV))),
+            nexus_access_key_id: non_empty(get(NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
+            nexus_secret_access_key: non_empty(get(NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
+            nexus_session_token: non_empty(get(NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)),
+            nexus_credential_source: non_empty(get(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV)),
+        }
+    }
+
+    fn default_chain_opt_in(&self) -> bool {
+        self.nexus_credential_source
+            .as_deref()
+            .is_some_and(|source| source.trim().eq_ignore_ascii_case(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN))
     }
 }
 
@@ -410,6 +514,11 @@ impl GlueIcebergTableDiagnostics {
 
 /// Loaded Glue Iceberg table and credential-safe diagnostics.
 pub struct LoadedGlueIcebergTable {
+    /// Frozen table/snapshot/source-access resolution shared by the CPU
+    /// delegate and optional native source inspection.
+    pub resolved: ResolvedIcebergTable,
+    /// Legacy raw table view of [`Self::resolved`]. New callers should consume
+    /// `resolved` so CPU and native planning retain one frozen identity.
     pub table: Table,
     /// Credential-safe load diagnostics.
     pub diagnostics: GlueIcebergTableDiagnostics,
@@ -440,7 +549,9 @@ pub async fn register_glue_table(
     config: GlueIcebergTableConfig,
 ) -> DataFusionResult<GlueIcebergTableRegistration> {
     let loaded = load_glue_table(config).await.map_err(DataFusionError::from)?;
-    let provider = table_provider(loaded.table).map_err(DataFusionError::from)?.with_catalog_type("glue");
+    let provider = NexusIcebergTableProvider::try_new_resolved(loaded.resolved)
+        .map_err(DataFusionError::from)?
+        .with_catalog_type("glue");
     let previous = ctx.register_table(table_ref, Arc::new(provider))?;
     Ok(GlueIcebergTableRegistration { diagnostics: loaded.diagnostics, previous })
 }
@@ -449,69 +560,36 @@ async fn load_glue_table_with_env(
     config: GlueIcebergTableConfig,
     mut get: impl FnMut(&str) -> Option<String>,
 ) -> crate::error::Result<LoadedGlueIcebergTable> {
-    let diagnostics = config.diagnostics_with_env(&mut get);
-    let mut props = HashMap::from([
-        (GLUE_CATALOG_PROP_WAREHOUSE.to_string(), config.warehouse.clone()),
-        (AWS_REGION_NAME.to_string(), config.region.clone()),
-    ]);
-    if let Some(uri) = config.uri.as_ref().filter(|value| !value.trim().is_empty()) {
-        props.insert(GLUE_CATALOG_PROP_URI.to_string(), uri.clone());
-    }
-    if let Some(catalog_id) = config.catalog_id.as_ref().filter(|value| !value.trim().is_empty()) {
-        props.insert(GLUE_CATALOG_PROP_CATALOG_ID.to_string(), catalog_id.clone());
-    }
-    if let Some(profile) = diagnostics.profile.as_ref().filter(|value| !value.trim().is_empty()) {
-        props.insert(AWS_PROFILE_NAME.to_string(), profile.clone());
-    }
-    if let (Some(access_key_id), Some(secret_access_key)) =
-        (non_empty(get(AWS_ACCESS_KEY_ID_ENV)), non_empty(get(AWS_SECRET_ACCESS_KEY_ENV)))
-    {
-        props.insert(GLUE_AWS_ACCESS_KEY_ID.to_string(), access_key_id);
-        props.insert(GLUE_AWS_SECRET_ACCESS_KEY.to_string(), secret_access_key);
-    }
-    if let Some(session_token) = non_empty(get(AWS_SESSION_TOKEN_ENV).or_else(|| get(AWS_SECURITY_TOKEN_ENV))) {
-        props.insert(GLUE_AWS_SESSION_TOKEN.to_string(), session_token);
-    }
-    if let Some(endpoint) = config.s3_endpoint.as_ref().filter(|value| !value.trim().is_empty()) {
-        props.insert(S3_ENDPOINT.to_string(), endpoint.clone());
-        props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
-        props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
-    }
-    if let Some(region) = config.s3_region.as_ref().filter(|value| !value.trim().is_empty()) {
-        props.insert(S3_REGION.to_string(), region.clone());
-    }
-    if let Some(path_style) = config.s3_path_style_access {
-        props.insert(S3_PATH_STYLE_ACCESS.to_string(), path_style.to_string());
-    }
-    insert_explicit_nexus_s3_credentials(&mut props, |name| get(name), true);
-
-    let catalog = GlueCatalogBuilder::default().load(config.catalog_name.clone(), props).await.map_err(|error| {
-        glue_error("failed to load AWS Glue Iceberg catalog", &config, diagnostics.credential_source, error)
-    })?;
-    let ident = TableIdent::from_strs([config.database.as_str(), config.table.as_str()]).map_err(|error| {
-        glue_error("failed to build AWS Glue Iceberg table identifier", &config, diagnostics.credential_source, error)
-    })?;
-    let table = catalog.load_table(&ident).await.map_err(|error| {
-        glue_error("failed to load AWS Glue Iceberg table", &config, diagnostics.credential_source, error)
-    })?;
-    Ok(LoadedGlueIcebergTable { table, diagnostics })
+    let environment = GlueLoadEnvironment::from_env(&mut get);
+    let diagnostics = config.diagnostics_from_environment(&environment);
+    let catalog_config = config.leaf_catalog_config(&environment, &diagnostics);
+    let backend = catalog::GlueIcebergCatalogBackend::connect(catalog_config)
+        .await
+        .map_err(|error| glue_leaf_error("failed to connect AWS Glue Iceberg catalog", &config, &diagnostics, error))?
+        .into_backend();
+    let resolved = backend
+        .load_table(datafusion_nexus_iceberg::IcebergTableIdentifier {
+            namespace: vec![config.database.clone()],
+            name: config.table.clone(),
+        })
+        .await
+        .map_err(|error| glue_leaf_error("failed to load AWS Glue Iceberg table", &config, &diagnostics, error))?;
+    Ok(LoadedGlueIcebergTable { table: resolved.table().clone(), resolved, diagnostics })
 }
 
-fn glue_error(
+fn glue_leaf_error(
     message: &'static str,
     config: &GlueIcebergTableConfig,
-    credential_source: GlueIcebergCredentialSource,
-    source: iceberg::Error,
+    diagnostics: &GlueIcebergTableDiagnostics,
+    source: datafusion_nexus_iceberg::IcebergError,
 ) -> crate::error::Error {
-    let error =
-        crate::error::Error::new(catalog::classify_iceberg_catalog_error(&source), LOAD_GLUE_TABLE_OPERATION, message)
-            .with_fact("catalog_type", "glue")
-            .with_fact("catalog_name", &config.catalog_name)
-            .with_fact("database", &config.database)
-            .with_fact("table", &config.table)
-            .with_fact("region", &config.region)
-            .with_fact("credential_source", credential_source.code());
-    catalog::apply_iceberg_catalog_error_facts(error, &source).with_source(source)
+    adapter::root_error_from_iceberg(source, LOAD_GLUE_TABLE_OPERATION, message)
+        .with_fact("catalog_type", "glue")
+        .with_fact("catalog_name", &config.catalog_name)
+        .with_fact("database", &config.database)
+        .with_fact("table", &config.table)
+        .with_fact("region", &config.region)
+        .with_fact("credential_source", diagnostics.credential_source.code())
 }
 
 pub(crate) fn non_empty(value: Option<String>) -> Option<String> {
@@ -523,85 +601,69 @@ pub(crate) fn non_empty(value: Option<String>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use nexus_query_engine::runtime::S3SourceStorageCredential;
+
     use super::*;
+    use crate::table_format::iceberg::source_access_policy_to_native_source_storage_profile;
 
     #[test]
-    fn legacy_glue_error_reuses_catalog_aws_classification_and_facts() {
+    fn glue_leaf_config_and_native_profile_share_static_custom_endpoint_policy() {
+        let config = GlueIcebergTableConfig::new("glue", "db", "tbl", "s3://warehouse", "us-east-1")
+            .with_s3_endpoint("http://rustfs.example:9000")
+            .with_s3_region("eu-west-1")
+            .with_s3_path_style_access(true);
+        let environment = GlueLoadEnvironment {
+            nexus_access_key_id: Some("access".to_string()),
+            nexus_secret_access_key: Some("secret".to_string()),
+            nexus_session_token: Some("token".to_string()),
+            ..Default::default()
+        };
+        let diagnostics = config.diagnostics_from_environment(&environment);
+        let leaf_config = config.leaf_catalog_config(&environment, &diagnostics);
+        let policy = leaf_config.source_access_policy();
+        let access = policy.s3_access();
+
+        assert_eq!(access.endpoint, Some("http://rustfs.example:9000"));
+        assert_eq!(access.region, Some("eu-west-1"));
+        assert_eq!(access.path_style_access, Some(true));
+        assert!(matches!(access.credential, datafusion_nexus_iceberg::S3CredentialRef::Static { .. }));
+
+        let native = source_access_policy_to_native_source_storage_profile(policy);
+        let native_s3 = native.s3_profile();
+        assert_eq!(native_s3.endpoint.as_deref(), Some("http://rustfs.example:9000"));
+        assert_eq!(native_s3.region.as_deref(), Some("eu-west-1"));
+        assert_eq!(native_s3.virtual_hosted_style_request, Some(false));
+        assert!(matches!(native_s3.credential, S3SourceStorageCredential::Static { .. }));
+    }
+
+    #[test]
+    fn custom_endpoint_without_explicit_opt_in_stays_unsigned_for_leaf_and_native() {
+        let config = GlueIcebergTableConfig::new("glue", "db", "tbl", "s3://warehouse", "us-east-1")
+            .with_s3_endpoint("http://rustfs.example:9000");
+        let environment = GlueLoadEnvironment::default();
+        let diagnostics = config.diagnostics_from_environment(&environment);
+        let leaf_config = config.leaf_catalog_config(&environment, &diagnostics);
+        let policy = leaf_config.source_access_policy();
+
+        assert!(matches!(policy.s3_access().credential, datafusion_nexus_iceberg::S3CredentialRef::Unsigned));
+        assert!(matches!(
+            source_access_policy_to_native_source_storage_profile(policy).s3_profile().credential,
+            S3SourceStorageCredential::Unsigned
+        ));
+    }
+
+    #[test]
+    fn default_chain_policy_stays_default_chain_for_leaf_and_native() {
         let config = GlueIcebergTableConfig::new("glue", "db", "tbl", "s3://warehouse", "us-east-1");
-        let source = iceberg::Error::new(iceberg::ErrorKind::Unexpected, "failed to call Glue").with_source(
-            std::io::Error::other(
-                "aws sdk error: ErrorMetadata { code: Some(\"AccessDeniedException\"), \
-                 message: Some(\"Access denied\"), aws_request_id: \"req-123\" }; status code: 403; retryable: false",
-            ),
-        );
+        let environment = GlueLoadEnvironment::default();
+        let diagnostics = config.diagnostics_from_environment(&environment);
+        let leaf_config = config.leaf_catalog_config(&environment, &diagnostics);
+        let policy = leaf_config.source_access_policy();
 
-        let error = glue_error(
-            "failed to load AWS Glue Iceberg table",
-            &config,
-            GlueIcebergCredentialSource::AwsDefaultChain,
-            source,
-        );
-
-        assert_eq!(error.code(), crate::error::ErrorCode::SourceAccessDenied);
-        assert_eq!(error.fact_value("aws_error_code"), Some("AccessDeniedException"));
-        assert_eq!(error.fact_value("aws_http_status"), Some("403"));
-        assert_eq!(error.fact_value("aws_retryable"), Some("false"));
-        assert_eq!(error.fact_value("aws_error_detail"), Some("access_denied"));
-        assert_eq!(error.fact_value("credential_source"), Some("aws_default_chain"));
-        assert!(error.source_error().is_some());
-    }
-
-    #[test]
-    fn explicit_nexus_s3_credentials_insert_static_pair_token_and_default_deny_when_requested() {
-        let mut props = HashMap::new();
-        let env = |name: &str| match name {
-            NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("access".to_string()),
-            NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("secret".to_string()),
-            NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("token".to_string()),
-            _ => None,
-        };
-
-        insert_explicit_nexus_s3_credentials(&mut props, env, true);
-
-        assert_eq!(props.get(S3_ACCESS_KEY_ID).map(String::as_str), Some("access"));
-        assert_eq!(props.get(S3_SECRET_ACCESS_KEY).map(String::as_str), Some("secret"));
-        assert_eq!(props.get(S3_SESSION_TOKEN).map(String::as_str), Some("token"));
-        assert_eq!(props.get(S3_DISABLE_CONFIG_LOAD).map(String::as_str), Some("true"));
-        assert_eq!(props.get(S3_DISABLE_EC2_METADATA).map(String::as_str), Some("true"));
-    }
-
-    #[test]
-    fn explicit_nexus_s3_credentials_can_leave_default_chain_policy_to_caller() {
-        let mut props = HashMap::new();
-        let env = |name: &str| match name {
-            NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("access".to_string()),
-            NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("secret".to_string()),
-            _ => None,
-        };
-
-        insert_explicit_nexus_s3_credentials(&mut props, env, false);
-
-        assert_eq!(props.get(S3_ACCESS_KEY_ID).map(String::as_str), Some("access"));
-        assert_eq!(props.get(S3_SECRET_ACCESS_KEY).map(String::as_str), Some("secret"));
-        assert!(!props.contains_key(S3_DISABLE_CONFIG_LOAD));
-        assert!(!props.contains_key(S3_DISABLE_EC2_METADATA));
-    }
-
-    #[test]
-    fn explicit_nexus_s3_credentials_preserve_token_without_static_pair() {
-        let mut props = HashMap::new();
-        let env = |name: &str| match name {
-            NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("access-only".to_string()),
-            NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("token".to_string()),
-            _ => None,
-        };
-
-        insert_explicit_nexus_s3_credentials(&mut props, env, true);
-
-        assert!(!props.contains_key(S3_ACCESS_KEY_ID));
-        assert!(!props.contains_key(S3_SECRET_ACCESS_KEY));
-        assert_eq!(props.get(S3_SESSION_TOKEN).map(String::as_str), Some("token"));
-        assert!(!props.contains_key(S3_DISABLE_CONFIG_LOAD));
-        assert!(!props.contains_key(S3_DISABLE_EC2_METADATA));
+        assert!(matches!(policy.s3_access().credential, datafusion_nexus_iceberg::S3CredentialRef::DefaultChain));
+        assert!(matches!(
+            source_access_policy_to_native_source_storage_profile(policy).s3_profile().credential,
+            S3SourceStorageCredential::DefaultChain
+        ));
     }
 }

@@ -19,8 +19,9 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::SourceUnauthenticated, ErrorStatus::Permanent),
     (ErrorCode::SourceObjectNotFound, ErrorStatus::Permanent),
     (ErrorCode::SourceTemporaryFailure, ErrorStatus::Temporary),
+    (ErrorCode::SourceDependencyFailure, ErrorStatus::Permanent),
     (ErrorCode::FieldNotFound, ErrorStatus::Permanent),
-    (ErrorCode::NativeCandidateRejected, ErrorStatus::Permanent),
+    (ErrorCode::GraphInputInvalid, ErrorStatus::Permanent),
     (ErrorCode::RequiredGpuOperationUnsupported, ErrorStatus::Permanent),
     (ErrorCode::FinalPlanRequirementUnsatisfied, ErrorStatus::Permanent),
     (ErrorCode::UnsupportedOperator, ErrorStatus::Permanent),
@@ -76,7 +77,7 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
 
 #[test]
 fn every_adapter_code_has_the_expected_retry_status() {
-    assert_eq!(ADAPTER_STATUS_CASES.len(), 34, "update the complete adapter status policy table");
+    assert_eq!(ADAPTER_STATUS_CASES.len(), 35, "update the complete adapter status policy table");
 
     for &(code, expected_status) in ADAPTER_STATUS_CASES {
         let error = Error::new(code, "datafusion_nexus.test.retry_policy", "retry policy test");
@@ -388,35 +389,35 @@ fn native_fact_collisions_preserve_adapter_facts_and_record_skipped_keys() {
 #[test]
 fn error_display_is_human_only_while_typed_fields_remain_available() {
     let error = Error::new(
-        ErrorCode::NativeCandidateRejected,
-        "datafusion_nexus.native.optimize_plan",
-        "cuDF native candidate rejected by adapter policy",
+        ErrorCode::FinalPlanRequirementUnsatisfied,
+        "datafusion_nexus.planner.final_plan_requirement",
+        "final physical plan did not satisfy the configured requirement",
     )
-    .with_fact("fallback_reason", "unsupported_expression")
-    .with_fact("candidate_shape", "SortExec(fetch)(AggregateExec(LocalParquetScan))")
+    .with_fact("observed_final_plan_disposition", "datafusion")
+    .with_fact("requirement", "no_datafusion_cpu")
     .with_source(std::io::Error::other("sensitive dependency source"));
 
-    assert_eq!(error.code(), ErrorCode::NativeCandidateRejected);
+    assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
     assert_eq!(error.kind(), ErrorKind::Planning);
     assert_eq!(error.status(), ErrorStatus::Permanent);
-    assert_eq!(error.operation(), "datafusion_nexus.native.optimize_plan");
-    assert_eq!(error.fact_value("fallback_reason"), Some("unsupported_expression"));
+    assert_eq!(error.operation(), "datafusion_nexus.planner.final_plan_requirement");
+    assert_eq!(error.fact_value("observed_final_plan_disposition"), Some("datafusion"));
 
-    assert_eq!(error.to_string(), "cuDF native candidate rejected by adapter policy");
+    assert_eq!(error.to_string(), "final physical plan did not satisfy the configured requirement");
     for hidden in [
-        "native_candidate_rejected",
-        "datafusion_nexus.native.optimize_plan",
-        "unsupported_expression",
-        "SortExec",
+        "final_plan_requirement_unsatisfied",
+        "datafusion_nexus.planner.final_plan_requirement",
+        "observed_final_plan_disposition",
+        "no_datafusion_cpu",
         "sensitive dependency source",
     ] {
         assert!(!error.to_string().contains(hidden), "Display leaked structured or source data: {hidden}");
     }
     let debug = format!("{error:?}");
-    assert!(debug.contains("NativeCandidateRejected"), "{debug}");
-    assert!(debug.contains("datafusion_nexus.native.optimize_plan"), "{debug}");
-    assert!(!debug.contains("fallback_reason"), "{debug}");
-    assert!(!debug.contains("unsupported_expression"), "{debug}");
+    assert!(debug.contains("FinalPlanRequirementUnsatisfied"), "{debug}");
+    assert!(debug.contains("datafusion_nexus.planner.final_plan_requirement"), "{debug}");
+    assert!(!debug.contains("observed_final_plan_disposition"), "{debug}");
+    assert!(!debug.contains("no_datafusion_cpu"), "{debug}");
 }
 
 fn nexus_error(operation: &'static str, message: &'static str) -> Error {

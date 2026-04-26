@@ -568,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn first_rejection_reason_ignores_unprojected_unsupported_schema_fields() {
+    fn first_not_supported_reason_ignores_unprojected_unsupported_schema_fields() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("allRiskEvents", map_utf8_int32_type(), true),
@@ -587,12 +587,12 @@ mod tests {
                 TableFormatColumnRole::Projected,
             ));
 
-        assert_eq!(plan.first_rejection_reason(), None);
+        assert_eq!(plan.first_not_supported_reason(), None);
         assert_eq!(plan.first_unsupported_column(), None);
     }
 
     #[test]
-    fn first_rejection_reason_rejects_projected_unsupported_schema_fields() {
+    fn first_not_supported_reason_reports_projected_unsupported_schema_fields() {
         let map_type = map_utf8_int32_type();
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
@@ -612,7 +612,7 @@ mod tests {
                 TableFormatColumnRole::Projected,
             ));
 
-        assert_eq!(plan.first_rejection_reason(), Some(FallbackReason::UnsupportedType));
+        assert_eq!(plan.first_not_supported_reason(), Some(CapabilityReason::UnsupportedType));
         let unsupported = plan.first_unsupported_column().expect("projected map column must be named");
         assert_eq!(unsupported.logical_name, "allRiskEvents");
         assert_eq!(unsupported.role_code(), "projected");
