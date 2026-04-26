@@ -337,6 +337,10 @@ impl GraphReservationReport {
             "vertex_estimate_source": self.vertex_estimate_source.as_str(),
             "vertex_width_bytes": self.vertex_width_bytes,
             "weight_width_bytes": self.weight_width_bytes,
+            "pair_rows": self.pair_rows,
+            "pair_vertex_width_bytes": self.pair_vertex_width_bytes,
+            "pair_cardinality_source": self.pair_cardinality_source.map(|source| source.as_str()),
+            "pair_cardinality_admission_mode": self.pair_cardinality_admission_mode.map(|mode| mode.as_str()),
             "has_edge_id": self.has_edge_id,
             "directed": self.directed,
             "renumber": self.renumber,
@@ -350,6 +354,7 @@ impl GraphReservationReport {
             "requested_bytes": self.requested_bytes,
             "budget_bytes": self.budget_bytes,
             "graph_model_error_ratio": self.graph_model_error_ratio.map(|ratio| ratio.as_decimal_string()),
+            "measured_peak_bytes": self.measured_peak_bytes,
             "statistics": self.statistics.map(|statistics| {
                 json!({
                     "exact_vertices": statistics.exact_vertices,

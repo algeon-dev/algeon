@@ -96,6 +96,18 @@ pub enum GraphAlgorithm {
     /// Force-directed graph layout.
     /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.layout.force_atlas2.force_atlas2/>
     ForceAtlas2,
+    /// Explicit-pair Jaccard similarity coefficient.
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/link_prediction/#jaccard-coefficients>
+    Jaccard,
+    /// Explicit-pair Sorensen similarity coefficient.
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/link_prediction/#sorensen-coefficients>
+    Sorensen,
+    /// Explicit-pair overlap similarity coefficient.
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/link_prediction/#overlap-coefficients>
+    Overlap,
+    /// Explicit-pair cosine similarity coefficient.
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/link_prediction/#cosine-similarity-coefficients>
+    Cosine,
 }
 
 impl GraphAlgorithm {
@@ -125,7 +137,16 @@ impl GraphAlgorithm {
             Self::Ecg => "ecg",
             Self::SpectralModularityMaximization => "spectral_modularity_maximization",
             Self::ForceAtlas2 => "force_atlas2",
+            Self::Jaccard => "jaccard",
+            Self::Sorensen => "sorensen",
+            Self::Overlap => "overlap",
+            Self::Cosine => "cosine",
         }
+    }
+
+    /// Whether this algorithm is one of the explicit-pair similarity metrics.
+    pub const fn is_similarity(self) -> bool {
+        matches!(self, Self::Jaccard | Self::Sorensen | Self::Overlap | Self::Cosine)
     }
 
     /// Look up the registry definition for this algorithm.
@@ -321,6 +342,10 @@ impl EmptyGraphInputPolicy {
         edge_input: EmptyGraphEdgeInputAction::Reject,
         side_inputs: EmptyGraphSideInputPolicy::RequirePersonalization,
     };
+    const SIMILARITY: Self = Self {
+        edge_input: EmptyGraphEdgeInputAction::SimilarityVertexPairs,
+        side_inputs: EmptyGraphSideInputPolicy::RequireVertexPairs,
+    };
     const BFS: Self = Self {
         edge_input: EmptyGraphEdgeInputAction::BfsEndpointPolicy,
         side_inputs: EmptyGraphSideInputPolicy::BfsPredicates,
@@ -339,6 +364,9 @@ pub enum EmptyGraphEdgeInputAction {
     Reject,
     /// BFS delegates empty-edge behavior to its explicit endpoint policy.
     BfsEndpointPolicy,
+    /// Explicit-pair similarity returns a stable empty result for an empty
+    /// pair relation and rejects non-empty pairs against an empty graph.
+    SimilarityVertexPairs,
 }
 
 impl EmptyGraphEdgeInputAction {
@@ -349,6 +377,7 @@ impl EmptyGraphEdgeInputAction {
             Self::ValidateSelectorsThenReturnEmpty => "validate_selectors_then_return_empty",
             Self::Reject => "reject",
             Self::BfsEndpointPolicy => "bfs_endpoint_policy",
+            Self::SimilarityVertexPairs => "similarity_vertex_pairs",
         }
     }
 }
@@ -363,6 +392,8 @@ pub enum EmptyGraphSideInputPolicy {
     /// BFS has role-specific source and predicate semantics owned by its
     /// traversal executor.
     BfsPredicates,
+    /// Explicit-pair similarity owns pair-cardinality and endpoint behavior.
+    RequireVertexPairs,
 }
 
 impl EmptyGraphSideInputPolicy {
@@ -372,6 +403,7 @@ impl EmptyGraphSideInputPolicy {
             Self::None => "none",
             Self::RequirePersonalization => "require_personalization",
             Self::BfsPredicates => "bfs_predicates",
+            Self::RequireVertexPairs => "require_vertex_pairs",
         }
     }
 }
@@ -426,7 +458,11 @@ impl GraphOperationDefinition {
             GraphAlgorithm::PageRank
             | GraphAlgorithm::PersonalizedPageRank
             | GraphAlgorithm::Sssp
-            | GraphAlgorithm::ForceAtlas2 => GraphWeightPolicy::Optional,
+            | GraphAlgorithm::ForceAtlas2
+            | GraphAlgorithm::Jaccard
+            | GraphAlgorithm::Sorensen
+            | GraphAlgorithm::Overlap
+            | GraphAlgorithm::Cosine => GraphWeightPolicy::Optional,
             _ => GraphWeightPolicy::Ignored,
         }
     }
@@ -445,7 +481,11 @@ impl GraphOperationDefinition {
         match self.algorithm {
             GraphAlgorithm::WeaklyConnectedComponents
             | GraphAlgorithm::MinimumSpanningTree
-            | GraphAlgorithm::SpectralModularityMaximization => Some(false),
+            | GraphAlgorithm::SpectralModularityMaximization
+            | GraphAlgorithm::Jaccard
+            | GraphAlgorithm::Sorensen
+            | GraphAlgorithm::Overlap
+            | GraphAlgorithm::Cosine => Some(false),
             GraphAlgorithm::StronglyConnectedComponents => Some(true),
             _ => None,
         }
@@ -491,6 +531,10 @@ impl GraphOperationDefinition {
                 | GraphAlgorithm::Ecg
                 | GraphAlgorithm::SpectralModularityMaximization
                 | GraphAlgorithm::ForceAtlas2
+                | GraphAlgorithm::Jaccard
+                | GraphAlgorithm::Sorensen
+                | GraphAlgorithm::Overlap
+                | GraphAlgorithm::Cosine
         ) {
             options.directed = false;
         }
@@ -543,6 +587,9 @@ impl GraphOperationDefinition {
                 GraphAlgorithmParams::SpectralModularityMaximization(GraphSpectralClusteringParams::default())
             },
             GraphAlgorithm::ForceAtlas2 => GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default()),
+            GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine => {
+                GraphAlgorithmParams::Similarity(GraphSimilarityParams::default())
+            },
         }
     }
 
@@ -552,7 +599,7 @@ impl GraphOperationDefinition {
     /// adapters may still apply a final user-facing overlay for modes that are
     /// not part of the native IR.
     pub fn result_schema_for_params(&self, params: &GraphAlgorithmParams) -> SchemaRef {
-        assert_eq!(self.algorithm, params.algorithm(), "graph algorithm and parameter variant must match");
+        assert!(params.supports_algorithm(self.algorithm), "graph algorithm and parameter variant must match");
         let mut fields =
             self.base_result_schema().fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
         if let GraphAlgorithmParams::Bfs(params) = params
@@ -707,6 +754,30 @@ pub const GRAPH_OPERATION_REGISTRY: &[GraphOperationDefinition] = &[
         name: "force_atlas2",
         layout_requirement: GraphLayoutRequirement::Any,
         empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
+    },
+    GraphOperationDefinition {
+        algorithm: GraphAlgorithm::Jaccard,
+        name: "jaccard",
+        layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::SIMILARITY,
+    },
+    GraphOperationDefinition {
+        algorithm: GraphAlgorithm::Sorensen,
+        name: "sorensen",
+        layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::SIMILARITY,
+    },
+    GraphOperationDefinition {
+        algorithm: GraphAlgorithm::Overlap,
+        name: "overlap",
+        layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::SIMILARITY,
+    },
+    GraphOperationDefinition {
+        algorithm: GraphAlgorithm::Cosine,
+        name: "cosine",
+        layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::SIMILARITY,
     },
 ];
 

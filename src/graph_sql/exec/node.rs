@@ -4,6 +4,7 @@ pub struct CugraphAlgoExec {
     pub(super) spec: CugraphAlgorithmSpec,
     pub(super) edge_source: Arc<dyn ExecutionPlan>,
     pub(super) predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
+    pub(super) predicate_row_upper_bounds: Vec<Option<u64>>,
     pub(super) projection: Option<Vec<usize>>,
     pub(super) limit: Option<usize>,
     pub(super) native_execution_config: NexusNativeExecutionConfig,
@@ -74,6 +75,10 @@ impl CugraphAlgoExec {
         let schema = projected_schema(&spec.output_schema, projection.as_ref())?;
         let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
         let edge_normalize_inserted = cugraph_edge_normalize_inserted(&spec, &edge_source_canonical_facts);
+        let predicate_row_upper_bounds = predicate_sources
+            .iter()
+            .map(|source| exact_execution_plan_output_rows(source.as_ref()))
+            .collect::<Result<Vec<_>>>()?;
         preflight_cugraph_query_plan(
             &spec,
             edge_source.schema(),
@@ -98,6 +103,7 @@ impl CugraphAlgoExec {
             spec,
             edge_source,
             predicate_sources,
+            predicate_row_upper_bounds,
             projection,
             limit,
             native_execution_config,
@@ -494,6 +500,7 @@ impl CugraphAlgoExec {
                 prepared.edge_schema,
                 prepared.edge_frame,
                 prepared.predicate_frames,
+                &self.predicate_row_upper_bounds,
                 if logical_mapping || path_target.is_some() { None } else { self.projection.as_ref() },
                 if logical_mapping || path_target.is_some() { None } else { self.limit },
                 self.edge_normalize_inserted(),
@@ -633,6 +640,7 @@ impl CugraphAlgoExec {
                     prepared.edge_schema,
                     prepared.edge_frame,
                     prepared.predicate_frames,
+                    &self.predicate_row_upper_bounds,
                     None,
                     None,
                     self.edge_normalize_inserted(),
@@ -692,6 +700,7 @@ impl CugraphAlgoExec {
                 prepared.edge_schema,
                 prepared.edge_frame,
                 prepared.predicate_frames,
+                &self.predicate_row_upper_bounds,
                 if prepared.logical_codebook.is_some() { None } else { self.projection.as_ref() },
                 if prepared.logical_codebook.is_some() { None } else { self.limit },
                 self.edge_normalize_inserted(),

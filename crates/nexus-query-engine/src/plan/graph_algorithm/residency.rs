@@ -147,6 +147,37 @@ pub struct GraphResidencyDescriptor {
 }
 
 impl GraphResidencyDescriptor {
+    /// Creates a descriptor for a materialized edge rowset with a caller-owned,
+    /// immutable content identity.
+    ///
+    /// The identity must change whenever the edge rows or any value consumed by
+    /// graph construction changes. It is retained only in the private cache
+    /// key; diagnostics expose its redacted fingerprint.
+    pub fn for_content_identity(
+        content_identity: impl AsRef<str>,
+        vertex_data_type: arrow::datatypes::DataType,
+        weight_data_type: Option<arrow::datatypes::DataType>,
+        edge_id_data_type: Option<arrow::datatypes::DataType>,
+    ) -> crate::error::Result<Self> {
+        let content_identity = content_identity.as_ref().trim();
+        if content_identity.is_empty() {
+            return Err(crate::error::QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.plan.graph_residency_content_identity",
+                "graph residency requires a non-empty immutable content identity",
+            )
+            .with_fact("reason", "missing_content_identity"));
+        }
+        Ok(Self {
+            source_fingerprint: GraphSourceFingerprint::new(format!(
+                "mode=external_content_identity_graph_edges_v1;content_identity={content_identity}"
+            )),
+            vertex_data_type,
+            weight_data_type,
+            edge_id_data_type,
+        })
+    }
+
     /// Builds a resident graph key for one graph orientation.
     pub fn resident_key(&self, spec: &GraphAlgorithmSpec, orientation: GraphResidencyOrientation) -> ResidentGraphKey {
         ResidentGraphKey {

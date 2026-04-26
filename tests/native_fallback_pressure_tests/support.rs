@@ -252,6 +252,10 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .with_new_label("vertex_estimate_source", "edge_endpoint_upper_bound")
         .with_new_label("vertex_width_bytes", "4")
         .with_new_label("weight_width_bytes", "8")
+        .with_new_label("pair_rows", "none")
+        .with_new_label("pair_vertex_width_bytes", "none")
+        .with_new_label("pair_cardinality_source", "none")
+        .with_new_label("pair_cardinality_admission_mode", "none")
         .with_new_label("has_edge_id", "false")
         .with_new_label("directed", "true")
         .with_new_label("renumber", "true")
@@ -265,6 +269,7 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .with_new_label("requested_bytes", "4096")
         .with_new_label("budget_bytes", "1048576")
         .with_new_label("graph_model_error_ratio", "2.000")
+        .with_new_label("measured_peak_bytes", "2048")
         .with_new_label("reason", "none")
         .global_counter("native_graph_reservation_rows")
         .add(1);

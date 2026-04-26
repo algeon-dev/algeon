@@ -37,7 +37,7 @@ pub(super) fn metadata_output_schema_json(algorithm: CugraphAlgorithm) -> String
 pub(super) fn options_schema_json(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> String {
     let graph_options = algorithm.effective_default_graph_options(&config.default_graph_options);
     let mut schema = json!({
-        "graph_options": graph_options_schema_json(&graph_options),
+        "graph_options": graph_options_schema_json(algorithm, &graph_options),
         "algorithm_options": algorithm_options_schema_json(algorithm)
     });
     if algorithm == CugraphAlgorithm::Bfs {
@@ -57,17 +57,37 @@ pub(super) fn options_schema_json(algorithm: CugraphAlgorithm, config: &CugraphS
             }),
         );
     }
+    if algorithm.is_similarity() {
+        schema.as_object_mut().expect("options schema is an object").insert(
+            "type_aliases".to_string(),
+            json!({
+                "vertex_domain": "same Int32 or Int64 domain as src_col and dst_col",
+                "vertex_pairs_domain": "same physical Int32 or Int64 dtype as vertex_domain"
+            }),
+        );
+    }
     schema.to_string()
 }
 
-fn graph_options_schema_json(options: &CugraphGraphOptions) -> Value {
+fn graph_options_schema_json(algorithm: CugraphAlgorithm, options: &CugraphGraphOptions) -> Value {
+    let mut directed = json!({
+        "scope": "graph",
+        "type": "Boolean",
+        "default": options.directed,
+        "description": "Whether graph construction treats edges as directed."
+    });
+    if algorithm.is_similarity() {
+        directed
+            .as_object_mut()
+            .expect("directed schema is an object")
+            .insert("allowed_values".to_string(), json!([false]));
+        directed.as_object_mut().expect("directed schema is an object").insert(
+            "valid_when".to_string(),
+            json!("required false: similarity operates on an undirected/symmetric graph"),
+        );
+    }
     json!({
-        "directed": {
-            "scope": "graph",
-            "type": "Boolean",
-            "default": options.directed,
-            "description": "Whether graph construction treats edges as directed."
-        },
+        "directed": directed,
         "renumber": {
             "scope": "graph",
             "type": "Boolean",
@@ -479,6 +499,7 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                 }
             })
         },
+        CugraphAlgorithmParams::Similarity(_) => similarity_options_schema_json(),
         CugraphAlgorithmParams::DegreesAll(_)
         | CugraphAlgorithmParams::InDegreesAll(_)
         | CugraphAlgorithmParams::OutDegreesAll(_)
@@ -487,6 +508,37 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
         | CugraphAlgorithmParams::TriangleCountAll(_)
         | CugraphAlgorithmParams::MinimumSpanningTree(_) => json!({}),
     }
+}
+
+fn similarity_options_schema_json() -> Value {
+    json!({
+        "vertex_pairs_table": {
+            "scope": "side_input",
+            "type": "Utf8",
+            "required": true,
+            "description": "Table or view containing the explicit candidate vertex pairs.",
+            "side_input": {
+                "role": "vertex_pairs",
+                "column_options": ["first_vertex_col", "second_vertex_col"]
+            }
+        },
+        "first_vertex_col": {
+            "scope": "side_input",
+            "type": "Utf8",
+            "required": true,
+            "description": "First endpoint column in vertex_pairs_table.",
+            "column_of": "vertex_pairs_table",
+            "expected_type_ref": "vertex_pairs_domain"
+        },
+        "second_vertex_col": {
+            "scope": "side_input",
+            "type": "Utf8",
+            "required": true,
+            "description": "Second endpoint column in vertex_pairs_table.",
+            "column_of": "vertex_pairs_table",
+            "expected_type_ref": "vertex_pairs_domain"
+        }
+    })
 }
 
 fn betweenness_options_schema_json(
@@ -863,6 +915,13 @@ fn params_json(params: &CugraphAlgorithmParams) -> Value {
         CugraphAlgorithmParams::ForceAtlas2(params) => {
             json!({"max_iter": params.max_iter, "outbound_attraction_distribution": params.outbound_attraction_distribution, "lin_log_mode": params.lin_log_mode, "prevent_overlapping": params.prevent_overlapping, "overlap_scaling_ratio": params.overlap_scaling_ratio, "edge_weight_influence": params.edge_weight_influence, "jitter_tolerance": params.jitter_tolerance, "barnes_hut_optimize": params.barnes_hut_optimize, "barnes_hut_theta": params.barnes_hut_theta, "scaling_ratio": params.scaling_ratio, "strong_gravity_mode": params.strong_gravity_mode, "gravity": params.gravity, "verbose": params.verbose, "seed": params.seed})
         },
+        CugraphAlgorithmParams::Similarity(params) => json!({
+            "vertex_pairs": {
+                "table": params.vertex_pairs.table_name.to_string(),
+                "first_vertex_col": params.vertex_pairs.first_vertex_col,
+                "second_vertex_col": params.vertex_pairs.second_vertex_col,
+            }
+        }),
         CugraphAlgorithmParams::DegreesAll(_)
         | CugraphAlgorithmParams::InDegreesAll(_)
         | CugraphAlgorithmParams::OutDegreesAll(_)

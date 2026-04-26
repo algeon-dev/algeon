@@ -29,6 +29,7 @@ clickbench-stage-probe = [
   "dep:nexus-query-engine",
 ]
 cugraph-oracle = ["dep:cudf", "dep:datafusion", "dep:datafusion-nexus", "dep:nexus-query-engine", "datafusion-nexus/cugraph"]
+cugraph-similarity-calibrate = ["dep:cudf", "dep:nexus-query-engine", "nexus-query-engine/cugraph"]
 iceberg-e2e = [
   "dep:datafusion",
   "dep:datafusion-nexus",

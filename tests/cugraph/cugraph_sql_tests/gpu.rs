@@ -541,6 +541,189 @@ async fn cugraph_sql_gpu_force_atlas2_executes_weighted_layout() {
 }
 
 #[tokio::test]
+async fn cugraph_sql_gpu_similarity_rejects_actual_null_pair_values() {
+    let state = default_backend_cugraph_sql_state();
+    let ctx = SessionContext::new_with_state(state);
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![0_i32, 0, 1, 2])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1_i32, 2, 2, 3])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("similarity_edges", Arc::new(MemTable::try_new(edge_schema, vec![vec![edge_batch]]).unwrap()))
+        .unwrap();
+
+    let pair_schema = Arc::new(Schema::new(vec![
+        Field::new("first", DataType::Int32, true),
+        Field::new("second", DataType::Int32, true),
+    ]));
+    let pair_batch = RecordBatch::try_new(
+        Arc::clone(&pair_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![Some(0_i32), None])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![Some(1_i32), Some(2_i32)])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("candidate_pairs", Arc::new(MemTable::try_new(pair_schema, vec![vec![pair_batch]]).unwrap()))
+        .unwrap();
+
+    let error = ctx
+        .sql(
+            "SELECT * FROM cugraph_jaccard(\
+             'similarity_edges', 'src', 'dst', NULL, \
+             '{\"vertex_pairs_table\":\"candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err();
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.code(), ErrorCode::GraphInputInvalid);
+    assert_eq!(nexus.fact_value("algorithm"), Some("jaccard"));
+    assert_eq!(nexus.fact_value("input_role"), Some("vertex_pairs"));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_similarity_executes_weighted_jaccard_for_nullable_int64_pairs() {
+    let state = default_backend_cugraph_sql_state();
+    let ctx = SessionContext::new_with_state(state);
+    register_weighted_similarity_edges_i64(&ctx, "similarity_edges");
+    // A nullable Arrow schema is admitted when the materialized pair values are
+    // all present. This is distinct from the null-rejection coverage above.
+    register_i64_similarity_pairs(&ctx, "candidate_pairs", true, vec![Some(0)], vec![Some(1)]);
+
+    let sql = "SELECT first, second, similarity \
+               FROM cugraph_jaccard(\
+                 'similarity_edges', 'src', 'dst', 'weight', \
+                 '{\"vertex_pairs_table\":\"candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}'\
+               ) ORDER BY first, second";
+    let df = ctx.sql(sql).await.unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(batch.schema().field(0).data_type(), &DataType::Int64);
+    assert_eq!(batch.schema().field(1).data_type(), &DataType::Int64);
+    assert_eq!(batch.schema().field(2).data_type(), &DataType::Float64);
+    assert_eq!(int64_column(batch, 0), vec![0]);
+    assert_eq!(int64_column(batch, 1), vec![1]);
+    let score = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap().value(0);
+    // The fixture has weighted-intersection sum 2 and weighted-union max sum
+    // 5 for pair (0, 1), so the hand-verifiable score is 2 / 5.
+    assert!((score - 0.4).abs() <= 1.0e-6, "weighted Jaccard score was {score}");
+
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
+    assert_eq!(metrics.graph_runtime_rows.len(), 1);
+    assert!(metrics.graph_runtime_rows[0].algorithm_metadata.contains("use_weight=true"));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absent_endpoints() {
+    let state = default_backend_cugraph_sql_state();
+    let ctx = SessionContext::new_with_state(state);
+    register_weighted_similarity_edges_i64(&ctx, "similarity_edges");
+    register_i64_similarity_pairs(&ctx, "empty_pairs", false, vec![], vec![]);
+    register_i64_similarity_pairs(&ctx, "absent_pairs", false, vec![Some(99)], vec![Some(0)]);
+
+    let empty_sql = "SELECT * FROM cugraph_jaccard(\
+                     'similarity_edges', 'src', 'dst', NULL, \
+                     '{\"vertex_pairs_table\":\"empty_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}'\
+                   )";
+    let empty_df = ctx.sql(empty_sql).await.unwrap();
+    let empty_plan = empty_df.create_physical_plan().await.unwrap();
+    let empty_batches = datafusion::physical_plan::collect(Arc::clone(&empty_plan), ctx.task_ctx()).await.unwrap();
+    let empty = single_batch(&empty_batches);
+    assert_eq!(empty.schema().field(0).data_type(), &DataType::Int64);
+    assert_eq!(empty.schema().field(1).data_type(), &DataType::Int64);
+    assert_eq!(empty.schema().field(2).data_type(), &DataType::Float64);
+    assert_eq!(empty.num_rows(), 0);
+    let empty_metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(empty_plan.as_ref()));
+    assert_eq!(empty_metrics.graph_runtime_rows.len(), 1);
+    assert!(empty_metrics.graph_runtime_rows[0].algorithm_metadata.contains("vertex_pairs_empty"));
+
+    let error = ctx
+        .sql(
+            "SELECT * FROM cugraph_jaccard(\
+               'similarity_edges', 'src', 'dst', NULL, \
+               '{\"vertex_pairs_table\":\"absent_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err();
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.code(), ErrorCode::CudfInvalidInput);
+    assert_eq!(nexus.fact_value("algorithm"), Some("jaccard"));
+    assert_eq!(nexus.fact_value("input_role"), Some("vertex_pairs"));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_similarity_reuses_a_keyable_graph_cache_between_cold_and_warm_queries() {
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-similarity-cache");
+    let path = dir.join("similarity_edges.parquet");
+    write_tiny_directed_edges(&path);
+
+    let backend = NexusGpuBackend::builder()
+        .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic))
+        .query_service_resident_graph_cache_max_retained_bytes(Some(64 * 1024 * 1024))
+        .build()
+        .unwrap();
+    let cugraph = CugraphSqlConfig::default()
+        .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
+    let state =
+        backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().with_cugraph_sql(cugraph).build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("similarity_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    register_i64_similarity_pairs(&ctx, "candidate_pairs", false, vec![Some(0)], vec![Some(1)]);
+
+    let sql = "SELECT * FROM cugraph_jaccard(\
+               'similarity_edges', 'src', 'dst', 'weight', \
+               '{\"vertex_pairs_table\":\"candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}')";
+    let cold_df = ctx.sql(sql).await.unwrap();
+    let cold_plan = cold_df.create_physical_plan().await.unwrap();
+    let cold_batches = datafusion::physical_plan::collect(Arc::clone(&cold_plan), ctx.task_ctx()).await.unwrap();
+    assert_eq!(cold_batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    let cold_metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(cold_plan.as_ref()));
+    assert_eq!(cold_metrics.graph_runtime_rows.len(), 1);
+    assert!(
+        cold_metrics.graph_runtime_rows[0].algorithm_metadata.contains("graph_cache=miss_inserted"),
+        "{}",
+        cold_metrics.graph_runtime_rows[0].algorithm_metadata
+    );
+    drop(cold_batches);
+    drop(cold_plan);
+
+    let warm_df = ctx.sql(sql).await.unwrap();
+    let warm_plan = warm_df.create_physical_plan().await.unwrap();
+    let warm_batches = datafusion::physical_plan::collect(Arc::clone(&warm_plan), ctx.task_ctx()).await.unwrap();
+    assert_eq!(warm_batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    let warm_metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(warm_plan.as_ref()));
+    assert_eq!(warm_metrics.graph_runtime_rows.len(), 1);
+    assert!(
+        warm_metrics.graph_runtime_rows[0].algorithm_metadata.contains("graph_cache=hit;"),
+        "{}",
+        warm_metrics.graph_runtime_rows[0].algorithm_metadata
+    );
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while backend.query_service().admission_snapshot().unwrap().active_queries != 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("ordered query-service cleanup should release admission");
+    fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
     let state = default_backend_cugraph_sql_state();
     let ctx = SessionContext::new_with_state(state);

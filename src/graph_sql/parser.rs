@@ -9,8 +9,8 @@ use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode,
     CugraphBfsOutputOptions, CugraphBfsPredicateInputs, CugraphBfsSource, CugraphBfsSourceVertex,
     CugraphGraphConstructionPolicy, CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable,
-    CugraphKCoreDegreeType, CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference, literal_string_arg,
-    plan_error, result_schema_for_params,
+    CugraphKCoreDegreeType, CugraphPageRankParams, CugraphSimilarityParams, CugraphSqlConfig, CugraphTableReference,
+    CugraphVertexPairTable, literal_string_arg, plan_error, result_schema_for_params,
 };
 
 pub fn parse_cugraph_algorithm_spec(
@@ -18,6 +18,14 @@ pub fn parse_cugraph_algorithm_spec(
     args: &[Expr],
     config: &CugraphSqlConfig,
 ) -> Result<CugraphAlgorithmSpec> {
+    // Keep the required-weight contract actionable even when the caller did
+    // not supply enough positional arguments to reach `weight_col`.
+    if algorithm.native_algorithm().weight_policy().requires_weight() && args.len() < 4 {
+        return Err(plan_error(format!(
+            "{} requires a weight column; supply one as the fourth argument",
+            algorithm.function_name()
+        )));
+    }
     validate_arity(algorithm, args.len())?;
     let table_name = CugraphTableReference::parse(&literal_string_arg(args, 0, "table_name")?)?;
 
@@ -75,6 +83,12 @@ pub fn parse_cugraph_algorithm_spec(
             "cugraph_personalized_pagerank requires options: personalization_table, personalization_vertex_col, personalization_value_col",
         ));
     }
+    if algorithm.is_similarity() && !has_options_json {
+        return Err(plan_error(format!(
+            "{} requires options: vertex_pairs_table, first_vertex_col, second_vertex_col",
+            algorithm.function_name()
+        )));
+    }
     validate_graph_directedness(algorithm, &graph_options)?;
 
     // MST is a weighted algorithm: require an explicit weight column so
@@ -82,7 +96,7 @@ pub fn parse_cugraph_algorithm_spec(
     // a meaningless unweighted result.
     if algorithm.native_algorithm().weight_policy().requires_weight() && weight_col.is_none() {
         return Err(plan_error(
-            "cugraph_minimum_spanning_tree requires a weight column; supply one as the third argument",
+            "cugraph_minimum_spanning_tree requires a weight column; supply one as the fourth argument",
         ));
     }
 
@@ -101,9 +115,7 @@ pub fn parse_cugraph_algorithm_spec(
 }
 
 fn validate_arity(algorithm: CugraphAlgorithm, len: usize) -> Result<()> {
-    let valid =
-        if algorithm.requires_source_vertex() { matches!(len, 2 | 4 | 5 | 6) } else { matches!(len, 1 | 3 | 4 | 5) };
-    if valid {
+    if algorithm.allowed_arg_counts().contains(&len) {
         Ok(())
     } else {
         Err(plan_error(format!(
@@ -115,7 +127,11 @@ fn validate_arity(algorithm: CugraphAlgorithm, len: usize) -> Result<()> {
 }
 
 fn expected_arity(algorithm: CugraphAlgorithm) -> &'static str {
-    if algorithm == CugraphAlgorithm::Bfs {
+    if algorithm == CugraphAlgorithm::MinimumSpanningTree {
+        "table_name, src_col, dst_col, weight_col [, options_json]"
+    } else if algorithm.is_similarity() {
+        "table_name, src_col, dst_col, weight_col, options_json"
+    } else if algorithm == CugraphAlgorithm::Bfs {
         "table_name, source_vertex_or_vertices [, src_col, dst_col, weight_col, options_json]"
     } else if algorithm.requires_source_vertex() {
         "table_name, source_vertex [, src_col, dst_col, weight_col, options_json]"
@@ -187,6 +203,12 @@ fn validate_graph_directedness(algorithm: CugraphAlgorithm, graph_options: &Cugr
     if graph_options.directed == required {
         return Ok(());
     }
+    if algorithm.is_similarity() && !required {
+        return Err(plan_error(format!(
+            "{} requires directed=false so cuGraph receives a symmetric graph",
+            algorithm.function_name()
+        )));
+    }
     let message = match (algorithm, required) {
         (CugraphAlgorithm::StronglyConnectedComponents, true) => {
             "cugraph_strongly_connected_components requires directed=true; use \
@@ -233,6 +255,24 @@ fn parse_options_json(
                         )));
                     },
                 };
+            },
+            "vertex_pairs_table" if algorithm.is_similarity() => {
+                let table = CugraphTableReference::parse(&json_string(value, key)?)?;
+                if let CugraphAlgorithmParams::Similarity(params) = params {
+                    params.vertex_pairs.table_name = table;
+                }
+            },
+            "first_vertex_col" if algorithm.is_similarity() => {
+                let column = json_string(value, key)?;
+                if let CugraphAlgorithmParams::Similarity(params) = params {
+                    params.vertex_pairs.first_vertex_col = column;
+                }
+            },
+            "second_vertex_col" if algorithm.is_similarity() => {
+                let column = json_string(value, key)?;
+                if let CugraphAlgorithmParams::Similarity(params) = params {
+                    params.vertex_pairs.second_vertex_col = column;
+                }
             },
             "alpha" if is_pagerank_algorithm(algorithm) => {
                 let alpha = json_f64(value, key)?;
@@ -769,6 +809,9 @@ fn parse_options_json(
     if algorithm == CugraphAlgorithm::PersonalizedPageRank {
         validate_personalized_pagerank_options(object, params)?;
     }
+    if algorithm.is_similarity() {
+        validate_similarity_options(algorithm, object, params)?;
+    }
     if is_betweenness_algorithm(algorithm) {
         validate_betweenness_options(params)?;
     }
@@ -837,6 +880,34 @@ fn validate_personalized_pagerank_options(
     }
     if params.personalization.value_col.is_empty() {
         return Err(plan_error("personalization_value_col must not be empty"));
+    }
+    Ok(())
+}
+
+fn validate_similarity_options(
+    algorithm: CugraphAlgorithm,
+    object: &serde_json::Map<String, Value>,
+    params: &CugraphAlgorithmParams,
+) -> Result<()> {
+    let missing = ["vertex_pairs_table", "first_vertex_col", "second_vertex_col"]
+        .into_iter()
+        .filter(|key| !object.contains_key(*key))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(plan_error(format!("{} requires options: {}", algorithm.function_name(), missing.join(", "))));
+    }
+    let CugraphAlgorithmParams::Similarity(CugraphSimilarityParams { vertex_pairs }) = params else {
+        return Err(plan_error(format!("{} carried non-similarity parameters", algorithm.function_name())));
+    };
+    validate_similarity_pair_selector(vertex_pairs)
+}
+
+fn validate_similarity_pair_selector(vertex_pairs: &CugraphVertexPairTable) -> Result<()> {
+    if vertex_pairs.first_vertex_col.is_empty() {
+        return Err(plan_error("first_vertex_col must not be empty"));
+    }
+    if vertex_pairs.second_vertex_col.is_empty() {
+        return Err(plan_error("second_vertex_col must not be empty"));
     }
     Ok(())
 }

@@ -469,6 +469,10 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             params.verbose,
             params.seed,
         ),
+        super::GraphAlgorithmParams::Similarity(params) => format!(
+            "vertex_pairs_node={}:first_column={}:second_column={}",
+            params.vertex_pairs.input, params.vertex_pairs.first_column, params.vertex_pairs.second_column,
+        ),
     }
 }
 

@@ -22,9 +22,9 @@ use nexus_query_engine::{
         GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams,
         GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
         GraphOutDegreesAllParams, GraphPageRankParams, GraphPageRankPersonalizationInput,
-        GraphPersonalizedPageRankParams, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
-        GraphTriangleCountAllParams, GraphVertexIdTypeSupport, GraphWccParams, PlanNode, QueryPlan, QueryPlanBuilder,
-        stable_graph_result_schema,
+        GraphPersonalizedPageRankParams, GraphSccParams, GraphSimilarityParams, GraphSpectralClusteringParams,
+        GraphSsspParams, GraphTriangleCountAllParams, GraphVertexIdTypeSupport, GraphVertexPairInput, GraphWccParams,
+        PlanNode, QueryPlan, QueryPlanBuilder, stable_graph_result_schema,
     },
     source::{GpuResidentSource, SourceNode},
 };
@@ -67,6 +67,9 @@ pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
             GraphAlgorithmParams::SpectralModularityMaximization(GraphSpectralClusteringParams::default())
         },
         GraphAlgorithm::ForceAtlas2 => GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default()),
+        GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine => {
+            GraphAlgorithmParams::Similarity(GraphSimilarityParams::default())
+        },
     }
 }
 
@@ -89,6 +92,17 @@ fn personalization_schema() -> Arc<Schema> {
     ]))
 }
 
+fn similarity_pair_schema(algorithm: GraphAlgorithm) -> Arc<Schema> {
+    let vertex_id_type = match algorithm.vertex_id_type_support() {
+        GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType => DataType::Int32,
+        GraphVertexIdTypeSupport::Int32OrInt64 => DataType::Int64,
+    };
+    Arc::new(Schema::new(vec![
+        Field::new("first", vertex_id_type.clone(), false),
+        Field::new("second", vertex_id_type, false),
+    ]))
+}
+
 /// Build the canonical CPU-only QueryPlan for the contract checks.
 pub fn graph_plan(algorithm: GraphAlgorithm) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
@@ -102,11 +116,23 @@ pub fn graph_plan(algorithm: GraphAlgorithm) -> QueryPlan {
         } else {
             None
         };
+    let vertex_pairs = algorithm.is_similarity().then(|| {
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+            "vertex_pairs",
+            similarity_pair_schema(algorithm),
+        )))
+    });
     let params = if let Some(personalization) = personalization {
         GraphAlgorithmParams::PersonalizedPageRank(GraphPersonalizedPageRankParams {
             pagerank: GraphPageRankParams::default(),
             personalization: GraphPageRankPersonalizationInput::new(personalization, "vertex", "value"),
         })
+    } else if let Some(vertex_pairs) = vertex_pairs {
+        GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
+            vertex_pairs,
+            "first",
+            "second",
+        )))
     } else {
         default_params(algorithm)
     };
@@ -252,6 +278,10 @@ fn registry_pins_current_cugraph_sql_inventory() {
             CugraphAlgorithm::Ecg,
             CugraphAlgorithm::SpectralModularityMaximization,
             CugraphAlgorithm::ForceAtlas2,
+            CugraphAlgorithm::Jaccard,
+            CugraphAlgorithm::Sorensen,
+            CugraphAlgorithm::Overlap,
+            CugraphAlgorithm::Cosine,
         ],
         "cuGraph SQL operation registry order is part of the public surface",
     );

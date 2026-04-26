@@ -14,10 +14,12 @@ pub(super) fn preflight_cugraph_query_plan(
     // those steps have completed, so a user projection/limit cannot be
     // applied to that internal schema during preflight.
     let defer_final_projection = prepared.logical_mapping || is_bfs_path_output(spec);
+    let predicate_row_upper_bounds = vec![None; prepared.predicate_schemas.len()];
     let plan = cugraph_schema_query_plan(
         &prepared.execution_spec,
         prepared.edge_schema,
         prepared.predicate_schemas,
+        &predicate_row_upper_bounds,
         if defer_final_projection { None } else { projection },
         if defer_final_projection { None } else { limit },
         edge_normalize_inserted,
@@ -50,6 +52,7 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
     edge_schema: SchemaRef,
     edge_frame: GpuDataFrame,
     predicate_frames: Vec<CugraphGpuFrame>,
+    predicate_row_upper_bounds: &[Option<u64>],
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
@@ -62,6 +65,7 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
         edge_schema,
         edge_frame,
         predicate_frames,
+        predicate_row_upper_bounds,
         projection,
         limit,
         edge_normalize_inserted,
@@ -117,6 +121,7 @@ pub(super) fn cugraph_query_plan(
     edge_schema: SchemaRef,
     edge_frame: GpuDataFrame,
     predicate_frames: Vec<CugraphGpuFrame>,
+    predicate_row_upper_bounds: &[Option<u64>],
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
@@ -132,8 +137,15 @@ pub(super) fn cugraph_query_plan(
     inputs.insert(CUGRAPH_EDGE_INPUT_NAME.to_string(), handle);
     let predicate_schemas = predicate_frames.iter().map(|frame| Arc::clone(&frame.schema)).collect::<Vec<_>>();
     bind_predicate_gpu_inputs(context, &mut inputs, predicate_frames)?;
-    let plan =
-        cugraph_schema_query_plan(spec, edge_schema, predicate_schemas, projection, limit, edge_normalize_inserted)?;
+    let plan = cugraph_schema_query_plan(
+        spec,
+        edge_schema,
+        predicate_schemas,
+        predicate_row_upper_bounds,
+        projection,
+        limit,
+        edge_normalize_inserted,
+    )?;
     Ok(CugraphQueryPlan { plan, inputs })
 }
 
@@ -141,10 +153,21 @@ pub(super) fn cugraph_schema_query_plan(
     spec: &CugraphAlgorithmSpec,
     edge_schema: SchemaRef,
     predicate_schemas: Vec<SchemaRef>,
+    predicate_row_upper_bounds: &[Option<u64>],
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
 ) -> Result<nexus_query_engine::plan::QueryPlan> {
+    if spec.algorithm.is_similarity() && predicate_schemas.len() != predicate_row_upper_bounds.len() {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.cugraph_sql.plan",
+            "cuGraph predicate schemas and row-cardinality evidence must have matching lengths",
+        )
+        .with_fact("predicate_schema_count", predicate_schemas.len())
+        .with_fact("predicate_row_upper_bound_count", predicate_row_upper_bounds.len())
+        .into());
+    }
     let mut builder = QueryPlanBuilder::new();
     let input = builder
         .add_source(SourceNode::GpuResident(GpuResidentSource::new(CUGRAPH_EDGE_INPUT_NAME, Arc::clone(&edge_schema))));
@@ -152,7 +175,13 @@ pub(super) fn cugraph_schema_query_plan(
         .into_iter()
         .enumerate()
         .map(|(index, schema)| {
-            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(cugraph_side_input_name(index), schema)))
+            let row_count_upper_bound = predicate_row_upper_bounds.get(index).copied().flatten();
+            let source = GpuResidentSource::new(cugraph_side_input_name(index), schema);
+            let source = match row_count_upper_bound {
+                Some(rows) => source.with_row_count_upper_bound(rows),
+                None => source,
+            };
+            builder.add_source(SourceNode::GpuResident(source))
         })
         .collect::<Vec<_>>();
     let graph_spec = native_graph_spec(spec, edge_normalize_inserted, &predicate_nodes);
@@ -296,6 +325,7 @@ pub(super) fn native_algorithm_params_for_memory_estimate(
         // to tenant-default admission instead of minting placeholder ids.
         CugraphAlgorithmParams::PersonalizedPageRank(_) => None,
         CugraphAlgorithmParams::Bfs(_) => None,
+        CugraphAlgorithmParams::Similarity(_) => None,
         _ => Some(native_algorithm_params(params, &[])),
     }
 }
@@ -512,6 +542,16 @@ pub(super) fn native_algorithm_params(
             verbose: params.verbose,
             seed: params.seed,
         }),
+        CugraphAlgorithmParams::Similarity(params) => {
+            let vertex_pairs_node = predicate_nodes.first().copied().expect("similarity vertex-pairs node missing");
+            GraphAlgorithmParams::Similarity(nexus_query_engine::plan::GraphSimilarityParams::new(
+                nexus_query_engine::plan::GraphVertexPairInput::new(
+                    vertex_pairs_node,
+                    params.vertex_pairs.first_vertex_col.clone(),
+                    params.vertex_pairs.second_vertex_col.clone(),
+                ),
+            ))
+        },
     }
 }
 

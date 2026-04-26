@@ -45,6 +45,12 @@ pub enum ParityComparator {
     /// the upstream cuGraph Python test
     /// (`topKVertices(katz, "katz_centrality", k)`).
     TopKVertices,
+    /// Compare `(first, second, similarity)` rows as a multiset.
+    ///
+    /// Similarity is defined over an explicit input relation: duplicate,
+    /// reversed, and self pairs are all semantically observable, so the
+    /// normal vertex-order comparators are not valid here.
+    SimilarityMultiset,
 }
 
 impl ParityComparator {
@@ -58,6 +64,7 @@ impl ParityComparator {
             Self::RankCorrelation => "rank_correlation",
             Self::EdgeSubgraph => "edge_subgraph",
             Self::TopKVertices => "top_k_vertices",
+            Self::SimilarityMultiset => "similarity_multiset",
         }
     }
 }
@@ -71,6 +78,12 @@ pub enum ParityTruthSource {
     /// cuGraph reference CSV copied under `fixture/graph/cugraph/ref/`.
     /// The path is expressed relative to the data root.
     RefCsv { path: &'static str },
+    /// A small, hand-derived result document for a contract that is simpler
+    /// to audit directly than to delegate to the Python oracle.
+    ///
+    /// The document contains a `result` object with the same column-array
+    /// shape as oracle JSON. It deliberately has no generated-oracle path.
+    HandVerified { document_json: &'static str },
 }
 
 impl ParityTruthSource {
@@ -78,6 +91,7 @@ impl ParityTruthSource {
         match self {
             Self::OracleJson => "oracle_json",
             Self::RefCsv { .. } => "ref_csv",
+            Self::HandVerified { .. } => "hand_verified",
         }
     }
 }
@@ -119,17 +133,17 @@ pub struct ParitySpec {
     /// `SeededSequence` comparator family.
     pub seed: Option<u64>,
     pub truth_source: ParityTruthSource,
-    /// Oracle JSON path relative to
-    /// `fixture/graph/cugraph/oracle/`. The file is generated locally by
-    /// `refresh_cugraph_oracle` and consumed by the parity harness.
-    pub oracle_relpath: &'static str,
+    /// Oracle JSON path relative to `fixture/graph/cugraph/oracle/` for
+    /// generated-oracle and reference-CSV rows. Hand-verified rows have no
+    /// generated oracle, so this is absent.
+    pub oracle_relpath: Option<&'static str>,
     pub comparator: ParityComparator,
     pub tolerance: ParityTolerance,
 }
 
 /// Source-of-truth list of cuGraph parity rows.
 ///
-/// Every SQL-visible algorithm has one GPU-oracle acceptance row. New
+/// Every SQL-visible algorithm has one GPU parity acceptance row. New
 /// algorithms must add a registry row here alongside their
 /// [`crate::graph_sql::CUGRAPH_OPERATION_REGISTRY`] entry.
 #[doc(hidden)]
@@ -141,7 +155,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"alpha":0.85,"epsilon":1e-05,"max_iterations":100}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/pagerank__alpha_0_85.json",
+        oracle_relpath: Some("karate/pagerank__alpha_0_85.json"),
         comparator: ParityComparator::Numeric,
         tolerance: ParityTolerance { abs: 1.0e-5, rel: 1.0e-3 },
     },
@@ -152,7 +166,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"alpha":0.85,"epsilon":1e-05,"max_iterations":100,"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value","personalization_vertices":[0],"personalization_values":[1.0]}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/personalized_pagerank__vertex_0.json",
+        oracle_relpath: Some("karate/personalized_pagerank__vertex_0.json"),
         comparator: ParityComparator::Numeric,
         tolerance: ParityTolerance { abs: 1.0e-5, rel: 1.0e-3 },
     },
@@ -163,7 +177,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"source_vertex":0,"depth_limit":null}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/bfs__source_0.json",
+        oracle_relpath: Some("karate/bfs__source_0.json"),
         comparator: ParityComparator::ExactInt,
         tolerance: ParityTolerance::exact(),
     },
@@ -174,7 +188,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"max_level":100,"threshold":1e-07,"resolution":1.0}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/louvain__resolution_1_0.json",
+        oracle_relpath: Some("karate/louvain__resolution_1_0.json"),
         comparator: ParityComparator::PartitionEquivalence,
         tolerance: ParityTolerance::exact(),
     },
@@ -188,7 +202,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"epsilon":1e-06,"max_iterations":200}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/eigenvector_centrality__default.json",
+        oracle_relpath: Some("karate/eigenvector_centrality__default.json"),
         comparator: ParityComparator::Numeric,
         // Eigenvector centrality is sensitive to convergence tolerance;
         // PageRank uses abs=1e-5 / rel=1e-3 which is a good starting point
@@ -207,7 +221,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"epsilon":1e-05,"max_iterations":100,"normalize":false}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/hits__default.json",
+        oracle_relpath: Some("karate/hits__default.json"),
         comparator: ParityComparator::Numeric,
         // HITS uses two float score columns; the existing Numeric
         // comparator compares column-by-column under abs/rel tolerance.
@@ -222,7 +236,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"seeds":[0,1,2],"normalized":true,"include_endpoints":false,"exact_vertex_threshold":100000}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/betweenness_centrality__seeds_0_1_2.json",
+        oracle_relpath: Some("karate/betweenness_centrality__seeds_0_1_2.json"),
         comparator: ParityComparator::Numeric,
         tolerance: ParityTolerance { abs: 1.0e-5, rel: 1.0e-3 },
     },
@@ -233,7 +247,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"seeds":[0,1,2],"normalized":true,"exact_vertex_threshold":100000}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/edge_betweenness_centrality__seeds_0_1_2.json",
+        oracle_relpath: Some("karate/edge_betweenness_centrality__seeds_0_1_2.json"),
         comparator: ParityComparator::Numeric,
         tolerance: ParityTolerance { abs: 1.0e-5, rel: 1.0e-3 },
     },
@@ -252,7 +266,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         // so callers can cross-check the full per-vertex score table
         // against Python cuGraph once it is available; the parity
         // harness reports the file as "needs refresh" until then.
-        oracle_relpath: "karate/katz_centrality__default.json",
+        oracle_relpath: Some("karate/katz_centrality__default.json"),
         comparator: ParityComparator::TopKVertices,
         // Comparator family is integer-set equality on the top-K
         // vertex list; tolerance fields are unused for `TopKVertices`.
@@ -266,7 +280,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"source_vertex":0}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/sssp__source_0.json",
+        oracle_relpath: Some("karate/sssp__source_0.json"),
         // SSSP distance is Float64; predecessor is Int64. Numeric compares
         // float columns with tolerance and integer columns exactly.
         comparator: ParityComparator::Numeric,
@@ -279,7 +293,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/degrees_all__default.json",
+        oracle_relpath: Some("karate/degrees_all__default.json"),
         comparator: ParityComparator::ExactInt,
         tolerance: ParityTolerance::exact(),
     },
@@ -290,7 +304,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/in_degrees_all__default.json",
+        oracle_relpath: Some("karate/in_degrees_all__default.json"),
         comparator: ParityComparator::ExactInt,
         tolerance: ParityTolerance::exact(),
     },
@@ -301,7 +315,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/out_degrees_all__default.json",
+        oracle_relpath: Some("karate/out_degrees_all__default.json"),
         comparator: ParityComparator::ExactInt,
         tolerance: ParityTolerance::exact(),
     },
@@ -315,7 +329,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/weakly_connected_components__default.json",
+        oracle_relpath: Some("karate/weakly_connected_components__default.json"),
         // Labels are partition identifiers, not ordered — use
         // partition-equivalence comparison.
         comparator: ParityComparator::PartitionEquivalence,
@@ -328,7 +342,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/strongly_connected_components__default.json",
+        oracle_relpath: Some("karate/strongly_connected_components__default.json"),
         comparator: ParityComparator::PartitionEquivalence,
         tolerance: ParityTolerance::exact(),
     },
@@ -339,7 +353,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/triangle_count_all__default.json",
+        oracle_relpath: Some("karate/triangle_count_all__default.json"),
         comparator: ParityComparator::ExactInt,
         tolerance: ParityTolerance::exact(),
     },
@@ -351,7 +365,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"degree_type":"in_out"}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/core_number__default.json",
+        oracle_relpath: Some("karate/core_number__default.json"),
         comparator: ParityComparator::ExactInt,
         tolerance: ParityTolerance::exact(),
     },
@@ -363,7 +377,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"k":2,"degree_type":"in_out"}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/k_core__k_2.json",
+        oracle_relpath: Some("karate/k_core__k_2.json"),
         comparator: ParityComparator::EdgeSubgraph,
         tolerance: ParityTolerance::exact(),
     },
@@ -377,7 +391,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "toy_graph/minimum_spanning_tree__default.json",
+        oracle_relpath: Some("toy_graph/minimum_spanning_tree__default.json"),
         comparator: ParityComparator::EdgeSubgraph,
         tolerance: ParityTolerance::exact(),
     },
@@ -389,7 +403,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"max_level":100,"resolution":1.0,"theta":1.0,"seed":0}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/leiden__default.json",
+        oracle_relpath: Some("karate/leiden__default.json"),
         // Leiden partition labels are arbitrary identifiers; compare by
         // partition equivalence, not exact label equality.
         comparator: ParityComparator::PartitionEquivalence,
@@ -403,7 +417,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"min_weight":0.001,"ensemble_size":10,"max_level":100,"threshold":1e-07,"resolution":1.0,"seed":0}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/ecg__default.json",
+        oracle_relpath: Some("karate/ecg__default.json"),
         // ECG runs a randomized Louvain ensemble. A fixed seed makes a
         // particular build repeatable, but does not make partitions portable
         // across CUDA/cuGraph builds or graph-ordering implementations. Keep
@@ -420,7 +434,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"n_clusters":2,"n_eigenvectors":2,"evs_tolerance":0.01,"evs_max_iterations":500,"k_means_tolerance":0.001,"k_means_max_iterations":100,"seed":0}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/spectral_modularity_maximization__default.json",
+        oracle_relpath: Some("karate/spectral_modularity_maximization__default.json"),
         comparator: ParityComparator::PartitionEquivalence,
         tolerance: ParityTolerance::exact(),
     },
@@ -434,13 +448,75 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{"max_iter":500,"outbound_attraction_distribution":false,"lin_log_mode":false,"prevent_overlapping":false,"overlap_scaling_ratio":2.0,"edge_weight_influence":1.0,"jitter_tolerance":1.0,"barnes_hut_optimize":false,"barnes_hut_theta":0.5,"scaling_ratio":2.0,"strong_gravity_mode":false,"gravity":1.0,"verbose":false,"seed":0}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/force_atlas2__default.json",
+        oracle_relpath: Some("karate/force_atlas2__default.json"),
         comparator: ParityComparator::Numeric,
         // ForceAtlas2 is iterative and GPU scheduling produces small
         // run-to-run coordinate drift even with a fixed random seed. The
         // comparator first applies the optimal rigid transform, then bounds
         // residual point displacement relative to the layout RMS radius.
         tolerance: ParityTolerance { abs: 1.0e-3, rel: 5.0e-3 },
+    },
+    // Explicit-pair similarity is a relation-preserving contract. The
+    // `toy_graph` fixture has reciprocal edges, and these inputs retain a
+    // duplicate, reverse, self, and zero-similarity pair. Their small
+    // unweighted Jaccard, Sorensen, and overlap results are hand-verifiable
+    // directly from the adjacency sets: N(0)={1,2}, N(3)={1,2,5},
+    // N(1)={0,2,3,4}, N(4)={1,5}. On its unweighted explicit-pair path,
+    // libcugraph's cosine kernel consumes unit norms and a binary non-empty
+    // intersection indicator. Preserve that native contract (one for every
+    // overlapping pair and zero for `(1,4)`) rather than projecting an
+    // algebraic cosine formula.
+    ParitySpec {
+        label: "jaccard/toy_graph@explicit_pairs",
+        algorithm: CugraphAlgorithm::Jaccard,
+        dataset: "toy_graph",
+        params_json: r#"{}"#,
+        seed: None,
+        truth_source: ParityTruthSource::HandVerified {
+            document_json: r#"{"result":{"first":[0,0,3,0,1],"second":[3,3,0,0,4],"similarity":[0.6666666666666666,0.6666666666666666,0.6666666666666666,1.0,0.0]}}"#,
+        },
+        oracle_relpath: None,
+        comparator: ParityComparator::SimilarityMultiset,
+        tolerance: ParityTolerance { abs: 1.0e-6, rel: 1.0e-6 },
+    },
+    ParitySpec {
+        label: "sorensen/toy_graph@explicit_pairs",
+        algorithm: CugraphAlgorithm::Sorensen,
+        dataset: "toy_graph",
+        params_json: r#"{}"#,
+        seed: None,
+        truth_source: ParityTruthSource::HandVerified {
+            document_json: r#"{"result":{"first":[0,0,3,0,1],"second":[3,3,0,0,4],"similarity":[0.8,0.8,0.8,1.0,0.0]}}"#,
+        },
+        oracle_relpath: None,
+        comparator: ParityComparator::SimilarityMultiset,
+        tolerance: ParityTolerance { abs: 1.0e-6, rel: 1.0e-6 },
+    },
+    ParitySpec {
+        label: "overlap/toy_graph@explicit_pairs",
+        algorithm: CugraphAlgorithm::Overlap,
+        dataset: "toy_graph",
+        params_json: r#"{}"#,
+        seed: None,
+        truth_source: ParityTruthSource::HandVerified {
+            document_json: r#"{"result":{"first":[0,0,3,0,1],"second":[3,3,0,0,4],"similarity":[1.0,1.0,1.0,1.0,0.0]}}"#,
+        },
+        oracle_relpath: None,
+        comparator: ParityComparator::SimilarityMultiset,
+        tolerance: ParityTolerance { abs: 1.0e-6, rel: 1.0e-6 },
+    },
+    ParitySpec {
+        label: "cosine/toy_graph@explicit_pairs",
+        algorithm: CugraphAlgorithm::Cosine,
+        dataset: "toy_graph",
+        params_json: r#"{}"#,
+        seed: None,
+        truth_source: ParityTruthSource::HandVerified {
+            document_json: r#"{"result":{"first":[0,0,3,0,1],"second":[3,3,0,0,4],"similarity":[1.0,1.0,1.0,1.0,0.0]}}"#,
+        },
+        oracle_relpath: None,
+        comparator: ParityComparator::SimilarityMultiset,
+        tolerance: ParityTolerance { abs: 1.0e-6, rel: 1.0e-6 },
     },
 ];
 
@@ -611,9 +687,10 @@ fn parity_reference_from_json(v: &serde_json::Value) -> ParityReference {
     }
 }
 
-/// Absolute path to the oracle JSON file for one parity row.
-pub fn oracle_path(data_root: &Path, spec: &ParitySpec) -> PathBuf {
-    data_root.join("oracle").join(spec.oracle_relpath)
+/// Absolute path to the generated oracle JSON for one parity row, when the
+/// row has a generated-oracle contract.
+pub fn oracle_path(data_root: &Path, spec: &ParitySpec) -> Option<PathBuf> {
+    spec.oracle_relpath.map(|path| data_root.join("oracle").join(path))
 }
 
 /// Errors raised by [`load_ref_csv_vertex_list`].
@@ -691,6 +768,8 @@ pub enum OracleLookup {
     Mismatch { path: PathBuf, reason: String },
     /// The oracle JSON could not be parsed.
     Invalid { path: PathBuf, reason: String },
+    /// The row owns a hand-verified result rather than a generated oracle.
+    NotApplicable,
 }
 
 /// Load + cross-check the oracle JSON header for a parity row.
@@ -704,7 +783,9 @@ pub enum OracleLookup {
 /// catches the case where a local dataset is updated (manifest
 /// SHA-256 rotated) but a stale oracle JSON survives on disk.
 pub fn load_oracle(data_root: &Path, spec: &ParitySpec, manifest: Option<&ParityManifest>) -> OracleLookup {
-    let path = oracle_path(data_root, spec);
+    let Some(path) = oracle_path(data_root, spec) else {
+        return OracleLookup::NotApplicable;
+    };
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return OracleLookup::Missing { path },
@@ -814,11 +895,10 @@ mod tests {
     fn parity_specs_have_unique_oracle_paths() {
         let mut seen = std::collections::BTreeSet::new();
         for spec in CUGRAPH_PARITY_SPECS {
-            assert!(
-                seen.insert(spec.oracle_relpath),
-                "oracle path {} appears twice in parity specs",
-                spec.oracle_relpath
-            );
+            let Some(path) = spec.oracle_relpath else {
+                continue;
+            };
+            assert!(seen.insert(path), "oracle path {} appears twice in parity specs", path);
         }
     }
 

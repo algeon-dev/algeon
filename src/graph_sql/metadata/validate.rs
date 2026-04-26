@@ -12,8 +12,8 @@ use super::{
     super::{
         CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource, CugraphBfsSourceVertex,
         CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain,
-        datafusion_table_reference, parse_cugraph_algorithm_spec, validate_vertex_id_domain_support_for_call,
-        vertex_id_domain_for_call,
+        datafusion_table_reference, parse_cugraph_algorithm_spec, types::validate_similarity_pair_table_schema,
+        validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
     },
     ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_INVALID_CALL_JSON, ERROR_TABLE_NOT_FOUND,
     ERROR_UNKNOWN_ALGORITHM, ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE, ERROR_UNSUPPORTED_WEIGHT_DTYPE,
@@ -287,6 +287,20 @@ pub(super) async fn cugraph_validate_call(
         row.weight_dtype = weight_dtype.clone();
         return row;
     }
+    if let Some(mut row) = validate_similarity_vertex_pair_source(
+        state,
+        canonical_function_name,
+        &spec,
+        &vertex_domain,
+        output_schema_json.clone(),
+    )
+    .await
+    {
+        row.src_dtype = src_dtype.clone();
+        row.dst_dtype = dst_dtype.clone();
+        row.weight_dtype = weight_dtype.clone();
+        return row;
+    }
 
     ValidationRow {
         valid: true,
@@ -479,6 +493,36 @@ async fn validate_personalized_pagerank_source(
             ),
             &output_schema_json,
         ));
+    }
+    None
+}
+
+async fn validate_similarity_vertex_pair_source(
+    state: &dyn Session,
+    function_name: &str,
+    spec: &CugraphAlgorithmSpec,
+    vertex_domain: &CugraphVertexIdDomain,
+    output_schema_json: String,
+) -> Option<ValidationRow> {
+    let CugraphAlgorithmParams::Similarity(params) = &spec.params else {
+        return None;
+    };
+    let vertex_pairs = &params.vertex_pairs;
+    let provider = match resolve_table_provider(state, datafusion_table_reference(&vertex_pairs.table_name)).await {
+        Ok(provider) => provider,
+        Err(message) => {
+            return Some(predicate_validation_error(
+                function_name,
+                ERROR_TABLE_NOT_FOUND,
+                message,
+                &output_schema_json,
+            ));
+        },
+    };
+    if let Err(error) = validate_similarity_pair_table_schema(vertex_pairs, &provider.schema(), vertex_domain) {
+        let message = error.to_string();
+        let code = if message.contains("is missing") { ERROR_COLUMN_NOT_FOUND } else { ERROR_VERTEX_DTYPE_MISMATCH };
+        return Some(predicate_validation_error(function_name, code, message, &output_schema_json));
     }
     None
 }

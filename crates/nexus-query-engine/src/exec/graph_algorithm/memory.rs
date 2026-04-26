@@ -24,6 +24,7 @@ pub(super) fn admit_graph_memory(
     node_id: NodeId,
     spec: &crate::plan::GraphAlgorithmSpec,
     input: &DataFrame,
+    side_inputs: &BTreeMap<NodeId, GpuDataFrame>,
     input_edges: u64,
     metrics: &mut QueryMetrics,
 ) -> Result<Option<u64>> {
@@ -35,12 +36,15 @@ pub(super) fn admit_graph_memory(
         node_id,
         spec,
         input,
+        side_inputs,
         input_edges,
+        None,
         context.bounded_device_budget_bytes(),
         graph_device_total_memory_bytes(context)?,
         false,
         None,
         None,
+        0,
     )?;
     let model = crate::graph_memory::GraphMemoryModel;
     let request = model.reservation_request(node_id, &report, context.device_memory_space());
@@ -76,14 +80,27 @@ pub(in crate::exec) fn graph_memory_reservation_report(
     node_id: NodeId,
     spec: &crate::plan::GraphAlgorithmSpec,
     input: &DataFrame,
+    side_inputs: &BTreeMap<NodeId, GpuDataFrame>,
     input_edges: u64,
+    strict_pair_cardinality: Option<(u64, crate::graph_memory::GraphPairCardinalitySource)>,
     budget_bytes: Option<u64>,
     device_total_memory_bytes: Option<u64>,
     allow_nulls: bool,
     vertex_estimate: Option<crate::graph_memory::GraphVertexEstimate>,
     statistics: Option<crate::graph_memory::GraphStatistics>,
+    already_accounted_similarity_pair_input_bytes: u64,
 ) -> Result<crate::graph_memory::GraphReservationReport> {
     let mut model_input = graph_memory_model_input_for_frame(input, spec, input_edges, allow_nulls)?;
+    if let Some((runtime_pair_rows, pair_vertex_width_bytes, runtime_pair_cardinality_source)) =
+        graph_similarity_pair_memory_evidence(spec, side_inputs)?
+    {
+        let (pair_rows, pair_cardinality_source) = match strict_pair_cardinality {
+            Some((pair_rows, pair_cardinality_source)) => (pair_rows, pair_cardinality_source),
+            None => (runtime_pair_rows, runtime_pair_cardinality_source),
+        };
+        model_input =
+            model_input.with_similarity_pair_input(pair_rows, pair_vertex_width_bytes, pair_cardinality_source);
+    }
     model_input = context.graph_memory_calibration_override().apply_to_input(model_input);
     if let Some(device_total_memory_bytes) = device_total_memory_bytes {
         model_input = model_input.with_device_total_memory_bytes(device_total_memory_bytes);
@@ -96,11 +113,20 @@ pub(in crate::exec) fn graph_memory_reservation_report(
         model_input = model_input.with_statistics(statistics);
     }
     let model = crate::graph_memory::GraphMemoryModel;
-    let mut estimate = model.estimate(spec, model_input)?;
+    let mut estimate = match (budget_bytes.is_some(), context.native_pipeline_execution_mode()) {
+        (true, crate::mode::NativePipelineExecutionMode::StrictBounded) => {
+            model.estimate_for_strict_bounded(spec, model_input)?
+        },
+        (true, crate::mode::NativePipelineExecutionMode::Adaptive) => {
+            model.estimate_for_adaptive_bounded(spec, model_input)?
+        },
+        (false, _) => model.estimate(spec, model_input)?,
+    };
     if context.has_reserved_resident_graph_price() {
         estimate.requested_bytes = estimate.execution_bytes;
     }
-    let report = crate::graph_memory::GraphReservationReport::from_estimate(node_id, estimate, budget_bytes);
+    let report = crate::graph_memory::GraphReservationReport::from_estimate(node_id, estimate, budget_bytes)
+        .credit_live_similarity_pair_input(already_accounted_similarity_pair_input_bytes);
     Ok(match statistics {
         Some(statistics) => report.with_statistics(statistics),
         None => report,
@@ -503,6 +529,64 @@ pub(in crate::exec) fn graph_memory_model_input_for_frame(
     ))
 }
 
+/// Returns materialized candidate-pair evidence for the similarity memory
+/// model.  This runs after the normal side-input materialization boundary, so
+/// it neither guesses from graph cardinality nor evaluates the relation a
+/// second time.
+#[cfg(feature = "cugraph")]
+fn graph_similarity_pair_memory_evidence(
+    spec: &crate::plan::GraphAlgorithmSpec,
+    side_inputs: &BTreeMap<NodeId, GpuDataFrame>,
+) -> Result<Option<(u64, u64, crate::graph_memory::GraphPairCardinalitySource)>> {
+    let crate::plan::GraphAlgorithmParams::Similarity(params) = &spec.params else {
+        return Ok(None);
+    };
+    let pair_input = side_inputs.get(&params.vertex_pairs.input).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.graph_memory_input",
+            "similarity graph memory admission is missing the vertex-pair side input",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str())
+        .with_fact("input_role", "vertex_pairs")
+        .with_fact("side_input_node", params.vertex_pairs.input)
+    })?;
+    let frame = pair_input.frame();
+    let first = inspect_edge_column(frame, &params.vertex_pairs.first_column, EdgeColumnRole::Vertex, false).map_err(
+        |error| {
+            error
+                .with_fact_if_absent("algorithm", spec.algorithm.as_str())
+                .with_fact_if_absent("input_role", "vertex_pairs")
+                .with_fact_if_absent("pair_column_role", "first")
+        },
+    )?;
+    let second = inspect_edge_column(frame, &params.vertex_pairs.second_column, EdgeColumnRole::Vertex, false)
+        .map_err(|error| {
+            error
+                .with_fact_if_absent("algorithm", spec.algorithm.as_str())
+                .with_fact_if_absent("input_role", "vertex_pairs")
+                .with_fact_if_absent("pair_column_role", "second")
+        })?;
+    if first.id() != second.id() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.graph_algorithm.graph_memory_input",
+            "similarity vertex-pair columns must have matching physical types",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str())
+        .with_fact("reason", "vertex_pair_dtype_mismatch")
+        .with_fact("first_column", &params.vertex_pairs.first_column)
+        .with_fact("first_cudf_dtype", format!("{first:?}"))
+        .with_fact("second_column", &params.vertex_pairs.second_column)
+        .with_fact("second_cudf_dtype", format!("{second:?}")));
+    }
+    Ok(Some((
+        frame.num_rows() as u64,
+        dtype_width_bytes(first)?,
+        crate::graph_memory::GraphPairCardinalitySource::RuntimeMaterialized,
+    )))
+}
+
 #[cfg(feature = "cugraph")]
 pub(super) fn validate_edge_column(frame: &DataFrame, column: &str, role: EdgeColumnRole) -> Result<cudf::DataType> {
     inspect_edge_column(frame, column, role, false)
@@ -525,9 +609,9 @@ fn inspect_edge_column(
     })?;
     if !allow_nulls && series.null_count() != 0 {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::GraphInputInvalid,
             "nexus_query_engine.graph_algorithm.validate_edge_column",
-            "cuGraph edge-list columns must be non-null",
+            "cuGraph materialized input columns must be non-null",
         )
         .with_fact("column", column)
         .with_fact("null_count", series.null_count()));

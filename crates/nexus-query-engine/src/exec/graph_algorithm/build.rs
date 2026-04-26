@@ -40,6 +40,7 @@ where
         "nexus_query_engine.graph_algorithm.enter",
         "failed to enter cuGraph execution context",
     ))?;
+    let _graph_build_range = graph_build_range(operation);
     let mut graph =
         cugraph::cudf_interop::graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(|error| {
             attach_graph_budget_error_facts(

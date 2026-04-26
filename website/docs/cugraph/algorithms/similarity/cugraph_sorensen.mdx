@@ -1,0 +1,108 @@
+---
+title: Sorensen
+sidebar_label: Sorensen
+description: "Compute Sorensen coefficients for explicit candidate vertex pairs."
+---
+
+{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit the matching hand-owned example partial and re-run the generator. */}
+
+# Sorensen
+
+SQL function: `cugraph_sorensen`
+
+Compute Sorensen coefficients for explicit candidate vertex pairs.
+
+## Signature
+
+```sql
+cugraph_sorensen(table_name, src_col, dst_col, weight_col, options_json)
+```
+
+Allowed argument counts: 5.
+
+## Quickstart
+
+```sql
+SELECT * FROM cugraph_sorensen('target_edges', 'src', 'dst', NULL, '{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}')
+```
+
+## Positional arguments
+
+| Argument | Type | Required | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `table_name` | `Utf8` | yes |  |  |
+| `src_col` | `Utf8` | no | `src` |  |
+| `dst_col` | `Utf8` | no | `dst` |  |
+| `weight_col` | `Utf8\|null` | no |  | optional edge weight column for graph construction when supported by the algorithm; semantic effect: edge weights affect algorithm results when provided |
+| `options_json` | `Utf8` | yes |  | required: identifies the explicit candidate-pair relation with vertex_pairs_table, first_vertex_col, and second_vertex_col; JSON string with algorithm-specific options plus shared graph construction options. |
+
+## JSON options
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `first_vertex_col` | `Utf8` |  | required; column of `vertex_pairs_table`; type ref `vertex_pairs_domain` | First endpoint column in vertex_pairs_table. |
+| `second_vertex_col` | `Utf8` |  | required; column of `vertex_pairs_table`; type ref `vertex_pairs_domain` | Second endpoint column in vertex_pairs_table. |
+| `vertex_pairs_table` | `Utf8` |  | required; side input (vertex_pairs, cols: `first_vertex_col`, `second_vertex_col`) | Table or view containing the explicit candidate vertex pairs. |
+
+### Graph Construction Options
+
+Shared by all cuGraph functions, shown here with this function's defaults. The `construction_policy` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [Graph Construction Options](../../graph-options.mdx) for the full policy guide.
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
+| `directed` | `Boolean` | `false` | one of `false`; valid when required false: similarity operates on an undirected/symmetric graph | Whether graph construction treats edges as directed. |
+| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+
+
+## Output schema
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `first` | `Int64` | no | First vertex from the explicit candidate-pair relation. |
+| `second` | `Int64` | no | Second vertex from the explicit candidate-pair relation. |
+| `similarity` | `Float64` | no | Similarity coefficient for the explicit candidate pair. |
+
+**Concrete schemas are call-specific.** These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
+
+
+## Candidate-pair relation
+
+Similarity functions score only the rows in the required candidate-pair relation selected by `options_json`. Set `vertex_pairs_table`, `first_vertex_col`, and `second_vertex_col` to identify it. The selected columns must exist, have the same physical `Int32` or `Int64` dtype, and match the edge table vertex domain.
+
+The candidate relation is a multiset: duplicate, reversed, and self pairs each remain distinct output rows. Null pair values are rejected at execution; they are never dropped. Results have no global ordering, so add `ORDER BY` when an order is required.
+
+These functions require an undirected graph (`directed=false`). Providing `weight_col` selects weighted similarity; omitting it selects unit-weight similarity. This API deliberately does not include all-pairs candidate generation or all-pairs top-k search.
+
+## Examples
+
+import Examples from '../../_examples/cugraph_sorensen.mdx';
+
+<Examples />
+
+## Limitations & notes
+
+- dry-run validates table resolution, column presence, static dtypes, and options only
+- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
+- similarity is explicit-pair only; all-pairs candidate generation and all-pairs top-k search are not exposed
+- options_json must name vertex_pairs_table, first_vertex_col, and second_vertex_col
+- candidate-pair columns must share the same Int32 or Int64 dtype and match the graph vertex domain
+- null candidate-pair values are rejected at execution and are never dropped
+- candidate pairs are a multiset: duplicate, reversed, and self pairs remain distinct output rows
+- result rows have no global ordering; use ORDER BY when order is required
+- providing weight_col selects weighted similarity; omitting it selects unit-weight similarity
+- cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
+
+## Validate before running
+
+Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:
+
+```sql
+SELECT * FROM cugraph_validate_call(
+  'cugraph_sorensen',
+  'your_edges_table',
+  '{"src_col":"src","dst_col":"dst","options":{"vertex_pairs_table":"your_candidate_pairs_table","first_vertex_col":"first","second_vertex_col":"second"}}'
+);
+```
+
+See [Discovery & Validation](../../discovery-and-validation.mdx) for the full `cugraph_validate_call` contract.

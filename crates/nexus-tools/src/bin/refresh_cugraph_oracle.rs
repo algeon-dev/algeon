@@ -1,8 +1,8 @@
 //! Driver that regenerates local cuGraph oracle JSON fixtures.
 //!
 //! Iterates [`CUGRAPH_PARITY_SPECS`] and invokes
-//! `fixture/graph/cugraph_oracle.py` for each `oracle_relpath`. Python cuGraph
-//! is optional per row: exit code 77 is reported as "oracle unavailable".
+//! `fixture/graph/cugraph_oracle.py` for each generated-oracle row. Python
+//! cuGraph is optional per row: exit code 77 is reported as "oracle unavailable".
 //! Generated JSON lives under `fixture/graph/cugraph/oracle/`.
 //!
 //! Recommended invocation:
@@ -28,7 +28,8 @@ use std::{
 };
 
 use datafusion_nexus::graph_sql::parity::{
-    CUGRAPH_DATA_DIR_FROM_CARGO_MANIFEST, CUGRAPH_PARITY_SPECS, ParitySpec, load_manifest, oracle_path,
+    CUGRAPH_DATA_DIR_FROM_CARGO_MANIFEST, CUGRAPH_PARITY_SPECS, ParitySpec, ParityTruthSource, load_manifest,
+    oracle_path,
 };
 
 const ORACLE_SCRIPT_REL: &str = "fixture/graph/cugraph_oracle.py";
@@ -163,7 +164,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 
     let mut summary: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut exit_code = 0i32;
-    // Refresh every spec's oracle JSON regardless of `truth_source`.
+    // Refresh every generated-oracle row regardless of `truth_source`.
     // RefCsv-truth rows (e.g. Katz) still carry a secondary
     // `oracle_relpath` slot for the per-vertex score cross-check, and
     // the previous truth-source filter caused
@@ -173,6 +174,10 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
     // `truth_source` to pick the primary truth at compare time.
     for spec in CUGRAPH_PARITY_SPECS {
         if !spec_matches(&opts, spec) {
+            continue;
+        }
+        if matches!(spec.truth_source, ParityTruthSource::HandVerified { .. }) {
+            *summary.entry("hand_verified").or_default() += 1;
             continue;
         }
         if manifest.dataset(spec.dataset).is_none() {
@@ -233,7 +238,8 @@ fn refresh_one(
     oracle_script: &Path,
     spec: &ParitySpec,
 ) -> Result<RefreshOutcome, Box<dyn std::error::Error>> {
-    let oracle_path = oracle_path(data_root, spec);
+    let oracle_path =
+        oracle_path(data_root, spec).expect("refresh only receives parity specs with a generated oracle path");
 
     // In `--check` mode, missing local JSON must fail even when Python cuGraph
     // is unavailable. `--force` only controls drift overwrite semantics.

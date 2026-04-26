@@ -33,6 +33,7 @@ const FAMILIES = {
   traversal:    { label: 'Traversal & Paths', position: 4, functions: ['cugraph_bfs','cugraph_sssp'] },
   connectivity: { label: 'Connectivity', position: 5, functions: ['cugraph_weakly_connected_components','cugraph_strongly_connected_components','cugraph_minimum_spanning_tree'] },
   structure:    { label: 'Structure', position: 6, functions: ['cugraph_degrees_all','cugraph_in_degrees_all','cugraph_out_degrees_all','cugraph_triangle_count_all','cugraph_core_number','cugraph_k_core'] },
+  similarity:   { label: 'Similarity', position: 7, functions: ['cugraph_jaccard','cugraph_sorensen','cugraph_overlap','cugraph_cosine'] },
   layout:       { label: 'Layout', position: 1, functions: ['cugraph_force_atlas2'] },
 };
 
@@ -297,10 +298,41 @@ function renderSchemas(spec) {
   return out;
 }
 
+function renderSimilarityPairContract(spec) {
+  if (familyOf(spec.function_name) !== 'similarity') return '';
+  return [
+    '## Candidate-pair relation',
+    '',
+    'Similarity functions score only the rows in the required candidate-pair relation selected by `options_json`. Set `vertex_pairs_table`, `first_vertex_col`, and `second_vertex_col` to identify it. The selected columns must exist, have the same physical `Int32` or `Int64` dtype, and match the edge table vertex domain.',
+    '',
+    'The candidate relation is a multiset: duplicate, reversed, and self pairs each remain distinct output rows. Null pair values are rejected at execution; they are never dropped. Results have no global ordering, so add `ORDER BY` when an order is required.',
+    '',
+    'These functions require an undirected graph (`directed=false`). Providing `weight_col` selects weighted similarity; omitting it selects unit-weight similarity. This API deliberately does not include all-pairs candidate generation or all-pairs top-k search.',
+  ].join('\n');
+}
+
+function validationCallJson(spec) {
+  const call = { src_col: 'src', dst_col: 'dst' };
+  if (familyOf(spec.function_name) !== 'similarity') return JSON.stringify(call);
+
+  call.options = {
+    vertex_pairs_table: 'your_candidate_pairs_table',
+    first_vertex_col: 'first',
+    second_vertex_col: 'second',
+  };
+  const algorithmOptions = JSON.parse(spec.options_schema_json).algorithm_options || {};
+  for (const [name, option] of Object.entries(algorithmOptions)) {
+    if (option.required === true && !(name in call.options)) {
+      throw new Error(`${spec.function_name}: validation example omits required similarity option "${name}"`);
+    }
+  }
+  return JSON.stringify(call);
+}
+
 function renderPage(spec) {
   const fn = spec.function_name;
   const argCounts = JSON.parse(spec.allowed_arg_counts_json).join(', ');
-  const validateCall = `SELECT * FROM cugraph_validate_call(\n  '${fn}',\n  'your_edges_table',\n  '{"src_col":"src","dst_col":"dst"}'\n);`;
+  const validateCall = `SELECT * FROM cugraph_validate_call(\n  '${fn}',\n  'your_edges_table',\n  '${validationCallJson(spec)}'\n);`;
   return [
     '---',
     `title: ${spec.algorithm}`,
@@ -341,6 +373,8 @@ function renderPage(spec) {
     '## Output schema',
     '',
     renderSchemas(spec),
+    '',
+    renderSimilarityPairContract(spec),
     '',
     '## Examples',
     '',
@@ -385,6 +419,8 @@ function renderCheatsheet(specs) {
   });
   return [
     '{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
+    '',
+    `The live registry exposes **${specs.length} SQL-visible algorithms**.`,
     '',
     'Cheatsheet columns are human summaries of registry metadata. Source input says whether the function needs a source selector; Weight column says whether `weight_col` affects execution; Output schema says whether the result schema is fixed or mode-dependent. The Algorithm options column counts only algorithm-specific JSON options; shared graph construction options are documented on each function page.',
     '',

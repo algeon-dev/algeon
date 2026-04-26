@@ -18,12 +18,22 @@ OUT_DIR="$SCRIPT_DIR/../cugraph-specs"
 # and a removed algorithm cannot leave a stale JSON behind.
 STAGE_DIR="$(mktemp -d "$SCRIPT_DIR/../.cugraph-specs.stage.XXXXXX")"
 OLD_DIR="$OUT_DIR.old.$$"
-trap 'rm -rf "$STAGE_DIR" "$OLD_DIR"' EXIT
+LIST_FILE="$(mktemp "$SCRIPT_DIR/../.cugraph-function-names.XXXXXX")"
+trap 'rm -rf "$STAGE_DIR" "$OLD_DIR" "$LIST_FILE"' EXIT
 
 run_sql() { printf '%s\n' "$1" | arrow_cli --host "$HOST" -P "$PORT" --timeout 120 --output "$2"; }
 
 echo "Listing algorithms from $HOST:$PORT ..."
-mapfile -t FNS < <(run_sql "SELECT function_name FROM cugraph_list_algorithms();" tsv | sed '/^$/d')
+# Do not put the query in process substitution: Bash does not propagate a
+# process-substitution failure through `mapfile`, which could otherwise make a
+# refused Flight SQL connection look like an empty registry and atomically
+# replace the captured specs with an empty directory.
+run_sql "SELECT function_name FROM cugraph_list_algorithms();" tsv > "$LIST_FILE"
+mapfile -t FNS < <(sed '/^$/d' "$LIST_FILE")
+if [ "${#FNS[@]}" -eq 0 ]; then
+  echo "ERROR: cugraph_list_algorithms returned no functions; refusing to replace $OUT_DIR" >&2
+  exit 1
+fi
 echo "Found ${#FNS[@]} functions."
 
 for fn in "${FNS[@]}"; do

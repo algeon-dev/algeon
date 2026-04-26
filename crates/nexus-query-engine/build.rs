@@ -13,4 +13,11 @@ fn main() {
         link_arg_targets: rapids::LinkArgTargets::new(true, false, true),
         cugraph_runtime,
     });
+
+    // Nsight Systems consumes the owning execution ranges through NVTX. The
+    // CUDA toolchain provides this interop library independently of cuDF and
+    // cuGraph, so link it only for the graph-enabled engine.
+    if std::env::var_os("CARGO_FEATURE_CUGRAPH").is_some() {
+        println!("cargo:rustc-link-lib=dylib=nvtx3interop");
+    }
 }

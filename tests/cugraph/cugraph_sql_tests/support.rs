@@ -314,6 +314,68 @@ pub(super) fn register_vertex_memtable(
     ctx.register_table(table_name, provider).unwrap();
 }
 
+pub(super) fn register_vertex_pair_memtable(
+    ctx: &SessionContext,
+    table_name: &str,
+    first_type: DataType,
+    second_type: DataType,
+    nullable: bool,
+) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("first", first_type.clone(), nullable),
+        Field::new("second", second_type.clone(), nullable),
+    ]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![edge_column(&first_type), edge_column(&second_type)]).unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+/// Registers the small undirected graph used to prove weighted similarity.
+///
+/// Its pair `(0, 1)` has weighted neighborhoods `{1: 1, 2: 2}` and
+/// `{0: 1, 2: 3}`.  Its weighted Jaccard numerator is therefore `min(2, 3) =
+/// 2`, while the denominator is `max(1, 0) + max(0, 1) + max(2, 3) = 5`.
+pub(super) fn register_weighted_similarity_edges_i64(ctx: &SessionContext, table_name: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("weight", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 0, 1, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1_i64, 2, 2, 3])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0_f64, 2.0, 3.0, 5.0])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+pub(super) fn register_i64_similarity_pairs(
+    ctx: &SessionContext,
+    table_name: &str,
+    nullable: bool,
+    first: Vec<Option<i64>>,
+    second: Vec<Option<i64>>,
+) {
+    assert_eq!(first.len(), second.len(), "similarity pair columns must have the same length");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("first", DataType::Int64, nullable),
+        Field::new("second", DataType::Int64, nullable),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(first)) as ArrayRef, Arc::new(Int64Array::from(second)) as ArrayRef],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
 pub(super) fn register_personalization_memtable(
     ctx: &SessionContext,
     table_name: &str,

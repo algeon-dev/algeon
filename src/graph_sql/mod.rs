@@ -17,12 +17,13 @@ pub use parser::parse_cugraph_algorithm_spec;
 pub use table_function::{CugraphAlgoTableProvider, cugraph_table_functions, register_cugraph_udtfs};
 pub use types::{
     CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION, CUGRAPH_BFS_FUNCTION, CUGRAPH_CORE_NUMBER_FUNCTION,
-    CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_ECG_FUNCTION,
+    CUGRAPH_COSINE_FUNCTION, CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_ECG_FUNCTION,
     CUGRAPH_EDGE_BETWEENNESS_CENTRALITY_FUNCTION, CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION,
-    CUGRAPH_FORCE_ATLAS2_FUNCTION, CUGRAPH_HITS_FUNCTION, CUGRAPH_IN_DEGREES_ALL_FUNCTION, CUGRAPH_K_CORE_FUNCTION,
-    CUGRAPH_KATZ_CENTRALITY_FUNCTION, CUGRAPH_LEIDEN_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION,
-    CUGRAPH_LOUVAIN_FUNCTION, CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
-    CUGRAPH_OUT_DEGREES_ALL_FUNCTION, CUGRAPH_PAGERANK_FUNCTION, CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION,
+    CUGRAPH_FORCE_ATLAS2_FUNCTION, CUGRAPH_HITS_FUNCTION, CUGRAPH_IN_DEGREES_ALL_FUNCTION, CUGRAPH_JACCARD_FUNCTION,
+    CUGRAPH_K_CORE_FUNCTION, CUGRAPH_KATZ_CENTRALITY_FUNCTION, CUGRAPH_LEIDEN_FUNCTION,
+    CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION, CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION,
+    CUGRAPH_OPERATION_REGISTRY, CUGRAPH_OUT_DEGREES_ALL_FUNCTION, CUGRAPH_OVERLAP_FUNCTION, CUGRAPH_PAGERANK_FUNCTION,
+    CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION, CUGRAPH_SORENSEN_FUNCTION,
     CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION, CUGRAPH_SSSP_FUNCTION,
     CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION, CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION,
     CUGRAPH_VALIDATE_CALL_FUNCTION, CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION, CugraphAlgorithm,
@@ -34,13 +35,13 @@ pub use types::{
     CugraphHitsParams, CugraphInDegreesAllParams, CugraphKCoreDegreeType, CugraphKCoreParams,
     CugraphKatzCentralityParams, CugraphLeidenParams, CugraphLouvainParams, CugraphMstParams,
     CugraphOperationDefinition, CugraphOutDegreesAllParams, CugraphPageRankParams, CugraphPageRankPersonalizationTable,
-    CugraphPersonalizedPageRankParams, CugraphSccParams, CugraphSpectralClusteringParams, CugraphSqlConfig,
-    CugraphSsspParams, CugraphTableReference, CugraphTriangleCountAllParams, CugraphWccParams,
-    GpuIslandHostBoundaryConfig, bfs_result_schema, result_schema_for_params, stable_result_schema,
+    CugraphPersonalizedPageRankParams, CugraphSccParams, CugraphSimilarityParams, CugraphSpectralClusteringParams,
+    CugraphSqlConfig, CugraphSsspParams, CugraphTableReference, CugraphTriangleCountAllParams, CugraphVertexPairTable,
+    CugraphWccParams, GpuIslandHostBoundaryConfig, bfs_result_schema, result_schema_for_params, stable_result_schema,
 };
 pub(crate) use types::{
-    CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain, validate_vertex_id_domain_support_for_call,
-    vertex_id_domain_for_call,
+    CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain, validate_similarity_pair_table_schema,
+    validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
 };
 
 use crate::error::{Error, ErrorCode};

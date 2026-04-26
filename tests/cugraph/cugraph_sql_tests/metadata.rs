@@ -720,15 +720,7 @@ async fn cugraph_metadata_registry_matches_native_graph_descriptors() {
             entry.sql_function_name,
         );
         assert!(string_value(batch, 4, row).starts_with(entry.sql_function_name));
-        let expected_arg_counts = if entry.algorithm == CugraphAlgorithm::MinimumSpanningTree {
-            serde_json::json!([4, 5])
-        } else if entry.algorithm == CugraphAlgorithm::PersonalizedPageRank {
-            serde_json::json!([5])
-        } else if descriptor.source_vertex_requirement().requires_source_vertex() {
-            serde_json::json!([2, 4, 5, 6])
-        } else {
-            serde_json::json!([1, 3, 4, 5])
-        };
+        let expected_arg_counts = serde_json::json!(entry.algorithm.allowed_arg_counts());
         assert_eq!(json_value(string_value(batch, 5, row)), expected_arg_counts);
 
         let describe_sql = format!(
@@ -795,6 +787,7 @@ async fn cugraph_validate_call_source_and_weight_policy_match_metadata() {
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "edges", DataType::Int32, DataType::Int32, DataType::Float64);
     register_personalization_memtable(&ctx, "ppr_seeds", DataType::Int32, DataType::Float64);
+    register_vertex_pair_memtable(&ctx, "candidate_pairs", DataType::Int32, DataType::Int32, false);
 
     for entry in CUGRAPH_OPERATION_REGISTRY {
         let function = entry.sql_function_name;
@@ -804,8 +797,18 @@ async fn cugraph_validate_call_source_and_weight_policy_match_metadata() {
             assert_eq!(string_value(&batch, 1, 0), "invalid_argument");
             assert!(string_value(&batch, 2, 0).contains("requires source_vertex"));
         } else {
-            let batch =
-                validate_call_batch(&ctx, function, r#"{"source_vertex":0,"src_col":"src","dst_col":"dst"}"#).await;
+            let call_json = if matches!(
+                entry.algorithm,
+                CugraphAlgorithm::Jaccard
+                    | CugraphAlgorithm::Sorensen
+                    | CugraphAlgorithm::Overlap
+                    | CugraphAlgorithm::Cosine
+            ) {
+                r#"{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}}"#
+            } else {
+                r#"{"source_vertex":0,"src_col":"src","dst_col":"dst"}"#
+            };
+            let batch = validate_call_batch(&ctx, function, call_json).await;
             assert!(!bool_value(&batch, 0, 0), "extra source_vertex must be rejected for {function}");
             assert_eq!(string_value(&batch, 1, 0), "invalid_argument");
             assert!(string_value(&batch, 2, 0).contains("does not accept source_vertex"));
@@ -815,6 +818,14 @@ async fn cugraph_validate_call_source_and_weight_policy_match_metadata() {
             r#"{"source_vertex":0,"src_col":"src","dst_col":"dst"}"#
         } else if entry.algorithm == CugraphAlgorithm::PersonalizedPageRank {
             r#"{"src_col":"src","dst_col":"dst","options":{"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value"}}"#
+        } else if matches!(
+            entry.algorithm,
+            CugraphAlgorithm::Jaccard
+                | CugraphAlgorithm::Sorensen
+                | CugraphAlgorithm::Overlap
+                | CugraphAlgorithm::Cosine
+        ) {
+            r#"{"src_col":"src","dst_col":"dst","options":{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}}"#
         } else {
             r#"{"src_col":"src","dst_col":"dst"}"#
         };
@@ -830,6 +841,100 @@ async fn cugraph_validate_call_source_and_weight_policy_match_metadata() {
                 string_value(&batch, 2, 0),
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn cugraph_similarity_metadata_describes_and_validates_the_explicit_pair_contract() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges", DataType::Int32, DataType::Int32, DataType::Float64);
+    register_vertex_pair_memtable(&ctx, "candidate_pairs", DataType::Int32, DataType::Int32, false);
+    register_vertex_pair_memtable(&ctx, "nullable_pairs", DataType::Int32, DataType::Int32, true);
+    register_vertex_pair_memtable(&ctx, "mismatched_pairs", DataType::Int32, DataType::Int64, false);
+    register_vertex_pair_memtable(&ctx, "int64_pairs", DataType::Int64, DataType::Int64, false);
+    register_vertex_pair_memtable(&ctx, "utf8_pairs", DataType::Utf8, DataType::Utf8, false);
+
+    for function in ["cugraph_jaccard", "cugraph_sorensen", "cugraph_overlap", "cugraph_cosine"] {
+        let describe_sql = format!(
+            "SELECT signature, allowed_arg_counts_json, options_schema_json, argument_descriptions_json, limitations_json \
+             FROM cugraph_describe_algorithm('{function}', 'verbose')"
+        );
+        let describe = ctx.sql(&describe_sql).await.unwrap().collect().await.unwrap();
+        let describe = single_batch(&describe);
+        assert!(
+            string_value(describe, 0, 0).contains("table_name, src_col, dst_col, weight_col, options_json"),
+            "{function} must expose the required five-argument signature"
+        );
+        assert_eq!(json_value(string_value(describe, 1, 0)), serde_json::json!([5]));
+        let options = json_value(string_value(describe, 2, 0));
+        let pair_table = &options["algorithm_options"]["vertex_pairs_table"];
+        assert_eq!(pair_table["required"], true);
+        assert_eq!(pair_table["side_input"]["role"], "vertex_pairs");
+        assert_eq!(
+            pair_table["side_input"]["column_options"],
+            serde_json::json!(["first_vertex_col", "second_vertex_col"])
+        );
+        assert_eq!(options["graph_options"]["directed"]["default"], false);
+        assert_eq!(options["graph_options"]["directed"]["allowed_values"], serde_json::json!([false]));
+
+        let arguments = json_value(string_value(describe, 3, 0));
+        let options_argument = json_array_item_by_name(&arguments, "options_json");
+        assert_eq!(options_argument["required"], true);
+        assert!(options_argument["note"].as_str().unwrap().contains("vertex_pairs_table"));
+        let limitations = json_value(string_value(describe, 4, 0));
+        assert_json_array_contains_string(
+            &limitations,
+            "candidate-pair columns must share the same Int32 or Int64 dtype and match the graph vertex domain",
+        );
+
+        let valid_sql = format!(
+            r#"SELECT valid, error_code, table_resolved, src_dtype, dst_dtype, output_schema_json, normalized_options_json, would_execute_gpu
+               FROM cugraph_validate_call(
+                 '{function}',
+                 'edges',
+                 '{{"src_col":"src","dst_col":"dst","options":{{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}}}}'
+               )"#
+        );
+        let valid = ctx.sql(&valid_sql).await.unwrap().collect().await.unwrap();
+        let valid = single_batch(&valid);
+        assert!(bool_value(valid, 0, 0), "valid explicit pair call should be admitted for {function}");
+        assert!(is_null_value(valid, 1, 0));
+        assert!(bool_value(valid, 2, 0));
+        assert_eq!(string_value(valid, 3, 0), "Int32");
+        assert_eq!(string_value(valid, 4, 0), "Int32");
+        assert!(string_value(valid, 5, 0).contains(r#""similarity""#));
+        assert!(string_value(valid, 6, 0).contains(r#""vertex_pairs""#));
+        assert!(bool_value(valid, 7, 0));
+
+        let nullable_sql = format!(
+            r#"SELECT valid, error_code
+               FROM cugraph_validate_call(
+                 '{function}',
+                 'edges',
+                 '{{"src_col":"src","dst_col":"dst","options":{{"vertex_pairs_table":"nullable_pairs","first_vertex_col":"first","second_vertex_col":"second"}}}}'
+               )"#
+        );
+        let nullable = ctx.sql(&nullable_sql).await.unwrap().collect().await.unwrap();
+        let nullable = single_batch(&nullable);
+        assert!(bool_value(nullable, 0, 0), "schema-nullable but null-free pair inputs must validate for {function}");
+        assert!(is_null_value(nullable, 1, 0));
+
+        for (pairs, first, second, code) in [
+            ("missing_pairs", "first", "second", "table_not_found"),
+            ("candidate_pairs", "missing", "second", "column_not_found"),
+            ("mismatched_pairs", "first", "second", "vertex_dtype_mismatch"),
+            ("int64_pairs", "first", "second", "vertex_dtype_mismatch"),
+            ("utf8_pairs", "first", "second", "vertex_dtype_mismatch"),
+        ] {
+            let call_json = format!(
+                r#"{{"src_col":"src","dst_col":"dst","options":{{"vertex_pairs_table":"{pairs}","first_vertex_col":"{first}","second_vertex_col":"{second}"}}}}"#
+            );
+            assert_validate_error(&ctx, function, "edges", &call_json, code).await;
+        }
+
+        let directed_call = r#"{"src_col":"src","dst_col":"dst","options":{"directed":true,"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}}"#;
+        assert_validate_error(&ctx, function, "edges", directed_call, "unsupported_option").await;
     }
 }
 

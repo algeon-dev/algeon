@@ -595,7 +595,7 @@ mod tests {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(edge_local_parquet_source()));
         let params = GraphAlgorithmParams::PageRank(GraphPageRankParams::default());
-        let output_schema = graph_result_schema_for_params(&params);
+        let output_schema = graph_result_schema_for_params(GraphAlgorithm::PageRank, &params);
         let graph = builder.add_graph_algorithm(
             source,
             nexus_query_engine::plan::GraphAlgorithmSpec::new(

@@ -179,10 +179,70 @@ pub fn compare(
         },
         ParityComparator::EdgeSubgraph => compare_edges(&actual, &expected),
         ParityComparator::TopKVertices => unreachable!("handled above"),
+        ParityComparator::SimilarityMultiset => {
+            compare_similarity_multiset(&actual, &expected, spec.tolerance.abs, spec.tolerance.rel)
+        },
         ParityComparator::PartitionQuality | ParityComparator::SeededSequence | ParityComparator::RankCorrelation => {
             Err(format!("comparator family '{}' has no registry rows yet", spec.comparator.as_str()))
         },
     }
+}
+
+fn compare_similarity_multiset(actual: &Table, expected: &Table, abs: f64, rel: f64) -> Result<(), String> {
+    let rows = |table: &Table| -> Result<BTreeMap<(i64, i64), Vec<f64>>, String> {
+        let first = table.integer_column("first")?;
+        let second = table.integer_column("second")?;
+        let similarity = table
+            .column("similarity")?
+            .iter()
+            .enumerate()
+            .map(|(row, value)| value.number("similarity", row))
+            .collect::<Result<Vec<_>, _>>()?;
+        if first.len() != second.len() || first.len() != similarity.len() {
+            return Err(format!(
+                "similarity output has mismatched column lengths: first={}, second={}, similarity={}",
+                first.len(),
+                second.len(),
+                similarity.len()
+            ));
+        }
+        let mut grouped = BTreeMap::<(i64, i64), Vec<f64>>::new();
+        for ((first, second), similarity) in first.into_iter().zip(second).zip(similarity) {
+            grouped.entry((first, second)).or_default().push(similarity);
+        }
+        for values in grouped.values_mut() {
+            values.sort_by(|left, right| left.total_cmp(right));
+        }
+        Ok(grouped)
+    };
+
+    let actual = rows(actual)?;
+    let expected = rows(expected)?;
+    let actual_pairs = actual.keys().copied().collect::<BTreeSet<_>>();
+    let expected_pairs = expected.keys().copied().collect::<BTreeSet<_>>();
+    if actual_pairs != expected_pairs {
+        return Err(format!("similarity pair multiset keys differ: GPU={actual_pairs:?} expected={expected_pairs:?}"));
+    }
+    for pair in actual_pairs {
+        let actual_values = actual.get(&pair).expect("pair came from actual keys");
+        let expected_values = expected.get(&pair).expect("pair came from expected keys");
+        if actual_values.len() != expected_values.len() {
+            return Err(format!(
+                "similarity pair {pair:?} multiplicity mismatch: GPU={} expected={}",
+                actual_values.len(),
+                expected_values.len()
+            ));
+        }
+        for (duplicate, (actual, expected)) in actual_values.iter().zip(expected_values).enumerate() {
+            if !numbers_close(*actual, *expected, abs, rel) {
+                let tolerance = abs.max(rel * actual.abs().max(expected.abs()));
+                return Err(format!(
+                    "similarity pair {pair:?} duplicate {duplicate} mismatch: GPU={actual} expected={expected} tolerance={tolerance}"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn compare_bfs(actual: &Table, expected: &Table, edges: &[ParityEdge]) -> Result<(), String> {
@@ -743,7 +803,7 @@ mod tests {
             params_json: r#"{"resolution":1.0}"#,
             seed: Some(0),
             truth_source: ParityTruthSource::OracleJson,
-            oracle_relpath: "test.json",
+            oracle_relpath: Some("test.json"),
             comparator: ParityComparator::PartitionQuality,
             tolerance: ParityTolerance { abs: abs_tolerance, rel: 0.0 },
         }
@@ -879,6 +939,25 @@ mod tests {
         compare_edges(&table(vec![0, 1, 2], vec![1, 0, 3]), &table(vec![1, 3], vec![0, 2])).unwrap();
         let error = compare_edges(&table(vec![0, 0], vec![1, 1]), &table(vec![0], vec![1])).unwrap_err();
         assert!(error.contains("duplicate directed row"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn similarity_multiset_comparison_preserves_duplicates_orientation_and_self_pairs() {
+        let table = |first: Vec<i64>, second: Vec<i64>, similarity: Vec<f64>| Table {
+            rows: first.len(),
+            columns: BTreeMap::from([
+                ("first".to_string(), first.into_iter().map(Cell::Int).collect()),
+                ("second".to_string(), second.into_iter().map(Cell::Int).collect()),
+                ("similarity".to_string(), similarity.into_iter().map(Cell::Float).collect()),
+            ]),
+        };
+        let expected = table(vec![0, 0, 3, 0], vec![3, 3, 0, 0], vec![2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 1.0]);
+        let reordered = table(vec![0, 3, 0, 0], vec![0, 0, 3, 3], vec![1.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0]);
+        compare_similarity_multiset(&reordered, &expected, 1.0e-12, 1.0e-12).unwrap();
+
+        let missing_duplicate = table(vec![0, 3, 0], vec![3, 0, 0], vec![2.0 / 3.0, 2.0 / 3.0, 1.0]);
+        let error = compare_similarity_multiset(&missing_duplicate, &expected, 1.0e-12, 1.0e-12).unwrap_err();
+        assert!(error.contains("multiplicity mismatch"), "unexpected error: {error}");
     }
 
     #[test]

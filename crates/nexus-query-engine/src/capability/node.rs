@@ -735,7 +735,22 @@ fn graph_algorithm_node_executable_decision(
         );
     }
 
-    if graph.output_schema().as_ref() != crate::plan::graph_result_schema_for_params(&graph.spec.params).as_ref() {
+    if let crate::plan::GraphAlgorithmParams::Similarity(params) = &graph.spec.params {
+        let vertex_type = input
+            .output_schema()
+            .field_with_name(&graph.spec.edge_columns.source)
+            .expect("source column was validated above")
+            .data_type();
+        let pair_input_decision =
+            graph_similarity_pair_input_decision(plan, node_id, &params.vertex_pairs, vertex_type);
+        if !matches!(pair_input_decision, CapabilityDecision::Satisfied) {
+            return pair_input_decision;
+        }
+    }
+
+    if graph.output_schema().as_ref()
+        != crate::plan::graph_result_schema_for_params(graph.spec.algorithm, &graph.spec.params).as_ref()
+    {
         return CapabilityDecision::rejected(
             "unsupported_graph_algorithm_node_capability",
             [
@@ -747,6 +762,84 @@ fn graph_algorithm_node_executable_decision(
         );
     }
 
+    CapabilityDecision::Satisfied
+}
+
+fn graph_similarity_pair_input_decision(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    pair_input: &crate::plan::GraphVertexPairInput,
+    vertex_type: &arrow::datatypes::DataType,
+) -> CapabilityDecision {
+    let Some(input) = plan.node(pair_input.input) else {
+        return CapabilityDecision::rejected(
+            "unsupported_graph_algorithm_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "missing_vertex_pair_input_node".to_string()),
+                ("pair_input", pair_input.input.to_string()),
+            ],
+        );
+    };
+    let Some(first) = input.output_schema().field_with_name(&pair_input.first_column).ok() else {
+        return CapabilityDecision::rejected(
+            "unsupported_graph_algorithm_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "missing_vertex_pair_column".to_string()),
+                ("pair_column_role", "first".to_string()),
+                ("column", pair_input.first_column.clone()),
+            ],
+        );
+    };
+    let Some(second) = input.output_schema().field_with_name(&pair_input.second_column).ok() else {
+        return CapabilityDecision::rejected(
+            "unsupported_graph_algorithm_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "missing_vertex_pair_column".to_string()),
+                ("pair_column_role", "second".to_string()),
+                ("column", pair_input.second_column.clone()),
+            ],
+        );
+    };
+    if first.data_type() != second.data_type() {
+        return CapabilityDecision::rejected(
+            "unsupported_graph_algorithm_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "vertex_pair_dtype_mismatch".to_string()),
+                ("first_column", pair_input.first_column.clone()),
+                ("first_type", format!("{:?}", first.data_type())),
+                ("second_column", pair_input.second_column.clone()),
+                ("second_type", format!("{:?}", second.data_type())),
+            ],
+        );
+    }
+    if !matches!(first.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+        return CapabilityDecision::rejected(
+            "unsupported_graph_algorithm_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "unsupported_vertex_pair_type".to_string()),
+                ("pair_column_role", "first".to_string()),
+                ("column", pair_input.first_column.clone()),
+                ("data_type", format!("{:?}", first.data_type())),
+            ],
+        );
+    }
+    if first.data_type() != vertex_type {
+        return CapabilityDecision::rejected(
+            "unsupported_graph_algorithm_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "vertex_pair_graph_vertex_dtype_mismatch".to_string()),
+                ("first_column", pair_input.first_column.clone()),
+                ("pair_type", format!("{:?}", first.data_type())),
+                ("vertex_type", format!("{vertex_type:?}")),
+            ],
+        );
+    }
     CapabilityDecision::Satisfied
 }
 

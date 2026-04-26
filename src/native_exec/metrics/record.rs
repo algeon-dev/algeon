@@ -330,6 +330,24 @@ impl NexusNativeMetrics {
                     "weight_width_bytes",
                     row.weight_width_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
                 )
+                .with_new_label(
+                    "pair_rows",
+                    row.pair_rows.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "pair_vertex_width_bytes",
+                    row.pair_vertex_width_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "pair_cardinality_source",
+                    row.pair_cardinality_source
+                        .map_or_else(|| "none".to_string(), |source| source.as_str().to_string()),
+                )
+                .with_new_label(
+                    "pair_cardinality_admission_mode",
+                    row.pair_cardinality_admission_mode
+                        .map_or_else(|| "none".to_string(), |mode| mode.as_str().to_string()),
+                )
                 .with_new_label("has_edge_id", row.has_edge_id.to_string())
                 .with_new_label("directed", row.directed.to_string())
                 .with_new_label("renumber", row.renumber.to_string())
@@ -354,6 +372,10 @@ impl NexusNativeMetrics {
                 .with_new_label(
                     "graph_model_error_ratio",
                     row.graph_model_error_ratio.map_or_else(|| "none".to_string(), |ratio| ratio.as_decimal_string()),
+                )
+                .with_new_label(
+                    "measured_peak_bytes",
+                    row.measured_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
                 )
                 .with_new_label(
                     "graph_statistics_exact_vertices",

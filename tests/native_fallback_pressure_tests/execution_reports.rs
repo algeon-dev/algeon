@@ -220,6 +220,11 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.graph_reservation_rows[0].requested_bytes, 4096);
     assert_eq!(row.metrics.graph_reservation_rows[0].budget_bytes, Some(1048576));
     assert_eq!(row.metrics.graph_reservation_rows[0].graph_model_error_ratio.as_deref(), Some("2.000"));
+    assert_eq!(row.metrics.graph_reservation_rows[0].pair_rows, None);
+    assert_eq!(row.metrics.graph_reservation_rows[0].pair_vertex_width_bytes, None);
+    assert_eq!(row.metrics.graph_reservation_rows[0].pair_cardinality_source, "none");
+    assert_eq!(row.metrics.graph_reservation_rows[0].pair_cardinality_admission_mode, "none");
+    assert_eq!(row.metrics.graph_reservation_rows[0].measured_peak_bytes, Some(2048));
     assert_eq!(row.metrics.graph_reservation_rows[0].graph_statistics_exact_vertices, None);
 
     let text = report.to_tsv();
@@ -279,6 +284,8 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert!(text.contains("seed_mode=none"));
     assert!(text.contains("model_requested_bytes=4096"));
     assert!(text.contains("graph_model_error_ratio=2.000"));
+    assert!(text.contains("pair_cardinality_source=none,pair_cardinality_admission_mode=none"));
+    assert!(text.contains("measured_peak_bytes=2048"));
     assert!(text.contains("graph_statistics_exact_vertices=none"));
     assert!(
         text.contains(

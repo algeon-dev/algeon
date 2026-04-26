@@ -1,5 +1,18 @@
 use super::*;
 
+pub(super) fn similarity_params(spec: &crate::plan::GraphAlgorithmSpec) -> cugraph::similarity::SimilarityParams {
+    cugraph::similarity::SimilarityParams {
+        // The graph definition owns whether a weight binding is meaningful for
+        // this algorithm. A present binding is projected into graph
+        // construction and must select the corresponding cuGraph metric path.
+        use_weight: spec.edge_columns.weight.is_some(),
+        // Pair endpoints are relation-backed and must be validated against the
+        // constructed graph domain by libcugraph; skipping this turns invalid
+        // endpoints into an implementation detail of the selected metric.
+        do_expensive_check: true,
+    }
+}
+
 pub(super) fn hits_params(params: &crate::plan::GraphHitsParams) -> Result<cugraph::centrality::HitsParams> {
     Ok(cugraph::centrality::HitsParams {
         epsilon: cugraph::params::NonNegativeF64::new(params.epsilon).map_err(map_cugraph_error(
