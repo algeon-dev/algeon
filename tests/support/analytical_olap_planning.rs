@@ -4,10 +4,8 @@ use datafusion::prelude::SessionConfig;
 use datafusion_nexus::{native_report::NativeDataFusionPlanningWorkloadItem, planner::CudfOptimizerConfig};
 use datafusion_nexus_workloads::tpch::TpchWorkloadResult;
 
-use crate::{
-    analytical_olap_workload::ANALYTICAL_OLAP_QUERIES,
-    tpch_report::{datafusion_planning_workload_items, tpch_native_optimizer_config},
-};
+use super::tpch_report::{datafusion_planning_workload_items, tpch_native_optimizer_config};
+use crate::analytical_olap_workload::ANALYTICAL_OLAP_QUERIES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AnalyticalOlapCurrentStrictAdmission {

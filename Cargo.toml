@@ -22,13 +22,19 @@ default-members = [
   ".",
   "crates/datafusion-nexus-workloads",
   "crates/nexus-query-engine",
-  "crates/datafusion-nexus-bench",
 ]
 resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
 rust-version = "1.94"
+
+# Line tables only. Full debuginfo left every integration harness near 2 GiB and
+# dominated link time on the local edit loop; file:line failure diagnostics remain
+# with debug = 1. Do not combine this with other profile experiments in the same
+# measurement (see docs/plan/2026-07-22-test-build-feedback-loop-plan.md).
+[profile.test]
+debug = 1
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"

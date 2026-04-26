@@ -170,6 +170,41 @@ def load_inventory(path: Path) -> list[InventoryBinary]:
     return sorted(records, key=lambda record: record.binary_id)
 
 
+def merge_inventories(inventories: list[list[InventoryBinary]]) -> list[InventoryBinary]:
+    """Union one or more nextest inventories.
+
+    Matching binary-id + binary-name pairs from distinct inventories coalesce so
+    the harness can validate default-member and explicit bench surfaces both
+    before and after bench leaves default-members. Conflicting names fail closed.
+    """
+    if not inventories:
+        raise InventoryError("at least one nextest JSON inventory is required")
+
+    by_id: dict[str, InventoryBinary] = {}
+    seen_names: dict[str, str] = {}
+    for records in inventories:
+        for record in records:
+            existing = by_id.get(record.binary_id)
+            if existing is not None:
+                if existing.binary_name != record.binary_name:
+                    raise LanePolicyError(
+                        "conflicting binary-name for "
+                        f"{record.binary_id}: {existing.binary_name!r} vs {record.binary_name!r}"
+                    )
+                continue
+            previous = seen_names.get(record.binary_name)
+            if previous is not None:
+                raise LanePolicyError(
+                    f"test-binary name collision {record.binary_name!r}: {previous} and {record.binary_id}"
+                )
+            by_id[record.binary_id] = record
+            seen_names[record.binary_name] = record.binary_id
+
+    if not by_id:
+        raise InventoryError("nextest JSON inventory contained no test binaries")
+    return sorted(by_id.values(), key=lambda record: record.binary_id)
+
+
 def filter_expression(entry: LaneEntry) -> str:
     if "::" not in entry.binary_id:
         return f"(package({entry.package}) & kind(lib))"
@@ -278,7 +313,7 @@ def command_check_catalog(args: argparse.Namespace) -> None:
 def command_validate(args: argparse.Namespace) -> None:
     entries = load_catalog(args.catalog)
     check_nextest(entries, args.nextest)
-    inventory = load_inventory(args.inventory)
+    inventory = merge_inventories([load_inventory(path) for path in args.inventory])
     stale = validate_inventory(entries, inventory, narrow=args.feature_mode == "narrow")
     if stale:
         print("WARN: catalog binaries absent from explicit narrower feature inventory:", file=sys.stderr)
@@ -308,7 +343,13 @@ def build_parser() -> argparse.ArgumentParser:
     catalog.set_defaults(function=command_check_catalog)
 
     validate = subparsers.add_parser("validate-inventory")
-    validate.add_argument("--inventory", type=Path, required=True)
+    validate.add_argument(
+        "--inventory",
+        type=Path,
+        required=True,
+        action="append",
+        help="nextest binaries-only JSON inventory; repeat to union multiple package surfaces",
+    )
     validate.add_argument("--feature-mode", choices=("all", "narrow"), required=True)
     validate.set_defaults(function=command_validate)
 

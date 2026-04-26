@@ -70,29 +70,25 @@ use nexus_query_engine::{
     source::{GpuResidentSource, LocalParquetSource, SourceNode},
 };
 
-#[path = "support/analytical_olap_planning.rs"]
+#[path = "../support/analytical_olap_planning.rs"]
 mod analytical_olap_planning;
-#[path = "support/analytical_olap_workload.rs"]
-mod analytical_olap_workload;
-#[path = "support/tpch_fallback_workload.rs"]
-mod tpch_fallback_workload;
-#[path = "support/tpch_report.rs"]
+#[path = "../support/tpch_report.rs"]
 mod tpch_report;
-#[path = "support/tpch_session.rs"]
-mod tpch_session;
 
 use analytical_olap_planning::{
     ANALYTICAL_OLAP_STRICT_ADMISSION_EXPECTATIONS, AnalyticalOlapCurrentStrictAdmission,
     analytical_olap_datafusion_planning_workload_items,
     analytical_olap_datafusion_planning_workload_items_with_optimizer_config, analytical_olap_strict_admission,
 };
-use analytical_olap_workload::*;
-use tpch_fallback_workload::tpch_fallback_pressure_workload_items;
 use tpch_report::{
     TestReportDatasetMetadataExt, tpch_datafusion_planning_workload_items, tpch_native_optimizer_config,
     tpch_scalar_fallback_pressure_workload_items,
 };
-use tpch_session::tpch_report_session_config;
+
+use crate::{
+    analytical_olap_workload::*, tpch_fallback_workload::tpch_fallback_pressure_workload_items,
+    tpch_session::tpch_report_session_config,
+};
 
 const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] = &[
     "q01", "q02", "q03", "q04", "q05", "q06", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q15", "q16",
@@ -103,17 +99,17 @@ const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] = &[
     "q21", "q18", "q20", "q22",
 ];
 
-#[path = "native_fallback_pressure_tests/analytical_olap.rs"]
+#[path = "../native_fallback_pressure_tests/analytical_olap.rs"]
 mod analytical_olap;
-#[path = "native_fallback_pressure_tests/execution_reports.rs"]
+#[path = "../native_fallback_pressure_tests/execution_reports.rs"]
 mod execution_reports;
-#[path = "native_fallback_pressure_tests/mixed_fallback.rs"]
+#[path = "../native_fallback_pressure_tests/mixed_fallback.rs"]
 mod mixed_fallback;
-#[path = "native_fallback_pressure_tests/sql.rs"]
+#[path = "../native_fallback_pressure_tests/sql.rs"]
 mod sql;
-#[path = "native_fallback_pressure_tests/support.rs"]
+#[path = "../native_fallback_pressure_tests/support.rs"]
 mod support;
-#[path = "native_fallback_pressure_tests/tpch_reports.rs"]
+#[path = "../native_fallback_pressure_tests/tpch_reports.rs"]
 mod tpch_reports;
 
 use sql::*;

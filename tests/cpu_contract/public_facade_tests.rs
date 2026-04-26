@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-#[path = "support/public_surface.rs"]
+#[path = "../support/public_surface.rs"]
 mod public_surface;
 
 use public_surface::{assert_modules_are_private, assert_no_crate_root_reexports, assert_no_removed_public_surface};

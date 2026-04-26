@@ -1,6 +1,7 @@
-# Repository-owned lane admission policy. One entry per live default-member
-# nextest binary. IDs are nextest's complete
-# `binary-id`; lane and GPU resource class are reviewed runtime properties.
+# Repository-owned lane admission policy. One entry per live pre-merge-admitted
+# nextest binary (default-member surface + explicit all-feature bench surface).
+# IDs are nextest's complete `binary-id`; lane and GPU resource class are
+# reviewed runtime properties.
 
 [[binary]]
 id = "datafusion-nexus"
@@ -60,9 +61,9 @@ resource_class = "shared"
 reason = "cuGraph SQL parity and algorithm tests construct and execute GPU graphs on small fixtures."
 
 [[binary]]
-id = "datafusion-nexus::error_tests"
+id = "datafusion-nexus::cpu_contract_tests"
 lane = "cpu"
-reason = "Structured error contract tests do not create a native runtime."
+reason = "Merged CPU contract harness covering structured errors, policy reports, public facade reachability, and table-format scan planning without creating a native runtime."
 
 [[binary]]
 id = "datafusion-nexus::iceberg_tests"
@@ -77,14 +78,9 @@ resource_class = "shared"
 reason = "Native execution integration tests create cuDF runtimes; their explicit budgets and fixtures permit reviewed shared execution."
 
 [[binary]]
-id = "datafusion-nexus::native_fallback_pressure_tests"
+id = "datafusion-nexus::native_planning_tests"
 lane = "cpu"
-reason = "Fallback pressure tests use synthetic metrics/plans and do not submit native GPU work."
-
-[[binary]]
-id = "datafusion-nexus::native_lowering_tests"
-lane = "cpu"
-reason = "Lowering tests assert structured plans and admission reports without executing the lowered GPU plan."
+reason = "Merged CPU native planning harness covering lowering shape/admission contracts and fallback-pressure synthetic metrics/plans without submitting native GPU work."
 
 [[binary]]
 id = "datafusion-nexus::native_metrics_tests"
@@ -103,16 +99,6 @@ id = "datafusion-nexus::native_tpcds_parity_tests"
 lane = "gpu"
 resource_class = "shared"
 reason = "Remaining TPC-DS harness coverage executes GPU-capable parity infrastructure and remains serialized with shared CUDA users."
-
-[[binary]]
-id = "datafusion-nexus::policy_report_tests"
-lane = "cpu"
-reason = "Policy report tests assert structured planning outcomes without runtime execution."
-
-[[binary]]
-id = "datafusion-nexus::public_facade_tests"
-lane = "cpu"
-reason = "Public facade tests validate API reachability and types without opening CUDA."
 
 [[binary]]
 id = "datafusion-nexus::server_cugraph_tests"
@@ -141,11 +127,6 @@ id = "datafusion-nexus::session_config_tests"
 lane = "gpu"
 resource_class = "shared"
 reason = "Session configuration tests include SQL paths that initialize the native cuDF execution context."
-
-[[binary]]
-id = "datafusion-nexus::table_format_scan_tests"
-lane = "cpu"
-reason = "Table-format scan tests exercise CPU-side planning and metadata contracts only."
 
 [[binary]]
 id = "nexus-query-engine"

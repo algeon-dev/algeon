@@ -163,7 +163,9 @@ assert_phase_contains() {
   local phase=$2
   local expected=$3
   local row
-  row=$(grep -F "${phase} | " "${file}" | tail -n 1) || {
+  # Anchor at the start of the phase column so "rustdoc" does not also match
+  # the later "bench-rustdoc" row introduced by the explicit bench phases.
+  row=$(grep -E "^${phase} \\| " "${file}" | tail -n 1) || {
     echo "FAIL: ${file} has no phase-table row for ${phase}" >&2
     sed 's/^/  /' "${file}" >&2
     exit 1
