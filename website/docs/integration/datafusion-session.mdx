@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 sidebar_label: DataFusion Session
-description: Integrate DataFusion Nexus by installing the native cuDF optimizer and optional cuGraph SQL functions on a DataFusion SessionContext.
+description: Integrate DataFusion Nexus by installing the native cuDF optimizer and optional cuGraph and cuVS SQL functions on a DataFusion SessionContext.
 ---
 
 # DataFusion Session
@@ -16,7 +16,7 @@ Add the dependencies with the features you need:
 # Cargo.toml
 [dependencies]
 datafusion = "54"
-datafusion-nexus = { version = "0.1", features = ["cugraph", "iceberg"] }
+datafusion-nexus = { version = "0.1", features = ["cugraph", "cuvs", "iceberg"] }
 ```
 
 For production-style embedded use, build one process-scoped `NexusGpuBackend`
@@ -209,6 +209,41 @@ table functions directly on an already-built `SessionContext`
 (`register_cugraph_udtfs`) bypasses backend admission and is not safe for
 backend-managed processes.
 
+## cuVS SQL functions
+
+`install_on` installs the relation-aware cuVS planner and the common GPU
+function metadata surface. Build with the `cuvs` feature to execute
+`cuvs_*` calls. Unlike cuGraph, there is no server-style enable flag for cuVS:
+the Cargo feature and the session memory policy determine availability.
+
+`NexusGpuBackend` currently owns bounded QueryService admission, while cuVS has
+no lower-level bounded peak-memory preflight. A backend-managed bounded session
+therefore rejects cuVS execution with structured `unsupported_operator`; it
+never falls back to CPU. For local single-query embedded work, install the
+planner with an explicitly unbounded direct configuration:
+
+```rust
+use datafusion::execution::SessionStateBuilder;
+use datafusion_nexus::{
+    native_exec::NexusNativeExecutionConfig,
+    planner::NexusNativeOptimizerConfig,
+    session::NexusSessionStateBuilderExt,
+};
+
+let state = SessionStateBuilder::new()
+    .with_default_features()
+    .with_nexus_native(
+        NexusNativeOptimizerConfig::default()
+            .with_native_execution_config(NexusNativeExecutionConfig::unbounded()),
+    )
+    .try_with_cuvs_sql()?
+    .build();
+```
+
+Use this mode only when the process and GPU are dedicated to the work. See
+[Vector Inputs](../cuvs/vector-inputs.mdx) for the relation contract and
+[cuVS Functions](../cuvs/operations/index.mdx) for operation lifecycles.
+
 ## Direct optimizer install
 
 For local single-query experiments, you can still install the raw optimizer rule
@@ -235,7 +270,9 @@ error at execute time) rather than stack a second full-budget
 ledger. Use `NexusGpuBackend` whenever the embedding process can run more than
 one GPU query at a time or mixes cuGraph with native execution.
 
-The same [discovery and validation functions](../cugraph/discovery-and-validation.mdx)
-work in-process: run `SELECT * FROM gpu_list_functions()` (optionally filtering
-with `provider = 'cugraph'`) or `gpu_validate_call(...)` against your
-`SessionContext` before executing GPU graph work.
+The same metadata functions work in-process. Follow
+[Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx)
+before executing GPU work; the
+[GPU Function Catalog API](../reference/gpu-function-catalog.mdx) defines
+`gpu_list_functions()`, `gpu_describe_function(...)`, and
+`gpu_validate_call(...)` for your `SessionContext`.

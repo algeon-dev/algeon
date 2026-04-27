@@ -12,11 +12,11 @@ Arrow Flight SQL and receive Arrow-native result batches.
 ## Build
 
 Build the server with the features your endpoint needs. Add `cugraph` for graph
-SQL and `iceberg` for Iceberg/Glue/REST/S3 sources. Workspace Cargo builds
+SQL, `cuvs` for vector SQL, and `iceberg` for Iceberg/Glue/REST/S3 sources. Workspace Cargo builds
 require the mold linker and clang on the host ([Build prerequisites](../build/prerequisites.md#rust-linker-mold)):
 
 ```bash
-cargo build --release --features server,cugraph,iceberg --bin datafusion_nexus_server
+cargo build --release --features server,cugraph,cuvs,iceberg --bin datafusion_nexus_server
 ```
 
 ## Start the citation demo server
@@ -55,7 +55,8 @@ flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 
 The startup log should show `iceberg_enabled=true`, `cugraph_enabled=true`, a
 non-zero `cugraph_registry_algorithm_count`, and a workspace overlay backed by
-`lake.citation_network`.
+`lake.citation_network`. cuVS has no separate server enable variable: verify
+the compiled `cuvs` feature through the unified catalog after startup.
 
 For the meaning of each server variable, see
 [Configuration](./configuration.mdx). For the tables used by the
@@ -93,7 +94,7 @@ with dbapi.connect(uri="grpc://127.0.0.1:50051") as conn:
         cur.execute("""
             SELECT function_name, signature, summary
             FROM gpu_list_functions()
-            WHERE provider = 'cugraph'
+            WHERE provider IN ('cugraph', 'cuvs')
             ORDER BY function_name
         """)
         algorithms = cur.fetch_arrow_table()
@@ -165,5 +166,8 @@ Output formats: `--output table` (default, shows column headers), `json`, `csv`,
 `tsv`, `psv`.
 
 Whether standalone or embedded, native execution runs on the GPU. The process
-must run on a machine with a CUDA-capable device and the matching cuDF and,
-when graph SQL is enabled, cuGraph runtime libraries available.
+must run on a machine with a CUDA-capable device and matching cuDF plus the
+cuGraph and/or cuVS runtime libraries selected by its Cargo features. `cuvs_*`
+calls require `NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded`; a bounded Flight
+SQL server returns structured `unsupported_operator` instead of falling back to
+the host.

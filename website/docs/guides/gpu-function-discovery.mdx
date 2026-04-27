@@ -1,0 +1,92 @@
+---
+sidebar_position: 1
+slug: /guides/gpu-function-discovery
+title: Discover & Validate GPU Functions
+sidebar_label: Discover & Validate GPU Functions
+description: Find installed GPU SQL functions, inspect their contracts, validate a call, and then verify whole-query GPU coverage.
+---
+
+# Discover & Validate GPU Functions
+
+Use this guide before adding a cuGraph or cuVS function to a query. It follows
+the same sequence for embedded sessions and Flight SQL: list what this build
+can run, inspect one contract, validate the call without executing it, then
+check the complete query before production use.
+
+For every returned column, JSON schema, and validation-envelope rule, see the
+[GPU Function Catalog API](../reference/gpu-function-catalog.mdx).
+
+## 1. List installed functions
+
+Start with the functions available in the current build and session. Filter by
+provider when you already know the workload:
+
+~~~sql
+SELECT function_name, provider, domain, available, summary
+FROM gpu_list_functions()
+WHERE provider IN ('cugraph', 'cuvs')
+ORDER BY function_name;
+~~~
+
+Availability is static planning availability for that function. It does not
+reserve GPU memory, inspect relation rows, or prove that a surrounding query is
+fully GPU-native. A cuVS function is unavailable in bounded execution until
+cuVS has a lower-level peak-memory preflight; see the
+[cuVS SQL API](../cuvs/overview.mdx) for that execution boundary.
+
+## 2. Describe the selected function
+
+Retrieve the canonical signature, relation roles, option schema, output schema,
+and lifecycle limits before constructing a call:
+
+~~~sql
+SELECT signature, relation_roles_json, options_schema_json,
+       result_schemas_json, limitations_json
+FROM gpu_describe_function('cugraph_pagerank');
+~~~
+
+Function names are exact canonical names. The returned descriptor is useful
+when a client or agent needs to construct SQL dynamically, while the provider
+function pages explain the same contract in task-specific terms.
+
+## 3. Validate a concrete call
+
+Validate registered relation metadata and the provider-owned options before
+execution:
+
+~~~sql
+SELECT *
+FROM gpu_validate_call(
+  'cugraph_pagerank',
+  '{
+    "schema_version":1,
+    "relations":{"edges":{"table":"analytics.edges"}},
+    "options":{"src_col":"src","dst_col":"dst","weight_col":"weight"}
+  }'
+);
+~~~
+
+Validation resolves named tables or views only. It does not scan rows, run a
+subquery, allocate GPU memory, or start a CUDA kernel. Register a derived
+relation as a temporary view when it needs metadata validation.
+
+## 4. Execute with the provider's relation syntax
+
+The catalog workflow is shared, but execution SQL intentionally differs:
+
+- cuGraph passes a registered edge table or view by its positional name, such
+  as cugraph_pagerank('edges', 'src', 'dst').
+- cuVS passes each relation as a parenthesized SELECT subquery, such as
+  cuvs_kmeans((SELECT item_id, d0, d1 FROM embeddings), '&lt;options-json&gt;').
+
+Use the [cuGraph Functions](../cugraph/algorithms/index.mdx) and
+[cuVS Functions](../cuvs/operations/index.mdx) pages for each function's signature,
+input contract, outputs, and lifecycle.
+
+## 5. Check whole-query GPU coverage
+
+gpu_validate_call covers one selected function call. It does not inspect
+DataFusion operators, sources, or host boundaries feeding and consuming that
+call. Before shipping a composed query, use
+[GPU coverage validation](../integration/gpu-coverage-validation.mdx) to check
+the final planned path.

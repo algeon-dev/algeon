@@ -1,16 +1,20 @@
 ---
-title: cuvs_pca
-sidebar_label: cuvs_pca
+title: PCA
+sidebar_label: PCA
 description: "Principal-component analysis transform for dense vector rows."
 ---
 
 {/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}
 
-# cuvs_pca
+# PCA
+
+SQL function: `cuvs_pca`
 
 Principal-component analysis transform for dense vector rows.
 
-Provider: `cuvs`. Domain: `vector`.
+## Use this when
+
+Use this when one statement should fit and transform its evaluated input relation for relational export or downstream visualization.
 
 ## Signature
 
@@ -18,60 +22,86 @@ Provider: `cuvs`. Domain: `vector`.
 cuvs_pca((input relation subquery), options_json)
 ```
 
-## Execution call shape
-
-Each relation argument is a parenthesized `SELECT` subquery. The execution function preserves those subqueries as real planner children; a bare table identifier or quoted table-name string is intentionally rejected.
+## Quickstart
 
 ```sql
-SELECT * FROM cuvs_pca(
+SELECT id, pc_0, pc_1
+FROM cuvs_pca(
   (SELECT item_id, d0, d1 FROM input_vectors),
   '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_components":2}'
-);
+)
+ORDER BY row_ordinal;
 ```
 
-## Validation relations
+## Relation inputs
 
-For metadata validation, use registered named tables or views in the common envelope:
+Every execution relation argument is a parenthesized `SELECT` subquery. The planner retains that relation as a real logical and physical child; a bare table identifier or quoted table-name string is rejected. Metadata validation instead uses a registered named table or view in its relation envelope.
 
-| Role | Required | Reference | Description |
+| Role | Required | Validation reference | Description |
 | --- | --- | --- | --- |
-| `input` | yes | `table` | Dense-vector input relation. |
+| `input` | yes | `table` | Dense-vector rows consumed by the fit-and-transform operation. |
 
-## Options JSON
+See [Vector Inputs](../vector-inputs.mdx) for the ID and dense-vector type, null, finite-value, and runtime-dimension contract.
 
-| Option | Required | JSON type | Default | Constraints |
-| --- | --- | --- | --- | --- |
-| `flip_signs_based_on_u` | no | `boolean` | `false` |  |
-| `input` | yes | `object` |  |  |
-| `n_components` | yes | `integer` |  | minimum 1; maximum 2147483647 |
-| `n_iterations` | no | `integer` | `15` | minimum 1; maximum 2147483647 |
-| `solver` | no | `string` | `"cov_eig_dq"` | one of `"cov_eig_dq"`, `"cov_eig_jacobi"` |
-| `tol` | no | `number` | `0` | minimum 0 |
-| `whiten` | no | `boolean` | `false` |  |
+## Scalar arguments & JSON options
 
-Unknown option keys are rejected.
+### Scalar SQL arguments
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `options_json` | `JSON string literal` | yes | cuVS operation options and relation-column bindings |
+
+### JSON options
+
+| Option | Required | JSON shape | Default | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `flip_signs_based_on_u` | no | `boolean` | `false` |  | Whether cuVS applies its U-based component-sign convention. |
+| `input` | yes | `object` |  |  | Names the input ID column and one dense-vector binding shape. |
+| `n_components` | yes | `integer` |  | minimum 1; maximum 2147483647 | Number of principal-component columns emitted as pc_0 through pc_&lt;n_components - 1&gt;. |
+| `n_iterations` | no | `integer` | `15` | minimum 1; maximum 2147483647 | Maximum eigensolver iterations for this invocation. |
+| `solver` | no | `string` | `"cov_eig_dq"` | one of `"cov_eig_dq"`, `"cov_eig_jacobi"` | Covariance eigensolver used for this fit-transform call. |
+| `tol` | no | `number` | `0` | minimum 0 | Non-negative eigensolver tolerance. |
+| `whiten` | no | `boolean` | `false` |  | Whether the query-local transformed components are whitened. |
+
+### Vector binding shapes
+
+`id`: Non-null logical row ID column. IDs may repeat; result ordinals disambiguate physical rows.
+
+| Shape | JSON | Contract |
+| --- | --- | --- |
+| Wide Float32 columns | `{"vector":{"columns":["d0","d1"]}}` | Ordered, unique non-null Float32 feature columns; order defines vector dimensions. |
+| List column | `{"vector":{"column":"embedding"}}` | One non-null FixedSizeList&lt;Float32, D&gt;, List&lt;Float32&gt;, or LargeList&lt;Float32&gt; column. |
+
+Choose exactly one dense-vector binding shape.
 
 ## Output schema
 
-| Column | Type | Nullable | Notes |
+| Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `row_ordinal` | `UInt64` | no |  |
-| `id` | `same_as_input.id` | no |  |
-| `pc_<index>` | `Float32` | no | repeats: n_components |
+| `row_ordinal` | `UInt64` | no | Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs. |
+| `id` | `same_as_input.id` | no | Logical ID copied from the input relation. |
+| `pc_<index>` | `Float32` | no | One transformed principal-component value; the field count is set by the literal n_components option.; repeats: n_components |
 
-## Limitations & notes
+**Concrete schemas are call-specific.** Run `gpu_validate_call` against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+
+## Limitations & lifecycle
 
 - Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
 - Bounded cuVS execution is unavailable until the lower-level peak-memory preflight contract exists.
-- Execution relation arguments support parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Fits and transforms the evaluated input in one statement; it does not return a reusable transform, components, or explained-variance metadata.
+- The evaluated input needs at least two rows and two dimensions, and n_components must not exceed the evaluated dimension.
+- Component sign orientation is not a semantic label. The output schema changes with the literal n_components option.
 
 ## Validate before running
+
+Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cuvs_pca',
-  '{"schema_version":1,"relations":{"input":{"table":"input_vectors"}},"options":{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_components":2}}'
+  '{"options":{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_components":2},"relations":{"input":{"table":"input_vectors"}},"schema_version":1}'
 );
 ```
 
-See [Discovery & Validation](../../cugraph/discovery-and-validation.mdx) for the common `gpu_validate_call` contract.
+See [GPU Function Catalog API](../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.

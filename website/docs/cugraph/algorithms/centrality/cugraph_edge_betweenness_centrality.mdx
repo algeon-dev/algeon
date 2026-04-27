@@ -12,6 +12,10 @@ SQL function: `cugraph_edge_betweenness_centrality`
 
 Compute exact or explicitly seeded/k-sampled approximate edge betweenness centrality scores.
 
+## Use this when
+
+Use this when a SQL statement needs Edge Betweenness Centrality results over a registered edge relation.
+
 ## Signature
 
 ```sql
@@ -24,7 +28,17 @@ cugraph_edge_betweenness_centrality(table_name [, src_col, dst_col [, weight_col
 SELECT * FROM cugraph_edge_betweenness_centrality('target_edges')
 ```
 
-## Non-relation arguments
+## Relation inputs
+
+cuGraph consumes a registered edge table or view by its first positional name. It does not accept a parenthesized relation subquery. Metadata validation uses the same registered name.
+
+| Role | Required | Reference | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | `table` | Required edge-list table or view for graph construction. |
+
+## Scalar arguments & JSON options
+
+### Positional scalar arguments
 
 | Argument | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
@@ -32,7 +46,7 @@ SELECT * FROM cugraph_edge_betweenness_centrality('target_edges')
 | `dst_col` | `Utf8` | no | `dst` |  |
 | `weight_col` | `Utf8\|null` | no |  | accepted as an edge-column binding; native algorithm execution does not consume weights; semantic effect: none for this algorithm |
 
-## JSON options
+### JSON options
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -41,7 +55,7 @@ SELECT * FROM cugraph_edge_betweenness_centrality('target_edges')
 | `normalized` | `Boolean` | `true` |  |  |
 | `seeds` | `List<Int64>\|null` | `null` | mutually exclusive with `k` | Explicit seed vertices for approximate betweenness. Null requests exact all-vertex betweenness unless k is set. |
 
-### Graph Construction Options
+### Graph construction options
 
 Shared by all cuGraph functions, shown with this function's defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.
 
@@ -59,7 +73,7 @@ Shared by all cuGraph functions, shown with this function's defaults. See [Graph
 | `destination` | `Int64` | no | Algorithm result column. |
 | `score` | `Float64` | no | Algorithm result column. |
 
-**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../discovery-and-validation.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.
+**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.
 
 ## Examples
 
@@ -67,20 +81,20 @@ import Examples from '../../_examples/cugraph_edge_betweenness_centrality.mdx';
 
 <Examples />
 
-## Limitations & notes
+## Limitations & lifecycle
 
 - dry-run validates table resolution, column presence, static dtypes, and options only
 - dry-run does not scan edge data, construct a graph, or prove source-vertex existence
 
 ## Validate before running
 
-Validation checks named relations, bindings, dtypes, and options without scanning rows or touching the GPU:
+Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_edge_betweenness_centrality',
-  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"src_col":"src","dst_col":"dst"}}'
+  '{"options":{"dst_col":"dst","src_col":"src"},"relations":{"edges":{"table":"target_edges"}},"schema_version":1}'
 );
 ```
 
-See [Discovery & Validation](../../discovery-and-validation.mdx) for the full `gpu_validate_call` contract.
+See [GPU Function Catalog API](../../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.

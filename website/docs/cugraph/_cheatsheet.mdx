@@ -2,32 +2,32 @@
 
 The live catalog contains **27 SQL-visible cuGraph functions**.
 
-| Function | Signature | Summary |
-| --- | --- | --- |
-| [Betweenness Centrality](./algorithms/centrality/cugraph_betweenness_centrality.mdx) | `cugraph_betweenness_centrality` | Compute exact or explicitly seeded/k-sampled approximate betweenness centrality scores. |
-| [BFS](./algorithms/traversal/cugraph_bfs.mdx) | `cugraph_bfs` | Multi-source-capable breadth-first search; source selectors must contain at most one source per connected component. |
-| [Core Number](./algorithms/structure/cugraph_core_number.mdx) | `cugraph_core_number` | Compute graph core numbers. |
-| [Cosine](./algorithms/similarity/cugraph_cosine.mdx) | `cugraph_cosine` | Compute cosine similarity coefficients for explicit candidate vertex pairs. |
-| [Degrees All](./algorithms/structure/cugraph_degrees_all.mdx) | `cugraph_degrees_all` | Compute in-degree and out-degree for every vertex. |
-| [ECG](./algorithms/community/cugraph_ecg.mdx) | `cugraph_ecg` | Detect communities with ensemble clustering for graphs. |
-| [Edge Betweenness Centrality](./algorithms/centrality/cugraph_edge_betweenness_centrality.mdx) | `cugraph_edge_betweenness_centrality` | Compute exact or explicitly seeded/k-sampled approximate edge betweenness centrality scores. |
-| [Eigenvector Centrality](./algorithms/centrality/cugraph_eigenvector_centrality.mdx) | `cugraph_eigenvector_centrality` | Compute eigenvector centrality scores. |
-| [ForceAtlas2](./algorithms/layout/cugraph_force_atlas2.mdx) | `cugraph_force_atlas2` | Compute ForceAtlas2 two-dimensional layout coordinates. |
-| [HITS](./algorithms/centrality/cugraph_hits.mdx) | `cugraph_hits` | Compute HITS hub and authority scores. |
-| [In Degrees All](./algorithms/structure/cugraph_in_degrees_all.mdx) | `cugraph_in_degrees_all` | Compute in-degree for every vertex. |
-| [Jaccard](./algorithms/similarity/cugraph_jaccard.mdx) | `cugraph_jaccard` | Compute Jaccard coefficients for explicit candidate vertex pairs. |
-| [K-Core](./algorithms/structure/cugraph_k_core.mdx) | `cugraph_k_core` | Return the graph k-core edge set. |
-| [Katz Centrality](./algorithms/centrality/cugraph_katz_centrality.mdx) | `cugraph_katz_centrality` | Compute Katz centrality scores. |
-| [Leiden](./algorithms/community/cugraph_leiden.mdx) | `cugraph_leiden` | Detect communities with Leiden optimization. |
-| [Louvain](./algorithms/community/cugraph_louvain.mdx) | `cugraph_louvain` | Detect communities with Louvain modularity optimization. |
-| [Minimum Spanning Tree](./algorithms/connectivity/cugraph_minimum_spanning_tree.mdx) | `cugraph_minimum_spanning_tree` | Compute a minimum spanning tree. |
-| [Out Degrees All](./algorithms/structure/cugraph_out_degrees_all.mdx) | `cugraph_out_degrees_all` | Compute out-degree for every vertex. |
-| [Overlap](./algorithms/similarity/cugraph_overlap.mdx) | `cugraph_overlap` | Compute overlap coefficients for explicit candidate vertex pairs. |
-| [PageRank](./algorithms/centrality/cugraph_pagerank.mdx) | `cugraph_pagerank` | Compute PageRank scores. |
-| [Personalized PageRank](./algorithms/centrality/cugraph_personalized_pagerank.mdx) | `cugraph_personalized_pagerank` | Compute personalized PageRank scores. |
-| [Sorensen](./algorithms/similarity/cugraph_sorensen.mdx) | `cugraph_sorensen` | Compute Sorensen coefficients for explicit candidate vertex pairs. |
-| [Spectral Modularity Maximization](./algorithms/community/cugraph_spectral_modularity_maximization.mdx) | `cugraph_spectral_modularity_maximization` | Cluster vertices with spectral modularity maximization. |
-| [SSSP](./algorithms/traversal/cugraph_sssp.mdx) | `cugraph_sssp` | Compute single-source shortest paths. |
-| [Strongly Connected Components](./algorithms/connectivity/cugraph_strongly_connected_components.mdx) | `cugraph_strongly_connected_components` | Compute strongly connected components. |
-| [Triangle Count All](./algorithms/structure/cugraph_triangle_count_all.mdx) | `cugraph_triangle_count_all` | Compute triangle counts for every vertex. |
-| [Weakly Connected Components](./algorithms/connectivity/cugraph_weakly_connected_components.mdx) | `cugraph_weakly_connected_components` | Compute weakly connected components. |
+| Function | Family | Signature | Summary |
+| --- | --- | --- | --- |
+| [Betweenness Centrality](./algorithms/centrality/cugraph_betweenness_centrality.mdx) | Centrality | `cugraph_betweenness_centrality` | Compute exact or explicitly seeded/k-sampled approximate betweenness centrality scores. |
+| [BFS](./algorithms/traversal/cugraph_bfs.mdx) | Traversal & Paths | `cugraph_bfs` | Multi-source-capable breadth-first search; source selectors must contain at most one source per connected component. |
+| [Core Number](./algorithms/structure/cugraph_core_number.mdx) | Structure | `cugraph_core_number` | Compute graph core numbers. |
+| [Cosine](./algorithms/similarity/cugraph_cosine.mdx) | Similarity | `cugraph_cosine` | Compute cosine similarity coefficients for explicit candidate vertex pairs. |
+| [Degrees All](./algorithms/structure/cugraph_degrees_all.mdx) | Structure | `cugraph_degrees_all` | Compute in-degree and out-degree for every vertex. |
+| [ECG](./algorithms/community/cugraph_ecg.mdx) | Community Detection | `cugraph_ecg` | Detect communities with ensemble clustering for graphs. |
+| [Edge Betweenness Centrality](./algorithms/centrality/cugraph_edge_betweenness_centrality.mdx) | Centrality | `cugraph_edge_betweenness_centrality` | Compute exact or explicitly seeded/k-sampled approximate edge betweenness centrality scores. |
+| [Eigenvector Centrality](./algorithms/centrality/cugraph_eigenvector_centrality.mdx) | Centrality | `cugraph_eigenvector_centrality` | Compute eigenvector centrality scores. |
+| [ForceAtlas2](./algorithms/layout/cugraph_force_atlas2.mdx) | Layout | `cugraph_force_atlas2` | Compute ForceAtlas2 two-dimensional layout coordinates. |
+| [HITS](./algorithms/centrality/cugraph_hits.mdx) | Centrality | `cugraph_hits` | Compute HITS hub and authority scores. |
+| [In Degrees All](./algorithms/structure/cugraph_in_degrees_all.mdx) | Structure | `cugraph_in_degrees_all` | Compute in-degree for every vertex. |
+| [Jaccard](./algorithms/similarity/cugraph_jaccard.mdx) | Similarity | `cugraph_jaccard` | Compute Jaccard coefficients for explicit candidate vertex pairs. |
+| [K-Core](./algorithms/structure/cugraph_k_core.mdx) | Structure | `cugraph_k_core` | Return the graph k-core edge set. |
+| [Katz Centrality](./algorithms/centrality/cugraph_katz_centrality.mdx) | Centrality | `cugraph_katz_centrality` | Compute Katz centrality scores. |
+| [Leiden](./algorithms/community/cugraph_leiden.mdx) | Community Detection | `cugraph_leiden` | Detect communities with Leiden optimization. |
+| [Louvain](./algorithms/community/cugraph_louvain.mdx) | Community Detection | `cugraph_louvain` | Detect communities with Louvain modularity optimization. |
+| [Minimum Spanning Tree](./algorithms/connectivity/cugraph_minimum_spanning_tree.mdx) | Connectivity | `cugraph_minimum_spanning_tree` | Compute a minimum spanning tree. |
+| [Out Degrees All](./algorithms/structure/cugraph_out_degrees_all.mdx) | Structure | `cugraph_out_degrees_all` | Compute out-degree for every vertex. |
+| [Overlap](./algorithms/similarity/cugraph_overlap.mdx) | Similarity | `cugraph_overlap` | Compute overlap coefficients for explicit candidate vertex pairs. |
+| [PageRank](./algorithms/centrality/cugraph_pagerank.mdx) | Centrality | `cugraph_pagerank` | Compute PageRank scores. |
+| [Personalized PageRank](./algorithms/centrality/cugraph_personalized_pagerank.mdx) | Centrality | `cugraph_personalized_pagerank` | Compute personalized PageRank scores. |
+| [Sorensen](./algorithms/similarity/cugraph_sorensen.mdx) | Similarity | `cugraph_sorensen` | Compute Sorensen coefficients for explicit candidate vertex pairs. |
+| [Spectral Modularity Maximization](./algorithms/community/cugraph_spectral_modularity_maximization.mdx) | Community Detection | `cugraph_spectral_modularity_maximization` | Cluster vertices with spectral modularity maximization. |
+| [SSSP](./algorithms/traversal/cugraph_sssp.mdx) | Traversal & Paths | `cugraph_sssp` | Compute single-source shortest paths. |
+| [Strongly Connected Components](./algorithms/connectivity/cugraph_strongly_connected_components.mdx) | Connectivity | `cugraph_strongly_connected_components` | Compute strongly connected components. |
+| [Triangle Count All](./algorithms/structure/cugraph_triangle_count_all.mdx) | Structure | `cugraph_triangle_count_all` | Compute triangle counts for every vertex. |
+| [Weakly Connected Components](./algorithms/connectivity/cugraph_weakly_connected_components.mdx) | Connectivity | `cugraph_weakly_connected_components` | Compute weakly connected components. |

@@ -54,7 +54,10 @@ while IFS= read -r row; do
     'select(.function_name == $name and .provider == $provider)' \
     --arg name "$function_name" --arg provider "$provider" <<<"$descriptor")"
   mkdir -p "$STAGE_ROOT/$provider"
-  jq -cS . <<<"$descriptor" > "$STAGE_ROOT/$provider/$function_name.json"
+  # Flight SQL's JSON output omits nullable fields whose value is SQL NULL.
+  # The committed descriptor contract retains the key so generators can
+  # distinguish an available function from a malformed spec deterministically.
+  jq -cS '. + {unavailable_reason: (.unavailable_reason // null)}' <<<"$descriptor" > "$STAGE_ROOT/$provider/$function_name.json"
   count=$((count + 1))
 done < "$LIST_FILE"
 

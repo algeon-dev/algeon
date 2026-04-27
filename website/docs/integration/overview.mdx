@@ -16,8 +16,10 @@ surface that matches the service boundary you own:
 | Flight SQL server | You want a remote Arrow Flight SQL endpoint for non-Rust clients, notebooks, agents, or service-to-service calls. | [Flight SQL server](./flight-sql-server.mdx) |
 
 All three surfaces execute supported relational plans on cuDF. The `cugraph`
-feature adds SQL-visible `cugraph_*` table functions on these surfaces, and the
-`iceberg` feature adds Iceberg/Glue/REST/S3 source integration.
+and `cuvs` features add SQL-visible `cugraph_*` and `cuvs_*` table functions;
+the `iceberg` feature adds Iceberg/Glue/REST/S3 source integration. cuVS has
+no lower-level bounded peak-memory preflight yet, so its execution requires an
+explicitly unbounded native session or server.
 
 ## Common flow
 
@@ -27,9 +29,12 @@ feature adds SQL-visible `cugraph_*` table functions on these surfaces, and the
    example, or the Flight SQL server.
 3. Size GPU memory and configure table sources before running user queries. The
    environment-variable contract is in [Configuration](./configuration.mdx).
-4. If you use GPU SQL, discover and validate available functions with
-   [`gpu_list_functions`](../cugraph/discovery-and-validation.mdx#gpu_list_functions)
-   and `gpu_validate_call`; filter the inventory by `provider` when needed.
+4. If you use GPU SQL, follow
+   [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx)
+   to list, describe, and validate available calls; filter the inventory by
+   `provider` when needed. The
+   [GPU Function Catalog API](../reference/gpu-function-catalog.mdx) defines
+   the exact metadata and validation schemas.
 5. Before shipping a query, check whether its planned path stays on the GPU —
    and why not, if it doesn't — with
    [GPU coverage validation](./gpu-coverage-validation.mdx)
@@ -39,6 +44,7 @@ feature adds SQL-visible `cugraph_*` table functions on these surfaces, and the
    then keep your existing policy for ordinary DataFusion failures. See
    [Handling Errors](./handling-errors.mdx).
 
-The [cuGraph SQL API](../cugraph/overview.mdx) section is the function-level
-contract: call signatures, graph options, validation metadata, demo dataset,
-and per-algorithm reference pages.
+The [cuGraph SQL API](../cugraph/overview.mdx) and
+[cuVS SQL API](../cuvs/overview.mdx) sections are the function-level
+contracts. They share discovery and validation while documenting their distinct
+relation syntax, input semantics, lifecycle, and execution constraints.

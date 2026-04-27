@@ -97,6 +97,12 @@ endpoint; the Iceberg REST catalog endpoint is `NEXUS_ICEBERG_REST_URI`.
 It requires bounded native memory admission; an unbounded server memory policy
 is rejected because the demo is about one shared query-service ledger.
 
+That makes this particular embedded example intentionally unsuitable for
+current `cuvs_*` execution: cuVS requires unbounded native execution until its
+lower-level peak-memory preflight exists. Use the direct, single-query embedded
+setup in [DataFusion Session](./datafusion-session.mdx#cuvs-sql-functions) for
+cuVS; do not weaken this example's bounded admission contract.
+
 ```bash
 EXAMPLE_REST_BIND=127.0.0.1:8080 \
 NEXUS_SERVER_BIND=127.0.0.1:50051 \

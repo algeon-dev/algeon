@@ -1,8 +1,8 @@
 {
-  "label": "Operations",
+  "label": "Functions",
   "position": 1,
   "link": {
-    "type": "generated-index",
-    "description": "Generated reference for every SQL-visible cuVS operation."
+    "type": "doc",
+    "id": "cuvs/operations/index"
   }
 }

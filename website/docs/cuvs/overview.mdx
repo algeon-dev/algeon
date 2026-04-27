@@ -14,91 +14,56 @@ relation of vectors, runs a GPU vector operation, and returns rows you can join
 and filter alongside the rest of your query, over the data already in your
 session — no separate vector store and no copy to keep in sync.
 
-The operation registry, JSON schemas, and generated pages below come from the
+The function registry, JSON schemas, and generated pages below come from the
 same live metadata API exposed to embedded and Flight SQL clients.
+
+## Vector input and call shape
+
+Every `cuvs_*` execution relation is a parenthesized `SELECT` subquery. The
+relation remains an explicit planner child, so it can use ordinary session
+tables, views, CTEs, Parquet scans, Iceberg tables, or a preceding SQL result.
+Bare table identifiers and quoted table-name strings are not execution inputs.
+
+For metadata-only validation, `gpu_validate_call` instead resolves a named
+registered table or view and checks its schema without scanning rows or
+invoking the GPU. [Vector Inputs](./vector-inputs.mdx) documents relation
+identity, dense-vector binding shapes, and the validation-versus-runtime
+boundary.
+
+## Functions
+
+Start with [Functions](./operations/index.mdx) to choose vector search,
+clustering, or dimensionality reduction by its one-statement lifecycle. Every
+function page links back to [Vector Inputs](./vector-inputs.mdx) for the shared
+input contract.
 
 ## Discovery and validation
 
-```sql
-SELECT function_name, relation_roles_json, summary
-FROM gpu_list_functions()
-WHERE provider = 'cuvs'
-ORDER BY function_name;
+Use [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx)
+for the shared list, describe, validate, and execute workflow. The detailed
+column and request schemas are in the
+[GPU Function Catalog API](../reference/gpu-function-catalog.mdx).
 
-SELECT *
-FROM gpu_describe_function('cuvs_brute_force_knn');
+## Execution availability
 
-SELECT *
-FROM gpu_validate_call(
-  'cuvs_kmeans',
-  '{
-    "schema_version":1,
-    "relations":{"input":{"table":"embeddings"}},
-    "options":{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":2}
-  }'
-);
-```
+`gpu_validate_call` validates schemas and options; it is not a GPU-memory
+preflight. All current `cuvs_*` calls require explicitly unbounded native
+execution. A bounded server rejects them before relation children run with the
+structured `unsupported_operator` error; there is no CPU fallback.
 
-The relation arguments of every `cuvs_*` execution function must be
-parenthesized subqueries. This makes regular tables, views, CTEs, Parquet
-scans, Iceberg tables, and cuGraph-derived relations explicit planner children.
-For metadata dry-run validation, `gpu_validate_call` resolves registered named
-tables or views and validates their schemas without scanning rows or invoking
-the GPU. Bare table identifiers and quoted table-name strings are rejected by
-the execution surface; there is no CTAS or adapter-owned name-lookup bridge.
+cuVS SQL also has no persistent cross-statement cache for brute-force indexes,
+KMeans models, PCA transforms, or result relations. Each call creates the
+vector artifacts needed by that evaluated statement only: exact kNN builds its
+index, KMeans fits its model, and PCA fits and transforms its input.
 
-## Parquet and Iceberg relation examples
+The server's source and graph caches do not cache cuVS artifacts. See
+[Cache Design](../design/cache.mdx) and
+[Configuration](../integration/configuration.mdx) for their separate bounded
+server requirements.
 
-The vector operation owns only the relation inside its parenthesized argument;
-the relation can be an ordinary external Parquet table or an Iceberg table
-resolved through the session catalog. For example, an embedded or Flight SQL
-session can fit KMeans directly from Parquet:
+## Next steps
 
-```sql
-CREATE EXTERNAL TABLE embedding_parquet STORED AS PARQUET
-LOCATION '/data/embeddings.parquet';
-
-SELECT id, cluster_id
-FROM cuvs_kmeans(
-  (SELECT item_id, d0, d1 FROM embedding_parquet),
-  '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":8}'
-)
-ORDER BY row_ordinal;
-```
-
-The same relation contract applies to a catalog-qualified Iceberg table; no
-export or temporary-table bridge is involved:
-
-```sql
-SELECT id, pc_0, pc_1
-FROM cuvs_pca(
-  (SELECT item_id, d0, d1 FROM catalog.analytics.embedding_iceberg),
-  '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_components":2}'
-)
-ORDER BY row_ordinal;
-```
-
-## Operations
-
-import Cheatsheet from './_cheatsheet.mdx';
-
-<Cheatsheet />
-
-## Running through Flight SQL
-
-Build the server with `server,cuvs`. While vector operations deliberately lack
-a lower-level bounded-memory preflight contract, start a vector-serving
-instance with `NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded`; the default
-bounded server rejects the call with structured `unsupported_operator` status
-metadata. This is an explicit admission boundary, never a CPU fallback.
-
-```bash
-cargo build --features server,cuvs --bin datafusion_nexus_server
-NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded bash scripts/dev/run_server.sh
-```
-
-The generated operation pages for
-[brute-force kNN](./operations/cuvs_brute_force_knn.mdx),
-[KMeans](./operations/cuvs_kmeans.mdx), and
-[PCA](./operations/cuvs_pca.mdx) include parenthesized-subquery examples and
-the stable output contract for every operation.
+- **[Integrate cuVS](../integration/overview.mdx)** — configure an embedded
+  session or Flight SQL server for the required unbounded execution mode.
+- **[Configure the server](../integration/configuration.mdx)** — review memory
+  policy and cache admission settings.

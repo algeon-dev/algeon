@@ -19,6 +19,24 @@ SQL server and for production-style Iceberg deployments.
 | `NEXUS_SERVER_LOG` | `info` | Log level (`error`/`warn`/`info`/`debug`/`trace`). |
 | `NEXUS_SERVER_CUGRAPH_ENABLED` | `false` | Register the `cugraph_*` SQL functions. Requires the `cugraph` build feature. |
 
+## cuVS availability
+
+cuVS has no `NEXUS_SERVER_CUVS_ENABLED` toggle. Build the server with the
+`cuvs` Cargo feature to register `cuvs_*` functions, then use
+`gpu_list_functions()` or `gpu_describe_function(...)` to inspect availability.
+Current cuVS execution requires the unbounded native memory policy because it
+has no lower-level peak-memory preflight. A bounded server exposes the
+functions as unavailable and rejects execution with structured
+`unsupported_operator`; it never selects a CPU fallback.
+
+### cuVS cache interaction
+
+The server's decoded local-Parquet source cache and parked cuGraph graph cache
+do not cache cuVS indexes, models, transforms, or result relations. Both cache
+knobs are bounded-only settings, while current cuVS execution requires
+`unbounded`; a Flight SQL server rejects that combination. cuVS therefore has
+no server-configurable cross-statement artifact cache today.
+
 ## Admission
 
 Server admission is byte-denominated and slot-bounded. The default admits two
@@ -105,7 +123,9 @@ account for other processes. Set a smaller fraction or explicit budget when
 the deployment needs more headroom, for example
 `NEXUS_SERVER_DEVICE_BUDGET_FRACTION=0.5`. Use
 `NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded` only for local single-query work
-when the GPU is otherwise idle.
+when the GPU is otherwise idle. This policy is currently required for `cuvs_*`
+execution. In unbounded mode the server limits native work to one concurrent
+query and rejects bounded-only memory, cache, and admission settings.
 :::
 
 The cache caps are part of the governor's evictable ledger, not extra memory

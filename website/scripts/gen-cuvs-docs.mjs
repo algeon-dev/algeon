@@ -3,115 +3,121 @@
 // reference. The generator is deterministic and never contacts a server.
 //
 //   node website/scripts/gen-cuvs-docs.mjs
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import {
+  cell,
+  code,
+  loadProviderSpecs,
+  prose,
+  renderFunctionPage,
+  table,
+  validationBlock,
+  write,
+} from './gpu-docs-common.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WEBSITE = join(HERE, '..');
 const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cuvs');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cuvs');
 const OPERATIONS_DIR = join(DOCS_DIR, 'operations');
-const REQUIRED_KEYS = [
-  'function_name', 'provider', 'domain', 'available', 'unavailable_reason',
-  'signature', 'summary', 'relation_roles_json', 'argument_descriptions_json',
-  'options_schema_json', 'result_schemas_json',
-  'validation_request_schema_json', 'examples_json', 'limitations_json',
-];
 
-function write(path, content) {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content.replace(/\n*$/, '\n'));
-}
+// These presentation families are documentation navigation only. They do not
+// alter SQL names or introduce an execution API family.
+const FAMILIES = {
+  vector_search: { label: 'Vector Search', functions: ['cuvs_brute_force_knn'] },
+  clustering: { label: 'Clustering', functions: ['cuvs_kmeans'] },
+  dimensionality_reduction: { label: 'Dimensionality Reduction', functions: ['cuvs_pca'] },
+};
 
-function parseJson(file, key, value) {
-  try {
-    return JSON.parse(value);
-  } catch (error) {
-    throw new Error(`${file}: ${key} is not valid JSON: ${error.message}`);
+function familyOf(functionName) {
+  for (const [slug, family] of Object.entries(FAMILIES)) {
+    if (family.functions.includes(functionName)) return slug;
   }
+  throw new Error(`No documentation family for ${functionName}; classify it before generating docs`);
 }
 
 function loadSpecs() {
-  if (!existsSync(SPEC_DIR)) throw new Error(`missing ${SPEC_DIR}; run capture-cuvs-specs.sh first`);
-  const names = new Set();
-  const specs = readdirSync(SPEC_DIR)
-    .filter(file => file.endsWith('.json'))
-    .sort()
-    .map(file => {
-      const spec = JSON.parse(readFileSync(join(SPEC_DIR, file), 'utf8'));
-      for (const key of REQUIRED_KEYS) {
-        if (!(key in spec)) throw new Error(`${file}: missing unified descriptor key ${key}`);
-      }
-      if (file !== `${spec.function_name}.json`) throw new Error(`${file}: filename must equal ${spec.function_name}.json`);
-      if (!/^cuvs_[a-z0-9_]+$/.test(spec.function_name)) throw new Error(`${file}: invalid canonical cuVS function name`);
-      if (names.has(spec.function_name)) throw new Error(`${file}: duplicate function descriptor`);
-      names.add(spec.function_name);
-      if (spec.provider !== 'cuvs' || spec.domain !== 'vector') throw new Error(`${file}: expected a cuVS vector descriptor`);
-      if (typeof spec.available !== 'boolean' || !(spec.unavailable_reason === null || typeof spec.unavailable_reason === 'string')) {
-        throw new Error(`${file}: invalid availability fields`);
-      }
-      spec.relation_roles = parseJson(file, 'relation_roles_json', spec.relation_roles_json);
-      spec.argument_descriptions = parseJson(file, 'argument_descriptions_json', spec.argument_descriptions_json);
-      spec.options_schema = parseJson(file, 'options_schema_json', spec.options_schema_json);
-      spec.result_schemas = parseJson(file, 'result_schemas_json', spec.result_schemas_json);
-      spec.validation_request_schema = parseJson(file, 'validation_request_schema_json', spec.validation_request_schema_json);
-      spec.examples = parseJson(file, 'examples_json', spec.examples_json);
-      spec.limitations = parseJson(file, 'limitations_json', spec.limitations_json);
+  return loadProviderSpecs({
+    specDir: SPEC_DIR,
+    provider: 'cuvs',
+    domain: 'vector',
+    namePattern: /^cuvs_[a-z0-9_]+$/,
+    validate(file, spec) {
       if (!Array.isArray(spec.relation_roles) || spec.relation_roles.length === 0 || spec.relation_roles.some(role => !role?.name)) {
         throw new Error(`${file}: relation_roles_json must contain named roles`);
+      }
+      if (!Array.isArray(spec.argument_descriptions) || !Array.isArray(spec.examples) || !Array.isArray(spec.limitations)) {
+        throw new Error(`${file}: descriptor arrays have an invalid shape`);
       }
       if (!spec.options_schema || typeof spec.options_schema !== 'object' || !spec.result_schemas || typeof spec.result_schemas !== 'object') {
         throw new Error(`${file}: descriptor schemas must be JSON objects`);
       }
-      if (!Array.isArray(spec.examples) || !Array.isArray(spec.limitations)) throw new Error(`${file}: descriptor arrays have an invalid shape`);
-      return spec;
-    });
-  if (specs.length === 0) throw new Error('no cuVS function descriptors found');
-  return specs;
+      if (!Array.isArray(spec.result_schemas.fields)) throw new Error(`${file}: result_schemas_json must contain fields`);
+      spec.family = familyOf(spec.function_name);
+      presentation(spec);
+      assertRenderableOptions(spec);
+      assertRenderableOutputFields(spec);
+    },
+  });
 }
 
-function cell(value) {
-  return String(value ?? '')
-    .replace(/\\/g, '\\\\')
-    .replace(/\|/g, '\\|')
-    .replace(/[{}]/g, match => `\\${match}`)
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, ' ');
+function presentation(spec) {
+  const entry = spec.examples.find(candidate => candidate?.quickstart?.sql && candidate?.validation?.call);
+  if (!entry) throw new Error(`${spec.function_name}: examples_json must contain quickstart SQL and a validation call`);
+  const quickstart = entry.quickstart;
+  if (typeof quickstart.display_name !== 'string' || quickstart.display_name.trim() === '') {
+    throw new Error(`${spec.function_name}: quickstart metadata must contain display_name`);
+  }
+  if (typeof quickstart.use_this_when !== 'string' || quickstart.use_this_when.trim() === '') {
+    throw new Error(`${spec.function_name}: quickstart metadata must contain use_this_when`);
+  }
+  if (typeof quickstart.sql !== 'string' || quickstart.sql.trim() === '') {
+    throw new Error(`${spec.function_name}: quickstart metadata must contain executable SQL`);
+  }
+  return entry;
 }
 
-function code(value) {
-  if (value === '' || value == null) return '';
-  const inner = String(value).replace(/\|/g, '\\|');
-  const longest = (inner.match(/`+/g) || []).reduce((max, run) => Math.max(max, run.length), 0);
-  const fence = '`'.repeat(longest + 1);
-  return `${fence}${inner}${fence}`;
+const RENDERED_OPTION_KEYS = new Set([
+  'type', 'default', 'enum', 'minimum', 'maximum', 'minLength', 'minItems',
+  'oneOf', 'description', 'additionalProperties', 'properties', 'required',
+]);
+
+function assertRenderableOptions(spec) {
+  for (const [name, option] of Object.entries(spec.options_schema.properties || {})) {
+    for (const key of Object.keys(option)) {
+      if (!RENDERED_OPTION_KEYS.has(key)) throw new Error(`${spec.function_name}: option ${name} has unrendered descriptor key ${key}`);
+    }
+    if (typeof option.description !== 'string' || option.description.trim() === '') {
+      throw new Error(`${spec.function_name}: option ${name} has no descriptor description`);
+    }
+  }
 }
 
-function prose(value) {
-  return String(value ?? '')
-    .replace(/[{}]/g, match => `\\${match}`)
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function table(headers, rows) {
-  return [
-    `| ${headers.join(' | ')} |`,
-    `| ${headers.map(() => '---').join(' | ')} |`,
-    ...rows.map(row => `| ${row.join(' | ')} |`),
-  ].join('\n');
-}
-
-function relationNames(spec) {
-  return spec.relation_roles.map(role => role.name);
+function assertRenderableOutputFields(spec) {
+  for (const field of spec.result_schemas.fields) {
+    for (const key of Object.keys(field)) {
+      if (!['name', 'data_type', 'nullable', 'repeats', 'description'].includes(key)) {
+        throw new Error(`${spec.function_name}: result field ${field.name || '<unnamed>'} has unrendered descriptor key ${key}`);
+      }
+    }
+    if (typeof field.name !== 'string' || typeof field.data_type !== 'string' || typeof field.description !== 'string') {
+      throw new Error(`${spec.function_name}: result fields require name, data_type, and description`);
+    }
+  }
 }
 
 function renderRelations(spec) {
-  return table(['Role', 'Required', 'Reference', 'Description'], spec.relation_roles.map(role => [
-    code(role.name), role.required === false ? 'no' : 'yes', code(role.reference?.type || 'table'), cell(role.description),
-  ]));
+  return [
+    'Every execution relation argument is a parenthesized `SELECT` subquery. The planner retains that relation as a real logical and physical child; a bare table identifier or quoted table-name string is rejected. Metadata validation instead uses a registered named table or view in its relation envelope.',
+    '',
+    table(['Role', 'Required', 'Validation reference', 'Description'], spec.relation_roles.map(role => [
+      code(role.name), role.required === false ? 'no' : 'yes', code(role.reference?.type || 'table'), cell(role.description),
+    ])),
+    '',
+    'See [Vector Inputs](../vector-inputs.mdx) for the ID and dense-vector type, null, finite-value, and runtime-dimension contract.',
+  ].join('\n');
 }
 
 function optionConstraints(option) {
@@ -121,128 +127,145 @@ function optionConstraints(option) {
   if ('maximum' in option) constraints.push(`maximum ${option.maximum}`);
   if ('minLength' in option) constraints.push(`minimum string length ${option.minLength}`);
   if ('minItems' in option) constraints.push(`at least ${option.minItems} item${option.minItems === 1 ? '' : 's'}`);
-  if (option.oneOf) constraints.push('one of the documented binding shapes');
+  if (option.oneOf) constraints.push('one of the documented vector-binding shapes');
   return constraints.join('; ');
 }
 
-function renderOptions(spec) {
+function optionType(option) {
+  if (option.oneOf) return 'object (binding)';
+  return option.type || 'unknown';
+}
+
+function renderArguments(spec) {
+  const argumentsTable = spec.argument_descriptions.length === 0
+    ? '_This function has no scalar SQL arguments beyond its relation arguments._'
+    : table(['Argument', 'Type', 'Required', 'Description'], spec.argument_descriptions.map(argument => [
+      code(argument.name),
+      code(argument.type),
+      argument.required ? 'yes' : 'no',
+      cell(argument.description),
+    ]));
   const required = new Set(spec.options_schema.required || []);
   const rows = Object.entries(spec.options_schema.properties || {})
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, option]) => [
       code(name),
       required.has(name) ? 'yes' : 'no',
-      code(option.type ?? (option.oneOf ? 'object' : 'unknown')),
+      code(optionType(option)),
       Object.hasOwn(option, 'default') ? code(JSON.stringify(option.default)) : '',
       cell(optionConstraints(option)),
+      cell(option.description),
     ]);
-  return rows.length === 0 ? '_This function has no options._' : table(['Option', 'Required', 'JSON type', 'Default', 'Constraints'], rows);
-}
-
-function renderOutputSchema(spec) {
-  const fields = spec.result_schemas.fields;
-  if (!Array.isArray(fields)) throw new Error(`${spec.function_name}: result_schemas_json must contain fields`);
-  return table(['Column', 'Type', 'Nullable', 'Notes'], fields.map(field => [
-    code(field.name), code(field.data_type), field.nullable ? 'yes' : 'no', cell(field.repeats ? `repeats: ${field.repeats}` : ''),
-  ]));
-}
-
-function firstExample(spec) {
-  const example = spec.examples.find(candidate => candidate?.validation?.call && typeof candidate.validation.call === 'object');
-  if (!example) throw new Error(`${spec.function_name}: examples_json must contain a unified validation call`);
-  return example.validation.call;
-}
-
-function relationSql(role) {
-  const id = role === 'queries' ? 'query_id' : 'item_id';
-  return `(SELECT ${id}, d0, d1 FROM ${role}_vectors)`;
-}
-
-function renderPage(spec) {
-  const call = firstExample(spec);
   return [
-    '---',
-    `title: ${spec.function_name}`,
-    `sidebar_label: ${spec.function_name}`,
-    `description: ${JSON.stringify(spec.summary)}`,
-    '---',
+    '### Scalar SQL arguments',
     '',
-    '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
+    argumentsTable,
     '',
-    `# ${spec.function_name}`,
+    '### JSON options',
     '',
-    prose(spec.summary),
+    rows.length === 0 ? '_This function has no options._' : table(['Option', 'Required', 'JSON shape', 'Default', 'Constraints', 'Description'], rows),
     '',
-    `Provider: ${code(spec.provider)}. Domain: ${code(spec.domain)}.`,
+    '### Vector binding shapes',
     '',
-    '## Signature',
-    '',
-    '```sql',
-    spec.signature,
-    '```',
-    '',
-    '## Execution call shape',
-    '',
-    'Each relation argument is a parenthesized `SELECT` subquery. The execution function preserves those subqueries as real planner children; a bare table identifier or quoted table-name string is intentionally rejected.',
-    '',
-    '```sql',
-    `SELECT * FROM ${spec.function_name}(`,
-    `  ${relationNames(spec).map(relationSql).join(',\n  ')},`,
-    `  '${JSON.stringify(call.options)}'`,
-    ');',
-    '```',
-    '',
-    '## Validation relations',
-    '',
-    'For metadata validation, use registered named tables or views in the common envelope:',
-    '',
-    renderRelations(spec),
-    '',
-    '## Options JSON',
-    '',
-    renderOptions(spec),
-    '',
-    'Unknown option keys are rejected.',
-    '',
-    '## Output schema',
-    '',
-    renderOutputSchema(spec),
-    '',
-    '## Limitations & notes',
-    '',
-    spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
-    '',
-    '## Validate before running',
-    '',
-    '```sql',
-    `SELECT * FROM gpu_validate_call(\n  '${spec.function_name}',\n  '${JSON.stringify(call)}'\n);`,
-    '```',
-    '',
-    'See [Discovery & Validation](../../cugraph/discovery-and-validation.mdx) for the common `gpu_validate_call` contract.',
+    renderVectorBindingShapes(spec),
   ].join('\n');
 }
 
+function renderVectorBindingShapes(spec) {
+  const bindingOption = Object.values(spec.options_schema.properties || {}).find(option => option?.properties?.vector?.oneOf);
+  if (!bindingOption) throw new Error(`${spec.function_name}: no renderable relation-binding option`);
+  const binding = bindingOption.properties;
+  const alternatives = binding.vector.oneOf;
+  const columns = alternatives.find(shape => shape?.properties?.columns)?.properties?.columns;
+  const column = alternatives.find(shape => shape?.properties?.column)?.properties?.column;
+  if (!binding.id?.description || !binding.vector?.description || !columns?.description || !column?.description) {
+    throw new Error(`${spec.function_name}: vector binding descriptions are incomplete`);
+  }
+  return [
+    `${code('id')}: ${prose(binding.id.description)}`,
+    '',
+    table(['Shape', 'JSON', 'Contract'], [
+      [
+        'Wide Float32 columns',
+        code('{"vector":{"columns":["d0","d1"]}}'),
+        cell(columns.description),
+      ],
+      [
+        'List column',
+        code('{"vector":{"column":"embedding"}}'),
+        cell(column.description),
+      ],
+    ]),
+    '',
+    prose(binding.vector.description),
+  ].join('\n');
+}
+
+function renderOutputSchema(spec) {
+  return [
+    table(['Column', 'Type', 'Nullable', 'Description'], spec.result_schemas.fields.map(field => [
+      code(field.name),
+      code(field.data_type),
+      field.nullable ? 'yes' : 'no',
+      cell([field.description, field.repeats ? `repeats: ${field.repeats}` : ''].filter(Boolean).join('; ')),
+    ])),
+    '',
+    '**Concrete schemas are call-specific.** Run `gpu_validate_call` against registered relations to inspect the output schema after the actual ID types and literal options are validated.',
+  ].join('\n');
+}
+
+function renderPage(spec) {
+  const entry = presentation(spec);
+  return renderFunctionPage({
+    generator: 'website/scripts/gen-cuvs-docs.mjs',
+    spec,
+    title: entry.quickstart.display_name,
+    useThisWhen: entry.quickstart.use_this_when,
+    quickstartSql: entry.quickstart.sql,
+    relationInputs: renderRelations(spec),
+    scalarArgumentsAndOptions: renderArguments(spec),
+    outputSchema: renderOutputSchema(spec),
+    examples: null,
+    limitations: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
+    validation: validationBlock({
+      functionName: spec.function_name,
+      call: entry.validation.call,
+      discoveryLink: '../../reference/gpu-function-catalog.mdx',
+    }),
+  });
+}
+
 function renderCheatsheet(specs) {
+  const sections = [];
+  for (const [family, metadata] of Object.entries(FAMILIES)) {
+    const familySpecs = specs.filter(spec => spec.family === family);
+    if (familySpecs.length === 0) throw new Error(`presentation family ${family} has no function descriptor`);
+    sections.push(
+      `## ${metadata.label}`,
+      '',
+      table(['Function', 'Summary'], familySpecs.map(spec => {
+        const entry = presentation(spec);
+        return [`[${cell(entry.quickstart.display_name)}](./operations/${spec.function_name}.mdx)`, cell(spec.summary)];
+      })),
+    );
+  }
   return [
     '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
     '',
     `The live catalog contains **${specs.length} SQL-visible cuVS functions**.`,
     '',
-    table(['Function', 'Relation roles', 'Summary'], specs.map(spec => [
-      `[${cell(spec.function_name)}](./operations/${spec.function_name}.mdx)`,
-      relationNames(spec).map(code).join(', '),
-      cell(spec.summary),
-    ])),
+    ...sections,
   ].join('\n');
 }
 
 function main() {
   const specs = loadSpecs();
-  write(join(OPERATIONS_DIR, '_category_.json'), JSON.stringify({
-    label: 'Operations',
-    position: 1,
-    link: { type: 'generated-index', description: 'Generated reference for every SQL-visible cuVS operation.' },
-  }, null, 2));
+  const names = new Set(specs.map(spec => spec.function_name));
+  for (const family of Object.values(FAMILIES)) {
+    for (const functionName of family.functions) {
+      if (!names.has(functionName)) throw new Error(`missing unified descriptor for ${functionName}`);
+    }
+  }
   for (const spec of specs) write(join(OPERATIONS_DIR, `${spec.function_name}.mdx`), renderPage(spec));
   write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(specs));
   console.log(`Wrote ${specs.length} generated cuVS function pages and cheatsheet.`);
