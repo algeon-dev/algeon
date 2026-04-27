@@ -8,9 +8,9 @@
 .docusaurus
 .cache-loader
 
-# cuGraph spec capture staging / backup dirs (transient, see scripts/capture-cugraph-specs.sh)
-.cugraph-specs.stage.*
-cugraph-specs.old.*
+# Unified GPU function spec capture staging / backup dirs (transient)
+.gpu-function-specs.stage.*
+gpu-function-specs.old.*
 
 # Misc
 cufile.log

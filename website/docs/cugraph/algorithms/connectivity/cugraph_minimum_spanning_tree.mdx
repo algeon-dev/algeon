@@ -4,7 +4,7 @@ sidebar_label: Minimum Spanning Tree
 description: "Compute a minimum spanning tree."
 ---
 
-{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit the matching hand-owned example partial and re-run the generator. */}
+{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
 
 # Minimum Spanning Tree
 
@@ -18,39 +18,33 @@ Compute a minimum spanning tree.
 cugraph_minimum_spanning_tree(table_name, src_col, dst_col, weight_col [, options_json])
 ```
 
-Allowed argument counts: 4, 5.
-
 ## Quickstart
 
 ```sql
 SELECT * FROM cugraph_minimum_spanning_tree('target_edges', 'src', 'dst', 'weight')
 ```
 
-## Positional arguments
+## Non-relation arguments
 
 | Argument | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `table_name` | `Utf8` | yes |  |  |
 | `src_col` | `Utf8` | no | `src` |  |
 | `dst_col` | `Utf8` | no | `dst` |  |
 | `weight_col` | `Utf8\|null` | yes |  | required edge weight column; semantic effect: required edge weights define the spanning-tree objective |
-| `options_json` | `Utf8` | no |  | JSON string with algorithm-specific options plus shared graph construction options. |
 
 ## JSON options
 
-_This algorithm has no algorithm-specific options._
-
+_This function has no algorithm-specific options._
 
 ### Graph Construction Options
 
-Shared by all cuGraph functions, shown here with this function's defaults. The `construction_policy` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [Graph Construction Options](../../graph-options.mdx) for the full policy guide.
+Shared by all cuGraph functions, shown with this function's defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
 | `directed` | `Boolean` | `false` |  | Whether graph construction treats edges as directed. |
 | `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
-
 
 ## Output schema
 
@@ -59,10 +53,7 @@ Shared by all cuGraph functions, shown here with this function's defaults. The `
 | `src` | `Int64` | no | Source vertex of an edge selected for the minimum spanning tree. |
 | `dst` | `Int64` | no | Destination vertex of an edge selected for the minimum spanning tree. |
 
-**Concrete schemas are call-specific.** These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
-
-
-
+**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../discovery-and-validation.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.
 
 ## Examples
 
@@ -79,14 +70,13 @@ import Examples from '../../_examples/cugraph_minimum_spanning_tree.mdx';
 
 ## Validate before running
 
-Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:
+Validation checks named relations, bindings, dtypes, and options without scanning rows or touching the GPU:
 
 ```sql
-SELECT * FROM cugraph_validate_call(
+SELECT * FROM gpu_validate_call(
   'cugraph_minimum_spanning_tree',
-  'your_edges_table',
-  '{"src_col":"src","dst_col":"dst"}'
+  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"src_col":"src","dst_col":"dst","weight_col":"weight"}}'
 );
 ```
 
-See [Discovery & Validation](../../discovery-and-validation.mdx) for the full `cugraph_validate_call` contract.
+See [Discovery & Validation](../../discovery-and-validation.mdx) for the full `gpu_validate_call` contract.

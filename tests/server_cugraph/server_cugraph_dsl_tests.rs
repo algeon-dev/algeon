@@ -46,7 +46,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     let batches = execute_batches(
         &mut client,
         "SELECT function_name \
-         FROM cugraph_list_algorithms() \
+         FROM gpu_list_functions() \
          WHERE function_name IN ('cugraph_bfs', 'cugraph_pagerank') \
          ORDER BY function_name",
     )
@@ -57,11 +57,10 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
 
     let batches = execute_batches(
         &mut client,
-        r#"SELECT valid, error_code, table_resolved, src_dtype, dst_dtype, weight_dtype, would_execute_gpu
-           FROM cugraph_validate_call(
+        r#"SELECT valid, error_code, relations_resolved, details_json, would_execute_gpu
+           FROM gpu_validate_call(
              'cugraph_bfs',
-             'target_edges',
-             '{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":"weight","options":{"depth_limit":2}}'
+             '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":"weight","depth_limit":2}}'
            )"#,
     )
     .await;
@@ -69,10 +68,11 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     assert!(bool_value(batch, 0, 0));
     assert!(is_null_value(batch, 1, 0));
     assert!(bool_value(batch, 2, 0));
-    assert_eq!(string_value(batch, 3, 0), "Int64");
-    assert_eq!(string_value(batch, 4, 0), "Int64");
-    assert_eq!(string_value(batch, 5, 0), "Float64");
-    assert!(bool_value(batch, 6, 0));
+    let details: serde_json::Value = serde_json::from_str(&string_value(batch, 3, 0)).unwrap();
+    assert_eq!(details["edges"]["src_dtype"], "Int64");
+    assert_eq!(details["edges"]["dst_dtype"], "Int64");
+    assert_eq!(details["edges"]["weight_dtype"], "Float64");
+    assert!(bool_value(batch, 4, 0));
 
     execute_batches(
         &mut client,
@@ -121,11 +121,10 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
 
     let batches = execute_batches(
         &mut client,
-        r#"SELECT valid, error_code, table_resolved, src_dtype, dst_dtype, weight_dtype, would_execute_gpu
-           FROM cugraph_validate_call(
+        r#"SELECT valid, error_code, relations_resolved, details_json, would_execute_gpu
+           FROM gpu_validate_call(
              'cugraph_bfs',
-             'nullable_edges',
-             '{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":"weight","options":{"depth_limit":2}}'
+             '{"schema_version":1,"relations":{"edges":{"table":"nullable_edges"}},"options":{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":"weight","depth_limit":2}}'
            )"#,
     )
     .await;
@@ -137,10 +136,11 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
     assert!(bool_value(batch, 0, 0));
     assert!(is_null_value(batch, 1, 0));
     assert!(bool_value(batch, 2, 0));
-    assert_eq!(string_value(batch, 3, 0), "Int64");
-    assert_eq!(string_value(batch, 4, 0), "Int64");
-    assert_eq!(string_value(batch, 5, 0), "Float64");
-    assert!(bool_value(batch, 6, 0));
+    let details: serde_json::Value = serde_json::from_str(&string_value(batch, 3, 0)).unwrap();
+    assert_eq!(details["edges"]["src_dtype"], "Int64");
+    assert_eq!(details["edges"]["dst_dtype"], "Int64");
+    assert_eq!(details["edges"]["weight_dtype"], "Float64");
+    assert!(bool_value(batch, 4, 0));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

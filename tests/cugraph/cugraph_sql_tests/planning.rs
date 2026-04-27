@@ -272,61 +272,6 @@ async fn cugraph_bfs_path_mode_requires_target_relation() {
 }
 
 #[tokio::test]
-async fn cugraph_validate_call_accepts_bfs_path_mode_on_canonical_function() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
-    let ctx = SessionContext::new_with_state(state);
-    register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
-    register_vertex_memtable(&ctx, "targets", "vertex_id", DataType::Int64, false);
-
-    let batches = ctx
-        .sql(
-            r#"SELECT valid, error_code, output_schema_json, normalized_options_json
-               FROM cugraph_validate_call(
-                 'cugraph_bfs',
-                 'raw_edges',
-                 '{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"output_mode":"path","target_vertices_table":"targets","target_vertex_col":"vertex_id"}}'
-               )"#,
-        )
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-    let batch = single_batch(&batches);
-    assert!(bool_value(batch, 0, 0));
-    assert!(is_null_value(batch, 1, 0));
-    assert!(string_value(batch, 2, 0).contains(r#""path_index""#));
-    assert!(string_value(batch, 3, 0).contains(r#""mode":"path""#));
-}
-
-#[tokio::test]
-async fn cugraph_validate_call_rejects_path_mode_target_info_as_structured_row() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
-    let ctx = SessionContext::new_with_state(state);
-    register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
-    register_vertex_memtable(&ctx, "targets", "vertex_id", DataType::Int64, false);
-
-    let batches = ctx
-        .sql(
-            r#"SELECT valid, error_code, message
-               FROM cugraph_validate_call(
-                 'cugraph_bfs',
-                 'raw_edges',
-                 '{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"output_mode":"path","target_vertices_table":"targets","target_vertex_col":"vertex_id","return_target_info":true}}'
-               )"#,
-        )
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-    let batch = single_batch(&batches);
-    assert!(!bool_value(batch, 0, 0));
-    assert_eq!(string_value(batch, 1, 0), "invalid_argument");
-    assert!(string_value(batch, 2, 0).contains("cannot combine with return_target_info=true"));
-}
-
-#[tokio::test]
 async fn cugraph_bfs_path_name_is_not_registered_or_aliased() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
@@ -338,16 +283,15 @@ async fn cugraph_bfs_path_name_is_not_registered_or_aliased() {
         .to_string();
     assert!(error.contains("cugraph_bfs_path"));
 
-    let error = ctx.sql("SELECT * FROM cugraph_describe_algorithm('cugraph_bfs_path')").await.unwrap_err().to_string();
-    assert!(error.contains("unknown cuGraph algorithm function 'cugraph_bfs_path'"));
+    let error = ctx.sql("SELECT * FROM gpu_describe_function('cugraph_bfs_path')").await.unwrap_err().to_string();
+    assert!(error.contains("unknown GPU function 'cugraph_bfs_path'"));
 
     let batches = ctx
         .sql(
             r#"SELECT valid, error_code, message
-               FROM cugraph_validate_call(
+               FROM gpu_validate_call(
                  'cugraph_bfs_path',
-                 'raw_edges',
-                 '{"source_vertex":0,"src_col":"src","dst_col":"dst"}'
+                 '{"schema_version":1,"relations":{"edges":{"table":"raw_edges"}},"options":{"source_vertex":0,"src_col":"src","dst_col":"dst"}}'
                )"#,
         )
         .await
@@ -357,7 +301,7 @@ async fn cugraph_bfs_path_name_is_not_registered_or_aliased() {
         .unwrap();
     let batch = single_batch(&batches);
     assert!(!bool_value(batch, 0, 0));
-    assert_eq!(string_value(batch, 1, 0), "unknown_algorithm");
+    assert_eq!(string_value(batch, 1, 0), "unknown_function");
     assert!(string_value(batch, 2, 0).contains("cugraph_bfs_path"));
 }
 

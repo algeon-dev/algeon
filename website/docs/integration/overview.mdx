@@ -27,9 +27,9 @@ feature adds SQL-visible `cugraph_*` table functions on these surfaces, and the
    example, or the Flight SQL server.
 3. Size GPU memory and configure table sources before running user queries. The
    environment-variable contract is in [Configuration](./configuration.mdx).
-4. If you use graph SQL, discover and validate the available functions with
-   [`cugraph_list_algorithms`](../cugraph/discovery-and-validation.mdx) and
-   `cugraph_validate_call`.
+4. If you use GPU SQL, discover and validate available functions with
+   [`gpu_list_functions`](../cugraph/discovery-and-validation.mdx#gpu_list_functions)
+   and `gpu_validate_call`; filter the inventory by `provider` when needed.
 5. Before shipping a query, check whether its planned path stays on the GPU —
    and why not, if it doesn't — with
    [GPU coverage validation](./gpu-coverage-validation.mdx)

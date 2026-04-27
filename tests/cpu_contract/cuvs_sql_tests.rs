@@ -12,7 +12,7 @@ use datafusion::{
     execution::{SessionStateBuilder, context::TaskContext},
     logical_expr::{LogicalPlan, UserDefinedLogicalNodeCore},
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream},
-    prelude::SessionContext,
+    prelude::{SessionConfig, SessionContext},
     sql::{
         parser::Statement as DataFusionStatement,
         sqlparser::ast::{
@@ -22,13 +22,15 @@ use datafusion::{
 };
 use datafusion_nexus::{
     cuvs_sql::{
-        CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION,
-        CUVS_VALIDATE_CALL_FUNCTION, CuvsAlgoExec, CuvsLogicalNode, CuvsOperation, CuvsOutputContract,
-        CuvsRelationArgumentSyntax, CuvsRelationRole, cuvs_options_json_schema,
+        CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION, CuvsAlgoExec,
+        CuvsLogicalNode, CuvsOperation, CuvsRelationArgumentSyntax, CuvsRelationRole, cuvs_options_json_schema,
     },
     error::{DataFusionErrorExt, ErrorCode},
+    gpu_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
     native_exec::NexusNativeExecutionConfig,
+    planner::NexusNativeOptimizerConfig,
     session::NexusSessionStateBuilderExt,
+    session_config::DataFusionNexusSessionConfig,
 };
 use nexus_query_engine::plan::{
     CUVS_ID_TYPES, CuvsOperation as NativeCuvsOperation, PlanNode, VectorAlgorithmParams, VectorRowIdBinding,
@@ -89,7 +91,7 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
 #[test]
 fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
     let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let spec_directory = repository.join("website/cuvs-specs");
+    let spec_directory = repository.join("website/gpu-function-specs/cuvs");
     let page_directory = repository.join("website/docs/cuvs/operations");
     let expected_names =
         CUVS_OPERATION_REGISTRY.iter().map(|descriptor| descriptor.sql_function_name).collect::<BTreeSet<_>>();
@@ -105,46 +107,40 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
     assert_eq!(captured_names.iter().map(String::as_str).collect::<BTreeSet<_>>(), expected_names);
 
     for descriptor in CUVS_OPERATION_REGISTRY {
-        let operation = metadata_operation_name(descriptor.operation);
-        let output_contract = metadata_output_contract_name(descriptor.output_contract);
         let spec_path = spec_directory.join(format!("{}.json", descriptor.sql_function_name));
         let captured: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(&spec_path)
                 .unwrap_or_else(|error| panic!("read captured cuVS spec at {}: {error}", spec_path.display())),
         )
         .unwrap_or_else(|error| panic!("parse captured cuVS spec at {}: {error}", spec_path.display()));
+        assert_eq!(captured["function_name"], descriptor.sql_function_name);
+        assert_eq!(captured["provider"], "cuvs");
+        assert_eq!(captured["domain"], "vector");
         assert_eq!(
-            captured,
-            serde_json::json!({
-                "function_name": descriptor.sql_function_name,
-                "operation": operation,
-                "relation_roles_json": serde_json::Value::Array(
-                    descriptor
-                        .relation_roles
-                        .iter()
-                        .map(|role| serde_json::Value::String(role.as_str().to_string()))
-                        .collect(),
-                )
-                .to_string(),
-                "relation_argument_syntax": "parenthesized_subquery",
-                "output_contract": output_contract,
-                "options_schema_json": descriptor.options_json_schema().to_string(),
-            }),
-            "captured metadata must be an exact projection of the canonical registry"
+            serde_json::from_str::<serde_json::Value>(captured["options_schema_json"].as_str().unwrap()).unwrap(),
+            descriptor.options_json_schema(),
+            "captured options schema must be an exact projection of the canonical registry"
+        );
+        let roles =
+            serde_json::from_str::<serde_json::Value>(captured["relation_roles_json"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            roles.as_array().unwrap().iter().map(|role| role["name"].as_str().unwrap()).collect::<Vec<_>>(),
+            descriptor.relation_roles.iter().map(|role| role.as_str()).collect::<Vec<_>>(),
+            "captured relation roles must be an exact projection of the canonical registry"
         );
 
         let page_path = page_directory.join(format!("{}.mdx", descriptor.sql_function_name));
         let page = fs::read_to_string(&page_path)
             .unwrap_or_else(|error| panic!("read generated cuVS page at {}: {error}", page_path.display()));
         assert!(
-            page.contains("GENERATED FROM cuVS SQL metadata by website/scripts/gen-cuvs-docs.mjs"),
+            page.contains("GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs"),
             "{} must retain its generated-source marker",
             page_path.display()
         );
         assert!(page.contains(&format!("# {}", descriptor.sql_function_name)), "{}", page_path.display());
         assert!(
-            page.contains(&format!("Native operation: `{operation}`. Output contract: `{output_contract}`.")),
-            "{} must agree with the captured operation and output contract",
+            page.contains("Provider: `cuvs`. Domain: `vector`."),
+            "{} must agree with the captured unified descriptor",
             page_path.display()
         );
         for relation_role in descriptor.relation_roles {
@@ -198,12 +194,10 @@ async fn sql_output_schemas_equal_canonical_native_output_schemas() {
 }
 
 #[test]
-fn installing_over_an_existing_query_planner_is_rejected_structurally() {
+fn identical_cuvs_installation_is_idempotent_over_its_existing_query_planner() {
     let builder = SessionStateBuilder::new_with_default_features().try_with_cuvs_sql().expect("first cuVS SQL install");
-    let error = builder.try_with_cuvs_sql().expect_err("second install must be rejected");
-    let typed = error.find_nexus_error().expect("structured query-planner conflict");
-    assert_eq!(typed.code(), ErrorCode::InvalidRequest);
-    assert_eq!(typed.facts().get("reason"), Some("query_planner_conflict"));
+    let mut builder = builder.try_with_cuvs_sql().expect("identical second cuVS SQL install must be a no-op");
+    assert!(builder.query_planner().is_some());
 }
 
 #[tokio::test]
@@ -399,10 +393,10 @@ async fn operation_output_schemas_and_defaulted_options_are_stable() {
 }
 
 #[tokio::test]
-async fn metadata_list_describe_and_validate_are_registry_projections() {
+async fn unified_gpu_metadata_is_relation_aware_and_projects_the_canonical_registry() {
     let ctx = cuvs_context();
     let listed = ctx
-        .sql("SELECT function_name, options_schema_json FROM cuvs_list_operations()")
+        .sql(&format!("SELECT function_name FROM {GPU_LIST_FUNCTIONS_FUNCTION}() WHERE provider = 'cuvs'"))
         .await
         .unwrap()
         .collect()
@@ -410,14 +404,25 @@ async fn metadata_list_describe_and_validate_are_registry_projections() {
         .unwrap();
     assert_eq!(listed.iter().map(|batch| batch.num_rows()).sum::<usize>(), CUVS_OPERATION_REGISTRY.len());
 
-    let described =
-        ctx.sql("SELECT * FROM cuvs_describe_operation('cuvs_pca')").await.unwrap().collect().await.unwrap();
+    let described = ctx
+        .sql(&format!("SELECT * FROM {GPU_DESCRIBE_FUNCTION_FUNCTION}('cuvs_pca')"))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
     assert_eq!(described.iter().map(|batch| batch.num_rows()).sum::<usize>(), 1);
 
+    let call = serde_json::json!({
+        "schema_version": 1,
+        "relations": {"input": {"table": "dataset_vectors"}},
+        "options": serde_json::from_str::<serde_json::Value>(KMEANS_OPTIONS).unwrap(),
+    });
     let valid = ctx
         .sql(&format!(
-            "SELECT valid, normalized_options_json FROM {CUVS_VALIDATE_CALL_FUNCTION}('cuvs_kmeans', '{}')",
-            sql_literal(KMEANS_OPTIONS)
+            "SELECT valid, error_code, relations_resolved, normalized_call_json, output_schema_json, would_execute_gpu \
+             FROM {GPU_VALIDATE_CALL_FUNCTION}('cuvs_kmeans', '{}')",
+            sql_literal(&call.to_string())
         ))
         .await
         .unwrap()
@@ -425,7 +430,135 @@ async fn metadata_list_describe_and_validate_are_registry_projections() {
         .await
         .unwrap();
     let valid_column = valid[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
-    assert!(valid_column.value(0));
+    let resolved_column = valid[0].column(2).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    let would_execute = valid[0].column(5).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    #[cfg(feature = "cuvs")]
+    {
+        let output_schema = valid[0].column(4).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        assert!(valid_column.value(0));
+        assert!(resolved_column.value(0));
+        assert!(would_execute.value(0));
+        let output_schema = serde_json::from_str::<serde_json::Value>(output_schema.value(0)).unwrap();
+        assert_eq!(
+            output_schema["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|field| field["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["row_ordinal", "id", "cluster_id"]
+        );
+    }
+    #[cfg(not(feature = "cuvs"))]
+    {
+        let error_code = valid[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        assert!(!valid_column.value(0));
+        assert_eq!(error_code.value(0), "required_feature_disabled");
+        assert!(!resolved_column.value(0));
+        assert!(!would_execute.value(0));
+    }
+}
+
+#[cfg(feature = "cuvs")]
+#[tokio::test]
+async fn unified_gpu_metadata_reports_bounded_cuvs_as_unavailable() {
+    let optimizer_config = NexusNativeOptimizerConfig::default()
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1));
+    let mut config = SessionConfig::new();
+    config.options_mut().extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(&optimizer_config));
+    let state =
+        SessionStateBuilder::new_with_default_features().with_config(config).try_with_cuvs_sql().unwrap().build();
+    let ctx = SessionContext::new_with_state(state);
+    let listed = ctx
+        .sql(&format!(
+            "SELECT available, unavailable_reason FROM {GPU_LIST_FUNCTIONS_FUNCTION}() WHERE function_name = 'cuvs_kmeans'"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let available = listed[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    let reason = listed[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+    assert!(!available.value(0));
+    assert_eq!(reason.value(0), "bounded_execution_unavailable");
+
+    let call = serde_json::json!({
+        "schema_version": 1,
+        "relations": {"input": {"table": "dataset_vectors"}},
+        "options": serde_json::from_str::<serde_json::Value>(KMEANS_OPTIONS).unwrap(),
+    });
+    let validated = ctx
+        .sql(&format!(
+            "SELECT valid, error_code, would_execute_gpu FROM {GPU_VALIDATE_CALL_FUNCTION}('cuvs_kmeans', '{}')",
+            sql_literal(&call.to_string())
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let valid = validated[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    let code = validated[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+    let would_execute = validated[0].column(2).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    assert!(!valid.value(0));
+    assert_eq!(code.value(0), "bounded_execution_unavailable");
+    assert!(!would_execute.value(0));
+}
+
+#[tokio::test]
+async fn unified_gpu_metadata_rejects_missing_relations_and_invalid_bindings_without_execution() {
+    let ctx = cuvs_context();
+    let missing = serde_json::json!({
+        "schema_version": 1,
+        "relations": {"input": {"table": "missing_vectors"}},
+        "options": serde_json::from_str::<serde_json::Value>(KMEANS_OPTIONS).unwrap(),
+    });
+    let missing = ctx
+        .sql(&format!(
+            "SELECT valid, error_code, relations_resolved FROM {GPU_VALIDATE_CALL_FUNCTION}('cuvs_kmeans', '{}')",
+            sql_literal(&missing.to_string())
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let missing_valid = missing[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    let missing_code = missing[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+    let missing_resolved = missing[0].column(2).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    #[cfg(feature = "cuvs")]
+    {
+        assert!(!missing_valid.value(0));
+        assert_eq!(missing_code.value(0), "table_not_found");
+        assert!(!missing_resolved.value(0));
+
+        let invalid_binding = serde_json::json!({
+            "schema_version": 1,
+            "relations": {"input": {"table": "dataset_vectors"}},
+            "options": {"input":{"id":"missing","vector":{"columns":["d0","d1"]}},"n_clusters":1},
+        });
+        let invalid = ctx
+            .sql(&format!(
+                "SELECT valid, error_code FROM {GPU_VALIDATE_CALL_FUNCTION}('cuvs_kmeans', '{}')",
+                sql_literal(&invalid_binding.to_string())
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let invalid_valid = invalid[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+        let invalid_code = invalid[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        assert!(!invalid_valid.value(0));
+        assert_eq!(invalid_code.value(0), "column_not_found");
+    }
+    #[cfg(not(feature = "cuvs"))]
+    {
+        assert!(!missing_valid.value(0));
+        assert_eq!(missing_code.value(0), "required_feature_disabled");
+        assert!(!missing_resolved.value(0));
+    }
 }
 
 #[tokio::test]
@@ -746,22 +879,6 @@ fn find_cuvs_exec(plan: &dyn ExecutionPlan) -> Option<&CuvsAlgoExec> {
         return Some(exec);
     }
     plan.children().into_iter().find_map(|child| find_cuvs_exec(child.as_ref()))
-}
-
-fn metadata_operation_name(operation: CuvsOperation) -> &'static str {
-    match operation {
-        CuvsOperation::BruteForceKnn => "brute_force_knn",
-        CuvsOperation::KMeans => "kmeans",
-        CuvsOperation::Pca => "pca",
-    }
-}
-
-fn metadata_output_contract_name(output_contract: CuvsOutputContract) -> &'static str {
-    match output_contract {
-        CuvsOutputContract::BruteForceKnn => "brute_force_knn",
-        CuvsOutputContract::KMeansAssignments => "kmeans_assignments",
-        CuvsOutputContract::PcaComponents => "pca_components",
-    }
 }
 
 fn assert_schema(schema: &DFSchema, names: &[&str]) {

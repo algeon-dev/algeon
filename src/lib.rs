@@ -24,6 +24,7 @@ pub mod error;
 mod final_plan_observation;
 pub mod gpu_coverage;
 pub mod gpu_coverage_sql;
+pub mod gpu_functions;
 #[cfg(feature = "cugraph")]
 pub mod graph_sql;
 pub mod native;

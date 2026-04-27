@@ -34,12 +34,13 @@ takes a source vertex); see each function's page for its exact signature.
 
 ## Recommended workflow
 
-1. **List** — `cugraph_list_algorithms()` to find enabled functions.
-2. **Describe** — `cugraph_describe_algorithm('<fn>', 'verbose')` for arguments,
-   options, schemas, and limitations.
-3. **Validate** — `cugraph_validate_call('<fn>', '<table>', '<call_json>')` to
-   statically check a call.
-4. **Execute** — run the call once validation returns `valid = true`.
+1. **List** — `gpu_list_functions()` to find enabled functions; filter with
+   `WHERE provider = 'cugraph'` when you need graph functions only.
+2. **Describe** — `gpu_describe_function('<fn>')` for the fixed descriptor with
+   arguments, options, schemas, examples, and limitations.
+3. **Validate** — `gpu_validate_call('<fn>', '<call_json>')` to statically check
+   a versioned envelope containing named relations and provider-owned options.
+4. **Execute** — run the `cugraph_*` call once validation returns `valid = true`.
 
 See [Discovery & Validation](./discovery-and-validation.mdx) for details. To
 run these functions in a process or server, see
@@ -48,7 +49,7 @@ run these functions in a process or server, see
 ## Next steps
 
 - **[Browse algorithms](./algorithms/index.mdx)** — choose an algorithm by
-  family or compare every available function.
+  family or compare every function generated from its catalog descriptor.
 - **[Discover & validate calls](./discovery-and-validation.mdx)** — inspect the
   runtime contract and dry-run a concrete call before execution.
 - **[Set graph construction options](./graph-options.mdx)** — choose directed

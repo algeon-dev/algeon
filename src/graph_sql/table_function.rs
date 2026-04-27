@@ -22,10 +22,8 @@ use super::{
     validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
 };
 use crate::{
-    graph_sql::{CugraphAlgoExec, metadata::cugraph_metadata_table_functions},
-    native_exec::NexusNativeExecutionConfig,
-    session::session_state_with_native_execution_config,
-    session_config::DataFusionNexusSessionConfig,
+    graph_sql::CugraphAlgoExec, native_exec::NexusNativeExecutionConfig,
+    session::session_state_with_native_execution_config, session_config::DataFusionNexusSessionConfig,
 };
 
 #[derive(Debug)]
@@ -169,16 +167,14 @@ fn maybe_resolve_bfs_relation_output_schema(spec: &mut CugraphAlgorithmSpec, ses
 }
 
 pub fn cugraph_table_functions(config: CugraphSqlConfig) -> Vec<Arc<TableFunction>> {
-    let mut functions: Vec<_> = CugraphAlgorithm::all()
+    CugraphAlgorithm::all()
         .map(|algorithm| {
             Arc::new(TableFunction::new(
                 algorithm.function_name().to_string(),
                 Arc::new(CugraphTableFunction { algorithm, config: config.clone() }),
             ))
         })
-        .collect();
-    functions.extend(cugraph_metadata_table_functions(config));
-    functions
+        .collect()
 }
 
 pub fn register_cugraph_udtfs(ctx: &SessionContext, config: CugraphSqlConfig) {

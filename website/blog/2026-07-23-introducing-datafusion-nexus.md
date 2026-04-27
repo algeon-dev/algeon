@@ -252,10 +252,10 @@ values with stable identity rather than log text.
 This matters for the engineers operating the system, and it matters just as
 much for the agents increasingly sitting between users and data. An agent
 working against a Nexus session does not have to guess at the engine's
-behavior: it can call `cugraph_describe_algorithm(...)` to read an
-algorithm's argument and output contract, `cugraph_validate_call(...)` to
-statically check a call before spending GPU time on it, and
-`nexus_explain_coverage(...)` to learn whether a query will hit the fast
+behavior: it can call `gpu_describe_function(...)` to read an execution
+function's descriptor, `gpu_validate_call(...)` with a versioned envelope to
+statically check named relations and options before spending GPU time on it,
+and `nexus_explain_coverage(...)` to learn whether a query will hit the fast
 path. As agents become a primary consumer of data infrastructure — issuing
 more queries, and more varied ones, than the dashboards before them —
 machine-readable contracts like these are how an engine earns a place under
@@ -368,9 +368,9 @@ questions you *can't* ask directly — they become a graph database procurement,
 pipeline, and a quarter of glue code, so they quietly fall off the roadmap.
 Behind a `cugraph_*` table function, over the tables you already have, they
 are a `SELECT`. The machine-readable contracts described above are what make
-this safe to hand to an agent: it can read an algorithm's shape with
-`cugraph_describe_algorithm(...)`, statically check a call with
-`cugraph_validate_call(...)` before spending GPU time, and ask
+this safe to hand to an agent: it can read an execution function's descriptor with
+`gpu_describe_function(...)`, statically check a versioned call envelope with
+`gpu_validate_call(...)` before spending GPU time, and ask
 `nexus_explain_coverage(...)` whether the query it just wrote lands on the
 fast path — so the exploration converges on queries that actually run on the
 GPU rather than guessing.

@@ -90,7 +90,12 @@ from adbc_driver_flightsql import dbapi
 
 with dbapi.connect(uri="grpc://127.0.0.1:50051") as conn:
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM cugraph_list_algorithms()")
+        cur.execute("""
+            SELECT function_name, signature, summary
+            FROM gpu_list_functions()
+            WHERE provider = 'cugraph'
+            ORDER BY function_name
+        """)
         algorithms = cur.fetch_arrow_table()
 
         cur.execute(

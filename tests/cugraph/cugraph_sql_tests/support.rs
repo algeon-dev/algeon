@@ -255,52 +255,6 @@ pub(super) fn register_edge_memtable(
     ctx.register_table(table_name, provider).unwrap();
 }
 
-pub(super) fn register_nullable_edge_memtable(
-    ctx: &SessionContext,
-    table_name: &str,
-    src_nullable: bool,
-    dst_nullable: bool,
-    weight_nullable: bool,
-) {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("src", DataType::Int64, src_nullable),
-        Field::new("dst", DataType::Int64, dst_nullable),
-        Field::new("weight", DataType::Float64, weight_nullable),
-    ]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int64Array::from(vec![0_i64, 1])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![1_i64, 2])) as ArrayRef,
-            Arc::new(Float64Array::from(vec![1.0_f64, 2.0])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
-    ctx.register_table(table_name, provider).unwrap();
-}
-
-pub(super) fn register_nullable_edge_id_memtable(ctx: &SessionContext, table_name: &str) {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("src", DataType::Int64, true),
-        Field::new("dst", DataType::Int64, true),
-        Field::new("weight", DataType::Float64, true),
-        Field::new("edge_id", DataType::Int64, true),
-    ]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int64Array::from(vec![0_i64, 1])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![1_i64, 2])) as ArrayRef,
-            Arc::new(Float64Array::from(vec![1.0_f64, 2.0])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![10_i64, 12])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
-    ctx.register_table(table_name, provider).unwrap();
-}
-
 pub(super) fn register_vertex_memtable(
     ctx: &SessionContext,
     table_name: &str,
@@ -372,22 +326,6 @@ pub(super) fn register_i64_similarity_pairs(
         vec![Arc::new(Int64Array::from(first)) as ArrayRef, Arc::new(Int64Array::from(second)) as ArrayRef],
     )
     .unwrap();
-    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
-    ctx.register_table(table_name, provider).unwrap();
-}
-
-pub(super) fn register_personalization_memtable(
-    ctx: &SessionContext,
-    table_name: &str,
-    vertex_type: DataType,
-    value_type: DataType,
-) {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("vertex", vertex_type.clone(), false),
-        Field::new("value", value_type.clone(), false),
-    ]));
-    let batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![edge_column(&vertex_type), edge_column(&value_type)]).unwrap();
     let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
     ctx.register_table(table_name, provider).unwrap();
 }
@@ -558,23 +496,6 @@ pub(super) fn register_nullable_string_bfs_edges_with_nulls(ctx: &SessionContext
     ctx.register_table(table_name, provider).unwrap();
 }
 
-pub(super) fn register_large_string_bfs_edges(ctx: &SessionContext, table_name: &str) {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("src", DataType::LargeUtf8, false),
-        Field::new("dst", DataType::LargeUtf8, false),
-    ]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(LargeStringArray::from(vec!["a", "a", "b", "c"])) as ArrayRef,
-            Arc::new(LargeStringArray::from(vec!["b", "c", "d", "d"])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
-    ctx.register_table(table_name, provider).unwrap();
-}
-
 pub(super) fn register_string_bfs_edges_with_edge_id(ctx: &SessionContext, table_name: &str) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("edge_id", DataType::Utf8, false),
@@ -678,33 +599,6 @@ pub(super) fn edge_column(data_type: &DataType) -> ArrayRef {
     }
 }
 
-pub(super) async fn assert_validate_error(
-    ctx: &SessionContext,
-    function_name: &str,
-    table_name: &str,
-    call_json: &str,
-    expected_code: &str,
-) -> RecordBatch {
-    let sql = format!(
-        "SELECT valid, error_code, src_dtype, dst_dtype, weight_dtype \
-         FROM cugraph_validate_call('{function_name}', '{table_name}', '{call_json}')"
-    );
-    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
-    let batch = single_batch(&batches).clone();
-    assert!(!bool_value(&batch, 0, 0), "validation should fail for {sql}");
-    assert_eq!(string_value(&batch, 1, 0), expected_code, "unexpected validation error for {sql}");
-    batch
-}
-
-pub(super) async fn validate_call_batch(ctx: &SessionContext, function_name: &str, call_json: &str) -> RecordBatch {
-    let escaped = call_json.replace('\'', "''");
-    let sql = format!(
-        "SELECT valid, error_code, message \
-         FROM cugraph_validate_call('{function_name}', 'edges', '{escaped}')"
-    );
-    single_batch(&ctx.sql(&sql).await.unwrap().collect().await.unwrap()).clone()
-}
-
 pub(super) fn single_batch(batches: &[RecordBatch]) -> &RecordBatch {
     assert_eq!(batches.len(), 1, "expected one RecordBatch");
     &batches[0]
@@ -718,19 +612,6 @@ pub(super) fn json_value(value: &str) -> serde_json::Value {
     serde_json::from_str(value).unwrap()
 }
 
-pub(super) fn test_data_type_label(data_type: &DataType) -> &'static str {
-    match data_type {
-        DataType::Int32 => "Int32",
-        DataType::Int64 => "Int64",
-        DataType::Float32 => "Float32",
-        DataType::Float64 => "Float64",
-        DataType::Boolean => "Boolean",
-        DataType::Utf8 => "Utf8",
-        DataType::LargeUtf8 => "LargeUtf8",
-        _ => "Other",
-    }
-}
-
 pub(super) fn json_array_item_by_name<'a>(array: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
     array
         .as_array()
@@ -738,47 +619,6 @@ pub(super) fn json_array_item_by_name<'a>(array: &'a serde_json::Value, name: &s
         .iter()
         .find(|item| item["name"].as_str() == Some(name))
         .unwrap_or_else(|| panic!("expected JSON array item named {name}: {array}"))
-}
-
-pub(super) fn assert_json_array_contains_string(array: &serde_json::Value, expected: &str) {
-    assert!(
-        array.as_array().unwrap().iter().any(|item| item.as_str() == Some(expected)),
-        "expected JSON string array to contain {expected:?}: {array}",
-    );
-}
-
-pub(super) fn assert_json_columns_parse_and_have_no_control_chars(batch: &RecordBatch) {
-    for (column_index, field) in batch.schema().fields().iter().enumerate() {
-        if !field.name().ends_with("_json") {
-            continue;
-        }
-        let values = batch.column(column_index).as_any().downcast_ref::<StringArray>().unwrap();
-        for row_index in 0..batch.num_rows() {
-            let value = json_value(values.value(row_index));
-            assert_json_strings_have_no_control_chars(&value, &format!("{}[{row_index}]", field.name()));
-        }
-    }
-}
-
-pub(super) fn assert_json_strings_have_no_control_chars(value: &serde_json::Value, path: &str) {
-    match value {
-        serde_json::Value::String(text) => {
-            if let Some(control) = text.chars().find(|ch| ch.is_control()) {
-                panic!("JSON string at {path} contains control character U+{:04X}", control as u32);
-            }
-        },
-        serde_json::Value::Array(items) => {
-            for (index, item) in items.iter().enumerate() {
-                assert_json_strings_have_no_control_chars(item, &format!("{path}[{index}]"));
-            }
-        },
-        serde_json::Value::Object(entries) => {
-            for (key, item) in entries {
-                assert_json_strings_have_no_control_chars(item, &format!("{path}.{key}"));
-            }
-        },
-        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {},
-    }
 }
 
 pub(super) fn string_value(batch: &RecordBatch, column: usize, row: usize) -> &str {

@@ -67,8 +67,8 @@ async fn server_cugraph_session_registers_algorithm_udtfs_when_enabled() {
         "enabled server config must install cuGraph SQL UDTFs into the Flight SQL SessionContext"
     );
     assert!(
-        ctx.state().table_functions().contains_key("cugraph_list_algorithms"),
-        "enabled server config must install cuGraph metadata UDTFs into the Flight SQL SessionContext"
+        ctx.state().table_functions().contains_key("gpu_list_functions"),
+        "enabled server config must install the common GPU metadata UDTFs into the Flight SQL SessionContext"
     );
 
     let df = ctx.sql("SELECT * FROM cugraph_pagerank('g')").await.unwrap();
@@ -79,7 +79,7 @@ async fn server_cugraph_session_registers_algorithm_udtfs_when_enabled() {
     );
 
     let batches = ctx
-        .sql("SELECT function_name FROM cugraph_list_algorithms() WHERE function_name = 'cugraph_pagerank'")
+        .sql("SELECT function_name FROM gpu_list_functions() WHERE function_name = 'cugraph_pagerank'")
         .await
         .unwrap()
         .collect()
@@ -132,7 +132,18 @@ async fn server_cugraph_session_does_not_register_udtfs_when_disabled() {
     let ctx = datafusion_nexus::server::build_session_context(&config).await.unwrap();
 
     assert!(!ctx.state().table_functions().contains_key("cugraph_pagerank"));
-    assert!(!ctx.state().table_functions().contains_key("cugraph_list_algorithms"));
+    // cuVS is installed independently in the server session and owns the
+    // shared catalog in this configuration, so common metadata remains
+    // available even when the graph family itself is disabled.
+    assert!(ctx.state().table_functions().contains_key("gpu_list_functions"));
+    let batches = ctx
+        .sql("SELECT function_name FROM gpu_list_functions() WHERE provider = 'cugraph'")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert_eq!(batches[0].num_rows(), 0);
 }
 
 #[cfg(feature = "cugraph")]
@@ -158,8 +169,8 @@ async fn server_cugraph_udtfs_and_views_survive_session_state_rebuild() {
         "Flight SQL per-query state rebuild must retain registered cuGraph UDTFs"
     );
     assert!(
-        rebuilt_state.table_functions().contains_key("cugraph_validate_call"),
-        "Flight SQL per-query state rebuild must retain registered cuGraph metadata UDTFs"
+        rebuilt_state.table_functions().contains_key("gpu_validate_call"),
+        "Flight SQL per-query state rebuild must retain registered common GPU metadata UDTFs"
     );
     let rebuilt = SessionContext::new_with_state(rebuilt_state);
     let batches = rebuilt.sql("SELECT src, dst FROM target_edges").await.unwrap().collect().await.unwrap();

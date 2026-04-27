@@ -185,11 +185,12 @@ executes the returned plan or performs GPU admission.
 | `cugraph_runtime_validation_unknown` | cuGraph seed, personalization, weight, and device-side checks can still fail at runtime. |
 | `execution_mode_plan_time_only` | Strict or adaptive runtime gates still execute later under the stamped native pipeline mode. |
 
-## Relationship to `cugraph_validate_call`
+## Relationship to `gpu_validate_call`
 
-[`cugraph_validate_call`](../cugraph/discovery-and-validation.mdx) validates one
-cuGraph call's schema, arguments, and options. Its result does not inspect the
-surrounding physical plan. `nexus_explain_coverage` inspects the whole planned
-query, including DataFusion boundaries feeding or consuming an explicit GPU
-island. Use both when composing graph SQL: call validation for the algorithm,
-then coverage validation for the query that will execute.
+[`gpu_validate_call`](../cugraph/discovery-and-validation.mdx#gpu_validate_callfunction_name-call_json)
+validates one installed GPU function call's named relations and provider-owned
+options. Its result does not inspect the surrounding physical plan.
+`nexus_explain_coverage` inspects the whole planned query, including DataFusion
+boundaries feeding or consuming an explicit GPU island. Use both when composing
+graph SQL: validate the function call, then check coverage for the query that
+will execute.
