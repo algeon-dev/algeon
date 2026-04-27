@@ -80,6 +80,8 @@ def fake_environment(
     logger: bool,
     missing_rmm: bool = False,
     divergent_runtime_rmm: bool = False,
+    logger_linkage: str | None = None,
+    graph_logger: bool = False,
 ) -> tuple[dict[str, str], Path, Path, Path]:
     cudf_dir = root / "cudf runtime"
     graph_native = root / "graph native"
@@ -97,14 +99,14 @@ def fake_environment(
             graph_runtime / "librmm.so",
             b"divergent rmm build" if divergent_runtime_rmm else b"one rmm build",
         )
-        if logger:
+        if logger or graph_logger:
             write_library(graph_native / "librapids_logger.so", b"one logger build")
             write_library(graph_runtime / "librapids_logger.so", b"one logger build")
 
     cudf_values = {
         "runtime-lib-dir": str(cudf_dir),
         "libcudf-runtime-lib": str(libcudf),
-        "rapids-logger-linkage": "shared" if logger else "static",
+        "rapids-logger-linkage": logger_linkage or ("shared" if logger else "static"),
     }
     if not missing_rmm:
         cudf_values["rmm-runtime-lib"] = str(rmm)
@@ -168,12 +170,14 @@ def run_site_scenario(
     cugraph: bool,
     metadata_mode: str,
     logger: bool,
+    logger_linkage: str | None = None,
 ) -> str:
     environment, cudf_dir, _, _ = fake_environment(
         fixture_root,
         metadata_mode=metadata_mode,
         cugraph=cugraph,
         logger=logger,
+        logger_linkage=logger_linkage,
     )
     if cugraph and site.feature_gated:
         environment["CARGO_FEATURE_CUGRAPH"] = "1"
@@ -183,12 +187,15 @@ def run_site_scenario(
     cugraph_tracking = "cargo:rerun-if-env-changed=DEP_CUGRAPH_METADATA"
     if (cugraph_tracking in result.stdout) != cugraph:
         raise AssertionError(f"{site.name}: unexpected cugraph tracking state\n{result.stdout}")
-    if cugraph and not logger:
+    if cugraph and not logger and logger_linkage != "absorbed":
         warning = "did not expose a shared librapids_logger.so (linkage=static)"
         if warning not in result.stdout:
             raise AssertionError(f"{site.name}: missing optional logger warning\n{result.stdout}")
-        if "librapids_logger.so,--pop-state" in result.stdout:
-            raise AssertionError(f"{site.name}: absent optional logger was linked\n{result.stdout}")
+    if cugraph and logger_linkage == "absorbed":
+        if "librapids_logger" in result.stdout:
+            raise AssertionError(f"{site.name}: verified absorbed logger must stay quiet\n{result.stdout}")
+    if not logger and "librapids_logger.so,--pop-state" in result.stdout:
+        raise AssertionError(f"{site.name}: absent optional logger was linked\n{result.stdout}")
     if logger and "librapids_logger.so,--pop-state" not in result.stdout:
         raise AssertionError(f"{site.name}: present optional logger was not linked\n{result.stdout}")
     return result.stdout
@@ -230,15 +237,16 @@ def main() -> int:
                 executables[site.name] = executable
 
             scenarios = [
-                ("root-disabled-direct", SITES[0], False, "direct", True),
-                ("root-enabled-aggregate", SITES[0], True, "aggregate", True),
-                ("engine-disabled-aggregate", SITES[1], False, "aggregate", True),
-                ("engine-enabled-direct-no-logger", SITES[1], True, "direct", False),
-                ("bench-disabled-mixed", SITES[2], False, "mixed", True),
-                ("bench-enabled-mixed", SITES[2], True, "mixed", True),
-                ("examples-enabled-direct", SITES[3], True, "direct", True),
+                ("root-disabled-direct", SITES[0], False, "direct", True, None),
+                ("root-enabled-aggregate", SITES[0], True, "aggregate", True, None),
+                ("engine-disabled-aggregate", SITES[1], False, "aggregate", True, None),
+                ("engine-enabled-direct-no-logger", SITES[1], True, "direct", False, None),
+                ("engine-enabled-aggregate-absorbed", SITES[1], True, "aggregate", False, "absorbed"),
+                ("bench-disabled-mixed", SITES[2], False, "mixed", True, None),
+                ("bench-enabled-mixed", SITES[2], True, "mixed", True, None),
+                ("examples-enabled-direct", SITES[3], True, "direct", True, None),
             ]
-            for name, site, cugraph, metadata_mode, logger in scenarios:
+            for name, site, cugraph, metadata_mode, logger, logger_linkage in scenarios:
                 run_site_scenario(
                     site,
                     executables[site.name],
@@ -246,6 +254,7 @@ def main() -> int:
                     cugraph=cugraph,
                     metadata_mode=metadata_mode,
                     logger=logger,
+                    logger_linkage=logger_linkage,
                 )
 
             missing_env, _, _, _ = fake_environment(
@@ -272,7 +281,22 @@ def main() -> int:
             if divergent.returncode == 0 or "two divergent librmm.so builds" not in divergent.stderr:
                 raise AssertionError(f"divergent RMM did not hard fail stably\n{divergent.stdout}\n{divergent.stderr}")
 
-            scenario_count = len(scenarios) + 2
+            absorbed_env, _, _, _ = fake_environment(
+                temporary_path / "absorbed-with-shared-candidate",
+                metadata_mode="direct",
+                cugraph=True,
+                logger=False,
+                logger_linkage="absorbed",
+                graph_logger=True,
+            )
+            absorbed_env["CARGO_FEATURE_CUGRAPH"] = "1"
+            absorbed = run([str(executables["root"])], env=absorbed_env)
+            if absorbed.returncode == 0 or "two rapids_logger builds" not in absorbed.stderr:
+                raise AssertionError(
+                    f"shared logger reachable in absorbed state did not hard fail stably\n{absorbed.stdout}\n{absorbed.stderr}"
+                )
+
+            scenario_count = len(scenarios) + 3
             print(
                 f"OK: {policy_count} pure RAPIDS policy tests, {len(SITES)} inclusion compile smokes, "
                 f"and {scenario_count} isolated build-script scenarios passed."

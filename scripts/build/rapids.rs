@@ -342,6 +342,19 @@ fn optional_logger_warning(linkage: &str) -> String {
     )
 }
 
+fn absorbed_logger_shared_candidate_diagnostic(candidate: &Path) -> String {
+    format!(
+        "cudf-sys reports rapids_logger absorbed into libcudf/librmm (no shipped RAPIDS shared library links a \
+         shared librapids_logger.so), but one is reachable from the cugraph-sys link/runtime dirs: {}. \
+         If libcugraph links it, this process carries two rapids_logger builds and logger symbols bind \
+         unpredictably; if it is a stale artifact from an earlier shared build, any future relink would \
+         adopt it. Remove the stale file and any stale rapids_logger CMake package (lib/cmake/rapids_logger \
+         under the same prefix), then reconfigure the cugraph C++ build against the cudf install prefix \
+         (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>) and rebuild it.",
+        candidate.display()
+    )
+}
+
 fn missing_candidate_diagnostic(lib_name: &str, cudf_lib: &Path) -> String {
     format!(
         "the `cugraph` feature is enabled but no {lib_name} is reachable from the cugraph-sys link/runtime \
@@ -381,7 +394,28 @@ fn enforce_single_rapids_runtime_libraries(metadata: &ResolvedMetadata) {
         OptionalLoggerPolicy::Enforce(library) => {
             enforce_shared_rapids_library_matches_cudf("librapids_logger.so", &library, &metadata.cugraph);
         },
+        // cudf-sys classified rapids_logger as absorbed by inspecting real
+        // DT_NEEDED linkage. The single-RMM enforcement above already pins
+        // cugraph to the same install prefix, whose static logger archive is
+        // therefore the only one either side can absorb — the invariant holds
+        // by construction, so this state stays quiet. What must not exist is
+        // a *shared* logger reachable from the cugraph dirs: that is either a
+        // second logger build in the process or a stale artifact any relink
+        // would adopt, and it breaks the absorbed contract.
+        OptionalLoggerPolicy::Skip { linkage } if linkage == "absorbed" => {
+            enforce_absorbed_logger_has_no_shared_candidate(&metadata.cugraph);
+        },
         OptionalLoggerPolicy::Skip { linkage } => println!("{}", optional_logger_warning(&linkage)),
+    }
+}
+
+fn enforce_absorbed_logger_has_no_shared_candidate(cugraph_metadata: &CugraphMetadata) {
+    let candidates = existing_candidates(cugraph_candidate_paths("librapids_logger.so", cugraph_metadata));
+    for candidate in &candidates {
+        println!("cargo:rerun-if-changed={}", candidate.display());
+    }
+    if let Some(candidate) = candidates.first() {
+        panic!("{}", absorbed_logger_shared_candidate_diagnostic(candidate));
     }
 }
 
@@ -733,5 +767,29 @@ mod tests {
             divergent_library_diagnostic("librmm.so", Path::new("/cudf/librmm.so"), Path::new("/graph/librmm.so")),
             "two divergent librmm.so builds are linked into this process:\n  cudf-sys:    /cudf/librmm.so\n  cugraph-sys: /graph/librmm.so\nOne process must bind every librmm.so symbol to a single build, or execution corrupts at runtime. Reconfigure the cugraph C++ build against the cudf install prefix (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>), rebuild it, and remove stale copies from the cugraph build tree."
         );
+        assert_eq!(
+            absorbed_logger_shared_candidate_diagnostic(Path::new("/graph/librapids_logger.so")),
+            "cudf-sys reports rapids_logger absorbed into libcudf/librmm (no shipped RAPIDS shared library links a shared librapids_logger.so), but one is reachable from the cugraph-sys link/runtime dirs: /graph/librapids_logger.so. If libcugraph links it, this process carries two rapids_logger builds and logger symbols bind unpredictably; if it is a stale artifact from an earlier shared build, any future relink would adopt it. Remove the stale file and any stale rapids_logger CMake package (lib/cmake/rapids_logger under the same prefix), then reconfigure the cugraph C++ build against the cudf install prefix (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>) and rebuild it."
+        );
+    }
+
+    #[test]
+    fn absorbed_logger_policy_rejects_only_reachable_shared_candidates() {
+        let test_dir = TestDir::new("absorbed-logger");
+        let graph_native = test_dir.path().join("graph native");
+        std::fs::create_dir_all(&graph_native).unwrap();
+        let metadata = CugraphMetadata { native_link_dirs: Some(vec![graph_native.clone()]), runtime_lib_dirs: None };
+
+        // Nothing reachable: the absorbed contract holds and stays quiet.
+        enforce_absorbed_logger_has_no_shared_candidate(&metadata);
+
+        // A reachable shared logger breaks the absorbed contract.
+        let candidate = graph_native.join("librapids_logger.so");
+        std::fs::write(&candidate, b"stale or divergent shared logger").unwrap();
+        let result = std::panic::catch_unwind(|| enforce_absorbed_logger_has_no_shared_candidate(&metadata));
+        let panic = result.expect_err("a reachable shared logger must fail the absorbed policy");
+        let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(message.contains("two rapids_logger builds"), "unexpected diagnostic: {message}");
+        assert!(message.contains(candidate.to_str().unwrap()), "diagnostic must name the candidate: {message}");
     }
 }
