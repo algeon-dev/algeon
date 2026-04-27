@@ -183,6 +183,36 @@ impl QueryPlan {
         plan
     }
 
+    /// Replace the externally materialized host schema while preserving the
+    /// executable root. This keeps Arrow schema metadata owned by an embedding
+    /// frontend at the host boundary without injecting frontend state into the
+    /// DataFusion-independent IR nodes.
+    ///
+    /// The replacement must retain the exact output fields and types of the
+    /// host sink schema it replaces. Only schema-level metadata may differ.
+    /// The host sink schema itself may differ from the executable root schema
+    /// by field names (see
+    /// [`QueryPlanBuilder::finish_with_host_sink_schema`]), so the executable
+    /// root is not a valid reference for this check.
+    ///
+    /// [`QueryPlanBuilder::finish_with_host_sink_schema`]: crate::plan::QueryPlanBuilder::finish_with_host_sink_schema
+    pub fn with_host_sink_schema(mut self, schema: SchemaRef) -> Self {
+        match &mut self.sink {
+            ResultSink::HostArrow { schema: host_schema, .. } => {
+                assert_eq!(
+                    host_schema.fields(),
+                    schema.fields(),
+                    "host sink schema replacement must preserve the existing host sink fields"
+                );
+                *host_schema = schema;
+            },
+            ResultSink::GpuResident { .. } => {
+                panic!("cannot replace the host sink schema of a GPU-resident plan")
+            },
+        }
+        self
+    }
+
     /// Returns this plan with a native sort appended above the current root.
     ///
     /// The existing DAG is preserved and the result sink is retargeted to the

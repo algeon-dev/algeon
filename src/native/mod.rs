@@ -127,6 +127,10 @@ fn lower_physical_plan_to_native_with_mode(
                 }
             },
             |mut native_plan| {
+                // The Arrow schema at the DataFusion boundary can carry
+                // schema-level metadata. Preserve that contract at the host
+                // sink while keeping the native IR itself DataFusion-free.
+                native_plan = native_plan.with_host_sink_schema(Arc::clone(&plan.schema()));
                 let mut candidate = normalized.candidate.clone();
                 if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
                     let mut report = PlanningReport::new();

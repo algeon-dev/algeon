@@ -608,6 +608,56 @@ fn native_plan_graph_represents_binary_join_with_same_named_inputs() {
 }
 
 #[test]
+fn with_host_sink_schema_attaches_metadata_above_frontend_named_sink() {
+    // The executable root may run on synthetic unique names while the host
+    // sink restores the frontend-visible schema (including duplicate names).
+    // Replacing the host sink schema attaches schema-level metadata without
+    // constraining the executable root.
+    let executable_schema = Arc::new(Schema::new(vec![
+        Field::new("__nexus_native_field_0_id", DataType::Int32, false),
+        Field::new("__nexus_native_field_1_id", DataType::Int32, false),
+    ]));
+    let frontend_schema =
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false), Field::new("id", DataType::Int32, false)]));
+    let source = LocalParquetSource::new(
+        "/tmp/frontend-named.parquet",
+        Arc::clone(&executable_schema),
+        vec!["__nexus_native_field_0_id".into(), "__nexus_native_field_1_id".into()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink_schema(source, Arc::clone(&frontend_schema));
+
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("owner".to_string(), "frontend".to_string());
+    let annotated_schema = Arc::new(Schema::new_with_metadata(frontend_schema.fields().clone(), metadata.clone()));
+    let plan = plan.with_host_sink_schema(Arc::clone(&annotated_schema));
+
+    let ResultSink::HostArrow { schema, .. } = plan.sink() else {
+        panic!("host sink schema replacement requires a host Arrow sink");
+    };
+    assert_eq!(schema.as_ref(), annotated_schema.as_ref());
+    assert_eq!(plan.root_node().output_schema().fields(), executable_schema.fields());
+}
+
+#[test]
+#[should_panic(expected = "host sink schema replacement must preserve the existing host sink fields")]
+fn with_host_sink_schema_rejects_field_shape_changes() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let renamed = Arc::new(Schema::new(vec![Field::new("renamed", DataType::Int32, false)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/rename-reject.parquet",
+        Arc::clone(&schema),
+        vec!["id".into()],
+    )));
+    let plan = builder.finish_with_host_sink(source);
+    let _ = plan.with_host_sink_schema(renamed);
+}
+
+#[test]
 fn native_query_validation_rejects_unreachable_dag_nodes() {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
     let mut builder = QueryPlanBuilder::new();

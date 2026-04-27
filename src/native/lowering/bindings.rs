@@ -157,7 +157,18 @@ pub(super) fn executable_schema_and_bindings(
         fields.push(rename_field(field.as_ref(), native_name.as_str()));
         bindings.push(FieldBinding { frontend_index, frontend_name, native_name });
     }
-    Ok((Arc::new(Schema::new(fields)), bindings))
+    // Retain Arrow schema metadata when the native projection is an identity
+    // over every frontend field. In-memory sources carry RecordBatches whose
+    // schemas include that metadata, and the native source contract requires
+    // those schemas to remain identical. Renamed or reduced projections get a
+    // deliberately new executable schema instead.
+    let preserves_frontend_schema = fields.len() == frontend_schema.fields().len()
+        && bindings
+            .iter()
+            .enumerate()
+            .all(|(index, binding)| binding.frontend_index == index && binding.frontend_name == binding.native_name);
+    let schema = if preserves_frontend_schema { Arc::clone(frontend_schema) } else { Arc::new(Schema::new(fields)) };
+    Ok((schema, bindings))
 }
 
 pub(super) fn rename_field(field: &Field, name: &str) -> Field {
