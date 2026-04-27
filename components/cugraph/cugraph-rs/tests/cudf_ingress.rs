@@ -24,7 +24,7 @@ use cugraph::{
         graph_from_borrowed_table_view, graph_from_dataframe, graph_from_parquet,
     },
     graph::{Forward, GraphBuilder, Transposed},
-    handle::ResourceHandle,
+    handle::{EnteredContext, ResourceHandle},
     traversal::BfsParams,
     types::GraphProperties,
 };
@@ -50,7 +50,7 @@ fn louvain_fixture_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
 }
 
 fn assert_python_weighted_ingress_scores_match_expected(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     label: &str,
     graph: &mut cugraph::Graph<Transposed>,
 ) {
@@ -59,7 +59,7 @@ fn assert_python_weighted_ingress_scores_match_expected(
     assert_score_maps_close_f32(&actual, &expected, 1.0e-6, label);
 }
 
-fn summarize_louvain_shape(graph: &mut cugraph::Graph<Forward>, handle: &ResourceHandle) -> LouvainShapeSummary {
+fn summarize_louvain_shape(graph: &mut cugraph::Graph<Forward>, handle: &EnteredContext<'_>) -> LouvainShapeSummary {
     let edge_count = graph.edge_count(handle).expect("edge_count");
     let result = graph.louvain(handle, &LouvainParams::default()).expect("louvain");
     let clusters = result.clusters().expect("clusters").to_vec_i32(handle).expect("cluster copy");
@@ -80,14 +80,20 @@ fn summarize_louvain_shape(graph: &mut cugraph::Graph<Forward>, handle: &Resourc
     }
 }
 
-fn summarize_pagerank_scores(graph: &mut cugraph::Graph<Transposed>, handle: &ResourceHandle) -> BTreeMap<i32, f64> {
+fn summarize_pagerank_scores(
+    graph: &mut cugraph::Graph<Transposed>,
+    handle: &EnteredContext<'_>,
+) -> BTreeMap<i32, f64> {
     let result = graph.pagerank(handle, &PageRankParams::default()).expect("pagerank");
     let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertex copy");
     let scores = result.scores().expect("scores").to_vec_f64(handle).expect("score copy");
     vertices.into_iter().zip(scores).collect()
 }
 
-fn summarize_betweenness_scores(graph: &mut cugraph::Graph<Forward>, handle: &ResourceHandle) -> BTreeMap<i32, f64> {
+fn summarize_betweenness_scores(
+    graph: &mut cugraph::Graph<Forward>,
+    handle: &EnteredContext<'_>,
+) -> BTreeMap<i32, f64> {
     let result =
         graph.betweenness_centrality_all(handle, &BetweennessCentralityParams::default()).expect("betweenness");
     let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertex copy");
@@ -115,21 +121,22 @@ fn assert_score_maps_close(actual: &BTreeMap<i32, f64>, expected: &BTreeMap<i32,
 #[test]
 fn graph_from_parquet_then_bfs() {
     let handle = test_handle();
+    let entered = handle.enter("graph_from_parquet_then_bfs").expect("entered");
     let fixture = TempParquetFixture::bfs_graph();
 
     let opts = ParquetGraphOptions::new(fixture.path_str(), 0, 1)
         .weight_col(2)
         .properties(GraphProperties::directed())
         .renumber();
-    let loaded = graph_from_parquet::<Forward>(&handle, &opts).expect("graph_from_parquet");
+    let loaded = graph_from_parquet::<Forward>(&entered, &opts).expect("graph_from_parquet");
     let mut graph = loaded.graph;
 
-    let sources = DeviceArray::from_slice(&handle, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
+    let sources = DeviceArray::from_slice(&entered, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
     let sources_view = sources.view().expect("sources_view");
-    let result = graph.bfs(&handle, &sources_view, &BfsParams::default()).expect("bfs");
+    let result = graph.bfs(&entered, &sources_view, &BfsParams::default()).expect("bfs");
 
-    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertices");
-    let distances: Vec<i32> = result.distances().expect("distances").to_vec_i32(&handle).expect("distances");
+    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertices");
+    let distances: Vec<i32> = result.distances().expect("distances").to_vec_i32(&entered).expect("distances");
     let dist_map: HashMap<i32, i32> = vertices.into_iter().zip(distances).collect();
 
     assert!(!dist_map.is_empty(), "graph_from_parquet should produce a non-empty graph");
@@ -139,11 +146,12 @@ fn graph_from_parquet_then_bfs() {
 #[test]
 fn graph_from_parquet_rejects_nonexistent_file() {
     let handle = test_handle();
+    let entered = handle.enter("graph_from_parquet_rejects_nonexistent_file").expect("entered");
     let opts = ParquetGraphOptions::new("/tmp/this_file_definitely_does_not_exist_12345.parquet", 0, 1)
         .properties(GraphProperties::directed())
         .renumber();
 
-    let err = graph_from_parquet::<Forward>(&handle, &opts).expect_err("should reject non-existent file");
+    let err = graph_from_parquet::<Forward>(&entered, &opts).expect_err("should reject non-existent file");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::IoError);
     assert_eq!(err.operation(), "graph_from_parquet");
 }
@@ -164,11 +172,12 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
     write_parquet_dataframe(&df, &path);
 
     let handle = test_handle();
+    let entered = handle.enter("graph_from_parquet_rejects_nulls_in_src_column").expect("entered");
     let opts = ParquetGraphOptions::new(path.to_str().expect("utf8 path"), 0, 1)
         .weight_col(2)
         .properties(GraphProperties::directed())
         .renumber();
-    let err = graph_from_parquet::<Forward>(&handle, &opts).expect_err("should reject nullable src column");
+    let err = graph_from_parquet::<Forward>(&entered, &opts).expect_err("should reject nullable src column");
 
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "graph_from_parquet");
@@ -180,6 +189,7 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
 #[test]
 fn graph_from_borrowed_table_view_then_bfs() {
     let handle = test_handle();
+    let entered = handle.enter("graph_from_borrowed_table_view_then_bfs").expect("entered");
     let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
@@ -188,14 +198,14 @@ fn graph_from_borrowed_table_view_then_bfs() {
 
     let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::directed()).renumber();
     let mut graph =
-        graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts).expect("graph_from_borrowed_table_view");
+        graph_from_borrowed_table_view::<Forward>(&entered, &borrowed, &opts).expect("graph_from_borrowed_table_view");
 
-    let sources = DeviceArray::from_slice(&handle, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
+    let sources = DeviceArray::from_slice(&entered, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
     let sources_view = sources.view().expect("sources_view");
-    let result = graph.bfs(&handle, &sources_view, &BfsParams::default()).expect("bfs");
+    let result = graph.bfs(&entered, &sources_view, &BfsParams::default()).expect("bfs");
 
-    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertices");
-    let distances: Vec<i32> = result.distances().expect("distances").to_vec_i32(&handle).expect("distances");
+    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertices");
+    let distances: Vec<i32> = result.distances().expect("distances").to_vec_i32(&entered).expect("distances");
     let dist_map: HashMap<i32, i32> = vertices.into_iter().zip(distances).collect();
 
     assert!(!dist_map.is_empty(), "should produce a non-empty graph");
@@ -205,6 +215,7 @@ fn graph_from_borrowed_table_view_then_bfs() {
 #[test]
 fn graph_from_borrowed_table_view_without_weights() {
     let handle = test_handle();
+    let entered = handle.enter("graph_from_borrowed_table_view_without_weights").expect("entered");
     let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
@@ -212,13 +223,13 @@ fn graph_from_borrowed_table_view_without_weights() {
     let borrowed = df.try_borrow_table_view().expect("borrowed table view");
 
     let opts = TableGraphOptions::new(0, 1).properties(GraphProperties::directed()).renumber();
-    let mut graph = graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts)
+    let mut graph = graph_from_borrowed_table_view::<Forward>(&entered, &borrowed, &opts)
         .expect("graph_from_borrowed_table_view without weights");
 
-    let sources = DeviceArray::from_slice(&handle, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
+    let sources = DeviceArray::from_slice(&entered, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
     let sources_view = sources.view().expect("sources_view");
-    let result = graph.bfs(&handle, &sources_view, &BfsParams::default()).expect("bfs");
-    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertices");
+    let result = graph.bfs(&entered, &sources_view, &BfsParams::default()).expect("bfs");
+    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertices");
 
     assert!(!vertices.is_empty(), "graph should have vertices");
 }
@@ -226,6 +237,7 @@ fn graph_from_borrowed_table_view_without_weights() {
 #[test]
 fn graph_from_borrowed_table_view_rejects_out_of_bounds_column() {
     let handle = test_handle();
+    let entered = handle.enter("graph_from_borrowed_table_view_rejects_out_of_bounds_column").expect("entered");
     let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
@@ -233,7 +245,7 @@ fn graph_from_borrowed_table_view_rejects_out_of_bounds_column() {
     let borrowed = df.try_borrow_table_view().expect("borrowed table view");
 
     let opts = TableGraphOptions::new(0, 99).properties(GraphProperties::directed()).renumber();
-    let err = graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts)
+    let err = graph_from_borrowed_table_view::<Forward>(&entered, &borrowed, &opts)
         .expect_err("should reject out-of-bounds column");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
 }
@@ -250,8 +262,9 @@ fn graph_from_borrowed_table_view_rejects_nullable_column() {
     let borrowed = df.try_borrow_table_view().expect("borrowed table view");
 
     let handle = test_handle();
+    let entered = handle.enter("graph_from_borrowed_table_view_rejects_nullable_column").expect("entered");
     let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::directed()).renumber();
-    let err = graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts)
+    let err = graph_from_borrowed_table_view::<Forward>(&entered, &borrowed, &opts)
         .expect_err("should reject nullable column");
 
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
@@ -261,6 +274,7 @@ fn graph_from_borrowed_table_view_rejects_nullable_column() {
 #[test]
 fn graph_from_dataframe_by_name() {
     let handle = test_handle();
+    let entered = handle.enter("graph_from_dataframe_by_name").expect("entered");
     let runtime = explicit_runtime();
     let df = bfs_graph_dataframe(&runtime);
 
@@ -268,14 +282,14 @@ fn graph_from_dataframe_by_name() {
         .weight_col("weight")
         .properties(GraphProperties::directed())
         .renumber();
-    let mut graph = graph_from_dataframe::<Forward>(&handle, &df, &opts).expect("graph_from_dataframe");
+    let mut graph = graph_from_dataframe::<Forward>(&entered, &df, &opts).expect("graph_from_dataframe");
 
-    let sources = DeviceArray::from_slice(&handle, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
+    let sources = DeviceArray::from_slice(&entered, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
     let sources_view = sources.view().expect("sources_view");
-    let result = graph.bfs(&handle, &sources_view, &BfsParams::default()).expect("bfs");
+    let result = graph.bfs(&entered, &sources_view, &BfsParams::default()).expect("bfs");
 
-    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertices");
-    let distances: Vec<i32> = result.distances().expect("distances").to_vec_i32(&handle).expect("distances");
+    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertices");
+    let distances: Vec<i32> = result.distances().expect("distances").to_vec_i32(&entered).expect("distances");
     let dist_map: HashMap<i32, i32> = vertices.into_iter().zip(distances).collect();
 
     assert_eq!(dist_map[&0], 0, "source vertex 0 should have distance 0");
@@ -290,20 +304,23 @@ fn graph_from_dataframe_rejects_unknown_column_name() {
     let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
 
     let handle = test_handle();
+    let entered = handle.enter("graph_from_dataframe_rejects_unknown_column_name").expect("entered");
     let opts = DataFrameGraphOptions::new("nonexistent", "dst").properties(GraphProperties::directed()).renumber();
-    let err = graph_from_dataframe::<Forward>(&handle, &df, &opts).expect_err("should reject unknown column name");
+    let err = graph_from_dataframe::<Forward>(&entered, &df, &opts).expect_err("should reject unknown column name");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
 }
 
 #[test]
 fn graph_from_dataframe_undirected_louvain_defaults_to_python_cugraph_policy() {
     let handle = test_handle();
+    let entered =
+        handle.enter("graph_from_dataframe_undirected_louvain_defaults_to_python_cugraph_policy").expect("entered");
     let runtime = explicit_runtime();
     let df = louvain_fixture_dataframe(&runtime);
 
-    let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
-    let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
-    let weights = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let src = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
     let weights_view = weights.view().expect("weights_view");
@@ -314,16 +331,16 @@ fn graph_from_dataframe_undirected_louvain_defaults_to_python_cugraph_policy() {
         .renumber()
         .drop_multi_edges()
         .symmetrize()
-        .build::<Forward>(&handle)
+        .build::<Forward>(&entered)
         .expect("python-compatible graph");
-    let expected = summarize_louvain_shape(&mut expected, &handle);
+    let expected = summarize_louvain_shape(&mut expected, &entered);
 
     let opts = DataFrameGraphOptions::new("src", "dst")
         .weight_col("weight")
         .properties(GraphProperties::undirected())
         .renumber();
-    let mut actual = graph_from_dataframe::<Forward>(&handle, &df, &opts).expect("graph_from_dataframe");
-    let actual = summarize_louvain_shape(&mut actual, &handle);
+    let mut actual = graph_from_dataframe::<Forward>(&entered, &df, &opts).expect("graph_from_dataframe");
+    let actual = summarize_louvain_shape(&mut actual, &entered);
 
     assert_eq!(actual.edge_count, expected.edge_count);
     assert_eq!(actual.community_count, expected.community_count);
@@ -339,12 +356,13 @@ fn graph_from_dataframe_undirected_louvain_defaults_to_python_cugraph_policy() {
 #[test]
 fn graph_from_dataframe_can_explicitly_request_raw_libcugraph_policy() {
     let handle = test_handle();
+    let entered = handle.enter("graph_from_dataframe_can_explicitly_request_raw_libcugraph_policy").expect("entered");
     let runtime = explicit_runtime();
     let df = louvain_fixture_dataframe(&runtime);
 
-    let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
-    let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
-    let weights = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let src = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
     let weights_view = weights.view().expect("weights_view");
@@ -353,17 +371,17 @@ fn graph_from_dataframe_can_explicitly_request_raw_libcugraph_policy() {
         .weights(&weights_view)
         .properties(GraphProperties::undirected())
         .renumber()
-        .build::<Forward>(&handle)
+        .build::<Forward>(&entered)
         .expect("raw graph");
-    let expected = summarize_louvain_shape(&mut expected, &handle);
+    let expected = summarize_louvain_shape(&mut expected, &entered);
 
     let opts = DataFrameGraphOptions::new("src", "dst")
         .weight_col("weight")
         .properties(GraphProperties::undirected())
         .renumber()
         .construction_policy(GraphConstructionPolicy::RawLibcugraph);
-    let mut actual = graph_from_dataframe::<Forward>(&handle, &df, &opts).expect("graph_from_dataframe");
-    let actual = summarize_louvain_shape(&mut actual, &handle);
+    let mut actual = graph_from_dataframe::<Forward>(&entered, &df, &opts).expect("graph_from_dataframe");
+    let actual = summarize_louvain_shape(&mut actual, &entered);
 
     assert_eq!(actual.edge_count, expected.edge_count);
     assert_eq!(actual.community_count, expected.community_count);
@@ -380,6 +398,7 @@ fn graph_from_dataframe_can_explicitly_request_raw_libcugraph_policy() {
 fn graph_from_dataframe_python_cugraph_weighted_undirected_simple_normalization_matches_expected_across_ingress_paths()
 {
     let handle = test_handle();
+    let entered = handle.enter("graph_from_dataframe_python_cugraph_weighted_undirected_simple_normalization_matches_expected_across_ingress_paths").expect("entered");
     let runtime = explicit_runtime();
     let df = python_weighted_reciprocal_dataframe(&runtime);
 
@@ -387,14 +406,15 @@ fn graph_from_dataframe_python_cugraph_weighted_undirected_simple_normalization_
         .weight_col("weight")
         .properties(GraphProperties::undirected())
         .renumber();
-    let mut dataframe_graph = graph_from_dataframe::<Transposed>(&handle, &df, &df_opts).expect("graph_from_dataframe");
-    assert_python_weighted_ingress_scores_match_expected(&handle, "dataframe", &mut dataframe_graph);
+    let mut dataframe_graph =
+        graph_from_dataframe::<Transposed>(&entered, &df, &df_opts).expect("graph_from_dataframe");
+    assert_python_weighted_ingress_scores_match_expected(&entered, "dataframe", &mut dataframe_graph);
 
     let borrowed = df.try_borrow_table_view().expect("borrowed table view");
     let table_opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::undirected()).renumber();
-    let mut borrowed_graph = graph_from_borrowed_table_view::<Transposed>(&handle, &borrowed, &table_opts)
+    let mut borrowed_graph = graph_from_borrowed_table_view::<Transposed>(&entered, &borrowed, &table_opts)
         .expect("graph_from_borrowed_table_view");
-    assert_python_weighted_ingress_scores_match_expected(&handle, "borrowed_table", &mut borrowed_graph);
+    assert_python_weighted_ingress_scores_match_expected(&entered, "borrowed_table", &mut borrowed_graph);
 
     let tmp_dir = unique_temp_dir("python_weighted_ingress");
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
@@ -405,9 +425,9 @@ fn graph_from_dataframe_python_cugraph_weighted_undirected_simple_normalization_
         .weight_col(2)
         .properties(GraphProperties::undirected())
         .renumber();
-    let loaded = graph_from_parquet::<Transposed>(&handle, &parquet_opts).expect("graph_from_parquet");
+    let loaded = graph_from_parquet::<Transposed>(&entered, &parquet_opts).expect("graph_from_parquet");
     let mut parquet_graph = loaded.graph;
-    assert_python_weighted_ingress_scores_match_expected(&handle, "parquet", &mut parquet_graph);
+    assert_python_weighted_ingress_scores_match_expected(&entered, "parquet", &mut parquet_graph);
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
@@ -415,19 +435,22 @@ fn graph_from_dataframe_python_cugraph_weighted_undirected_simple_normalization_
 #[test]
 fn graph_from_dataframe_python_cugraph_accepts_undirected_multigraph_properties_across_ingress_paths() {
     let handle = test_handle();
+    let entered = handle
+        .enter("graph_from_dataframe_python_cugraph_accepts_undirected_multigraph_properties_across_ingress_paths")
+        .expect("entered");
     let runtime = explicit_runtime();
     let df = python_undirected_multigraph_dataframe(&runtime);
     let properties = GraphProperties { is_symmetric: true, is_multigraph: true };
 
     let df_opts = DataFrameGraphOptions::new("src", "dst").properties(properties).renumber();
-    let mut dataframe_graph = graph_from_dataframe::<Forward>(&handle, &df, &df_opts).expect("graph_from_dataframe");
-    assert_eq!(dataframe_graph.edge_count(&handle).expect("edge_count"), 3);
+    let mut dataframe_graph = graph_from_dataframe::<Forward>(&entered, &df, &df_opts).expect("graph_from_dataframe");
+    assert_eq!(dataframe_graph.edge_count(&entered).expect("edge_count"), 3);
 
     let borrowed = df.try_borrow_table_view().expect("borrowed table view");
     let table_opts = TableGraphOptions::new(0, 1).properties(properties).renumber();
-    let mut borrowed_graph = graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &table_opts)
+    let mut borrowed_graph = graph_from_borrowed_table_view::<Forward>(&entered, &borrowed, &table_opts)
         .expect("graph_from_borrowed_table_view");
-    assert_eq!(borrowed_graph.edge_count(&handle).expect("edge_count"), 3);
+    assert_eq!(borrowed_graph.edge_count(&entered).expect("edge_count"), 3);
 
     let tmp_dir = unique_temp_dir("python_multigraph_ingress");
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
@@ -436,9 +459,9 @@ fn graph_from_dataframe_python_cugraph_accepts_undirected_multigraph_properties_
 
     let parquet_opts =
         ParquetGraphOptions::new(parquet_path.to_str().expect("utf8 path"), 0, 1).properties(properties).renumber();
-    let loaded = graph_from_parquet::<Forward>(&handle, &parquet_opts).expect("graph_from_parquet");
+    let loaded = graph_from_parquet::<Forward>(&entered, &parquet_opts).expect("graph_from_parquet");
     let mut parquet_graph = loaded.graph;
-    assert_eq!(parquet_graph.edge_count(&handle).expect("edge_count"), 3);
+    assert_eq!(parquet_graph.edge_count(&entered).expect("edge_count"), 3);
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
@@ -446,12 +469,14 @@ fn graph_from_dataframe_python_cugraph_accepts_undirected_multigraph_properties_
 #[test]
 fn graph_from_dataframe_undirected_pagerank_defaults_to_python_cugraph_policy() {
     let handle = test_handle();
+    let entered =
+        handle.enter("graph_from_dataframe_undirected_pagerank_defaults_to_python_cugraph_policy").expect("entered");
     let runtime = explicit_runtime();
     let df = louvain_fixture_dataframe(&runtime);
 
-    let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
-    let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
-    let weights = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let src = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
     let weights_view = weights.view().expect("weights_view");
@@ -462,16 +487,16 @@ fn graph_from_dataframe_undirected_pagerank_defaults_to_python_cugraph_policy() 
         .renumber()
         .drop_multi_edges()
         .symmetrize()
-        .build::<Transposed>(&handle)
+        .build::<Transposed>(&entered)
         .expect("python-compatible graph");
-    let expected = summarize_pagerank_scores(&mut expected, &handle);
+    let expected = summarize_pagerank_scores(&mut expected, &entered);
 
     let opts = DataFrameGraphOptions::new("src", "dst")
         .weight_col("weight")
         .properties(GraphProperties::undirected())
         .renumber();
-    let mut actual = graph_from_dataframe::<Transposed>(&handle, &df, &opts).expect("graph_from_dataframe");
-    let actual = summarize_pagerank_scores(&mut actual, &handle);
+    let mut actual = graph_from_dataframe::<Transposed>(&entered, &df, &opts).expect("graph_from_dataframe");
+    let actual = summarize_pagerank_scores(&mut actual, &entered);
 
     assert_score_maps_close(&actual, &expected, 1e-6, "pagerank");
 }
@@ -479,12 +504,14 @@ fn graph_from_dataframe_undirected_pagerank_defaults_to_python_cugraph_policy() 
 #[test]
 fn graph_from_dataframe_undirected_betweenness_defaults_to_python_cugraph_policy() {
     let handle = test_handle();
+    let entered =
+        handle.enter("graph_from_dataframe_undirected_betweenness_defaults_to_python_cugraph_policy").expect("entered");
     let runtime = explicit_runtime();
     let df = louvain_fixture_dataframe(&runtime);
 
-    let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
-    let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
-    let weights = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let src = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
     let weights_view = weights.view().expect("weights_view");
@@ -495,16 +522,16 @@ fn graph_from_dataframe_undirected_betweenness_defaults_to_python_cugraph_policy
         .renumber()
         .drop_multi_edges()
         .symmetrize()
-        .build::<Forward>(&handle)
+        .build::<Forward>(&entered)
         .expect("python-compatible graph");
-    let expected = summarize_betweenness_scores(&mut expected, &handle);
+    let expected = summarize_betweenness_scores(&mut expected, &entered);
 
     let opts = DataFrameGraphOptions::new("src", "dst")
         .weight_col("weight")
         .properties(GraphProperties::undirected())
         .renumber();
-    let mut actual = graph_from_dataframe::<Forward>(&handle, &df, &opts).expect("graph_from_dataframe");
-    let actual = summarize_betweenness_scores(&mut actual, &handle);
+    let mut actual = graph_from_dataframe::<Forward>(&entered, &df, &opts).expect("graph_from_dataframe");
+    let actual = summarize_betweenness_scores(&mut actual, &entered);
 
     assert_score_maps_close(&actual, &expected, 1e-6, "betweenness");
 }

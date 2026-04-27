@@ -98,21 +98,22 @@ impl Drop for TempParquetFixture {
 #[test]
 fn bfs_results_to_cudf_dataframe() {
     let (runtime, handle) = test_runtime_and_handle();
+    let entered = handle.enter("bfs_results_to_cudf_dataframe").expect("entered");
 
     // Build graph from host data: directed, same topology as the unit test in bfs.rs.
     // 0->1, 1->3, 1->4, 2->0, 2->1, 2->3, 3->5, 4->5
-    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
     let src_view = src.view().expect("src view");
     let dst_view = dst.view().expect("dst view");
 
-    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
 
-    let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+    let sources = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
     let sources_view = sources.view().expect("sources view");
 
     let params = BfsParams::default().with_predecessors();
-    let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
+    let result = graph.bfs(&entered, &sources_view, &params).expect("bfs");
 
     // ── Convert BFS results to cudf DataFrame ───────────────────────────
     let df = result.to_dataframe(&runtime).expect("to_dataframe");
@@ -141,6 +142,7 @@ fn bfs_results_to_cudf_dataframe() {
 fn bfs_results_roundtrip_through_parquet() {
     // ── Load graph from Parquet ─────────────────────────────────────────
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("bfs_results_roundtrip_through_parquet").expect("entered");
     let props = GraphProperties::directed();
     let fixture = TempParquetFixture::bfs_graph(&runtime);
 
@@ -191,6 +193,7 @@ fn bfs_results_roundtrip_through_parquet() {
 #[test]
 fn graph_from_parquet_then_bfs() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("graph_from_parquet_then_bfs").expect("entered");
     let props = GraphProperties::directed();
     let fixture = TempParquetFixture::bfs_graph(&runtime);
 
@@ -221,6 +224,7 @@ fn graph_from_parquet_then_bfs() {
 #[test]
 fn graph_from_parquet_without_weights() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("graph_from_parquet_without_weights").expect("entered");
     let props = GraphProperties::directed();
     let fixture = TempParquetFixture::bfs_graph(&runtime);
 
@@ -243,6 +247,7 @@ fn graph_from_parquet_without_weights() {
 #[test]
 fn graph_from_parquet_rejects_out_of_bounds_column() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("graph_from_parquet_rejects_out_of_bounds_column").expect("entered");
     let props = GraphProperties::directed();
     let fixture = TempParquetFixture::bfs_graph(&runtime);
 
@@ -263,6 +268,7 @@ fn graph_from_parquet_rejects_out_of_bounds_column() {
 #[test]
 fn graph_from_parquet_rejects_nonexistent_file() {
     let (_runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("graph_from_parquet_rejects_nonexistent_file").expect("entered");
 
     let props = GraphProperties::directed();
 
@@ -284,6 +290,7 @@ fn graph_from_parquet_rejects_nonexistent_file() {
 #[test]
 fn graph_from_parquet_rejects_nulls_in_src_column() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("graph_from_parquet_rejects_nulls_in_src_column").expect("entered");
 
     // Build a 3-column edge table where src contains one null.
     let src = runtime.column_from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
@@ -323,6 +330,7 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
 #[test]
 fn graph_from_borrowed_table_view_then_bfs() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("graph_from_borrowed_table_view_then_bfs").expect("entered");
     let fixture = TempParquetFixture::bfs_graph(&runtime);
 
     let df = read_parquet_dataframe(&runtime, fixture.path());
@@ -350,6 +358,7 @@ fn graph_from_borrowed_table_view_then_bfs() {
 #[test]
 fn graph_from_borrowed_table_view_without_weights() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("graph_from_borrowed_table_view_without_weights").expect("entered");
     let fixture = TempParquetFixture::bfs_graph(&runtime);
 
     let df = read_parquet_dataframe(&runtime, fixture.path());
@@ -372,6 +381,7 @@ fn graph_from_borrowed_table_view_without_weights() {
 #[test]
 fn graph_from_borrowed_table_view_rejects_out_of_bounds_column() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("graph_from_borrowed_table_view_rejects_out_of_bounds_column").expect("entered");
     let fixture = TempParquetFixture::bfs_graph(&runtime);
 
     let df = read_parquet_dataframe(&runtime, fixture.path());
@@ -389,6 +399,7 @@ fn graph_from_borrowed_table_view_rejects_out_of_bounds_column() {
 #[test]
 fn graph_from_borrowed_table_view_rejects_nullable_column() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("graph_from_borrowed_table_view_rejects_nullable_column").expect("entered");
     let src = runtime.column_from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
     let dst = runtime.column_from_slice(&[1i32, 2, 0]).expect("dst");
     let wgt = runtime.column_from_slice(&[1.0f32, 2.0, 3.0]).expect("wgt");
@@ -412,6 +423,7 @@ fn graph_from_borrowed_table_view_rejects_nullable_column() {
 #[test]
 fn graph_from_dataframe_by_name() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("graph_from_dataframe_by_name").expect("entered");
     let df = DataFrame::from_columns([
         ("src", runtime.series(&[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src")),
         ("dst", runtime.series(&[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst")),
@@ -441,6 +453,7 @@ fn graph_from_dataframe_by_name() {
 #[test]
 fn graph_from_dataframe_rejects_unknown_column_name() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("graph_from_dataframe_rejects_unknown_column_name").expect("entered");
     let df = DataFrame::from_columns([
         ("src", runtime.series(&[0i32, 1]).expect("src")),
         ("dst", runtime.series(&[1i32, 0]).expect("dst")),
@@ -465,6 +478,7 @@ fn centrality_result_to_dataframe() {
     use cugraph::centrality::PageRankParams;
 
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("centrality_result_to_dataframe").expect("entered");
 
     let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2, 1, 2, 0]).expect("src");
     let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0, 0, 1, 2]).expect("dst");
@@ -508,6 +522,7 @@ fn layout_result_to_dataframe() {
     use cugraph::{layout::ForceAtlas2Params, params::IterationCount, random::RngState};
 
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("layout_result_to_dataframe").expect("entered");
     let mut rng = RngState::new(&handle, 42).expect("rng");
 
     let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2, 1, 2, 0]).expect("src");
@@ -549,6 +564,7 @@ fn layout_result_to_dataframe() {
 #[test]
 fn bfs_result_to_dataframe_with_predecessors() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("bfs_result_to_dataframe_with_predecessors").expect("entered");
 
     let src = DeviceArray::from_slice(&handle, &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
     let dst = DeviceArray::from_slice(&handle, &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
@@ -582,6 +598,7 @@ fn bfs_result_to_dataframe_with_predecessors() {
 #[test]
 fn bfs_result_to_dataframe_without_predecessors() {
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("bfs_result_to_dataframe_without_predecessors").expect("entered");
 
     let src = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("src");
     let dst = DeviceArray::from_slice(&handle, &[1i32, 2]).expect("dst");
@@ -611,6 +628,7 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
     use cugraph::centrality::PageRankParams;
 
     let (runtime, handle) = test_runtime_and_handle();
+    let handle = handle.enter("centrality_to_dataframe_write_parquet_roundtrip").expect("entered");
 
     let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2, 1, 2, 0]).expect("src");
     let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0, 0, 1, 2]).expect("dst");

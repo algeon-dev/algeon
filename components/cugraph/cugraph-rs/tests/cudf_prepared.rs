@@ -206,6 +206,7 @@ impl ActiveLeaseBackend for RecordingLeaseBackend {
 fn graph_from_prepared_columns_i32_bfs() {
     let _event_observation = lock_event_observation();
     let handle = test_handle();
+    let handle = handle.enter("graph_from_prepared_columns_i32_bfs").expect("entered");
     let runtime = explicit_runtime();
 
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
@@ -233,6 +234,9 @@ fn graph_from_prepared_columns_i32_bfs() {
 fn graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fails() {
     let _event_observation = lock_event_observation();
     let handle = test_handle();
+    let handle = handle
+        .enter("graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fails")
+        .expect("entered");
     let runtime = explicit_runtime();
 
     let src = runtime.series(DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
@@ -271,6 +275,9 @@ fn graph_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authori
     let _event_observation = lock_event_observation();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle
+        .enter("graph_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authorities")
+        .expect("entered");
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
     let recorded = Arc::new(Mutex::new(Vec::new()));
@@ -312,6 +319,9 @@ fn graph_from_prepared_columns_runtime_bound_handle_defers_completion_sync_until
     let _event_observation = lock_event_observation();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
+    let handle = handle
+        .enter("graph_from_prepared_columns_runtime_bound_handle_defers_completion_sync_until_graph_drop")
+        .expect("entered");
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
 
@@ -340,6 +350,7 @@ fn graph_from_prepared_columns_runtime_bound_handle_defers_completion_sync_until
 fn graph_from_prepared_table_export_bfs() {
     let _event_observation = lock_event_observation();
     let handle = test_handle();
+    let handle = handle.enter("graph_from_prepared_table_export_bfs").expect("entered");
     let runtime = explicit_runtime();
 
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
@@ -364,6 +375,9 @@ fn graph_from_prepared_table_export_runtime_bound_handle_uses_consumer_stream_au
     let _event_observation = lock_event_observation();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle
+        .enter("graph_from_prepared_table_export_runtime_bound_handle_uses_consumer_stream_authorities")
+        .expect("entered");
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
     let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
@@ -405,6 +419,9 @@ fn graph_from_prepared_table_export_runtime_bound_handle_defers_completion_sync_
     let _event_observation = lock_event_observation();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
+    let handle = handle
+        .enter("graph_from_prepared_table_export_runtime_bound_handle_defers_completion_sync_until_graph_drop")
+        .expect("entered");
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
     let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
@@ -433,6 +450,9 @@ fn graph_from_prepared_columns_runtime_bound_owned_column_export_defers_completi
     let _event_observation = lock_event_observation();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
+    let handle = handle
+        .enter("graph_from_prepared_columns_runtime_bound_owned_column_export_defers_completion_sync_until_graph_drop")
+        .expect("entered");
     let src = runtime.column_from_slice(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.column_from_slice(TRIANGLE_TAIL_DST_I32).expect("dst");
 
@@ -468,6 +488,11 @@ fn graph_from_prepared_table_export_runtime_bound_owned_table_export_defers_comp
     let _event_observation = lock_event_observation();
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
+    let handle = handle
+        .enter(
+            "graph_from_prepared_table_export_runtime_bound_owned_table_export_defers_completion_sync_until_graph_drop",
+        )
+        .expect("entered");
     let src = runtime.column_from_slice(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.column_from_slice(TRIANGLE_TAIL_DST_I32).expect("dst");
     let table = cudf::core::Table::from_columns(vec![src, dst]).expect("table");
@@ -495,6 +520,9 @@ fn graph_from_prepared_table_export_runtime_bound_owned_table_export_defers_comp
 fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
     let _event_observation = lock_event_observation();
     let handle = test_handle();
+    let handle = handle
+        .enter("graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight")
+        .expect("entered");
     let runtime = explicit_runtime();
 
     let src = runtime.series(&[0i32, 1, 1, 2]).expect("src");
@@ -524,6 +552,8 @@ fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_m
 fn graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph() {
     let _event_observation = lock_event_observation();
     let handle = test_handle();
+    let handle =
+        handle.enter("graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph").expect("entered");
     let runtime = explicit_runtime();
     let df = python_undirected_multigraph_dataframe(&runtime);
     let export = df.try_prepare_device_table_export().expect("table export");
@@ -540,6 +570,7 @@ fn graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph
 fn graph_from_prepared_columns_rejects_host_exports() {
     let _event_observation = lock_event_observation();
     let handle = test_handle();
+    let handle = handle.enter("graph_from_prepared_columns_rejects_host_exports").expect("entered");
     let runtime = explicit_runtime();
 
     let src = runtime.series(DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
@@ -564,6 +595,7 @@ fn graph_from_prepared_columns_rejects_host_exports() {
 fn graph_from_prepared_table_export_rejects_host_exports() {
     let _event_observation = lock_event_observation();
     let handle = test_handle();
+    let handle = handle.enter("graph_from_prepared_table_export_rejects_host_exports").expect("entered");
     let runtime = explicit_runtime();
 
     let src = runtime.series(DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
@@ -587,6 +619,7 @@ fn graph_from_prepared_table_export_rejects_host_exports() {
 fn prepared_export_vs_deep_copy_import_pagerank_equivalence() {
     let _event_observation = lock_event_observation();
     let handle = test_handle();
+    let handle = handle.enter("prepared_export_vs_deep_copy_import_pagerank_equivalence").expect("entered");
     let producer_runtime = explicit_runtime();
     let consumer_runtime = explicit_runtime();
 
@@ -619,6 +652,7 @@ fn prepared_export_vs_deep_copy_import_pagerank_equivalence() {
 fn prepared_host_export_import_pagerank_matches_prepared_device_path() {
     let _event_observation = lock_event_observation();
     let handle = test_handle();
+    let handle = handle.enter("prepared_host_export_import_pagerank_matches_prepared_device_path").expect("entered");
     let producer_runtime = explicit_runtime();
     let consumer_runtime = explicit_runtime();
 

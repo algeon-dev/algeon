@@ -9,7 +9,7 @@ use cugraph::{
     centrality::PageRankParams,
     cudf_interop::{DataFrameGraphOptions, TableGraphOptions, graph_from_dataframe, graph_from_prepared_table_export},
     graph::{Forward, Graph, GraphBuilder, Transposed},
-    handle::ResourceHandle,
+    handle::{EnteredContext, ResourceHandle},
     types::GraphProperties,
 };
 use rapids_interop::PreparedTableExport;
@@ -44,7 +44,7 @@ pub fn assert_named_edge_columns(df: &cudf::DataFrame) {
 }
 
 pub fn build_directed_named_dataframe_graph(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     df: &cudf::DataFrame,
 ) -> cugraph::error::Result<Graph<Forward>> {
     let opts = DataFrameGraphOptions::new("src", "dst")
@@ -55,7 +55,7 @@ pub fn build_directed_named_dataframe_graph(
 }
 
 pub fn build_undirected_named_dataframe_graph(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     df: &cudf::DataFrame,
 ) -> cugraph::error::Result<Graph<Transposed>> {
     let opts = DataFrameGraphOptions::new("src", "dst")
@@ -66,14 +66,14 @@ pub fn build_undirected_named_dataframe_graph(
 }
 
 pub fn build_undirected_prepared_graph(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     export: &PreparedTableExport<'_>,
 ) -> cugraph::error::Result<Graph<Transposed>> {
     let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::undirected()).renumber();
     graph_from_prepared_table_export::<Transposed>(handle, export, &opts)
 }
 
-pub fn pagerank_score_map(handle: &ResourceHandle, graph: &mut Graph<Transposed>) -> HashMap<i32, f32> {
+pub fn pagerank_score_map(handle: &EnteredContext<'_>, graph: &mut Graph<Transposed>) -> HashMap<i32, f32> {
     let result = graph.pagerank(handle, &PageRankParams::default()).expect("pagerank");
     let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertices");
     let scores: Vec<f32> = result.scores().expect("scores").to_vec_f32(handle).expect("scores");
@@ -113,7 +113,7 @@ pub fn python_undirected_multigraph_dataframe(runtime: &cudf::Runtime) -> cudf::
     cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("python undirected multigraph dataframe")
 }
 
-pub fn python_weighted_reciprocal_expected_pagerank_map(handle: &ResourceHandle) -> HashMap<i32, f32> {
+pub fn python_weighted_reciprocal_expected_pagerank_map(handle: &EnteredContext<'_>) -> HashMap<i32, f32> {
     let src = DeviceArray::from_slice(handle, &[0i32, 1, 1, 2]).expect("src");
     let dst = DeviceArray::from_slice(handle, &[1i32, 0, 2, 1]).expect("dst");
     let wgt = DeviceArray::from_slice(handle, &[2.0f32, 2.0, 1.0, 1.0]).expect("weight");

@@ -13,7 +13,7 @@ pub use bfs_graph::{
 use cugraph::{
     array::DeviceArray,
     graph::{Forward, Graph},
-    handle::ResourceHandle,
+    handle::EnteredContext,
     traversal::{BfsParams, BfsResult},
 };
 
@@ -83,20 +83,20 @@ pub fn triangle_graph_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
     cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", wgt)]).expect("triangle graph dataframe")
 }
 
-pub fn bfs_distance_map_i32_result(handle: &ResourceHandle, result: &BfsResult) -> HashMap<i32, i32> {
+pub fn bfs_distance_map_i32_result(handle: &EnteredContext<'_>, result: &BfsResult) -> HashMap<i32, i32> {
     let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertices");
     let distances = result.distances().expect("distances").to_vec_i32(handle).expect("distances");
     vertices.into_iter().zip(distances).collect()
 }
 
-pub fn bfs_distance_map_i64_result(handle: &ResourceHandle, result: &BfsResult) -> HashMap<i64, i64> {
+pub fn bfs_distance_map_i64_result(handle: &EnteredContext<'_>, result: &BfsResult) -> HashMap<i64, i64> {
     let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i64(handle).expect("vertices");
     let distances = result.distances().expect("distances").to_vec_i64(handle).expect("distances");
     vertices.into_iter().zip(distances).collect()
 }
 
 pub fn bfs_distance_map_i32_graph(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     graph: &mut Graph<Forward>,
     source: i32,
 ) -> HashMap<i32, i32> {

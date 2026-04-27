@@ -23,6 +23,8 @@ fn test_handle() -> ResourceHandle {
 #[test]
 fn owned_transfer_zero_copy_import_preserves_device_buffers_and_bfs_semantics() {
     let handle = test_handle();
+    let handle =
+        handle.enter("owned_transfer_zero_copy_import_preserves_device_buffers_and_bfs_semantics").expect("entered");
     let runtime = explicit_runtime();
 
     let src = runtime.series(BFS_GRAPH_SRC_I32).expect("src");
@@ -56,6 +58,7 @@ fn owned_transfer_zero_copy_import_preserves_device_buffers_and_bfs_semantics() 
 #[test]
 fn owned_transfer_with_release_import_invalidates_releaser() {
     let handle = test_handle();
+    let handle = handle.enter("owned_transfer_with_release_import_invalidates_releaser").expect("entered");
     let runtime = explicit_runtime();
 
     let producer_df = bfs_graph_dataframe(&runtime);

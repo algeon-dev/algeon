@@ -7,7 +7,7 @@ use cugraph::{
         GraphConstructionPolicy, SeriesGraphOptions, graph_from_borrowed_columns, graph_from_prepared_columns,
     },
     graph::Transposed,
-    handle::ResourceHandle,
+    handle::{EnteredContext, ResourceHandle},
     types::GraphProperties,
 };
 
@@ -51,7 +51,7 @@ fn python_weighted_options() -> SeriesGraphOptions {
         .construction_policy(GraphConstructionPolicy::PythonCugraph)
 }
 
-fn run_borrowed_probe(handle: &ResourceHandle) {
+fn run_borrowed_probe(handle: &EnteredContext<'_>) {
     let src_runtime = explicit_runtime();
     let dst_runtime = explicit_runtime();
     let wgt_runtime = explicit_runtime();
@@ -75,7 +75,7 @@ fn run_borrowed_probe(handle: &ResourceHandle) {
     let _scores = result.scores().expect("scores").to_vec_f32(handle).expect("scores copy");
 }
 
-fn run_prepared_probe(handle: &ResourceHandle) {
+fn run_prepared_probe(handle: &EnteredContext<'_>) {
     let src_runtime = explicit_runtime();
     let dst_runtime = explicit_runtime();
     let wgt_runtime = explicit_runtime();
@@ -107,6 +107,7 @@ fn main() {
 
     let runtime = runtime_with_explicit_pool_memory_resource();
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("runtime-bound handle");
+    let entered = handle.enter("phase7_allocator_probe").expect("entered");
     let current_stats_mr = cudf::testing::core::stats_memory_resource().expect("current stats memory resource");
     assert_ne!(
         current_stats_mr.testing_raw_handle_value(),
@@ -118,8 +119,8 @@ fn main() {
     let baseline = current_stats_mr.testing_allocation_count().expect("current allocation count");
 
     match mode.as_str() {
-        "borrowed" => run_borrowed_probe(&handle),
-        "prepared" => run_prepared_probe(&handle),
+        "borrowed" => run_borrowed_probe(&entered),
+        "prepared" => run_prepared_probe(&entered),
         _ => {
             eprintln!("unknown probe mode: {mode}");
             std::process::exit(2);

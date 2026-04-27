@@ -144,7 +144,7 @@ impl Drop for DeviceGuard {
 
 #[cfg(test)]
 #[derive(Debug)]
-enum TestCudaCall {
+pub(crate) enum TestCudaCall {
     GetDevice { status: cudf_sys::cudf_status_t, device: i32 },
     SetDevice { expected_target: i32, status: cudf_sys::cudf_status_t },
 }
@@ -156,11 +156,11 @@ thread_local! {
 
 #[cfg(test)]
 #[derive(Debug)]
-struct TestCudaHooks;
+pub(crate) struct TestCudaHooks;
 
 #[cfg(test)]
 impl TestCudaHooks {
-    fn install(calls: Vec<TestCudaCall>) -> Self {
+    pub(crate) fn install(calls: Vec<TestCudaCall>) -> Self {
         clear_device_guard_poison();
         TEST_CUDA_CALLS.with(|queued| {
             let mut queued = queued.borrow_mut();

@@ -12,21 +12,12 @@
 
 use std::{fmt, marker::PhantomData, ptr};
 
-use cugraph_sys::{
-    cugraph_error_t, cugraph_type_erased_device_array_create, cugraph_type_erased_device_array_free,
-    cugraph_type_erased_device_array_t, cugraph_type_erased_device_array_view,
-    cugraph_type_erased_device_array_view_copy_from_host, cugraph_type_erased_device_array_view_copy_to_host,
-    cugraph_type_erased_device_array_view_create, cugraph_type_erased_device_array_view_free,
-    cugraph_type_erased_device_array_view_pointer, cugraph_type_erased_device_array_view_size,
-    cugraph_type_erased_device_array_view_t, cugraph_type_erased_device_array_view_type,
-    cugraph_type_erased_host_array_view_create, cugraph_type_erased_host_array_view_free,
-    cugraph_type_erased_host_array_view_t,
-};
+use cugraph_sys::*;
 
 use crate::{
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
-    handle::ResourceHandle,
+    handle::EnteredContext,
     types::{CugraphElement, DataType},
 };
 
@@ -53,7 +44,7 @@ fn checked_byte_len(len: usize, dtype: DataType, operation: &'static str) -> Res
 }
 
 impl RawDeviceArray {
-    pub(crate) fn new(handle: &ResourceHandle, len: usize, dtype: DataType) -> Result<Self> {
+    pub(crate) fn new(handle: &EnteredContext<'_>, len: usize, dtype: DataType) -> Result<Self> {
         let mut raw: *mut cugraph_type_erased_device_array_t = ptr::null_mut();
         let mut error: *mut cugraph_error_t = ptr::null_mut();
 
@@ -61,7 +52,7 @@ impl RawDeviceArray {
         // out-pointers for the C API to initialize.
         unsafe {
             let code =
-                cugraph_type_erased_device_array_create(handle.as_ptr(), len, dtype.into(), &mut raw, &mut error);
+                cugraph_type_erased_device_array_create(handle.handle_ptr(), len, dtype.into(), &mut raw, &mut error);
             check_error(code, error, "RawDeviceArray::new")?;
         }
 
@@ -94,7 +85,7 @@ impl RawDeviceArray {
         })
     }
 
-    fn copy_from_host(&mut self, handle: &ResourceHandle, data: &[u8]) -> Result<()> {
+    fn copy_from_host(&mut self, handle: &EnteredContext<'_>, data: &[u8]) -> Result<()> {
         let view = self.raw_view()?;
         let mut error: *mut cugraph_error_t = ptr::null_mut();
 
@@ -103,7 +94,7 @@ impl RawDeviceArray {
         // out-pointer.
         unsafe {
             let code = cugraph_type_erased_device_array_view_copy_from_host(
-                handle.as_ptr(),
+                handle.handle_ptr(),
                 view.raw,
                 data.as_ptr() as *const i8,
                 &mut error,
@@ -249,7 +240,7 @@ impl<'a> RawDeviceArrayView<'a> {
     ///
     /// The returned bytes can be reinterpreted as the element type indicated
     /// by [`dtype()`](Self::dtype).
-    pub(crate) fn to_host_vec(&self, handle: &ResourceHandle) -> Result<Vec<u8>> {
+    pub(crate) fn to_host_vec(&self, handle: &EnteredContext<'_>) -> Result<Vec<u8>> {
         let dtype = self.dtype()?;
         let byte_len = checked_byte_len(self.len(), dtype, "RawDeviceArrayView::to_host_vec")?;
         let mut buf = vec![0u8; byte_len];
@@ -260,7 +251,7 @@ impl<'a> RawDeviceArrayView<'a> {
         // out-pointer.
         unsafe {
             let code = cugraph_type_erased_device_array_view_copy_to_host(
-                handle.as_ptr(),
+                handle.handle_ptr(),
                 buf.as_mut_ptr() as *mut i8,
                 self.raw,
                 &mut error,
@@ -299,8 +290,9 @@ impl<'a> Drop for RawDeviceArrayView<'a> {
 /// let runtime = std::sync::Arc::new(Runtime::new().unwrap());
 /// let handle =
 ///     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
-/// let arr = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
-/// let ids: Vec<i32> = arr.view().unwrap().to_vec(&handle).unwrap();
+/// let entered = handle.enter("DeviceArray docs").unwrap();
+/// let arr = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).unwrap();
+/// let ids: Vec<i32> = arr.view().unwrap().to_vec(&entered).unwrap();
 /// assert_eq!(ids, vec![0, 1, 2]);
 /// ```
 pub struct DeviceArray<T: CugraphElement> {
@@ -326,7 +318,7 @@ impl<T: CugraphElement> fmt::Debug for DeviceArray<T> {
 
 impl<T: CugraphElement> DeviceArray<T> {
     /// Allocate a new device array with `len` elements of type `T`.
-    pub fn new(handle: &ResourceHandle, len: usize) -> Result<Self> {
+    pub fn new(handle: &EnteredContext<'_>, len: usize) -> Result<Self> {
         let inner = RawDeviceArray::new(handle, len, T::data_type())?;
         Ok(Self { inner, _element: PhantomData })
     }
@@ -343,10 +335,11 @@ impl<T: CugraphElement> DeviceArray<T> {
     /// let runtime = std::sync::Arc::new(Runtime::new().unwrap());
     /// let handle =
     ///     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
-    /// let arr = DeviceArray::from_slice(&handle, &[1i32, 2, 3]).unwrap();
+    /// let entered = handle.enter("DeviceArray::from_slice docs").unwrap();
+    /// let arr = DeviceArray::from_slice(&entered, &[1i32, 2, 3]).unwrap();
     /// assert_eq!(arr.view().unwrap().len(), 3);
     /// ```
-    pub fn from_slice(handle: &ResourceHandle, data: &[T]) -> Result<Self> {
+    pub fn from_slice(handle: &EnteredContext<'_>, data: &[T]) -> Result<Self> {
         let mut arr = Self::new(handle, data.len())?;
         let byte_len = std::mem::size_of_val(data);
         // SAFETY: `data` is a contiguous slice of `T`, so reinterpreting its
@@ -512,11 +505,12 @@ impl<'a, T: CugraphElement> DeviceArrayView<'a, T> {
     /// # use cugraph::{DeviceArray, ResourceHandle};
     /// # let runtime = std::sync::Arc::new(Runtime::new().unwrap());
     /// # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
-    /// let arr = DeviceArray::from_slice(&handle, &[10i32, 20, 30]).unwrap();
-    /// let values: Vec<i32> = arr.view().unwrap().to_vec(&handle).unwrap();
+    /// # let entered = handle.enter("DeviceArrayView::to_vec docs").unwrap();
+    /// let arr = DeviceArray::from_slice(&entered, &[10i32, 20, 30]).unwrap();
+    /// let values: Vec<i32> = arr.view().unwrap().to_vec(&entered).unwrap();
     /// assert_eq!(values, vec![10, 20, 30]);
     /// ```
-    pub fn to_vec(&self, handle: &ResourceHandle) -> Result<Vec<T>> {
+    pub fn to_vec(&self, handle: &EnteredContext<'_>) -> Result<Vec<T>> {
         let type_size = std::mem::size_of::<T>();
         let bytes = self.inner.to_host_vec(handle)?;
         let len = bytes.len() / type_size;
@@ -647,33 +641,37 @@ mod tests {
     use static_assertions::assert_not_impl_any;
 
     use super::*;
+    use crate::ResourceHandle;
 
     #[test]
     fn test_device_array_roundtrip() {
         let handle = ResourceHandle::new().expect("handle");
-        let arr = DeviceArray::from_slice(&handle, &[10i32, 20, 30, 40, 50]).expect("create");
+        let entered = handle.enter("test_device_array_roundtrip").expect("entered");
+        let arr = DeviceArray::from_slice(&entered, &[10i32, 20, 30, 40, 50]).expect("create");
 
         let view = arr.view().expect("view");
         assert_eq!(view.len(), 5);
 
-        let result: Vec<i32> = view.to_vec(&handle).expect("to_vec");
+        let result: Vec<i32> = view.to_vec(&entered).expect("to_vec");
         assert_eq!(result, vec![10, 20, 30, 40, 50]);
     }
 
     #[test]
     fn test_device_array_f32_roundtrip() {
         let handle = ResourceHandle::new().expect("handle");
-        let arr = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0]).expect("create");
+        let entered = handle.enter("test_device_array_f32_roundtrip").expect("entered");
+        let arr = DeviceArray::from_slice(&entered, &[1.0f32, 2.0, 3.0]).expect("create");
 
         let view = arr.view().expect("view");
-        let result: Vec<f32> = view.to_vec(&handle).expect("to_vec");
+        let result: Vec<f32> = view.to_vec(&entered).expect("to_vec");
         assert_eq!(result, vec![1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn test_device_array_empty() {
         let handle = ResourceHandle::new().expect("handle");
-        let arr = DeviceArray::<i32>::new(&handle, 0).expect("create empty");
+        let entered = handle.enter("test_device_array_empty").expect("entered");
+        let arr = DeviceArray::<i32>::new(&entered, 0).expect("create empty");
         let view = arr.view().expect("view");
         assert_eq!(view.len(), 0);
         assert!(view.is_empty());
@@ -689,7 +687,8 @@ mod tests {
     #[test]
     fn test_from_raw_roundtrip() {
         let handle = ResourceHandle::new().expect("handle");
-        let arr = DeviceArray::from_slice(&handle, &[100i32, 200, 300]).expect("create");
+        let entered = handle.enter("test_from_raw_roundtrip").expect("entered");
+        let arr = DeviceArray::from_slice(&entered, &[100i32, 200, 300]).expect("create");
 
         let owned_view = arr.view().expect("owned_view");
         let raw_ptr = owned_view.device_ptr();
@@ -699,7 +698,7 @@ mod tests {
         let raw_view = unsafe { DeviceArrayView::<i32>::from_raw(raw_ptr, 3) }.expect("raw_view");
         assert_eq!(raw_view.len(), 3);
 
-        let result: Vec<i32> = raw_view.to_vec(&handle).expect("to_vec");
+        let result: Vec<i32> = raw_view.to_vec(&entered).expect("to_vec");
         assert_eq!(result, vec![100, 200, 300]);
     }
 
@@ -722,14 +721,15 @@ mod tests {
         }
 
         let handle = ResourceHandle::new().expect("handle");
-        let arr = DeviceArray::from_slice(&handle, &[7i32, 8, 9, 10]).expect("create");
+        let entered = handle.enter("test_from_device_buffer_roundtrip").expect("entered");
+        let arr = DeviceArray::from_slice(&entered, &[7i32, 8, 9, 10]).expect("create");
 
         let ext = ExternalBuffer { arr: &arr };
 
         let view = DeviceArrayView::<i32>::from_device_buffer(&ext).expect("device view");
         assert_eq!(view.len(), 4);
 
-        let result: Vec<i32> = view.to_vec(&handle).expect("to_vec");
+        let result: Vec<i32> = view.to_vec(&entered).expect("to_vec");
         assert_eq!(result, vec![7, 8, 9, 10]);
     }
 
@@ -752,32 +752,35 @@ mod tests {
         }
 
         let handle = ResourceHandle::new().expect("handle");
-        let arr = DeviceArray::from_slice(&handle, &[11i32, 12, 13]).expect("create");
+        let entered = handle.enter("test_try_from_device_buffer_roundtrip").expect("entered");
+        let arr = DeviceArray::from_slice(&entered, &[11i32, 12, 13]).expect("create");
 
         let ext = ExternalBuffer { arr: &arr };
 
         let view = DeviceArrayView::<i32>::try_from_device_buffer(&ext).expect("device view");
         assert_eq!(view.len(), 3);
 
-        let result: Vec<i32> = view.to_vec(&handle).expect("to_vec");
+        let result: Vec<i32> = view.to_vec(&entered).expect("to_vec");
         assert_eq!(result, vec![11, 12, 13]);
     }
 
     #[test]
     fn test_to_vec_roundtrip_i32() {
         let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_to_vec_roundtrip_i32").expect("entered");
         let src: Vec<i32> = vec![10, 20, 30];
-        let arr = DeviceArray::from_slice(&handle, &src).expect("create");
-        let result: Vec<i32> = arr.view().expect("view").to_vec(&handle).expect("roundtrip");
+        let arr = DeviceArray::from_slice(&entered, &src).expect("create");
+        let result: Vec<i32> = arr.view().expect("view").to_vec(&entered).expect("roundtrip");
         assert_eq!(result, src);
     }
 
     #[test]
     fn test_to_vec_roundtrip_f64() {
         let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_to_vec_roundtrip_f64").expect("entered");
         let src: Vec<f64> = vec![1.5, 2.5, 3.5];
-        let arr = DeviceArray::from_slice(&handle, &src).expect("create");
-        let result: Vec<f64> = arr.view().expect("view").to_vec(&handle).expect("roundtrip");
+        let arr = DeviceArray::from_slice(&entered, &src).expect("create");
+        let result: Vec<f64> = arr.view().expect("view").to_vec(&entered).expect("roundtrip");
         assert_eq!(result, src);
     }
 
@@ -841,8 +844,9 @@ mod tests {
         fn takes_f32(_arr: &DeviceArray<f32>) {}
 
         let handle = ResourceHandle::new().expect("handle");
-        let arr_i32 = DeviceArray::from_slice(&handle, &[1i32, 2, 3]).expect("i32");
-        let arr_f32 = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0]).expect("f32");
+        let entered = handle.enter("test_device_array_distinct_types").expect("entered");
+        let arr_i32 = DeviceArray::from_slice(&entered, &[1i32, 2, 3]).expect("i32");
+        let arr_f32 = DeviceArray::from_slice(&entered, &[1.0f32, 2.0, 3.0]).expect("f32");
         takes_i32(&arr_i32);
         takes_f32(&arr_f32);
     }

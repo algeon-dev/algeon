@@ -9,7 +9,7 @@ use crate::{
     array::DeviceArrayView,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposed},
-    handle::ResourceHandle,
+    handle::EnteredContext,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64, defaults},
     types::{CugraphElement, to_bool_t},
 };
@@ -101,7 +101,7 @@ pub struct InitialGuess<'a, V: CugraphElement = i32, W: CugraphElement = f32> {
 /// [`Graph::pagerank_with`](crate::graph::Graph::pagerank_with) instead
 /// of calling this function directly.
 pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     graph: &mut Graph<Transposed>,
     params: &PageRankParams,
     precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
@@ -150,7 +150,7 @@ pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
     // valid out-pointers.
     unsafe {
         let code = cugraph_pagerank_allow_nonconvergence(
-            handle.as_ptr(),
+            handle.handle_ptr(),
             graph.as_ptr(),
             pw_verts_ptr,
             pw_sums_ptr,
@@ -209,6 +209,7 @@ mod tests {
     #[test]
     fn test_pagerank_star_graph() {
         let handle = ResourceHandle::new().expect("handle");
+        let handle = handle.enter("test_pagerank_star_graph").expect("entered");
 
         // Star graph: 1->0, 2->0, 3->0 (node 0 is the hub)
         let src_data: Vec<i32> = vec![1, 2, 3, 0, 0, 0];
@@ -257,6 +258,7 @@ mod tests {
     #[test]
     fn test_pagerank_simple_convenience() {
         let handle = ResourceHandle::new().expect("handle");
+        let handle = handle.enter("test_pagerank_simple_convenience").expect("entered");
 
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
@@ -274,6 +276,7 @@ mod tests {
     #[test]
     fn test_pagerank_rejects_mismatched_precomputed_weights() {
         let handle = ResourceHandle::new().expect("handle");
+        let handle = handle.enter("test_pagerank_rejects_mismatched_precomputed_weights").expect("entered");
 
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
@@ -297,6 +300,7 @@ mod tests {
     #[test]
     fn test_pagerank_rejects_mismatched_initial_guess() {
         let handle = ResourceHandle::new().expect("handle");
+        let handle = handle.enter("test_pagerank_rejects_mismatched_initial_guess").expect("entered");
 
         let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
         let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");

@@ -18,7 +18,7 @@ use cugraph::{
         DataFrameGraphOptions, GraphConstructionPolicy, device_array_view_from_slice, graph_from_dataframe,
     },
     graph::{Forward, Graph, GraphBuilder},
-    handle::ResourceHandle,
+    handle::{EnteredContext, ResourceHandle},
     types::{CugraphElement, GraphProperties},
 };
 use serde::{Deserialize, Serialize};
@@ -269,9 +269,10 @@ fn execute_louvain_harness(fixture: &Path) -> Result<LouvainParityReport, Harnes
         .context("build cuGraph resource handle for parity harness")
         .map_err(environment_failure_from_error)?;
     let prepared = prepare_parity_fixture(&runtime, &fixture).map_err(environment_failure_from_error)?;
+    let entered = handle.enter("xtask parity louvain").map_err(|error| environment_failure(error.to_string()))?;
 
     let python_summary = run_python_baseline(&prepared.python_fixture_path)?;
-    let rust_summaries = run_rust_cases(&handle, &prepared.rust_df).map_err(environment_failure_from_error)?;
+    let rust_summaries = run_rust_cases(&entered, &prepared.rust_df).map_err(environment_failure_from_error)?;
 
     let mut diffs = Vec::new();
     for summary in &rust_summaries {
@@ -471,7 +472,7 @@ fn unique_temp_parquet_path(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{prefix}_{}_{}.parquet", std::process::id(), nanos))
 }
 
-fn run_rust_cases(handle: &ResourceHandle, fixture_df: &DataFrame) -> anyhow::Result<Vec<LouvainSummary>> {
+fn run_rust_cases(handle: &EnteredContext<'_>, fixture_df: &DataFrame) -> anyhow::Result<Vec<LouvainSummary>> {
     let builder_python_like = LouvainFlags {
         undirected: true,
         renumber: true,
@@ -505,7 +506,7 @@ fn run_rust_cases(handle: &ResourceHandle, fixture_df: &DataFrame) -> anyhow::Re
 }
 
 fn run_graph_builder_case(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     fixture_df: &DataFrame,
     flags: LouvainFlags,
 ) -> anyhow::Result<LouvainSummary> {
@@ -535,7 +536,7 @@ fn run_graph_builder_case(
 }
 
 fn run_graph_builder_case_typed<V, W>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     src: &Series,
     dst: &Series,
     weight: &Series,
@@ -577,7 +578,7 @@ where
 }
 
 fn run_graph_from_dataframe_case(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     fixture_df: &DataFrame,
     flags: LouvainFlags,
 ) -> anyhow::Result<LouvainSummary> {
@@ -592,7 +593,7 @@ fn run_graph_from_dataframe_case(
 }
 
 fn run_louvain_case(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     graph: &mut Graph<Forward>,
     path_kind: PathKind,
     flags: LouvainFlags,
@@ -622,7 +623,7 @@ fn run_louvain_case(
     ))
 }
 
-fn graph_edge_count(handle: &ResourceHandle, graph: &mut Graph<Forward>) -> anyhow::Result<usize> {
+fn graph_edge_count(handle: &EnteredContext<'_>, graph: &mut Graph<Forward>) -> anyhow::Result<usize> {
     graph.edge_count(handle).context("query graph edge count")
 }
 
@@ -917,6 +918,16 @@ pub fn build_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_helpers_require_entered_context() {
+        let _: fn(&EnteredContext<'_>, &DataFrame) -> anyhow::Result<Vec<LouvainSummary>> = run_rust_cases;
+        let _: fn(&EnteredContext<'_>, &DataFrame, LouvainFlags) -> anyhow::Result<LouvainSummary> =
+            run_graph_builder_case;
+        let _: fn(&EnteredContext<'_>, &DataFrame, LouvainFlags) -> anyhow::Result<LouvainSummary> =
+            run_graph_from_dataframe_case;
+        let _: fn(&EnteredContext<'_>, &mut Graph<Forward>) -> anyhow::Result<usize> = graph_edge_count;
+    }
 
     fn flags(path_kind: PathKind) -> LouvainFlags {
         match path_kind {

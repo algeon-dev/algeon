@@ -7,7 +7,7 @@
 use crate::{
     array::{DeviceArrayView, RawDeviceArrayView},
     error::{Error, ErrorKind, Result},
-    handle::ResourceHandle,
+    handle::EnteredContext,
     types::DataType,
 };
 
@@ -58,7 +58,7 @@ impl<'a> VertexIds<'a> {
     }
 
     /// Copy to host as `Vec<i64>`, widening `i32` values if needed.
-    pub fn to_vec_i64(&self, handle: &ResourceHandle) -> Result<Vec<i64>> {
+    pub fn to_vec_i64(&self, handle: &EnteredContext<'_>) -> Result<Vec<i64>> {
         match self {
             Self::I32(v) => {
                 let vals = v.to_vec(handle)?;
@@ -72,7 +72,7 @@ impl<'a> VertexIds<'a> {
     ///
     /// Returns an error if the underlying values are `i64`, since narrowing
     /// could lose data.
-    pub fn to_vec_i32(&self, handle: &ResourceHandle) -> Result<Vec<i32>> {
+    pub fn to_vec_i32(&self, handle: &EnteredContext<'_>) -> Result<Vec<i32>> {
         match self {
             Self::I32(v) => v.to_vec(handle),
             Self::I64(_) => Err(Error::new(ErrorKind::InvalidState, "VertexIds::to_vec_i32")
@@ -144,7 +144,7 @@ impl<'a> ScoreValues<'a> {
     }
 
     /// Copy to host as `Vec<f64>`, widening `f32` values if needed.
-    pub fn to_vec_f64(&self, handle: &ResourceHandle) -> Result<Vec<f64>> {
+    pub fn to_vec_f64(&self, handle: &EnteredContext<'_>) -> Result<Vec<f64>> {
         match self {
             Self::F32(v) => {
                 let vals = v.to_vec(handle)?;
@@ -158,7 +158,7 @@ impl<'a> ScoreValues<'a> {
     ///
     /// Returns an error if the underlying values are `f64`, since narrowing
     /// could lose data.
-    pub fn to_vec_f32(&self, handle: &ResourceHandle) -> Result<Vec<f32>> {
+    pub fn to_vec_f32(&self, handle: &EnteredContext<'_>) -> Result<Vec<f32>> {
         match self {
             Self::F32(v) => v.to_vec(handle),
             Self::F64(_) => Err(Error::new(ErrorKind::InvalidState, "ScoreValues::to_vec_f32")
@@ -242,7 +242,7 @@ impl<'a> Distances<'a> {
     ///
     /// Returns an error for float variants — use [`to_vec_f64`](Distances::to_vec_f64)
     /// instead.
-    pub fn to_vec_i64(&self, handle: &ResourceHandle) -> Result<Vec<i64>> {
+    pub fn to_vec_i64(&self, handle: &EnteredContext<'_>) -> Result<Vec<i64>> {
         match self {
             Self::I32(v) => {
                 let vals = v.to_vec(handle)?;
@@ -258,7 +258,7 @@ impl<'a> Distances<'a> {
     ///
     /// Returns an error if the underlying values are `i64` (narrowing) or
     /// floating-point.
-    pub fn to_vec_i32(&self, handle: &ResourceHandle) -> Result<Vec<i32>> {
+    pub fn to_vec_i32(&self, handle: &EnteredContext<'_>) -> Result<Vec<i32>> {
         match self {
             Self::I32(v) => v.to_vec(handle),
             Self::I64(_) => Err(Error::new(ErrorKind::InvalidState, "Distances::to_vec_i32")
@@ -272,7 +272,7 @@ impl<'a> Distances<'a> {
     ///
     /// Integer distances are converted to `f64` losslessly (for i32) or with
     /// possible precision loss for very large i64 values.
-    pub fn to_vec_f64(&self, handle: &ResourceHandle) -> Result<Vec<f64>> {
+    pub fn to_vec_f64(&self, handle: &EnteredContext<'_>) -> Result<Vec<f64>> {
         match self {
             Self::I32(v) => {
                 let vals = v.to_vec(handle)?;
@@ -294,7 +294,7 @@ impl<'a> Distances<'a> {
     ///
     /// Returns an error if the underlying values are `i64`, `f64`, or `i32`
     /// with values outside `f32` range. Only succeeds for `F32` variant.
-    pub fn to_vec_f32(&self, handle: &ResourceHandle) -> Result<Vec<f32>> {
+    pub fn to_vec_f32(&self, handle: &EnteredContext<'_>) -> Result<Vec<f32>> {
         match self {
             Self::F32(v) => v.to_vec(handle),
             _ => Err(Error::new(ErrorKind::InvalidState, "Distances::to_vec_f32")
@@ -307,19 +307,20 @@ impl<'a> Distances<'a> {
 mod tests {
     use super::*;
     use crate::{
+        ResourceHandle,
         array::{DeviceArray, RawDeviceArrayView},
         error::ErrorKind,
-        handle::ResourceHandle,
         types::DataType,
     };
 
     #[test]
     fn vertex_ids_i64_to_vec_i32_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
-        let ids = DeviceArray::from_slice(&handle, &[1i64, 2, 3]).expect("ids");
+        let entered = handle.enter("vertex_ids_i64_to_vec_i32_is_invalid_state").expect("entered");
+        let ids = DeviceArray::from_slice(&entered, &[1i64, 2, 3]).expect("ids");
         let values = VertexIds::I64(ids.view().expect("view"));
 
-        let err = values.to_vec_i32(&handle).expect_err("i64 vertex ids should reject i32 copy");
+        let err = values.to_vec_i32(&entered).expect_err("i64 vertex ids should reject i32 copy");
         assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert_eq!(err.operation(), "VertexIds::to_vec_i32");
     }
@@ -327,10 +328,11 @@ mod tests {
     #[test]
     fn score_values_f64_to_vec_f32_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
-        let scores = DeviceArray::from_slice(&handle, &[1.0f64, 2.0, 3.0]).expect("scores");
+        let entered = handle.enter("score_values_f64_to_vec_f32_is_invalid_state").expect("entered");
+        let scores = DeviceArray::from_slice(&entered, &[1.0f64, 2.0, 3.0]).expect("scores");
         let values = ScoreValues::F64(scores.view().expect("view"));
 
-        let err = values.to_vec_f32(&handle).expect_err("f64 score values should reject f32 copy");
+        let err = values.to_vec_f32(&entered).expect_err("f64 score values should reject f32 copy");
         assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert_eq!(err.operation(), "ScoreValues::to_vec_f32");
     }
@@ -338,10 +340,11 @@ mod tests {
     #[test]
     fn distances_float_to_vec_i64_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
-        let distances = DeviceArray::from_slice(&handle, &[1.5f32, 2.5, 3.5]).expect("distances");
+        let entered = handle.enter("distances_float_to_vec_i64_is_invalid_state").expect("entered");
+        let distances = DeviceArray::from_slice(&entered, &[1.5f32, 2.5, 3.5]).expect("distances");
         let values = Distances::F32(distances.view().expect("view"));
 
-        let err = values.to_vec_i64(&handle).expect_err("float distances should reject integer copy");
+        let err = values.to_vec_i64(&entered).expect_err("float distances should reject integer copy");
         assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert_eq!(err.operation(), "Distances::to_vec_i64");
     }
@@ -349,10 +352,11 @@ mod tests {
     #[test]
     fn distances_i64_to_vec_i32_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
-        let distances = DeviceArray::from_slice(&handle, &[10i64, 20, 30]).expect("distances");
+        let entered = handle.enter("distances_i64_to_vec_i32_is_invalid_state").expect("entered");
+        let distances = DeviceArray::from_slice(&entered, &[10i64, 20, 30]).expect("distances");
         let values = Distances::I64(distances.view().expect("view"));
 
-        let err = values.to_vec_i32(&handle).expect_err("i64 distances should reject i32 copy");
+        let err = values.to_vec_i32(&entered).expect_err("i64 distances should reject i32 copy");
         assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert_eq!(err.operation(), "Distances::to_vec_i32");
     }
@@ -360,10 +364,11 @@ mod tests {
     #[test]
     fn distances_non_f32_to_vec_f32_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
-        let distances = DeviceArray::from_slice(&handle, &[10i32, 20, 30]).expect("distances");
+        let entered = handle.enter("distances_non_f32_to_vec_f32_is_invalid_state").expect("entered");
+        let distances = DeviceArray::from_slice(&entered, &[10i32, 20, 30]).expect("distances");
         let values = Distances::I32(distances.view().expect("view"));
 
-        let err = values.to_vec_f32(&handle).expect_err("non-f32 distances should reject f32 copy");
+        let err = values.to_vec_f32(&entered).expect_err("non-f32 distances should reject f32 copy");
         assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert_eq!(err.operation(), "Distances::to_vec_f32");
     }
@@ -371,7 +376,8 @@ mod tests {
     #[test]
     fn vertex_ids_from_raw_unexpected_dtype_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
-        let ids = DeviceArray::from_slice(&handle, &[1i16, 2, 3]).expect("ids");
+        let entered = handle.enter("vertex_ids_from_raw_unexpected_dtype_is_invalid_state").expect("entered");
+        let ids = DeviceArray::from_slice(&entered, &[1i16, 2, 3]).expect("ids");
         let view = ids.view().expect("view");
         // SAFETY: The pointer/length pair comes from a live `DeviceArrayView`, and the dtype is
         // intentionally mismatched to verify `VertexIds::from_raw` rejects unsupported inputs.
@@ -388,7 +394,8 @@ mod tests {
     #[test]
     fn score_values_from_raw_unexpected_dtype_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
-        let scores = DeviceArray::from_slice(&handle, &[1i32, 2, 3]).expect("scores");
+        let entered = handle.enter("score_values_from_raw_unexpected_dtype_is_invalid_state").expect("entered");
+        let scores = DeviceArray::from_slice(&entered, &[1i32, 2, 3]).expect("scores");
         let view = scores.view().expect("view");
         // SAFETY: The pointer/length pair comes from a live `DeviceArrayView`, and the dtype is
         // intentionally mismatched to verify `ScoreValues::from_raw` rejects unsupported inputs.
@@ -405,7 +412,8 @@ mod tests {
     #[test]
     fn distances_from_raw_unexpected_dtype_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
-        let distances = DeviceArray::from_slice(&handle, &[1i16, 2, 3]).expect("distances");
+        let entered = handle.enter("distances_from_raw_unexpected_dtype_is_invalid_state").expect("entered");
+        let distances = DeviceArray::from_slice(&entered, &[1i16, 2, 3]).expect("distances");
         let view = distances.view().expect("view");
         // SAFETY: The pointer/length pair comes from a live `DeviceArrayView`, and the dtype is
         // intentionally mismatched to verify `Distances::from_raw` rejects unsupported inputs.
