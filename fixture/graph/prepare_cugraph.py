@@ -23,7 +23,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CUGRAPH_REPO = REPO_ROOT.parent / "cugraph-rs" / "cugraph"
+DEFAULT_CUGRAPH_REPO = REPO_ROOT.parent / "cugraph-nexus" / "cugraph"
 DEFAULT_DATA_ROOT = REPO_ROOT / "fixture" / "graph" / "cugraph"
 
 
@@ -56,13 +56,13 @@ REFERENCES = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Copy cuGraph parity datasets from ../cugraph-rs/cugraph and generate fixture/graph/cugraph/manifest.json.",
+        description="Copy cuGraph parity datasets from ../cugraph-nexus/cugraph and generate fixture/graph/cugraph/manifest.json.",
     )
     parser.add_argument(
         "--cugraph-repo",
         type=Path,
         default=DEFAULT_CUGRAPH_REPO,
-        help="Path to the cuGraph source checkout. Defaults to ../cugraph-rs/cugraph.",
+        help="Path to the cuGraph source checkout. Defaults to ../cugraph-nexus/cugraph.",
     )
     parser.add_argument(
         "--out-dir",

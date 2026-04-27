@@ -7,13 +7,13 @@ pub const GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY: &str = "graph_algorith
 /// Strict bounded required-contract label for graph algorithm rejection facts.
 pub const GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT: &str = "unsupported_graph_algorithm_reservation_contract";
 
-/// Lower-level cuGraph/cudf-rs contracts required before graph algorithms can
+/// Lower-level cuGraph/cudf contracts required before graph algorithms can
 /// be admitted under strict bounded execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GraphAlgorithmStrictBoundedLowerLevelContract {
     /// Stable short contract name.
     pub name: &'static str,
-    /// Required lower-level cudf-rs/libcugraph surface before strict admission.
+    /// Required lower-level cudf/libcugraph surface before strict admission.
     pub required_surface: &'static str,
 }
 

@@ -11,7 +11,7 @@ mod diagnostics;
 pub enum BoundedJoinReservationStatus {
     /// The reservation is modeled and enforced by current bounded execution.
     Modeled,
-    /// The reservation depends on a lower-level cudf-rs/libcudf contract that is
+    /// The reservation depends on a lower-level cudf/libcudf contract that is
     /// not available yet.
     BlockedByLowerLevel,
     /// The reservation is intentionally deferred until another prerequisite is
@@ -51,7 +51,7 @@ pub struct BoundedJoinReservationRequirement {
     reservation_kind: ReservationKind,
     /// Stable memory-boundary name used in facts and reservation requests.
     memory_boundary: &'static str,
-    /// Query-engine or cudf-rs contract required to observe or admit the boundary.
+    /// Query-engine or cudf contract required to observe or admit the boundary.
     required_contract: &'static str,
     /// Current modeling status for this boundary.
     status: BoundedJoinReservationStatus,

@@ -158,8 +158,8 @@ impl GraphEdgePredicateInput {
 
 /// Parameters for single-source shortest paths (SSSP).
 ///
-/// Mirrors `cugraph::traversal::SsspParams` without cugraph-rs newtype
-/// wrappers so the native IR can be constructed without the cuGraph feature.
+/// Mirrors `cugraph::traversal::SsspParams` without the `cugraph` crate's
+/// newtype wrappers so the native IR can be constructed without the cuGraph feature.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphSsspParams {
     /// Source vertex for the SSSP traversal.

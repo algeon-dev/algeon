@@ -47,7 +47,7 @@ pub struct JoinOperatorMetrics {
     pub probe_bytes: u64,
     /// Device bytes retained by the reusable cuDF join build artifact.
     ///
-    /// This is a direct cudf-rs observation. For hash joins it is the retained
+    /// This is a direct cudf observation. For hash joins it is the retained
     /// hash table; for filtered joins it is the retained filtered-join build
     /// artifact. It remains `0` for join paths without a reusable build artifact.
     pub hash_table_bytes: u64,
@@ -57,7 +57,7 @@ pub struct JoinOperatorMetrics {
     pub mixed_size_data_bytes: u64,
     /// Device bytes retained by join gather maps produced for this join.
     ///
-    /// This is a direct cudf-rs observation over the returned device index
+    /// This is a direct cudf observation over the returned device index
     /// columns, not a row-count estimate.
     pub gather_map_bytes: u64,
     /// Bytes reserved for join output materialization.

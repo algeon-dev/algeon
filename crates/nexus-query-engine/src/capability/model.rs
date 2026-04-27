@@ -12,7 +12,7 @@ use crate::plan::{EdgeDedupStrategy, EdgeWeightCombiner};
 pub enum ContractStatus {
     /// The boundary has an admissible contract for strict bounded execution.
     Modeled,
-    /// The boundary is understood, but a required cudf-rs/libcudf contract is
+    /// The boundary is understood, but a required cudf/libcudf contract is
     /// not available yet.
     BlockedByLowerLevel,
     /// The boundary can be decided only after another capability proof lands.
@@ -97,62 +97,62 @@ pub struct ReservationRequirement {
 }
 
 /// A current strict preflight gap that can only be retired by replacing the
-/// placeholder contract with a stronger cudf-rs/libcudf contract.
+/// placeholder contract with a stronger cudf/libcudf contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StrictUnresolvedPreflightGap {
     /// Reservation kind affected by the unresolved lower-level contract.
     pub kind: ReservationKind,
     /// Stable contract label that currently relies on a placeholder proof.
     pub required_contract: &'static str,
-    /// Stable report code naming the missing cudf-rs/libcudf preflight.
+    /// Stable report code naming the missing cudf/libcudf preflight.
     pub unresolved_gap: &'static str,
     /// Human-readable condition required to remove this gap from strict mode.
     pub retirement_requirement: &'static str,
 }
 
-/// Known strict-mode preflight gaps that require lower-level cudf-rs/libcudf work.
+/// Known strict-mode preflight gaps that require lower-level cudf/libcudf work.
 pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::SourceRead,
         required_contract: "row_delete_application_contract",
         unresolved_gap: "libcudf_row_delete_application_preflight_unavailable",
-        retirement_requirement: "cudf-rs/libcudf row-delete file read, anti-join, and workspace preflight for strict source chunks",
+        retirement_requirement: "cudf/libcudf row-delete file read, anti-join, and workspace preflight for strict source chunks",
     },
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::SourceRead,
         required_contract: "source_contract",
         unresolved_gap: "libcudf_parquet_decoded_output_preflight_unavailable",
-        retirement_requirement: "cudf-rs/libcudf decoded-output preflight for planned row groups and projected columns",
+        retirement_requirement: "cudf/libcudf decoded-output preflight for planned row groups and projected columns",
     },
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::OperatorOutput,
         required_contract: "aggregate_contract",
         unresolved_gap: "libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable",
-        retirement_requirement: "cudf-rs/libcudf groupby aggregate output and temporary-workspace preflight",
+        retirement_requirement: "cudf/libcudf groupby aggregate output and temporary-workspace preflight",
     },
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::OperatorOutput,
         required_contract: "window_contract",
         unresolved_gap: "libcudf_window_output_temporary_workspace_preflight_unavailable",
-        retirement_requirement: "cudf-rs/libcudf window output and temporary-workspace preflight",
+        retirement_requirement: "cudf/libcudf window output and temporary-workspace preflight",
     },
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::OperatorOutput,
         required_contract: "edge_normalize_output_size_preflight",
         unresolved_gap: "libcudf_edge_normalize_output_preflight_unavailable",
-        retirement_requirement: "cudf-rs/libcudf edge normalization output and temporary-workspace preflight",
+        retirement_requirement: "cudf/libcudf edge normalization output and temporary-workspace preflight",
     },
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::FinalSort,
         required_contract: "final_sort_contract",
         unresolved_gap: "libcudf_final_sort_order_preflight_unavailable",
-        retirement_requirement: "cudf-rs/libcudf final sort or top-k output and temporary-workspace preflight",
+        retirement_requirement: "cudf/libcudf final sort or top-k output and temporary-workspace preflight",
     },
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::OperatorOutput,
         required_contract: "join_filtered_build_key_deduplicate_output_contract",
         unresolved_gap: "libcudf_drop_duplicates_output_preflight_unavailable",
-        retirement_requirement: "cudf-rs/libcudf drop-duplicates output and temporary-workspace preflight",
+        retirement_requirement: "cudf/libcudf drop-duplicates output and temporary-workspace preflight",
     },
 ];
 
@@ -743,7 +743,7 @@ pub struct CapabilityRejectionProjection {
 /// Stable category for rejected capability or envelope admission projections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CapabilityRejectionCategory {
-    /// A lower-level cudf-rs/libcudf contract is not available yet.
+    /// A lower-level cudf/libcudf contract is not available yet.
     MissingLowerLevelContract,
     /// An expression family is not supported by the native engine.
     UnsupportedExpressionFamily,

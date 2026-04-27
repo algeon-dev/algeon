@@ -109,7 +109,7 @@ pub(super) fn execute_out_degrees_all(
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
 
-    // out_degrees_all is layout-agnostic in cugraph-rs; build Forward for
+    // out_degrees_all is layout-agnostic in the local `cugraph` crate; build Forward for
     // consistency with other Any-layout algorithms in this adapter.
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,

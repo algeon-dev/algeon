@@ -131,7 +131,7 @@ impl SlotGuarantee {
     }
 }
 
-/// Opt-in policy for binding service contexts to cudf-rs query memory domains.
+/// Opt-in policy for binding service contexts to cudf query memory domains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryMemoryDomainPolicy {
     /// Domain ceiling as a multiple of the grant budget observed when the
@@ -226,7 +226,7 @@ pub struct QueryServiceConfig {
     ///
     /// `None` disables resident graph caching. When enabled, entries are scoped
     /// per CUDA device and keyed internally by graph residency key plus service
-    /// stream-pool runtime identity, matching the cugraph-rs parked-graph v1
+    /// stream-pool runtime identity, matching the `cugraph` crate's parked-graph v1
     /// same-runtime resume contract.
     pub resident_graph_cache_max_retained_bytes: Option<u64>,
     /// Optional per-query allocator domain policy for service contexts.

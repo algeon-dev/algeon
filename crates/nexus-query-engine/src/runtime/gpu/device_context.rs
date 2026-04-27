@@ -133,7 +133,7 @@ impl DeviceContext {
         &self.inner.stream_pool
     }
 
-    /// Handle to cudf-rs's process-global per-device memory manager.
+    /// Handle to cudf's process-global per-device memory manager.
     pub fn memory_manager(&self) -> &cudf::DeviceMemoryManager {
         &self.inner.mr_manager
     }

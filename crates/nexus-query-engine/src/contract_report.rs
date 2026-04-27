@@ -266,7 +266,7 @@ pub struct StrictBoundedContractGateRow {
     pub contract_status: ContractStatus,
     /// Quality of the evidence backing a modeled gate.
     pub contract_quality: ContractQuality,
-    /// Named cudf-rs/libcudf gap when quality is unresolved preflight.
+    /// Named cudf/libcudf gap when quality is unresolved preflight.
     pub unresolved_preflight_gap: Option<&'static str>,
 }
 

@@ -222,7 +222,7 @@ impl KvikioCompatModeStatus {
 pub enum GdsDriverProbeStatus {
     /// The cuFile driver-open probe succeeded.
     Available,
-    /// No clean cudf-rs/libcudf probe boundary exists in this build.
+    /// No clean cudf/libcudf probe boundary exists in this build.
     ProbeUnimplemented,
     /// The probe was skipped because `nvidia-fs` is absent.
     SkippedDriverMissing,
@@ -230,11 +230,11 @@ pub enum GdsDriverProbeStatus {
     SkippedCompatModeForced,
     /// The cuFile driver-open probe failed.
     Unavailable {
-        /// Stable cudf-rs error code.
+        /// Stable cudf error code.
         code: String,
-        /// cudf-rs operation where the failure surfaced.
+        /// cudf operation where the failure surfaced.
         operation: String,
-        /// One-line cudf-rs error message.
+        /// One-line cudf error message.
         message: String,
     },
 }

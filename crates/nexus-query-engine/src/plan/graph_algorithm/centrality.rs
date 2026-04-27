@@ -6,7 +6,7 @@ use super::*;
 ///
 /// `alpha` is the damping factor, `epsilon` is the positive convergence
 /// tolerance, and `max_iterations` is the positive iteration cap. Defaults
-/// match the pinned local cugraph-rs defaults.
+/// match the pinned local `cugraph` crate defaults.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphPageRankParams {
     /// Damping factor.
@@ -74,7 +74,7 @@ impl GraphPageRankPersonalizationInput {
 /// Parameters for cuGraph eigenvector centrality.
 ///
 /// Mirrors `cugraph::centrality::EigenvectorCentralityParams` but stays free
-/// of cugraph-rs newtype wrappers so the native IR can be constructed (and
+/// of the `cugraph` crate's newtype wrappers so the native IR can be constructed (and
 /// validated) without depending on the cuGraph feature.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphEigenvectorCentralityParams {
@@ -94,7 +94,7 @@ impl Default for GraphEigenvectorCentralityParams {
 /// Parameters for cuGraph Katz centrality.
 ///
 /// Mirrors `cugraph::centrality::KatzCentralityParams` but stays free of
-/// cugraph-rs newtype wrappers so the native IR can be constructed and
+/// the `cugraph` crate's newtype wrappers so the native IR can be constructed and
 /// validated without depending on the cuGraph feature.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphKatzCentralityParams {
@@ -122,7 +122,7 @@ impl Default for GraphKatzCentralityParams {
 
 /// Parameters for cuGraph HITS (Hyperlink-Induced Topic Search).
 ///
-/// Mirrors `cugraph::centrality::HitsParams` minus the cugraph-rs
+/// Mirrors `cugraph::centrality::HitsParams` minus the `cugraph` crate's
 /// newtype wrappers, so the native IR can be constructed without
 /// depending on the cuGraph feature.
 #[derive(Debug, Clone, PartialEq)]
@@ -133,7 +133,7 @@ pub struct GraphHitsParams {
     /// Maximum number of power-iteration steps. Must be >= 1.
     pub max_iterations: u32,
     /// Whether to normalize the resulting hub/authority scores so their
-    /// L1 norm sums to 1. Off by default to match the cugraph-rs
+    /// L1 norm sums to 1. Off by default to match the `cugraph` crate's
     /// `HitsParams::default()`.
     pub normalize: bool,
 }

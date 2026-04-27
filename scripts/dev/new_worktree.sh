@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Create an isolated git worktree for parallel agent development on
-# datafusion-nexus. Shares sibling path dependencies (cudf-rs, cugraph-rs, and
+# datafusion-nexus. Shares sibling path dependencies (cudf-nexus, cugraph-nexus, and
 # optional comparison repos) with the primary checkout; isolates only the Cargo target dir
 # so parallel builds don't clobber each other.
 #
@@ -64,8 +64,8 @@ cat >"$envrc" <<EOF
 # Provides:
 #   - isolated CARGO_TARGET_DIR so parallel worktrees don't fight over target/
 #   - PATH pointing at the shared Python .venv when present
-#   - LD_LIBRARY_PATH pointing at the shared cudf-rs install + this worktree's
-#     own cudf-sys build output (in case cudf-sys is rebuilt here).
+#   - LD_LIBRARY_PATH pointing at the shared cudf-nexus install + this worktree's
+#     own cudf-nexus-sys build output (in case cudf-nexus-sys is rebuilt here).
 CARGO_TARGET_DIR="$target_dir"
 export CARGO_TARGET_DIR
 
@@ -74,10 +74,10 @@ if [[ -d "$worktree_path/.venv/bin" && ":\${PATH:-}:" != *":$worktree_path/.venv
     export PATH
 fi
 
-# Shared libcudf install (from the primary cudf-rs checkout). Every worktree
-# links against the same libcudf.so unless you explicitly override cudf-rs via
+# Shared libcudf install (from the primary cudf-nexus checkout). Every worktree
+# links against the same libcudf.so unless you explicitly override cudf-nexus via
 # a .cargo/config.toml [paths] entry in this worktree.
-_CUDF_INSTALL_LIB="$HOME/code/cudf-rs/cudf-install/lib"
+_CUDF_INSTALL_LIB="$HOME/code/cudf-nexus/cudf-install/lib"
 _WT_CUDF_SYS_OUT="\$CARGO_TARGET_DIR/release/build"
 
 if [[ ":\${LD_LIBRARY_PATH:-}:" != *":\$_CUDF_INSTALL_LIB:"* ]]; then
@@ -110,7 +110,7 @@ Next steps:
   cargo build
 
 Sibling path-deps shared with primary checkout (read-only by convention):
-  $parent_dir/cudf-rs
+  $parent_dir/cudf-nexus
   optional comparison repos under $parent_dir
 
 If you need to modify a sibling dep for this worktree only, add a

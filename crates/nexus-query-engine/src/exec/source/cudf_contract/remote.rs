@@ -15,7 +15,7 @@ pub struct ResolvedRemoteParquetDatasourceProbe {
     pub size_bytes: Option<u64>,
     /// cuDF/KvikIO remote backend build status.
     pub backend_build_status: String,
-    /// Conservative typed-source capability disposition at the cudf-rs boundary.
+    /// Conservative typed-source capability disposition at the cudf boundary.
     pub source_capability_disposition: String,
     /// URI scheme only, never the full URI.
     pub uri_scheme: String,

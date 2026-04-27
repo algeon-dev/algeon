@@ -24,7 +24,7 @@ use nexus_workloads::clickbench::{
 /// Device-byte budget for bounded native ClickBench execution.
 ///
 /// When unset, the selected native profile supplies the budget. The
-/// conservative profile uses CUDA/cudf-rs inventory total memory minus 500 MiB,
+/// conservative profile uses CUDA/cudf inventory total memory minus 500 MiB,
 /// with a 256 MiB fallback if GPU memory cannot be detected. Invalid values
 /// panic during profile construction.
 pub const NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES";

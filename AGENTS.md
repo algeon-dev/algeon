@@ -3,7 +3,7 @@
 ## Working principles
 
 - Fix the owning abstraction or contract, not a failing query with an adapter
-  workaround. Extend `cudf-rs` or `cugraph-rs` when the gap belongs there.
+  workaround. Extend `cudf-nexus` or `cugraph-nexus` when the gap belongs there.
 - Keep changes scoped. Preserve unrelated worktree edits and avoid opportunistic
   cleanup.
 - Preserve public behavior and contract tests unless the task changes them. Add
@@ -12,11 +12,11 @@
 ## Project boundaries
 
 `datafusion-nexus` lowers supported DataFusion physical plans to
-`nexus-query-engine` IR and executes them with `cudf-rs` and `cugraph-rs`.
+`nexus-query-engine` IR and executes them with `cudf-nexus` and `cugraph-nexus`.
 
 - DataFusion-dependent code belongs in the root adapter; DataFusion-independent
   IR and execution belong in `crates/nexus-query-engine`.
-- `cudf` and `cugraph` are sibling path dependencies; DataFusion is pinned in
+- `cudf-nexus` and `cugraph-nexus` are sibling path dependencies; DataFusion is pinned in
   `Cargo.toml`.
 - Default members are the adapter, `nexus-workloads`, and
   `nexus-query-engine`. Bench, tools, and examples are explicit non-default

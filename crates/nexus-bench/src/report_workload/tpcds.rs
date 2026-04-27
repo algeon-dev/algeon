@@ -31,7 +31,7 @@ pub use parity::{
 
 /// Device-byte budget for bounded native TPC-DS execution.
 ///
-/// When unset, the workload uses CUDA/cudf-rs inventory total memory minus
+/// When unset, the workload uses CUDA/cudf inventory total memory minus
 /// 500 MiB, with a 256 MiB fallback if GPU memory cannot be detected. Invalid
 /// values panic during config construction.
 pub const NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES";

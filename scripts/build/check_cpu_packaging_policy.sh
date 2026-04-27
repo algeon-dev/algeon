@@ -289,12 +289,12 @@ grep -Fq 'cannot load provenance' "${tmp_dir}/skip-without-provenance.output" \
 # Exercise the complete SKIP/stage/print path with the fake canonical artifact,
 # fake native libraries, and an isolated dist directory.
 mkdir -p "${tmp_dir}/cudf/lib" \
-  "${target_root}/portable-x86-64-v2/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib"
+  "${target_root}/portable-x86-64-v2/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib"
 for library in libcudf.so librmm.so librapids_logger.so; do
   printf 'fake %s\n' "${library}" >"${tmp_dir}/cudf/lib/${library}"
 done
 printf 'fake cudf bridge\n' \
-  >"${target_root}/portable-x86-64-v2/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib/libcudf_rust.so"
+  >"${target_root}/portable-x86-64-v2/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib/libcudf_rust.so"
 cat >"${tmp_dir}/bin/patchelf" <<'SH'
 #!/usr/bin/bash
 set -euo pipefail

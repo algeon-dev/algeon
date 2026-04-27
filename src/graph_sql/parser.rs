@@ -409,7 +409,7 @@ fn parse_options_json(
                 // beta=0 combined with the zero initial vector leaves the
                 // solver iterating on all-zero scores; normalization then
                 // produces an all-zero output that the kernel rejects.
-                // Reject at planning since cugraph-rs's `NonNegativeF64`
+                // Reject at planning since the `cugraph` crate's `NonNegativeF64`
                 // wrapper accepts zero.
                 if beta <= 0.0 {
                     return Err(plan_error("Katz centrality beta must be positive"));

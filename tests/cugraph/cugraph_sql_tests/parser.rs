@@ -628,7 +628,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     );
 
     // Eigenvector centrality must reject zero max_iterations the same way
-    // PageRank does, since the underlying cugraph-rs newtype requires >= 1.
+    // PageRank does, since the underlying `cugraph` crate newtype requires >= 1.
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::EigenvectorCentrality,
@@ -644,7 +644,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
         "max_iterations must be at least 1",
     );
 
-    // epsilon=0 must also be rejected at planning. cugraph-rs's
+    // epsilon=0 must also be rejected at planning. The `cugraph` crate's
     // `NonNegativeF64` accepts zero, but libcugraph's convergence test
     // `diff_sum < vertex_count * epsilon` never accepts on a non-empty
     // graph when the tolerance is zero, so the solver burns all
@@ -740,7 +740,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     );
 
     // beta=0 with the zero initial vector reaches normalization with
-    // all-zero scores. cugraph-rs's `NonNegativeF64` accepts zero, so
+    // all-zero scores. The `cugraph` crate's `NonNegativeF64` accepts zero, so
     // the only place left to reject it is the SQL planner.
     assert_error_contains(
         parse_cugraph_algorithm_spec(
@@ -759,7 +759,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
 
     // HITS accepts epsilon/max_iterations/normalize. Mirrors
     // PageRank's pattern; `normalize` defaults to false matching the
-    // cugraph-rs `HitsParams::default()` convention.
+    // `cugraph` crate's `HitsParams::default()` convention.
     let spec = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::Hits,
         &[
@@ -799,7 +799,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
         "epsilon must be positive",
     );
 
-    // max_iterations=0 is rejected by cugraph-rs's IterationCount
+    // max_iterations=0 is rejected by the `cugraph` crate's IterationCount
     // newtype at runtime; surface that at planning so the failure
     // path is consistent with PageRank / eigenvector / Katz.
     assert_error_contains(

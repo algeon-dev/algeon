@@ -29,7 +29,7 @@ leaf_id = leaf_ids[0]
 if leaf_id not in nodes:
     raise SystemExit("ERROR: Cargo metadata did not resolve nexus-iceberg")
 
-banned = {"datafusion-nexus", "nexus-query-engine", "datafusion", "cudf", "cudf-sys", "cugraph", "cugraph-sys"}
+banned = {"datafusion-nexus", "nexus-query-engine", "datafusion", "cudf-nexus", "cudf-nexus-sys", "cugraph-nexus", "cugraph-nexus-sys"}
 parents = {leaf_id: None}
 queue = deque([leaf_id])
 while queue:

@@ -215,7 +215,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         algorithm: CugraphAlgorithm::Hits,
         dataset: "karate",
         // Mirrors `CugraphHitsParams::default()` — epsilon and
-        // max_iterations track the cugraph-rs defaults; `normalize`
+        // max_iterations track the local `cugraph` crate defaults; `normalize`
         // stays off so the score range matches the upstream cuGraph
         // sample tests.
         params_json: r#"{"epsilon":1e-05,"max_iterations":100,"normalize":false}"#,
@@ -444,7 +444,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         dataset: "karate",
         // Mirrors the unweighted default SQL call and GraphForceAtlas2Params::default();
         // pass every option explicitly because Python cuGraph defaults differ
-        // for some layout knobs while cugraph-rs follows the C API defaults.
+        // for some layout knobs while the `cugraph` crate follows libcugraph C API defaults.
         params_json: r#"{"max_iter":500,"outbound_attraction_distribution":false,"lin_log_mode":false,"prevent_overlapping":false,"overlap_scaling_ratio":2.0,"edge_weight_influence":1.0,"jitter_tolerance":1.0,"barnes_hut_optimize":false,"barnes_hut_theta":0.5,"scaling_ratio":2.0,"strong_gravity_mode":false,"gravity":1.0,"verbose":false,"seed":0}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,

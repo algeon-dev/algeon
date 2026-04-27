@@ -3,7 +3,7 @@
 #
 # Normal GNU x86-64 workspace builds require an x86-64-v2 host. Pinning the
 # floor here makes it intentional and uniform across the dependency graph,
-# including `ahash` (a cudf-rs dependency).
+# including `ahash` (a cudf-nexus dependency).
 #
 # Why this matters: `ahash` and all Rust/LLVM codegen choose their instruction
 # set at COMPILE time from `target_feature`, not at runtime. x86-64-v2 does NOT

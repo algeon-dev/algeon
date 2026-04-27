@@ -3,7 +3,7 @@
 //! Expressions use Arrow datatypes and native column references but do not
 //! depend on DataFusion physical-expression objects. Unsupported expression
 //! forms should be rejected during capability analysis or validation before
-//! reaching cudf-rs execution.
+//! reaching cudf execution.
 
 use std::{fmt, ops::Not};
 
@@ -430,7 +430,7 @@ impl Expr {
     /// Returns true when this expression tree contains a `REGEXP_REPLACE`.
     ///
     /// Used by capability labeling and runtime preflight paths that size
-    /// replace-with-backrefs via the owning cudf-rs output-size contract.
+    /// replace-with-backrefs via the owning cudf output-size contract.
     pub fn contains_regexp_replace(&self) -> bool {
         match self {
             Self::RegexpReplace { .. } => true,

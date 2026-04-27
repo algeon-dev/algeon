@@ -14,7 +14,7 @@
 //!   and diagnostic binaries. Column order is part of the public surface.
 //!
 //! DataFusion-specific planning belongs here. DataFusion-free native IR,
-//! runtime policy, capability admission, and cudf-rs execution live in
+//! runtime policy, capability admission, and cudf execution live in
 //! [`nexus_query_engine`].
 
 pub mod backend;

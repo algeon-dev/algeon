@@ -345,9 +345,9 @@ fn parse_lag_lead_default(
         return Err(CapabilityReason::UnsupportedExpression);
     }
     // Mirror the literal families that the engine's
-    // `build_lag_lead_value_fill_scalar` can lower to a cudf-rs Scalar today.
+    // `build_lag_lead_value_fill_scalar` can lower to a cudf Scalar today.
     // Decimal, date, timestamp, duration, and interval literals still need a
-    // cudf-rs fill-scalar contract before the adapter can admit them; until
+    // cudf fill-scalar contract before the adapter can admit them; until
     // then we reject so the query falls back to CPU instead of failing at
     // execute time.
     match &lowered {

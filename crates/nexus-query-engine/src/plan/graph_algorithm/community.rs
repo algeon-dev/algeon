@@ -2,7 +2,7 @@
 
 /// Louvain community detection parameters.
 ///
-/// Mirrors `cugraph::community::LouvainParams` without the cugraph-rs
+/// Mirrors `cugraph::community::LouvainParams` without the `cugraph` crate's
 /// newtype wrappers and without `do_expensive_check` (always false in the
 /// adapter).
 #[derive(Debug, Clone, PartialEq)]
@@ -36,8 +36,8 @@ pub struct GraphSccParams;
 
 /// Parameters for Leiden community detection.
 ///
-/// Mirrors `cugraph::community::LeidenParams` without the cugraph-rs newtype
-/// wrappers and without `do_expensive_check` (always false in the adapter).
+/// Mirrors `cugraph::community::LeidenParams` without the `cugraph` crate's
+/// newtype wrappers and without `do_expensive_check` (always false in the adapter).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphLeidenParams {
     /// Maximum hierarchy depth / iteration count. Must be >= 1.
@@ -59,8 +59,8 @@ impl Default for GraphLeidenParams {
 
 /// Parameters for ECG community detection.
 ///
-/// Mirrors `cugraph::community::EcgParams` without cugraph-rs newtype
-/// wrappers and without `do_expensive_check` (always false in the adapter).
+/// Mirrors `cugraph::community::EcgParams` without the `cugraph` crate's
+/// newtype wrappers and without `do_expensive_check` (always false in the adapter).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphEcgParams {
     /// Minimum edge weight in the final Louvain graph. Must be >= 0.
@@ -86,7 +86,7 @@ impl Default for GraphEcgParams {
 
 /// Parameters for spectral modularity maximization.
 ///
-/// Mirrors `cugraph::community::SpectralClusteringParams` without cugraph-rs
+/// Mirrors `cugraph::community::SpectralClusteringParams` without the `cugraph` crate's
 /// newtype wrappers and without `do_expensive_check` (always false in the
 /// adapter).
 #[derive(Debug, Clone, PartialEq)]

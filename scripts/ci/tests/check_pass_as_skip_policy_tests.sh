@@ -31,7 +31,7 @@ fi
 grep -Fq 'optional_sf1_fixture' "${tmp_dir}/sf1.out"
 rm "${tmp_dir}/tests/sf1.rs"
 
-printf 'fn test() { eprintln!("skipping cugraph-rs drift test"); }\n' >"${tmp_dir}/tests/skip.rs"
+printf 'fn test() { eprintln!("skipping cugraph crate drift test"); }\n' >"${tmp_dir}/tests/skip.rs"
 if python3 scripts/ci/pass_as_skip_policy.py --root "${tmp_dir}/tests" >"${tmp_dir}/skip.out" 2>&1; then
   echo "FAIL: sibling source skip unexpectedly passed" >&2
   exit 1
@@ -39,7 +39,7 @@ fi
 grep -Fq 'sibling_source_skip' "${tmp_dir}/skip.out"
 rm "${tmp_dir}/tests/skip.rs"
 
-printf 'const GRAPH_RS: &str = "../../../cugraph-rs/cugraph-rs/src/graph.rs";\n' >"${tmp_dir}/tests/scrape.rs"
+printf 'const GRAPH_RS: &str = "../../../cugraph-nexus/cugraph-nexus/src/graph.rs";\n' >"${tmp_dir}/tests/scrape.rs"
 if python3 scripts/ci/pass_as_skip_policy.py --root "${tmp_dir}/tests" >"${tmp_dir}/scrape.out" 2>&1; then
   echo "FAIL: sibling source scrape unexpectedly passed" >&2
   exit 1

@@ -23,8 +23,8 @@ RULES = {
         r"handle_cugraph_python_oracle_unavailable\s*\([^;]*\)\s*;\s*return\s+None\s*;",
         re.DOTALL,
     ),
-    "sibling_source_skip": re.compile(r"skipping\s+cugraph-rs\s+drift\s+test", re.IGNORECASE),
-    "sibling_source_scrape": re.compile(r"cugraph-rs[^\"']*src/graph\.rs"),
+    "sibling_source_skip": re.compile(r"skipping\s+cugraph\s+crate\s+drift\s+test", re.IGNORECASE),
+    "sibling_source_scrape": re.compile(r"cugraph-nexus[^\"']*src/graph\.rs"),
 }
 
 

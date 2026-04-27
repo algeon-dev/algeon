@@ -13,7 +13,7 @@ pub struct SourceReadRuntimeMetrics {
     pub read_kind: String,
     /// Parquet read strategy used by the chunk or batch.
     pub read_strategy: String,
-    /// Lower-layer Parquet read evidence reported by cudf-rs.
+    /// Lower-layer Parquet read evidence reported by cudf.
     pub parquet_read_evidence: SourceReadParquetEvidenceMetrics,
     /// Batch index within the source stream, or the chunk index for singleton reads.
     pub batch_index: u64,
@@ -121,7 +121,7 @@ pub struct SourceReadParquetEvidenceMetrics {
     pub remote_read_mode: String,
     /// Parquet reader backend evidence.
     pub backend: String,
-    /// Build-time remote backend status reported by cudf-rs/libcudf.
+    /// Build-time remote backend status reported by cudf/libcudf.
     pub backend_build_status: String,
     /// Remote bytes read, when reported by the lower layer.
     pub remote_bytes: Option<u64>,

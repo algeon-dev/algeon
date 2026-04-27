@@ -74,7 +74,7 @@ export NEXUS_SERVER_MAX_CONCURRENT_QUERIES="${NEXUS_SERVER_MAX_CONCURRENT_QUERIE
 #
 # NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES
 #   Hard cap on live GPU memory reservations. Leave unset with the two chunk
-#   knobs below to use the server's cudf-rs inventory based auto-sized bounded
+#   knobs below to use the server's cudf inventory based auto-sized bounded
 #   profile.
 #
 # NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES

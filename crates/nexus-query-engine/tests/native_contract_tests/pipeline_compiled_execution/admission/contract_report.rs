@@ -84,14 +84,14 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
                 ReservationKind::HashTable if row.contract_quality == ContractQuality::ExactPreflight => {
                     assert_eq!(
                         row.required_contract, "hash_join_pre_build_reservation_size_bytes",
-                        "{}: hash-table exact preflight must name its cudf-rs pre-build sizing owner",
+                        "{}: hash-table exact preflight must name its cudf pre-build sizing owner",
                         case.label
                     );
                 },
                 ReservationKind::GatherMap if row.contract_quality == ContractQuality::ExactPreflight => {
                     assert_eq!(
                         row.required_contract, "join_gather_map_reservation_size_bytes",
-                        "{}: gather-map exact preflight must name its cudf-rs gather-map sizing owner",
+                        "{}: gather-map exact preflight must name its cudf gather-map sizing owner",
                         case.label
                     );
                 },
@@ -152,7 +152,7 @@ fn strict_preflight_gap_strict_preflight_gap_registry_tracks_current_retirement_
             gap.required_contract
         );
         assert!(
-            gap.retirement_requirement.contains("cudf-rs/libcudf"),
+            gap.retirement_requirement.contains("cudf/libcudf"),
             "retirement must wait on an owning lower-level API: {}",
             gap.retirement_requirement
         );

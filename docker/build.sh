@@ -12,9 +12,9 @@
 #
 # It stages, into docker/dist/:
 #   bin/datafusion_nexus_server        the compiled server
-#   lib/libcudf_rust.so                cudf-sys CMake FFI bridge (OUT_DIR)
-#   lib/libcudf.so librmm.so ...       forked RAPIDS C++ libs from cudf-rs
-#   lib/libcugraph*.so libcuvs.so      forked RAPIDS C++ libs from cugraph-rs
+#   lib/libcudf_rust.so                cudf-nexus-sys CMake FFI bridge (OUT_DIR)
+#   lib/libcudf.so librmm.so ...       forked RAPIDS C++ libs from cudf-nexus
+#   lib/libcugraph*.so libcuvs.so      forked RAPIDS C++ libs from cugraph-nexus
 #                                      (only when FEATURES contains `cugraph`)
 #
 # The CUDA *toolkit* libraries (libcudart, libcublas, libnvrtc, ...) are NOT
@@ -24,8 +24,8 @@
 #
 # Prerequisites:
 #   - Sibling path deps resolved and BUILT:
-#       ../cudf-rs/cudf-install/lib   (forked libcudf + friends)
-#       ../cugraph-rs/cugraph/cpp/build (forked libcugraph + cuvs, if cugraph)
+#       ../cudf-nexus/cudf-install/lib   (forked libcudf + friends)
+#       ../cugraph-nexus/cugraph/cpp/build (forked libcugraph + cuvs, if cugraph)
 #   - `cargo build --release` succeeds for the chosen FEATURES
 #   - patchelf (recommended; rewrites RUNPATHs so the container is hermetic)
 #
@@ -71,8 +71,8 @@ esac
 python3 "$POLICY_HELPER" --policy "$POLICY_FILE" check-env --profile "$CPU_PACKAGE_PROFILE"
 
 # Sibling forked-lib locations (override via env if your layout differs).
-CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR:-$REPO_ROOT/../cudf-rs/cudf-install}"
-CUGRAPH_BUILD_DIR="${CUGRAPH_BUILD_DIR:-$REPO_ROOT/../cugraph-rs/cugraph/cpp/build}"
+CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR:-$REPO_ROOT/../cudf-nexus/cudf-install}"
+CUGRAPH_BUILD_DIR="${CUGRAPH_BUILD_DIR:-$REPO_ROOT/../cugraph-nexus/cugraph/cpp/build}"
 
 # /app/lib is where the Dockerfile places the runtime libraries.
 RUNTIME_LIB_DIR="/app/lib"
@@ -129,8 +129,8 @@ mkdir -p "$DIST_DIR/bin" "$DIST_DIR/lib"
 # ── 3. Stage the binary ─────────────────────────────────────────────────────
 cp "$BINARY" "$DIST_DIR/bin/datafusion_nexus_server"
 
-# ── 4. Locate + stage libcudf_rust.so (cudf-sys CMake FFI bridge) ───────────
-# It lives in the cudf-sys CMake OUT_DIR, referenced by the binary's RUNPATH.
+# ── 4. Locate + stage libcudf_rust.so (cudf-nexus-sys CMake FFI bridge) ───────────
+# It lives in the cudf-nexus-sys CMake OUT_DIR, referenced by the binary's RUNPATH.
 RUNPATH=$(patchelf --print-rpath "$BINARY" 2>/dev/null \
     || readelf -d "$BINARY" 2>/dev/null \
         | awk -F'[][]+' '/\(RUNPATH\)|\(RPATH\)/{print $3}' \
@@ -143,7 +143,7 @@ for dir in "${RPATH_DIRS[@]+"${RPATH_DIRS[@]}"}"; do
 done
 if [[ -z "$CUDF_RUST_SO" ]]; then
     CUDF_RUST_SO=$(find "$CARGO_BUILD_ROOT/$CPU_TARGET_TRIPLE/$CPU_CARGO_PROFILE/build" \
-        -name libcudf_rust.so -path "*/cudf-sys-*/out/lib/*" 2>/dev/null \
+        -name libcudf_rust.so -path "*/cudf-nexus-sys-*/out/lib/*" 2>/dev/null \
         | head -1)
 fi
 [[ -n "$CUDF_RUST_SO" ]] || { echo "ERROR: cannot locate libcudf_rust.so." >&2; exit 1; }
@@ -165,7 +165,7 @@ copy_lib() {
 }
 
 CUDF_LIB="$CUDF_INSTALL_DIR/lib"
-[[ -d "$CUDF_LIB" ]] || { echo "ERROR: $CUDF_LIB not found — build cudf-rs first." >&2; exit 1; }
+[[ -d "$CUDF_LIB" ]] || { echo "ERROR: $CUDF_LIB not found — build cudf-nexus first." >&2; exit 1; }
 echo "==> Staging forked cuDF libs from $CUDF_LIB"
 copy_lib "$CUDF_LIB/libcudf.so"          || { echo "ERROR: libcudf.so missing" >&2; exit 1; }
 copy_lib "$CUDF_LIB/librmm.so"           || { echo "ERROR: librmm.so missing" >&2; exit 1; }
@@ -178,7 +178,7 @@ copy_lib "$CUDF_LIB/libnvcomp_cpu.so"*   || true
 
 # ── 6. Stage forked cuGraph / cuVS libs (only with cugraph feature) ─────────
 if [[ $want_cugraph -eq 1 ]]; then
-    [[ -d "$CUGRAPH_BUILD_DIR" ]] || { echo "ERROR: $CUGRAPH_BUILD_DIR not found — build cugraph-rs first." >&2; exit 1; }
+    [[ -d "$CUGRAPH_BUILD_DIR" ]] || { echo "ERROR: $CUGRAPH_BUILD_DIR not found — build cugraph-nexus first." >&2; exit 1; }
     echo "==> Staging forked cuGraph libs from $CUGRAPH_BUILD_DIR"
     copy_lib "$CUGRAPH_BUILD_DIR/libcugraph.so"        || { echo "ERROR: libcugraph.so missing" >&2; exit 1; }
     copy_lib "$CUGRAPH_BUILD_DIR/libcugraph_c.so"      || { echo "ERROR: libcugraph_c.so missing" >&2; exit 1; }
